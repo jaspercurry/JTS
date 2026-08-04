@@ -65,6 +65,7 @@ from jasper.active_speaker.runtime_contract import (
 )
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from tests.test_active_speaker_program_config import PROTECTION
 from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_bass_extension_profile import _profile
 
@@ -607,7 +608,8 @@ def test_pipeline_reference_closure_errors_fails_closed_on_bad_shapes() -> None:
 def test_assert_pipeline_references_closed_passes_the_real_program_config() -> None:
     preset = _preset("mono", 2)
     yaml_text = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        preset, role_channels=ROLE_CHANNELS, summed_channel=2,
+        measurement_protection_by_role=PROTECTION, playback_device=ACTIVE_PCM
     )
     _assert_pipeline_references_closed(yaml_text, preset)  # must not raise
 
@@ -637,6 +639,8 @@ def test_build_and_prove_refuses_program_graph_with_dropped_mixer(monkeypatch) -
         emit_active_speaker_program_config(
             _preset("mono", 2),
             role_channels=ROLE_CHANNELS,
+            summed_channel=2,
+            measurement_protection_by_role=PROTECTION,
             playback_device=ACTIVE_PCM,
         )
 
@@ -666,7 +670,8 @@ def test_program_config_mixer_is_named_split_active_not_program_route() -> None:
     jasper.active_speaker.environment's _ACTIVE_SPLIT_RE ecosystem contract
     keys on it (see test_active_speaker_environment.py for that half)."""
     yaml_text = emit_active_speaker_program_config(
-        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, summed_channel=2,
+        measurement_protection_by_role=PROTECTION, playback_device=ACTIVE_PCM
     )
     assert "split_active_2way" in yaml_text
     assert "program_route_2way" not in yaml_text
@@ -692,7 +697,8 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     from jasper.dsp_apply import ValidationStatus, validate_camilla_config
 
     yaml_text = emit_active_speaker_program_config(
-        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, summed_channel=2,
+        measurement_protection_by_role=PROTECTION, playback_device=ACTIVE_PCM
     )
     cfg_path = tmp_path / "program.yml"
     cfg_path.write_text(yaml_text)

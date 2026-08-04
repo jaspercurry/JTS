@@ -139,6 +139,64 @@ def test_clean_program_is_admitted():
     assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
 
 
+def test_protected_neutral_summed_program_reuses_role_plans_and_binding_cap():
+    topology, profile, targets = _profile_and_targets()
+    program = build_verify_program(
+        2000.0,
+        gain_db=-46.0,
+        downstream_gain_db=-20.0,
+        output_channel=2,
+        total_channels=3,
+        summed_role="summed",
+        sweep_s=3.0,
+    )
+    admission = admit_excitation_program(
+        program,
+        topology=topology,
+        safety_profile=profile,
+        role_targets=targets,
+        session_volume_db=-20.0,
+    )
+    assert admission.allowed
+    assert [segment.role for segment in admission.segments] == ["woofer", "tweeter"]
+    facts = {item.role: item for item in admission.channels}
+    assert facts["summed"].cap_dbfs == -65.0
+    assert sum(item.role == "unused" for item in admission.channels) == 2
+
+
+def test_unused_static_graph_channel_must_remain_byte_silent():
+    topology, profile, targets = _profile_and_targets()
+    program = build_measure_program(
+        {"woofer": -46.0, "tweeter": -46.0},
+        _roles(),
+        downstream_gain_db=-20.0,
+        total_channels=3,
+    )
+    pcm = render_program_pcm(program)
+    pcm[100, 2] = 1.0 / 32768.0  # one int16 LSB is still not byte-silence
+    admission = admit_excitation_program(
+        program,
+        topology=topology,
+        safety_profile=profile,
+        role_targets=targets,
+        session_volume_db=-20.0,
+        pcm=pcm,
+    )
+    assert ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY in admission.refusals
+
+
+def test_applied_verify_shape_is_not_accepted_as_protected_summed_program():
+    topology, profile, targets = _profile_and_targets()
+    with pytest.raises(ProgramAdmissionError, match="protected-neutral"):
+        admit_excitation_program(
+            build_verify_program(2000.0, gain_db=-46.0),
+            topology=topology,
+            safety_profile=profile,
+            role_targets=targets,
+            session_volume_db=-20.0,
+        )
+
+
 def test_band_escape_refuses_segment():
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())

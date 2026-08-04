@@ -4619,25 +4619,18 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
     assert priors.crossover_fc_hz == FC_HZ
 
 
-def test_summed_sweep_phases_share_one_program_object():
-    """The byte-safety invariant issue #1976's fix depends on, pinned
-    directly (adversarial-gate SF2, PR #2028): ``_program_for_phase`` must
-    hand VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY the SAME object, not merely
-    an equal one. ``self._verify_program`` is composed once in ``__init__``
-    (see the "Programs" block) and returned unchanged for every
-    ``SUMMED_SWEEP_PHASES`` member — nothing upstream of this test caught a
-    divergence here: mutating ``_program_for_phase`` to hand cloud phases a
-    freshly-composed (value-equal, object-distinct) program left the wider
-    suite green, because everything else asserts on program CONTENT
-    (segments, gains, ``.phase``), never object identity. If this ever goes
-    false, `jasper/web/correction_crossover_v2.py`'s
-    ``bind_production_play._play`` writes a ``summed_program.wav`` that is
-    NOT what a genuine VERIFY capture actually played."""
+def test_preapply_cloud_uses_protected_graph_program_only():
+    """R15: CLOUD_MEASURE is the distinct three-channel protected-neutral
+    program; post-apply VERIFY/CLOUD_VERIFY retain one mono production object."""
     fakes = FakeSeams()
     c = _conductor(fakes)
-    assert c._program_for_phase(PHASE_CLOUD_MEASURE) is c._program_for_phase(
-        PHASE_VERIFY
-    )
+    protected = c._program_for_phase(PHASE_CLOUD_MEASURE)
+    applied = c._program_for_phase(PHASE_VERIFY)
+    assert protected is not applied
+    assert protected.channels == 3
+    assert {segment.channel for segment in protected.stimulus_segments()} == {2}
+    assert {segment.role for segment in protected.stimulus_segments()} == {"summed"}
+    assert applied.channels == 1
     assert c._program_for_phase(PHASE_CLOUD_VERIFY) is c._program_for_phase(
         PHASE_VERIFY
     )

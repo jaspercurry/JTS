@@ -24,6 +24,7 @@ from jasper.active_speaker.path_safety import (
 )
 from tests.active_speaker_fixtures import valid_camilla_config as _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_active_speaker_program_config import PROTECTION
 
 
 _APLAY_STDOUT = """
@@ -205,6 +206,8 @@ def test_program_config_mixer_satisfies_active_split_ecosystem_contract() -> Non
     text = emit_active_speaker_program_config(
         preset,
         role_channels={"woofer": 0, "tweeter": 1},
+        summed_channel=2,
+        measurement_protection_by_role=PROTECTION,
         playback_device="hw:CARD=DAC8x,DEV=0",
     )
 

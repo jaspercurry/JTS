@@ -4,8 +4,9 @@
 
 """Program-playback entry for the crossover conductor (Wave 2, deliverable D).
 
-:func:`play_program` is the one entry that plays a compiled excitation program
-(CHECK / MEASURE) through the speaker's real DSP chain. It composes the other
+:func:`play_program` is the one entry that plays a compiled pre-apply excitation
+program (CHECK / MEASURE / CLOUD_MEASURE) through the speaker's real DSP chain.
+It composes the other
 three Wave 2 pieces:
 
 * the session-scoped fixed measurement volume
@@ -26,9 +27,10 @@ The CamillaDSP graph seams and the writer lock are injected callables so the
 orchestration is exercised end-to-end with a fake aplay/DSP boundary; Wave 5
 binds the real CamillaController-backed seams.
 
-VERIFY needs no machinery here: it plays a mono summed sweep through the APPLIED
-production graph — the real system, not a commissioning construct — so it reuses
-the existing summed-sweep playback (Wave 5 wires it), NOT this program graph.
+Post-apply VERIFY/CLOUD_VERIFY need no machinery here: they play mono summed
+sweeps through the APPLIED production graph, so they reuse the existing
+summed-sweep playback. Pre-apply CLOUD_MEASURE instead uses this graph's shared
+summed input and the same re-admission/restore transaction as CHECK/MEASURE.
 """
 
 from __future__ import annotations
@@ -152,7 +154,7 @@ async def play_program(
     play_wav: PlayWav,
     writer_lock: WriterLock,
 ) -> ProgramPlaybackResult:
-    """Play one CHECK/MEASURE program through the real DSP chain, then restore.
+    """Play one pre-apply program through the real DSP chain, then restore.
 
     Order of operations (all fail-closed):
 

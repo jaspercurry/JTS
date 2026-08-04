@@ -479,10 +479,12 @@ def resolve_driver_excitation_ceilings(
     which is the one owner of that physical property. Optional: without it the
     proven-HP path simply keeps the class-default ceiling (and logs the skip).
 
-    Band-edge asymmetry (sweep-composition PR-A, #1668): the LOWER permitted
-    edge is ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
-    measurement_band[0])`` -- excursion protection, an absolute boundary that
-    stays untouched by this PR. The UPPER permitted edge is
+    Band-edge policy: the LOWER permitted edge is normally
+    ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``.
+    On the proven protected-program path it instead uses the DECLARED hard
+    floor, not the narrower analysis-window floor, so R15 can capture the HF
+    response down to its declared safe floor (#1654). The emitted protection P
+    carries that same hard floor. The UPPER permitted edge is
     ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
     ``measurement_band[1]`` is deliberately EXCLUDED from it.
     ``measurement_band`` is analysis-window metadata (what the wizard tells
@@ -517,11 +519,10 @@ def resolve_driver_excitation_ceilings(
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
         )
-    lower = max(
-        MIN_DRIVER_TEST_FREQUENCY_HZ,
-        float(hard_band[0]),
-        float(measurement_band[0]),
-    )
+    lower_candidates = [MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[0])]
+    if not program_admission:
+        lower_candidates.append(float(measurement_band[0]))
+    lower = max(lower_candidates)
     # measurement_band[1] is deliberately NOT part of this min() -- see the
     # "Band-edge asymmetry" paragraph in this function's docstring. The hard
     # band + global ceiling are the only upper-edge protection boundaries.

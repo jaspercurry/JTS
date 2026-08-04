@@ -5990,6 +5990,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
     probe cares only about the config_dir plumbing (graph emission and
     playback have their own coverage elsewhere)."""
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
+    from jasper.active_speaker import crossover_raw_evidence as raw_evidence_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     import jasper.audio_measurement.program as program_mod
 
@@ -6012,6 +6013,11 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
         lambda *a, **kw: "placeholder-graph-yaml",
     )
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
+    monkeypatch.setattr(
+        raw_evidence_mod,
+        "validate_protected_neutral_program_routing",
+        lambda program, graph: None,
+    )
 
     class _FakeEvidenceStore:
         bundle_dir = tmp_path
@@ -6027,6 +6033,9 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
+        session_graph=SimpleNamespace(
+            yaml_text="placeholder-graph-yaml", identity={}
+        ),
         playback_device="hw:Test",
         safety_profile={},
         role_targets={},
@@ -6068,28 +6077,12 @@ def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camill
 # --- Issue #1976: the summed-sweep stimulus must also land at a stable name --
 
 
-def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
+def test_cloud_measure_uses_protected_graph_and_exact_phase_program_only(
     monkeypatch, tmp_path
 ):
-    """Issue #1976: a measure-stage session that walks the pre-apply cloud
-    group (CLOUD_MEASURE) plays the SAME excitation object a literal VERIFY
-    capture would — ``_program_for_phase`` in crossover_v2_flow.py returns
-    ``self._verify_program`` for every phase in ``SUMMED_SWEEP_PHASES`` — but
-    a session that never arms PHASE_VERIFY itself used to leave that reusable
-    stimulus discoverable only under its cloud-phase filename.
-
-    Confirmed against real bench data
-    (``captures/bench-20260730/bundle-d76b55bc6b67``, a measure-stage-only
-    session): ``cloud_measure_program.wav`` was on disk, no summed-sweep
-    stimulus was recoverable under a predictable name.
-
-    ``_play`` must now ALSO persist ``summed_program.wav`` alongside the
-    phase-named file whenever the armed phase is CLOUD_MEASURE, CLOUD_VERIFY,
-    or VERIFY itself. This is a NEW, dedicated filename — never
-    ``verify_program.wav`` — because corpus-index tooling derives "which
-    phases this bundle reached" from which ``{phase}_program.wav`` files
-    exist; reusing that name would make a cloud-only bundle false-report
-    having reached VERIFY (adversarial-gate SF1, PR #2028)."""
+    """R15: pre-apply cloud enters the existing transient graph owner and its
+    three-channel artifact is never mixed into the mono applied-sum alias."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
     import jasper.active_speaker.program_playback as program_playback_mod
     import jasper.audio_measurement.program as program_mod
 
@@ -6099,13 +6092,16 @@ def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
         written.append(Path(path))
         Path(path).write_bytes(b"fake-wav-bytes")
 
-    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
-        return SimpleNamespace()
+    played: list[tuple[Any, str]] = []
+
+    async def fake_play_program(program, *, program_graph_yaml, **kwargs):
+        played.append((program, program_graph_yaml))
 
     monkeypatch.setattr(program_mod, "write_program_wav", fake_write_program_wav)
     monkeypatch.setattr(
-        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
+        program_playback_mod, "play_program", fake_play_program
     )
+    monkeypatch.setattr(flow_mod, "bind_program_playback_seams", lambda *a, **k: {})
     _patch_measurement_window(monkeypatch, [])
 
     class _FakeEvidenceStore:
@@ -6122,12 +6118,26 @@ def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
+        session_graph=SimpleNamespace(
+            yaml_text="placeholder-graph-yaml",
+            identity={
+                "kind": "jts_crossover_protected_neutral_graph_v1",
+                "role_channels": {"woofer": 0, "tweeter": 1},
+                "summed_channel": 2,
+            },
+        ),
         playback_device="hw:Test",
         safety_profile={},
         role_targets={},
         session_volume_db=-20.0,
     )
-    play(PHASE_CLOUD_MEASURE, object())
+    cloud_program = SimpleNamespace(
+        channels=3,
+        stimulus_segments=lambda: (
+            SimpleNamespace(role="summed", channel=2),
+        ),
+    )
+    play(PHASE_CLOUD_MEASURE, cloud_program)
 
     session_dir = tmp_path / "crossover_v2" / "cap_verify_persist_probe"
     assert (session_dir / "cloud_measure_program.wav").exists()
@@ -6135,17 +6145,10 @@ def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
     # CLOUD_MEASURE alone must NOT create a verify_program.wav that would make
     # this cloud-only session false-report having reached VERIFY.
     assert not (session_dir / "verify_program.wav").exists()
-    assert (session_dir / "summed_program.wav").exists(), (
-        "CLOUD_MEASURE must also persist the canonical summed_program.wav — "
-        "a session that never arms a literal VERIFY capture would otherwise "
-        "leave its reusable stimulus un-replayable offline (#1976)"
-    )
-    # Written exactly once each — the alias is not re-derived or re-rendered,
-    # just a second write of the SAME program object already validated above.
-    assert written == [
-        session_dir / "cloud_measure_program.wav",
-        session_dir / "summed_program.wav",
-    ]
+    assert not (session_dir / "summed_program.wav").exists()
+    assert written == [session_dir / "cloud_measure_program.wav"]
+    assert len(played) == 1
+    assert played[0][1] == "placeholder-graph-yaml"
 
 
 def test_verify_play_does_not_overwrite_existing_summed_program_wav(
@@ -6188,6 +6191,7 @@ def test_verify_play_does_not_overwrite_existing_summed_program_wav(
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
+        session_graph=SimpleNamespace(yaml_text="placeholder-graph-yaml"),
         playback_device="hw:Test",
         safety_profile={},
         role_targets={},
@@ -6248,6 +6252,7 @@ def test_summed_program_wav_persist_failure_is_best_effort(monkeypatch, tmp_path
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
+        session_graph=SimpleNamespace(yaml_text="placeholder-graph-yaml"),
         playback_device="hw:Test",
         safety_profile={},
         role_targets={},
@@ -6255,10 +6260,10 @@ def test_summed_program_wav_persist_failure_is_best_effort(monkeypatch, tmp_path
     )
     # Must not raise — the OSError from the summed_program.wav write is
     # swallowed, not propagated into the measurement.
-    play(PHASE_CLOUD_MEASURE, object())
+    play(PHASE_VERIFY, object())
 
     session_dir = tmp_path / "crossover_v2" / "cap_summed_persist_fails_probe"
-    assert (session_dir / "cloud_measure_program.wav").exists(), (
+    assert (session_dir / "verify_program.wav").exists(), (
         "the phase-named WAV that was actually played must persist even "
         "when the best-effort diagnostic copy fails"
     )

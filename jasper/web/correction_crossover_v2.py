@@ -3052,6 +3052,73 @@ def bind_evidence_publishers(
     return publish_check, publish_candidate, refs
 
 
+def bind_raw_anchor_publisher(
+    store: Any,
+    relay_session_id: str,
+    refs: dict[str, Any],
+    *,
+    session_graph: Any,
+    roles_bands: Sequence[Any],
+    configured_fc_hz: float,
+    safety_profile: Mapping[str, Any],
+) -> Callable[[Any, Any, Any, int], None]:
+    """Publish the accepted MEASURE WAV and anchor-only v1 record write-once."""
+
+    def _publish(analysis: Any, result: Any, program: Any, attempt: int) -> None:
+        from jasper.active_speaker.crossover_raw_evidence import (
+            build_raw_evidence_v1,
+            validate_raw_evidence_v1,
+        )
+
+        wav = getattr(result, "wav", result)
+        if not isinstance(wav, (bytes, bytearray)):
+            raise TypeError("RAW anchor publisher requires exact capture WAV bytes")
+        take_id = f"anchor_00_take_{int(attempt):02d}"
+        calibration = (refs.get("calibration") or {}).get("measure") or {
+            "applied": False,
+            "calibration_id": None,
+        }
+        payload = build_raw_evidence_v1(
+            session_id=relay_session_id,
+            analysis=analysis,
+            program=program,
+            capture_wav=bytes(wav),
+            attempt=int(attempt),
+            roles_bands=roles_bands,
+            measurement_graph=session_graph.identity,
+            protection_by_role=session_graph.protection_by_role,
+            polarity_sign_by_role=session_graph.polarity_sign_by_role,
+            configured_fc_hz=float(configured_fc_hz),
+            component_safety_profile=safety_profile,
+            calibration_identity=calibration,
+            limiter_threshold_dbfs=session_graph.limiter_threshold_dbfs,
+        )
+        # Validate the complete identity envelope before making either
+        # write-once publication. A malformed accepted analysis must not leave
+        # a raw-WAV artifact that looks eligible for a missing evidence record.
+        raw_artifact = store.publish_raw_artifact(
+            f"crossover_v2/{relay_session_id}/{take_id}.wav", bytes(wav)
+        )
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/raw_evidence_v1.json", payload
+        )
+        reopened = store.reopen_json_artifact(artifact)
+        validate_raw_evidence_v1(reopened, expected_session_id=relay_session_id)
+        refs["raw_anchor_wav_artifact"] = raw_artifact.fingerprint
+        refs["raw_evidence_artifact"] = artifact.fingerprint
+        refs["raw_evidence_set_fingerprint"] = payload[
+            "evidence_set_fingerprint"
+        ]
+        log_event(
+            logger,
+            "correction.crossover_v2_raw_anchor_published",
+            relay_session_id=relay_session_id,
+            evidence_set_fingerprint=payload["evidence_set_fingerprint"],
+        )
+
+    return _publish
+
+
 def bind_position_retention(
     store: Any, relay_session_id: str, refs: dict[str, Any]
 ) -> Callable[[str, Any, Mapping[str, Any]], None]:
@@ -3744,6 +3811,7 @@ def bind_production_play(
     topology: Any,
     preset: Any,
     role_channels: Mapping[str, int],
+    session_graph: Any,
     playback_device: str,
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
@@ -3754,13 +3822,13 @@ def bind_production_play(
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
-    CHECK/MEASURE render + publish the program WAV into the session's evidence
+    CHECK/MEASURE/CLOUD_MEASURE render + publish the program WAV into the session's evidence
     bundle, emit the channel-routed program graph
     (``emit_active_speaker_program_config``), and ride
     :func:`jasper.active_speaker.program_playback.play_program` with the
-    CamillaController seams from ``bind_program_playback_seams``; VERIFY plays
-    its mono WAV through the APPLIED production graph (verified-aplay only —
-    no graph load). Both run inside the mux measurement window so the
+    CamillaController seams from ``bind_program_playback_seams``; VERIFY and
+    CLOUD_VERIFY play through the APPLIED production graph (verified-aplay only
+    — no graph load). All run inside the mux measurement window so the
     correction lane actually reaches the speaker.
 
     ``config_dir`` defaults to the SAME
@@ -3787,7 +3855,8 @@ def bind_production_play(
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2_flow import (
-        SUMMED_SWEEP_PHASES,
+        PHASE_CLOUD_VERIFY,
+        PHASE_VERIFY,
         bind_program_playback_seams,
     )
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
@@ -3796,49 +3865,35 @@ def bind_production_play(
     resolved_config_dir = (
         config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
     )
+    program_graph_yaml = (
+        str(session_graph.yaml_text) if session_graph is not None else ""
+    )
 
     def _play(phase: str, program: Any) -> None:
+        if phase not in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
+            from jasper.active_speaker.crossover_raw_evidence import (
+                validate_protected_neutral_program_routing,
+            )
+
+            if session_graph is None:
+                raise RuntimeError(
+                    "pre-apply playback requires a protected-neutral session graph"
+                )
+            validate_protected_neutral_program_routing(
+                program, session_graph.identity
+            )
         bundle_dir = evidence_store.bundle_dir
         wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
         wav_path = Path(bundle_dir) / wav_rel
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_program_wav(wav_path, program)
         artifact = evidence_store.identify_artifact(wav_rel)
-        if phase in SUMMED_SWEEP_PHASES:
-            # Issue #1976. Every SUMMED_SWEEP_PHASES phase plays the SAME
-            # excitation object — ``_program_for_phase`` in
-            # crossover_v2_flow.py returns ``self._verify_program`` for
-            # VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike — so a
-            # measure-stage session that walks a pre-apply cloud group
-            # WITHOUT ever arming a literal VERIFY capture (the common
-            # shape: 12 real bundles surveyed 2026-07-29, only 4 ever
-            # reached VERIFY) left this reusable stimulus persisted only
-            # under its cloud-phase name, discoverable by nobody who
-            # didn't already know which phase happened to run. A
-            # 2026-07-31 offline-replay attempt against a real bench
-            # bundle confirmed the gap: ``cloud_measure_program.wav`` was
-            # on disk, no summed-sweep stimulus was recoverable under a
-            # predictable name.
-            #
-            # This does NOT reuse the ``verify_program.wav`` name: the
-            # corpus-index tooling and its mapped research docs derive
-            # "which phases this bundle reached" from which
-            # ``{phase}_program.wav`` files exist on disk, so writing to
-            # that path for a CLOUD_MEASURE-only session would make a
-            # cloud-only bundle false-report having reached VERIFY —
-            # corrupting the exact presence-heuristic this fix's own
-            # replay use case depends on. ``summed_program.wav`` is a
-            # NEW, dedicated name: present whenever this session played
-            # ANY summed-sweep-shaped capture, additive to (never a
-            # substitute for) the phase-named files above.
-            #
-            # Fill-if-absent: content is guaranteed byte-identical (same
-            # ``program`` object across VERIFY/CLOUD_MEASURE/CLOUD_VERIFY
-            # within one relay session), so an existing file — including
-            # one an earlier phase in this same session already wrote —
-            # is left alone. Best-effort: this is a diagnostic convenience
-            # copy, not the measurement itself, so a full disk or a
-            # permissions fault here must not abort an operator's capture.
+        if phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
+            # Issue #1976's stable applied-sum alias. R15's pre-apply cloud
+            # is deliberately a different three-channel artifact for the
+            # protected-neutral graph and remains under its exact phase name;
+            # mixing that identity into this mono production alias would make
+            # offline replay nondeterministic. Best-effort as before.
             try:
                 summed_wav_path = (
                     Path(bundle_dir)
@@ -3857,30 +3912,16 @@ def bind_production_play(
                 verified_program_aplay,
             )
 
-            if phase in SUMMED_SWEEP_PHASES:
-                # The LIVE production graph IS the system under test — no graph
-                # load, just the verified WAV into the lane. True for VERIFY
-                # (the applied graph) and for both position groups: a spatial
-                # cloud measures the summed system as it stands, which is the
-                # pre-apply graph for CLOUD_MEASURE and the applied one for
-                # CLOUD_VERIFY. Level safety for all three is the compose-time
-                # min-cap clamp in ``_compose_verify_program``.
+            if phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
+                # Post-apply evidence measures the applied production graph.
                 if on_playback_started is not None:
                     on_playback_started(program)
                 await verified_program_aplay(
                     bundle_dir, artifact, timeout_s=60.0
                 )
                 return
-            from jasper.active_speaker.camilla_yaml import (
-                emit_active_speaker_program_config,
-            )
             from jasper.active_speaker.program_playback import play_program
 
-            program_yaml = emit_active_speaker_program_config(
-                preset,
-                role_channels=dict(role_channels),
-                playback_device=playback_device,
-            )
             seams = bind_program_playback_seams(
                 camilla_factory(),
                 bundle_dir=str(bundle_dir),
@@ -3908,7 +3949,7 @@ def bind_production_play(
                 seams["play_wav"] = _play_wav_signalling
             await play_program(
                 program,
-                program_graph_yaml=program_yaml,
+                program_graph_yaml=program_graph_yaml,
                 session_volume_plan=session_volume_plan(),
                 **seams,
             )
@@ -5269,6 +5310,17 @@ def prepare_v2_session(
         # One signal per session, shared by the play seam (which fires it) and
         # the runner (which installs the armed capture's phase ladder on it).
         playback_started = PlaybackStartSignal()
+        from jasper.active_speaker.crossover_raw_evidence import (
+            build_protected_neutral_session_graph,
+        )
+
+        session_graph = build_protected_neutral_session_graph(
+            preset=context.preset,
+            roles_bands=context.roles_bands,
+            role_channels=context.role_channels,
+            summed_channel=2,
+            playback_device=context.playback_device,
+        )
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -5277,6 +5329,7 @@ def prepare_v2_session(
             topology=context.topology,
             preset=context.preset,
             role_channels=context.role_channels,
+            session_graph=session_graph,
             playback_device=context.playback_device,
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
@@ -5316,6 +5369,15 @@ def prepare_v2_session(
                 rollback=bind_delta_probe_rollback(run_async, camilla_factory),
                 applied_offset_db=_applied_offset_gate,
                 record_model_error=_record_live_model_error,
+                publish_raw_anchor=bind_raw_anchor_publisher(
+                    evidence_store,
+                    relay_session_id,
+                    refs,
+                    session_graph=session_graph,
+                    roles_bands=context.roles_bands,
+                    configured_fc_hz=context.fc_hz,
+                    safety_profile=context.safety_profile,
+                ),
             ),
             tier=plan_shape.tier,
             # The conductor's index→phase map is built from the SAME resolved
@@ -5332,6 +5394,7 @@ def prepare_v2_session(
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+            session_graph=session_graph,
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
         )
@@ -5541,6 +5604,7 @@ def prepare_v2_verify(
             topology=context.topology,
             preset=context.preset,
             role_channels=context.role_channels,
+            session_graph=None,
             playback_device=context.playback_device,
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,

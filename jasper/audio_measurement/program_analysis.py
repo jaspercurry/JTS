@@ -34,8 +34,10 @@ Pipeline (per phase):
    delay is selected from the drift-corrected physical peak-gap ANCHOR plus a
    ±(period/6) gated local-peak snap (methodology §10, 2026-07-22). Summed
    flatness has been evidence only, never the selector, since #1649.
-6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
-   match the branches through the crossover. Two sums come out of this, on
+6. **Candidate + prediction** — production R15 sessions replace the emitted
+   protection offline with the configured total crossover transfer; legacy
+   callers may still supply already-crossed branches. Trims then level-match
+   the branches through the crossover. Two sums come out of this, on
    purpose (rung P3 / R10b): ``predicted_sum``, the branches at the COMMITTED
    trim and delay — what the emitted graph will do, and what VERIFY's tracking
    comparison grades against — and the independently aligned
@@ -80,6 +82,10 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     ProgramSegment,
     segment_stimulus,
+)
+from jasper.audio_measurement.transfer_composition import (
+    compose_total_transfer,
+    linkwitz_riley_response_complex,
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
@@ -728,6 +734,11 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     mic_tier: str | None = None
+    # R15's exact pre-apply transfer replacement. All three mappings are
+    # required together; absent means the legacy as-crossed analysis path.
+    measurement_protection_by_role: Mapping[str, Sequence[Any]] | None = None
+    configured_transfer_by_role: Mapping[str, Sequence[Any]] | None = None
+    polarity_sign_by_role: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -1223,6 +1234,12 @@ class ProgramAnalysis:
     locations: tuple[SegmentLocation, ...]
     drift: DriftEstimate | None = None
     driver_responses: tuple[DriverResponse, ...] = ()
+    # Raw M remains in ``driver_responses`` for the v1 evidence contract.
+    # These are the offline fitter inputs S=M*C/P on the same basis.
+    configured_driver_responses: tuple[DriverResponse, ...] = ()
+    transfer_composition_fingerprints: Mapping[str, Mapping[str, str]] = field(
+        default_factory=dict
+    )
     alignment: AlignmentEstimate | None = None
     candidate: CrossoverCandidate | None = None
     ambient_report: dict[str, Any] | None = None
@@ -4444,6 +4461,86 @@ def _repeat_driver_responses(
     return tuple(out)
 
 
+def _total_transfer_for_role(
+    measured: np.ndarray,
+    freqs_hz: np.ndarray,
+    *,
+    role: str,
+    priors: MeasurementPriors,
+    required_mask: np.ndarray,
+):
+    maps = (
+        priors.measurement_protection_by_role,
+        priors.configured_transfer_by_role,
+        priors.polarity_sign_by_role,
+    )
+    if all(item is None for item in maps):
+        return None
+    if any(item is None for item in maps):
+        raise ValueError("M*C/P analysis requires P, C, and polarity identities together")
+    protection = priors.measurement_protection_by_role
+    configured = priors.configured_transfer_by_role
+    signs = priors.polarity_sign_by_role
+    assert protection is not None and configured is not None and signs is not None
+    if role not in protection or role not in configured or role not in signs:
+        raise ValueError(f"M*C/P analysis identity is missing role {role!r}")
+    sign = int(signs[role])
+    P = linkwitz_riley_response_complex(
+        freqs_hz, protection[role], polarity_sign=sign
+    )
+    C = linkwitz_riley_response_complex(
+        freqs_hz, configured[role], polarity_sign=sign
+    )
+    return compose_total_transfer(
+        measured, C, P, required_mask=np.asarray(required_mask, dtype=bool)
+    )
+
+
+def _configured_driver_response(
+    response: DriverResponse,
+    *,
+    priors: MeasurementPriors,
+    sweep_lo_hz: float,
+    sweep_hi_hz: float,
+) -> tuple[DriverResponse, Mapping[str, str] | None]:
+    freqs = np.asarray(response.freqs_hz, dtype=np.float64)
+    mask = (
+        np.isfinite(freqs)
+        & (freqs >= float(sweep_lo_hz))
+        & (freqs <= float(sweep_hi_hz))
+    )
+    if response.validity_floor_hz is not None and math.isfinite(
+        response.validity_floor_hz
+    ):
+        mask &= freqs >= float(response.validity_floor_hz)
+    composition = _total_transfer_for_role(
+        np.asarray(response.complex_tf, dtype=np.complex128),
+        freqs,
+        role=response.role,
+        priors=priors,
+        required_mask=mask,
+    )
+    if composition is None:
+        return response, None
+    repeats = tuple(
+        _configured_driver_response(
+            repeat,
+            priors=priors,
+            sweep_lo_hz=sweep_lo_hz,
+            sweep_hi_hz=sweep_hi_hz,
+        )[0]
+        for repeat in response.repeat_responses
+    )
+    configured = replace(
+        response,
+        complex_tf=composition.fitter_input,
+        magnitude_db=20.0
+        * np.log10(np.maximum(np.abs(composition.fitter_input), 1e-12)),
+        repeat_responses=repeats,
+    )
+    return configured, composition.fingerprints
+
+
 def _analyze_measure(
     program, capture, sample_rate, global_offset, locations,
     calibration, geometry, priors,
@@ -4509,6 +4606,22 @@ def _analyze_measure(
             ),
         )
     )
+    sweep_by_role = {str(seg_w.role): seg_w, str(seg_t.role): seg_t}
+    configured_pairs = tuple(
+        _configured_driver_response(
+            response,
+            priors=priors,
+            sweep_lo_hz=float(sweep_by_role[response.role].f1_hz),
+            sweep_hi_hz=float(sweep_by_role[response.role].f2_hz),
+        )
+        for response in responses
+    )
+    configured_responses = tuple(item[0] for item in configured_pairs)
+    composition_fingerprints = {
+        response.role: dict(fingerprints)
+        for response, (_configured, fingerprints) in zip(responses, configured_pairs)
+        if fingerprints is not None
+    }
 
     alignment = _estimate_alignment(
         capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
@@ -4523,6 +4636,7 @@ def _analyze_measure(
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
         woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
+        total_transfer_priors=priors,
     )
     if candidate.alignment_seed_ripple_db is not None:
         alignment = replace(
@@ -4545,6 +4659,10 @@ def _analyze_measure(
         locations=tuple(locations),
         drift=drift,
         driver_responses=responses,
+        configured_driver_responses=(
+            configured_responses if composition_fingerprints else ()
+        ),
+        transfer_composition_fingerprints=composition_fingerprints,
         alignment=alignment,
         candidate=candidate,
         mic_tier=priors.mic_tier,
@@ -4566,6 +4684,7 @@ def _build_candidate(
     woofer_sweep_lo_hz: float | None = None,
     tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
+    total_transfer_priors: MeasurementPriors | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -4592,6 +4711,35 @@ def _build_candidate(
         if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
         else lo
     )
+    if total_transfer_priors is not None:
+        role_masks = {
+            woofer_role: (freqs >= float(woofer_sweep_lo_hz))
+            & (freqs <= float(woofer_sweep_hi_hz)),
+            tweeter_role: (freqs >= float(tweeter_sweep_lo_hz))
+            & (freqs <= float(tweeter_sweep_hi_hz)),
+        }
+        if branch_floor_hz is not None and math.isfinite(branch_floor_hz):
+            role_masks = {
+                role: mask & (freqs >= branch_floor_hz)
+                for role, mask in role_masks.items()
+            }
+        W_composed = _total_transfer_for_role(
+            W,
+            freqs,
+            role=woofer_role,
+            priors=total_transfer_priors,
+            required_mask=role_masks[woofer_role],
+        )
+        T_composed = _total_transfer_for_role(
+            T,
+            freqs,
+            role=tweeter_role,
+            priors=total_transfer_priors,
+            required_mask=role_masks[tweeter_role],
+        )
+        if W_composed is not None and T_composed is not None:
+            W = W_composed.fitter_input
+            T = T_composed.fitter_input
     # The LEVEL MATCH reads a different span from the ripple/prediction band
     # above (PR-L3): each branch on its own side of Fc, inside its OWN
     # excited-and-gated span, never the shared both-branches-excited overlap

@@ -32,10 +32,11 @@ Design boundaries this module deliberately keeps:
   :class:`~jasper.audio_measurement.excitation_admission.FrequencyBand`) are
   imported, plus numpy for PCM rendering.
 
-Channel routing (design §5.4): CHECK/MEASURE programs are 2-channel WAVs
-(ch0 → woofer output path, ch1 → tweeter output path); VERIFY is a mono summed
-sweep through the applied production graph. Per-driver sequencing lives in the
-WAV channels so the CamillaDSP commissioning graph stays static and provable.
+Channel routing (design §5.4): CHECK/MEASURE programs use the protected-neutral
+graph's role channels (ch0 → woofer, ch1 → tweeter). Pre-apply summed capture
+uses that graph's ch2; post-apply VERIFY remains a mono sweep through the
+applied production graph. Per-driver sequencing lives in the WAV channels so
+the transient graph stays static and provable.
 
 **Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
 ``courtesy_prelude`` flag that splices a short "beep beep beep" + ~3 s of
@@ -960,6 +961,7 @@ def build_check_program(
     downstream_gain_db: float = 0.0,
     role_base_peak_dbfs: Mapping[str, float] | None = None,
     courtesy_prelude: bool = False,
+    total_channels: int | None = None,
 ) -> ExcitationProgram:
     """Compose the CHECK program (design §5.2): ambient silence + per-driver pilots.
 
@@ -986,7 +988,10 @@ def build_check_program(
     roles = _validate_roles(roles_bands)
     if len(pilot_levels_db) != 2:
         raise ValueError("pilot_levels_db must be exactly two levels")
-    channels = 1 + max(rb.channel for rb in roles)
+    required_channels = 1 + max(rb.channel for rb in roles)
+    channels = required_channels if total_channels is None else total_channels
+    if type(channels) is not int or channels < required_channels:
+        raise ValueError("total_channels cannot omit a declared role channel")
 
     segments: list[ProgramSegment] = []
     cursor = 0
@@ -1070,6 +1075,7 @@ def build_measure_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
+    total_channels: int | None = None,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
     interleaved woofer/tweeter sweep cycles.
@@ -1134,7 +1140,10 @@ def build_measure_program(
     }
     if sweep_durations:
         durations.update(sweep_durations)
-    channels = 1 + max(rb.channel for rb in roles)
+    required_channels = 1 + max(rb.channel for rb in roles)
+    channels = required_channels if total_channels is None else total_channels
+    if type(channels) is not int or channels < required_channels:
+        raise ValueError("total_channels cannot omit a declared role channel")
 
     def _band(rb: RoleBand) -> tuple[float, float]:
         f1, f2 = _intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
@@ -1258,15 +1267,20 @@ def build_verify_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
+    output_channel: int = 0,
+    total_channels: int | None = None,
+    summed_role: str | None = None,
 ) -> ExcitationProgram:
-    """Compose the VERIFY program (design §5.2): a mono full-band summed sweep.
+    """Compose a verify-shaped full-band summed sweep (design §5.2).
 
     One channel: ``[ambient window → pilot lo → gap → pilot hi → gap →]``
     (v2, when leading pilots requested) guard silence + one full-band summed
     ESS (~6 s) + tail,
-    played through the APPLIED production graph (the real system, not a
-    commissioning construct). ``fc_hz`` widens the low bound when the crossover
-    is low so the lower shoulder ``fc/2`` is always excited:
+    By default it is mono and played through the applied production graph.
+    ``output_channel``/``total_channels``/``summed_role`` opt the pre-apply
+    cloud into the protected-neutral graph's summed lane without introducing a
+    second composer. ``fc_hz`` widens the low bound when the crossover is low
+    so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
     ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
@@ -1288,14 +1302,22 @@ def build_verify_program(
     silence warning (see the module docstring) in front of the first AUDIBLE
     content: sample 0 when a leading pilot pair is requested (issue #1812,
     2026-07-28), otherwise directly in front of the summed sweep.
-    ``False`` (the default) is byte-identical to the pre-#1677 composer. VERIFY has no
-    program-admission gate (it rides the applied production graph — see
-    ``jasper.active_speaker.program_admission``'s ``_validate_program``), so
-    the prelude's compose-time clamp (``courtesy_tone_gain_db``) is the ONLY
-    level guard here, exactly like the summed sweep itself.
+    ``False`` (the default) is byte-identical to the pre-#1677 composer. The
+    default applied-graph shape has no program-admission gate, so its prelude's
+    compose-time clamp remains the only level guard. The protected-neutral
+    shape is additionally re-admitted at playback.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
         raise ValueError("fc_hz must be finite and positive")
+    if type(output_channel) is not int or output_channel < 0:
+        raise ValueError("output_channel must be a non-negative integer")
+    channels = output_channel + 1 if total_channels is None else total_channels
+    if type(channels) is not int or channels <= output_channel:
+        raise ValueError("total_channels cannot omit output_channel")
+    if summed_role is not None and (
+        not isinstance(summed_role, str) or not summed_role
+    ):
+        raise ValueError("summed_role must be a non-empty string or None")
     f1_hz = min(VERIFY_F_LO_HZ, fc_hz / 2.0)
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
@@ -1322,7 +1344,7 @@ def build_verify_program(
         cursor = _append_leading_pilot_pair(
             segments, cursor,
             role=VERIFY_PILOT_ROLE,
-            channel=0,
+            channel=output_channel,
             f1_hz=pilot_lo,
             f2_hz=pilot_hi,
             gains_db=leading_pilot_gains_db,
@@ -1340,8 +1362,8 @@ def build_verify_program(
     sweep = _stimulus(
         segment_id="sweep_verify",
         kind=KIND_SUMMED_SWEEP,
-        role=None,
-        channel=0,
+        role=summed_role,
+        channel=output_channel,
         start=cursor,
         f1_hz=f1_hz,
         f2_hz=f2_hz,
@@ -1358,10 +1380,10 @@ def build_verify_program(
 
     if courtesy_prelude:
         segments, cursor = _insert_courtesy_prelude(
-            segments, cursor, at_sample=prelude_at, channels=1,
+            segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PHASE_VERIFY, 1, segments, cursor)
+    return _finalize(PHASE_VERIFY, channels, segments, cursor)
 
 
 def segment_stimulus(segment: ProgramSegment):

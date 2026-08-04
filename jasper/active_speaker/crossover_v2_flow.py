@@ -124,6 +124,11 @@ from jasper.active_speaker.branch_chain import (
     sections_by_role,
 )
 from jasper.active_speaker.branch_target import branch_target
+from jasper.active_speaker.crossover_raw_evidence import (
+    configured_transfer_from_preset,
+    measurement_protection_from_role_bands,
+    role_polarity_signs,
+)
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
@@ -137,6 +142,8 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
+    DEFAULT_TWEETER_SWEEP_S,
+    DEFAULT_VERIFY_SWEEP_S,
     KIND_SWEEP,
     STIMULUS_KINDS,
     VERIFY_PILOT_ROLE,
@@ -293,15 +300,11 @@ GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
 # never had one.
 PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
 
-# The phases whose excitation is the mono summed sweep played through the LIVE
-# production graph with no program-graph load and no play-time admission gate
-# (see ``jasper.web.correction_crossover_v2.bind_production_play``). VERIFY has
-# always been one; the two cloud groups join it because a spatial cloud measures
-# the SUMMED system — pre-apply for CLOUD_MEASURE ("what the speaker does
-# today"), post-apply for CLOUD_VERIFY. The compose-time min-cap clamp in
-# ``_compose_verify_program`` is the only level guard for all three, and its
-# argument ("a summed signal reaches every driver, so clamp to the most
-# restrictive cap") holds identically before and after apply.
+# The phases whose analysis bookkeeping is summed rather than per-driver.
+# CLOUD_MEASURE is pre-apply and therefore rides the protected-neutral graph's
+# summed input with normal readmission; VERIFY/CLOUD_VERIFY are post-apply and
+# ride the explicitly applied production graph. The shared composer still uses
+# the most restrictive role cap because one summed signal reaches both roles.
 SUMMED_SWEEP_PHASES = frozenset(
     {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
 )
@@ -3027,7 +3030,12 @@ def _verify_frame_from_tracking(
 
 
 def _driver_response_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
-    for resp in analysis.driver_responses:
+    responses = (
+        analysis.configured_driver_responses
+        if analysis.configured_driver_responses
+        else analysis.driver_responses
+    )
+    for resp in responses:
         if resp.role == role:
             return resp
     return None
@@ -3402,7 +3410,7 @@ class AnalyzeCapture(Protocol):
 
     ``phase`` is REQUIRED and keyword-only: the CONDUCTOR's own flow phase
     (issue #1855) — NOT ``program.phase``. The two are different
-    vocabularies: every cloud position plays ``self._verify_program`` (see
+    vocabularies: every cloud position plays a verify-shaped program (see
     ``_program_for_phase``), so ``program.phase`` is always "verify" for
     PHASE_VERIFY, PHASE_CLOUD_MEASURE, and PHASE_CLOUD_VERIFY alike. A seam
     that derives a retained capture's label from ``program.phase`` mislabels
@@ -3428,6 +3436,7 @@ class AnalyzeCapture(Protocol):
 
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
+PublishRawAnchor = Callable[[ProgramAnalysis, Any, ExcitationProgram, int], None]
 ApplyGate = Callable[[], bool]
 # Reads whether an apply hit a TERMINAL failure. Retained with the deferred
 # VERIFY hold it feeds, and unreached by any shipped session since the
@@ -3507,6 +3516,9 @@ class V2FlowSeams:
     # VERIFY. Optional so a conductor without a durable host still grades its
     # in-memory attempt and every pre-wiring construction site remains valid.
     record_model_error: RecordModelError | None = None
+    # R15: one write-once RAW anchor record after MEASURE passes every capture
+    # gate. Optional for pure conductor tests; production stage 1 binds it.
+    publish_raw_anchor: PublishRawAnchor | None = None
 
 
 @dataclass(frozen=True)
@@ -5385,6 +5397,7 @@ class CrossoverV2Conductor:
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
+        session_graph: Any | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
         attempt_floor: FloorStats | None = None,
         last_attempt_decision: Mapping[str, Any] | None = None,
@@ -5405,6 +5418,27 @@ class CrossoverV2Conductor:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        # Production passes the one graph object that playback and RAW
+        # publication also use. Pure conductor tests may omit it and derive
+        # the same contracts through the shared helpers.
+        if session_graph is not None:
+            self._measurement_protection_by_role = dict(
+                session_graph.protection_by_role
+            )
+            self._configured_transfer_by_role = dict(
+                session_graph.configured_by_role
+            )
+            self._polarity_sign_by_role = dict(
+                session_graph.polarity_sign_by_role
+            )
+        else:
+            self._measurement_protection_by_role = (
+                measurement_protection_from_role_bands(self._roles)
+            )
+            self._configured_transfer_by_role = configured_transfer_from_preset(
+                self._preset
+            )
+            self._polarity_sign_by_role = role_polarity_signs(self._preset)
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5586,6 +5620,9 @@ class CrossoverV2Conductor:
             else None
         )
         self._verify_program = self._compose_verify_program()
+        self._cloud_measure_program = self._compose_verify_program(
+            protected_neutral=True
+        )
 
         # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
         # phase for a single-capture phase and the ``phase:index`` pair inside a
@@ -5959,6 +5996,7 @@ class CrossoverV2Conductor:
             downstream_gain_db=self._session_volume_db,
             role_base_peak_dbfs=role_base,
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            total_channels=3,
         )
 
     def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
@@ -5981,14 +6019,19 @@ class CrossoverV2Conductor:
             leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
             leading_pilot_role=self._woofer.role,
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            total_channels=3,
         )
 
-    def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        # Cap-aware (W6.1): VERIFY plays a MONO summed sweep through the APPLIED
-        # production graph with NO play-time admission gate (it does not ride
-        # ``play_program``/``readmit`` — see ``bind_production_play``), so the
-        # compose-time clamp is the ONLY level guard. A summed signal reaches
-        # every driver, so it is clamped to the MOST RESTRICTIVE (min) cap: at
+    def _compose_verify_program(
+        self,
+        *,
+        extra_backoff_db: float = 0.0,
+        protected_neutral: bool = False,
+    ) -> ExcitationProgram:
+        # Cap-aware (W6.1): post-apply VERIFY has no play-time admission gate;
+        # pre-apply CLOUD_MEASURE is readmitted through the protected-neutral
+        # graph. Both are composed to the most restrictive role cap because a
+        # summed signal reaches every driver: at
         # the worst case (no crossover attenuation) no driver is driven past its
         # own limit. Without this the summed sweep played at the shared
         # reference base (effective ~-32 dBFS) would over-drive a deep-cap
@@ -6005,9 +6048,17 @@ class CrossoverV2Conductor:
         return build_verify_program(
             self._fc_hz,
             gain_db=gain,
+            sweep_s=(
+                DEFAULT_TWEETER_SWEEP_S
+                if protected_neutral
+                else DEFAULT_VERIFY_SWEEP_S
+            ),
             downstream_gain_db=self._session_volume_db,
             leading_pilot_gains_db=self._pilot_gains(gain),
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+            output_channel=2 if protected_neutral else 0,
+            total_channels=3 if protected_neutral else 1,
+            summed_role=VERIFY_PILOT_ROLE if protected_neutral else None,
         )
 
     # --- priors per phase ----------------------------------------------------
@@ -6040,6 +6091,9 @@ class CrossoverV2Conductor:
             # in which case the verdict stays honestly absent rather than
             # guessed.
             ambient_report=self._check_ambient_report,
+            measurement_protection_by_role=self._measurement_protection_by_role,
+            configured_transfer_by_role=self._configured_transfer_by_role,
+            polarity_sign_by_role=self._polarity_sign_by_role,
         )
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -6727,13 +6781,13 @@ class CrossoverV2Conductor:
                     "MEASURE armed before the CHECK gain solve produced a program"
                 )
             return self._measure_program
-        if phase in SUMMED_SWEEP_PHASES:
-            # One composed mono summed sweep serves VERIFY and both position
-            # groups: identical excitation, identical min-cap clamp, identical
-            # ``program.phase`` ("verify") so the analyzer routes it to
-            # ``_analyze_verify`` unchanged. What differs between the three is
-            # the PRIORS the conductor hands the analysis and the verdict it
-            # draws — never the sound the speaker makes.
+        if phase == PHASE_CLOUD_MEASURE:
+            return self._cloud_measure_program
+        if phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
+            # Post-apply anchor and positions share the same mono excitation.
+            # The pre-apply cloud uses the distinct three-channel protected
+            # program above; all remain phase="verify" so one summed analyzer
+            # handles them without conflating their graph identities.
             return self._verify_program
         raise CrossoverV2FlowError(f"no program for phase {phase!r}")
 
@@ -6765,7 +6819,9 @@ class CrossoverV2Conductor:
         if phase == PHASE_CHECK:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:
-            verdict = self._consume_measure(analysis)
+            verdict = self._consume_measure(
+                analysis, result=result, program=program, attempt=attempt
+            )
         elif phase in GROUP_PHASES:
             verdict = self._consume_cloud_position(
                 phase, index, attempt, analysis, result
@@ -7155,8 +7211,17 @@ class CrossoverV2Conductor:
         self._seams.publish_check(gain_plan, analysis.ambient_report or {})
         return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
 
-    def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+    def _consume_measure(
+        self,
+        analysis: ProgramAnalysis,
+        *,
+        result: Any,
+        program: ExcitationProgram,
+        attempt: int,
+    ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
+        if verdict.accepted and self._seams.publish_raw_anchor is not None:
+            self._seams.publish_raw_anchor(analysis, result, program, attempt)
         self._safe_log_diag(self._log_measure_diag, analysis, verdict)
         return verdict
 

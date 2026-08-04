@@ -24,12 +24,13 @@ alternatives, the wave plan) is
 [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 this doc is the current operational truth.
 
-> **Planned revision, not current behavior (2026-08-04):**
+> **R15 foundation implemented, hardware validation pending (2026-08-04):**
 > [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
-> owns the next campaign to keep the Express walk while moving all pre-apply
-> captures onto protected raw per-driver evidence, evaluating bounded
-> Fc-specific prescriptions, and verifying crossed branches plus their sum.
-> Until that campaign lands, the operational behavior below remains exact.
+> remains canonical for the campaign. R15 now moves CHECK, mark-position
+> MEASURE, and the existing pre-apply summed cloud onto one session-owned
+> protected-neutral graph and publishes the anchor-only raw-evidence v1 record.
+> R16 lateral raw poses, R17 Fc selection, and the later VERIFY redesign remain
+> planned; the current Express/Full walks and configured-Fc proposal path remain.
 
 ## How to run it
 
@@ -87,6 +88,46 @@ this doc is the current operational truth.
   [`relay/README.md`](../relay/README.md) "Release order".
 
 ## Current status (2026-07-22)
+
+### R15 protected-neutral anchor foundation (2026-08-04)
+
+Every stage-1 session now builds one immutable three-input measurement graph
+before its first stimulus: woofer role input, tweeter role input, and a shared
+summed input. Every pre-apply phase uses the existing transient
+`program_playback.play_program` owner to load that exact graph under the DSP
+writer lock and restore the entry config on success, abort, or play failure.
+Stage 2 remains production-graph playback. The transient graph contains only
+the declared hard-band role protection `P`, declared physical polarity, zero
+delay, soft limiters, output pass gains, and the non-positive volume ceiling.
+Configured crossover shaping, prior automatic alignment/linearization, Room,
+bass extension, and preference EQ are absent. The persisted production profile
+and retained Undo are not mutated until the existing explicit Apply.
+
+Mark-position MEASURE still captures the shipped three interleaved woofer/HF
+occurrences. After all existing acceptance gates pass, the existing
+commissioning evidence store publishes their exact capture WAV and one
+`jts_crossover_raw_evidence_v1` anchor record: exactly three accepted-order
+paired groups, one timing/gain ledger, both drivers' raw complex responses and
+repeat uncertainty/SNR evidence, exact emitted role-specific `P(f)`, confirmed
+component/calibration/stimulus/graph identities, and a proof that the accepted
+capture stayed linear with its stimulus peak strictly below the limiter.
+Schema or identity drift invalidates the entire record; it is never repaired or
+mixed with another session.
+
+The configured-Fc path remains usable by replacing the measurement protection
+offline: `S = M * C_configured / P`. `C_configured` is the complete desired LR4
+transfer replacing `P`; `C/P` is never emitted to hardware. The fitter and
+branch-target path receive only `S`, while raw evidence retains `M`. The exact
+finite-value rule, inclusive −12 dB `|P|` floor, inclusive +12 dB `|C/P|` cap,
+required-bin mask, transfers, ratio, and result are fingerprinted. The
+pre-apply summed cloud now enters the same protected-neutral graph through its
+shared third input and is re-admitted against both role limits; its prior
+production graph can no longer leak old correction into the "before" evidence.
+
+This slice is hardware-free tested only. A fixed-microphone JTS3 run still must
+confirm the declared-floor HF capture, audible gain, no limiter engagement,
+exact production-profile restoration, raw artifact publication, and unchanged
+configured-Fc proposal/Apply/Undo behavior on real CamillaDSP.
 
 ### Live attempts loop (2026-08-03)
 
@@ -775,9 +816,12 @@ only with the linearization filters emitted (#1668 PR-D); the two land
 together. Design rationale:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Decisions already made" #2 and "Execution plan" Phase 3.
-3. **CLOUD-MEASURE** (8 × ~16 s, one tap each). The pre-apply spatial
-   cloud, between MEASURE and APPLYING: the same mono summed sweep
-   VERIFY plays, captured at prompted positions around the mark.
+3. **CLOUD-MEASURE** (8 prompted captures at Full defaults). The pre-apply
+   spatial cloud, between MEASURE and APPLYING: a three-channel artifact whose
+   shared input plays a conservative summed sweep through the same
+   protected-neutral graph as CHECK/MEASURE, captured around the mark. It is
+   not the post-apply VERIFY artifact and never traverses the old production
+   graph.
    Per-position work is deliberately light — the same locate/linearity
    screens plus "did this yield a usable summed response"; the heavy
    pass runs once at group end. See "Position groups" below.
@@ -795,7 +839,7 @@ together. Design rationale:
    (`CaptureBeginDeferred`, screen `awaiting_apply`) is retained machinery
    that no shipped session reaches — stage 1 has no VERIFY index and stage
    2 is constructed `applied=True`. See gotcha #18 for the history.
-5. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
+5. **VERIFY** (~15 s, in the separate stage-2 session opened after Apply). A mono
    summed sweep through the **applied production graph** + a pilot pair,
    captured back at the mark (the apply hold's copy is where the
    household is told to walk back). Pass = notch-excluded,
@@ -1565,11 +1609,13 @@ the page's ~250 ms poll reads it.
    is unchanged.)
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
     graph, `devices.volume_limit = 0.0` and positive writes clamp to
-    0 dB. The program graph adds no headroom beyond the main volume.
+    0 dB. The protected-neutral graph adds no headroom beyond the main volume,
+    emits the declared hard-floor/high-ceiling `P` independently for each
+    role, and keeps the existing soft limiter after each role's protection.
 
     **10a. The apply boundary's level move is DECLARED, never
-    compensated (#1811).** The conductor's auto-apply swaps the
-    production graph ~3 s before VERIFY arms. The applied graph absorbs
+    compensated (#1811).** The household's explicit Apply POST swaps the
+    production graph before stage-2 VERIFY arms. The applied graph absorbs
     its correction's boost as a pre-split common attenuation
     (`camilla_yaml.linearization_headroom_db` → `active_baseline_headroom`),
     so the same commanded volume drives the speaker measurably quieter —
@@ -1723,7 +1769,7 @@ unready setup.
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
 | `verify_level_shift` | VERIFY | 2 | G3, session-scoped since #1927 — the recording chain moved DURING this sitting, so the capture is not evidence about the speaker. Structurally unreachable on a session's FIRST usable attempt. Same verify-fail screen; its copy (#1924) is written for the fact that ONE string renders where "try again" is two different controls — the measurement page's in-session re-arm, which re-compares the same reference and can repeat, and the wizard's fresh session, which re-baselines and settles it in one capture. So it names the visible primary and makes Re-measure / Undo the escalation *if the retry repeats*, commanding neither |
 | `low_alignment_confidence` | MEASURE | 1 | **TWO causes, since #2087 took away a third.** Alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18). The **G1 predicted-ripple** check reused this code as an undocumented third cause until the owner's 2026-08-03 ruling, and that reuse is exactly what made the ruling necessary: a high ripple says the two branches summed incoherently on this rig, which the copy above answers by telling a household to move a microphone that was often already right (#2085), and the refusal then consumed the attempt budget until the session died (#2086). G1 now discloses instead — see "G1 discloses, it does not refuse" below. The `guard` diag field still separates the two remaining causes (empty for both) from G1's `ripple_disclosure`, which now rides an **accepted** capture |
-| `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
+| `apply_failed` | APPLYING | new session | the household's explicit Apply transaction came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | **TWO gates share this code** — the household's remedy is identical, so one sentence serves both, and `event=` separates them in the journal (`_assert_accountable` runs the frame gate first, as the more specific diagnosis). (a) `event=…_level_frame_refused` — linearization-integrity PR-L5's shared level FRAME: the two measured estimates of where the drivers sit relative to each other (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagree by more than `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, so no trim derived from them can be trusted. Since #1929 that median is read over each driver's **radiating band** — declared `measurement_band_hz` spans routinely reach past Fc, and a median that counts a driver's own crossover stopband refused healthy speakers (2026-07-30 field session, 3.395 dB). **Since the #1866 frame-gate ruling (2026-07-30) the frame gate no longer refuses on a disagreement alone**: it consults gate (b)'s realized-level verdict for the same candidate, and when THAT passes it banks the disagreement as an M7 finding (`event=…_level_frame_finding`, WARNING, carrying both estimators' per-role levels, both bands, and the realized difference; persisted to the bundle as `findings_measure.json`) and the session **proceeds — the same tune, not refused**. Read "proceeds" precisely: it commits the anchor the fit always computed, which is `giveback + system − core` (the trim term cancels), so the committed inter-driver placement is set by the CORE-MEDIAN frame — the *disputed* estimator — and gate (b) grades the OUTCOME rather than picking a winner between the two frames. The ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)") describes the opposite; the corrected mechanism above is the **ratified** one (owner confirmed 2026-07-30, #1866 comment 5137494519). `event=…_level_frame_refused` therefore now means both instruments failed — or, on a path that is fail-closed and today unreachable, that no realized verdict existed at all. Why: #1929 removed a structural bias from one estimator but not the residual, which scales with ordinary driver shape (a pair identical by construction reads 0.910 dB apart; ~1.33 dB per dB/octave of woofer passband tilt on top), so the gate was refusing healthy speakers whose OUTPUT every other instrument graded fine. (b) `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Both refuse BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply. **Since rung P3 / R10b both of its terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve and why the onset is capture-specific |
 | `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself |
@@ -3125,9 +3171,10 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   one alignment triple to per-boundary entries — a schema change.
 - **Subwoofer/main alignment belongs to the bass-extension program.**
   v2 measures nothing below its gated validity floor.
-- **Fc/slope re-derivation and driver EQ beyond trims are a v3 door.**
-  v2 deliberately measures *as-crossed* branches and cannot recover them
-  (dividing out the target filter explodes stopband noise).
+- **Dynamic Fc/slope selection remains a later round.** R15 retains raw
+  protected branches and uses bounded offline `M*C_configured/P` composition
+  only for today's configured LR4 path. It does not select another Fc, search
+  topology/order, or emit a de-embedding inverse to hardware.
 
 ---
 
@@ -3207,8 +3254,14 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-08-04 — added and verified the planning-vs-shipped
-orientation above against the current phase routing; the prior 2026-08-03 pass
+Last verified: 2026-08-04 — verified the R15 protected-neutral graph, raw-anchor
+publication, configured-Fc total-transfer composition, pre/post-apply routing,
+and lifecycle statements above against `crossover_raw_evidence.py`,
+`transfer_composition.py`, `crossover_v2_flow.py`,
+`correction_crossover_v2.py`, `program_admission.py`, and the targeted contract
+tests. Hardware validation remains explicitly open. The prior same-day pass
+added and verified the planning-vs-shipped orientation against the then-current
+phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the
 predicted-ripple frame claim against `crossover_v2_flow.py` /

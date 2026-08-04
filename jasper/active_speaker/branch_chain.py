@@ -59,6 +59,10 @@ import numpy as np
 from jasper.sound.profile import (
     RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
 )
+from jasper.audio_measurement.transfer_composition import (
+    LinearTransferSection,
+    linkwitz_riley_response_complex,
+)
 
 # --------------------------------------------------------------------------- #
 # policy constants
@@ -294,60 +298,21 @@ def crossover_response_db(
     which is the property that lets a cut-only chain be known to sit at or
     below unity without evaluating it at all.
     """
-    freqs = np.asarray(freqs_hz, dtype=np.float64)
-    total_db = np.zeros(freqs.shape, dtype=np.float64)
-    for section in sections:
-        fc_hz = max(float(section.fc_hz), 1e-9)
-        # Butterworth order per pass; the pass runs twice, hence the doubling.
-        butterworth_order = max(int(section.order), 1) // 2 or 1
-        biquads = [
-            {
-                "biquad_type": "Highpass" if section.highpass else "Lowpass",
-                "freq": fc_hz, "q": q, "gain": 0.0,
-            }
-            for q in _butterworth_qs(butterworth_order)
-        ]
-        pass_db = 20.0 * np.log10(
-            np.maximum(np.abs(chain_response(biquads, freqs)), 1e-12)
-        )
-        if butterworth_order % 2:
-            pass_db = pass_db + _first_order_db(
-                freqs, fc_hz=fc_hz, highpass=section.highpass
+    response = linkwitz_riley_response_complex(
+        freqs_hz,
+        tuple(
+            LinearTransferSection(
+                highpass=section.highpass,
+                frequency_hz=section.fc_hz,
+                order=section.order,
+                reason="configured_crossover",
             )
-        total_db = total_db + 2.0 * pass_db
-    return total_db
-
-
-def _butterworth_qs(order: int) -> list[float]:
-    """The pole Qs of a Butterworth filter of ``order``, one per biquad
-    section. An odd order's leftover real pole is the first-order section
-    :func:`_first_order_db` adds, and is not in this list."""
-    return [
-        1.0 / (2.0 * math.sin(math.pi * (2 * k + 1) / (2 * order)))
-        for k in range(order // 2)
-    ]
-
-
-def _first_order_db(
-    freqs_hz: np.ndarray, *, fc_hz: float, highpass: bool,
-) -> np.ndarray:
-    """One first-order digital section's magnitude, dB — the bilinear
-    transform at :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` with the
-    same ``tan`` prewarp ``_biquad_coeffs`` uses, so a first-order pass and a
-    biquad pass agree about where the corner is.
-
-    Reached only for an odd Butterworth order, which across the supported LR
-    orders means LR2 (two first-order passes).
-    """
-    k = math.tan(math.pi * fc_hz / RESPONSE_SAMPLE_RATE_HZ)
-    b0 = (k / (1.0 + k)) if not highpass else (1.0 / (1.0 + k))
-    b1 = b0 if not highpass else -b0
-    a1 = (k - 1.0) / (k + 1.0)
-    z = np.exp(
-        -1j * 2.0 * np.pi
-        * np.asarray(freqs_hz, dtype=np.float64) / RESPONSE_SAMPLE_RATE_HZ
+            for section in sections
+        ),
     )
-    return 20.0 * np.log10(np.maximum(np.abs((b0 + b1 * z) / (1.0 + a1 * z)), 1e-12))
+    # The historical branch evaluator floored one Butterworth pass at -240 dB
+    # and then ran that pass twice, so its exact LR floor is -480 dB.
+    return 20.0 * np.log10(np.maximum(np.abs(response), 1e-24))
 
 
 def radiating_band_hz(

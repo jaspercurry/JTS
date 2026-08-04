@@ -357,8 +357,8 @@ def test_skipped_derivation_logs_named_role(caplog):
 
 # --- resolve_driver_excitation_ceilings: band-edge asymmetry (PR-A, #1668) ---
 #
-# The lower permitted edge stays max(MIN, hard[0], measurement[0]) -- an
-# absolute excursion-protection boundary, untouched. The upper permitted edge
+# The ordinary lower edge stays max(MIN, hard[0], measurement[0]); R15's
+# proven protected-program path uses the declared hard floor for #1654. The upper edge
 # drops measurement_band[1] from the min() -- it is analysis-window metadata,
 # not a protection boundary -- so it now binds at min(MAX_DRIVER_TEST_
 # FREQUENCY_HZ, hard_band[1]) instead of also being capped by the (often
@@ -379,6 +379,21 @@ def test_upper_edge_ignores_measurement_band_lower_edge_still_absolute():
     # Lower edge: unchanged -- measurement_band[0] (1800) is still the
     # strictest of the three lower-edge candidates and still binds.
     assert band.lower_hz == pytest.approx(1800.0)
+
+
+def test_protected_program_captures_hf_down_to_declared_hard_floor_1654():
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[1600, 20_000], measurement_band=[2000, 18_000],
+        search_band=[2100, 2500],
+    )
+    target = targets["tweeter"]["target_fingerprint"]
+    ordinary, _ = resolve_driver_excitation_ceilings(profile, target)
+    protected, _ = resolve_driver_excitation_ceilings(
+        profile, target, program_admission=True
+    )
+    assert ordinary.lower_hz == 2000.0
+    assert protected.lower_hz == 1600.0
+    assert protected.upper_hz == ordinary.upper_hz == 20_000.0
 
 
 def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():

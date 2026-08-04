@@ -4,9 +4,10 @@
 
 """Multi-segment excitation-program admission (crossover conductor, Wave 2).
 
-A CHECK/MEASURE program (:mod:`jasper.audio_measurement.program`) is one 2-channel
-WAV that sequences per-driver stimuli by channel. Before it may play, and again
-at play time from a fresh byte readback, it must be admitted. Admission has two
+A pre-apply program (:mod:`jasper.audio_measurement.program`) is one
+multi-channel WAV that sequences role-specific or protected-summed stimuli.
+Before it may play, and again at play time from a fresh byte readback, it must
+be admitted. Admission has two
 independent parts (docs/crossover-measurement-productization-design.md §5.3 +
 the Wave 2 attestation strengthening):
 
@@ -41,7 +42,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -50,6 +51,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import (
     PHASE_CHECK,
     PHASE_MEASURE,
+    PHASE_VERIFY,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
@@ -317,6 +319,71 @@ def _evaluate_program(
     # --- per-segment prepared plans -----------------------------------------
     for segment in program.stimulus_segments():
         role = segment.role or ""
+        if role == "summed":
+            # This one source reaches both branches only after the exact
+            # protected-neutral graph applies each role's declared P. Reuse
+            # the established per-driver admission plan on those two emitted
+            # passbands and retain one whole-file cap below.
+            for protected_role, target_fingerprint in role_targets.items():
+                try:
+                    permitted_band, _cap = resolve_driver_excitation_ceilings(
+                        safety_profile,
+                        target_fingerprint,
+                        program_admission=True,
+                        declared_sensitivities=declared_sensitivities,
+                    )
+                    f1_hz = max(
+                        float(segment.f1_hz or 0.0), permitted_band.lower_hz
+                    )
+                    f2_hz = min(
+                        float(segment.f2_hz or 0.0), permitted_band.upper_hz
+                    )
+                    if not f1_hz < f2_hz:
+                        raise ExcitationSafetyPlanError(
+                            ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS.value
+                        )
+                    protected_segment = replace(
+                        segment,
+                        segment_id=f"{segment.segment_id}:{protected_role}",
+                        role=protected_role,
+                        f1_hz=f1_hz,
+                        f2_hz=f2_hz,
+                    )
+                    requested = _requested_segment_plan(
+                        protected_segment,
+                        target_fingerprint=target_fingerprint,
+                        session_volume_db=session_volume_db,
+                        program_id=program.program_id,
+                    )
+                    prepared = prepare_driver_excitation_plan(
+                        topology,
+                        safety_profile,
+                        requested,
+                        program_admission=True,
+                        declared_sensitivities=declared_sensitivities,
+                    )
+                except ExcitationSafetyPlanError as exc:
+                    reason = _map_safety_plan_error(exc)
+                    refusals.append(reason)
+                    segments.append(
+                        SegmentAdmission(
+                            segment_id=f"{segment.segment_id}:{protected_role}",
+                            role=protected_role,
+                            channel=int(segment.channel or 0),
+                            band=(
+                                float(segment.f1_hz or 0.0),
+                                float(segment.f2_hz or 0.0),
+                            ),
+                            effective_peak_dbfs=float(segment.effective_peak_dbfs),
+                            execution_allowed=False,
+                            refusals=(reason.value,),
+                        )
+                    )
+                    continue
+                segments.append(_segment_admission(protected_segment, prepared))
+                if not prepared.execution_allowed:
+                    refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
+            continue
         target_fingerprint = role_targets.get(role)
         if not target_fingerprint:
             refusals.append(ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
@@ -339,10 +406,9 @@ def _evaluate_program(
             program_id=program.program_id,
         )
         try:
-            # program_admission=True: a CHECK/MEASURE program's channel
-            # routing carries each driver's crossover filter (the tweeter's
-            # protective HP included) by construction -- the proven-HP path
-            # (see resolve_driver_excitation_ceilings).
+            # program_admission=True: the transient graph routes each role
+            # through its exact declared-band protection by construction --
+            # the proven-HP path (see resolve_driver_excitation_ceilings).
             prepared = prepare_driver_excitation_plan(
                 topology,
                 safety_profile,
@@ -375,18 +441,25 @@ def _evaluate_program(
     else:
         for channel in sorted(channel_roles):
             role = channel_roles[channel]
-            target_fingerprint = role_targets.get(role)
-            if not target_fingerprint:
-                continue  # already refused above as TARGET_NOT_MAPPED
+            target_fingerprints = (
+                tuple(role_targets.values())
+                if role == "summed"
+                else (role_targets.get(role),)
+            )
+            if not all(target_fingerprints):
+                continue
             try:
                 # Same proven-HP path as the per-segment plans above: this is
                 # the whole-file cap the rendered channel's true peak is
                 # attested against.
-                _band, cap_dbfs = resolve_driver_excitation_ceilings(
-                    safety_profile,
-                    target_fingerprint,
-                    program_admission=True,
-                    declared_sensitivities=declared_sensitivities,
+                cap_dbfs = min(
+                    resolve_driver_excitation_ceilings(
+                        safety_profile,
+                        str(target_fingerprint),
+                        program_admission=True,
+                        declared_sensitivities=declared_sensitivities,
+                    )[1]
+                    for target_fingerprint in target_fingerprints
                 )
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))
@@ -440,6 +513,43 @@ def _evaluate_program(
             if not peak_matches_manifest:
                 refusals.append(ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH)
 
+        # R15's static graph has three inputs in every pre-apply phase. Inputs
+        # unused by this program MUST be byte-silent: otherwise a tampered
+        # CHECK/MEASURE file could inject the shared summed lane (or a tampered
+        # cloud file a role lane) without appearing in ``channel_roles``.
+        for channel in sorted(set(range(program.channels)) - set(channel_roles)):
+            column = np.asarray(pcm[:, channel], dtype=np.float32)
+            peak = float(np.max(np.abs(column))) if column.size else 0.0
+            peak_dbfs = _dbfs(peak)
+            rms = (
+                float(np.sqrt(np.mean(np.square(column), dtype=np.float64)))
+                if column.size
+                else 0.0
+            )
+            rms_dbfs = _dbfs(rms)
+            # A graph input with no declared segment has no quantization or
+            # windowing ambiguity: the composer writes exact zero samples.
+            # Reject even one non-zero sample so an unused role/summed lane can
+            # never become a low-level second stimulus path.
+            quiet = not bool(np.any(column))
+            channels.append(
+                ChannelFacts(
+                    channel=channel,
+                    role="unused",
+                    cap_dbfs=OUT_OF_SEGMENT_RMS_FLOOR_DBFS,
+                    session_volume_db=float(session_volume_db),
+                    declared_peak_dbfs=_dbfs(0.0),
+                    true_peak_dbfs=peak_dbfs,
+                    effective_true_peak_dbfs=peak_dbfs + float(session_volume_db),
+                    out_of_segment_rms_dbfs=rms_dbfs,
+                    peak_within_cap=quiet,
+                    quiet_out_of_segment=quiet,
+                    peak_matches_manifest=quiet,
+                )
+            )
+            if not quiet:
+                refusals.append(ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY)
+
     # De-duplicate refusals while preserving first-seen order.
     seen: dict[ProgramAdmissionRefusal, None] = {}
     for reason in refusals:
@@ -451,7 +561,7 @@ def _evaluate_program(
         phase=program.phase,
         session_volume_db=float(session_volume_db),
         segments=tuple(segments),
-        channels=tuple(channels),
+        channels=tuple(sorted(channels, key=lambda item: item.channel)),
         refusals=unique_refusals,
     )
     if not admission.allowed:
@@ -493,10 +603,16 @@ def _map_safety_plan_error(exc: ExcitationSafetyPlanError) -> ProgramAdmissionRe
 def _validate_program(program: ExcitationProgram) -> None:
     if not isinstance(program, ExcitationProgram):
         raise ProgramAdmissionError("program must be an ExcitationProgram")
-    if program.phase not in {PHASE_CHECK, PHASE_MEASURE}:
+    protected_summed = (
+        program.phase == PHASE_VERIFY
+        and bool(program.stimulus_segments())
+        and {segment.role for segment in program.stimulus_segments()} == {"summed"}
+        and len({segment.channel for segment in program.stimulus_segments()}) == 1
+    )
+    if program.phase not in {PHASE_CHECK, PHASE_MEASURE} and not protected_summed:
         raise ProgramAdmissionError(
-            "program admission only covers CHECK/MEASURE programs; VERIFY rides "
-            "the applied production graph"
+            "program admission covers role-routed CHECK/MEASURE and the explicit "
+            "protected-neutral summed program only"
         )
 
 
@@ -557,7 +673,7 @@ def readmit_program_from_wav(
     re-runs the whole evaluation, so tampered bytes — an inflated channel, energy
     leaked outside a stimulus window — are caught before playback. Mirrors the
     driver-capture ``play_admitted_wav`` re-admission pattern, extended to
-    2-channel program WAVs with per-channel peak validation. Returns a fresh
+    multi-channel program WAVs with per-channel peak validation. Returns a fresh
     :class:`ProgramAdmission` (a shape/rate/channel mismatch refuses fail-closed).
     """
     import numpy as np
