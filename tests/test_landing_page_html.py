@@ -145,7 +145,7 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
 
     assert 'id="volume-safety-note" hidden' in html
     assert "Speaker output is locked until active crossover setup is complete." in html
-    assert 'href="/sound/"' in html
+    assert 'href="/sound/setup/"' in html
     assert ".volume-wrap.safety-muted" in style
     assert "cursor: not-allowed;" in style
     assert "fetch('/system/data.json', {cache: 'no-store'})" in script
@@ -470,11 +470,37 @@ def test_source_selector_uses_control_endpoints() -> None:
 def test_room_correction_card_uses_room_handoff() -> None:
     html = _index_html()
 
-    assert 'id="correction-card" href="/correction/room/"' in html
+    assert 'id="correction-card" href="/sound/room/"' in html
     assert "data-https" not in html
     # #1941 R4: the instrument is the microphone, never the phone — the row is
     # the entry point to /correction/room/, whose own subtitle says the same.
     assert "Microphone measurement relay" in html
+
+
+def test_landing_exposes_complete_canonical_sound_navigation() -> None:
+    html = _index_html()
+
+    for href in (
+        "/eq/",
+        "/sound/setup/",
+        "/sound/crossover/",
+        "/sound/room/",
+        "/sound/bass/",
+    ):
+        assert f'href="{href}"' in html
+    crossover_row = re.search(
+        r'<a class="setting-row" href="/sound/crossover/">(?P<body>.*?)</a>',
+        html,
+        re.DOTALL,
+    )
+    assert crossover_row is not None
+    assert '<span class="setting-title">Active speaker</span>' in crossover_row.group(
+        "body"
+    )
+    # Follower pages own delegation locally; the dashboard must keep Setup and
+    # commissioning navigation visible instead of hiding the whole section.
+    pair_script = html.split("// Stereo-pair banner.", 1)[1]
+    assert "soundSection.style.display" not in pair_script
 
 
 def test_room_correction_preflight_switches_to_https() -> None:
@@ -551,6 +577,7 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "return 302 https://$host/correction/bass/$is_args$args;" in bass_block
     for block in (proceed_block, room_block, crossover_block, bass_block):
         _assert_strong_no_cache(block)
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in block
     assert "proxy_pass http://127.0.0.1:8770/;" in http_proxy_block
     assert "client_max_body_size 32m;" in http_proxy_block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
@@ -580,10 +607,74 @@ def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
     )
     _assert_strong_no_cache(proceed_block)
     _assert_strong_no_cache(crossover_block)
+    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in proceed_block
+    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in crossover_block
     https_nginx = nginx[nginx.index("listen 443") :]
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
     assert "return 302 http://$host$request_uri;" in catchall_block
+
+
+def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
+    measurement_routes = {
+        "room": "room",
+        "crossover": "crossover",
+        "bass": "bass",
+    }
+    for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
+        nginx = path.read_text(encoding="utf-8")
+        https_at = nginx.index("listen 443")
+        http_nginx = nginx[:https_at]
+        https_nginx = nginx[https_at:]
+        assert "\n+    location" not in nginx
+
+        https_catchall = _nginx_location_block(https_nginx, "location /")
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in https_catchall
+        _assert_strong_no_cache(https_catchall)
+
+        sound_redirect = _nginx_location_block(
+            http_nginx, "location = /sound/"
+        )
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in sound_redirect
+        assert "return 302 /sound/setup/;" in sound_redirect
+        _assert_strong_no_cache(sound_redirect)
+
+        eq = _nginx_location_block(http_nginx, "location /eq/")
+        setup = _nginx_location_block(http_nginx, "location /sound/setup/")
+        compat = _nginx_location_block(http_nginx, "location /sound/")
+        for block in (eq, setup, compat):
+            assert "proxy_pass http://127.0.0.1:8784/;" in block
+            assert "127.0.0.1:8770" not in block
+        assert "proxy_set_header X-JTS-Sound-Page eq;" in eq
+        assert "proxy_set_header X-JTS-Sound-Page setup;" in setup
+        assert "return 302" not in compat
+
+        canonical_proceed = _nginx_location_block(
+            http_nginx, "location = /sound/proceed/room"
+        )
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in canonical_proceed
+        assert "return 302 https://$host/sound/room/$is_args$args;" in canonical_proceed
+        _assert_strong_no_cache(canonical_proceed)
+
+        for public_slug, backend_slug in measurement_routes.items():
+            location = f"location /sound/{public_slug}/"
+            for server_nginx in (http_nginx, https_nginx):
+                block = _nginx_location_block(server_nginx, location)
+                assert (
+                    f"proxy_pass http://127.0.0.1:8770/{backend_slug}/;"
+                    in block
+                )
+                assert "client_max_body_size 32m;" in block
+                assert "proxy_read_timeout 600s;" in block
+                assert "127.0.0.1:8784" not in block
+
+        # Compatibility aliases remain direct on both schemes, with the same
+        # upload and long-running measurement bounds as canonical routes.
+        for server_nginx in (http_nginx, https_nginx):
+            alias = _nginx_location_block(server_nginx, "location /correction/")
+            assert "proxy_pass http://127.0.0.1:8770/;" in alias
+            assert "client_max_body_size 32m;" in alias
+            assert "proxy_read_timeout 600s;" in alias
 
 
 def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:

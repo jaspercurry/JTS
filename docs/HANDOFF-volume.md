@@ -108,7 +108,7 @@ When the voice tool / remote / "louder" wants to change volume:
    calibrated 1-100% curve applies, while 0% additionally sets Camilla's
    `main_mute`.
 
-The audible curve is configured by `/sound/` advanced settings:
+The audible curve is configured by `/sound/setup/`:
 `volume_floor_db` is the dB value for 1%, clamped to −60..−10 dB and
 defaulting to −50 dB. The page can start a continuous 1% calibration tone,
 update CamillaDSP `main_volume` as the floor slider moves, and stop the tone
@@ -774,4 +774,17 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-28 (canonical `VolumeState` projection owns remembered-level + mute interpretation across `/volume`, `/state`, voice reads, source observers, and carrier handoffs; cross-daemon operations—including mux gate/winner publication and candidate reconciler writes—and persistence merges are serialized; push-mode mute transitions use a durable token/revision/zero-observation barrier; USB startup snapshots yield to existing mute intent; the landing-page poll is persistence-only, visible-only, 500 ms, and single-flight; prior 2026-07-24 pass covered atomic post-DSP turn-start context and fail-closed outputd behavior)
+Verification scope (2026-08-04): route-only recheck: the volume-floor calibration UI
+is now published at `/sound/setup/`; its existing volume owner, API, and safety
+semantics are unchanged and were covered by the focused Sound tests. No
+hardware validation was performed. Prior 2026-07-28 (canonical `VolumeState`
+projection owns remembered-level + mute interpretation across `/volume`,
+`/state`, voice reads, source observers, and carrier handoffs; cross-daemon
+operations—including mux gate/winner publication and candidate reconciler
+writes—and persistence merges are serialized; push-mode mute transitions use a
+durable token/revision/zero-observation barrier; USB startup snapshots yield to
+existing mute intent; the landing-page poll is persistence-only, visible-only,
+500 ms, and single-flight; prior 2026-07-24 pass covered atomic post-DSP
+turn-start context and fail-closed outputd behavior)
+
+Last verified: 2026-08-04

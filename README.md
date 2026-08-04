@@ -273,15 +273,17 @@ computer gets a mono USB input.
   wireless remote (e.g. the VK-01 volume knob) is present, since
   powering the adapter off would silently disconnect it. Same
   prompt fires on the Power switch at `http://jts.local/bluetooth/`.
-- ✅ Sound curve + preference EQ wizard at `http://jts.local/sound/` —
+- ✅ Sound curve + preference EQ wizard at `http://jts.local/eq/` —
   Off / Saved / Draft tabs as the live source, stock Flat / Harman-style
   / B&K-style presets, a five-band Simple EQ (Sub-bass / Bass / Mid /
   Presence / Treble) plus an exclusive PEQ editing mode, and named custom
-  profiles (save / overwrite / rename / delete). Built on the canonical
-  design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
+  profiles (save / overwrite / rename / delete), plus Match Loudness. Built on
+  the canonical design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
   Applying emits a CamillaDSP config that preserves any active
   room-correction PEQs; Off turns off only preference shaping without
-  clearing room correction. A collapsed Speaker setup card hosts the
+  clearing room correction. Global headroom, the volume floor, output
+  topology, and active-speaker commissioning now live at
+  `http://jts.local/sound/setup/`. That setup page hosts the
   active-crossover commissioning flow — choose the speaker layout, enter
   driver/crossover values, confirm the DAC outputs, then run the guarded
   per-driver audible test and apply the active speaker profile (passive /
@@ -293,7 +295,12 @@ computer gets a mono USB input.
   value remains visible/editable, and operator confirmation produces an inert
   safety-profile fingerprint. Research and the confirmed profile are not
   playback permission; live excitation/graph integration remains a later
-  active-crossover slice.
+  active-crossover slice. Measurement navigation is
+  `http://jts.local/sound/crossover/` (**Active speaker**),
+  `/sound/room/`, and `/sound/bass/`; these keep the existing correction
+  worker and local-microphone HTTP/HTTPS handoff behavior. `/sound/` redirects
+  non-cacheably to `/sound/setup/`, while `/correction/*` remains a direct
+  compatibility alias.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
   name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. A fresh
   install derives its initial display name from the hostname (`jts4.local`
@@ -926,14 +933,15 @@ reference. Currently:
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
 - [`correction-journey-design.md`](docs/correction-journey-design.md)
   — **Design record (not yet implemented)** for the three-step calibration
-  journey (1 Crossover → 2 Room → 3 Bass) over the existing `/correction/`
-  tabs: a read-only aggregator + strip that composes the per-tab facts each
+  journey (1 Crossover → 2 Room → 3 Bass) over the measurement surfaces
+  now published as `/sound/crossover/`, `/sound/room/`, and `/sound/bass/`:
+  a read-only aggregator + strip that composes the per-page facts each
   flow already owns (the Active-to-Room eligibility receipt, the current
   correction descriptor, the bass-extension classifier) into per-step state
   and one "next" pointer. Deliberately not a wizard framework.
 - [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
   — **Operational canon for the crossover measurement v2 "conductor" flow**
-  (the only `/correction/crossover/` flow since W5b retired the legacy
+  (the only `/sound/crossover/` flow since W5b retired the legacy
   per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). The conductor
   model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
   CHECK → MEASURE → cloud → automatic APPLYING → VERIFY → cloud capture
@@ -1046,7 +1054,7 @@ reference. Currently:
   [`docs/research/2026-07-29-attribution/`](docs/research/2026-07-29-attribution/README.md).
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
-  `/correction/crossover/` measurement + tuning flow flexible for non-expert
+  `/sound/crossover/` measurement + tuning flow flexible for non-expert
   phone-mic users: the first-principles framework, the resolved level/distance/
   phase-delay tradeoffs, and the conductor architecture (§5) that superseded the
   earlier staged plan. Read for the decision archaeology; current operational
@@ -1085,7 +1093,9 @@ reference. Currently:
   interfaces) live in
   [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md).
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
-  correction measurement hub at `/correction/`: room correction,
+  correction measurement service behind `/sound/room/`,
+  `/sound/crossover/` (**Active speaker**), and `/sound/bass/`, with
+  `/correction/*` retained as direct compatibility aliases: room correction,
   active-crossover mic measurement, and bass/subwoofer tuning surfaces;
   calibrated mic ingest, configurable correction strategies,
   design-audit bundles, replay-grade analysis artifacts,
@@ -1095,7 +1105,8 @@ reference. Currently:
   production Room still gates from the legacy applied recomposition snapshot,
   not that receipt. Active workstream — read Status first.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
-  — `/sound/` preference-EQ layer: Off / Saved / Draft live source,
+  — `/eq/` preference-EQ layer plus `/sound/setup/` global-output and
+  active-speaker commissioning surface: Off / Saved / Draft live source,
   stock curves, five-band Simple EQ + exclusive PEQ editing, named custom
   profile library, room-correction composition order, generated config
   ownership, durable apply + live-draft semantics, doctor and
@@ -1110,7 +1121,8 @@ reference. Currently:
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of
-  `/correction/`: calibrated mic ingest (Dayton/miniDSP serial lookup
+  the `/sound/room/` correction flow: calibrated mic ingest
+  (Dayton/miniDSP serial lookup
   plus manual upload fallback), richer measurement bundles,
   FIR/target-curve research corpus, read-only
   `jasper-calibration-agent` bundle-intake tooling, and eventually an
@@ -1124,9 +1136,9 @@ reference. Currently:
   JTS hardware (JTS3 today) where CamillaDSP directly drives
   woofer/mid/tweeter amplifier channels: the five-layer tuning model
   (driver linearization + crossover integration as the speaker layer,
-  then bass/room/preference), the `/sound/` topology-setup substrate
-  versus the `/correction/crossover/` measurement flow (v2 default,
-  legacy opt-out and deprecated), the always-sibling candidate/promote
+  then bass/room/preference), the `/sound/setup/` topology-setup substrate
+  versus the `/sound/crossover/` measurement flow, the always-sibling
+  candidate/promote
   baseline lifecycle and its doctor divergence check, and the hard
   safety invariants (two-invariant protection model, one audio path,
   crash-recovery-muted). Restructured 2026-07-24 to the current-
@@ -1204,7 +1216,7 @@ reference. Currently:
   strategy, concentric radii, tabular numbers, touch-target floor,
   motion policy, interface-writing rules, and the visual-craft review
   lenses the adversarial gate applies to UI diffs. Scoped to the
-  measurement-flow design pass (capture page + correction/crossover
+  measurement-flow design pass (capture page + Sound room/Active-speaker
   surfaces), not a codebase-wide compliance program. Reads alongside
   `HANDOFF-management-ui.md`, which owns IA and anti-patterns.
 - [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md)

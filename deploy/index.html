@@ -563,7 +563,7 @@
           </div>
           <p class="volume-safety-note" id="volume-safety-note" hidden>
             Speaker output is locked until active crossover setup is complete.
-            <a href="/sound/">Continue setup in Sound</a>
+            <a href="/sound/setup/">Continue setup in Sound</a>
           </p>
         </section>
 
@@ -629,19 +629,43 @@
       <section class="settings-section" id="sound-section" aria-labelledby="sound-heading" data-requires="content_dsp" hidden>
         <h2 class="eyebrow group-title" id="sound-heading">Sound</h2>
         <div class="settings-list">
-          <a class="setting-row" href="/sound/">
+          <a class="setting-row" href="/eq/">
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sound"></use></svg></span>
             <span class="setting-copy">
-              <span class="setting-title">Sound profile</span>
-              <span class="setting-status">Curve and EQ</span>
+              <span class="setting-title">EQ</span>
+              <span class="setting-status">Profiles · Simple EQ · PEQ</span>
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row" id="correction-card" href="/correction/room/">
+          <a class="setting-row" href="/sound/setup/">
+            <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sliders"></use></svg></span>
+            <span class="setting-copy">
+              <span class="setting-title">Sound setup</span>
+              <span class="setting-status">Volume · Outputs · Commissioning</span>
+            </span>
+            <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+          </a>
+          <a class="setting-row" href="/sound/crossover/">
+            <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wave"></use></svg></span>
+            <span class="setting-copy">
+              <span class="setting-title">Active speaker</span>
+              <span class="setting-status">Crossover measurement</span>
+            </span>
+            <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+          </a>
+          <a class="setting-row" id="correction-card" href="/sound/room/">
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wave"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">Room correction</span>
               <span class="setting-status">Microphone measurement relay</span>
+            </span>
+            <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+          </a>
+          <a class="setting-row" href="/sound/bass/">
+            <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sound"></use></svg></span>
+            <span class="setting-copy">
+              <span class="setting-title">Bass</span>
+              <span class="setting-status">Bass-management status</span>
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
@@ -1173,9 +1197,10 @@
 
     // Stereo-pair banner. While this speaker is an active bond member
     // the banner explains who owns playback. On a FOLLOWER the source
-    // selector and content-DSP cards hide (sources and sound shaping play
-    // through the leader) and the volume slider is relabeled — its requests
-    // are forwarded server-side by jasper-control's bonded-follower proxy,
+    // selector hides (sources play through the leader) and the volume slider
+    // is relabeled. Sound navigation stays visible: EQ/Room delegate in their
+    // own pages while local Setup/commissioning remains on the DAC owner.
+    // Volume requests are forwarded server-side by jasper-control's bonded-follower proxy,
     // so it controls the PAIR volume. Untrusted grouping fields reach the
     // DOM as text nodes only; the leader link is built only for a stable
     // .local web host.
@@ -1185,7 +1210,6 @@
       var channelEl = document.getElementById('pair-channel');
       var leaderLink = document.getElementById('pair-leader-link');
       var sourceSection = document.getElementById('source-section');
-      var soundSection = document.getElementById('sound-section');
       var volumeEyebrow = document.getElementById('volume-eyebrow');
       if (!banner || !sourceSection) return;
       var POLL_MS = 10000;
@@ -1203,9 +1227,6 @@
         var follower = bonded && g.role === 'follower';
         banner.hidden = !bonded;
         sourceSection.style.display = follower ? 'none' : '';
-        if (soundSection) {
-          soundSection.style.display = follower ? 'none' : '';
-        }
         // Dumb-follower profile: voice + mic are parked while paired —
         // the leader owns the assistant. Annotate the mic card so a
         // dead /mic probe reads as intended state, not breakage. Text

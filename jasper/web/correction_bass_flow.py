@@ -69,7 +69,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       the Room tab. A dip right at the crossover is your speakers handing off to
       the subwoofer, not a room mode, so it is left alone there.
     </p>
-    <a class="btn btn--ghost" href="/correction/room/">Go to Room measurement</a>
+    <a class="btn btn--ghost" href="/sound/room/">Go to Room measurement</a>
   </section>
 </main>
 <script type="module" src="/assets/correction/js/bass/main.js"></script>

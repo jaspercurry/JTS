@@ -19,7 +19,8 @@ profile, so they live apart from :class:`~jasper.sound.profile.SoundProfile`:
   floor. The default preserves the original shipped curve.
 
 Single source of truth: ``/var/lib/jasper/sound_settings.json``,
-wizard-owned (the ``/sound/`` page). Absence or corruption fails soft to
+wizard-owned (the split ``/eq/`` and ``/sound/setup/`` pages). Absence or
+corruption fails soft to
 the defaults above — which are also the "change nothing" state — so a
 missing or bad file can never silently alter the sound.
 """
@@ -146,8 +147,8 @@ def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
     headroom trim, plus the profile's loudness compensation when match-loudness
     is on. Both default to 0, so the default is no trim at all -- boosts boost.
     (Emitters additionally ignore any trim on a flat profile, which can't clip
-    from EQ.) Shared by the ``/sound/`` apply path, jasper-control's ``/state``,
-    and jasper-doctor so the policy lives in exactly one place."""
+    from EQ.) Shared by the split Sound-page apply path, jasper-control's
+    ``/state``, and jasper-doctor so the policy lives in exactly one place."""
     trim = settings.headroom_trim_db
     if settings.match_loudness:
         trim += loudness_compensation_db(profile)

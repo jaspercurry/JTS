@@ -319,6 +319,15 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     return pathish || '';
   }
 
+  function publicRoomUrl(value) {
+    var raw = String(value || '');
+    if (currentPathname().indexOf('/sound/room/') === 0 &&
+        raw.indexOf('/correction/room') === 0) {
+      return '/sound/room' + raw.slice('/correction/room'.length);
+    }
+    return raw;
+  }
+
   function endpoint(path) {
     path = String(path || '').replace(/^\/+/, '');
     if (currentPathname().indexOf('/correction/') === 0) {
@@ -1701,7 +1710,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     var action = blocker && blocker.recovery_action;
     if (action) {
       readinessBlockerAction.textContent = String(action.label);
-      readinessBlockerAction.href = String(action.href);
+      readinessBlockerAction.href = publicRoomUrl(action.href);
       readinessBlockerAction.classList.remove('hidden');
     } else {
       readinessBlockerAction.textContent = '';
@@ -3601,8 +3610,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   if (relayConfigured) {
     setRelayMode(true);
   } else {
-    if (!window.isSecureContext && currentPathname().indexOf('/correction/') === 0) {
+    var currentPath = currentPathname();
+    if (!window.isSecureContext && currentPath.indexOf('/correction/') === 0) {
       window.location.href = '/correction/proceed/room';
+      return;
+    }
+    if (!window.isSecureContext && currentPath.indexOf('/sound/room/') === 0) {
+      window.location.href = '/sound/proceed/room';
       return;
     }
     setRelayMode(false);

@@ -38,7 +38,6 @@ import {
   outputStatusClass,
   outputStepTitle,
   sensitivityTrimsFromGap,
-  subwooferCrossoverBand,
   subwooferCrossoverFcHz,
   summedGroupFailureHint
 } from "/assets/sound-profile/js/active-speaker-ui.js";
@@ -125,7 +124,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
-  // is "/sound/#confirm-safety-limits"). Both halves of that link — the id
+  // is "/sound/setup/#confirm-safety-limits"). Both halves of that link — the id
   // rendered here and the href in the registry — are pinned by
   // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
   var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
@@ -164,28 +163,33 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 
   function el(id) { return document.getElementById(id); }
-  // Distributed-active Slice 4: a bonded active follower's /sound/ page mounts
-  // this same module but emits a "sound-follower-data" island. In follower mode
-  // the leader owns the program domain (content EQ / room correction / volume),
-  // so we render ONLY the local active-speaker driver/crossover surface and skip
-  // the content-EQ editor (its tabs + now-playing plot are absent from the page).
-  //
-  // The signal is the island's NON-EMPTY content — only the follower page emits
-  // it; the solo page never does. Keying on content (not a bare presence check)
-  // keeps a malformed island in the SAFE direction: a follower page has no tabs
-  // or plot, so falling back to the solo render path would dereference absent
-  // elements and blank the page. So: empty/absent → solo; present with content →
-  // follower (even if the flag can't be parsed).
-  var followerMode = (function() {
-    var node = document.getElementById('sound-follower-data');
+  // nginx selects one renderer mode on the same backend. EQ owns profiles and
+  // Match Loudness; Setup owns output controls and local commissioning.
+  var pageData = (function() {
+    var node = document.getElementById('sound-page-data');
     var text = node && node.textContent ? node.textContent.trim() : '';
-    if (!text) return false;
+    var legacyFollowerIsland = false;
+    // Keep the standalone follower harness compatible with the old island.
+    if (!text) {
+      node = document.getElementById('sound-follower-data');
+      text = node && node.textContent ? node.textContent.trim() : '';
+      legacyFollowerIsland = !!text;
+    }
+    if (!text) return {mode: 'eq', follower: false};
     try {
-      return JSON.parse(text).follower !== false;
+      var parsed = JSON.parse(text);
+      return {
+        mode: parsed.mode === 'setup' || legacyFollowerIsland ? 'setup' : 'eq',
+        follower: parsed.follower === true
+      };
     } catch (e) {
-      return true;
+      // Split pages without EQ chrome must stay on the local-setup side if the
+      // tiny island is damaged; attempting EQ would dereference absent tabs.
+      return {mode: 'setup', follower: true};
     }
   })();
+  var pageMode = pageData.mode;
+  var followerMode = pageData.follower;
   // jsonHeaders is imported from /assets/shared/js/http.js — the one
   // cross-page owner of the CSRF/JSON plumbing. A conventions guard in
   // tests/test_web_wizard_conventions.py keeps a local re-declaration from
@@ -505,6 +509,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Render the graph for whatever is the live source right now.
   function renderLiveGraph() {
     var profile = liveProfile();
+    if (!el('live-label')) return;
     el('live-label').textContent = liveLabel();
     if (!profile) { renderGraph({preview: []}, false); return; }
     renderGraph(previewPayload(profile), profile.enabled !== false);
@@ -521,6 +526,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function render() {
     if (followerMode) {
       renderFollower();
+      status(statusText, statusErr);
+      return;
+    }
+    if (pageMode === 'setup') {
+      renderSetup();
       status(statusText, statusErr);
       return;
     }
@@ -542,6 +552,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</section></div>';
   }
 
+  function renderSetup() {
+    el('view-body').innerHTML = '<div class="saved-stack">' +
+      renderSetupSoundSettings() + renderActiveSpeakerSetup() + '</div>';
+  }
+
   function renderOff() {
     el('view-body').innerHTML =
       '<div class="saved-stack">' +
@@ -553,7 +568,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<button type="button" class="btn btn--primary" data-act="new-draft">Create custom profile</button>' +
         '</div>' +
       '</section>' +
-      renderActiveSpeakerSetup() +
       '</div>';
   }
 
@@ -601,7 +615,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection +
-      renderSoundSettings() + renderActiveSpeakerSetup() + '</div>';
+      renderMatchLoudnessSetting() + '</div>';
   }
   function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function fmtVolumeFloor(v) {
@@ -661,8 +675,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     volumeFloorDraftDb = coerceVolumeFloorDb(v);
     syncVolumeFloorControls(volumeFloorDraftDb);
   }
-  function renderSoundSettings() {
+  function renderMatchLoudnessSetting() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
+    return '<section class="sound-settings">' +
+      '<div class="setting-row">' +
+        '<div class="setting-row__text">' +
+          '<p class="setting-row__title">Match loudness</p>' +
+          '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
+        '</div>' +
+        '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
+          ' aria-label="Match loudness"><span class="track"></span></label>' +
+      '</div>' +
+    '</section>';
+  }
+  function renderSetupSoundSettings() {
     var trim = Number(soundSettings.headroom_trim_db) || 0;
     var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
     var floorBounds = volumeFloorLimits();
@@ -677,14 +703,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var saveLabel = volumeFloorSaving ? 'Saving' :
       (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
-      '<div class="setting-row">' +
-        '<div class="setting-row__text">' +
-          '<p class="setting-row__title">Match loudness</p>' +
-          '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
-        '</div>' +
-        '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
-          ' aria-label="Match loudness"><span class="track"></span></label>' +
-      '</div>' +
       '<details class="advanced"' + (advancedOpen ? ' open' : '') + '>' +
         '<summary>Advanced</summary>' +
         '<div class="setting-row setting-row--stack">' +
@@ -4162,37 +4180,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
       (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
         (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
-      '</div></div>' + renderSubwooferCrossoverCallout() + bandsContent + '</section>';
+      '</div></div>' + bandsContent + '</section>';
 
     el('view-body').innerHTML = '<div>' + modeSection + bandsSection +
       '<section class="draft-footer">' + footerHtml() + '</section></div>';
-  }
-  // Called-out, NON-editable band showing the system-managed bass-management
-  // high-pass a routed local subwoofer applies to the mains. The household must
-  // SEE that a subwoofer high-pass at N Hz shapes the mains; it is edited via the
-  // subwoofer card (output setup), never in this PEQ list — so it has no Type or
-  // Delete controls. Returns '' when no local sub is routed. Pure-helper decision
-  // (does a sub exist? what Fc? the synthetic band) lives in active-speaker-ui.js.
-  function renderSubwooferCrossoverCallout() {
-    var band = subwooferCrossoverBand(currentOutputTopology());
-    if (!band) return '';
-    return '<div class="bands-card bands-card--system">' +
-      '<div class="band-row band-row--system" data-open="false">' +
-        '<div class="band-row__header band-row__header--system">' +
-          '<span class="band-row__title">' +
-            '<span class="band-dot band-dot--system">' + ico('wave') + '</span>' +
-            '<span><p class="band-row__name">' + escapeHtml(String(band.label)) + '</p>' +
-              '<p class="band-row__meta">' + escapeHtml(
-                String(band.type) + ' · ' + Math.round(Number(band.freq_hz)) + ' Hz · system-managed'
-              ) + '</p></span>' +
-          '</span>' +
-          '<span class="status-pill">' + escapeHtml('locked') + '</span>' +
-        '</div>' +
-        '<p class="setting-row__hint">' + escapeHtml(
-          String(band.detail) + '. Change it on the subwoofer card under speaker setup.'
-        ) + '</p>' +
-      '</div>' +
-    '</div>';
   }
   function footerHtml() {
     if (naming) {
@@ -4351,7 +4342,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     soundSettings = Object.assign({}, soundSettings, patch);
     try {
       var resp = await fetch('./settings', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify(soundSettings)});
+        body: JSON.stringify(patch)});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'settings failed');
       ingestState(payload);
@@ -4568,7 +4559,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
 
   // ---- events ---------------------------------------------------------
   // The Off/Saved/Draft tabs only exist on the solo page; a follower omits them.
-  if (!followerMode) {
+  if (!followerMode && pageMode === 'eq') {
     ['off', 'saved', 'draft'].forEach(function(v) {
       el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
     });
@@ -6674,7 +6665,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       render();
       // The design draft the deep link needs arrives with this refresh, so the
       // fragment is applied after it settles, not at DOMContentLoaded.
-      refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
+      if (pageMode === 'setup') {
+        refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
+      }
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }

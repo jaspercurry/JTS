@@ -1,11 +1,12 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-07-27.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-08-04.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
 surface. On 2026-05-29 the first two **wizards** were ported to the canonical
-design system: `/sound/` ([`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py))
+design system: `/eq/` and `/sound/setup/` (two modes rendered by
+[`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py))
 and `/system/` ([`jasper/web/system_setup.py`](../jasper/web/system_setup.py)),
 both rendered via `canonical_page()` + `/assets/app.css`, with page behaviour
 delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
@@ -71,7 +72,8 @@ does not ship a legacy inline dialog copy.
 
 ## Restyle-in-place migration (legacy → canonical)
 
-`/system/` and `/sound/` were rebuilt as client-side render targets. Most of
+`/system/` and the two Sound page modes (`/eq/` and `/sound/setup/`) were
+built as client-side render targets. Most of
 the remaining ~15 wizards don't need that — they're plain server-rendered
 forms. The cheap path for them is a **restyle-in-place**: keep the
 server-rendered form and its POST request/response flow, swap only the
@@ -151,8 +153,8 @@ nginx serves `/assets/` (app.css immutable + SHA-busted, page ES modules
 **both** server blocks of
 [`deploy/nginx-jasper.conf`](../deploy/nginx-jasper.conf). The port-80 block
 is the obvious one; the **443 block needs its own copy** because
-`/correction/` — the one wizard served over HTTPS (getUserMedia needs a
-secure context) — links `/assets/app.css` and its ES module by absolute
+the correction measurement pages — served over HTTPS when `getUserMedia`
+needs a secure context — link `/assets/app.css` and their ES modules by absolute
 path. Without a 443 `/assets/` location those subresource requests fall
 through to the HTTP-downgrade catch-all, redirect to `http://`, and browsers
 block them as mixed content — leaving the measurement UI unstyled and its JS
@@ -203,6 +205,8 @@ depend on client-side JavaScript to survive the HTTP → HTTPS hop, and mobile
 browsers do not cache stale local hostname or scheme rules. Safe
 `?next=/correction/...` subflows become `/correction/proceed/<subflow>`, with
 the same temporary no-store redirect and query preservation.
+The canonical Room page uses nginx's `/sound/proceed/room` handoff instead;
+the static preflight's closed allowlist remains `/correction/*`.
 
 ### Archetype recipes
 
@@ -442,7 +446,7 @@ reordering better than the prior flat enumeration):
 | Section | Rows — title → destination |
 |---|---|
 | **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
-| **Sound** | Sound profile → `/sound/` · Room correction → `https://…/correction/` (HTTPS, preflight first) · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
+| **Sound** | EQ → `/eq/` · Sound setup → `/sound/setup/` · Active speaker → `/sound/crossover/` · Room correction → `/sound/room/` · Bass → `/sound/bass/` · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
 | **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Microphone & wake → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
@@ -525,10 +529,10 @@ rather than a misleading numeric latency estimate.
 
 ### 3.3 Web surfaces under `jasper/web/`
 
-19 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
+19 stdlib-`http.server` setup/debug modules, mostly socket-activated and
 LAN-only. Some run inside the combined `jasper-web` process; older/heavier
 surfaces such as `/bluetooth/`, `/system/`, `/chat/`, and
-`/correction/` still have their own service/socket wrappers.
+the correction measurement routes still have their own service/socket wrappers.
 
 | Path | Module | Port | Purpose |
 |---|---|---|---|
@@ -536,7 +540,7 @@ surfaces such as `/bluetooth/`, `/system/`, `/chat/`, and
 | `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing + spend cap |
 | `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
 | `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
-| `/correction/` | `correction_setup.py` | 8770 | Room measurement (HTTPS) |
+| `/sound/room/`, `/sound/crossover/`, `/sound/bass/` (`/correction/*` aliases) | `correction_setup.py` | 8770 | Room, active-speaker crossover, and Bass measurement/status; HTTPS only when local microphone capture needs it |
 | `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
 | `/system/`, `/system/audio/` | `system_setup.py` | 8772 | System and audio-health dashboard |
 | `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
@@ -547,7 +551,7 @@ surfaces such as `/bluetooth/`, `/system/`, `/chat/`, and
 | `/weather/` | `weather_setup.py` | 8779 | Weather default |
 | `/wake-corpus/` | `wake_corpus_setup.py` | 8782 | Wake-word corpus recorder |
 | `/speaker/` | `speaker_setup.py` | 8783 | Speaker display name |
-| `/sound/` | `sound_setup.py` | 8784 | Sound curve + preference EQ |
+| `/eq/`, `/sound/setup/` (`/sound/*` APIs) | `sound_setup.py` | 8784 | Profiles/EQ and local output, safety, topology, and active-speaker commissioning |
 | `/rooms/` | `rooms_setup.py` | 8785 | Speakers, pairing, wake-response peering |
 | `/tools/` | `tools_setup.py` | 8786 | Voice tool catalog |
 | `/chat/` | `chat_setup.py` | 8787 | Read-only conversation history |
@@ -570,7 +574,8 @@ Static and external companion surfaces:
   row should summarize both.
 - **Home Assistant landed** under `/ha/`, reached directly from the
   landing page's Integrations section.
-- **Sound preferences landed** under `/sound/`; this strengthens the case
+- **Sound preferences are published under `/eq/`, while local output setup is
+  published under `/sound/setup/`;** this strengthens the case
   for Sound as a top-level section.
 - **Speaker name landed** under `/speaker/`; the homepage title should use
   this state and should not say `JTS speaker` (JTS already expands to
@@ -1481,9 +1486,10 @@ Notes specific to JTS that the research doesn't cover:
   memory note `feedback_silent_failure_unacceptable.md`).
   Don't bury it under a fold or behind a toggle whose state can be
   misread.
-- **All web pages are HTTP, not HTTPS, except `/correction/`** (which
-  needs `getUserMedia`). Don't accidentally redirect the whole page to
-  HTTPS — surfaces the self-signed cert warning. This comes from the
+- **Web pages remain directly available over HTTP.** Correction measurement
+  pages use HTTPS only for the local-browser `getUserMedia` fallback; the
+  default phone-relay path remains on HTTP. Don't accidentally redirect the
+  whole page to HTTPS — that surfaces the self-signed cert warning. This comes from the
   private memory note `feedback_jts_http_not_https.md`.
 - **State files live under `/var/lib/jasper/*.env`** with `EnvironmentFile=`
   chaining in the systemd units (see AGENTS.md "Voice provider switching"
@@ -1493,7 +1499,13 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-27 (`/system/` Software optional-feature disclosure,
+Verification scope (2026-08-04): Sound IA/current-route scope: the six landing-page
+rows, `/eq/` and `/sound/setup/` page modes, canonical measurement navigation,
+direct correction aliases, and local-microphone HTTP/HTTPS handoff were
+rechecked against `deploy/index.html`, both nginx profiles, the Sound/correction
+renderers, 768 passing focused Sound/correction/landing tests, and the passing
+Sound browser harness. No on-device browser or Pi validation was performed.
+Prior 2026-07-27 (`/system/` Software optional-feature disclosure,
 lazy enhanced-AEC proxy/install contract, backend-owned chip-AEC state, and
 static ES-module state projection rechecked against
 `jasper/web/system_setup.py`, `deploy/assets/system-status/js/`, and
@@ -1571,3 +1583,5 @@ design-system / wizard-convention / main-import guards. Prior pass 2026-05-28:
 Phase 1 landing-page implementation, local font asset serving, integrations
 page, nginx route map, `jasper/web/__main__.py`, `/system/` dashboard, live
 `http://jts.local/`, and 2026-05-28 design/iOS research refresh)
+
+Last verified: 2026-08-04

@@ -1373,7 +1373,7 @@ __HOUSEHOLD_MIC_ISLAND__
 
 
 def _render_follower_page(hostname: str, csrf_token: str = "") -> bytes:
-    leader_url = bonded_follower_leader_web_url("/correction/")
+    leader_url = bonded_follower_leader_web_url("/sound/room/")
     leader_link = (
         '<a class="btn btn--primary" href="'
         + html.escape(leader_url)

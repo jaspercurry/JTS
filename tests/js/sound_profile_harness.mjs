@@ -567,6 +567,7 @@ function summedSummary(latestSummedTests, overrides = {}) {
 }
 
 function setupHarness(fetchHandler, options = {}) {
+  const pageMode = options.mode || "setup";
   const elements = new Map();
   const absent = new Set();
   for (const id of [
@@ -576,17 +577,15 @@ function setupHarness(fetchHandler, options = {}) {
   ]) {
     elements.set(id, makeEl(id));
   }
-  if (options.follower) {
-    // Reproduce the bonded-follower /sound/ DOM: the follower island is present,
-    // and the content-EQ chrome (Off/Saved/Draft tabs + now-playing plot) is
-    // omitted from the page. Making those ids resolve to null exercises the
-    // module's follower-mode guards exactly as the browser would. islandText lets
-    // a test inject a malformed island to prove the safe (follower) fallback.
-    const island = makeEl("sound-follower-data");
-    island.textContent = options.islandText !== undefined
-      ? options.islandText
-      : JSON.stringify({ follower: true });
-    elements.set("sound-follower-data", island);
+  const island = makeEl("sound-page-data");
+  island.textContent = options.islandText !== undefined
+    ? options.islandText
+    : JSON.stringify({ mode: pageMode, follower: !!options.follower });
+  elements.set("sound-page-data", island);
+  if (pageMode === "setup" || options.follower) {
+    // Setup and follower pages omit the content-EQ chrome. Making those ids
+    // resolve to null exercises the module's mode guards as the browser does.
+    // islandText lets a test inject malformed renderer data.
     for (const id of ["tab-off", "tab-saved", "tab-draft", "plot", "plot-summary", "live-label"]) {
       elements.delete(id);
       absent.add(id);
@@ -818,7 +817,7 @@ async function testLiveTabReplay() {
       }));
     },
   });
-  const harness = setupHarness(fetchHandler);
+  const harness = setupHarness(fetchHandler, { mode: "eq" });
   await harness.flush();
   await harness.flush();
 
@@ -896,8 +895,6 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   await harness.flush();
   await harness.flush();
 
-  harness.elements.get("tab-saved").click();
-  await harness.flush();
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes('data-act="save-volume-floor"') || !html.includes(">Saved</button>")) {
     fail("volume floor should render an explicit saved/save button", { html });
@@ -920,7 +917,8 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
 
   harness.dispatchClick({ "data-act": "save-volume-floor" });
   await harness.flush(); await harness.flush(); await harness.flush();
-  if (settingsPosts.length !== 1 || settingsPosts[0].volume_floor_db !== -42) {
+  if (settingsPosts.length !== 1 ||
+      JSON.stringify(settingsPosts[0]) !== JSON.stringify({ volume_floor_db: -42 })) {
     fail("Save floor should persist the selected floor exactly once", { settingsPosts });
   }
   if (!harness.elements.get("status").textContent.includes("Volume floor saved.")) {
@@ -929,6 +927,64 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
     });
   }
   return { volumeFloorRequiresExplicitSaveButAuditionsDraft: true };
+}
+
+async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
+  const eqFetched = [];
+  const eqBase = baseFetch();
+  const eq = setupHarness((path, options = {}) => {
+    eqFetched.push(path);
+    return eqBase(path, options);
+  }, { mode: "eq" });
+  await eq.flush(); await eq.flush();
+  eq.elements.get("tab-saved").click();
+  await eq.flush(); await eq.flush();
+  const eqHtml = eq.elements.get("view-body").innerHTML;
+  for (const expected of ["Your profiles", "Match loudness"]) {
+    if (!eqHtml.includes(expected)) {
+      fail("EQ mode omitted an owned Saved control", { expected, eqHtml });
+    }
+  }
+  for (const forbidden of ["Volume floor", "Extra headroom", "Speaker setup"]) {
+    if (eqHtml.includes(forbidden)) {
+      fail("EQ mode rendered a Setup-owned control", { forbidden, eqHtml });
+    }
+  }
+  if (eqFetched.includes("./output-topology") ||
+      eqFetched.some((path) => path.indexOf("./active-speaker/") === 0)) {
+    fail("EQ mode must not boot topology or commissioning", { eqFetched });
+  }
+  eq.elements.get("tab-draft").click();
+  await eq.flush(); await eq.flush();
+  const draftHtml = eq.elements.get("view-body").innerHTML;
+  for (const expected of [">Simple</button>", ">PEQ</button>"]) {
+    if (!draftHtml.includes(expected)) {
+      fail("EQ mode omitted an owned editor mode", { expected, draftHtml });
+    }
+  }
+
+  const setupFetched = [];
+  const setupBase = baseFetch();
+  const setup = setupHarness((path, options = {}) => {
+    setupFetched.push(path);
+    return setupBase(path, options);
+  }, { mode: "setup" });
+  await setup.flush(); await setup.flush(); await setup.flush();
+  const setupHtml = setup.elements.get("view-body").innerHTML;
+  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup"]) {
+    if (!setupHtml.includes(expected)) {
+      fail("Setup mode omitted an owned control", { expected, setupHtml });
+    }
+  }
+  for (const forbidden of ["Match loudness", "Your profiles", "Simple", "PEQ"]) {
+    if (setupHtml.includes(forbidden)) {
+      fail("Setup mode rendered an EQ-owned control", { forbidden, setupHtml });
+    }
+  }
+  if (!setupFetched.includes("./output-topology")) {
+    fail("Setup mode should load local topology", { setupFetched });
+  }
+  return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
 }
 
 async function testQuietTestSurfaceSurvivesStartupActions() {
@@ -5605,6 +5661,9 @@ async function testFollowerModeRendersLocalDriverUi() {
     "Try a stock profile",
     "data-act=\"new-draft\"",
     "Speaker setup",
+    "Match loudness",
+    "Volume floor",
+    "Extra headroom",
   ]) {
     if (html.includes(forbidden)) {
       fail("follower /sound/ should not render the content-EQ editor", { forbidden, html });
@@ -6270,6 +6329,7 @@ async function testConfirmSafetyDeepLinkOpensTheComponentStep() {
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
+results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
 results.push(await testActiveCrossoverFirstStepRender());

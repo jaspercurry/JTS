@@ -7,7 +7,10 @@ components on 2026-07-31. Neither is installed; we own every rule below.
 ## 1. Scope — what this is for
 
 The craft reference for the **measurement-flow design pass**: the jasper.tech
-capture page and the `/correction/` + active-crossover wizards (#1941's world).
+capture page and the Sound measurement wizards at `/sound/room/`,
+`/sound/crossover/` (**Active speaker**), and `/sound/bass/` (#1941's world).
+The direct `/correction/*` compatibility aliases render those same surfaces;
+they are not a second design contract.
 Written to be generally applicable — take a rule elsewhere when it's cheap and
 obvious — but its mandate is those surfaces.
 
@@ -233,4 +236,9 @@ correction/crossover flow.
 
 ---
 
-Last verified: 2026-07-31
+Verification scope (2026-08-04): route-scope only: the Room, Active-speaker, and Bass
+measurement surfaces are canonical under `/sound/*`; direct `/correction/*`
+aliases render the same contract. No craft-system rule changed. Prior
+2026-07-31.
+
+Last verified: 2026-08-04

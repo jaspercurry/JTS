@@ -1,7 +1,9 @@
-# HANDOFF — correction measurement hub at `/correction/`
+# HANDOFF — correction measurement behind the Sound routes
 
-> This is the canonical operational reference for the HTTPS correction
-> measurement surface: read **Status** first for what ships, current runtime
+> This is the canonical operational reference for the correction measurement
+> service and its HTTPS local-microphone fallback, published at
+> `/sound/room/`, `/sound/crossover/` (labelled **Active speaker**), and
+> `/sound/bass/`: read **Status** first for what ships, current runtime
 > boundaries, and hardware evidence. Intended Room product states, whole-page
 > visibility, defaults, and language are canonical in
 > [`room-correction-information-design.md`](room-correction-information-design.md).
@@ -11,12 +13,45 @@
 > The crossover builder's user journey, manual/automatic replacement semantics,
 > and parameter ownership are canonical in
 > [`active-crossover-information-design.md`](active-crossover-information-design.md).
-> This handoff owns shipped HTTPS measurement and room-correction behavior.
+> This handoff owns shipped measurement ingress, the HTTPS fallback, and
+> room-correction behavior.
+
+## Public ingress and compatibility
+
+The public routes changed in 2026-08 without moving the measurement engine or
+adding a service:
+
+| Canonical route | Correction-service surface |
+|---|---|
+| `/sound/room/` | Room measurement and correction |
+| `/sound/crossover/` | **Active speaker** crossover measurement and tuning |
+| `/sound/bass/` | Bass measurement and status |
+
+The canonical subflow pages remain directly reachable over plain HTTP, just as
+the existing `/correction/room/`, `/correction/crossover/`, and
+`/correction/bass/` paths are. The default phone-relay flow works there. When a
+same-origin local microphone is needed, the page uses the existing
+hostname-safe proceed handoff to the HTTPS version:
+`/sound/proceed/room` for the canonical page and
+`/correction/proceed/room` for the alias. Exact `/correction/` remains that
+static preflight entry. The correction worker
+remains the same socket-activated service on `127.0.0.1:8770`, and it still
+owns Room, crossover measurement, and Bass. `/correction/`, its subflows, and
+their existing child routes remain direct compatibility aliases; they are not
+redirected to the canonical paths and have no separate telemetry or retirement
+plan.
+
+The lightweight `/eq/` and `/sound/setup/` pages never activate this service.
+They remain on `jasper.web.sound_setup`; in particular,
+`/sound/active-speaker/*` is still that server's audible commissioning API and
+is never repurposed as measurement ingress. `/sound/` itself is a
+non-cacheable navigation redirect to `/sound/setup/`; mutating requests are
+never redirected.
 
 ## Status
 
 - ✅ **Crossover measurement is now the v2 conductor flow (default flipped
-  2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
+  2026-07-19).** The `/sound/crossover/` measurement + tuning flow is
   the conductor flow (CHECK → MEASURE → the pre-apply position group →
   automatic APPLYING → VERIFY → the post-apply position group): a guided
   spatial cloud, 16 captures at the Full tier's shipped defaults or 7 on
@@ -940,9 +975,11 @@
   Relay room level setup temporarily suspends the local browser's 120-second
   upload watchdog while the human completes mic permission, calibration,
   placement, and auto-level, then restores a fresh bound for the actual room
-  capture. Every room-relay completion page (level, position sweep, and verify)
-  returns directly to `/correction/room/`; `/correction/` remains only the
-  legacy local-microphone preflight. Modern Room sweep/verify links are signed
+  capture. Room-relay completion pages (level, position sweep, and verify)
+  retain the correction engine's compatibility return path,
+  `/correction/room/`; the new public route does not rewrite relay specs.
+  Exact `/correction/` remains the legacy local-microphone preflight. Modern
+  Room sweep/verify links are signed
   capture-only specs: the Pi supplies position progress and verifies the
   realized microphone/calibration against the level-check identity before
   playback. Active crossover retains its own compact setup binding.
@@ -980,8 +1017,9 @@
   before any sweep, captures passive room noise, and records until the
   Pi publishes `sweep_complete` through the relay. The Pi also includes a
   local `return_url` in each relay spec, so once the phone upload finishes the
-  capture page shows a **Back to speaker** CTA to the originating local
-  management page (for example `http://jts5.local/correction/room/`). On
+  capture page shows a **Back to speaker** CTA to the correction engine's
+  stable compatibility return path (for example
+  `http://jts5.local/correction/room/`). On
   2026-07-11, JTS3 completed the full UMIK-2 flow on the production relay:
   guided setup without a calibration file, automatic level lock, protected room
   sweep, four-filter apply, and post-apply verification to terminal `verified`.
@@ -990,12 +1028,13 @@
   hardware coverage, not an architectural blocker. Single source of truth for the design,
   deploy, and remaining work:
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md). Do not restate it here.
-- ✅ **HTTPS measurement hub shell.** As of 2026-06-23,
-  `/correction/` is the secure measurement hub for `room`, `crossover`,
-  and `bass`. `/correction/` and `/correction/room/` render the existing
-  room-correction workflow and keep
+- ✅ **HTTPS measurement hub shell.** The correction service is published at
+  `/sound/room/`, `/sound/crossover/`, and `/sound/bass/`.
+  `/sound/room/` renders the existing
+  room-correction workflow and keeps
   `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
-  is a correction-native active-crossover microphone surface: correction
+  is retained as a direct alias of the canonical `/sound/crossover/`
+  **Active speaker** microphone surface: correction
   web modules own HTTPS/browser routing, while
   `jasper.active_speaker.web_commissioning` owns safe admitted driver playback;
   the typed internal Active host owns production summed operation selection,
@@ -1024,7 +1063,7 @@
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
   crossover tuning. A safe applied manual crossover is a valid Layer-A
-  prerequisite for Room and remains editable under `/sound/`. Automatic tuning
+  prerequisite for Room and remains editable under `/sound/setup/`. Automatic tuning
   is optional: mic/calibration, driver-specific automatic levels, and driver
   captures run sequentially, then an explicit apply replaces manual attenuation
   trims while preserving crossover frequency and slope. Legacy
@@ -1033,26 +1072,30 @@
   automatic level matching transparently runs the same exact-preservation apply
   when `manual_preservation.ready` is true, so a legacy speaker reaches the mic
   relay in one intent; unsafe preservation refuses before relay registration.
-  `/correction/bass/` is a READ-ONLY bass-management display (P5): it
+  `/sound/bass/` is a READ-ONLY bass-management display (P5): it
   renders the live bass-management state (crossover corner, its owner —
   active-speaker local vs wireless sub, sub-present, mains-HP status) from
-  `jasper.bass_management.resolve_bass_management` via `GET /bass/status`,
+  `jasper.bass_management.resolve_bass_management`; the browser requests the
+  page-relative `status`, yielding `/sound/bass/status` on the canonical page
+  or `/correction/bass/status` on the alias, both mapped to the correction
+  backend's `GET /bass/status`,
   and points to the Room tab where the bass-region measurement lives. It
-  owns no corner control (the speaker layer owns the corner). The plain-HTTP
-  preflight accepts
-  `?next=/correction/...` so HTTP-only setup flows can link directly to a
-  secure subflow after showing the certificate warning; its Proceed
-  button has a no-JS fallback through `/correction/proceed[/subflow]`.
-  When JavaScript is available, the page validates the `next` path against
-  the correction subflow allowlist and goes directly to the final
-  `https://<current-host>/correction/...` URL with a per-page-load `jts_cb`
-  cache-bust token. The nginx fallback redirects are temporary and carry
-  strong no-cache headers so non-default hostnames survive the scheme switch
-  without teaching mobile browsers a permanent rule or reusing a stale
-  handoff URL.
+  owns no corner control (the speaker layer owns the corner). The static
+  plain-HTTP preflight keeps its existing closed `/correction/*` allowlist; it
+  does not learn canonical Sound paths. Canonical Room reaches the same secure
+  local-browser-microphone fallback through nginx's hostname-safe
+  `/sound/proceed/room` handoff. Relay-backed Room/crossover pages stay on
+  ordinary HTTP. The compatibility preflight's Proceed button retains the
+  hostname-safe no-JS fallback. When JavaScript is available, it validates the
+  target against its closed correction-subflow allowlist and goes directly to
+  the final HTTPS compatibility URL, with a per-page-load `jts_cb` cache-bust
+  token. The nginx fallback redirects are temporary and carry strong no-cache
+  headers so non-default hostnames survive the scheme switch without teaching
+  mobile browsers a permanent rule or reusing a stale handoff URL.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
-  measurement flows. `GET /correction/`, `/correction/balance`, and
+  measurement flows. `GET /sound/room/` (and its `/correction/` aliases),
+  `/correction/balance`, and
   `/correction/sync` render a leader-owned notice, and all mutating
   correction/balance/sync POST routes return HTTP 409 while the speaker
   is a follower. These are content-calibration surfaces for the paired
@@ -1062,18 +1105,21 @@
 - ✅ **Phase 0 — TLS + skeleton wizard.** PR #40 merged 2026-05-09.
   Self-signed cert + iOS trust dance documented; mic-permission
   page with `getSettings()` constraint verify lands at
-  `https://jts.local/correction/`.
+  `https://jts.local/sound/room/` (the original `/correction/` path remains an alias).
 - ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
   Implemented 2026-05-28; hostname-safe proceed redirect added
   2026-06-24; JS-enabled direct HTTPS handoff added 2026-06-26.
-  `http://jts.local/correction/` now serves a static preflight page that
-  explains the browser's self-signed-cert warning. Its default OK button
-  targets `/correction/proceed` with a build-token fallback query string;
+  Exact `http://jts.local/correction/` remains the static preflight page that
+  explains the browser's self-signed-cert warning; canonical and compatibility
+  subflow pages are direct HTTP routes unless local browser-microphone capture
+  needs the secure handoff. The preflight allowlist remains limited to
+  `/correction/*`; canonical Room uses `/sound/proceed/room` instead. The
+  preflight's default OK button
+  targets the hostname-safe proceed fallback with a build-token query string;
   JavaScript replaces that with a fresh `jts_cb` token on each preflight
-  page load and a direct HTTPS URL for the current host, with optional
-  `/room`, `/crossover`, or `/bass` suffixes when a safe
-  `?next=/correction/...` target is present. Nginx keeps temporary,
-  strongly non-cacheable `/correction/proceed` redirects for no-JS fallback,
+  page load and a direct HTTPS compatibility URL for the current host and
+  selected room, Active-speaker, or Bass path. Nginx keeps the fallback redirects temporary
+  and strongly non-cacheable,
   so `jts3.local` and other configured hostnames do not depend on hard-coded
   `jts.local` or sticky 308 state in Safari. The landing
   page links to the HTTP preflight, and the HTTPS correction page's Home
@@ -1683,8 +1729,8 @@ health, spatial stability, and headroom.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
-**Correction / preference composition note:** `/correction/` owns room
-measurement and room PEQ design; `/sound/` owns stock sound curves,
+**Correction / preference composition note:** `/sound/room/` owns room
+measurement and room PEQ design; `/eq/` owns stock sound curves,
 user preference EQ, Bypass / Applied / Draft auditioning, and the
 combined CamillaDSP config ordering when both layers are present. Both
 surfaces re-emit through `jasper.sound.graph_carrier` so full-range,
@@ -1703,11 +1749,11 @@ declaring the current Room flow hardware-validated.
 ## Goal
 
 A measurement-and-correction loop that runs from a phone at the
-listening position. Start at `http://jts.local/correction/` (or the
-speaker's actual hostname, such as `http://jts3.local/correction/`),
-read the plain-HTTP warning preflight, then tap through the
-hostname-safe `/correction/proceed` redirect to the secure browser-mic
-page.
+listening position. Start at `http://jts.local/sound/room/` (or the
+speaker's actual hostname, such as `http://jts3.local/sound/room/`),
+which supports the default phone-relay flow on plain HTTP. If the local
+same-origin microphone fallback is needed, the page uses the hostname-safe
+preflight/proceed handoff to its secure HTTPS counterpart.
 Optionally pick a calibrated USB measurement mic, the speaker plays a
 sweep, the phone records it, the Pi designs a PEQ filter set,
 hot-reloads CamillaDSP, and the next song plays through the corrected
@@ -3361,7 +3407,14 @@ Internal:
 
 ---
 
-Last verified: 2026-07-27 (runtime-integrity memory evidence rechecked against
+Verification scope (2026-08-04): PR-1 ingress/current-surface scope: canonical Sound
+measurement routes, direct `/correction/*` aliases, Bass's page-relative status
+request, both nginx profiles, the unchanged `/correction/room/` relay return
+path, and the unchanged correction-only static-preflight allowlist were
+rechecked against the correction renderers/modules, nginx profiles, and 768
+passing focused hardware-free Sound/correction/landing tests; 28
+environment-dependent cases were deselected. No Pi, microphone, acoustic,
+deploy, or reboot validation was performed. Prior 2026-07-27 (runtime-integrity memory evidence rechecked against
 the shared RAM-tier-aware headroom policy; hardware-free tests only). Prior
 2026-07-27 (flow-simplification PR-U3 — the Status bullet's
 "16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
@@ -3519,3 +3572,5 @@ runtime files listed in that verification pass; prior 2026-06-18 pass covered
 topology-safe correction reset/start behavior; prior 2026-06-17 pass covered
 auto-level controller ownership, state guards, and status/bundle payload
 ownership; prior 2026-06-15 pass covered bonded-follower delegation.)
+
+Last verified: 2026-08-04

@@ -1923,7 +1923,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # (deploy/assets/sound-profile/js/main.js), and its boot path opens
             # the owning step for this fragment. Both halves are pinned by
             # tests/test_sound_profile_confirm_deeplink.py.
-            "href": "/sound/#confirm-safety-limits",
+            "href": "/sound/setup/#confirm-safety-limits",
         },
     ),
     REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
@@ -1940,7 +1940,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # No fragment: ``/sound/`` renders no confirm callout in this state,
             # so a deep link would land on nothing. The page opens on its own
             # first unfinished step, which IS the action.
-            "href": "/sound/",
+            "href": "/sound/setup/",
         },
     ),
     REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
@@ -1956,7 +1956,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "label": "Add the missing limits",
             # The callout DOES render for this state (button-less, naming the
             # add-the-values action), so the fragment lands on the explanation.
-            "href": "/sound/#confirm-safety-limits",
+            "href": "/sound/setup/#confirm-safety-limits",
         },
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(

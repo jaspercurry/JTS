@@ -4,12 +4,22 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _location_block(nginx: str, location: str) -> str:
+    match = re.search(
+        rf"(?ms)^    {re.escape(location)} \{{\n(?P<body>.*?)^    \}}",
+        nginx,
+    )
+    assert match is not None, f"missing nginx block: {location}"
+    return match.group(0)
 
 
 def test_sound_wizard_is_socket_nginx_and_web_wired():
@@ -47,3 +57,24 @@ def test_sound_setup_import_keeps_numpy_out_of_cold_start():
     )
 
     assert result.returncode == 0
+
+
+def test_both_profiles_keep_stale_active_speaker_stop_ingress_direct():
+    stale_paths = (
+        "/sound/active-speaker/stop",
+        "/sound/active-speaker/commission-ramp-abort",
+        "/sound/active-speaker/summed-test/stop",
+    )
+    handler_source = (ROOT / "jasper" / "web" / "sound_setup.py").read_text()
+    for path in stale_paths:
+        assert f'"{path.removeprefix("/sound")}"' in handler_source
+
+    for filename in ("nginx-jasper.conf", "nginx-jasper-streambox.conf"):
+        nginx = (ROOT / "deploy" / filename).read_text()
+        compat = _location_block(nginx, "location /sound/")
+        redirect = _location_block(nginx, "location = /sound/")
+
+        assert "proxy_pass http://127.0.0.1:8784/;" in compat
+        assert "return 302" not in compat
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in redirect
+        assert "return 302 /sound/setup/;" in redirect
