@@ -3961,16 +3961,16 @@ def test_geometry_locked_group_asks_for_wider_retakes_then_proceeds(monkeypatch)
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_a_geometry_retried_position_keeps_its_ordinary_failure_budget(monkeypatch):
-    """S8: geometry retakes must not spend the slot's QUALITY-failure budget.
+def test_two_geometry_asks_leave_one_household_retry_in_the_pooled_budget(
+    monkeypatch,
+):
+    """Two speaker asks spend two pooled extras; the third remains household.
 
-    They are the conductor asking again for a GOOD capture, not the household
-    failing one. Before this, the exact sequence below — two geometry retakes,
-    then one ordinary recoverable glitch at the same position — spent four
-    attempts against a one-retry reason and raised ``CaptureBeginRefused``,
-    which is TERMINAL: a 16-capture session died at its final pre-apply
-    position over a single locate miss the household could have simply
-    retaken.
+    There is no geometry discount and no separate quality-failure budget.
+    The planned close asks for the first wider take; that rejection asks for
+    the second. Those two conductor-initiated extras leave exactly one of the
+    position's three pooled extras for the household after an ordinary locate
+    miss.
     """
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
@@ -3984,18 +3984,29 @@ def test_a_geometry_retried_position_keeps_its_ordinary_failure_budget(monkeypat
         assert _run_phase(c, last, attempt)["code"] == REASON_CLOUD_GEOMETRY_LOCKED
         attempt += 1
 
-    # Now ONE ordinary failure at that same position.
+    # Now ONE ordinary failure at that same position. It lands on the second
+    # speaker-booked extra and asks for the sole remaining household extra.
     monkeypatch.undo()
     fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
     verdict = _run_phase(c, last, attempt)
     attempt += 1
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_LOCATE_FAILED
+    assert verdict["attempts"] == {
+        "used": 2,
+        "allowed": flow.MAX_EXTRA_ATTEMPTS_PER_POSITION,
+        "left": 1,
+        "by_speaker": 2,
+        "by_household": 0,
+    }
 
-    # ...which must still be RETRIABLE. Before the discount this raised.
+    # ...and the final pooled extra is the household's retry.
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, last, attempt)
     assert verdict["accepted"] is True
+    assert verdict["attempts"]["by_speaker"] == 2
+    assert verdict["attempts"]["by_household"] == 1
+    assert verdict["attempts"]["left"] == 0
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
@@ -4279,6 +4290,53 @@ def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy()
         locate_failed_diagnosis(True)
     )
     assert "too few positions" in excinfo.value.user_message.lower()
+
+
+def test_a_spent_final_slot_terminalizes_its_close_time_refusal():
+    """The cloud-close hard stop replaces, rather than hides behind, X.
+
+    The last verify-cloud position spends its pooled extras on locate misses.
+    The group can still close without that spot, but its delta probe then
+    refuses with ``correction_model_error``. That closing finding is the final
+    truth: publish its exact code/copy as terminal on THIS capture, never the
+    earlier locate diagnosis plus a retry the ledger cannot admit.
+    """
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    c = _conductor(
+        fakes,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    # Isolate the close seam under test from delta-probe arithmetic; the real
+    # classifier's mapping/copy is independently exhaustive below.
+    c._delta_probe_refusal = (  # type: ignore[method-assign]
+        lambda _probe: (
+            REASON_CORRECTION_MODEL_ERROR
+            if c.current_phase == PHASE_CLOUD_VERIFY
+            else None
+        )
+    )
+
+    attempt = _walk(c, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
+    last = CLOUD_VERIFY_INDEXES[-1]
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, pilot_snr_ok=True,
+    )
+    for _ in range(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+
+    closing_copy = REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
+    assert verdict["reason"] == closing_copy
+    assert verdict["terminal"] is True
+    assert verdict["terminal_outcome"] == "phase_cannot_proceed"
+    assert verdict["attempts"]["left"] == 0
+    assert "could hear the speaker" not in verdict["reason"]
+    assert "previous sound has been put back" in verdict["reason"]
 
 
 def test_no_exhaustion_refusal_ever_carries_a_reasons_try_again_copy():

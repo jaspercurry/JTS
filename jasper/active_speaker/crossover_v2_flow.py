@@ -7031,7 +7031,21 @@ class CrossoverV2Conductor:
         """
         if index == self._group_indexes[phase][-1]:
             closing = self._close_cloud_group(phase, None)
-            return replace(closing, payload={**closing.payload, **payload})
+            closing_payload = {**closing.payload, **payload}
+            if not closing.accepted:
+                # This slot is already spent: a close-time product gate (for
+                # example the delta probe) has replaced the position's
+                # retryable rejection with its OWN hard-stop finding. Publish
+                # that exact closing code/copy as terminal on this capture;
+                # otherwise the page offers a retry the ledger cannot admit.
+                # Do not route through ``_terminal_spent_verdict`` — its
+                # diagnosis belongs to the earlier position rejection, while
+                # ``closing`` is now the reason the phase cannot proceed.
+                closing_payload.update(
+                    terminal=True,
+                    terminal_outcome="phase_cannot_proceed",
+                )
+            return replace(closing, payload=closing_payload)
         return PhaseVerdict(True, payload=payload)
 
     def _log_slot_spent(

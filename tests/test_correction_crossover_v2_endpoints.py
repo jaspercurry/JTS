@@ -57,7 +57,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLES,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_MODEL_ERROR,
     REASON_LOCATE_FAILED,
+    REASON_REGISTRY,
     TIER_EXPRESS,
     CrossoverV2Conductor,
     V2FlowSeams,
@@ -1328,6 +1330,63 @@ def test_a_position_that_spends_its_extras_is_dropped_and_the_real_runner_goes_o
     }
     assert doomed not in walked
     assert len(walked) == DEFAULT_CLOUD_MEASURE_POSITIONS - 2
+
+
+def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
+    """Closing X replaces the position miss at the real runner boundary.
+
+    The final post-apply cloud position spends planned+3 on locate misses, is
+    left out, and the group close then hard-stops on a model error. The runner
+    must publish that close-time truth as its final event and return — never
+    wait for a next begin that the position ledger will refuse.
+    """
+    shape = resolve_plan_shape()
+    spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    doomed = spec.capture_plan.capture_target
+    attempts_at_doomed: list[int] = []
+
+    def verify_analysis(program):
+        index, attempt = phone.begun
+        if index != doomed:
+            return _verify_analysis(program)
+        attempts_at_doomed.append(attempt)
+        return _verify_analysis(
+            program, locate_confidence=0.0, pilot_snr_ok=True,
+        )
+
+    conductor = _stage2_conductor(
+        backend,
+        session,
+        phone,
+        analyses={"verify": verify_analysis},
+    )
+    conductor._delta_probe_refusal = (  # type: ignore[method-assign]
+        lambda _probe: (
+            REASON_CORRECTION_MODEL_ERROR
+            if conductor.current_phase == PHASE_CLOUD_VERIFY
+            else None
+        )
+    )
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    assert len(attempts_at_doomed) == MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
+    phases = backend.phases(session.session_id)
+    assert phases[-1] == "capture_result"
+    assert "capture_set_complete" not in phases
+    assert "capture_set_exhausted" not in phases
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["index"] == doomed
+    assert terminal["accepted"] is False
+    assert terminal["code"] == REASON_CORRECTION_MODEL_ERROR
+    assert terminal["reason"] == REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == "phase_cannot_proceed"
+    assert terminal["attempts"]["left"] == 0
+    assert "could hear the speaker" not in terminal["reason"]
 
 
 def test_position_retention_survives_a_retake_through_the_real_evidence_store(

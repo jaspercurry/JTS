@@ -599,10 +599,8 @@ position's diagnosis, and renders the server-supplied guidance fail-soft in
 both directions. Final-position `unresolved` also rides
 `capture_set_complete` so last-write-wins completion cannot erase it. Source +
 tests ship in PR-3b/#2097. The public page and Pi rollout remain separate:
-publish and verify capture-page build `20260803.4` first, then deploy the Pi
-that can emit the terminal result. Rollback is Pi first, page second. The page
-DEPLOY is the architect's at ship time; repository merge alone is not that
-deployment.)*
+follow the page-first fixture and rollback order owned by
+`capture-page/README.md`; repository merge alone is not that deployment.)*
 
 *(**N raised 8 → 9** (adjudication 3a, round-1 review) so the delivered curve
 rests on 8 summed sweeps — fundamental 1's floor is a count of CURVES, and a
@@ -1096,9 +1094,10 @@ a retake's evidence sidecar collided with the take it replaced, leaving the
 surviving record describing the wrong capture (artifacts are now qualified
 by attempt, the prompt recorded is the one actually shown, and the
 retention seam is tested through the REAL write-once store). Behavioural
-follow-ons: geometry rejections now carry their own admission headroom so a
-retried position keeps its ordinary failure budget, and a corrupt
-`session_phases` list can no longer read as "done". Also corrected in the
+follow-ons: geometry asks consume the same pooled position extras as every
+retry — two conductor asks leave one household retry, with no discount or
+separate quality budget — and a corrupt `session_phases` list can no longer
+read as "done". Also corrected in the
 accounting below: deviation 5's "structurally identical" list omitted the
 MEASURE "this spot is the mark" addition and the relocation of the END
 screen's `done_title`/`done_body` from the VERIFY entry to the last

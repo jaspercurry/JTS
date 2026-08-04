@@ -942,23 +942,27 @@ async function testAnUnresolvedPositionSaysSoInsteadOfTicking() {
   ok();
 }
 
-async function testFinalExtraTerminalHasNoDeadRetryAffordance() {
+async function testSpentFinalSlotCloseRefusalHasNoDeadRetryAffordance() {
   statusHistory.length = 0;
   const { onPlanStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
   installDocument(makeStatusEl());
 
+  // The position itself failed locate, but cloud close found the stronger
+  // product-level truth. The phone must narrate THIS hard stop, not the
+  // position miss it replaced and not a generic exhausted-count sentence.
   const reason =
-    "The room is too loud right now. JTS measured this spot 4 times — the "
-    + "planned one plus 3 extra tries — and still could not get a clean read. "
-    + "The measurement cannot continue because this step needs a clean read.";
+    "JTS checked the tuning against what your speaker actually did, and they "
+    + "did not match — so the previous sound has been put back. This usually "
+    + "means something in the chain is not behaving as described; re-check "
+    + "the driver details in speaker setup, then measure again.";
   const spec = planSpec({ target: 2, maxAttempts: 8 });
   const { client, posted } = makeFakePlanClient({
     target: 2,
     maxAttempts: 8,
     resultFor: () => ({
       accepted: false,
-      code: "snr_floor",
+      code: "correction_model_error",
       reason,
       terminal: true,
       terminal_outcome: "phase_cannot_proceed",
@@ -971,6 +975,8 @@ async function testFinalExtraTerminalHasNoDeadRetryAffordance() {
   assert.equal(noteText(ctx.screenEl), reason);
   assert.deepEqual(actionLabels(ctx.screenEl), []);
   assert.ok(!noteText(ctx.screenEl).toLowerCase().includes("try again"));
+  assert.ok(!noteText(ctx.screenEl).includes("could hear the speaker"));
+  assert.ok(noteText(ctx.screenEl).includes("previous sound has been put back"));
   assert.equal(
     posted.filter((event) => event.begin_capture && !event.armed).length,
     1,
@@ -4210,7 +4216,7 @@ const tests = [
   testGeometryRetakeRendersTheServerSuppliedGuidance,
   testTheRetryEyebrowCountsThisPositionsExtraTries,
   testAnUnresolvedPositionSaysSoInsteadOfTicking,
-  testFinalExtraTerminalHasNoDeadRetryAffordance,
+  testSpentFinalSlotCloseRefusalHasNoDeadRetryAffordance,
   testTerminalResultRequiresThe202608034PageFirstRollout,
   testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm,
   testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite,

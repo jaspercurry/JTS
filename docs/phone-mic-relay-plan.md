@@ -1060,13 +1060,9 @@ is not); for a protocol removal it is the page.
   A page that has dropped protocol N strands every Pi still emitting N —
   instantly, since `version.json` is served `no-store`.
 
-- **Adding a required host-event meaning → page before Pi:** #2097's terminal
-  `capture_result` does not change the protocol list, but page build
-  `20260803.4` must be public before a Pi can emit `terminal=true`. The new
-  page safely treats an old conductor's omitted field as false; page
-  `20260803.3` drops a new terminal meaning and offers a dead retry after the
-  runner exits. Rollback is the inverse — Pi first, page second. The behavioral
-  fixture and exact release steps live in `capture-page/README.md`.
+- **Adding a required host-event meaning:** #2097 is page-first; the exact
+  build fixture, skew proof, and rollback order are owned by
+  [`capture-page/README.md`](../capture-page/README.md).
 
   The 2026-07-27 deletion of protocols 1 and 2 was a REMOVAL (the published
   build `20260712.3` served protocol 2) and shipped Pi-first.
