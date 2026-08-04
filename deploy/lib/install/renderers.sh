@@ -20,6 +20,11 @@
 # Run only on debian backend. Each is idempotent — checks for the
 # installed binary and skips the install if present.
 install_renderers() {
+    # Must precede the AirPlay + BlueZ renders below.  This is the first shared
+    # full/streambox seam, so both profiles get one hostname-derived fresh seed
+    # without duplicating speaker-name ownership in their Python install paths.
+    seed_speaker_name_env
+
     # ---- librespot (rust, via raspotify .deb) ----
     # We use the raspotify .deb because (a) it ships librespot 0.8.0
     # arm64 binaries; (b) the librespot project itself doesn't ship

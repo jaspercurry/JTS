@@ -15,13 +15,14 @@ display name:
 | **OS hostname** | Pi Imager / `hostnamectl` | `/etc/hostname` | What Avahi *tries* to advertise (`<hostname>.local`) |
 | **Avahi effective hostname** | Avahi (RFC 6762 conflict resolution) | avahi-daemon runtime state | What the LAN *actually resolves*. Differs from `<os>.local` after a collision rename (`jts.local` → `jts-2.local`) |
 | **`JASPER_HOSTNAME`** | install.sh seed / operator | `/etc/jasper/jasper.env` | The *intended* identity: management-host allowlist, TLS cert CN/SAN, Spotify/Google OAuth bounce (`?host=`), spoken management URLs, `Config.management_url` |
-| **Display name** | `/speaker/` wizard | `/var/lib/jasper/speaker_name.env` | AirPlay / Spotify Connect / Bluetooth / USB device names, `_jasper-control._tcp` TXT `name=` |
+| **Display name** | Fresh-install hostname seed, then `/speaker/` wizard | `/var/lib/jasper/speaker_name.env` | AirPlay / Spotify Connect / Bluetooth / USB device names, `_jasper-control._tcp` TXT `name=` |
 
-The display name is independent and already wizard-owned (single
-writer, restart fan-out on save) — it needs no reconciliation. The
-first three are the fragile set: **nothing keeps them in sync**, and
-before the reconciler existed, drift was silent until something
-user-visible broke.
+The display name is independent and wizard-owned after its one-time installer
+seed (for example, `jts4.local` seeds `JTS4`). An existing
+`speaker_name.env` is authoritative and deploys never rewrite it; wizard saves
+remain the single restart fan-out. It needs no reconciliation. The first three
+are the fragile set: **nothing keeps them in sync**, and before the reconciler
+existed, drift was silent until something user-visible broke.
 
 ## What breaks when the names drift
 

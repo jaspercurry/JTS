@@ -17,6 +17,7 @@ from jasper.speaker_name import (
     ENV_VAR_ROOM,
     SpeakerNameError,
     SpeakerNameState,
+    initial_name_from_hostname,
     read_state,
     runtime_name,
     runtime_room,
@@ -42,6 +43,31 @@ def test_validate_name_accepts_room_name_punctuation():
     assert validate_name("  Jasper's Kitchen-2  ") == "Jasper's Kitchen-2"
     assert validate_name("Living Room #2") == "Living Room #2"
     assert validate_name("A&B + C") == "A&B + C"
+
+
+@pytest.mark.parametrize(
+    ("hostname", "expected"),
+    [
+        ("jts.local", "JTS"),
+        ("jts4.local", "JTS4"),
+        ("JTS-12.local.", "JTS12"),
+        ("kitchen.local", "Kitchen"),
+        ("living-room.local", "Living Room"),
+        ("workshop", "Workshop"),
+    ],
+)
+def test_initial_name_from_hostname_is_readable_and_collision_avoiding(
+    hostname: str,
+    expected: str,
+):
+    assert initial_name_from_hostname(hostname) == expected
+
+
+def test_initial_name_from_hostname_uses_safe_bounded_fallbacks():
+    assert initial_name_from_hostname("") == DEFAULT_SPEAKER_NAME
+    assert initial_name_from_hostname("...local") == DEFAULT_SPEAKER_NAME
+    assert initial_name_from_hostname("kitchen$(touch).local") == "Kitchen Touch"
+    assert len(initial_name_from_hostname("a" * 63 + ".local")) == 32
 
 
 @pytest.mark.parametrize(

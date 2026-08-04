@@ -133,7 +133,7 @@ def _run_install_helper(
 ) -> subprocess.CompletedProcess[str]:
     env_dir = tmp_path / "etc"
     state_dir = tmp_path / "state"
-    env_dir.mkdir(exist_ok=True)
+    env_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(exist_ok=True)
     script = (
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
@@ -147,6 +147,234 @@ def _run_install_helper(
         text=True,
         timeout=5,
     )
+
+
+def _run_speaker_name_seed(
+    tmp_path: Path,
+    *,
+    deploy_hostname: str | None = None,
+    saved_hostname: str | None = None,
+    os_hostname: str = "raspberrypi",
+    fail_write: bool = False,
+    fail_chmod: bool = False,
+    publish_behavior: str = "normal",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the creation-only installer seed against scratch state."""
+
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    if saved_hostname is not None:
+        (env_dir / "jasper.env").write_text(
+            f'JASPER_HOSTNAME="{saved_hostname}"\n',
+            encoding="utf-8",
+        )
+    commands = [
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+        f"ENV_DIR={shlex.quote(str(env_dir))}",
+        f"STATE_DIR={shlex.quote(str(state_dir))}",
+        "unset JASPER_HOSTNAME JASPER_SYSTEM_PYTHON",
+        f"hostname() {{ printf '%s\\n' {shlex.quote(os_hostname)}; }}",
+    ]
+    if deploy_hostname is not None:
+        commands.append(f"export JASPER_HOSTNAME={shlex.quote(deploy_hostname)}")
+    if fail_write:
+        commands.append("printf() { builtin printf partial; return 1; }")
+    if fail_chmod:
+        commands.append(
+            "chmod() { [[ \"$2\" == *'.speaker_name.env.seed.'* ]] "
+            "&& return 1; command chmod \"$@\"; }"
+        )
+    if publish_behavior != "normal":
+        real_python = shlex.quote(sys.executable)
+        publish_actions = {
+            "wizard_file": (
+                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$3\""
+            ),
+            "directory": 'mkdir "$3"',
+            "directory_symlink": (
+                'mkdir "${3}.target"; command ln -s "${3}.target" "$3"'
+            ),
+            "fail": "return 23",
+        }
+        action = publish_actions[publish_behavior]
+        commands.append(
+            "python3() { "
+            "if [[ \"$2\" == *'.speaker_name.env.seed.'* ]]; then "
+            f"{action}; "
+            "fi; "
+            f"command {real_python} \"$@\"; }}"
+        )
+    commands.append("seed_speaker_name_env")
+    result = subprocess.run(
+        ["bash", "-c", " && ".join(commands)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return result, state_dir / "speaker_name.env"
+
+
+@pytest.mark.parametrize(
+    ("hostname", "expected"),
+    [
+        ("jts.local", 'JASPER_SPEAKER_NAME="JTS"\n'),
+        ("jts4.local", 'JASPER_SPEAKER_NAME="JTS4"\n'),
+        ("kitchen.local", 'JASPER_SPEAKER_NAME="Kitchen"\n'),
+    ],
+)
+def test_fresh_speaker_name_seed_uses_deploy_hostname(
+    tmp_path: Path,
+    hostname: str,
+    expected: str,
+):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname=hostname,
+    )
+    assert result.returncode == 0, result.stderr
+    assert state_file.read_text(encoding="utf-8") == expected
+
+
+def test_speaker_name_seed_falls_back_to_saved_then_os_hostname(tmp_path: Path):
+    saved_result, saved_file = _run_speaker_name_seed(
+        tmp_path / "saved",
+        saved_hostname="den.local",
+        os_hostname="ignored",
+    )
+    assert saved_result.returncode == 0, saved_result.stderr
+    assert saved_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="Den"\n'
+    )
+
+    os_result, os_file = _run_speaker_name_seed(
+        tmp_path / "os",
+        os_hostname="workshop",
+    )
+    assert os_result.returncode == 0, os_result.stderr
+    assert os_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="Workshop"\n'
+    )
+
+
+def test_speaker_name_seed_preserves_existing_file_byte_for_byte(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / "speaker_name.env"
+    original = b'# household formatting\n  JASPER_SPEAKER_NAME = "My Kitchen"'
+    state_file.write_bytes(original)
+
+    result, resolved = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts99.local",
+    )
+    assert result.returncode == 0, result.stderr
+    assert resolved == state_file
+    assert state_file.read_bytes() == original
+
+
+def test_speaker_name_seed_write_failure_is_clean_and_retryable(tmp_path: Path):
+    failed, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        fail_write=True,
+    )
+    assert failed.returncode != 0
+    assert "ERROR: could not write fresh speaker name" in failed.stderr
+    assert not state_file.exists()
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+    retried, retry_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert retry_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="JTS4"\n'
+    )
+    assert list(retry_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+def test_speaker_name_seed_does_not_clobber_concurrent_wizard_save(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        publish_behavior="wizard_file",
+    )
+    assert result.returncode == 0, result.stderr
+    assert state_file.read_bytes() == b'JASPER_SPEAKER_NAME="Wizard Save"'
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+@pytest.mark.parametrize("publish_behavior", ["directory", "directory_symlink"])
+def test_speaker_name_seed_directory_race_is_preserved_without_nested_link(
+    tmp_path: Path,
+    publish_behavior: str,
+):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        publish_behavior=publish_behavior,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"speaker name: preserving {state_file}" in result.stdout
+    assert 'speaker name: "JTS4"' not in result.stdout
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+    target_dir = (
+        Path(f"{state_file}.target")
+        if publish_behavior == "directory_symlink"
+        else state_file
+    )
+    assert target_dir.is_dir()
+    assert list(target_dir.iterdir()) == []
+    assert state_file.is_symlink() is (publish_behavior == "directory_symlink")
+
+
+def test_speaker_name_seed_chmod_failure_cleans_temp_and_fails(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        fail_chmod=True,
+    )
+    assert result.returncode != 0
+    assert "ERROR: could not set fresh speaker-name permissions" in result.stderr
+    assert not state_file.exists()
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+def test_speaker_name_seed_publish_failure_cleans_temp_and_fails(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        publish_behavior="fail",
+    )
+    assert result.returncode != 0
+    assert "ERROR: could not publish fresh speaker name" in result.stderr
+    assert not state_file.exists()
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    body = renderers[
+        renderers.index("install_renderers() {"):
+        renderers.index("\n}\n\nreconcile_usb_data_role()")
+    ]
+    assert body.count("seed_speaker_name_env") == 1
+    assert body.index("seed_speaker_name_env") < body.index(
+        "/usr/local/sbin/jasper-apply-airplay-mode"
+    )
+    assert body.index("seed_speaker_name_env") < body.index(
+        'bash "${REPO_DIR}/deploy/configure-bluez.sh"'
+    )
+
+    main = _INSTALL_SH.read_text(encoding="utf-8")
+    assert sum(line.strip() == "install_renderers" for line in main.splitlines()) == 2
+    runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text(
+        encoding="utf-8",
+    )
+    assert runtime.count('JASPER_SPEAKER_NAME="JTS"') == 0
 
 
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each

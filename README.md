@@ -295,9 +295,11 @@ computer gets a mono USB input.
   playback permission; live excitation/graph integration remains a later
   active-crossover slice.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
-  name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
-  to `JTS`; the URL remains the hostname chosen in Imager
-  (`jts.local`, `jts3.local`, etc.).
+  name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. A fresh
+  install derives its initial display name from the hostname (`jts4.local`
+  becomes `JTS4`, `kitchen.local` becomes `Kitchen`); after that, the saved
+  `/speaker/` choice is authoritative. The URL remains the hostname chosen
+  in Imager (`jts.local`, `jts3.local`, etc.).
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB data/OTG port through a compatible
   power/data splitter or hub and the host sees the configured speaker

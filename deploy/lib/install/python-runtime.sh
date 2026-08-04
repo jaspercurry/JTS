@@ -9,6 +9,80 @@
 # Extracted from install.sh; functions assume install.sh globals and
 # set -euo pipefail from the sourcing shell.
 
+seed_speaker_name_env() {
+    # The /speaker wizard owns this file after first creation.  Seed it before
+    # install_renderers renders AirPlay + BlueZ so every first-boot consumer
+    # (including later-started Librespot, dashboard, USB, and Avahi) sees one
+    # canonical display name.  Any existing path is authoritative and remains
+    # byte-for-byte untouched, including operator comments/formatting.
+    local state_file="${STATE_DIR}/speaker_name.env"
+    if [[ -e "${state_file}" || -L "${state_file}" ]]; then
+        echo "  speaker name: preserving ${state_file}"
+        return 0
+    fi
+
+    ensure_state_dir
+    local system_hostname
+    system_hostname="$(hostname 2>/dev/null || true)"
+    local env_line
+    env_line="$(
+        PYTHONPATH="${REPO_DIR}" "${JASPER_SYSTEM_PYTHON:-python3}" - \
+            "${ENV_DIR}/jasper.env" "${system_hostname}" <<'PY'
+import os
+import sys
+
+from jasper.env_load import parse_env_file
+from jasper.speaker_name import initial_name_from_hostname, quote_env_value
+
+env_path, system_hostname = sys.argv[1:]
+configured = os.environ.get("JASPER_HOSTNAME", "").strip()
+if not configured:
+    configured = parse_env_file(env_path).get("JASPER_HOSTNAME", "").strip()
+hostname = configured or system_hostname
+name = initial_name_from_hostname(hostname)
+print(f"JASPER_SPEAKER_NAME={quote_env_value(name)}")
+PY
+    )"
+
+    # Publish only after the complete line and final mode are ready.  A failed
+    # direct redirection would leave a partial canonical file that every later
+    # deploy correctly preserves.  The hard link is an atomic create-if-absent:
+    # if a wizard save appears after our first check, it remains authoritative.
+    local tmp
+    tmp="$(mktemp "${STATE_DIR}/.speaker_name.env.seed.XXXXXX")"
+    if ! printf '%s\n' "${env_line}" > "${tmp}"; then
+        rm -f -- "${tmp}"
+        echo "  ERROR: could not write fresh speaker name" >&2
+        return 1
+    fi
+    if ! chmod 0644 "${tmp}"; then
+        rm -f -- "${tmp}"
+        echo "  ERROR: could not set fresh speaker-name permissions" >&2
+        return 1
+    fi
+    if "${JASPER_SYSTEM_PYTHON:-python3}" - "${tmp}" "${state_file}" <<'PY'
+import os
+import sys
+
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError:
+    raise SystemExit(1)
+PY
+    then
+        rm -f -- "${tmp}"
+        echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
+        return 0
+    fi
+    rm -f -- "${tmp}"
+    if [[ -e "${state_file}" || -L "${state_file}" ]]; then
+        echo "  speaker name: preserving ${state_file}"
+        return 0
+    fi
+    echo "  ERROR: could not publish fresh speaker name" >&2
+    return 1
+}
+
 retire_esp32_accessory_files() {
     # The bespoke ESP32 dial/AMOLED accessory stack was removed in 2026-07.
     # Its source and locally-built images were deliberately staged without
@@ -343,12 +417,6 @@ PY
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"
     fi
-    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
-        ensure_state_dir
-        printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"
-        chmod 0644 "${STATE_DIR}/speaker_name.env"
-        echo "  speaker name: JTS"
-    fi
     migrate_voice_provider
     # WS1 Phase 4a — runs AFTER migrate_voice_provider so JASPER_VOICE_PROVIDER
     # is already in voice_provider.env; this moves the Google tree + client
@@ -475,9 +543,4 @@ EOF
     fi
     seed_capture_relay_env
 
-    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
-        printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"
-        chmod 0644 "${STATE_DIR}/speaker_name.env"
-        echo "  speaker name: JTS"
-    fi
 }

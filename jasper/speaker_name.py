@@ -60,6 +60,41 @@ def normalize_name(raw: str) -> str:
     return " ".join((raw or "").strip().split())
 
 
+def initial_name_from_hostname(raw: str) -> str:
+    """Derive the one-time fresh-install display name from a hostname.
+
+    The persisted ``speaker_name.env`` remains authoritative after creation;
+    this helper owns only the installer seed.  Hostnames are reduced to their
+    first DNS label, separators become spaces, and the common JTS-number shape
+    keeps its acronym casing (``jts4.local`` -> ``JTS4``).  Unexpected input is
+    reduced to the same conservative ASCII subset accepted by
+    :func:`validate_name`, with the established ``JTS`` default as the final
+    fallback.
+    """
+
+    hostname = (raw or "").strip().rstrip(".")
+    label = hostname.split(".", 1)[0]
+    words = re.findall(r"[A-Za-z0-9]+", label)
+    if not words:
+        return DEFAULT_SPEAKER_NAME
+
+    compact = "".join(words)
+    if re.fullmatch(r"jts\d*", compact, flags=re.IGNORECASE):
+        candidate = compact.upper()
+    else:
+        candidate = " ".join(word[:1].upper() + word[1:].lower() for word in words)
+
+    # Linux hostnames may be longer than the cross-renderer display-name cap.
+    # Keep the readable prefix rather than making a valid host fall all the way
+    # back to the generic name; trimming trailing punctuation preserves the
+    # validator's start/end contract.
+    candidate = candidate[:MAX_SPEAKER_NAME_CHARS].rstrip(ALLOWED_PUNCTUATION)
+    try:
+        return validate_name(candidate)
+    except SpeakerNameError:
+        return DEFAULT_SPEAKER_NAME
+
+
 def validate_name(raw: str) -> str:
     """Return a normalized name or raise ``SpeakerNameError``."""
     name = normalize_name(raw)
