@@ -27,7 +27,7 @@ streambox = [
     # The Streambox keeps the correction/phone-mic relay surfaces, whose
     # package imports AES-GCM support directly.  Keep the AEAD dependency
     # explicit here rather than relying on another package's transitive tree.
-    "cryptography>=42",
+    "cryptography>=50.0.0",
     "rapidfuzz>=3.6,<4",
     "dbus-next>=0.2.3",
     "zeroconf>=0.149,<1.0",
@@ -124,7 +124,7 @@ full = [
     # balance/sync/crossover analysis). pyca/cryptography is the standard
     # AEAD implementation — never roll our own — pinned here because we import
     # it directly. aarch64 wheels exist for PiOS Trixie, so no Pi-side build.
-    "cryptography>=42",
+    "cryptography>=50.0.0",
 ]
 
 dev = [
