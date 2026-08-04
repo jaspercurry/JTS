@@ -4543,6 +4543,240 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     assert responses[emitted[-1]["worker"]]["sound_settings"] == merged.to_dict()
 
 
+@pytest.mark.parametrize("first_operation", ("profile", "settings"))
+def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
+    first_operation: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Profile and Settings Apply linearize one complete Sound transaction.
+
+    Force each operation to own the boundary first while the other attempts to
+    enter. Whichever runs second must fresh-read the first operation's durable
+    intent and leave disk plus the live graph/trim at the same P1/S1 pair.
+    """
+
+    settings_path = tmp_path / "sound_settings.json"
+    profile_path = tmp_path / "sound_profile.json"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+
+    initial_profile = SoundProfile(
+        curve_id="flat",
+        simple_eq=SimpleEq(bass_db=1.0),
+        updated_at="2026-08-01T00:00:00+00:00",
+    )
+    requested_profile = SoundProfile(
+        curve_id="bk",
+        simple_eq=SimpleEq(bass_db=6.0, treble_db=1.5),
+    )
+    initial_settings = SoundSettings(
+        headroom_trim_db=1.0,
+        match_loudness=False,
+        volume_floor_db=-48.0,
+    )
+    requested_settings = SoundSettings(
+        headroom_trim_db=5.0,
+        match_loudness=True,
+        volume_floor_db=-30.0,
+    )
+    save_profile(initial_profile, profile_path)
+    sound_setup.save_sound_settings(initial_settings)
+
+    first_inside_emit = threading.Barrier(2)
+    release_first_emit = threading.Event()
+    second_boundary_attempted = threading.Event()
+    second_entered_emit = threading.Event()
+    record_lock = threading.Lock()
+    entered_sources = []
+    live_emits = []
+    reconciled_floors = []
+    settings_reads = []
+    responses = {}
+    errors = []
+
+    class ObservedSoundStateLock:
+        """Expose the second worker's exact attempt at the real boundary."""
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._owner: int | None = None
+
+        def __enter__(self):
+            if threading.current_thread().name == "sound-second-operation":
+                second_boundary_attempted.set()
+            self._lock.acquire()
+            self._owner = threading.get_ident()
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb) -> None:
+            self._owner = None
+            self._lock.release()
+
+        def owned_by_current_thread(self) -> bool:
+            return self._owner == threading.get_ident()
+
+    observed_state_lock = ObservedSoundStateLock()
+    monkeypatch.setattr(
+        sound_setup,
+        "_sound_state_write_lock",
+        observed_state_lock,
+    )
+    real_load_sound_settings = sound_setup.load_sound_settings
+
+    def observed_load_sound_settings(*args, **kwargs):
+        if threading.current_thread().name in {
+            "sound-first-operation",
+            "sound-second-operation",
+        }:
+            with record_lock:
+                settings_reads.append(observed_state_lock.owned_by_current_thread())
+        return real_load_sound_settings(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sound_setup,
+        "load_sound_settings",
+        observed_load_sound_settings,
+    )
+
+    async def fake_emit(profile, **kwargs):
+        source = kwargs["source"]
+        with record_lock:
+            call_index = len(entered_sources)
+            entered_sources.append(source)
+        if call_index == 0:
+            first_inside_emit.wait(timeout=2.0)
+            assert release_first_emit.wait(timeout=2.0)
+        else:
+            second_entered_emit.set()
+
+        state = DspApplyState(
+            schema_version=1,
+            op_id=f"{source}-{call_index}",
+            source=source,
+            phase="done",
+            result="success",
+            started_at="2026-08-04T00:00:00Z",
+            finished_at="2026-08-04T00:00:01Z",
+            prior_config_path=None,
+            candidate_config_path=str(config_dir / f"{source}-{call_index}.yml"),
+            room_peq_count=0,
+        )
+        if kwargs["persist_profile"]:
+            save_profile(profile, profile_path)
+        with record_lock:
+            live_emits.append({
+                "source": source,
+                "profile": profile.to_dict(),
+                "settings": load_sound_settings().to_dict(),
+                "trim": kwargs["output_trim_db"],
+                "epoch": state.op_id,
+            })
+        return state, Path(state.candidate_config_path), profile
+
+    async def fake_reconcile(**_kwargs):
+        reconciled_floors.append(load_sound_settings().volume_floor_db)
+        return True
+
+    monkeypatch.setattr(sound_setup, "_load_profile_config", fake_emit)
+    monkeypatch.setattr(
+        sound_setup,
+        "_reconcile_volume_curve_after_settings",
+        fake_reconcile,
+    )
+
+    def run(operation: str) -> None:
+        try:
+            if operation == "profile":
+                response = asyncio.run(
+                    sound_setup._apply_profile(
+                        requested_profile,
+                        profile_path=profile_path,
+                        config_dir=config_dir,
+                        camilla_factory=lambda: None,
+                    )
+                )
+            else:
+                response = asyncio.run(
+                    sound_setup._apply_settings(
+                        requested_settings.to_dict(),
+                        profile_path=profile_path,
+                        config_dir=config_dir,
+                        camilla_factory=lambda: None,
+                    )
+                )
+            with record_lock:
+                responses[operation] = response
+        except BaseException as exc:  # noqa: BLE001 - surfaced in main thread
+            errors.append(exc)
+
+    second_operation = "settings" if first_operation == "profile" else "profile"
+    first_thread = threading.Thread(
+        target=run,
+        args=(first_operation,),
+        name="sound-first-operation",
+    )
+    first_thread.start()
+    first_inside_emit.wait(timeout=2.0)
+
+    second_thread = threading.Thread(
+        target=run,
+        args=(second_operation,),
+        name="sound-second-operation",
+    )
+    second_thread.start()
+    assert second_boundary_attempted.wait(timeout=1.0)
+    # Before the first transaction is released, the second must be waiting at
+    # the shared ordering boundary rather than entering the DSP transaction.
+    assert not second_entered_emit.wait(timeout=0.25)
+    assert entered_sources == [
+        "sound" if first_operation == "profile" else "sound_settings"
+    ]
+    release_first_emit.set()
+
+    for thread in (first_thread, second_thread):
+        thread.join(timeout=3.0)
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+
+    final_profile = load_profile(profile_path)
+    final_settings = load_sound_settings()
+    assert final_profile.curve_id == requested_profile.curve_id
+    assert final_profile.simple_eq == requested_profile.simple_eq
+    assert final_settings == requested_settings
+    assert len(live_emits) == 2
+    assert live_emits[-1]["profile"] == final_profile.to_dict()
+    assert live_emits[-1]["settings"] == final_settings.to_dict()
+    assert live_emits[-1]["trim"] == sound_setup._output_trim(
+        final_profile,
+        final_settings,
+    )
+    assert reconciled_floors == [requested_settings.volume_floor_db]
+    assert settings_reads
+    assert all(settings_reads)
+
+    emits_by_operation = {
+        "profile" if emit["source"] == "sound" else "settings": emit
+        for emit in live_emits
+    }
+    for operation, response in responses.items():
+        emit = emits_by_operation[operation]
+        assert response["profile"] == emit["profile"]
+        assert response["sound_settings"] == emit["settings"]
+        assert response["output_trim_db"] == emit["trim"]
+        assert response["dsp_write_epoch"] == emit["epoch"]
+        assert response["last_dsp_apply"]["op_id"] == emit["epoch"]
+
+    last_response = responses[second_operation]
+    assert last_response["profile"] == final_profile.to_dict()
+    assert last_response["sound_settings"] == final_settings.to_dict()
+    assert last_response["dsp_write_epoch"] == live_emits[-1]["epoch"]
+    assert last_response["last_dsp_apply"]["op_id"] == live_emits[-1]["epoch"]
+
+
 async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     tmp_path: Path, monkeypatch,
 ):

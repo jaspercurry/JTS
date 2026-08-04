@@ -751,10 +751,12 @@ footer rather than a separate menu.
 
 The page is built on the **canonical design system**: shared tokens,
 fonts, and component primitives live in `deploy/assets/app.css` (served
-static by nginx, linked via `jasper.web._common.canonical_page`), with
-only sound-specific component CSS inline. The original combined Sound page was
-the first wizard on this system; see AGENTS.md "Canonical design system" for the
-convention other wizards follow.
+static by nginx, linked via `jasper.web._common.canonical_page`). Sound-specific
+component styles live in the shared
+`deploy/assets/sound-profile/sound.css` asset; both `/eq/` and
+`/sound/setup/` link that same stylesheet through `canonical_page`. The
+original combined Sound page was the first wizard on this system; see AGENTS.md
+"Canonical design system" for the convention other wizards follow.
 
 ## Apply Semantics
 
@@ -1036,7 +1038,8 @@ Verification scope (2026-08-04): PR-1 route/current-surface scope: `/eq/` and
 commissioning, the fresh-read recognized-field `SoundSettings` merge and one
 lock through DSP/volume convergence, and full/streambox ingress were rechecked
 against `jasper.web.sound_setup`, the Sound ES module, nginx profiles, and
-focused hardware-free tests: 768 Sound/correction/landing tests passed with 28
+the shared `/assets/sound-profile/sound.css` page asset. Focused hardware-free
+tests: 768 Sound/correction/landing tests passed with 28
 environment-dependent cases deselected, 173 unchanged commissioning/topology
 tests passed, and the Sound browser harness passed. No Pi, hardware, deploy, or
 reboot validation was performed. Prior 2026-07-28 (component-first speaker setup, one whole-speaker

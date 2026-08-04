@@ -240,11 +240,12 @@ class OutputTopologyRevisionConflict(ValueError):
 # stall the wizard on a blocking call.
 _output_topology_write_lock = threading.Lock()
 
-# Split EQ and setup pages write different fields in the same aggregate settings
-# file. Serialize the fresh-read merge and every live side effect so the final
-# persisted settings, DSP trim, volume curve, and response readback describe one
-# ordered result instead of interleaving two browser saves.
-_sound_settings_write_lock = threading.Lock()
+# Profile Apply and the split EQ/setup settings pages both replace the live DSP
+# graph from persisted Sound state. Serialize their fresh reads, durable writes,
+# and live side effects so the final profile, settings, and graph describe one
+# ordered result instead of interleaving browser saves.
+_sound_state_write_lock = threading.Lock()
+_LAST_DSP_APPLY_SNAPSHOT_UNSET = object()
 _SOUND_SETTINGS_FIELDS = frozenset({
     "headroom_trim_db",
     "match_loudness",
@@ -263,11 +264,24 @@ def _state_payload(
     *,
     library_path: str | Path | None = None,
     include_library: bool = False,
+    settings_snapshot: SoundSettings | None = None,
+    last_dsp_apply_snapshot: Mapping[str, Any] | None | object = (
+        _LAST_DSP_APPLY_SNAPSHOT_UNSET
+    ),
 ) -> dict[str, Any]:
     from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
-    last_dsp_apply = last_dsp_apply_state()
-    settings = load_sound_settings()
+    if last_dsp_apply_snapshot is _LAST_DSP_APPLY_SNAPSHOT_UNSET:
+        last_dsp_apply = last_dsp_apply_state()
+    elif last_dsp_apply_snapshot is None:
+        last_dsp_apply = None
+    else:
+        last_dsp_apply = dict(last_dsp_apply_snapshot)
+    settings = (
+        settings_snapshot
+        if settings_snapshot is not None
+        else load_sound_settings()
+    )
 
     payload = {
         "profile": profile.to_dict(),
@@ -569,16 +583,20 @@ async def _apply_profile(
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
-    settings = load_sound_settings()
-    apply_state, out_path, stamped = await _load_profile_config(
-        profile.with_timestamp(),
-        profile_path=profile_path,
-        config_dir=config_dir,
-        camilla_factory=camilla_factory,
-        source="sound",
-        persist_profile=True,
-        output_trim_db=_output_trim(profile, settings),
-    )
+    # Settings Apply uses this same ordering boundary. Read settings only after
+    # entering it, then keep the durable profile write and live graph/trim emit
+    # together so neither operation can finish with the other's stale half.
+    with _sound_state_write_lock:
+        settings = load_sound_settings()
+        apply_state, out_path, stamped = await _load_profile_config(
+            profile.with_timestamp(),
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=camilla_factory,
+            source="sound",
+            persist_profile=True,
+            output_trim_db=_output_trim(profile, settings),
+        )
     log_event(
         logger,
         "sound.apply",
@@ -596,10 +614,15 @@ async def _apply_profile(
         config=out_path,
         op_id=apply_state.op_id,
     )
+    # Assemble previews and the optional profile library outside the ordering
+    # boundary. The captured settings make this response coherent with the DSP
+    # transaction without extending the lock across unrelated file I/O/work.
     payload = _state_payload(
         stamped,
         library_path=library_path,
         include_library=library_path is not None,
+        settings_snapshot=settings,
+        last_dsp_apply_snapshot=apply_state.to_dict(),
     )
     payload["active_config_path"] = str(out_path)
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
@@ -641,8 +664,9 @@ async def _apply_settings(
     EQ and Setup intentionally share the one aggregate ``SoundSettings`` file.
     Each page posts only the fields it owns, so this function fresh-reads and
     merges recognized fields while holding one process-local lock through the
-    durable save, DSP re-emit, volume reconciliation, and final readback. The
-    profile content is unchanged and is not re-stamped or re-persisted.
+    durable save, DSP re-emit, volume reconciliation, and coherent response
+    snapshots. The profile content is unchanged and is not re-stamped or
+    re-persisted.
 
     A full ``SoundSettings`` remains accepted for internal callers and tests.
     A failed live re-apply returns the saved state with a ``warning`` rather
@@ -654,7 +678,7 @@ async def _apply_settings(
         for key in _SOUND_SETTINGS_FIELDS
         if key in raw_changes
     }
-    with _sound_settings_write_lock:
+    with _sound_state_write_lock:
         merged_raw = load_sound_settings().to_dict()
         merged_raw.update(recognized)
         settings = SoundSettings.from_mapping(merged_raw)
@@ -696,26 +720,36 @@ async def _apply_settings(
                 f"volume change: {e}"
             )
 
-        # Read after every side effect while still serialized. A caller never
-        # receives an earlier aggregate after another split-page save is live.
-        payload = _state_payload(
-            profile,
-            library_path=library_path,
-            include_library=library_path is not None,
-        )
-        if warning is not None:
-            payload["warning"] = warning
-        if volume_warning is not None:
-            payload["volume_warning"] = volume_warning
+        # Capture the response's live-state anchor after every side effect while
+        # still serialized. Preview/curve/library rendering happens outside the
+        # boundary and consumes these coherent snapshots.
         if apply_result is not None:
             apply_state, out_path, _ = apply_result
-            payload["active_config_path"] = str(out_path)
-            payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
-            payload["last_dsp_apply"] = apply_state.to_dict()
-            payload["dsp_write_epoch"] = apply_state.op_id
-        if reconciled:
-            payload["volume_reconciled"] = True
-        return payload
+            last_dsp_apply_snapshot = apply_state.to_dict()
+        else:
+            from jasper.dsp_apply import last_dsp_apply_state
+
+            last_dsp_apply_snapshot = last_dsp_apply_state()
+
+    payload = _state_payload(
+        profile,
+        library_path=library_path,
+        include_library=library_path is not None,
+        settings_snapshot=settings,
+        last_dsp_apply_snapshot=last_dsp_apply_snapshot,
+    )
+    if warning is not None:
+        payload["warning"] = warning
+    if volume_warning is not None:
+        payload["volume_warning"] = volume_warning
+    if apply_result is not None:
+        payload["active_config_path"] = str(out_path)
+        payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
+        payload["last_dsp_apply"] = apply_state.to_dict()
+        payload["dsp_write_epoch"] = apply_state.op_id
+    if reconciled:
+        payload["volume_reconciled"] = True
+    return payload
 
 
 async def _reconcile_volume_curve_after_settings(

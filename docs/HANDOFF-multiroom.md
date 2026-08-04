@@ -48,8 +48,11 @@ a fresh pass so success means the role's sources are converged. The source
 owner delegates Bluetooth accessories and USB coupling in its own order, while
 grouping acquires no source-unit or USB-routing knowledge. On a full
 speaker, the reconciler parks its voice/AEC brain via the derived park flag;
-the landing page suppresses Source/Sound and
-relabels Volume for followers. Every member, either role, uses
+the landing page suppresses the Source control, keeps the Sound section
+visible, and relabels Volume for followers. EQ can hand the household to the
+pair leader, while Sound setup keeps the local output-topology and
+active-speaker commissioning controls owned by the speaker driving the DAC.
+Every member, either role, uses
 the single `snapclient -> FIFO -> outputd` member lane; there is no longer a
 direct-ALSA endpoint variant. The Zero 2 W lab runbook lives in
 [`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
@@ -1703,12 +1706,21 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
   volume" (server-side forward); mic card says the leader listens.
 - /sources/: toggles disabled + pair note; POST /set 409s (an
   `enable --now` would reopen the advertise/leak hole).
-- /voice/, /wake/, /sound/, /correction/: shared pair banner
-  (`_common.pair_banner_html`); saves persist but
+- /voice/ and /wake/: shared pair banner (`_common.pair_banner_html`); saves
+  persist but
   `restart_voice_daemon` (the ONE helper all nine wizards use) skips
   the restart while parked — config applies on unbond via the un-park
-  restart. Correction additionally warns: a follower's measurement
-  sweep plays into outputd's DRAINED direct lane (inaudible).
+  restart.
+- /eq/: the content-EQ editor is absent and the follower delegates to the
+  pair leader through the existing leader link when that address is available.
+- /sound/setup/: Sound remains visible and local. A follower renders only the
+  output-topology and active-speaker commissioning/driver-protection work
+  owned by this speaker's DAC path; leader-owned EQ and volume-shaping controls
+  are omitted, and their mutation routes remain blocked.
+- /sound/room/ and the /correction/* compatibility routes: Room remains
+  leader-owned. The follower renders the pair notice and refuses mutating
+  correction requests, because a local measurement sweep would play into
+  outputd's drained direct lane and be inaudible.
 - /system/: restart-voice 409s with the pair story; restart-audio
   touches only the alive subset (camilla).
 - Doctor: 8 liveness checks read "parked (bonded follower)" via
@@ -2849,7 +2861,11 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-24 (post-DSP outputd volume-context parity and its
+Verification scope (2026-08-04): follower UI ownership was rechecked against
+`deploy/index.html` and `jasper.web.sound_setup`: Source is suppressed while
+Sound remains visible; EQ delegates content ownership to the leader, and Sound
+setup retains local DAC topology and active-speaker commissioning. Prior
+2026-07-24 (post-DSP outputd volume-context parity and its
 atomic turn-start fail-closed rule checked against the reconciled passive-member
 route; prior 2026-07-16 pass covered `JASPER_TTS_MIX_STAGE=post_dsp` ownership and the
 socket-only rolling-upgrade fail-closed rule rechecked against
@@ -2899,3 +2915,5 @@ Stage-0 update 2026-06-27: `buffer_ms` was inert (passed as a snapcast
 1000 ms default); now routed via `--stream.buffer` in
 `reconcile.py:snapserver_argv` so the configured value takes effect. Pre-fix
 buffer-sizing observations predate any real buffer change.
+
+Last verified: 2026-08-04
