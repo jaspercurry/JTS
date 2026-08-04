@@ -24,6 +24,13 @@ alternatives, the wave plan) is
 [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 this doc is the current operational truth.
 
+> **Planned revision, not current behavior (2026-08-04):**
+> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
+> owns the next campaign to keep the Express walk while moving all pre-apply
+> captures onto protected raw per-driver evidence, evaluating bounded
+> Fc-specific prescriptions, and verifying crossed branches plus their sum.
+> Until that campaign lands, the operational behavior below remains exact.
+
 ## How to run it
 
 - **Household surface:** `http://jts.local/correction/` → the crossover
@@ -3200,7 +3207,9 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-08-03 — re-verified the MEASURE-phase acceptance section,
+Last verified: 2026-08-04 — added and verified the planning-vs-shipped
+orientation above against the current phase routing; the prior 2026-08-03 pass
+re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the
 predicted-ripple frame claim against `crossover_v2_flow.py` /
 `crossover_envelope_v2.py` / `correction_crossover_v2.py` while landing the

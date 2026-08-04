@@ -974,6 +974,14 @@ reference. Currently:
   derived duration, an explicit user-facing tier chooser, per-measurement
   Retake/Next/Stop, and the courtesy-tone pacing fix). Executes as its own
   small PR ladder on top of the shipped instrument.
+- [`crossover-linearization-80-20-plan.md`](docs/crossover-linearization-80-20-plan.md)
+  — **Owner-directed next campaign (2026-08-04; not shipped)** preserving the
+  seven-action Express walk while replacing contaminated pre-apply evidence
+  with protected raw per-driver anchor/lateral captures, evaluating a bounded
+  LR4 Fc grid with candidate-specific linearization, applying one winner, and
+  verifying both crossed branches plus their sum. Owns the R14–R20 campaign,
+  existing-ticket disposition, anti-spiral boundaries, agent topology, and
+  launch contracts; current behavior remains in the crossover v2 HANDOFF.
 - [`linearization-integrity-plan.md`](docs/linearization-integrity-plan.md)
   — **Fix work order (2026-07-27)** for the commissioned-profile darkness
   found by the iLoud comparison session: the mic-calibration sign

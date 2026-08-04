@@ -8,6 +8,13 @@ reviewed design; the PR ladder at the bottom executes it. Parent plan:
 instrument: [`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md);
 operational reference: [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md).
 
+> **Successor campaign (2026-08-04; not shipped):**
+> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
+> preserves this work order's seven-action Express burden and current lateral
+> poses, but changes the pre-apply side actions from live-graph summed sweeps
+> to protected raw per-driver evidence. It owns future sequencing; this file
+> remains the Express UX/claim decision record.
+
 ## 0. The mandate (owner, 2026-07-27, after running the flow)
 
 1. **Spoon-fed, one-instruction-per-step UX.** Today the position prompt is

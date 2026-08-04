@@ -14,6 +14,11 @@
 > single-point gated sweep becomes a spatially-averaged gated capture
 > cloud with declared per-band tolerances; that plan wins on instrument
 > and spec details, this doc stays canonical for the layer architecture.
+> **Commissioning revision (2026-08-04; not shipped):**
+> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
+> now owns the next protected-raw measurement, bounded-Fc selection, and
+> candidate-specific verification campaign. The layer ownership below is
+> unchanged.
 
 ## Why this exists (one paragraph of history)
 

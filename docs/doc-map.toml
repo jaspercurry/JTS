@@ -842,6 +842,7 @@ docs = [
   "docs/flat-linearization-plan.md",
   "docs/flat-linearization-productization-plan.md",
   "docs/flat-linearization-flow-simplification-plan.md",
+  "docs/crossover-linearization-80-20-plan.md",
   "docs/linearization-integrity-plan.md",
   "docs/llm-native-tuning-workbench-plan.md",
   "docs/gating-v2-plan.md",
