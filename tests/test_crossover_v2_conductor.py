@@ -4335,6 +4335,7 @@ def test_a_spent_final_slot_terminalizes_its_close_time_refusal():
     assert verdict["terminal"] is True
     assert verdict["terminal_outcome"] == "phase_cannot_proceed"
     assert verdict["attempts"]["left"] == 0
+    assert "unresolved" not in verdict
     assert "could hear the speaker" not in verdict["reason"]
     assert "previous sound has been put back" in verdict["reason"]
 

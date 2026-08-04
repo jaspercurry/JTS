@@ -1386,6 +1386,7 @@ def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
     assert terminal["terminal"] is True
     assert terminal["terminal_outcome"] == "phase_cannot_proceed"
     assert terminal["attempts"]["left"] == 0
+    assert "unresolved" not in terminal
     assert "could hear the speaker" not in terminal["reason"]
 
 

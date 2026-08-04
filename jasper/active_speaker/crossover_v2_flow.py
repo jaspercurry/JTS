@@ -7031,7 +7031,6 @@ class CrossoverV2Conductor:
         """
         if index == self._group_indexes[phase][-1]:
             closing = self._close_cloud_group(phase, None)
-            closing_payload = {**closing.payload, **payload}
             if not closing.accepted:
                 # This slot is already spent: a close-time product gate (for
                 # example the delta probe) has replaced the position's
@@ -7041,10 +7040,15 @@ class CrossoverV2Conductor:
                 # Do not route through ``_terminal_spent_verdict`` — its
                 # diagnosis belongs to the earlier position rejection, while
                 # ``closing`` is now the reason the phase cannot proceed.
-                closing_payload.update(
-                    terminal=True,
-                    terminal_outcome="phase_cannot_proceed",
-                )
+                closing_payload = {
+                    **closing.payload,
+                    "terminal": True,
+                    "terminal_outcome": "phase_cannot_proceed",
+                }
+            else:
+                # Only a successful close continues the group, so only that
+                # path carries the settled position's left-out/kept payload.
+                closing_payload = {**closing.payload, **payload}
             return replace(closing, payload=closing_payload)
         return PhaseVerdict(True, payload=payload)
 
