@@ -417,6 +417,14 @@ def check_usbsink_low_latency_contract() -> CheckResult:
 def check_usb_mic_export() -> CheckResult:
     """Cross-check USB-microphone intent, descriptor, relay, and privacy."""
 
+    usb_role = current_usb_data_role()
+    if not usb_role.gadget_available:
+        return CheckResult(
+            "USB microphone export",
+            "ok",
+            f"not applicable: {gadget_unavailable_detail(usb_role)}",
+        )
+
     intent = read_usb_mic_intent()
     function = _uac2_function_path()
     try:
