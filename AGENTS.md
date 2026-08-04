@@ -683,7 +683,8 @@ stays self-contained (no shared-CSS single point of failure beyond nginx,
 which every page already depends on for fonts); `jasper-doctor`'s
 `check_web_design_assets` warns if `app.css` is missing.
 
-[`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) and
+[`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/eq/` and
+`/sound/setup/`) and
 [`jasper/web/system_setup.py`](jasper/web/system_setup.py) (`/system/`)
 are the reference wizards — mirror their shape when adding a new one.
 The old wrapper/style/nav primitives have been deleted from

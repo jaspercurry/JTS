@@ -17,10 +17,11 @@ from __future__ import annotations
 import io
 import json
 import logging
+import threading
 from contextlib import nullcontext
+from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-import threading
 
 import pytest
 
@@ -138,10 +139,10 @@ def test_render_links_page_css_and_module():
 def test_render_has_correction_measurement_tabs():
     html = _render()
     assert 'aria-label="Correction measurement type"' in html
-    assert 'href="/correction/room/"' in html
-    assert 'href="/correction/crossover/"' in html
-    assert 'href="/correction/bass/"' in html
-    assert 'aria-current="page" href="/correction/room/"' in html
+    assert 'href="/sound/room/"' in html
+    assert 'href="/sound/crossover/"' in html
+    assert 'href="/sound/bass/"' in html
+    assert 'aria-current="page" href="/sound/room/"' in html
 
 
 def test_render_has_no_inline_script_iife():
@@ -341,7 +342,7 @@ def test_get_room_subpath_renders_room_html():
     resp = _drive("/room/")
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"/assets/correction/js/main.js" in resp
-    assert b"/correction/crossover/" in resp
+    assert b"/sound/crossover/" in resp
 
 
 def test_get_crossover_subpath_renders_secure_capture_ui():
@@ -356,12 +357,29 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b'id="mic-support"' not in resp
 
 
+def test_follower_keeps_local_crossover_measurement_post(monkeypatch):
+    monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(correction_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_crossover_reset",
+        lambda: ({"route": "crossover-reset"}, HTTPStatus.OK),
+    )
+
+    resp = _drive("/crossover/reset", "POST", body=b"{}")
+
+    assert b" 200 " in resp.split(b"\r\n", 1)[0]
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {
+        "route": "crossover-reset"
+    }
+
+
 def test_get_bass_subpath_renders_display_page():
     resp = _drive("/bass/")
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"Bass management" in resp  # P5: read-only display, not a placeholder
     assert b"/assets/correction/js/bass/main.js" in resp
-    assert b"/correction/room/" in resp  # pointer to the bass-region measurement
+    assert b"/sound/room/" in resp  # pointer to the bass-region measurement
 
 
 def test_get_bass_status_returns_display_json():
@@ -639,7 +657,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert body["error"] == spec.message
     # Same registry entry the hard-stop screen would have rendered.
     assert body["next_action"] == dict(spec.next_action)
-    assert body["next_action"]["href"] == "/sound/#confirm-safety-limits"
+    assert body["next_action"]["href"] == "/sound/setup/#confirm-safety-limits"
     # And the code is on the journal line beside the reason.
     assert any(
         f"code={REASON_PROGRAM_PROFILE_NOT_CONFIRMED}" in r.getMessage()

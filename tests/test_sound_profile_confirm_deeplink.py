@@ -48,7 +48,7 @@ def test_the_deeplink_href_and_the_dom_id_agree():
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
     assert spec.next_action is not None
     href = str(spec.next_action["href"])
-    assert href == f"/sound/#{ANCHOR_ID}"
+    assert href == f"/sound/setup/#{ANCHOR_ID}"
 
     source = _source()
     assert f"var CONFIRM_SAFETY_ANCHOR_ID = '{ANCHOR_ID}';" in source

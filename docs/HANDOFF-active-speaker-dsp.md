@@ -26,7 +26,7 @@ Active speaker DSP asks "what should this speaker be before the room
 is considered?" — a separate question from room correction ("what
 should be compensated at this listening position?") and preference
 voicing ("what tonal tilt does this listener like?"). The
-`/correction/` room-correction wizard must never rewrite crossover,
+`/sound/room/` room-correction wizard must never rewrite crossover,
 polarity, per-driver gain, driver delay, or limiter policy; those
 belong here.
 
@@ -67,7 +67,7 @@ Boundary" implementation status in the appendix, still accurate.
 
 Two web surfaces, two different jobs, run in sequence:
 
-1. **`/sound/`** (Active crossover setup) — physical topology: detect
+1. **`/sound/setup/`** (Active crossover setup) — physical topology: detect
    DAC outputs, group them into speakers, assign driver roles up to
    3-way, mark subwoofers, confirm each driver's identity and level by
    ear (`commission-load` / `commission-ramp-*`), stage a
@@ -75,9 +75,13 @@ Two web surfaces, two different jobs, run in sequence:
    *both* measurement flows below and doesn't change with which one is
    active. Backed by `jasper.output_topology` and
    `jasper.active_speaker.{staging,startup_load,commission_ramp,
-   calibration_level,safe_playback,bringup,playback}`.
-2. **`/correction/crossover/`** — measures and applies crossover
-   level/delay/polarity and linearization. **v2 is the only flow** —
+   calibration_level,safe_playback,bringup,playback}`. Its APIs deliberately
+   remain under `/sound/active-speaker/*`, including Stop and abort controls,
+   so an older open setup tab retains control of an audible commissioning
+   session.
+2. **`/sound/crossover/`** (labelled **Active speaker**) — measures and
+   applies crossover level/delay/polarity and linearization. **v2 is the only
+   flow** —
    see
    [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
    canonical for this flow's file map and invariants. W5b (2026-07-24)
@@ -93,7 +97,9 @@ Two web surfaces, two different jobs, run in sequence:
    machinery they describe outlived it — the `CrossoverLevelLease` and
    the capture geometry are shared with v2
    ([HANDOFF-correction.md](HANDOFF-correction.md) owns which parts
-   survive) — but the flow that drove it is gone.
+   survive) — but the flow that drove it is gone. The existing correction
+   service still owns this flow; `/correction/crossover/` remains a direct
+   compatibility alias.
 
 ### File map (entry points only)
 
@@ -106,7 +112,7 @@ above; this is only the entry points:
 | [`jasper/output_topology.py`](../jasper/output_topology.py) | Physical DAC-lane / speaker-group / driver-role topology. No audio side effects. |
 | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | Every CamillaDSP YAML emitter — startup, commissioning-masked, and baseline. |
 | [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) | Compiles and applies the durable active-speaker baseline; owns the candidate/promote lifecycle below. |
-| [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
+| [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/setup/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
 | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) | Classifies saved topology against the running/candidate CamillaDSP graph; the doctor's fail-closed authority. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md) "File map". |
 | `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Substrate built for the deleted legacy Wave 1-3 nine-state receipt lifecycle. Not a selectable flow any more; parts still back v2 (`commissioning_run` → `correction_crossover_backend`, `driver_acoustics`'s sweep constants → `web_measurement.capture_sweep_meta`). |
@@ -215,7 +221,7 @@ sudo /opt/jasper/.venv/bin/jasper-output-topology-reset --yes
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -i "active speaker\|bass extension"
 curl -s http://jts.local:8780/state | jq .active_speaker_output_safety
-curl -s http://jts.local/correction/crossover/status | jq   # v2 conductor status
+curl -s http://jts.local/sound/crossover/status | jq   # v2 conductor status
 ```
 
 For crossover-measurement-specific debugging (capture retention,
@@ -2555,7 +2561,12 @@ reset recovery and stale `/sound/output-topology` POST guard against
 `jasper.web.sound_setup`; active-speaker commissioning state against the focused
 `/sound/` tests.)
 
-Last verified: 2026-07-24 (restructured into the canonical current-state-first
+Verification scope (2026-08-04): current route-surface scope only:
+`/sound/setup/`, `/sound/crossover/`, and the unchanged
+`/sound/active-speaker/*` commissioning namespace—including stale Stop/abort
+control—were rechecked against the route configuration and focused tests; 173
+unchanged commissioning/topology tests passed. No hardware behavior was
+revalidated, and the historical appendix was not re-read. Prior 2026-07-24 (restructured into the canonical current-state-first
 HANDOFF shape per issue #1681; the "Current Operational Truth" section above
 was freshly re-verified against code at commit f59d5a776 -- the five-layer
 tuning model (active-speaker-tuning-layers-design.md), the v2/legacy
@@ -2577,3 +2588,5 @@ was retired by W5b hours after f59d5a776 was checked, so that file is deleted
 and the selector selects nothing (see "The two commissioning surfaces"). The
 `Last verified` date is deliberately NOT bumped: this footer records what was
 checked at f59d5a776, and correcting one entry is not a re-read of the doc.
+
+Last verified: 2026-08-04

@@ -59,6 +59,18 @@ const RELAY_IN_FLIGHT = new Set([
   'stopping',
 ]);
 
+function publicCrossoverUrl(value) {
+  const raw = String(value || '');
+  const pathname = typeof window !== 'undefined' && window.location
+    ? String(window.location.pathname || '')
+    : '';
+  if (pathname.indexOf('/sound/crossover/') === 0 &&
+      raw.indexOf('/correction/crossover') === 0) {
+    return '/sound/crossover' + raw.slice('/correction/crossover'.length);
+  }
+  return raw;
+}
+
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -83,7 +95,7 @@ function el(tag, attrs = {}, children = []) {
 // survives the refresh that follows a failed action.
 function setStatus(message, tone = '', action = null) {
   els.status.dataset.tone = tone;
-  const href = action && action.href ? String(action.href) : '';
+  const href = action && action.href ? publicCrossoverUrl(action.href) : '';
   if (!href) {
     els.status.textContent = message || '';
     return;
@@ -365,7 +377,7 @@ function renderActions(primary, alternates = []) {
     if (action.href) {
       control = el('a', {
         class: className,
-        href: action.href,
+        href: publicCrossoverUrl(action.href),
         text: action.label || 'Continue',
       });
     } else {
@@ -577,7 +589,10 @@ async function stopRelay() {
   els.relayStop.disabled = true;
   setStatus('Stopping safely…');
   try {
-    const response = await postJSON('/correction/crossover/relay-cancel', {});
+    const response = await postJSON(
+      publicCrossoverUrl('/correction/crossover/relay-cancel'),
+      {},
+    );
     renderRelay(response.relay);
     schedulePoll(POLL_MS);
     await refresh();
@@ -615,7 +630,10 @@ async function startOver() {
   els.startOver.disabled = true;
   setStatus('Starting over…');
   try {
-    const response = await postJSON('/correction/crossover/reset', {});
+    const response = await postJSON(
+      publicCrossoverUrl('/correction/crossover/reset'),
+      {},
+    );
     render(response);
     const reset = response && response.reset;
     if (reset && reset.status && reset.status !== 'cleared') {
@@ -654,7 +672,10 @@ async function runAction(action, button) {
   setStatus('Working…');
   let relayStarted = false;
   try {
-    const response = await postJSON(action.endpoint, action.body || {});
+    const response = await postJSON(
+      publicCrossoverUrl(action.endpoint),
+      action.body || {},
+    );
     relayStarted = Boolean(response && response.relay);
     if (relayStarted) {
       renderRelay(response.relay);
@@ -738,7 +759,9 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await getJSON('/correction/crossover/envelope');
+    const env = await getJSON(
+      publicCrossoverUrl('/correction/crossover/envelope'),
+    );
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }

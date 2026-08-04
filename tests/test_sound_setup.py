@@ -16,6 +16,7 @@ import threading
 import urllib.error
 import urllib.request
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -499,6 +500,45 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
     assert read_calls == []
 
 
+def test_stale_sound_stop_and_abort_routes_still_dispatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"route": "stop"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda *, reason: {"route": "summed-stop", "reason": reason},
+    )
+
+    async def abort(*, camilla_factory):
+        return {"route": "commission-abort"}
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_commission_ramp_abort_payload",
+        abort,
+    )
+
+    expected = {
+        "/active-speaker/stop": "stop",
+        "/active-speaker/commission-ramp-abort": "commission-abort",
+        "/active-speaker/summed-test/stop": "summed-stop",
+    }
+    for path, route in expected.items():
+        response, read_calls = _drive_raw_sound_post(
+            tmp_path,
+            path=path,
+            content_length=2,
+            body=b"{}",
+        )
+        assert b" 200 " in response.split(b"\r\n", 1)[0]
+        assert json.loads(response.split(b"\r\n\r\n", 1)[1])["route"] == route
+        assert read_calls == [2]
+
+
 def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     guard_calls = []
 
@@ -519,14 +559,16 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert read_calls == []
 
 
-def test_index_html_renders_canonical_sound_page():
-    html = sound_setup._index_html().decode()
+def test_index_html_renders_eq_page_mode():
+    html = sound_setup._index_html(page_mode="eq").decode()
 
     # Canonical design system + page shell.
     assert "/assets/app.css" in html
     assert "/assets/sound-profile/sound.css?v=" in html  # page CSS linked, not inlined
     assert "<style>" not in html
-    assert 'class="app-header__title">Sound profile' in html
+    assert 'class="app-header__title">EQ' in html
+    assert 'id="sound-page-data"' in html
+    assert '"mode": "eq"' in html
 
     # Off / Saved / Draft tabs are the live source (server-rendered chrome).
     assert 'id="tab-off"' in html
@@ -539,27 +581,42 @@ def test_index_html_renders_canonical_sound_page():
     assert "<script>" not in html  # no inline logic left in the page
 
 
-def test_index_html_delegates_content_dsp_when_bonded_follower(monkeypatch):
+def test_index_html_renders_setup_page_mode_without_eq_chrome():
+    html = sound_setup._index_html(page_mode="setup").decode()
+
+    assert 'class="app-header__title">Sound setup' in html
+    assert 'id="sound-page-data"' in html
+    assert '"mode": "setup"' in html
+    assert 'id="view-body"' in html
+    assert 'id="tab-off"' not in html
+    assert 'id="tab-saved"' not in html
+    assert 'id="tab-draft"' not in html
+    assert 'id="plot"' not in html
+    assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
+
+
+def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    leader_paths = []
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": "http://jts3.local/sound/",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/eq/",
     )
 
-    html = sound_setup._index_html("csrf-token").decode()
+    html = sound_setup._index_html("csrf-token", page_mode="eq").decode()
 
     # The delegation card stays: content EQ / room correction / volume shaping
     # are the leader's job while paired.
     assert "Sound is controlled by the pair leader" in html
-    assert "http://jts3.local/sound/" in html
-    # Distributed-active Slice 4: the local driver/crossover/commissioning UI now
-    # mounts on the follower too — main.js boots in follower mode via the island,
-    # making the card's "local crossover ... stays with the DAC owner" promise true.
-    assert "/assets/sound-profile/js/main.js" in html
-    assert 'id="sound-follower-data"' in html
+    assert leader_paths == ["/eq/"]
+    assert "http://jts3.local/eq/" in html
+    assert 'href="/sound/setup/">Open local sound setup</a>' in html
+    # EQ is entirely leader-owned on a follower; no local commissioning module.
+    assert "/assets/sound-profile/js/main.js" not in html
+    assert 'id="sound-page-data"' in html
     assert '"follower"' in html
-    assert 'id="view-body"' in html
+    assert 'id="view-body"' not in html
     # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented tablist,
     # and the now-playing EQ plot) stays delegated to the leader — none of it is
     # rendered on the follower page.
@@ -570,6 +627,27 @@ def test_index_html_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert 'class="now-playing"' not in html
     assert 'role="tablist"' not in html
     assert 'meta name="jts-csrf" content="csrf-token"' in html
+
+
+def test_setup_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    leader_paths = []
+    monkeypatch.setattr(
+        sound_setup,
+        "bonded_follower_leader_web_url",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/setup/",
+    )
+
+    html = sound_setup._index_html("csrf-token", page_mode="setup").decode()
+
+    assert leader_paths == ["/sound/setup/"]
+    assert "http://jts3.local/sound/setup/" in html
+    assert 'id="view-body"' in html
+    assert "/assets/sound-profile/js/main.js" in html
+    assert '"mode": "setup"' in html
+    assert '"follower": true' in html
+    assert 'id="tab-off"' not in html
+    assert 'id="plot"' not in html
 
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
@@ -4299,6 +4377,376 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     assert load_sound_settings(settings_path).volume_floor_db == -24.0
     # The profile JSON is untouched: not re-stamped, not overwritten.
     assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_apply_settings_merges_only_recognized_posted_fields(
+    tmp_path: Path, monkeypatch,
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text(
+        json.dumps({
+            "headroom_trim_db": 4.0,
+            "match_loudness": False,
+            "volume_floor_db": -36.0,
+        })
+    )
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(_room_config())
+    fake = FakeCamilla(str(current))
+
+    payload = await sound_setup._apply_settings(
+        {"match_loudness": True, "not_a_sound_setting": "discard me"},
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    merged = load_sound_settings(settings_path)
+    assert merged == SoundSettings(
+        headroom_trim_db=4.0,
+        match_loudness=True,
+        volume_floor_db=-36.0,
+    )
+    assert payload["sound_settings"] == merged.to_dict()
+    assert "not_a_sound_setting" not in json.loads(settings_path.read_text())
+
+
+def test_concurrent_split_page_settings_merge_and_live_state_converge(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    settings_path = tmp_path / "sound_settings.json"
+    profile_path = tmp_path / "sound_profile.json"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    profile = SoundProfile(simple_eq=SimpleEq(bass_db=6.0))
+    save_profile(profile, profile_path)
+
+    start = threading.Barrier(3)
+    attempted = [threading.Event(), threading.Event()]
+    reemit_entered = threading.Event()
+    allow_reemit = threading.Event()
+    reconcile_entered = threading.Event()
+    allow_reconcile = threading.Event()
+    call_lock = threading.Lock()
+    save_snapshots = []
+    emitted = []
+    reconciled_floors = []
+    worker_context = threading.local()
+
+    real_save = sound_setup.save_sound_settings
+
+    def recording_save(settings):
+        real_save(settings)
+        with call_lock:
+            save_snapshots.append(settings.to_dict())
+
+    async def fake_reemit(_profile, **kwargs):
+        with call_lock:
+            call_index = len(emitted)
+            emitted.append({
+                "worker": worker_context.index,
+                "trim": kwargs["output_trim_db"],
+                "settings": load_sound_settings().to_dict(),
+            })
+        if call_index == 0:
+            reemit_entered.set()
+            assert allow_reemit.wait(timeout=2.0)
+        state = DspApplyState(
+            schema_version=1,
+            op_id=f"settings-{call_index}",
+            source="sound_settings",
+            phase="done",
+            result="success",
+            started_at="2026-08-04T00:00:00Z",
+            finished_at="2026-08-04T00:00:01Z",
+            prior_config_path=None,
+            candidate_config_path=str(config_dir / f"settings-{call_index}.yml"),
+            room_peq_count=0,
+        )
+        return state, config_dir / f"settings-{call_index}.yml", _profile
+
+    async def fake_reconcile(**_kwargs):
+        with call_lock:
+            call_index = len(reconciled_floors)
+            reconciled_floors.append(load_sound_settings().volume_floor_db)
+        if call_index == 0:
+            reconcile_entered.set()
+            assert allow_reconcile.wait(timeout=2.0)
+        return True
+
+    monkeypatch.setattr(sound_setup, "save_sound_settings", recording_save)
+    monkeypatch.setattr(sound_setup, "_load_profile_config", fake_reemit)
+    monkeypatch.setattr(
+        sound_setup,
+        "_reconcile_volume_curve_after_settings",
+        fake_reconcile,
+    )
+
+    patches = (
+        {"match_loudness": True},
+        {"headroom_trim_db": 6.0, "volume_floor_db": -30.0},
+    )
+
+    def worker(index: int):
+        start.wait(timeout=2.0)
+        attempted[index].set()
+        worker_context.index = index
+        response = asyncio.run(
+            sound_setup._apply_settings(
+                patches[index],
+                profile_path=profile_path,
+                config_dir=config_dir,
+                camilla_factory=lambda: None,
+            )
+        )
+        return index, response
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(worker, index) for index in range(2)]
+        start.wait(timeout=2.0)
+        assert attempted[0].wait(timeout=1.0)
+        assert attempted[1].wait(timeout=1.0)
+        assert reemit_entered.wait(timeout=1.0)
+        assert len(save_snapshots) == 1
+        allow_reemit.set()
+        assert reconcile_entered.wait(timeout=1.0)
+        assert len(save_snapshots) == 1
+        allow_reconcile.set()
+        responses = dict(future.result(timeout=3.0) for future in futures)
+
+    merged = load_sound_settings()
+    assert merged == SoundSettings(
+        headroom_trim_db=6.0,
+        match_loudness=True,
+        volume_floor_db=-30.0,
+    )
+    assert len(save_snapshots) == 2
+    assert emitted[-1]["settings"] == merged.to_dict()
+    assert emitted[-1]["trim"] == sound_setup._output_trim(profile, merged)
+    assert reconciled_floors[-1] == -30.0
+    assert responses[emitted[-1]["worker"]]["sound_settings"] == merged.to_dict()
+
+
+@pytest.mark.parametrize("first_operation", ("profile", "settings"))
+def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
+    first_operation: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Profile and Settings Apply linearize one complete Sound transaction.
+
+    Force each operation to own the boundary first while the other attempts to
+    enter. Whichever runs second must fresh-read the first operation's durable
+    intent and leave disk plus the live graph/trim at the same P1/S1 pair.
+    """
+
+    settings_path = tmp_path / "sound_settings.json"
+    profile_path = tmp_path / "sound_profile.json"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+
+    initial_profile = SoundProfile(
+        curve_id="flat",
+        simple_eq=SimpleEq(bass_db=1.0),
+        updated_at="2026-08-01T00:00:00+00:00",
+    )
+    requested_profile = SoundProfile(
+        curve_id="bk",
+        simple_eq=SimpleEq(bass_db=6.0, treble_db=1.5),
+    )
+    initial_settings = SoundSettings(
+        headroom_trim_db=1.0,
+        match_loudness=False,
+        volume_floor_db=-48.0,
+    )
+    requested_settings = SoundSettings(
+        headroom_trim_db=5.0,
+        match_loudness=True,
+        volume_floor_db=-30.0,
+    )
+    save_profile(initial_profile, profile_path)
+    sound_setup.save_sound_settings(initial_settings)
+
+    first_inside_emit = threading.Barrier(2)
+    release_first_emit = threading.Event()
+    second_boundary_attempted = threading.Event()
+    second_entered_emit = threading.Event()
+    record_lock = threading.Lock()
+    entered_sources = []
+    live_emits = []
+    reconciled_floors = []
+    settings_reads = []
+    worker_role = threading.local()
+
+    class ObservedSoundStateLock:
+        """Expose the second worker's exact attempt at the real boundary."""
+
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._owner: int | None = None
+
+        def __enter__(self):
+            if getattr(worker_role, "value", None) == "second":
+                second_boundary_attempted.set()
+            self._lock.acquire()
+            self._owner = threading.get_ident()
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb) -> None:
+            self._owner = None
+            self._lock.release()
+
+        def owned_by_current_thread(self) -> bool:
+            return self._owner == threading.get_ident()
+
+    observed_state_lock = ObservedSoundStateLock()
+    monkeypatch.setattr(
+        sound_setup,
+        "_sound_state_write_lock",
+        observed_state_lock,
+    )
+    real_load_sound_settings = sound_setup.load_sound_settings
+
+    def observed_load_sound_settings(*args, **kwargs):
+        if getattr(worker_role, "value", None) in {"first", "second"}:
+            with record_lock:
+                settings_reads.append(observed_state_lock.owned_by_current_thread())
+        return real_load_sound_settings(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sound_setup,
+        "load_sound_settings",
+        observed_load_sound_settings,
+    )
+
+    async def fake_emit(profile, **kwargs):
+        source = kwargs["source"]
+        with record_lock:
+            call_index = len(entered_sources)
+            entered_sources.append(source)
+        if call_index == 0:
+            first_inside_emit.wait(timeout=2.0)
+            assert release_first_emit.wait(timeout=2.0)
+        else:
+            second_entered_emit.set()
+
+        state = DspApplyState(
+            schema_version=1,
+            op_id=f"{source}-{call_index}",
+            source=source,
+            phase="done",
+            result="success",
+            started_at="2026-08-04T00:00:00Z",
+            finished_at="2026-08-04T00:00:01Z",
+            prior_config_path=None,
+            candidate_config_path=str(config_dir / f"{source}-{call_index}.yml"),
+            room_peq_count=0,
+        )
+        if kwargs["persist_profile"]:
+            save_profile(profile, profile_path)
+        with record_lock:
+            live_emits.append({
+                "source": source,
+                "profile": profile.to_dict(),
+                "settings": load_sound_settings().to_dict(),
+                "trim": kwargs["output_trim_db"],
+                "epoch": state.op_id,
+            })
+        return state, Path(state.candidate_config_path), profile
+
+    async def fake_reconcile(**_kwargs):
+        reconciled_floors.append(load_sound_settings().volume_floor_db)
+        return True
+
+    monkeypatch.setattr(sound_setup, "_load_profile_config", fake_emit)
+    monkeypatch.setattr(
+        sound_setup,
+        "_reconcile_volume_curve_after_settings",
+        fake_reconcile,
+    )
+
+    def run(operation: str, role: str):
+        worker_role.value = role
+        if operation == "profile":
+            return asyncio.run(
+                sound_setup._apply_profile(
+                    requested_profile,
+                    profile_path=profile_path,
+                    config_dir=config_dir,
+                    camilla_factory=lambda: None,
+                )
+            )
+        return asyncio.run(
+            sound_setup._apply_settings(
+                requested_settings.to_dict(),
+                profile_path=profile_path,
+                config_dir=config_dir,
+                camilla_factory=lambda: None,
+            )
+        )
+
+    second_operation = "settings" if first_operation == "profile" else "profile"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(run, first_operation, "first")
+        first_inside_emit.wait(timeout=2.0)
+
+        second_future = executor.submit(run, second_operation, "second")
+        assert second_boundary_attempted.wait(timeout=1.0)
+        # Before the first transaction is released, the second must be waiting at
+        # the shared ordering boundary rather than entering the DSP transaction.
+        assert not second_entered_emit.wait(timeout=0.25)
+        assert entered_sources == [
+            "sound" if first_operation == "profile" else "sound_settings"
+        ]
+        release_first_emit.set()
+
+        responses = {
+            first_operation: first_future.result(timeout=3.0),
+            second_operation: second_future.result(timeout=3.0),
+        }
+
+    final_profile = load_profile(profile_path)
+    final_settings = load_sound_settings()
+    assert final_profile.curve_id == requested_profile.curve_id
+    assert final_profile.simple_eq == requested_profile.simple_eq
+    assert final_settings == requested_settings
+    assert len(live_emits) == 2
+    assert live_emits[-1]["profile"] == final_profile.to_dict()
+    assert live_emits[-1]["settings"] == final_settings.to_dict()
+    assert live_emits[-1]["trim"] == sound_setup._output_trim(
+        final_profile,
+        final_settings,
+    )
+    assert reconciled_floors == [requested_settings.volume_floor_db]
+    assert settings_reads
+    assert all(settings_reads)
+
+    emits_by_operation = {
+        "profile" if emit["source"] == "sound" else "settings": emit
+        for emit in live_emits
+    }
+    for operation, response in responses.items():
+        emit = emits_by_operation[operation]
+        assert response["profile"] == emit["profile"]
+        assert response["sound_settings"] == emit["settings"]
+        assert response["output_trim_db"] == emit["trim"]
+        assert response["dsp_write_epoch"] == emit["epoch"]
+        assert response["last_dsp_apply"]["op_id"] == emit["epoch"]
+
+    last_response = responses[second_operation]
+    assert last_response["profile"] == final_profile.to_dict()
+    assert last_response["sound_settings"] == final_settings.to_dict()
+    assert last_response["dsp_write_epoch"] == live_emits[-1]["epoch"]
+    assert last_response["last_dsp_apply"]["op_id"] == live_emits[-1]["epoch"]
 
 
 async def test_audition_volume_floor_holds_updates_and_restores_on_stop(

@@ -2551,7 +2551,7 @@ def _failure_envelope(
             verdict=message,
             nudges=[{"code": code, "severity": "warn", "text": message}],
             next_action=dict(spec.next_action) if spec.next_action else {
-                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/",
+                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/setup/",
             },
             status=status,
         )
@@ -2663,7 +2663,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "Finish the protected speaker setup first. This proves the output "
                 "map and tweeter protection before the microphone check can play."
             ),
-            next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/"},
+            next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/setup/"},
             status=status,
         )
 

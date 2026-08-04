@@ -135,7 +135,7 @@ def test_setup_not_ready_blocks_before_any_capture():
         "crossover_v2": {"phase": "check"},
     })
     assert env["screen"] == "speaker_setup"
-    assert env["next_action"]["href"] == "/sound/"
+    assert env["next_action"]["href"] == "/sound/setup/"
     assert _step_statuses(env)["speaker_setup"] == "active"
 
 
@@ -1044,7 +1044,7 @@ def test_hard_stop_template():
     # shape still holds: one screen, one pair of fix actions).
     assert "wiring" in env["verdict_text"]
     assert "noisy" in env["verdict_text"]
-    assert env["next_action"]["href"] == "/sound/"
+    assert env["next_action"]["href"] == "/sound/setup/"
 
 
 def test_session_restart_template():

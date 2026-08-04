@@ -208,7 +208,9 @@ async function load() {
   extEls.message.textContent = 'Loading…';
   let state;
   try {
-    state = await getJSON('/bass/status');
+    // Page-relative so both the canonical /sound/bass/ ingress and the
+    // indefinitely supported /correction/bass/ alias reach backend /bass/status.
+    state = await getJSON('status');
   } catch (err) {
     // Never block — a read failure just shows a plain message. Unlike the
     // "nothing to show" case in renderBassExtension, a fetch failure is an

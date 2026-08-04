@@ -9,13 +9,13 @@ from __future__ import annotations
 import html
 
 SECTIONS = (
-    ("room", "Room", "/correction/room/"),
+    ("room", "Room", "/sound/room/"),
     # Label only (#1670) — "Active speaker" is the household-facing name for
-    # what is still, internally, the crossover wizard: slug/href/every
-    # internal identifier stay "crossover" (docs/active-speaker-tuning-
+    # what is still, internally, the crossover wizard: slug and internal
+    # identifiers stay "crossover" (docs/active-speaker-tuning-
     # layers-design.md decision 1, "the surface gets a more honest name").
-    ("crossover", "Active speaker", "/correction/crossover/"),
-    ("bass", "Bass", "/correction/bass/"),
+    ("crossover", "Active speaker", "/sound/crossover/"),
+    ("bass", "Bass", "/sound/bass/"),
 )
 
 

@@ -20,12 +20,12 @@ def test_render_page_is_a_canonical_page_with_the_bass_module():
     # Canonical page shell (CSRF meta, app.css) and the bass section-tab active.
     assert 'name="jts-csrf"' in html
     assert '/assets/app.css' in html
-    assert 'aria-current="page" href="/correction/bass/"' in html
+    assert 'aria-current="page" href="/sound/bass/"' in html
     assert "Bass management" in html
     # The static ES module is loaded (no inline script behaviour on the page).
     assert '<script type="module" src="/assets/correction/js/bass/main.js">' in html
     # A pointer to the Room tab where the bass-region measurement lives.
-    assert "/correction/room/" in html
+    assert "/sound/room/" in html
 
 
 def test_render_page_escapes_hostname_in_back_link():
@@ -36,7 +36,8 @@ def test_render_page_escapes_hostname_in_back_link():
 def test_bass_module_uses_shared_get_json():
     source = (ROOT / "deploy/assets/correction/js/bass/main.js").read_text()
     assert "import { getJSON } from '/assets/shared/js/http.js';" in source
-    assert "getJSON('/bass/status')" in source
+    assert "getJSON('status')" in source
+    assert "getJSON('/bass/status')" not in source
     assert "await fetch(" not in source
     assert ".json()" not in source
 

@@ -152,6 +152,8 @@ def test_capture_relay_ui_contract_is_wired():
     assert "postJson('relay/capture'" in js
     assert "function endpoint(path)" in js
     assert "return '/correction/' + path;" in js
+    assert "function publicRoomUrl(value)" in js
+    assert "readinessBlockerAction.href = publicRoomUrl(action.href);" in js
     assert "if (relayConfigured)" in js
     assert "detectMicrophones();" in js
     assert "repeat_main_position:" not in js
@@ -160,6 +162,7 @@ def test_capture_relay_ui_contract_is_wired():
     assert "KNOWN_ACTION_ENDPOINTS" in js
     assert "env.sections" in js
     assert "window.location.href = '/correction/proceed/room';" in js
+    assert "window.location.href = '/sound/proceed/room';" in js
 
 
 def test_capture_relay_next_position_ui_hides_expired_link():
@@ -2547,16 +2550,18 @@ def test_room_relay_verify_host_event_failure_contract(
 
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
+    leader_paths = []
     monkeypatch.setattr(
         correction_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": "http://jts3.local/correction/",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/room/",
     )
 
     body = correction_setup._render_page("jts4.local", "csrf-token").decode()
 
     assert "Room correction is controlled by the pair leader" in body
-    assert "http://jts3.local/correction/" in body
+    assert leader_paths == ["/sound/room/"]
+    assert "http://jts3.local/sound/room/" in body
     assert "/assets/correction/js/main.js" not in body
     assert 'meta name="jts-csrf" content="csrf-token"' in body
 

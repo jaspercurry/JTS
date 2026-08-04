@@ -39,7 +39,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div class="crossover-card__footer">
       <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
       <p class="form-hint">
-        <a href="http://{html.escape(hostname, quote=True)}/sound/">Remove the active crossover entirely</a>
+        <a href="http://{html.escape(hostname, quote=True)}/sound/setup/">Remove the active crossover entirely</a>
         — this returns the speaker to a plain stereo crossover.
       </p>
     </div>

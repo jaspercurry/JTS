@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sound curve and preference-EQ page at /sound/.
+"""Shared backend for preference EQ at /eq/ and hardware setup at /sound/setup/.
 
-URL surface (after nginx strips /sound/):
+URL surface (after nginx strips either public prefix):
   GET  /         page render
   GET  /state    persisted profile + preview + stock curve metadata
   GET  /output-topology              speaker/DAC topology draft + safety evidence
@@ -84,7 +84,7 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_SUBSTREAM as VOLUME_FLOOR_TONE_ALSA_DEVICE,
@@ -240,6 +240,18 @@ class OutputTopologyRevisionConflict(ValueError):
 # stall the wizard on a blocking call.
 _output_topology_write_lock = threading.Lock()
 
+# Profile Apply and the split EQ/setup settings pages both replace the live DSP
+# graph from persisted Sound state. Serialize their fresh reads, durable writes,
+# and live side effects so the final profile, settings, and graph describe one
+# ordered result instead of interleaving browser saves.
+_sound_state_write_lock = threading.Lock()
+_LAST_DSP_APPLY_SNAPSHOT_UNSET = object()
+_SOUND_SETTINGS_FIELDS = frozenset({
+    "headroom_trim_db",
+    "match_loudness",
+    "volume_floor_db",
+})
+
 
 def _camilla():
     from jasper.camilla import primary_controller
@@ -252,11 +264,24 @@ def _state_payload(
     *,
     library_path: str | Path | None = None,
     include_library: bool = False,
+    settings_snapshot: SoundSettings | None = None,
+    last_dsp_apply_snapshot: Mapping[str, Any] | None | object = (
+        _LAST_DSP_APPLY_SNAPSHOT_UNSET
+    ),
 ) -> dict[str, Any]:
     from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
-    last_dsp_apply = last_dsp_apply_state()
-    settings = load_sound_settings()
+    if last_dsp_apply_snapshot is _LAST_DSP_APPLY_SNAPSHOT_UNSET:
+        last_dsp_apply = last_dsp_apply_state()
+    elif last_dsp_apply_snapshot is None:
+        last_dsp_apply = None
+    else:
+        last_dsp_apply = dict(last_dsp_apply_snapshot)
+    settings = (
+        settings_snapshot
+        if settings_snapshot is not None
+        else load_sound_settings()
+    )
 
     payload = {
         "profile": profile.to_dict(),
@@ -558,16 +583,20 @@ async def _apply_profile(
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
-    settings = load_sound_settings()
-    apply_state, out_path, stamped = await _load_profile_config(
-        profile.with_timestamp(),
-        profile_path=profile_path,
-        config_dir=config_dir,
-        camilla_factory=camilla_factory,
-        source="sound",
-        persist_profile=True,
-        output_trim_db=_output_trim(profile, settings),
-    )
+    # Settings Apply uses this same ordering boundary. Read settings only after
+    # entering it, then keep the durable profile write and live graph/trim emit
+    # together so neither operation can finish with the other's stale half.
+    with _sound_state_write_lock:
+        settings = load_sound_settings()
+        apply_state, out_path, stamped = await _load_profile_config(
+            profile.with_timestamp(),
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=camilla_factory,
+            source="sound",
+            persist_profile=True,
+            output_trim_db=_output_trim(profile, settings),
+        )
     log_event(
         logger,
         "sound.apply",
@@ -585,10 +614,15 @@ async def _apply_profile(
         config=out_path,
         op_id=apply_state.op_id,
     )
+    # Assemble previews and the optional profile library outside the ordering
+    # boundary. The captured settings make this response coherent with the DSP
+    # transaction without extending the lock across unrelated file I/O/work.
     payload = _state_payload(
         stamped,
         library_path=library_path,
         include_library=library_path is not None,
+        settings_snapshot=settings,
+        last_dsp_apply_snapshot=apply_state.to_dict(),
     )
     payload["active_config_path"] = str(out_path)
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
@@ -618,66 +652,103 @@ def _carrier_refusal(exc: BaseException):
 
 
 async def _apply_settings(
-    settings: SoundSettings,
+    changes: Mapping[str, Any] | SoundSettings,
     *,
     profile_path: str | Path,
     library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
-    """Persist global sound settings, then re-emit the active profile's config
-    with the new output trim so the change is audible immediately.
+    """Merge global sound settings, then make the merged state live.
 
-    The profile content is unchanged, so this re-applies it **without**
-    re-stamping or re-persisting the profile JSON (unlike `_apply_profile`).
-    Settings are saved first; a write error propagates as `OSError`. A failed
-    re-apply returns the saved state with a ``warning`` rather than reverting
-    a setting the backend already kept -- no silent failure either way.
+    EQ and Setup intentionally share the one aggregate ``SoundSettings`` file.
+    Each page posts only the fields it owns, so this function fresh-reads and
+    merges recognized fields while holding one process-local lock through the
+    durable save, DSP re-emit, volume reconciliation, and coherent response
+    snapshots. The profile content is unchanged and is not re-stamped or
+    re-persisted.
+
+    A full ``SoundSettings`` remains accepted for internal callers and tests.
+    A failed live re-apply returns the saved state with a ``warning`` rather
+    than reverting a setting the backend already kept.
     """
-    save_sound_settings(settings)
-    log_event(
-        logger,
-        "sound.settings",
-        headroom_trim=f"{settings.headroom_trim_db:.1f}",
-        match_loudness=str(settings.match_loudness),
-        volume_floor_db=f"{settings.volume_floor_db:.1f}",
-    )
-    profile = load_profile(profile_path)
+    raw_changes = changes.to_dict() if isinstance(changes, SoundSettings) else changes
+    recognized = {
+        key: raw_changes[key]
+        for key in _SOUND_SETTINGS_FIELDS
+        if key in raw_changes
+    }
+    with _sound_state_write_lock:
+        merged_raw = load_sound_settings().to_dict()
+        merged_raw.update(recognized)
+        settings = SoundSettings.from_mapping(merged_raw)
+        save_sound_settings(settings)
+        log_event(
+            logger,
+            "sound.settings",
+            headroom_trim=f"{settings.headroom_trim_db:.1f}",
+            match_loudness=str(settings.match_loudness),
+            volume_floor_db=f"{settings.volume_floor_db:.1f}",
+        )
+        profile = load_profile(profile_path)
+        warning: str | None = None
+        volume_warning: str | None = None
+        apply_result: tuple[Any, Path, SoundProfile] | None = None
+        reconciled = False
+        try:
+            apply_result = await _load_profile_config(
+                profile,
+                profile_path=profile_path,
+                config_dir=config_dir,
+                camilla_factory=camilla_factory,
+                source="sound_settings",
+                persist_profile=False,
+                output_trim_db=_output_trim(profile, settings),
+            )
+        except (OSError, RuntimeError, ValueError, TypeError) as e:
+            logger.exception("sound settings re-apply failed")
+            warning = f"Saved, but applying to the speaker failed: {e}"
+
+        try:
+            reconciled = await _reconcile_volume_curve_after_settings(
+                camilla_factory=camilla_factory,
+            )
+        except (AttributeError, OSError, RuntimeError) as e:
+            logger.warning("volume floor saved but volume reconcile failed: %s", e)
+            volume_warning = (
+                "Saved, but the current volume will use the new floor on the next "
+                f"volume change: {e}"
+            )
+
+        # Capture the response's live-state anchor after every side effect while
+        # still serialized. Preview/curve/library rendering happens outside the
+        # boundary and consumes these coherent snapshots.
+        if apply_result is not None:
+            apply_state, out_path, _ = apply_result
+            last_dsp_apply_snapshot = apply_state.to_dict()
+        else:
+            from jasper.dsp_apply import last_dsp_apply_state
+
+            last_dsp_apply_snapshot = last_dsp_apply_state()
+
     payload = _state_payload(
         profile,
         library_path=library_path,
         include_library=library_path is not None,
+        settings_snapshot=settings,
+        last_dsp_apply_snapshot=last_dsp_apply_snapshot,
     )
-    try:
-        apply_state, out_path, _ = await _load_profile_config(
-            profile,
-            profile_path=profile_path,
-            config_dir=config_dir,
-            camilla_factory=camilla_factory,
-            source="sound_settings",
-            persist_profile=False,
-            output_trim_db=_output_trim(profile, settings),
-        )
-    except (OSError, RuntimeError, ValueError, TypeError) as e:
-        logger.exception("sound settings re-apply failed")
-        payload["warning"] = f"Saved, but applying to the speaker failed: {e}"
-        return payload
-    payload["active_config_path"] = str(out_path)
-    payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
-    payload["last_dsp_apply"] = apply_state.to_dict()
-    payload["dsp_write_epoch"] = apply_state.op_id
-    try:
-        reconciled = await _reconcile_volume_curve_after_settings(
-            camilla_factory=camilla_factory,
-        )
-        if reconciled:
-            payload["volume_reconciled"] = True
-    except (AttributeError, OSError, RuntimeError) as e:
-        logger.warning("volume floor saved but volume reconcile failed: %s", e)
-        payload["volume_warning"] = (
-            "Saved, but the current volume will use the new floor on the next "
-            f"volume change: {e}"
-        )
+    if warning is not None:
+        payload["warning"] = warning
+    if volume_warning is not None:
+        payload["volume_warning"] = volume_warning
+    if apply_result is not None:
+        payload["active_config_path"] = str(out_path)
+        payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
+        payload["last_dsp_apply"] = apply_state.to_dict()
+        payload["dsp_write_epoch"] = apply_state.op_id
+    if reconciled:
+        payload["volume_reconciled"] = True
     return payload
 
 
@@ -1552,24 +1623,25 @@ async def _load_profile_config(
     )
 
 
-def _follower_sound_html(csrf_token: str = "") -> bytes:
-    """Render a bonded active follower's /sound/ page.
+def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
+    """Render one split Sound page for a bonded active follower.
 
     Distributed-active Slice 4: a bonded follower delegates the PROGRAM domain
     (content EQ, room correction, volume shaping) to the pair leader, but it
     still owns its LOCAL driver domain (Layer A — the per-driver crossover /
-    limiter / tweeter high-pass that protects the DAC it drives). So the page
-    keeps the delegation card AND mounts the same active-speaker setup UI that
-    main.js renders on a solo box, making the card's "local crossover ... stays
-    with the speaker that owns the DAC path" promise literally true.
+    limiter / tweeter high-pass that protects the DAC it drives). Setup keeps
+    the delegation card and mounts the same active-speaker UI as a solo box;
+    EQ is a delegation-only page with a direct path back to local Setup.
 
-    The follower island tells main.js to boot in follower mode: it renders only
+    The page island tells main.js to boot in follower Setup mode: it renders only
     the active-speaker section (expanded as the primary content) and omits the
     Off/Saved/Draft content-EQ editor and now-playing plot, which live only on
     the leader. Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``);
     the active-speaker commissioning/crossover endpoints are allowed (invariant 6).
     """
-    leader_sound_url = bonded_follower_leader_web_url("/sound/")
+    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
+    leader_path = "/eq/" if page_mode == "eq" else "/sound/setup/"
+    leader_sound_url = bonded_follower_leader_web_url(leader_path)
     leader_link = (
         '<a class="btn btn--primary" href="'
         + html.escape(leader_sound_url)
@@ -1577,14 +1649,30 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
         if leader_sound_url
         else ""
     )
-    follower_island = json_island("sound-follower-data", {"follower": True})
+    page_island = json_island(
+        "sound-page-data",
+        {"mode": page_mode, "follower": True},
+    )
+    title = "EQ" if page_mode == "eq" else "Sound setup"
+    local_setup = (
+        '<div id="view-body"></div>'
+        '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
+        '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
+        if page_mode == "setup"
+        else ""
+    )
+    local_setup_link = (
+        '<a class="btn" href="/sound/setup/">Open local sound setup</a>'
+        if page_mode == "eq"
+        else ""
+    )
     body = f"""
 <header class="app-header">
   <div class="app-header__row">
     <a class="icon-button" id="back" href="/" aria-label="Home">
       <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
     </a>
-    <h1 class="app-header__title">Sound profile</h1>
+    <h1 class="app-header__title">{title}</h1>
     <span></span>
   </div>
 </header>
@@ -1597,34 +1685,35 @@ def _follower_sound_html(csrf_token: str = "") -> bytes:
     speaker that owns the DAC path.</p>
     <div class="actions">
       {leader_link}
+      {local_setup_link}
       <a class="btn" href="/rooms/">Manage pair</a>
     </div>
   </section>
-  <div id="view-body"></div>
-  <div class="status-line" id="status" role="status" aria-live="polite"></div>
+  {local_setup}
 </main>
-{follower_island}
-<script type="module" src="/assets/sound-profile/js/main.js"></script>
+{page_island}
 """
     return canonical_page(
-        "Sound profile",
+        title,
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/sound-profile/sound.css",
     )
 
 
-def _index_html(csrf_token: str = "") -> bytes:
+def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
+    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
     if bonded_follower_active():
-        return _follower_sound_html(csrf_token)
-    body = (
+        return _follower_sound_html(csrf_token, page_mode=page_mode)
+    title = "EQ" if page_mode == "eq" else "Sound setup"
+    editor_chrome = (
         """
 <header class="app-header">
   <div class="app-header__row">
     <a class="icon-button" id="back" href="/" aria-label="Home">"""
         + '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
         + """</a>
-    <h1 class="app-header__title">Sound profile</h1>
+    <h1 class="app-header__title">EQ</h1>
     <span></span>
   </div>
   <div class="app-header__tabs">
@@ -1652,11 +1741,33 @@ def _index_html(csrf_token: str = "") -> bytes:
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
 </main>
-<script type="module" src="/assets/sound-profile/js/main.js"></script>
+"""
+        if page_mode == "eq"
+        else """
+<header class="app-header">
+  <div class="app-header__row">
+    <a class="icon-button" id="back" href="/" aria-label="Home">
+      <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
+    </a>
+    <h1 class="app-header__title">Sound setup</h1>
+    <span></span>
+  </div>
+</header>
+<main class="page">
+  <div id="view-body"></div>
+  <div class="status-line" id="status" role="status" aria-live="polite"></div>
+</main>
 """
     )
+    page_island = json_island(
+        "sound-page-data",
+        {"mode": page_mode, "follower": False},
+    )
+    body = editor_chrome + page_island + (
+        '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
+    )
     return canonical_page(
-        "Sound profile",
+        title,
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/sound-profile/sound.css",
@@ -4655,7 +4766,12 @@ def _make_handler(
                 return
             if path == "/":
                 ctx = begin_request(self)
-                self._send_html(_index_html(ctx["csrf_token"]))
+                self._send_html(
+                    _index_html(
+                        ctx["csrf_token"],
+                        page_mode=self.headers.get("X-JTS-Sound-Page", "eq"),
+                    )
+                )
                 return
             if path == "/state":
                 self._send_json(
@@ -5260,11 +5376,10 @@ def _make_handler(
                         self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/settings":
-                    settings = SoundSettings.from_mapping(raw)
                     try:
                         payload = asyncio.run(
                             _apply_settings(
-                                settings,
+                                raw,
                                 profile_path=profile_path,
                                 library_path=library_path,
                                 config_dir=config_dir,
