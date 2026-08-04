@@ -1,8 +1,9 @@
 ---
 description: |
-  Set up a JTS smart speaker on a Raspberry Pi from scratch — the
-  complete journey from "I have hardware in front of me" through
-  "Hey Jarvis works." Use whenever the user says any natural-language
+  Set up a JTS speaker or Streambox on a Raspberry Pi from scratch —
+  the complete journey from "I have hardware in front of me" through
+  a working profile-appropriate speaker. Use whenever the user says any
+  natural-language
   variant of: "set this up", "install JTS", "set up a Pi", "I bought
   a new Pi", "help me get started", "flash my SD card", "I have a
   new speaker", or mentions Raspberry Pi Imager. Also handles
@@ -13,7 +14,7 @@ description: |
 
 # Onboard a JTS Raspberry Pi speaker
 
-You are walking a user through setting up a JTS smart speaker. The
+You are walking a user through setting up a JTS speaker. The
 user may be at any point in the journey — already-flashed Pi, brand
 new Pi in the box, or still shopping for hardware. Your job is to
 **figure out where they are** (Phase 0), then drive the remaining
@@ -71,18 +72,19 @@ second speaker, or replacing the existing one?"*
 
 ## Phase 1 — Hardware checklist
 
-Ask the user, one or two items at a time, whether they have:
+If the Pi is already booted, read `/proc/device-tree/model` rather than
+asking which model it is. Otherwise ask which Raspberry Pi they have, then
+check the matching hardware one or two items at a time. The two hardware
+paths and their parts live in [QUICKSTART.md](../../QUICKSTART.md); do not
+maintain a second parts list here.
 
-1. Raspberry Pi 5 (2 GB recommended)
-2. microSD card (16 GB+)
-3. Pi 5 power supply
-4. Apple USB-C → 3.5mm dongle
-5. Seeed ReSpeaker XVF3800 (USB-UA variant)
-6. TPA3255 amp + its own 32 V power supply
-7. Speakers + speaker wire
+Do not choose or override `JASPER_INSTALL_PROFILE` during onboarding. The
+installer owns board-to-profile resolution, persists its result, and the
+success banner reports that authoritative result.
 
-Full BOM in [README.md § Hardware](../../README.md#hardware). If anything
-is missing, don't block — tell them to come back to `/onboard-pi`
+The full Pi 5 BOM is also in
+[README.md § Hardware](../../README.md#hardware). If anything is missing,
+don't block — tell them to come back to `/onboard-pi`
 when hardware arrives. Nothing is persisted yet; the skill picks
 up cleanly later.
 
@@ -109,7 +111,7 @@ Walk them through the wizard, **one step per turn**. (Imager 2.0 is a
 multi-step wizard — each customisation step below is its own full
 screen, not a tab.)
 
-1. **Device** → Raspberry Pi 5
+1. **Device** → the Raspberry Pi model the user actually has
 2. **OS** →
    **Raspberry Pi OS → Raspberry Pi OS (Other) → Raspberry Pi OS Lite (64-bit)**
 3. **Storage** → their SD card. Imager prompts about customisation —
@@ -152,15 +154,22 @@ screen, not a tab.)
 
 ## Phase 3 — Flash, eject, boot
 
-Ask the user, after Imager finishes:
+Ask the user, after Imager finishes, to insert the card and wire the hardware
+for their selected Pi.
+
+For a full speaker:
 
 > "Imager done? It usually auto-ejects the SD card after writing.
 > Please physically remove it from your computer, insert it into the
-> Pi (the slot is on the underside, opposite the USB ports), wire the
+> Pi, wire the
 > speaker now — amp powered from its own 32 V supply, speakers connected
 > to the amp, Apple dongle in the Pi with its 3.5mm into the amp input,
 > ReSpeaker plugged into the Pi — and then power the Pi on. Then let me
 > know — I'll watch for it to come up."
+
+For a Streambox, use the same pacing but ask them to connect its supported
+output DAC and amplifier; do not ask for a ReSpeaker or 32 V amplifier unless
+those are actually part of their build.
 
 If they are unsure about the wiring, point them at
 [BRINGUP.md](../../BRINGUP.md) Phase 1 before they power on.
@@ -229,10 +238,11 @@ bash scripts/onboard.sh <hostname>.local
 
 Stream the output. The script emits both `==>` headers (human-readable
 phase milestones) and `event=onboard.<phase> status=<s>` lines
-(parseable; same convention as the Pi-side daemons). Expect 15-20
-minutes — the long pole is shairport-sync compiling from source on
-the Pi. Don't ask the user to wait silently; let them know what's
-happening at each phase.
+(parseable; same convention as the Pi-side daemons). First-install
+duration varies substantially by hardware because native components are
+built on the Pi; a Zero 2 W can take much longer than a Pi 5. Don't ask
+the user to wait silently; keep the output streaming and explain each
+phase as it runs.
 
 If a phase fails, the script prints a detailed remediation block.
 Surface it verbatim to the user; don't paraphrase.
@@ -244,8 +254,11 @@ an `~/.ssh/config` Host alias automatically.
 
 ## Phase 5 — Configure
 
-The script's success banner lists the post-install wizard URLs. Walk
-the user through them, one at a time:
+The script reports the Pi model and the installer's persisted profile, then
+lists only that profile's post-install pages. Follow the reported profile;
+do not infer it again from the board model.
+
+For a **full** profile, walk the user through these one at a time:
 
 1. **`http://<hostname>.local/voice/`** — required. Pick a voice
    provider (Gemini is the cheapest at ~$0.025/min; OpenAI Realtime
@@ -261,6 +274,17 @@ the user through them, one at a time:
 
 Tell them they're done after Step 1 (voice provider). The rest can
 happen anytime later.
+
+For a **streambox** profile, explain that AirPlay, Spotify Connect,
+Bluetooth, DSP, grouping, and management are installed locally, while the
+voice/microphone brain is intentionally omitted. Walk them through the
+banner's `/sources/`, `/spotify/`, `/sound/`, `/rooms/`, and `/system/`
+links. Do not send them to `/voice/` or `/transit/`.
+
+If the banner says audio is safely parked because no output DAC was found,
+this is an actionable next step, not an installation failure. Ask them to
+connect a supported DAC (the standard build uses the Apple USB-C → 3.5mm
+dongle with its analog plug attached) and then open `/sound/`.
 
 **If `jasper-doctor` warned about XVF firmware**: speaker works fine;
 AEC is just off. To enable, walk through [BRINGUP.md](../../BRINGUP.md)
@@ -328,11 +352,16 @@ needed.
 
 ## After success
 
-Confirm one last time:
+For a **full** profile, confirm one last time:
 - They can hit `http://<hostname>.local/voice/` from their phone/laptop.
 - They've pasted an API key for at least one voice provider.
 - They've heard the speaker respond to "Hey Jarvis" with a brief
   greeting (or whatever the model decides to say) at least once.
+
+For a **streambox** profile, confirm that `/system/` opens and at least one
+intended music source is enabled at `/sources/`. If no DAC was present at
+install time, confirm the user understands the `/sound/` hardware next step;
+do not require voice setup or a wake-word test.
 
 Tell them they're done. Mention that future Claude Code sessions in
 this checkout will automatically know which Pi is active because of

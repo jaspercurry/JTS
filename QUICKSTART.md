@@ -1,8 +1,8 @@
 # JTS QUICKSTART
 
-From "I just bought a Pi" to "Hey Jarvis, play Taylor Swift" in
-about 30 minutes — most of which is the speaker building software
-by itself while you do something else.
+From "I just bought a Pi" to a working JTS speaker. Much of the wait is
+the speaker building software by itself; first-install duration varies
+substantially by Pi model.
 
 > [!TIP]
 > **Using Claude Code?** Skip this doc and just say *"set up a Pi"*
@@ -12,8 +12,22 @@ by itself while you do something else.
 > the first setup pages. This QUICKSTART is the same flow in
 > human-readable form, for when you want to read it yourself.
 
-This guide assumes you have the hardware from [README.md](README.md#hardware)
-in front of you, a laptop or desktop on your home Wi-Fi, and a
+This guide supports two hardware paths:
+
+- **Full speaker:** Raspberry Pi 5 (2 GB recommended) plus the voice,
+  microphone, DAC, amplifier, and speaker hardware from
+  [README.md](README.md#hardware).
+- **Streambox:** Raspberry Pi Zero 2 W, microSD card (16 GB+), an
+  appropriate 5 V supply, a supported output DAC, amplifier, speakers,
+  and the adapters/cables needed for the Pi's USB data port. It provides
+  local music streaming, DSP, grouping, and management without the local
+  voice/microphone brain.
+
+The installer detects the board on a fresh setup, persists the resolved
+`full` or `streambox` profile, and reports it in the completion banner. Do
+not set `JASPER_INSTALL_PROFILE` during ordinary onboarding.
+
+You also need a laptop or desktop on your home Wi-Fi and a
 2.4 GHz Wi-Fi network the Pi can join. Put the Pi on the **same
 Wi-Fi network as your computer** during setup; the laptop talks to
 it by local hostname.
@@ -55,11 +69,11 @@ the best way.
 
 ---
 
-## 1. Flash the Pi (5 minutes)
+## 1. Flash the Pi
 
 1. Insert a microSD card (16 GB+) into your computer.
 2. Open Raspberry Pi Imager and choose:
-   - **Device**: Raspberry Pi 5
+   - **Device**: the Raspberry Pi model you actually have
    - **OS**:
      **Raspberry Pi OS -> Raspberry Pi OS (Other) -> Raspberry Pi OS Lite (64-bit)**
    - **Storage**: your SD card
@@ -98,12 +112,13 @@ Auto-eject means the files may not be visible until you do.
 
 ---
 
-## 2. Boot the Pi (3 minutes)
+## 2. Boot the Pi
 
 1. Insert the SD card into the Pi.
-2. Connect the Apple USB-C dongle, ReSpeaker XVF3800, amp, and
-   speakers. See [BRINGUP.md](BRINGUP.md) Phase 1 for the full
-   hardware connections.
+2. Connect the hardware for your path. For a full speaker, connect the
+   Apple USB-C dongle, ReSpeaker XVF3800, amp, and speakers; see
+   [BRINGUP.md](BRINGUP.md) Phase 1. For a Streambox, connect its
+   supported output DAC, amplifier, and speakers; there is no ReSpeaker.
 3. Power on the Pi. It should join Wi-Fi and start SSH in 45-90
    seconds.
 4. From your computer, check that it is reachable:
@@ -118,7 +133,7 @@ Auto-eject means the files may not be visible until you do.
 
 ---
 
-## 3. Onboard (15-20 minutes)
+## 3. Onboard
 
 Clone the repo and run the onboarder from your computer:
 
@@ -176,10 +191,13 @@ When it finishes, you'll see a banner with the next URLs to visit.
 
 ---
 
-## 4. Configure (10 minutes, one-time)
+## 4. Configure (one-time)
 
-Visit these pages from any device on the same Wi-Fi. Replace
-`jts.local` with your chosen hostname if needed.
+The completion banner reports the Pi model and installed profile. Follow
+that result rather than inferring the profile again from the board model.
+
+For a **full** profile, visit these pages from any device on the same
+Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
 
 - **`http://jts.local/voice/`** — required. Pick a voice provider
   (Gemini / OpenAI / Grok) and paste an API key. The speaker will
@@ -195,6 +213,20 @@ Visit these pages from any device on the same Wi-Fi. Replace
 - **`http://jts.local/system/`** — the dashboard. Status, mic-mute,
   software version, Wi-Fi.
 
+For a **streambox** profile, use only the locally installed surfaces:
+
+- **`http://jts.local/sources/`** — choose and enable music sources.
+- **`http://jts.local/spotify/`** — connect a Spotify account (optional).
+- **`http://jts.local/sound/`** — configure sound and output hardware.
+- **`http://jts.local/rooms/`** — group speakers.
+- **`http://jts.local/system/`** — dashboard and status.
+
+Streambox intentionally has no `/voice/` or `/transit/` setup. If the
+banner says audio is safely parked because no output DAC was detected,
+connect a supported DAC (the standard build uses the Apple USB-C → 3.5mm
+dongle with its analog plug attached), then open `/sound/`. That hardware
+next step does not mean installation failed.
+
 ---
 
 ## What you have now
@@ -202,9 +234,11 @@ Visit these pages from any device on the same Wi-Fi. Replace
 A speaker that:
 - Plays music from any device that supports AirPlay 2, Spotify
   Connect, or Bluetooth A2DP.
-- Listens for "Hey Jarvis" and answers via the LLM provider you
-  picked.
 - Has every wizard URL persisted across reboots.
+
+A full speaker also listens for "Hey Jarvis" and answers via the LLM
+provider you picked. A Streambox intentionally omits that local voice and
+microphone brain while retaining DSP, grouping, and management.
 
 Future Claude Code sessions in this checkout will automatically
 read `CLAUDE.local.md` and know which Pi you're targeting — no
