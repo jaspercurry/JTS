@@ -45,6 +45,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
     DEFAULT_CLOUD_MEASURE_POSITIONS,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
     GEOMETRY_RETRY_OFFSET_CM,
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -56,6 +57,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLES,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_MODEL_ERROR,
+    REASON_LOCATE_FAILED,
+    REASON_REGISTRY,
     TIER_EXPRESS,
     CrossoverV2Conductor,
     V2FlowSeams,
@@ -64,6 +68,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_verify_session_spec,
     cloud_capture_target,
     format_position_distance,
+    locate_failed_diagnosis,
     resolve_plan_shape,
 )
 from jasper.capture_relay.client import RelayClient
@@ -1241,6 +1246,148 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
         assert entry["excluded_interval_count"] is None or isinstance(
             entry["excluded_interval_count"], int
         )
+
+
+def test_a_position_that_spends_its_extras_is_dropped_and_the_real_runner_goes_on():
+    """Owner ruling #2086, end to end through the SHIPPED runner.
+
+    The conductor unit tests prove the settled verdict's SHAPE; only this
+    proves it is a shape ``run_capture_plan`` acts on. That matters because the
+    whole design rests on one protocol fact: the runner completes a
+    fixed-length set at exactly ``capture_target`` ACCEPTED captures with
+    ``index == accepted_count + 1``, so a position the flow gives up on has to
+    look accepted on the wire or the phone re-prompts the same spot forever.
+
+    On 2026-08-03 this shape ended the session instead: the fourth failure at
+    one position raised ``CaptureBeginRefused`` before any audio played, while
+    the household's screen still read "one last time".
+    """
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+
+    # A mid-cloud position (never the group's last, so nothing here can be
+    # confused with the geometry ladder) that cannot be located, ever.
+    doomed = DEFAULT_CLOUD_MEASURE_POSITIONS - 1
+    assert build_v2_cloud_index_phase_map()[doomed] == PHASE_CLOUD_MEASURE
+    assert doomed != STAGE1_LAST_INDEX, "not the group's last position"
+    attempts_at_doomed: list[int] = []
+
+    def verify_analysis(program):
+        index, attempt = phone.begun
+        if index != doomed:
+            return _verify_analysis(program)
+        attempts_at_doomed.append(attempt)
+        return _verify_analysis(
+            program, locate_confidence=0.0, pilot_snr_ok=True,
+        )
+
+    published: list = []
+    conductor = _conductor(
+        backend, session, phone,
+        published=published,
+        analyses={"verify": verify_analysis},
+    )
+    volume = VolumeRecorder()
+    _run(_build_runner(conductor, volume), client, session)
+
+    # FINITE: the planned capture plus exactly three extras, then the flow
+    # stopped asking. Not "until the plan's attempt budget ran out".
+    assert len(attempts_at_doomed) == MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
+
+    # AND THE SESSION LIVED. The walk finished, the group closed, and a
+    # candidate was built from the positions that did land.
+    assert conductor.current_phase == PHASE_DONE
+    assert conductor.candidate is not None
+    assert PHASE_CLOUD_MEASURE in conductor.accepted_phases
+    assert volume.events[-1] == "close"
+    assert "abandon" not in volume.events
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+
+    # ATTRIBUTED: the give-up rode the wire carrying the condition observed,
+    # and the count the phone renders said the tries were gone.
+    results = [
+        e for e in backend.host_events[session.session_id]
+        if e.get("phase") == "capture_result"
+    ]
+    settled = [e for e in results if e.get("unresolved")]
+    assert [e["index"] for e in settled] == [doomed]
+    assert settled[0]["unresolved"] == {
+        "index": doomed,
+        "code": REASON_LOCATE_FAILED,
+        "diagnosis": locate_failed_diagnosis(True),
+    }
+    assert settled[0]["accepted"] is True
+    assert settled[0]["attempts"]["left"] == 0
+    assert settled[0]["attempts"]["by_household"] == 3
+
+    # …and the dropped position is genuinely absent from the evidence, so the
+    # correction was fitted from one fewer spot rather than from a fabricated
+    # one.
+    walked = {
+        int(pid.rsplit("_", 1)[1])
+        for pid in conductor.group_positions(PHASE_CLOUD_MEASURE)
+    }
+    assert doomed not in walked
+    assert len(walked) == DEFAULT_CLOUD_MEASURE_POSITIONS - 2
+
+
+def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
+    """Closing X replaces the position miss at the real runner boundary.
+
+    The final post-apply cloud position spends planned+3 on locate misses, is
+    left out, and the group close then hard-stops on a model error. The runner
+    must publish that close-time truth as its final event and return — never
+    wait for a next begin that the position ledger will refuse.
+    """
+    shape = resolve_plan_shape()
+    spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    doomed = spec.capture_plan.capture_target
+    attempts_at_doomed: list[int] = []
+
+    def verify_analysis(program):
+        index, attempt = phone.begun
+        if index != doomed:
+            return _verify_analysis(program)
+        attempts_at_doomed.append(attempt)
+        return _verify_analysis(
+            program, locate_confidence=0.0, pilot_snr_ok=True,
+        )
+
+    conductor = _stage2_conductor(
+        backend,
+        session,
+        phone,
+        analyses={"verify": verify_analysis},
+    )
+    conductor._delta_probe_refusal = (  # type: ignore[method-assign]
+        lambda _probe: (
+            REASON_CORRECTION_MODEL_ERROR
+            if conductor.current_phase == PHASE_CLOUD_VERIFY
+            else None
+        )
+    )
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    assert len(attempts_at_doomed) == MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
+    phases = backend.phases(session.session_id)
+    assert phases[-1] == "capture_result"
+    assert "capture_set_complete" not in phases
+    assert "capture_set_exhausted" not in phases
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["index"] == doomed
+    assert terminal["accepted"] is False
+    assert terminal["code"] == REASON_CORRECTION_MODEL_ERROR
+    assert terminal["reason"] == REASON_REGISTRY[REASON_CORRECTION_MODEL_ERROR].message
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == "phase_cannot_proceed"
+    assert terminal["attempts"]["left"] == 0
+    assert "unresolved" not in terminal
+    assert "could hear the speaker" not in terminal["reason"]
 
 
 def test_position_retention_survives_a_retake_through_the_real_evidence_store(

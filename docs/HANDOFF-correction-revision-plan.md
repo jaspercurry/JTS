@@ -952,8 +952,9 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-03 (R13 owner validation day and overnight evidence /
-                integration review complete)
+date:           2026-08-03 (R13 owner validation day; #2097 repository
+                contract shipped; page-first public rollout and jts3
+                validation remain pending)
 jts3_sha:       7cf87029ac1eecf7e3f6016819ad231a41908772 — verified deployed
                 2026-08-03 18:41 EDT (build.txt status=ok); post-settle
                 jasper-doctor: 0 failed / 5 non-critical warnings. Includes
@@ -964,9 +965,13 @@ active_round:   none — the campaign remains closed. R13's hands-on record,
 last_round:     R13 (owner validation day). #2087 ruled that the predicted-
                 ripple ceiling becomes a brief disclosure, not a hard
                 refusal; shipped in #2088. #2086 records the finite, honest,
-                per-position retry intent, but its #2097 implementation is
-                blocked below. #2091's renderer parking is deprioritized /
-                ordinary backlog
+                per-position retry intent; #2097 is the shipped repository
+                implementation of the owner's diagnosis-vs-action ruling on
+                top of #2095. Its capture-page build 20260803.4 must publish
+                before any Pi carrying the new terminal-result conductor;
+                neither that public page rollout nor the jts3 deployment is
+                asserted by this block. #2091's renderer parking is
+                deprioritized / ordinary backlog
 validation:     applied=true, tier=full, session phases verify/cloud_verify.
                 Local at-mark VERIFY passed (max raw 0.9835 dB; offset
                 -5.868 dB), but only 4 of 5 cloud positions were accepted;
@@ -978,15 +983,20 @@ rollback:       Undo remains banked through the retained pre_apply_profile;
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure
-next_mission:   rerun the entire Full stage 2: local VERIFY plus all five
-                cloud positions. The current protocol cannot honestly resume
-                from only the missing fifth position
-blocked_on:     #2097 remains open and unshipped. Merged #2095 requires an
-                exhausted refusal to equal its evidence-aware reason_message;
-                heard locate_failed ends "Try again." #2097 explicitly
-                forbids retry language on exhaustion and deletes that call
-                site. Both invariants need a new owner/product copy contract;
-                no overnight guess was made
+next_mission:   publish capture-page build 20260803.4 and verify the public
+                version.json first; only then deploy the repository build to
+                jts3 and rerun the entire Full stage 2: local VERIFY plus all
+                five cloud positions. The current protocol cannot honestly
+                resume from only the missing fifth position
+blocked_on:     the page-first capture rollout, followed by jts3 deployment
+                and a hardware pass. Do not deploy the Pi first: an old page
+                drops terminal=true and offers a dead retry after the new
+                runner exits. The #2095/#2097 product question is resolved in
+                the shipped repository contract: diagnosis X is evidence-
+                identical across retry and exhaustion; retry advice appears
+                only while an attempt exists; terminal copy names the exact
+                outcome on the final capture. None of that is yet the deployed
+                jts3 state named above
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1663,7 +1673,8 @@ deliberate, recorded exception — not licence for the spine's *prose* to grow.
 **Verification scope.** A **2026-08-03 post-R13 pass** re-verified exactly the
 CURRENT POSITION block against jts3's deployed build marker and doctor result,
 the retained crossover-v2 state and capture ledger, the owner rulings on #2087
-and #2086, #2091's recorded deprioritization, #2097's integration blocker,
+and #2086, #2091's recorded deprioritization, #2097's ruled integration state
+(shipped in the repository; capture-page 20260803.4 and jts3 not yet deployed),
 #2083's corrected evidence trail, and the filed contracts #2098–#2100. It did
 **not** re-verify the charter, rung bodies, campaign narrative, research index,
 phase→issue reconciliation, or historical appendix; their previously recorded

@@ -407,6 +407,71 @@ GEOMETRY_RETRY_POSITIONS = 2
 # will not fix."
 CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 
+# --------------------------------------------------------------------------- #
+# The bounded-retry ruling (owner, 2026-08-03, issue #2086)
+# --------------------------------------------------------------------------- #
+#
+# One prompted position gets its PLANNED capture plus at most this many EXTRA
+# attempts, POOLED across everyone who can ask for one: the household's "Try
+# again" and voluntary retakes, and the conductor's own geometry retakes. In the
+# owner's words: *"We need a finite bound: do up to three more measurements to
+# see if we can get a read. If we still can't, attribute it to X."*
+#
+# What this replaces: a per-REASON-CODE budget (``ReasonSpec.retry_budget``,
+# 0-2) measured against a cumulative per-slot attempt count. Two measured
+# defects fell out of that shape and killed two live sessions on 2026-08-03
+# (#2083 entries 4 and 6):
+#
+# * an ACCEPTED capture left the counter standing, so one voluntary retake of a
+#   healthy position could start at zero headroom;
+# * each reason code held its OWN counter while all of them drew on the same
+#   plan attempts and the same operator, so alternating conditions walked the
+#   meter to 12 attempts behind a screen still reading "step 6".
+#
+# One pooled counter with an honest surface is the whole replacement. It is
+# deliberately NOT derived from ``ReasonSpec.retry_budget``: the point of the
+# ruling is that the bound belongs to the POSITION and the household's patience,
+# not to whichever condition happened to fire last.
+MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
+
+# Who asked for one extra attempt. Pooled against the single bound above (the
+# ruling is explicit that the bound is shared), but recorded separately so the
+# count the household reads is truthful about who spent what — "the speaker used
+# 2 extra tries; you have 1 left" rather than a bare total that reads as though
+# the household burned them.
+#
+# The split is observed at the REJECTION that kept the plan alive, never at the
+# relay's ``retake`` flag: a geometry rung does not travel the retake path at
+# all (it rejects a good capture so the runner stays on the same index — see
+# ``GEOMETRY_RETRY_POSITIONS``' own note), so every geometry rung on 2026-08-03
+# was authorized with ``retake=false``. Reading the flag would have attributed
+# every system-forced take to the household.
+ATTEMPT_INITIATOR_HOUSEHOLD = "household"
+ATTEMPT_INITIATOR_SPEAKER = "speaker"
+
+# The fewest RESOLVED positions a cloud group can close with and still produce a
+# usable claim, so a position the flow gives up on degrades the group instead of
+# ending the session (ruling item 3: "continue the phase if it can proceed with
+# the positions it has").
+#
+# MEASURED, not chosen: the group close itself has no position floor at all
+# (``_close_cloud_group`` never compares ``len(positions)`` to anything), and
+# ``combine_cloud_positions`` tolerates any non-empty group. The binding
+# constraint is downstream, in the fit —
+# ``linearization_envelope.position_stability_limit`` raises ``ValueError`` for
+# ``n_positions < 2``, because a cross-position spread across fewer than two
+# positions is undefined. So two is where "can proceed" genuinely stops.
+#
+# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` / ``MIN_CLOUD_VERIFY_POSITIONS``
+# (6 / 5): those are PLAN-DECLARATION floors — how many positions the household
+# is asked to walk — enforced once by ``_validated_cloud_counts`` before any
+# capture happens. Reusing them at runtime would have killed the 2026-08-03
+# verify, which was running usefully at 4-of-6 when it died. Between this floor
+# and the declared one the claim is degraded, and degradation is DISCLOSED (the
+# geometry verdict's ``n_positions`` / ``thin_evidence`` already ride the
+# envelope), not gated.
+MIN_RESOLVED_CLOUD_POSITIONS = 2
+
 
 # The offset class that carries fundamental 1's LF edge. A move at or past
 # this distance is "wide"; everything shorter only decorrelates HF nulls.
@@ -1534,6 +1599,12 @@ def verify_inconclusive_cause(
     return "this measurement had less usable sound to compare than the tuning did"
 
 
+def verify_inconclusive_diagnosis(reflection_measured: bool | None) -> str:
+    """What VERIFY established, without advice about the next action."""
+    cause = verify_inconclusive_cause(REASON_VERIFY_INCONCLUSIVE, reflection_measured)
+    return f"The check was inconclusive — {cause}."
+
+
 def verify_inconclusive_message(reflection_measured: bool | None) -> str:
     """``REASON_VERIFY_INCONCLUSIVE``'s household sentence. Single writer.
 
@@ -1542,8 +1613,17 @@ def verify_inconclusive_message(reflection_measured: bool | None) -> str:
     ``REASON_REGISTRY`` — gets copy that is true rather than copy that guesses.
     The envelope re-renders it with the persisted fact when it has one.
     """
-    cause = verify_inconclusive_cause(REASON_VERIFY_INCONCLUSIVE, reflection_measured)
-    return f"The check was inconclusive — {cause}. Re-verify to try again."
+    return f"{verify_inconclusive_diagnosis(reflection_measured)} Re-verify to try again."
+
+
+def locate_failed_diagnosis(pilot_heard: bool | None) -> str:
+    """What the locator established, without advice about the next action."""
+    if pilot_heard:
+        return (
+            "JTS could hear the speaker, but couldn't line up the test tones "
+            "in the recording."
+        )
+    return "Couldn't hear the speaker clearly."
 
 
 def locate_failed_message(pilot_heard: bool | None) -> str:
@@ -1600,15 +1680,39 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     depending on which floor happened to be checked first — the drift this
     file already fixed once for the inconclusive copy (#1974).
     """
+    diagnosis = locate_failed_diagnosis(pilot_heard)
     if pilot_heard:
-        return (
-            "JTS could hear the speaker, but couldn't line up the test tones "
-            "in the recording. Try again."
-        )
-    return (
-        "Couldn't hear the speaker clearly. Check the volume and the "
-        "microphone, then try again."
-    )
+        return f"{diagnosis} Try again."
+    return f"{diagnosis} Check the volume and the microphone, then try again."
+
+
+@dataclass(frozen=True)
+class RetryableReasonCopy:
+    """One retryable reason's diagnosis and still-available action.
+
+    ``diagnosis`` is the observation that remains true after the slot's last
+    extra attempt.  ``retry_action`` is appended only on surfaces where an
+    attempt is still available.  Keeping both pieces in this one value lets
+    :class:`ReasonSpec` expose the historical full ``message``/``banner``
+    strings without duplicating the diagnosis in a terminal-copy registry.
+
+    ``strip_before_join`` supports the two existing em-dash sentences: their
+    standalone diagnosis ends with a period, while the retryable rendering
+    removes that period before the dash.  The diagnosis itself remains a
+    complete household sentence.
+    """
+
+    diagnosis: str
+    retry_action: str
+    joiner: str = " "
+    strip_before_join: str = ""
+
+    @property
+    def message(self) -> str:
+        diagnosis = self.diagnosis
+        if self.strip_before_join and diagnosis.endswith(self.strip_before_join):
+            diagnosis = diagnosis[: -len(self.strip_before_join)]
+        return f"{diagnosis}{self.joiner}{self.retry_action}"
 
 
 @dataclass(frozen=True)
@@ -1617,6 +1721,17 @@ class ReasonSpec:
 
     code: str
     template: str
+    # RETRIABLE-OR-NOT, since the bounded-retry ruling (#2086) moved the COUNT
+    # to :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`. Zero still means "no extra
+    # attempt can help" — a statement about the CONDITION (wiring is wrong, the
+    # tuning would not have improved the speaker), not a budget — and those
+    # codes still stop the moment they fire. Any non-zero value now says only
+    # "retriable"; the specific 1 vs 2 no longer changes behaviour, because a
+    # per-code count was exactly the fragmentation the ruling replaced (five
+    # attempts at one position on 2026-08-03 came from three codes each holding
+    # its own meter). Kept as an int rather than collapsed to a bool to keep
+    # this change off every registry entry's line; see
+    # :data:`NON_RETRIABLE_CODES`.
     retry_budget: int
     # Short banner shown while a transient code auto-retries (template 1). Empty
     # for codes whose template is a decision screen.
@@ -1635,13 +1750,38 @@ class ReasonSpec:
     # that contains it. Shape is the ``next_action`` mapping the envelope
     # emits: ``{"id", "label", "href"}``.
     next_action: Mapping[str, Any] | None = None
+    # Structured only for retryable rows.  ``message``/``banner`` above is
+    # derived from this value by :func:`_retriable_reason`, so the diagnosis
+    # used at exhaustion and the diagnosis inside retry copy have one writer.
+    retry_copy: RetryableReasonCopy | None = None
+
+
+def _retriable_reason(
+    code: str,
+    template: str,
+    retry_budget: int,
+    copy: RetryableReasonCopy,
+    *,
+    auto_retry: bool = False,
+) -> ReasonSpec:
+    """Build a retryable registry row from one structured copy source."""
+    if retry_budget <= 0:
+        raise ValueError("a retryable reason needs a positive retry budget")
+    return ReasonSpec(
+        code,
+        template,
+        retry_budget,
+        copy.message if auto_retry else "",
+        "" if auto_retry else copy.message,
+        retry_copy=copy,
+    )
 
 
 # The §5.10 table, as data. The envelope and the conductor both read it, so copy
 # and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
-    REASON_AGC_BEHAVIORAL_FAIL: ReasonSpec(
-        REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1, "",
+    REASON_AGC_BEHAVIORAL_FAIL: _retriable_reason(
+        REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1,
         # Copy amended 2026-07-28 (issue #1810). It used to state the cause
         # outright — "Your phone's microphone changed its own levels
         # mid-measurement" — and the JTS3 session that filed the issue proved
@@ -1656,28 +1796,39 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # one action that helps either way. The definite mic accusation now
         # lives ONLY on REASON_VERIFY_LEVEL_SHIFT, which has the cross-attempt
         # transfer step to back it.
-        "The two test tones didn't come back at the levels JTS played them. "
-        "Re-allow the microphone, then try again.",
+        RetryableReasonCopy(
+            "The two test tones didn't come back at the levels JTS played them.",
+            "Re-allow the microphone, then try again.",
+        ),
     ),
-    REASON_NOISY_ROOM_LINEARITY: ReasonSpec(
-        REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "The room got loud during that measurement — quiet it and try again.",
+    REASON_NOISY_ROOM_LINEARITY: _retriable_reason(
+        REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "The room got loud during that measurement.",
+            "quiet it and try again.",
+            joiner=" — ",
+            strip_before_join=".",
+        ),
     ),
-    REASON_PILOT_LEVEL_COLLAPSE: ReasonSpec(
-        REASON_PILOT_LEVEL_COLLAPSE, TEMPLATE_FIX_AND_RETRY, 1, "",
+    REASON_PILOT_LEVEL_COLLAPSE: _retriable_reason(
+        REASON_PILOT_LEVEL_COLLAPSE, TEMPLATE_FIX_AND_RETRY, 1,
         # One reason, one action (the Language guide) — but the cause is
         # genuinely two-sided and naming only half of it would be the same
         # over-claim this code exists to stop. "Not your phone" is the point:
         # the household's previous experience of this failure was being told
         # to re-allow a microphone that was working.
-        "The test tones didn't rise clearly above the room — it was too loud, "
-        "or the speaker too quiet, for this check. Quiet the room or move the "
-        "microphone closer, then try again.",
+        RetryableReasonCopy(
+            "The test tones didn't rise clearly above the room — it was too "
+            "loud, or the speaker too quiet, for this check.",
+            "Quiet the room or move the microphone closer, then try again.",
+        ),
     ),
-    REASON_SNR_FLOOR: ReasonSpec(
-        REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "The room is too loud right now, or the microphone is too far away. "
-        "Quiet the room or move the microphone closer, then try again.",
+    REASON_SNR_FLOOR: _retriable_reason(
+        REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "The room is too loud right now, or the microphone is too far away.",
+            "Quiet the room or move the microphone closer, then try again.",
+        ),
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
@@ -1690,21 +1841,35 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The drivers didn't play in the expected order — check the speaker "
         "wiring, or if the room is noisy, quiet it and try again.",
     ),
-    REASON_CLIPPED: ReasonSpec(
+    REASON_CLIPPED: _retriable_reason(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        "That was a touch loud — measuring again a bit quieter.", "",
+        RetryableReasonCopy(
+            "That was a touch loud.",
+            "measuring again a bit quieter.",
+            joiner=" — ",
+            strip_before_join=".",
+        ),
+        auto_retry=True,
     ),
-    REASON_DRIFT_BASELINES_DISAGREE: ReasonSpec(
+    REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        "The capture glitched — measuring again.", "",
+        RetryableReasonCopy(
+            "The capture glitched.",
+            "measuring again.",
+            joiner=" — ",
+            strip_before_join=".",
+        ),
+        auto_retry=True,
     ),
-    REASON_DELAY_EXCEEDS_SEARCH_WINDOW: ReasonSpec(
-        REASON_DELAY_EXCEEDS_SEARCH_WINDOW, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "The microphone may be off the spot in the picture. Re-check its "
-        "placement, then try again.",
+    REASON_DELAY_EXCEEDS_SEARCH_WINDOW: _retriable_reason(
+        REASON_DELAY_EXCEEDS_SEARCH_WINDOW, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "The microphone may be off the spot in the picture.",
+            "Re-check its placement, then try again.",
+        ),
     ),
-    REASON_LOCATE_FAILED: ReasonSpec(
-        REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1, "",
+    REASON_LOCATE_FAILED: _retriable_reason(
+        REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
         # NOT a literal (issue #2085). This code is a locate-CONFIDENCE floor,
         # and its copy named the one cause that would explain a miss on its own
         # — an inaudible speaker — on captures whose own pilot pair proved the
@@ -1714,7 +1879,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # no-pilot-evidence rendering, true for any reader with no capture in
         # hand. The relay verdict and the envelope both re-render it with the
         # measured fact.
-        locate_failed_message(None),
+        RetryableReasonCopy(
+            locate_failed_diagnosis(None),
+            "Check the volume and the microphone, then try again.",
+        ),
     ),
     REASON_RELAY_TIMEOUT: ReasonSpec(
         REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
@@ -1796,13 +1964,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Something went wrong on the speaker during that measurement. "
         "Try again.",
     ),
-    REASON_VERIFY_OUT_OF_TOLERANCE: ReasonSpec(
-        REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2, "",
-        "The result didn't quite match the prediction. Try again, or undo to "
-        "restore the previous sound.",
+    REASON_VERIFY_OUT_OF_TOLERANCE: _retriable_reason(
+        REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2,
+        RetryableReasonCopy(
+            "The result didn't quite match the prediction.",
+            "Try again, or undo to restore the previous sound.",
+        ),
     ),
-    REASON_VERIFY_INCONCLUSIVE: ReasonSpec(
-        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2, "",
+    REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
+        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
         # NOT a literal (issue #1974). This copy used to assert "the room
         # reflection cut the window short" on a verdict that never consulted
         # whether a reflection was found — and across the whole 2026-07-30
@@ -1810,10 +1980,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # (``verify_inconclusive_message``), and what the registry holds is its
         # cause-unknown rendering: true for any reader with no gate record.
         # The envelope re-renders it with the persisted fact.
-        verify_inconclusive_message(None),
+        RetryableReasonCopy(
+            verify_inconclusive_diagnosis(None),
+            "Re-verify to try again.",
+        ),
     ),
-    REASON_VERIFY_LEVEL_SHIFT: ReasonSpec(
-        REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2, "",
+    REASON_VERIFY_LEVEL_SHIFT: _retriable_reason(
+        REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2,
         # The instrument is named device-agnostically (#1941 R4): the session
         # mic may be a UMIK-2 or a laptop, and #1924's field evidence is a
         # UMIK-2 session told its phone had drifted.
@@ -1844,19 +2017,27 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # "not decisions", and the issue carries no ruling comment. This
         # wording is the pipeline's call, derived from #1927's mechanics above,
         # and is the owner's to change.
-        "The microphone's levels changed between measurements, so this check "
-        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
-        "restore the previous sound.",
+        RetryableReasonCopy(
+            "The microphone's levels changed between measurements, so this "
+            "check couldn't settle.",
+            "Try again — if it repeats, re-measure, or undo to restore the "
+            "previous sound.",
+        ),
     ),
-    REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
-        REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "Alignment is less certain at this mic position. Place the microphone "
-        "about 1 m in front of the speaker at tweeter height, then measure "
-        "again.",
+    REASON_LOW_ALIGNMENT_CONFIDENCE: _retriable_reason(
+        REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "Alignment is less certain at this mic position.",
+            "Place the microphone about 1 m in front of the speaker at tweeter "
+            "height, then measure again.",
+        ),
     ),
-    REASON_APPLY_FAILED: ReasonSpec(
-        REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "JTS could not apply the measured crossover automatically. Try again.",
+    REASON_APPLY_FAILED: _retriable_reason(
+        REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "JTS could not apply the measured crossover automatically.",
+            "Try again.",
+        ),
     ),
     REASON_USER_STOPPED: ReasonSpec(
         REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
@@ -1869,22 +2050,25 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "timed out before it could finish. Start over from this page to "
         "measure again — the quick microphone check runs first.",
     ),
-    REASON_CLOUD_GEOMETRY_LOCKED: ReasonSpec(
+    REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
-        # Budget = the retake count itself. ``authorize_begin`` admits
-        # ``retry_budget + 1`` attempts at a slot before refusing, and this
-        # code is only ever raised at the group's LAST position, so a budget of
-        # GEOMETRY_RETRY_POSITIONS is exactly "the original take plus two
-        # wider ones". The conductor stops asking before this budget bites
-        # (``_geometry_retries_used``); the budget is the backstop, not the
-        # policy.
-        GEOMETRY_RETRY_POSITIONS, "",
+        # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
+        # count kept here for readability is the conductor's own ceiling on
+        # wider-spot asks — ``_close_cloud_group`` stops at
+        # ``GEOMETRY_RETRY_POSITIONS`` — but it is no longer what admits the
+        # retake: since the bounded-retry ruling (#2086) every rung spends one
+        # of the POSITION's pooled extras, booked to the speaker rather than the
+        # household. Before that, this code's own budget and every other code's
+        # ran side by side on the same operator.
+        GEOMETRY_RETRY_POSITIONS,
         # Copy names the ACTION, not the diagnosis — a household has no way to
         # judge "the echo estimates clustered". The per-attempt wider-spot
         # instruction rides the verdict payload's ``prompt`` field on top of
         # this (see ``_cloud_measure_group_verdict``).
-        "These spots were too close together to tell a real dip from an echo. "
-        "Take this one from further out and we will use it instead.",
+        RetryableReasonCopy(
+            "These spots were too close together to tell a real dip from an echo.",
+            "Take this one from further out and we will use it instead.",
+        ),
     ),
     # PR-L4. Both are HARD_STOP with budget 0: the defects are systematic, not
     # transient — a second identical measurement reproduces them — and both name
@@ -1959,7 +2143,6 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
 
-
 def reason_message(
     code: str,
     spec: ReasonSpec,
@@ -1983,14 +2166,10 @@ def reason_message(
     evidence-keyed code means adding a branch HERE; a caller that renders
     ``spec.message`` directly re-opens the gap.
 
-    **Every caller is routed, including the budget-exhaustion raise inside
-    ``authorize_begin``.** That one was briefly left out on the grounds that
-    the attempt-meter block belongs to the bounded-retry work — but leaving it
-    did not preserve the old behaviour, it INTRODUCED a divergence: the phone's
-    terminal screen said one thing, the speaker page said another, about a
-    single failure, with the phone's copy pointing the household at the
-    speaker page to see it. A surface left un-routed is not neutral once its
-    siblings move.
+    Exhaustion is state-aware: :meth:`authorize_begin` keeps the diagnosis
+    selected here but replaces retry advice with the terminal outcome. That is
+    intentionally not whole-sentence equality. The observation must agree
+    across surfaces; an action that is no longer available must not survive.
 
     ``spec`` is passed in rather than looked up so each caller keeps the
     existence guard it already had — ``REASON_REGISTRY[code]`` raising
@@ -2009,6 +2188,39 @@ def reason_message(
     # ``or spec.banner`` for the silent-auto-retry codes, whose household text
     # IS the banner and whose ``message`` is empty by construction.
     return spec.message or spec.banner
+
+
+def reason_diagnosis(
+    code: str,
+    spec: ReasonSpec,
+    *,
+    pilot_heard: bool | None = None,
+    reflection_measured: bool | None = None,
+) -> str:
+    """The observation inside any retryable reason, without retry advice.
+
+    The two evidence-keyed reasons select their diagnosis from this capture's
+    facts. Every literal reason reads the diagnosis stored in its structured
+    :class:`RetryableReasonCopy`; that same value also composes the registry's
+    full retryable ``message``/``banner``. Exhaustion therefore preserves X
+    for every retryable code without maintaining a second prose table.
+    """
+    if code == REASON_LOCATE_FAILED:
+        return locate_failed_diagnosis(pilot_heard)
+    if code == REASON_VERIFY_INCONCLUSIVE:
+        return verify_inconclusive_diagnosis(reflection_measured)
+    return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
+
+
+# Conditions no extra attempt can clear — wiring in the wrong order, a tuning
+# that would not have improved the speaker, a dead link. The bounded-retry
+# ruling (#2086) is a CEILING on retries, not a floor: it stops the flow asking
+# a household for a fifth take of the same spot, and it does not start it asking
+# for a second take of something a second take cannot fix. These refuse on the
+# next begin, with their own copy, exactly as they always have.
+NON_RETRIABLE_CODES = frozenset(
+    code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
+)
 
 # --------------------------------------------------------------------------- #
 # tuning constants (PROVISIONAL pending W6 bench validation)
@@ -3483,6 +3695,74 @@ def attempt_record_from_verify(
     )
 
 
+@dataclass
+class SlotAttempts:
+    """One prompted position's attempt ledger (owner ruling #2086).
+
+    The single meter for a slot. ``admitted`` counts every attempt the
+    conductor let start — the first is the PLANNED capture and is free; each
+    one after it spends an extra against
+    :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`, attributed to whoever asked.
+
+    An ACCEPTED capture never adds to ``by_household``/``by_speaker`` beyond
+    the extra its own admission already spent, and the planned capture adds
+    nothing at all — so a position measured cleanly on the first take still has
+    its full three extras available if the household chooses to redo it. That
+    is the "accepted captures never consume retry budget" half of the ruling:
+    before it, acceptance left the old cumulative counter standing and one
+    voluntary retake of a healthy position could start at zero headroom.
+
+    Mutable on purpose (the frozen ``PhaseVerdict`` next door is a value; this
+    is per-session state the conductor advances).
+    """
+
+    admitted: int = 0
+    by_household: int = 0
+    by_speaker: int = 0
+
+    @property
+    def extras_used(self) -> int:
+        return self.by_household + self.by_speaker
+
+    @property
+    def extras_left(self) -> int:
+        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.extras_used)
+
+    def spend(self, initiator: str) -> None:
+        """Charge one extra attempt to ``initiator``.
+
+        Callers gate on :attr:`extras_left` first; an unchecked overspend would
+        be a bug, so it raises rather than silently capping — a meter that lies
+        about its own total is the defect this class replaces.
+        """
+        if self.extras_left <= 0:
+            raise CrossoverV2FlowError(
+                "slot has no extra attempts left "
+                f"({self.extras_used}/{MAX_EXTRA_ATTEMPTS_PER_POSITION})"
+            )
+        if initiator == ATTEMPT_INITIATOR_SPEAKER:
+            self.by_speaker += 1
+        else:
+            self.by_household += 1
+
+    def to_payload(self) -> dict[str, Any]:
+        """The honest count, as the phone renders it (ruling item 2).
+
+        Numbers only — the page composes the eyebrow ("Measurement 6 of 6 —
+        extra try 2 of 3") because the §2.1 screen grammar makes the counter
+        the page's slot, and a second sentence written here would be the same
+        fact stated twice. ``by_speaker`` is what makes the count truthful
+        about who spent what.
+        """
+        return {
+            "used": self.extras_used,
+            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            "left": self.extras_left,
+            "by_speaker": self.by_speaker,
+            "by_household": self.by_household,
+        }
+
+
 @dataclass(frozen=True)
 class PhaseVerdict:
     """A consume verdict: the relay dict + the internal reason (if any)."""
@@ -3498,6 +3778,11 @@ class PhaseVerdict:
     # than dug out of ``payload`` because it is decided at the gate, where the
     # analysis is in hand, and a typed field cannot be misspelled into silence.
     pilot_heard: bool | None = None
+    # VERIFY's gate discriminator for ``verify_inconclusive`` (#1974/#2095),
+    # paired with the verdict for the same reason ``pilot_heard`` is: terminal
+    # exhaustion must repeat this capture's diagnosis, not the registry's
+    # evidence-unknown fallback.
+    reflection_measured: bool | None = None
 
     def to_relay_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
@@ -3520,11 +3805,18 @@ class PhaseVerdict:
             out.update(
                 code=self.code,
                 template=spec.template,
-                reason=reason_message(self.code, spec, pilot_heard=self.pilot_heard),
+                reason=reason_message(
+                    self.code,
+                    spec,
+                    pilot_heard=self.pilot_heard,
+                    reflection_measured=self.reflection_measured,
+                ),
                 banner=spec.banner,
                 auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
                 pilot_heard=self.pilot_heard,
             )
+            if self.code == REASON_VERIFY_INCONCLUSIVE:
+                out["reflection_measured"] = self.reflection_measured
         out.update(self.payload)
         return out
 
@@ -5299,12 +5591,30 @@ class CrossoverV2Conductor:
         # phase for a single-capture phase and the ``phase:index`` pair inside a
         # position group (``_slot_of_index``), so a rejected position spends its
         # own retry budget instead of the whole group's.
-        self._phase_attempts: dict[str, int] = {}
+        #
+        # ONE meter per slot (:class:`SlotAttempts`, owner ruling #2086). It
+        # replaced a pair — a cumulative attempt count measured against
+        # ``ReasonSpec.retry_budget``, plus a per-slot geometry-rejection
+        # DISCOUNT that existed only to keep the conductor's own retakes from
+        # eating the household's budget. Under one pooled bound the discount has
+        # nothing to discount from: a geometry rung spends an extra like any
+        # other, it is just booked to the speaker rather than the household.
+        self._slot_attempts: dict[str, SlotAttempts] = {}
         self._last_reason: dict[str, str] = {}
-        # Per-slot count of geometry-locked rejections — attempts the conductor
-        # spent on GOOD captures to buy spread. Discounted from the slot's
-        # failure budget in ``authorize_begin``; see its comment.
-        self._geometry_rejections: dict[str, int] = {}
+        # The capture evidence paired with each slot's last rejection. The
+        # global ``_last_failure_*`` pair serves persistence; it cannot answer
+        # a replayed begin for an older slot without risking evidence from a
+        # different position. Exhaustion reads this slot-owned pair instead.
+        self._last_pilot_evidence: dict[
+            str, tuple[str, bool | None, bool | None]
+        ] = {}
+        # Positions the flow GAVE UP on: ``{phase: {index: observed_code}}``.
+        # Written when a slot's extras are spent and the group can still
+        # proceed without it (``_resolve_spent_slot``), so the group closes with
+        # the positions it has instead of the session dying at the mic.
+        self._group_unresolved: dict[str, dict[int, str]] = {
+            phase: {} for phase in self._group_indexes
+        }
         self._armed_index: int | None = None
         # The most recent authorized (index, attempt) — the host reads it to
         # address the terminal ``capture_result`` host event at a play-seam
@@ -6038,21 +6348,37 @@ class CrossoverV2Conductor:
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
 
-    def _pilot_heard_for(self, code: str | None) -> bool | None:
+    def _pilot_heard_for(
+        self, code: str | None, *, slot: str | None = None,
+    ) -> bool | None:
         """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
 
-        Every writer of ``_last_failure_code`` writes the discriminator beside
-        it, so in practice this returns the stored value. It re-checks anyway
-        because the failure being described is not always the failure last
-        consumed — :meth:`_refuse` can name a code the capture loop never
-        produced — and attaching one capture's evidence to another's code
-        would put a confident, wrong sentence in front of a household. An
-        unknown pairing degrades to "no evidence", which renders the
-        registry's own copy: the honest answer when nothing is established.
+        With ``slot``, reads the pair owned by that capture position; without
+        it, reads the global pair used by persisted terminal state. Both forms
+        re-check the code because the failure being described is not always
+        the failure last consumed — :meth:`_refuse` can name a code the capture
+        loop never produced, and a replayed begin can address an older slot.
+        Attaching one capture's evidence to another's code would put a
+        confident, wrong sentence in front of a household. An unknown pairing
+        degrades to the registry copy, which claims nothing unmeasured.
         """
+        if slot is not None:
+            paired = self._last_pilot_evidence.get(slot)
+            if code is None or paired is None or paired[0] != code:
+                return None
+            return paired[1]
         if code is None or code != self._last_failure_code:
             return None
         return self._last_failure_pilot_heard
+
+    def _reflection_measured_for(
+        self, code: str | None, *, slot: str,
+    ) -> bool | None:
+        """The gate discriminator recorded with ``code`` at ``slot``."""
+        paired = self._last_pilot_evidence.get(slot)
+        if code is None or paired is None or paired[0] != code:
+            return None
+        return paired[2]
 
     @property
     def armed_capture(self) -> tuple[int, int] | None:
@@ -6231,14 +6557,21 @@ class CrossoverV2Conductor:
         ``_apply_observed`` short-circuits before either the deferral or the
         ``apply_failed`` refusal below. The machinery is retained rather than
         deleted — no new design may depend on it, and a conductor built without
-        a prior apply still gets the honest hold. A phase whose retry budget is
-        spent is
-        refused (:class:`CaptureBeginRefused`, which ends the session so the
-        envelope's terminal screen shows). If the auto-apply hit a TERMINAL
-        failure (``seams.apply_failed()`` names a reason), the hold is refused
-        outright rather than held toward a dishonest relay_timeout — the
+        a prior apply still gets the honest hold. If the auto-apply hit a
+        TERMINAL failure (``seams.apply_failed()`` names a reason), the hold is
+        refused outright rather than held toward a dishonest relay_timeout — the
         household sees the real reason, not a manufactured "link timed out."
         Every other begin is admitted.
+
+        **Retry exhaustion does NOT normally arrive here** (owner ruling
+        #2086). A slot that has spent its extras is settled at the verdict that
+        spent the last one — ``_resolve_spent_slot`` either drops the position
+        and advances the group, or names the honest end — so the household is
+        never handed a "try again" screen whose button is about to end the
+        session. The refusal below is the backstop for a begin that reaches a
+        settled slot anyway (a page that ignored the verdict, a replayed
+        event), and its copy says the tries are gone rather than inviting one
+        more.
         """
         phase = self._phase_of_index(index)
         if phase == PHASE_VERIFY and not self._apply_observed():
@@ -6258,61 +6591,119 @@ class CrossoverV2Conductor:
                 message = reason_message(failure_code, spec) if spec else failure_code
                 raise CaptureBeginRefused(failure_code, message)
             raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
-        # Budget: CUMULATIVE per phase by design — the phase's total attempt
-        # count is compared against the LAST failure's retry budget, so
-        # alternating reason codes cannot restart the meter (a capture that
-        # fails `clipped` then `locate_failed` then `clipped`... would retry
-        # forever under a literal per-code reading of the §5.10 budget
-        # column). This is deliberately stricter than §5.10 read per-code;
-        # the plan's `max_attempts` (8) bounds the whole session regardless.
-        # First attempt of any slot is always admitted.
+        # ONE pooled meter per slot: the planned capture, then at most
+        # MAX_EXTRA_ATTEMPTS_PER_POSITION extras, whoever asks for them. The
+        # first attempt of any slot is always admitted and always free.
         slot = self._slot_of_index(index)
-        count = self._phase_attempts.get(slot, 0) + 1
-        last = self._last_reason.get(slot)
-        # A geometry-locked retake is NOT a quality failure — the capture was
-        # good and the conductor asked for a wider one anyway — so it must not
-        # eat the slot's failure budget. Without this discount the sequence
-        # "geometry retake ×2, then one ordinary bad capture" spends 4 attempts
-        # against a 1-retry reason and refuses TERMINALLY, killing a 16-capture
-        # session at its last position over a single recoverable glitch. The
-        # discount is capped at GEOMETRY_RETRY_POSITIONS so a runaway geometry
-        # loop still meets the wall (``_close_cloud_group`` bounds it first;
-        # this is the backstop), and the plan's own ``max_attempts`` bounds the
-        # whole session regardless.
-        forgiven = min(
-            self._geometry_rejections.get(slot, 0), GEOMETRY_RETRY_POSITIONS
-        )
-        if (
-            last is not None
-            and count - forgiven > REASON_REGISTRY[last].retry_budget + 1
-        ):
-            spec = REASON_REGISTRY[last]
-            # Same selector as every other surface (#2085). Without this the
-            # phone's terminal screen and the speaker page describe ONE failure
-            # two different ways — and the phone's own copy ends with "The
-            # speaker page shows what happens next", pointing the household
-            # straight at the contradiction. With ``retry_budget=1`` this
-            # refusal is the 3rd authorize, so the misattribution would be the
-            # LAST thing read.
-            #
-            # ``_pilot_heard_for(last)`` does real work here rather than
-            # returning the stored value unconditionally: ``last`` is the
-            # SLOT's reason, and a session that failed a different slot more
-            # recently has moved ``_last_failure_code`` on. Mismatch degrades
-            # to the registry copy, which claims nothing.
-            raise CaptureBeginRefused(
-                spec.code,
-                reason_message(
-                    spec.code, spec, pilot_heard=self._pilot_heard_for(last),
-                ),
-            )
-        self._phase_attempts[slot] = count
+        ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
+        if ledger.admitted:
+            last = self._last_reason.get(slot)
+            if last in NON_RETRIABLE_CODES:
+                # Not exhaustion — a condition another take cannot clear. Its
+                # own copy already names the one action that helps, so it is
+                # published unchanged (and it never promised "measure again").
+                spec = REASON_REGISTRY[last]
+                raise CaptureBeginRefused(
+                    spec.code,
+                    reason_message(
+                        spec.code,
+                        spec,
+                        pilot_heard=self._pilot_heard_for(last, slot=slot),
+                    ),
+                )
+            if ledger.extras_left <= 0:
+                code = last or REASON_LOCATE_FAILED
+                spec = REASON_REGISTRY[code]
+                diagnosis = reason_diagnosis(
+                    code,
+                    spec,
+                    pilot_heard=self._pilot_heard_for(code, slot=slot),
+                    reflection_measured=self._reflection_measured_for(
+                        code, slot=slot,
+                    ),
+                )
+                raise CaptureBeginRefused(
+                    # ATTRIBUTE: the code the household is told about, and the
+                    # one ``_persist_terminal_failure`` records, is the
+                    # condition actually observed here — never a generic
+                    # exhaustion code that would erase what went wrong.
+                    code,
+                    self._extras_spent_message(
+                        ledger,
+                        diagnosis=diagnosis,
+                        outcome=self._spent_slot_outcome(phase, index),
+                    ),
+                )
+            ledger.spend(self._extra_initiator(slot))
+        ledger.admitted += 1
         self._armed_index = index
         self._armed_capture = (index, attempt)
         log_event(
             logger, "correction.crossover_v2_authorized",
             session_id=self.session_id, phase=phase, index=index, attempt=attempt,
+            # The same numbers the household reads, in the journal (ruling item
+            # 2). ``attempt`` alone is the PLAN's running counter — it was 12
+            # while the screen said "step 6" on 2026-08-03 — so it cannot tell a
+            # support read how many tries this POSITION has had.
+            extra_used=ledger.extras_used,
+            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            extra_by_speaker=ledger.by_speaker,
         )
+
+    def _extra_initiator(self, slot: str) -> str:
+        """Who is asking for the extra attempt about to be admitted.
+
+        Read off the rejection that kept the plan alive at this slot, because
+        that is the only place the distinction is visible: a geometry rung is
+        the conductor demanding a wider take of a capture that was otherwise
+        fine, and it travels the ordinary begin path with ``retake=false``
+        (see :data:`GEOMETRY_RETRY_POSITIONS` — rejecting is the only lever
+        that keeps a fixed-length plan on the same index). Everything else —
+        a "Try again" after a quality rejection, a voluntary retake — is the
+        household choosing to spend one.
+        """
+        return (
+            ATTEMPT_INITIATOR_SPEAKER
+            if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED
+            else ATTEMPT_INITIATOR_HOUSEHOLD
+        )
+
+    @staticmethod
+    def _extras_spent_message(
+        ledger: SlotAttempts, *, diagnosis: str, outcome: str,
+    ) -> str:
+        """The household sentence for a position whose extras are gone.
+
+        Keeps an evidence-derived diagnosis when one exists, then names the
+        count and terminal outcome. It deliberately does NOT reuse the full
+        registry ``message``: retriable rows end by inviting an action the
+        flow will no longer grant.
+        """
+        used = ledger.extras_used
+        tries = "try" if used == 1 else "tries"
+        count = (
+            f"JTS measured this spot {ledger.admitted} times — the planned one "
+            f"plus {used} extra {tries} — and still could not get a clean read."
+        )
+        return " ".join(part for part in (diagnosis, count, outcome) if part)
+
+    def _spent_slot_outcome(self, phase: str, index: int) -> str:
+        """The state after an exhausted slot, derived from conductor state."""
+        if phase in self._group_indexes:
+            if index in self._group_unresolved[phase]:
+                return "This position was left out and the group continued."
+            if any(
+                position.index == index for position in self._group_positions[phase]
+            ):
+                return (
+                    "JTS kept the earlier measurement for this position and "
+                    "the group continued."
+                )
+            return (
+                "The measurement cannot continue because too few positions "
+                "produced a clean read."
+            )
+        return "The measurement cannot continue because this step needs a clean read."
 
     def on_armed(self, state: Any = None) -> None:
         """Play the armed phase's excitation program (the host stimulus)."""
@@ -6392,17 +6783,55 @@ class CrossoverV2Conductor:
         # it cannot be forgotten, and the fact is the same one regardless of
         # which floor fired: did the pilot pair clear the room in this
         # recording. See ``locate_failed_message``.
-        verdict = replace(verdict, pilot_heard=analysis.pilot_snr_ok)
+        reflection_measured: bool | None = None
+        if verdict.code == REASON_VERIFY_INCONCLUSIVE:
+            gate_record = _gate_record(analysis.summed_response)
+            if gate_record is not None:
+                reflection_measured = bool(gate_record["reflection_measured"])
+        verdict = replace(
+            verdict,
+            pilot_heard=analysis.pilot_snr_ok,
+            reflection_measured=reflection_measured,
+        )
+        if not verdict.accepted and verdict.code is not None:
+            # Recorded BEFORE the settle so both readers see it: the settle's
+            # own attribution fallback, and ``_extra_initiator`` at the next
+            # begin (a geometry rung is only identifiable from the rejection
+            # that produced it).
+            self._last_reason[slot] = verdict.code
+            self._last_pilot_evidence[slot] = (
+                verdict.code,
+                verdict.pilot_heard,
+                verdict.reflection_measured,
+            )
+            # SETTLE HERE, not at the next begin (owner ruling #2086 item 3).
+            # If this rejection spent the slot's last extra, the position is
+            # decided now — dropped and the group advanced, or the honest end
+            # named — so the household is never shown a retry screen whose
+            # button only leads to a pre-play refusal.
+            verdict = self._resolve_spent_slot(phase, index, slot, verdict)
         if verdict.accepted:
             # A position group's PHASE is accepted only when its last index is
             # in; a single-capture phase closes on its own acceptance. Both
             # cases route through ``_note_accepted`` so there is one place that
             # decides "this phase is done."
             self._note_accepted(phase, index)
-            self._last_reason.pop(slot, None)
+            # A clean acceptance supersedes the slot's rejection. A settled
+            # exhaustion remains paired for the defensive replay/backstop;
+            # the group has advanced, so retaining it cannot spend a new slot.
+            if not (
+                "unresolved" in verdict.payload
+                or verdict.payload.get("kept_earlier_take") is True
+            ):
+                self._last_reason.pop(slot, None)
+                self._last_pilot_evidence.pop(slot, None)
             self._last_failure_code = None
             self._last_failure_pilot_heard = None
         elif verdict.code is not None:
+            # Re-read off the FINAL verdict: a settled close can substitute a
+            # product refusal (the CLOUD_VERIFY delta probe) for the quality
+            # rejection that got here, and the attributed code must be the one
+            # actually returned.
             self._last_reason[slot] = verdict.code
             self._last_failure_code = verdict.code
             # Cleared together with the code above and set together with it
@@ -6410,10 +6839,13 @@ class CrossoverV2Conductor:
             # this pair, and a discriminator outliving its code would describe
             # one capture with another's evidence.
             self._last_failure_pilot_heard = verdict.pilot_heard
-            if verdict.code == REASON_CLOUD_GEOMETRY_LOCKED:
-                self._geometry_rejections[slot] = (
-                    self._geometry_rejections.get(slot, 0) + 1
-                )
+        # Every verdict carries the position's honest count (ruling item 2), so
+        # the phone can say "extra try 2 of 3" instead of repeating "one more
+        # time" while a hidden meter runs. Stamped once, here, rather than in
+        # each ``_consume_*``: the ledger is this method's bookkeeping, and one
+        # writer is what keeps the number the phone renders and the number the
+        # journal logs from drifting.
+        verdict = self._with_attempt_payload(slot, verdict)
         log_event(
             logger, "correction.crossover_v2_result",
             session_id=self.session_id, phase=phase,
@@ -6430,7 +6862,226 @@ class CrossoverV2Conductor:
         )
         return verdict.to_relay_dict()
 
+    def _with_attempt_payload(
+        self, slot: str, verdict: PhaseVerdict
+    ) -> PhaseVerdict:
+        ledger = self._slot_attempts.get(slot)
+        if ledger is None:
+            return verdict
+        return replace(
+            verdict, payload={**verdict.payload, "attempts": ledger.to_payload()}
+        )
+
+    def _resolve_spent_slot(
+        self, phase: str, index: int, slot: str, verdict: PhaseVerdict
+    ) -> PhaseVerdict:
+        """Decide a position whose extras are gone — attribute, then degrade.
+
+        Returns ``verdict`` unchanged while the slot still has extras left; the
+        household keeps retrying exactly as before. Once they are spent there
+        are three honest outcomes, in this order:
+
+        1. **An earlier take is still standing** (the household retook a
+           position that had already been accepted, and the retakes failed).
+           Nothing was lost — keep the earlier curve and move on. This is the
+           `Keep the earlier measurement` escape, applied automatically once
+           there is no try left to offer.
+        2. **The group can still reach a usable cloud** — drop this position,
+           record the observed condition against it, and advance. The cloud
+           tolerates variable position counts down to
+           :data:`MIN_RESOLVED_CLOUD_POSITIONS`; below the declared plan length
+           the claim is degraded and disclosed, not refused.
+        3. **It cannot** (a single-capture phase, or a group with too few
+           curves in hand and too few positions left to reach the floor) —
+           return a terminal result on THIS final capture. The runner ends the
+           set immediately and the phone renders diagnosis + count + exact
+           outcome with no retry affordance. :meth:`authorize_begin` retains a
+           defensive backstop for a replayed/older page only.
+
+        A group phase never reaches (3) with anything left to measure, which is
+        why the 2026-08-03 shape — a pre-play refusal at a cloud position while
+        the screen read "step 6, one last time" — is now unreachable from
+        ordinary retry exhaustion.
+        """
+        ledger = self._slot_attempts.get(slot)
+        if ledger is None or ledger.extras_left > 0:
+            return verdict
+        observed = verdict.code or self._last_reason.get(slot) or ""
+        diagnosis = ""
+        if observed in REASON_REGISTRY:
+            diagnosis = reason_diagnosis(
+                observed,
+                REASON_REGISTRY[observed],
+                pilot_heard=verdict.pilot_heard,
+                reflection_measured=verdict.reflection_measured,
+            )
+        if phase not in self._group_indexes:
+            outcome = "phase_cannot_proceed"
+            self._log_slot_spent(
+                phase, index, observed, outcome,
+                diagnosis=diagnosis,
+                pilot_heard=verdict.pilot_heard,
+                reflection_measured=verdict.reflection_measured,
+            )
+            return self._terminal_spent_verdict(
+                phase, index, slot, verdict,
+                diagnosis=diagnosis,
+                outcome=outcome,
+            )
+        with self._close_lock:
+            retained = self._group_positions[phase]
+            if any(position.index == index for position in retained):
+                # (1) The earlier take survives — a rejection never replaces a
+                # retained curve — so this position is not unresolved at all.
+                self._log_slot_spent(
+                    phase, index, observed, "kept_earlier_take",
+                    diagnosis=diagnosis,
+                    pilot_heard=verdict.pilot_heard,
+                    reflection_measured=verdict.reflection_measured,
+                )
+                return self._settled_group_verdict(
+                    phase, index, {"kept_earlier_take": True}
+                )
+            # (3) Can this group still reach the floor? Curves in hand PLUS the
+            # positions the household has not walked yet — never the count so
+            # far, which would make the answer depend on walk order and end the
+            # session at position 1 of 8 with seven good spots still ahead.
+            unwalked = [
+                other for other in self._group_indexes[phase]
+                if other != index and other not in self._group_accepted[phase]
+            ]
+            if len(retained) + len(unwalked) < MIN_RESOLVED_CLOUD_POSITIONS:
+                outcome = "below_position_floor"
+                self._log_slot_spent(
+                    phase, index, observed, outcome,
+                    diagnosis=diagnosis,
+                    pilot_heard=verdict.pilot_heard,
+                    reflection_measured=verdict.reflection_measured,
+                )
+                return self._terminal_spent_verdict(
+                    phase, index, slot, verdict,
+                    diagnosis=diagnosis,
+                    outcome=outcome,
+                )
+            # (2) Attribute and continue.
+            self._group_unresolved[phase][index] = observed
+            self._log_slot_spent(
+                phase, index, observed, "position_unresolved",
+                diagnosis=diagnosis,
+                pilot_heard=verdict.pilot_heard,
+                reflection_measured=verdict.reflection_measured,
+            )
+            return self._settled_group_verdict(
+                phase,
+                index,
+                {
+                    "unresolved": {
+                        "index": index,
+                        "code": observed,
+                        "diagnosis": diagnosis,
+                    }
+                },
+            )
+
+    def _terminal_spent_verdict(
+        self,
+        phase: str,
+        index: int,
+        slot: str,
+        verdict: PhaseVerdict,
+        *,
+        diagnosis: str,
+        outcome: str,
+    ) -> PhaseVerdict:
+        """Return the last capture's terminal, no-more-attempts verdict."""
+        ledger = self._slot_attempts[slot]
+        return replace(
+            verdict,
+            payload={
+                **verdict.payload,
+                # Overrides ``to_relay_dict``'s retryable reason. The same
+                # observed code/evidence still selects the diagnosis; only the
+                # unavailable retry action is replaced.
+                "reason": self._extras_spent_message(
+                    ledger,
+                    diagnosis=diagnosis,
+                    outcome=self._spent_slot_outcome(phase, index),
+                ),
+                # Generic runner/page contract: publish this capture_result,
+                # then finish without waiting for a dead next begin.
+                "terminal": True,
+                "terminal_outcome": outcome,
+            },
+        )
+
+    def _settled_group_verdict(
+        self, phase: str, index: int, payload: dict[str, Any]
+    ) -> PhaseVerdict:
+        """Advance the group past a settled position.
+
+        ``accepted=True`` is the relay's only "this slot is done, move on"
+        signal — the runner completes a fixed-length set at exactly
+        ``capture_target`` accepted captures with ``index == accepted_count +
+        1`` (see :data:`GEOMETRY_RETRY_POSITIONS`' note), so a settled position
+        has to look accepted on the wire or the phone re-prompts the same spot
+        forever. The payload says what actually happened, and
+        ``_group_unresolved`` is what the group close and the journal read.
+
+        Caller holds ``_close_lock``.
+        """
+        if index == self._group_indexes[phase][-1]:
+            closing = self._close_cloud_group(phase, None)
+            if not closing.accepted:
+                # This slot is already spent: a close-time product gate (for
+                # example the delta probe) has replaced the position's
+                # retryable rejection with its OWN hard-stop finding. Publish
+                # that exact closing code/copy as terminal on this capture;
+                # otherwise the page offers a retry the ledger cannot admit.
+                # Do not route through ``_terminal_spent_verdict`` — its
+                # diagnosis belongs to the earlier position rejection, while
+                # ``closing`` is now the reason the phase cannot proceed.
+                closing_payload = {
+                    **closing.payload,
+                    "terminal": True,
+                    "terminal_outcome": "phase_cannot_proceed",
+                }
+            else:
+                # Only a successful close continues the group, so only that
+                # path carries the settled position's left-out/kept payload.
+                closing_payload = {**closing.payload, **payload}
+            return replace(closing, payload=closing_payload)
+        return PhaseVerdict(True, payload=payload)
+
+    def _log_slot_spent(
+        self,
+        phase: str,
+        index: int,
+        observed: str,
+        outcome: str,
+        *,
+        diagnosis: str,
+        pilot_heard: bool | None,
+        reflection_measured: bool | None,
+    ) -> None:
+        log_event(
+            logger, "correction.crossover_v2_position_attempts_spent",
+            level=logging.WARNING,
+            session_id=self.session_id, phase=phase, index=index,
+            observed=observed, outcome=outcome,
+            # A settled accepted result has ``code=None`` by protocol. Preserve
+            # the final rejected capture's exact observation/evidence pairing
+            # here so support does not have to infer it from earlier logs.
+            diagnosis=diagnosis,
+            pilot_heard=pilot_heard,
+            reflection_measured=reflection_measured,
+            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+        )
+
     def _note_accepted(self, phase: str, index: int) -> None:
+        # ``_group_accepted`` means RESOLVED, not "has a curve": a position the
+        # flow gave up on (``_group_unresolved``) lands here too, because the
+        # relay advanced past it and the phase would otherwise never close.
+        # ``_group_positions`` remains the sole record of what was measured.
         if phase not in self._group_indexes:
             self._accepted.add(phase)
             return
@@ -6951,9 +7602,16 @@ class CrossoverV2Conductor:
             )
 
     def _close_cloud_group(
-        self, phase: str, position: _CloudPosition
+        self, phase: str, position: _CloudPosition | None
     ) -> PhaseVerdict:
         """The group-end combine, and the one bounded retake it can ask for.
+
+        ``position`` is the take that just landed at the group's last index, or
+        ``None`` when the group is closing because that position was SETTLED
+        without a curve (:meth:`_resolve_spent_slot`). A settled close never
+        asks for a geometry retake: the retake lever works by rejecting the
+        take at this index, and there is no take — asking would re-open the
+        slot whose tries are exactly what just ran out.
 
         Combines the group's retained positions exactly ONCE (S3 review
         finding, 2026-07-26: an earlier revision called
@@ -7000,7 +7658,13 @@ class CrossoverV2Conductor:
             # the verdict honest with the new take, and accept.
             and phase not in self._group_geometry
         )
-        if retry_warranted:
+        # The take a warranted retry would replace — ``None`` on a SETTLED
+        # close, which is why such a close never asks (see the docstring).
+        # Carrying the narrowing in the value rather than in a second
+        # conjunct keeps "which take gets dropped" and "is a drop warranted"
+        # the same fact.
+        replacing = position if retry_warranted else None
+        if replacing is not None:
             self._geometry_retries_used[phase] = retries + 1
             # Drop the take being replaced FROM THE CLOUD. This is what the
             # protocol's retake lever means — the same index is measured again
@@ -7010,7 +7674,7 @@ class CrossoverV2Conductor:
             # path: the capture was fine, and a forensic record of what the
             # operator actually walked is worth more than a tidy bundle.
             retained = self._group_positions[phase]
-            retained[:] = [p for p in retained if p.index != position.index]
+            retained[:] = [p for p in retained if p.index != replacing.index]
             log_event(
                 logger, "correction.crossover_v2_cloud_geometry_retry",
                 session_id=self.session_id, phase=phase,
@@ -7053,6 +7717,10 @@ class CrossoverV2Conductor:
             geometry_reason=verdict.get("reason") or "",
             thin_evidence=bool(verdict.get("thin_evidence")),
             geometry_retries=retries,
+            # Positions the flow gave up on (ruling #2086 item 3). A group that
+            # closed short says so here, so a support read can tell a degraded
+            # cloud from a walk the household completed.
+            unresolved=len(self._group_unresolved.get(phase, {})),
         )
         # S4 review finding (2026-07-26): the group's accept is decided above
         # (the log line just fired) — the honesty pipeline below is
@@ -7098,10 +7766,11 @@ class CrossoverV2Conductor:
                 session_id=self.session_id, phase=phase, exc_info=True,
             )
         payload: dict[str, Any] = {
-            "position_id": position.position_id,
             "group_complete": phase,
             "geometry": dict(verdict),
         }
+        if position is not None:
+            payload["position_id"] = position.position_id
         if phase == PHASE_CLOUD_MEASURE:
             # The pre-apply cloud's geometry verdict and disclosure pipeline are
             # in hand — but the FIT no longer runs here. Flow-simplification

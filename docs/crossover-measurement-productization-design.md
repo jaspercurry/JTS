@@ -551,7 +551,8 @@ class CapturePlanEntry:
 The capture page's v3 session loop reads the entry for the next index
 (duration + prompt); `begin_capture{index, attempt}` and the worker stay
 untouched (the worker never parses specs — opacity preserved). Pi-side
-admission maps index → phase and holds per-phase retry budgets; between
+admission maps index → phase and holds one pooled per-position retry meter
+(planned capture + three extras since #2097); between
 MEASURE and VERIFY the phone page shows the entry's "waiting for apply"
 screen driven by host events. One session, one link, one TTL window.
 Program durations fit comfortably inside existing caps: the longest capture
@@ -603,8 +604,11 @@ screen), (2) fix-and-retry prompt (`snr_floor`, `delay_exceeds_search_window`,
 `locate_failed`, `agc_behavioral_fail`), (3) hard stop
 (`channel_map_mismatch`), (4) session restart (`relay_timeout`).
 `volume_unresolved` and the VERIFY-fail screen already exist or are defined
-in §5.2. Every terminal verdict has one owning phase, one retry budget, and
-one-reason/one-action copy:
+in §5.2. The table's historical per-code numbers now classify only
+retriable (`>0`) versus non-retriable (`0`); #2097 moved the count to the
+pooled position meter. Every retryable row is composed from one structured
+diagnosis + available action, so exhaustion preserves the observation and
+replaces only advice that is no longer available:
 
 | Code | Phase | Retry budget | Action copy shape |
 |---|---|---|---|

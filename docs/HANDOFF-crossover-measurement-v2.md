@@ -61,6 +61,8 @@ this doc is the current operational truth.
   emits it (add → page first), and must keep advertising it UNTIL no Pi
   emits it (remove → Pi first). The list holds exactly one entry today, so
   the two sides have to move close together.
+  #2097's terminal result is a page-first compatibility cut; follow the
+  fixture and rollback order owned by [`capture-page/README.md`](../capture-page/README.md).
 - **Relay Worker:** the Cloudflare Worker under
   [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
   **third independent release**, and like the page it ships **before**
@@ -356,12 +358,11 @@ copy is therefore no longer a literal on `REASON_LOCATE_FAILED`:
 `locate_failed_message` picks it from `analysis.pilot_snr_ok` — heard ⇒ report
 that JTS could not line up the tones, name no cause, ask for a retry; unheard
 or unmeasured ⇒ the original level/microphone copy. One writer, read by every
-surface that narrates the failure — the relay verdict, the budget-exhaustion
-refusal in `authorize_begin`, the apply-seam refusal, and the envelope. That
-completeness is the point, not tidiness: while the exhaustion refusal was
-briefly left on the literal, the phone's terminal screen and the speaker page
-gave one failure two different remedies, and the phone's own copy ends with
-"The speaker page shows what happens next".
+surface that narrates the failure — the relay verdict, terminal exhaustion,
+the defensive replay refusal in `authorize_begin`, the apply-seam refusal, and
+the envelope. Retryable copy and terminal copy share the diagnosis selected
+from this capture's evidence; only the available action differs. That
+completeness is the point, not tidiness.
 
 **Both of those gates are MEASURE-only, and VERIFY got its own in #1971.**
 They filter `KIND_SWEEP`; VERIFY plays one `KIND_SUMMED_SWEEP`, so until
@@ -881,7 +882,13 @@ together. Design rationale:
 - **Retry budget is per POSITION, not per group.** `_slot_of_index`
   keys attempt bookkeeping by `phase:index` inside a group and by the
   bare phase everywhere else, so CHECK/MEASURE/VERIFY bookkeeping is
-  unchanged and a retake at position 2 cannot refuse position 7.
+  unchanged and a retake at position 2 cannot refuse position 7. Since
+  the bounded-retry ruling (#2086) that budget is the planned capture
+  plus three extras, pooled across every initiator — see "Retries are
+  bounded per POSITION" under **Failure taxonomy & debugging**. A
+  position whose extras run out is dropped from the group with its
+  observed condition recorded, and the walk continues; the geometry
+  retake above spends one of those extras, booked to the speaker.
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
   (1800 s + 120 s per capture beyond the 3-entry baseline), and each STAGE
@@ -1627,9 +1634,11 @@ Terminal verdicts are **internal reason codes, not screens.**
 `REASON_REGISTRY` (in `crossover_v2_flow.py`) maps each code to one of
 four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
 `session_restart`) plus the two special screens (`verify_fail`,
-`volume_recovery`), its owning phase, and its retry budget. The
-conductor decides the code; the envelope renders the copy — one copy
-source, no drift.
+`volume_recovery`), its owning phase, and whether it is retriable at all
+(`retry_budget == 0` ⇒ `NON_RETRIABLE_CODES`; the retry COUNT is
+per-position, not per-code — see "Retries are bounded per POSITION"
+below). The conductor decides the code; the envelope renders the copy —
+one copy source, no drift.
 
 **A failure screen has a lifetime (#1942).** The persisted `failure`
 record carries its own `at` stamp (epoch float, written by
@@ -1695,7 +1704,7 @@ unready setup.
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
-| `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). All four render surfaces — relay verdict, budget-exhaustion refusal, apply-seam refusal, envelope — go through `reason_message`, so one failure gets one account of itself. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
+| `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). Relay verdict, terminal exhaustion, defensive replay refusal, apply-seam refusal, and envelope all select the diagnosis from the same paired evidence; retry versus terminal state changes only the action. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
@@ -1737,7 +1746,9 @@ at 15.244 dB was refused 58 s after an identically-positioned 11.324 dB
 capture was accepted, at alignment confidences 0.677 and 0.677 — both well
 clear of the 0.6 trust floor, so confidence was never the discriminator the
 reused reason code claimed. The household was told to move a correctly-placed
-microphone, and the attempt meter then ended the session. The threshold's own
+microphone, and the attempt meter then ended the session (that second half is
+fixed separately — see "Retries are bounded per POSITION" below; it is quoted
+here as the incident, not as current behaviour). The threshold's own
 calibration corpus was collected on clean rigs at 4.4–9.0 dB; a room and
 recording chain that simply sit at 11–15 dB are the case the ruling addresses.
 
@@ -1894,9 +1905,74 @@ write (`_set_verify_outcome`) — **not** from `failure.code`, which is the most
 recent rejection of any phase and is nulled by a later persist while the
 outcome stands.
 
-**Budgets are cumulative per phase** (compared against the *last*
-failure's budget) so alternating codes can't restart the meter; the
-relay plan's `max_attempts` bounds the whole session.
+**Retries are bounded per POSITION, pooled, and honest** (owner ruling
+2026-08-03, issue #2086). One prompted position gets its planned capture
+plus at most `MAX_EXTRA_ATTEMPTS_PER_POSITION` (3) extra attempts,
+counted in one `SlotAttempts` ledger no matter who asked — a household
+"Try again", a voluntary retake, or a geometry rung. `ReasonSpec.
+retry_budget` no longer supplies a count: zero still means "no extra
+attempt can help" (`NON_RETRIABLE_CODES` — those refuse on the next begin
+with their own copy, unchanged), and any non-zero value now means only
+"retriable". The relay plan's `max_attempts` still bounds the whole
+session.
+
+Every verdict carries the count on the wire as `attempts`
+(`{used, allowed, left, by_speaker, by_household}`), and the capture page
+renders it — "Measurement 6 of 6 — extra try 2 of 3", plus a note naming
+the speaker's own share. `by_speaker` is read off the rejection that kept
+the plan alive, never the relay's `retake` flag: a geometry rung travels
+the ordinary begin path with `retake=false`, so the flag would bill every
+system-forced take to the household.
+
+**Exhaustion attributes and degrades; it does not end a session with copy
+that says "measure again."** It is settled at the verdict that spends the
+last extra (`_resolve_spent_slot`), not at the next begin, so the phone
+is never handed a retry screen whose button only leads to a pre-play
+refusal. Three outcomes, in order: an earlier accepted take at that index
+still stands, so it is kept (`kept_earlier_take`); or the group can still
+reach `MIN_RESOLVED_CLOUD_POSITIONS` (2 — the floor
+`linearization_envelope.position_stability_limit` imposes, *not* the 6/5
+plan-declaration floors), so the position is recorded in
+`_group_unresolved` with the observed code and the group advances
+(`unresolved` on the wire, `accepted` because that is the fixed-length
+runner's only "this slot is done" signal); or it cannot, and **that final
+capture_result is terminal immediately** (`terminal=true`,
+`terminal_outcome=below_position_floor|phase_cannot_proceed`). The generic
+relay runner publishes it and returns, so the phone never receives a live
+retry button while the conductor waits to refuse the next begin;
+`authorize_begin` keeps only a replay/old-page backstop.
+
+That terminal path has a page-first release dependency; the operational
+fixture, skew proof, and rollback order live in
+[`capture-page/README.md`](../capture-page/README.md).
+
+Diagnosis and action are distinct for **every retriable reason**. Each
+positive-budget `ReasonSpec` is built from one `RetryableReasonCopy`
+(diagnosis + still-available action), so its historical full `message` or
+`banner` and `reason_diagnosis` have one prose source. The two evidence-keyed
+reasons (`locate_failed`, `verify_inconclusive`) substitute the addressed
+slot's paired pilot/reflection fact into that same seam. Exhaustion preserves
+the resulting observation X, then replaces retry advice with the measured
+count and exact outcome.
+
+The unresolved wire payload carries diagnosis beside code. On the final group
+index the relay's last-write-wins `capture_set_complete` repeats that payload,
+so the page cannot lose it behind completion. Stage 1 renders the final spot
+as left out before its Continue confirmation; stage 2 renders it as left out
+instead of "All measurements done". Neither terminal nor unresolved surface
+offers an unavailable retake. The stable
+`event=correction.crossover_v2_position_attempts_spent` record carries
+`observed`, `diagnosis`, `pilot_heard`, and `reflection_measured`, because a
+settled accepted verdict deliberately has no final reason code. A cloud
+position never reaches the cannot-continue branch while the group can still
+be completed.
+
+*Why this shape*: on 2026-08-03 two live sessions died at
+`CaptureBeginRefused` raised before any audio played, while the household
+screen read "step 6 … one last time" and the flow was on attempt 12 —
+three reason codes each holding their own budget, a geometry discount
+forgiving two more, and an accepted capture leaving the cumulative
+counter standing (#2083 entries 4 and 6).
 
 Key `event=` lines (via `jasper.log_event`):
 
@@ -3132,5 +3208,12 @@ predicted-ripple frame claim against `crossover_v2_flow.py` /
 wrote the new "Timeline anchor" section against `program_analysis.py`
 (`_global_offset` / `_resolve_anchor` / `_locate_in_window`) while landing
 #2093, with its measured numbers re-derived from the 11 retained 2026-08-03
-cloud VERIFY captures. Sections outside those paths carry their 2026-07-30
-verification.
+cloud VERIFY captures; and re-verified the retry/refusal contract (the position-group
+retry-budget bullet, the reason-registry paragraph, and the attempt-meter
+paragraph under Failure taxonomy) against `crossover_v2_flow.py` /
+`capture_relay/session.py` / `capture-page/js/main.js` while landing the #2086
+ruling; then re-verified that same retry/refusal contract after #2097's
+adversarial review against the structured all-reason diagnosis model, the
+final-capture terminal runner path, final-index stage-1/stage-2 rendering, and
+the stable spent-event evidence pairing. Sections outside those paths carry
+their 2026-07-30 verification.

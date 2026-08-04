@@ -139,6 +139,31 @@ index + 1)`; both halves are pinned in `tests/js/capture_plan_loop_test.mjs`
 (tests 30/32 the legacy path, 55-57 the measure-only one). Roll back in the
 inverse order.
 
+Build `20260803.4` is the terminal-result fixture (#2097). The conductor's
+final allowed position attempt can now publish `capture_result` with
+`terminal: true` and return the runner immediately — there is deliberately no
+next begin and no later `capture_set_exhausted` event. This is a **new host event
+meaning that both sides need**, even though the protocol number did not move:
+
+- **Forward rollout → page first, Pi second.** Publish and verify page build
+  `20260803.4` before deploying any Pi that can emit `terminal: true`. The new
+  page is tolerant of an old conductor: an old `capture_result` omits
+  `terminal`, the page's strict `event.terminal === true` check stays false,
+  and the still-live old runner follows its ordinary retry path.
+- **The inverse skew is unsafe.** Page build `20260803.3` ignores the new field,
+  reads the terminal rejection as an ordinary rejected capture, and renders a
+  live **Try again** control after the new runner has already returned. A Pi
+  carrying #2097 must therefore never be deployed before `20260803.4` is live
+  at `capture.jasper.tech` and verified through `version.json`.
+- **Rollback → Pi first, page second.** First roll every Pi back to a conductor
+  that cannot emit the terminal result; only then may the page be rolled back
+  below `20260803.4`. Rolling the page back first recreates the unsafe skew.
+
+Both behavioral halves — tolerant new page with an old result, and the frozen
+`20260803.3` parser misclassifying a new terminal result as retryable — are
+pinned in `tests/js/capture_plan_loop_test.mjs`. The build/order/rollback words
+are pinned in `tests/test_capture_page_js.py`. **Do not deploy the Pi first.**
+
 DA-0005 is the fixture for the rule above it: build `20260729.1` starts
 rendering Room position/trust-repeat copy from the existing `ui.screen`. An old page safely
 ignores the newer Pi copy and retains its embedded presentation, but the new

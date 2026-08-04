@@ -598,6 +598,11 @@ under the enforced floor, and not by a household.
   a cloud position with neither key, so the household is told the
   speaker continues automatically at the exact moment it deliberately
   will not. PR-T4 owns that fallback.
+  **Shipped outcome:** PR-T4 replaced the fallback with the speaker-page
+  handoff. Since #2097 an unresolved final group index is a distinct branch:
+  stage 1 says the spot was left out before the Continue confirmation, and
+  stage 2 repeats the unresolved payload through `capture_set_complete` and
+  renders left-out copy instead of the generic done title.
 
 **Recorded deferral — per-step VISUAL distinctness (#1806's field list).**
 The owner's 2026-07-29 note asks for more than new words: *"the capture-page

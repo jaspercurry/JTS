@@ -565,7 +565,11 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           accepted,
           ...verdictFields,
         };
-        if (verdict.accepted && verdict.awaiting_confirm) {
+        if (verdict.terminal) {
+          // The real runner publishes this exact result and returns. There is
+          // no capture_set_exhausted overwrite and no next begin.
+          last = resultEvent;
+        } else if (verdict.accepted && verdict.awaiting_confirm) {
           // HELD (work order D1): the Pi posts NOTHING further and stays in
           // awaiting_begin, so the last-write-wins slot keeps this verdict and
           // the phone's confirm screen is what the household reads. The set
@@ -578,7 +582,12 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           // landed last on the last-write-wins slot — mirror that by
           // advancing straight to the terminal on the FOLLOWING poll.
           queueMicrotask(() => {
-            last = { phase: "capture_set_complete", accepted: acceptedCount, capture_target: target };
+            last = {
+              phase: "capture_set_complete",
+              accepted: acceptedCount,
+              capture_target: target,
+              ...(verdict.unresolved ? { unresolved: verdict.unresolved } : {}),
+            };
           });
         } else if (!verdict.accepted && attempt >= maxAttempts) {
           last = resultEvent;
@@ -828,6 +837,308 @@ async function testGeometryRetakeRendersTheServerSuppliedGuidance() {
   const retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
   await retry._listeners.click[0]();
   assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  ok();
+}
+
+// ============================================================================
+// 2a-ter. The honest per-position count (owner ruling #2086 item 2). The
+// eyebrow used to read "— one more try" on EVERY rejection, forever, because
+// the only counter the page had names the POSITION and a retried position does
+// not move: on 2026-08-03 the screen said "step 6, one last time" while the
+// flow was on its fifth attempt at that spot. The Pi now publishes the count;
+// this pins that the page renders it, and renders who spent it.
+// ============================================================================
+async function testTheRetryEyebrowCountsThisPositionsExtraTries() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 6 });
+  // Attempt 1 is the PLANNED capture (nothing spent). Attempts 2 and 3 are
+  // extras — the first one asked for by the speaker, mirroring a geometry rung.
+  const attemptsFor = {
+    1: { used: 0, allowed: 3, left: 3, by_speaker: 0, by_household: 0 },
+    2: { used: 1, allowed: 3, left: 2, by_speaker: 1, by_household: 0 },
+    3: { used: 2, allowed: 3, left: 1, by_speaker: 1, by_household: 1 },
+  };
+  const { client } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 6,
+    resultFor: (index, attempt) =>
+      attempt <= 3
+        ? { accepted: false, error: "SNR too low.", attempts: attemptsFor[attempt] }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  // Nothing spent yet, so the NEXT tap is extra try 1 of 3 — never "one more".
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 2 — extra try 1 of 3");
+  assert.deepEqual(noteTexts(ctx.screenEl), ["SNR too low."]);
+
+  let retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await retry._listeners.click[0]();
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 2 — extra try 2 of 3");
+  // …and the count says who spent what (ruling item 4): the household's
+  // patience was partly spent on the speaker's behalf, so it is not billed
+  // silently to them.
+  assert.ok(
+    noteTexts(ctx.screenEl).includes("JTS asked for 1 of those extra tries itself."),
+    `expected the speaker's share, got: ${JSON.stringify(noteTexts(ctx.screenEl))}`,
+  );
+
+  retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await retry._listeners.click[0]();
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 2 — extra try 3 of 3");
+  ok();
+}
+
+// ============================================================================
+// 2a-quater. Ruling #2086 item 3's VISIBLE half. When the Pi gives a position
+// up it sends `accepted` — the relay's only "this slot is done" signal — plus
+// `unresolved`. Without the second field the household reads the advance as a
+// tick: continue-and-imply, the quiet cousin of kill-and-lie. The screen must
+// say the spot was left out, and must not offer a retake of a position whose
+// tries are exactly what ran out.
+// ============================================================================
+async function testAnUnresolvedPositionSaysSoInsteadOfTicking() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  // No per-entry copy, so the page's own fallback headline is what renders —
+  // and that fallback is the one carrying the "✓".
+  const spec = planSpec({ target: 3, maxAttempts: 8 });
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 8,
+    resultFor: (index, attempt) =>
+      index === 1
+        ? {
+            accepted: true,
+            unresolved: {
+              index: 1,
+              code: "locate_failed",
+              diagnosis: "JTS could hear the speaker, but couldn't line up the test tones in the recording.",
+            },
+            attempts: { used: 3, allowed: 3, left: 0, by_speaker: 0, by_household: 3 },
+          }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 3 — left out");
+  assert.ok(
+    noteTexts(ctx.screenEl).some((t) =>
+      t.includes("could hear the speaker") && t.includes("the group continued")),
+    `expected the left-out sentence, got: ${JSON.stringify(noteTexts(ctx.screenEl))}`,
+  );
+  // Only the forward control — no retake of a spot with no tries left.
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Next measurement"]);
+  ok();
+}
+
+async function testSpentFinalSlotCloseRefusalHasNoDeadRetryAffordance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  // The position itself failed locate, but cloud close found the stronger
+  // product-level truth. The phone must narrate THIS hard stop, not the
+  // position miss it replaced and not a generic exhausted-count sentence.
+  const reason =
+    "JTS checked the tuning against what your speaker actually did, and they "
+    + "did not match — so the previous sound has been put back. This usually "
+    + "means something in the chain is not behaving as described; re-check "
+    + "the driver details in speaker setup, then measure again.";
+  const spec = planSpec({ target: 2, maxAttempts: 8 });
+  const { client, posted } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 8,
+    resultFor: () => ({
+      accepted: false,
+      code: "correction_model_error",
+      reason,
+      terminal: true,
+      terminal_outcome: "phase_cannot_proceed",
+    }),
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement cannot continue");
+  assert.equal(noteText(ctx.screenEl), reason);
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
+  assert.ok(!noteText(ctx.screenEl).toLowerCase().includes("try again"));
+  assert.ok(!noteText(ctx.screenEl).includes("could hear the speaker"));
+  assert.ok(noteText(ctx.screenEl).includes("previous sound has been put back"));
+  assert.equal(
+    posted.filter((event) => event.begin_capture && !event.armed).length,
+    1,
+    "the page never posts the doomed next begin",
+  );
+  ok();
+}
+
+// ============================================================================
+// Build 20260803.4 release fixture (#2097). `terminal: true` is additive on
+// the wire but NOT compatible in both deployment directions:
+//
+//   * new page + old conductor is safe — omission is false, and the old
+//     runner is still alive for the ordinary retry;
+//   * old 20260803.3 page + new conductor is unsafe — its frozen projection
+//     dropped `terminal`, then its final `else` rendered a retry after the new
+//     runner had returned.
+//
+// This behavioral pair is why README says page first / Pi second and the
+// rollback inverse (Pi first / page second). A static prose assertion alone
+// would not prove the tolerance that ordering rests on.
+// ============================================================================
+async function testTerminalResultRequiresThe202608034PageFirstRollout() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  // Safe skew: this is an OLD conductor result — no `terminal` field — and
+  // its runner remains alive. The new page must preserve the retry path.
+  const spec = planSpec({ target: 2, maxAttempts: 4 });
+  const { client, posted } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 4,
+    resultFor: (_index, attempt) => attempt === 1
+      ? { accepted: false, reason: "The old conductor asked for another read." }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Try again"]);
+  await fire(primaryButton(ctx));
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  assert.deepEqual(
+    posted
+      .filter((event) => event.begin_capture && !event.armed)
+      .map((event) => [event.begin_capture.index, event.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+    "the new page can retry because the old runner did not terminate",
+  );
+
+  // Unsafe inverse skew: freeze the relevant 20260803.3 parser/decision
+  // shape. It projected the established fields but had no `terminal` member;
+  // runPlanCapture's final branch therefore treated every accepted=false
+  // result as retryable. Keep this tiny historical fixture here rather than
+  // depending on git history being available in CI.
+  const terminalEventFromNewConductor = {
+    phase: "capture_result",
+    index: 1,
+    attempt: 1,
+    accepted: false,
+    reason: "The measurement cannot continue.",
+    terminal: true,
+    terminal_outcome: "phase_cannot_proceed",
+  };
+  const legacy202608033Verdict = {
+    accepted: terminalEventFromNewConductor.accepted === true,
+    error: terminalEventFromNewConductor.error
+      ? String(terminalEventFromNewConductor.error)
+      : "",
+    reason: terminalEventFromNewConductor.reason
+      ? String(terminalEventFromNewConductor.reason)
+      : "",
+    banner: terminalEventFromNewConductor.banner
+      ? String(terminalEventFromNewConductor.banner)
+      : "",
+    prompt: terminalEventFromNewConductor.prompt
+      ? String(terminalEventFromNewConductor.prompt)
+      : "",
+    code: terminalEventFromNewConductor.code
+      ? String(terminalEventFromNewConductor.code)
+      : "",
+  };
+  assert.ok(
+    !("terminal" in legacy202608033Verdict),
+    "build 20260803.3 dropped the new terminal meaning",
+  );
+  const legacy202608033Screen = legacy202608033Verdict.accepted
+    ? "advance"
+    : "retry";
+  assert.equal(
+    legacy202608033Screen,
+    "retry",
+    "an old page would offer a dead retry after the new runner returned",
+  );
+  ok();
+}
+
+async function testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const diagnosis = "The room got loud during that measurement.";
+  const spec = measureOnlyPlanSpec();
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) => index === 3
+      ? {
+          accepted: true,
+          awaiting_confirm: true,
+          unresolved: { index, code: "noisy_room_linearity", diagnosis },
+        }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  assert.equal(headingText(ctx.screenEl), "Measurement 3 of 3 — left out");
+  assert.notEqual(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  assert.ok(noteText(ctx.screenEl).includes(diagnosis));
+  assert.ok(noteText(ctx.screenEl).includes("the group continued"));
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue"]);
+  ok();
+}
+
+async function testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const diagnosis = "Alignment is less certain at this mic position.";
+  const spec = planSpec({ target: 3, maxAttempts: 6 });
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) => index === 3
+      ? {
+          accepted: true,
+          unresolved: { index, code: "low_alignment_confidence", diagnosis },
+        }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  assert.equal(headingText(ctx.screenEl), "Measurement 3 — left out");
+  assert.notEqual(headingText(ctx.screenEl), "All measurements done");
+  assert.ok(noteText(ctx.screenEl).includes(diagnosis));
+  assert.ok(noteText(ctx.screenEl).includes("the group continued"));
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
   ok();
 }
 
@@ -3022,19 +3333,24 @@ async function testPreArmFailureOnTheCountdownScreenNamesARealControl() {
 }
 
 // ============================================================================
-// 41 (review M1). The offering screen is not replaced until the new round's
-// verdict lands, so the Retake control it rendered is still on screen while
-// the next capture runs — with its window shut. It must be visibly disabled,
-// not live-looking and inert.
+// 41 (review M1, TRANSFORMED for issue #2090). The offering screen is not
+// replaced until the new round's verdict lands, so the Retake control it
+// rendered is still on screen while the next capture runs — with its window
+// shut. This used to assert the control was DISABLED there. That is what made
+// the press SILENT: a disabled button fires no click, so the owner's retake
+// press during the 2026-08-03 verify produced no retake AND no explanation.
+// The control must now ANSWER — it may not act (posting past the window is
+// refused by the runner as `begin_out_of_order`, which ends the session), and
+// it may not swallow the press either.
 // ============================================================================
-async function testTheRetakeControlIsDisabledOnceItsWindowShuts() {
+async function testAShutRetakeWindowAnswersThePressInsteadOfSwallowingIt() {
   statusHistory.length = 0;
   const { onPlanStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
   installDocument(makeStatusEl());
 
   const spec = guidedPlanSpec();
-  const { client } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
   const ctx = makeCtx(spec, client);
 
   await onPlanStart(ctx);
@@ -3042,7 +3358,21 @@ async function testTheRetakeControlIsDisabledOnceItsWindowShuts() {
   assert.equal(retake.disabled, false);
 
   await fire(primaryButton(ctx)); // the forward begin shuts the window
-  assert.equal(retake.disabled, true, "a shut retake offer leaves no live-looking control");
+  const beginsBefore = posted.filter((p) => p && p.begin_capture).length;
+  statusHistory.length = 0;
+  await fire(retake);
+
+  const said = statusHistory.map((s) => String(s.text || s)).join(" | ");
+  assert.ok(
+    /Too late to redo that spot/.test(said),
+    `a shut retake window must say why, got: ${said}`,
+  );
+  // …and must not post the begin that would kill the session.
+  assert.equal(
+    posted.filter((p) => p && p.begin_capture).length,
+    beginsBefore,
+    "a refused retake must not reach the Pi",
+  );
   ok();
 }
 
@@ -3884,6 +4214,12 @@ const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
   testGeometryRetakeRendersTheServerSuppliedGuidance,
+  testTheRetryEyebrowCountsThisPositionsExtraTries,
+  testAnUnresolvedPositionSaysSoInsteadOfTicking,
+  testSpentFinalSlotCloseRefusalHasNoDeadRetryAffordance,
+  testTerminalResultRequiresThe202608034PageFirstRollout,
+  testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm,
+  testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite,
   testRejectionCopyFallsBackWhenThePiSendsNoGuidance,
   testTimedOutResultPollRendersTerminalNotStaleRetry,
   testRefusedBeginRendersTerminalWithNoRetry,
@@ -3927,7 +4263,7 @@ const tests = [
   testARejectedRetakeCanKeepTheEarlierTakeAndContinue,
   testPreArmFailureDuringARetakeReArmsTheRetakeNotTheForwardPath,
   testPreArmFailureOnTheCountdownScreenNamesARealControl,
-  testTheRetakeControlIsDisabledOnceItsWindowShuts,
+  testAShutRetakeWindowAnswersThePressInsteadOfSwallowingIt,
   testRetakeOnTheCountdownScreenClearsItsFrozenCounter,
   testOneAbortedPollMidSweepDoesNotEndTheSession,
   testTheLegacyBareAbortShapeIsAlsoAbsorbed,

@@ -214,7 +214,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260803.1",
+        "capture_page_build": "20260803.4",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -222,7 +222,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260803-1" in index_html
+    assert "main.js?v=20260803-4" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -271,9 +271,9 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "59c1a8c4830666e5afa5ab97c4a3e5cba85c17c315d3a43f3944cefaea8e3d4b"
+    "f2ad5dac5e9fa038d5f1a437bc08783c12b94b3f54bdc6ecde719061db4be2d8"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.4"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -382,6 +382,38 @@ def test_capture_page_new_phone_event_rollout_order_is_pinned():
     # confirmation still rides that next begin (an older conductor's plan).
     assert "if (entryForIndex(ctx.spec, index + 1)) {" in main_js
     assert "complete_capture_set: true" in main_js
+
+
+def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
+    """#2097's terminal result is a page-first compatibility cut.
+
+    The protocol number did not move and the Pi validates only the build
+    stamp's format, so the release contract itself is load-bearing: publish
+    the tolerant page before any conductor can end on ``terminal: true``;
+    roll back in the inverse order. The JS harness behaviorally pins both skew
+    directions, while this guard pins the public artifact and exact ordering
+    words an operator follows.
+    """
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    version = json.loads(
+        (_REPO / "capture-page/version.json").read_text(encoding="utf-8")
+    )
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    harness = (
+        _REPO / "tests/js/capture_plan_loop_test.mjs"
+    ).read_text(encoding="utf-8")
+
+    assert version["capture_page_build"] == "20260803.4"
+    assert "Build `20260803.4` is the terminal-result fixture" in readme
+    assert "**Forward rollout → page first, Pi second.**" in readme
+    assert "**Rollback → Pi first, page second.**" in readme
+    assert "**Do not deploy the Pi first.**" in readme
+    # New page + old conductor: omission is deliberately false, not inferred.
+    assert "terminal: event.terminal === true" in main_js
+    # Old page + new conductor: the frozen .3 decision must stay in the
+    # behavioral suite, or the unsafe half can disappear while prose passes.
+    assert "legacy202608033Verdict" in harness
+    assert "testTerminalResultRequiresThe202608034PageFirstRollout" in harness
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
@@ -516,15 +548,21 @@ def test_capture_page_retake_offer_never_outlives_the_runners_window():
     end = main_js.index("async function onPlanStart(ctx)", start)
     run_body = main_js[start:end]
     assert "shutRetakeWindow(ctx);" in run_body
-    # …and shutting it disables the control that offered it, rather than
-    # leaving a live-looking button that does nothing (review M1).
-    assert "ctx.retakeButtonEl.disabled = true;" in main_js
-    # …and only an accepted verdict re-arms it, within the plan's own budget.
-    assert "armRetakeSlot(ctx, { index, attempt });" in run_body
-    assert "planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts" in main_js
-    # 2. The tap re-checks (a countdown's auto-begin can win the race).
+    # …and only an accepted verdict re-arms it, within the plan's own budget
+    # AND the position's own extra-try budget (owner ruling #2086: a retake IS
+    # one of the position's three extras).
+    assert "armRetakeSlot(ctx, { index, attempt, attempts: verdict.attempts });" in run_body
+    assert "planSupportsRetake(ctx.spec) && extrasLeft && attempt + 1 <= maxAttempts" in main_js
+    # 2. The tap re-checks (a countdown's auto-begin can win the race) — and
+    # SAYS SO. The re-check used to `return` silently, and shutting the window
+    # used to disable the button; between them a retake press produced no
+    # retake and no explanation at all (issue #2090, owner's 2026-08-03 verify).
     assert "function canRetake(ctx, index) {" in main_js
-    assert main_js.count("if (!canRetake(ctx, index)) return") >= 2
+    assert "if (!canRetake(ctx, index)) return null;" in main_js
+    assert 'setStatus(RETAKE_TOO_LATE_MESSAGE, "error");' in main_js
+    assert "ctx.retakeButtonEl.disabled = true;" not in main_js, (
+        "a disabled control cannot report why it refused — #2090"
+    )
     # 3. The marker is a distinct wire shape, and a rejected retake keeps it.
     assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
     assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js
@@ -1037,13 +1075,13 @@ def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
     with no replacement copy. 3 pre-existing call sites (capture complete,
     ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, the
     phone-initiated Stop terminal screen (renderStoppedScreen), the run-19
-    dead-session terminal (renderSessionExpired), and the three new v3
+    dead-session terminal (renderSessionExpired), and the four v3
     session-plan terminals (renderPlanAllDone, renderPlanRefused,
-    renderPlanExhausted) all need the same fallback."""
+    renderPlanExhausted, renderPlanTerminal) all need the same fallback."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 9
-    assert main_js.count('text: "You can close this tab."') == 9
+    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 10
+    assert main_js.count('text: "You can close this tab."') == 10
 
 
 def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():

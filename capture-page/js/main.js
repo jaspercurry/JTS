@@ -1816,6 +1816,53 @@ function planTargetAndAttempts(spec) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The honest per-position attempt count (owner ruling #2086, 2026-08-03).
+//
+// The Pi puts `attempts` on every capture verdict: how many EXTRA tries this
+// spot has already spent, out of how many it is allowed, and how many of them
+// the speaker asked for itself. It exists because the counter this page had —
+// `screen.progress`, frozen at plan-build time — names the POSITION, and a
+// position that is retried does not move: on 2026-08-03 the phone read "step 6,
+// one last time" while the flow was on its fifth attempt at that spot and the
+// twelfth of the session. Numbers rather than a sentence, because the §2.1
+// grammar makes the eyebrow the page's slot.
+//
+// Absent (an older Pi) → null, and every caller keeps today's copy.
+// ---------------------------------------------------------------------------
+function attemptCount(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const allowed = Number(raw.allowed);
+  const used = Number(raw.used);
+  if (!Number.isFinite(allowed) || !Number.isFinite(used)) return null;
+  return {
+    used,
+    allowed,
+    left: Number.isFinite(Number(raw.left)) ? Number(raw.left) : allowed - used,
+    bySpeaker: Number(raw.by_speaker) || 0,
+    byHousehold: Number(raw.by_household) || 0,
+  };
+}
+
+// The eyebrow suffix naming which try the household is about to make. `used` is
+// what this position has ALREADY spent, so the next one is `used + 1` — the one
+// place this page does arithmetic on the Pi's numbers, kept here so there is
+// one of it. Empty when the Pi published no count (today's copy stands).
+function extraTrySuffix(attempts) {
+  if (!attempts) return " — one more try";
+  if (attempts.left <= 0) return " — no more tries at this spot";
+  return ` — extra try ${attempts.used + 1} of ${attempts.allowed}`;
+}
+
+// "Who spent what", only when it is not all the household (ruling item 4). A
+// geometry rung is the SPEAKER asking for a wider take of a capture that was
+// otherwise fine; billing that silently to the household's patience is what the
+// ruling calls out.
+function extraTryAttribution(attempts) {
+  if (!attempts || attempts.bySpeaker <= 0) return "";
+  return `JTS asked for ${attempts.bySpeaker} of those extra tries itself.`;
+}
+
 // Per-capture heterogeneity (§5.7): `spec.capture_plan.entries` is 0-based
 // (index 0..capture_target-1); the wire protocol's `begin_capture.index` is
 // 1-based (SPEC W2.3) — mirrors jasper/capture_relay/spec.py's
@@ -2320,26 +2367,40 @@ function canRetake(ctx, index) {
 
 // Re-arm (or shut) the offer from an accepted verdict. `attempt` is the
 // attempt just consumed, so a retake would be `attempt + 1` — offered only
-// while the plan's own attempt budget covers it.
-function armRetakeSlot(ctx, { index, attempt }) {
+// while the plan's own attempt budget AND this position's own extra-try budget
+// cover it. The second half is the ruling's (#2086): a retake IS one of the
+// position's three extras, so once they are gone the control must be absent
+// rather than sitting there leading to a refusal.
+function armRetakeSlot(ctx, { index, attempt, attempts = null }) {
   const { maxAttempts } = planTargetAndAttempts(ctx.spec);
+  const extrasLeft = !attempts || attempts.left > 0;
   ctx.retakeSlot =
-    planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts ? { index, attempt } : null;
+    planSupportsRetake(ctx.spec) && extrasLeft && attempt + 1 <= maxAttempts
+      ? { index, attempt }
+      : null;
 }
 
-// Shut the window AND kill the control that offered it. The offering screen is
-// not replaced until the new round's verdict lands, so without the second half
-// a live-looking "Retake this measurement" sits there through the next capture
-// doing nothing when tapped — exactly the dead-affordance class §2.1 removes.
+// Shut the window. The offering screen is not replaced until the new round's
+// verdict lands, so the "Retake this measurement" control the household is
+// looking at stays on screen through the whole next capture.
+//
+// It used to be DISABLED here, to keep a live-looking control from doing
+// nothing when tapped. That traded one silent failure for another: a disabled
+// button cannot fire a click, so the press produced no reaction at all — the
+// owner pressed retake mid-verify on 2026-08-03 and the session journal
+// recorded no retake and no refusal, just an auto-advance (issue #2090). The
+// control now stays tappable and ANSWERS: `retakeControl`'s handler re-checks
+// the window and says why it is closed. Silence is the only wrong outcome.
 function shutRetakeWindow(ctx) {
   ctx.retakeSlot = null;
-  if (ctx.retakeButtonEl) {
-    ctx.retakeButtonEl.disabled = true;
-    ctx.retakeButtonEl = null;
-  }
 }
 
 const RETAKE_LABEL = "Retake this measurement";
+// Why a retake press arrived too late. Names the state the household can see
+// (the next measurement started) rather than the protocol fact behind it
+// (`next_begin_seen` closed the runner's admission window).
+const RETAKE_TOO_LATE_MESSAGE =
+  "Too late to redo that spot — the next measurement already started.";
 
 // `onTap` lets the offering screen clear its own transient state before the
 // round starts — the countdown's live "Starting in N…" counter, which would
@@ -2347,10 +2408,16 @@ const RETAKE_LABEL = "Retake this measurement";
 function retakeControl(ctx, { index, attempt, onTap = null }) {
   if (!canRetake(ctx, index)) return null;
   const retake = button(RETAKE_LABEL, async () => {
-    // Re-checked inside the tap: a pending countdown may have fired its own
-    // begin for the NEXT entry between render and tap, which shuts the
-    // window on the Pi.
-    if (!canRetake(ctx, index)) return;
+    // Re-checked inside the tap: the next round may have begun between render
+    // and tap (a countdown firing its own begin, or the household tapping the
+    // forward primary first), which shuts the window on the Pi — a retake
+    // posted past it is refused as `begin_out_of_order`, which ends the whole
+    // session. So the press must NOT reach the Pi. It must also not vanish:
+    // this branch used to `return` silently, which is issue #2090.
+    if (!canRetake(ctx, index)) {
+      setStatus(RETAKE_TOO_LATE_MESSAGE, "error");
+      return;
+    }
     // …and stop that countdown from firing behind this tap.
     clearAutoAdvance(ctx);
     if (onTap) onTap();
@@ -2371,7 +2438,6 @@ function retakeControl(ctx, { index, attempt, onTap = null }) {
       retake.disabled = false;
     }
   }, true);
-  ctx.retakeButtonEl = retake;
   return retake;
 }
 
@@ -2393,7 +2459,21 @@ function renderRetakeInProgress(ctx, { index }) {
   });
 }
 
-function renderPlanNext(ctx, { index, attempt, target }) {
+// The sentence a household reads when JTS gave up on the spot they just
+// measured and carried on (owner ruling #2086 item 3). Without it the advance
+// past an unresolved position is indistinguishable from a clean one, which is
+// the "kill-and-lie"'s quieter cousin: continue-and-imply.
+const UNRESOLVED_POSITION_OUTCOME =
+  "JTS left that spot out and the group continued. The speaker page shows what it "
+  + "worked out from the rest.";
+
+function unresolvedPositionNote(unresolved) {
+  const diagnosis = String((unresolved && unresolved.diagnosis) || "").trim();
+  if (diagnosis) return `${diagnosis} ${UNRESOLVED_POSITION_OUTCOME}`;
+  return `JTS could not get a clean read at that spot, so ${UNRESOLVED_POSITION_OUTCOME}`;
+}
+
+function renderPlanNext(ctx, { index, attempt, target, unresolved = null }) {
   // The UPCOMING capture's own entry (§5.7), when the plan carries one —
   // its progress/title/body drive the grammar; a v1/v2 plan (or an entry with
   // no `screen`) falls back to the generic "Measurement N of target" copy,
@@ -2410,10 +2490,23 @@ function renderPlanNext(ctx, { index, attempt, target }) {
   });
   renderStepScreen(ctx, {
     progress: String(screenCopy.progress || ""),
-    headline: String(screenCopy.title || `Measurement ${index} of ${target} ✓`),
+    // A "✓" would be a claim, and an unresolved position did not earn one. The
+    // upcoming entry's own title wins as it always has; this only replaces the
+    // entry-less fallback, which is the one that ticks.
+    headline: String(
+      screenCopy.title
+      || (unresolved
+        ? `Measurement ${index} of ${target} — left out`
+        : `Measurement ${index} of ${target} ✓`),
+    ),
     detail: String(screenCopy.body || "Ready for the next measurement."),
+    notes: unresolved
+      ? [el("p", { class: "cap-note", text: unresolvedPositionNote(unresolved) })]
+      : [],
     primary: next,
-    secondary: retakeControl(ctx, { index, attempt }),
+    // Nothing to retake: the flow gave this spot up because its tries ran out,
+    // so offering one more would be the dead affordance again.
+    secondary: unresolved ? null : retakeControl(ctx, { index, attempt }),
   });
   // The screen carries the counter and the instruction; #status stops
   // repeating them (§2.1 — the two counters used to disagree).
@@ -2431,7 +2524,7 @@ function renderPlanNext(ctx, { index, attempt, target }) {
 // the group's size (`kind_label` is display/telemetry only by contract), and
 // inventing one from it would be a sentence that quietly goes wrong when a
 // plan shape changes.
-function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
+function renderPlanGroupConfirm(ctx, { index, attempt, target, unresolved = null }) {
   const current = entryForIndex(ctx.spec, index);
   const screenCopy = (current && current.screen) || {};
   const proceed = button("Continue", async () => {
@@ -2456,7 +2549,9 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
   });
   renderStepScreen(ctx, {
     progress: String(screenCopy.progress || ""),
-    headline: "All spots measured — ready to continue?",
+    headline: unresolved
+      ? `Measurement ${index} of ${target} — left out`
+      : "All spots measured — ready to continue?",
     // THE LAST THING A HOUSEHOLD READS BEFORE THE INTERLUDE, so it is the
     // sentence that has to set the interlude up (work order D10). On a
     // measure-only plan JTS tunes nothing next — it works out what it heard
@@ -2468,12 +2563,15 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
     // contract: the page publishes first, so a new bundle legitimately meets
     // an OLD conductor whose plan still carries VERIFY past this group — and
     // there JTS really does tune next).
-    detail: entryForIndex(ctx.spec, index + 1)
-      ? "JTS tunes the speaker next. Retake this spot first if you want to."
-      : "JTS works out what it heard, then you decide what to do about it "
-        + "back on the speaker page. Retake this spot first if you want to.",
+    detail: unresolved
+      ? unresolvedPositionNote(unresolved)
+      : (entryForIndex(ctx.spec, index + 1)
+        ? "JTS tunes the speaker next. Retake this spot first if you want to."
+        : "JTS works out what it heard, then you decide what to do about it "
+          + "back on the speaker page. Retake this spot first if you want to."),
     primary: proceed,
-    secondary: retakeControl(ctx, { index, attempt }),
+    // Exhaustion settled the unresolved spot; another retake is unavailable.
+    secondary: unresolved ? null : retakeControl(ctx, { index, attempt }),
   });
   clearStatus();
 }
@@ -2610,7 +2708,9 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
   throw failure;
 }
 
-function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake = false }) {
+function renderPlanRetry(
+  ctx, { index, attempt, target, reason, prompt, retake = false, attempts = null },
+) {
   // The CURRENT capture's own entry, if any — its progress and (absent
   // server guidance) its instruction carry over; the rejection `reason`
   // always wins the detail slot.
@@ -2626,8 +2726,8 @@ function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake =
   const guidance = prompt ? String(prompt) : "";
   const headline =
     guidance ||
-    // The eyebrow already carries "Measurement N of T — one more try", so the
-    // entry-less fallback headline must NOT count again (it used to read
+    // The eyebrow already carries "Measurement N of T — extra try 2 of 3", so
+    // the entry-less fallback headline must NOT count again (it used to read
     // "Measurement N of T needs another try" directly under it). A plan with
     // no per-entry copy has no instruction to offer, so this is the plainest
     // imperative that is still true.
@@ -2643,10 +2743,20 @@ function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake =
       retry.disabled = false;
     }
   });
+  // Who spent the extras, when it was not all the household (ruling item 4).
+  // Its own quiet line rather than folded into the reason sentence: the reason
+  // is the Pi's copy about what happened acoustically, and this is about the
+  // household's own patience being spent on their behalf.
+  const attribution = extraTryAttribution(attempts);
   renderStepScreen(ctx, {
-    progress: `${String(screenCopy.progress || `Measurement ${index} of ${target}`)} — one more try`,
+    progress:
+      `${String(screenCopy.progress || `Measurement ${index} of ${target}`)}`
+      + extraTrySuffix(attempts),
     headline,
     detail: message,
+    notes: attribution
+      ? [el("p", { class: "cap-note", text: attribution })]
+      : [],
     primary: retry,
     // THE ESCAPE FROM A REJECTED VOLUNTARY RETAKE (review blocker B1). This
     // slot is ALREADY accepted — the design's fail-safe is that a rejected
@@ -2905,7 +3015,7 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
 // auto-advance policy (§5.2). on_apply → the hold owns the screen and the
 // deferred loop auto-posts the begin (no tap); countdown → a cancelable
 // countdown; tap (or a plan with no policy) → the manual "Next measurement".
-function advanceAfterAccepted(ctx, { index, attempt, target }) {
+function advanceAfterAccepted(ctx, { index, attempt, target, unresolved = null }) {
   const nextIndex = index + 1;
   const nextAttempt = attempt + 1;
   const policy = nextEntryAutoAdvance(ctx, nextIndex);
@@ -2918,7 +3028,7 @@ function advanceAfterAccepted(ctx, { index, attempt, target }) {
     renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttempt });
     return;
   }
-  renderPlanNext(ctx, { index, attempt, target });
+  renderPlanNext(ctx, { index, attempt, target, unresolved });
 }
 
 // `index` (the just-completed FINAL wire index, 1-based) is optional — most
@@ -2941,15 +3051,19 @@ function advanceAfterAccepted(ctx, { index, attempt, target }) {
 // sync, and balance plans that share this screen, so no flow needs a branch
 // here to be told the truth (a flow that wants its own end copy still carries
 // `done_title`/`done_body` on its LAST entry, which wins over this).
-function renderPlanAllDone(ctx, { index } = {}) {
+function renderPlanAllDone(ctx, { index, unresolved = null } = {}) {
   const returnUrl = safeReturnUrl(ctx.spec);
   const entry = typeof index === "number" ? entryForIndex(ctx.spec, index) : null;
   const screenCopy = (entry && entry.screen) || {};
-  const heading = String(screenCopy.done_title || "All measurements done");
-  const body = String(
-    screenCopy.done_body ||
-      "All measurements done — the speaker page shows what happens next.",
-  );
+  const heading = unresolved
+    ? `Measurement ${index} — left out`
+    : String(screenCopy.done_title || "All measurements done");
+  const body = unresolved
+    ? unresolvedPositionNote(unresolved)
+    : String(
+      screenCopy.done_body ||
+        "All measurements done — the speaker page shows what happens next.",
+    );
   const children = [
     el("h1", { class: "cap-heading", text: heading }),
     el("p", { class: "cap-note", text: body }),
@@ -2961,6 +3075,26 @@ function renderPlanAllDone(ctx, { index } = {}) {
   }
   setScreen(ctx.screenEl, children);
   setStatus(body, "done");
+}
+
+// A capture ran, spent this slot's final available extra and established that
+// the set cannot continue. This is not an admission refusal and not a retry:
+// the Pi publishes it as the final capture_result, then ends the runner.
+function renderPlanTerminal(ctx, verdict) {
+  const returnUrl = safeReturnUrl(ctx.spec);
+  const message = verdict.error || verdict.reason || verdict.banner
+    || "The measurement cannot continue.";
+  const children = [
+    el("h1", { class: "cap-heading", text: "Measurement cannot continue" }),
+    el("p", { class: "cap-note", text: message }),
+  ];
+  if (returnUrl) {
+    children.push(linkButton("Back to speaker", returnUrl));
+  } else {
+    children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
+  }
+  setScreen(ctx.screenEl, children);
+  setStatus(message, "error");
 }
 
 function renderPlanRefused(ctx, admission) {
@@ -3220,6 +3354,15 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
         setComplete: true,
         accepted: Number(event.accepted) || 0,
         target: Number(event.capture_target) || target,
+        // The relay host slot is last-write-wins: completion may replace the
+        // final capture_result before this poll, so the Pi repeats the final
+        // unresolved-position disclosure here.
+        unresolved: event.unresolved && typeof event.unresolved === "object"
+          ? {
+              code: String(event.unresolved.code || ""),
+              diagnosis: String(event.unresolved.diagnosis || ""),
+            }
+          : null,
       };
     }
     if (phase === "capture_set_exhausted") {
@@ -3256,11 +3399,31 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
         banner: event.banner ? String(event.banner) : "",
         prompt: event.prompt ? String(event.prompt) : "",
         code: event.code ? String(event.code) : "",
+        // The host decided on THIS capture that the set cannot continue. The
+        // runner publishes this result and exits; no next begin exists.
+        terminal: event.terminal === true,
+        terminalOutcome: event.terminal_outcome
+          ? String(event.terminal_outcome)
+          : "",
         // §2.6: the pre-apply cloud is walked but its group is NOT closed —
         // the Pi is waiting for a begin PAST the group before it fits and
         // applies. An older Pi never sends the key and the page advances
         // exactly as it does today.
         awaitingConfirm: event.awaiting_confirm === true,
+        // THIS position's honest attempt count (owner ruling #2086 item 2).
+        // The screen used to say "one more try" on every rejection while the
+        // Pi ran a hidden meter to twelve; these are the numbers that stop it.
+        attempts: attemptCount(event.attempts),
+        // Set when the Pi gave up on this position and moved the group on. The
+        // verdict reads `accepted` because that is the relay's only "this slot
+        // is done" signal — it is NOT a claim the spot was measured, and the
+        // next screen must not imply one.
+        unresolved: event.unresolved && typeof event.unresolved === "object"
+          ? {
+              code: String(event.unresolved.code || ""),
+              diagnosis: String(event.unresolved.diagnosis || ""),
+            }
+          : null,
       };
     }
     await delayMs(pollMs);
@@ -3655,6 +3818,11 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       await endPlanSession(ctx);
       return;
     }
+    if (verdict.terminal) {
+      renderPlanTerminal(ctx, verdict);
+      await endPlanSession(ctx);
+      return;
+    }
     // ORDER IS LOAD-BEARING (two-stage work order D1). `awaitingConfirm` must
     // beat the completion test, not follow it: in a measure-only plan the
     // final cloud position IS `target`, so `verdict.accepted && index >=
@@ -3667,16 +3835,20 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     if (verdict.accepted && verdict.awaitingConfirm) {
       // The just-accepted capture becomes retakeable — until this page posts
       // its next begin (§2.6) or signals the set complete.
-      armRetakeSlot(ctx, { index, attempt });
+      if (!verdict.unresolved) {
+        armRetakeSlot(ctx, { index, attempt, attempts: verdict.attempts });
+      }
       ctx.retakeAwaitingConfirm = true;
       // The pre-apply cloud is walked but NOT closed: the Pi is holding the
       // set open for the household's confirmation, which is exactly the
       // window in which retaking this spot still means something.
-      renderPlanGroupConfirm(ctx, { index, attempt, target });
+      renderPlanGroupConfirm(ctx, {
+        index, attempt, target, unresolved: verdict.unresolved,
+      });
       return;
     }
     if (verdict.setComplete || (verdict.accepted && index >= target)) {
-      renderPlanAllDone(ctx, { index });
+      renderPlanAllDone(ctx, { index, unresolved: verdict.unresolved });
       await endPlanSession(ctx);
       return;
     }
@@ -3688,14 +3860,20 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     if (verdict.accepted) {
       // The just-accepted capture becomes retakeable — until this page posts
       // its next begin (§2.6).
-      armRetakeSlot(ctx, { index, attempt });
+      if (!verdict.unresolved) {
+        armRetakeSlot(ctx, { index, attempt, attempts: verdict.attempts });
+      }
       // …and remember WHICH screen this acceptance belongs on, so a rejected
       // retake of it can return to the same place (B1's escape) rather than
       // guessing. Survives the retake round; overwritten by the next accept.
       ctx.retakeAwaitingConfirm = false;
       // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
       // owns the screen (on_apply), a cancelable countdown, or the manual tap.
-      advanceAfterAccepted(ctx, { index, attempt, target });
+      // `unresolved` rides along so the next screen SAYS the spot was left out
+      // instead of letting the household read the advance as a tick.
+      advanceAfterAccepted(ctx, {
+        index, attempt, target, unresolved: verdict.unresolved,
+      });
     } else {
       // `error` first for the legacy shape (kinds whose host sets it), then
       // the v2 conductor's `reason`/`banner`; `prompt` is the separate
@@ -3707,6 +3885,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         reason: verdict.error || verdict.reason || verdict.banner,
         prompt: verdict.prompt,
         retake,
+        attempts: verdict.attempts,
       });
     }
   } catch (err) {
