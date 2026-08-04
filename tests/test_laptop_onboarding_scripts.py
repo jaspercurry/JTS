@@ -66,6 +66,15 @@ case "$cmd" in
   sudo\ cat\ /var/lib/jasper/install_profile*)
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
     ;;
+  cat\ /var/lib/jasper/install_profile*)
+    printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
+    ;;
+  tr\ -d*\/proc\/device-tree\/model*)
+    printf '%s\n' "${FAKE_PI_MODEL:-Raspberry Pi 5 Model B Rev 1.0}"
+    ;;
+  *jasper.output_hardware*load_state*)
+    printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
+    ;;
   sudo\ -n*)
     exit 0
     ;;
@@ -84,6 +93,11 @@ set -euo pipefail
 printf 'RSYNC' >> "$FAKE_LOG"
 for arg in "$@"; do printf ' %q' "$arg" >> "$FAKE_LOG"; done
 printf '\n' >> "$FAKE_LOG"
+"""
+
+
+FAKE_PING = r"""#!/usr/bin/env bash
+exit 0
 """
 
 
@@ -138,6 +152,7 @@ class FakeRemote:
         self.log = self.tmp / "calls.log"
         self._write_executable(self.bin / "ssh", FAKE_SSH)
         self._write_executable(self.bin / "rsync", FAKE_RSYNC)
+        self._write_executable(self.bin / "ping", FAKE_PING)
         test_case.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
     @staticmethod
@@ -212,6 +227,40 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                 timeout=10,
             )
 
+    def run_onboard(
+        self,
+        fake: FakeRemote,
+        *,
+        profile: str,
+        model: str,
+        output_status: str,
+    ) -> subprocess.CompletedProcess[str]:
+        home = fake.tmp / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        (ssh_dir / "id_ed25519.pub").write_text(
+            "ssh-ed25519 fake onboarding test key\n", encoding="utf-8"
+        )
+        env = fake.env(
+            HOME=str(home),
+            FAKE_INSTALL_PROFILE=profile,
+            FAKE_PI_MODEL=model,
+            FAKE_OUTPUT_STATUS=output_status,
+        )
+        with isolated_checkout(None) as checkout:
+            return subprocess.run(
+                [
+                    "bash",
+                    str(checkout / "scripts" / "onboard.sh"),
+                    "jts4.local",
+                ],
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
     def test_laptop_onboarding_scripts_are_valid_bash(self):
         for script in (LIB, ONBOARD, DEPLOY, USE):
             subprocess.run(["bash", "-n", str(script)], check=True)
@@ -233,6 +282,48 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             result.stdout.index("bash scripts/onboard.sh jts.local --adopt"),
             result.stdout.index("Advanced/unattended path"),
         )
+
+    def test_streambox_completion_is_capability_and_hardware_aware(self):
+        fake = FakeRemote(self)
+        result = self.run_onboard(
+            fake,
+            profile="streambox",
+            model="Raspberry Pi Zero 2 W Rev 1.0",
+            output_status="missing",
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, combined)
+        self.assertIn("Raspberry Pi Zero 2 W Rev 1.0", result.stdout)
+        self.assertIn("Install profile:   streambox", result.stdout)
+        self.assertIn("This Streambox provides AirPlay", result.stdout)
+        self.assertIn(
+            "intentionally omits the local\nvoice and microphone brain",
+            result.stdout,
+        )
+        for page in ("sources", "spotify", "sound", "rooms", "system"):
+            self.assertIn(f"http://jts4.local/{page}/", result.stdout)
+        self.assertNotIn("http://jts4.local/voice/", result.stdout)
+        self.assertNotIn("http://jts4.local/transit/", result.stdout)
+        self.assertIn("Audio output is safely parked", result.stdout)
+        self.assertIn("Apple\nUSB-C to 3.5 mm dongle", result.stdout)
+
+    def test_full_completion_retains_voice_guidance(self):
+        fake = FakeRemote(self)
+        result = self.run_onboard(
+            fake,
+            profile="full",
+            model="Raspberry Pi 5 Model B Rev 1.0",
+            output_status="ready",
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, combined)
+        self.assertIn("Install profile:   full", result.stdout)
+        self.assertIn("http://jts4.local/voice/", result.stdout)
+        self.assertIn("http://jts4.local/transit/", result.stdout)
+        self.assertNotIn("This Streambox provides", result.stdout)
+        self.assertNotIn("Audio output is safely parked", result.stdout)
 
     def test_unattended_sudo_failure_exits_before_mkdir_rsync_or_install(self):
         fake = FakeRemote(self)

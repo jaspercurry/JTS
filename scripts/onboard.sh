@@ -407,6 +407,45 @@ if ! PI_HOST="$HOST" PI_USER="$PI_USER" JASPER_HOSTNAME="$SPEAKER_HOSTNAME" bash
 fi
 log_event install ok
 
+# Read the installer's persisted result instead of repeating its board-to-profile
+# policy here. This remains useful when a future image has already installed the
+# packages: the marker and reconciler state still describe what this box can do.
+INSTALLED_PROFILE="$(
+    ssh -o BatchMode=yes "${PI_USER}@${HOST}" \
+        'cat /var/lib/jasper/install_profile 2>/dev/null' 2>/dev/null \
+        | tr -d '\r' | head -n1 || true
+)"
+PROFILE_STATUS="ok"
+case "$INSTALLED_PROFILE" in
+    full|streambox)
+        ;;
+    *)
+        echo "    warning: installed profile marker is unavailable or invalid" >&2
+        echo "             completion guidance will stay capability-neutral" >&2
+        INSTALLED_PROFILE="unknown"
+        PROFILE_STATUS="warn"
+        ;;
+esac
+
+PI_MODEL="$(
+    ssh -o BatchMode=yes "${PI_USER}@${HOST}" \
+        "tr -d '\\000\\r\\n' < /proc/device-tree/model 2>/dev/null" \
+        2>/dev/null || true
+)"
+[[ -n "$PI_MODEL" ]] || PI_MODEL="unknown Raspberry Pi model"
+
+OUTPUT_STATUS_CMD="/opt/jasper/.venv/bin/python -c 'from jasper.output_hardware import load_state; s = load_state(); print(\"\" if s is None else s.status)'"
+OUTPUT_STATUS="$(
+    ssh -o BatchMode=yes "${PI_USER}@${HOST}" "$OUTPUT_STATUS_CMD" \
+        2>/dev/null | tr -d '\r' | head -n1 || true
+)"
+
+echo
+echo "==> installed hardware profile"
+echo "    model: ${PI_MODEL}"
+echo "    profile: ${INSTALLED_PROFILE} (from /var/lib/jasper/install_profile)"
+log_event profile "$PROFILE_STATUS" "profile=${INSTALLED_PROFILE}"
+
 # ---- phase 5: validate -------------------------------------------------
 
 echo
@@ -457,13 +496,56 @@ JTS onboarding complete: ${HOST}
   SSH:               ${SSH_HOWTO}
 ${ALT_URL_NOTE:-}
   Build manifest:    ${SSH_HOWTO} 'sudo cat /var/lib/jasper/build.txt'
+  Raspberry Pi:      ${PI_MODEL}
+  Install profile:   ${INSTALLED_PROFILE}
+EOF
+
+if [[ "$OUTPUT_STATUS" == "missing" ]]; then
+    cat <<EOF
+
+Audio output is safely parked because no output DAC was detected.
+Connect a supported output DAC (for the standard build, the Apple
+USB-C to 3.5 mm dongle with its analog plug attached), then open:
+  http://${URL_HOST}/sound/
+EOF
+fi
+
+case "$INSTALLED_PROFILE" in
+    streambox)
+        cat <<EOF
+
+This Streambox provides AirPlay, Spotify Connect, Bluetooth, DSP,
+speaker grouping, and management. It intentionally omits the local
+voice and microphone brain.
+
+Next steps (visit from any device on the LAN):
+  http://${URL_HOST}/sources/    choose and enable music sources
+  http://${URL_HOST}/spotify/    connect a Spotify account (optional)
+  http://${URL_HOST}/sound/      configure sound and output hardware
+  http://${URL_HOST}/rooms/      group speakers
+  http://${URL_HOST}/system/     dashboard and status
+EOF
+        ;;
+    full)
+        cat <<EOF
 
 Next steps (visit from any device on the LAN):
   http://${URL_HOST}/voice/      pick a voice provider + paste API key
   http://${URL_HOST}/transit/    NYC subway / bus / Citi Bike (optional)
   http://${URL_HOST}/spotify/    connect a Spotify account (optional)
   http://${URL_HOST}/system/     dashboard and status
+EOF
+        ;;
+    *)
+        cat <<EOF
 
+Next step (visit from any device on the LAN):
+  http://${URL_HOST}/system/     dashboard, capabilities, and status
+EOF
+        ;;
+esac
+
+cat <<EOF
 Future Claude Code sessions in this checkout will read
 CLAUDE.local.md automatically and know that ${HOST} is the
 active Pi.
