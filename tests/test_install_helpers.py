@@ -156,7 +156,8 @@ def _run_speaker_name_seed(
     saved_hostname: str | None = None,
     os_hostname: str = "raspberrypi",
     fail_write: bool = False,
-    race_wizard_save: bool = False,
+    fail_chmod: bool = False,
+    publish_behavior: str = "normal",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run the creation-only installer seed against scratch state."""
 
@@ -172,18 +173,37 @@ def _run_speaker_name_seed(
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
         f"ENV_DIR={shlex.quote(str(env_dir))}",
         f"STATE_DIR={shlex.quote(str(state_dir))}",
-        "unset JASPER_HOSTNAME",
+        "unset JASPER_HOSTNAME JASPER_SYSTEM_PYTHON",
         f"hostname() {{ printf '%s\\n' {shlex.quote(os_hostname)}; }}",
     ]
     if deploy_hostname is not None:
         commands.append(f"export JASPER_HOSTNAME={shlex.quote(deploy_hostname)}")
     if fail_write:
         commands.append("printf() { builtin printf partial; return 1; }")
-    if race_wizard_save:
+    if fail_chmod:
         commands.append(
-            "ln() { "
-            "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' "
-            '> "${STATE_DIR}/speaker_name.env"; command ln "$@"; }'
+            "chmod() { [[ \"$2\" == *'.speaker_name.env.seed.'* ]] "
+            "&& return 1; command chmod \"$@\"; }"
+        )
+    if publish_behavior != "normal":
+        real_python = shlex.quote(sys.executable)
+        publish_actions = {
+            "wizard_file": (
+                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$3\""
+            ),
+            "directory": 'mkdir "$3"',
+            "directory_symlink": (
+                'mkdir "${3}.target"; command ln -s "${3}.target" "$3"'
+            ),
+            "fail": "return 23",
+        }
+        action = publish_actions[publish_behavior]
+        commands.append(
+            "python3() { "
+            "if [[ \"$2\" == *'.speaker_name.env.seed.'* ]]; then "
+            f"{action}; "
+            "fi; "
+            f"command {real_python} \"$@\"; }}"
         )
     commands.append("seed_speaker_name_env")
     result = subprocess.run(
@@ -279,10 +299,59 @@ def test_speaker_name_seed_does_not_clobber_concurrent_wizard_save(tmp_path: Pat
     result, state_file = _run_speaker_name_seed(
         tmp_path,
         deploy_hostname="jts4.local",
-        race_wizard_save=True,
+        publish_behavior="wizard_file",
     )
     assert result.returncode == 0, result.stderr
     assert state_file.read_bytes() == b'JASPER_SPEAKER_NAME="Wizard Save"'
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+@pytest.mark.parametrize("publish_behavior", ["directory", "directory_symlink"])
+def test_speaker_name_seed_directory_race_is_preserved_without_nested_link(
+    tmp_path: Path,
+    publish_behavior: str,
+):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        publish_behavior=publish_behavior,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"speaker name: preserving {state_file}" in result.stdout
+    assert 'speaker name: "JTS4"' not in result.stdout
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+    target_dir = (
+        Path(f"{state_file}.target")
+        if publish_behavior == "directory_symlink"
+        else state_file
+    )
+    assert target_dir.is_dir()
+    assert list(target_dir.iterdir()) == []
+    assert state_file.is_symlink() is (publish_behavior == "directory_symlink")
+
+
+def test_speaker_name_seed_chmod_failure_cleans_temp_and_fails(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        fail_chmod=True,
+    )
+    assert result.returncode != 0
+    assert "ERROR: could not set fresh speaker-name permissions" in result.stderr
+    assert not state_file.exists()
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+def test_speaker_name_seed_publish_failure_cleans_temp_and_fails(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        publish_behavior="fail",
+    )
+    assert result.returncode != 0
+    assert "ERROR: could not publish fresh speaker name" in result.stderr
+    assert not state_file.exists()
     assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
 
 

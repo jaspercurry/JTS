@@ -60,7 +60,16 @@ PY
         echo "  ERROR: could not set fresh speaker-name permissions" >&2
         return 1
     fi
-    if ln -- "${tmp}" "${state_file}" 2>/dev/null; then
+    if "${JASPER_SYSTEM_PYTHON:-python3}" - "${tmp}" "${state_file}" <<'PY'
+import os
+import sys
+
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError:
+    raise SystemExit(1)
+PY
+    then
         rm -f -- "${tmp}"
         echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
         return 0
