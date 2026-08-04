@@ -238,10 +238,11 @@ bash scripts/onboard.sh <hostname>.local
 
 Stream the output. The script emits both `==>` headers (human-readable
 phase milestones) and `event=onboard.<phase> status=<s>` lines
-(parseable; same convention as the Pi-side daemons). Expect 15-20
-minutes — the long pole is shairport-sync compiling from source on
-the Pi. Don't ask the user to wait silently; let them know what's
-happening at each phase.
+(parseable; same convention as the Pi-side daemons). First-install
+duration varies substantially by hardware because native components are
+built on the Pi; a Zero 2 W can take much longer than a Pi 5. Don't ask
+the user to wait silently; keep the output streaming and explain each
+phase as it runs.
 
 If a phase fails, the script prints a detailed remediation block.
 Surface it verbatim to the user; don't paraphrase.

@@ -67,12 +67,15 @@ case "$cmd" in
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
     ;;
   cat\ /var/lib/jasper/install_profile*)
+    [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
     ;;
   tr\ -d*\/proc\/device-tree\/model*)
+    [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_PI_MODEL:-Raspberry Pi 5 Model B Rev 1.0}"
     ;;
   *jasper.output_hardware*load_state*)
+    [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
   sudo\ -n*)
@@ -234,6 +237,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         profile: str,
         model: str,
         output_status: str,
+        metadata_probes_fail: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         home = fake.tmp / "home"
         ssh_dir = home / ".ssh"
@@ -246,6 +250,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             FAKE_INSTALL_PROFILE=profile,
             FAKE_PI_MODEL=model,
             FAKE_OUTPUT_STATUS=output_status,
+            FAKE_METADATA_PROBES_FAIL="1" if metadata_probes_fail else "0",
         )
         with isolated_checkout(None) as checkout:
             return subprocess.run(
@@ -324,6 +329,48 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("http://jts4.local/transit/", result.stdout)
         self.assertNotIn("This Streambox provides", result.stdout)
         self.assertNotIn("Audio output is safely parked", result.stdout)
+
+    def test_metadata_probe_failures_keep_neutral_completion_successful(self):
+        fake = FakeRemote(self)
+        result = self.run_onboard(
+            fake,
+            profile="streambox",
+            model="stale model must not leak",
+            output_status="missing",
+            metadata_probes_fail=True,
+        )
+
+        combined = result.stdout + result.stderr
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, combined)
+        self.assertIn("cat\\ /var/lib/jasper/install_profile", calls)
+        self.assertIn("/proc/device-tree/model", calls)
+        self.assertIn("jasper.output_hardware", calls)
+        self.assertIn("Install profile:   unknown", result.stdout)
+        self.assertIn(
+            "Raspberry Pi:      unknown Raspberry Pi model",
+            result.stdout,
+        )
+        self.assertIn("http://jts4.local/system/", result.stdout)
+        for page in (
+            "sources",
+            "spotify",
+            "sound",
+            "rooms",
+            "voice",
+            "transit",
+        ):
+            self.assertNotIn(f"http://jts4.local/{page}/", result.stdout)
+        self.assertNotIn("Audio output is safely parked", result.stdout)
+        self.assertNotIn("stale model must not leak", result.stdout)
+        self.assertIn(
+            "completion guidance will stay capability-neutral",
+            result.stderr,
+        )
+        self.assertIn(
+            "event=onboard.profile status=warn profile=unknown",
+            result.stdout,
+        )
 
     def test_unattended_sudo_failure_exits_before_mkdir_rsync_or_install(self):
         fake = FakeRemote(self)

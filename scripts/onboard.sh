@@ -58,8 +58,8 @@
 #                     JASPER_HOSTNAME is the speaker identity. If the
 #                     SSH target is an IP, query the Pi hostname or use
 #                     --speaker-hostname.
-#   4. install      — calls scripts/deploy-to-pi.sh (~15-20 min — the
-#                     time is dominated by shairport-sync source-build)
+#   4. install      — calls scripts/deploy-to-pi.sh (duration varies by
+#                     hardware; native source builds dominate)
 #   5. validate     — runs jasper-doctor on the Pi and surfaces verdict
 #
 # Idempotency contract: running this twice in a row is a no-op that
@@ -393,7 +393,7 @@ fi
 
 echo
 echo "==> run install.sh on ${HOST} via deploy-to-pi.sh"
-echo "    expect 15-20 minutes (shairport-sync source-build dominates)"
+echo "    first-install duration varies by hardware (native source builds dominate)"
 echo
 # Export PI_HOST/PI_USER for deploy-to-pi.sh. The two scripts share
 # the same env-var contract; this is just being explicit so a future

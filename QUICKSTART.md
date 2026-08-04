@@ -1,8 +1,8 @@
 # JTS QUICKSTART
 
-From "I just bought a Pi" to a working JTS speaker in about 30 minutes —
-most of which is the speaker building software by itself while you do
-something else.
+From "I just bought a Pi" to a working JTS speaker. Much of the wait is
+the speaker building software by itself; first-install duration varies
+substantially by Pi model.
 
 > [!TIP]
 > **Using Claude Code?** Skip this doc and just say *"set up a Pi"*
@@ -69,7 +69,7 @@ the best way.
 
 ---
 
-## 1. Flash the Pi (5 minutes)
+## 1. Flash the Pi
 
 1. Insert a microSD card (16 GB+) into your computer.
 2. Open Raspberry Pi Imager and choose:
@@ -112,7 +112,7 @@ Auto-eject means the files may not be visible until you do.
 
 ---
 
-## 2. Boot the Pi (3 minutes)
+## 2. Boot the Pi
 
 1. Insert the SD card into the Pi.
 2. Connect the hardware for your path. For a full speaker, connect the
@@ -133,7 +133,7 @@ Auto-eject means the files may not be visible until you do.
 
 ---
 
-## 3. Onboard (15-20 minutes)
+## 3. Onboard
 
 Clone the repo and run the onboarder from your computer:
 
@@ -191,7 +191,7 @@ When it finishes, you'll see a banner with the next URLs to visit.
 
 ---
 
-## 4. Configure (10 minutes, one-time)
+## 4. Configure (one-time)
 
 The completion banner reports the Pi model and installed profile. Follow
 that result rather than inferring the profile again from the board model.

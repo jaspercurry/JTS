@@ -28,7 +28,8 @@ voice-assistant pause scope, and the independent USB microphone export.
   through every step — Raspberry Pi Imager's nested OS picker,
   password-based SSH setup, SD card flash, first boot, network
   discovery (including multi-speaker collision detection), and the
-  install. ~30 minutes total.
+  install. First-install duration varies by Pi model because native
+  components are built on the device.
 - **Prefer to read the steps yourself?** [QUICKSTART.md](QUICKSTART.md)
   is the same flow as a human-readable walkthrough.
 - **Doing the full long-form bringup** (hardware calibration and XVF
@@ -551,7 +552,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |
-| [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
+| [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker. Carries the chosen hostname through every step. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, and calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/PLAN-usb-mic-export-latency-fix.md](docs/PLAN-usb-mic-export-latency-fix.md) | Audio architects / maintainers | **Verbatim point-in-time plan / execution record.** Preserves the original latency-fix instructions exactly; current operational truth remains in the linked HANDOFF docs. |
@@ -1440,7 +1441,7 @@ modifying. One-line summaries here:
 If you have a fresh Pi and want to set up a speaker, start with
 [QUICKSTART.md](QUICKSTART.md). It follows the beginner path from
 Raspberry Pi Imager through `scripts/onboard.sh --adopt` and the
-first setup pages in ~30 minutes.
+first setup pages. First-install duration varies substantially by hardware.
 
 For the long-form operator runbook — hardware calibration, XVF
 firmware, and room correction — use
