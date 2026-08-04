@@ -565,7 +565,11 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           accepted,
           ...verdictFields,
         };
-        if (verdict.accepted && verdict.awaiting_confirm) {
+        if (verdict.terminal) {
+          // The real runner publishes this exact result and returns. There is
+          // no capture_set_exhausted overwrite and no next begin.
+          last = resultEvent;
+        } else if (verdict.accepted && verdict.awaiting_confirm) {
           // HELD (work order D1): the Pi posts NOTHING further and stays in
           // awaiting_begin, so the last-write-wins slot keeps this verdict and
           // the phone's confirm screen is what the household reads. The set
@@ -578,7 +582,12 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           // landed last on the last-write-wins slot — mirror that by
           // advancing straight to the terminal on the FOLLOWING poll.
           queueMicrotask(() => {
-            last = { phase: "capture_set_complete", accepted: acceptedCount, capture_target: target };
+            last = {
+              phase: "capture_set_complete",
+              accepted: acceptedCount,
+              capture_target: target,
+              ...(verdict.unresolved ? { unresolved: verdict.unresolved } : {}),
+            };
           });
         } else if (!verdict.accepted && attempt >= maxAttempts) {
           last = resultEvent;
@@ -925,11 +934,113 @@ async function testAnUnresolvedPositionSaysSoInsteadOfTicking() {
   assert.equal(headingText(ctx.screenEl), "Measurement 1 of 3 — left out");
   assert.ok(
     noteTexts(ctx.screenEl).some((t) =>
-      t.includes("could hear the speaker") && t.includes("left that spot out and moved on")),
+      t.includes("could hear the speaker") && t.includes("the group continued")),
     `expected the left-out sentence, got: ${JSON.stringify(noteTexts(ctx.screenEl))}`,
   );
   // Only the forward control — no retake of a spot with no tries left.
   assert.deepEqual(actionLabels(ctx.screenEl), ["Next measurement"]);
+  ok();
+}
+
+async function testFinalExtraTerminalHasNoDeadRetryAffordance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const reason =
+    "The room is too loud right now. JTS measured this spot 4 times — the "
+    + "planned one plus 3 extra tries — and still could not get a clean read. "
+    + "The measurement cannot continue because this step needs a clean read.";
+  const spec = planSpec({ target: 2, maxAttempts: 8 });
+  const { client, posted } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 8,
+    resultFor: () => ({
+      accepted: false,
+      code: "snr_floor",
+      reason,
+      terminal: true,
+      terminal_outcome: "phase_cannot_proceed",
+    }),
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement cannot continue");
+  assert.equal(noteText(ctx.screenEl), reason);
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
+  assert.ok(!noteText(ctx.screenEl).toLowerCase().includes("try again"));
+  assert.equal(
+    posted.filter((event) => event.begin_capture && !event.armed).length,
+    1,
+    "the page never posts the doomed next begin",
+  );
+  ok();
+}
+
+async function testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const diagnosis = "The room got loud during that measurement.";
+  const spec = measureOnlyPlanSpec();
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) => index === 3
+      ? {
+          accepted: true,
+          awaiting_confirm: true,
+          unresolved: { index, code: "noisy_room_linearity", diagnosis },
+        }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  assert.equal(headingText(ctx.screenEl), "Measurement 3 of 3 — left out");
+  assert.notEqual(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  assert.ok(noteText(ctx.screenEl).includes(diagnosis));
+  assert.ok(noteText(ctx.screenEl).includes("the group continued"));
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue"]);
+  ok();
+}
+
+async function testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const diagnosis = "Alignment is less certain at this mic position.";
+  const spec = planSpec({ target: 3, maxAttempts: 6 });
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) => index === 3
+      ? {
+          accepted: true,
+          unresolved: { index, code: "low_alignment_confidence", diagnosis },
+        }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  assert.equal(headingText(ctx.screenEl), "Measurement 3 — left out");
+  assert.notEqual(headingText(ctx.screenEl), "All measurements done");
+  assert.ok(noteText(ctx.screenEl).includes(diagnosis));
+  assert.ok(noteText(ctx.screenEl).includes("the group continued"));
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
   ok();
 }
 
@@ -4007,6 +4118,9 @@ const tests = [
   testGeometryRetakeRendersTheServerSuppliedGuidance,
   testTheRetryEyebrowCountsThisPositionsExtraTries,
   testAnUnresolvedPositionSaysSoInsteadOfTicking,
+  testFinalExtraTerminalHasNoDeadRetryAffordance,
+  testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm,
+  testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite,
   testRejectionCopyFallsBackWhenThePiSendsNoGuidance,
   testTimedOutResultPollRendersTerminalNotStaleRetry,
   testRefusedBeginRendersTerminalWithNoRetry,

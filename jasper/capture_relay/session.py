@@ -1364,6 +1364,14 @@ def run_capture_plan(
     ``capture_set_complete`` (target met) or ``capture_set_exhausted``
     (attempt budget spent) and returns every outcome in order.
 
+    A verdict may additionally carry ``terminal: true`` when the host can
+    decide at consume time that no later capture can make the set usable (for
+    example, a per-position retry bound spent below a required position
+    floor). The runner publishes that exact ``capture_result`` and returns
+    immediately; it never waits for a next begin whose only possible answer is
+    refusal. The host owns the accompanying ``reason`` and
+    ``terminal_outcome`` copy/state.
+
     The phone NEVER decides admission; out-of-order, replayed, or malformed
     begins are refused loudly (named host event + ``CaptureFailed``). Failure
     semantics — timeout phases, abort, stop, cues, logging — mirror
@@ -1562,7 +1570,15 @@ def _poll_capture_plan(
             return REVIEW_HOLD_BUDGET_S
         return timeout_s
 
-    def post_set_complete(accepted: int) -> None:
+    def post_set_complete(
+        accepted: int, final_verdict: Mapping[str, Any] | None = None,
+    ) -> None:
+        unresolved = (
+            final_verdict.get("unresolved")
+            if isinstance(final_verdict, Mapping)
+            and isinstance(final_verdict.get("unresolved"), Mapping)
+            else None
+        )
         client.post_host_event(
             session.session_id,
             session.pull_token,
@@ -1570,6 +1586,11 @@ def _poll_capture_plan(
                 "phase": HOST_PHASE_CAPTURE_SET_COMPLETE,
                 "accepted": accepted,
                 "capture_target": plan_target,
+                # The relay host slot is last-write-wins. The final
+                # capture_result can be replaced by this event before the
+                # phone polls, so carry the one final-position disclosure the
+                # completion screen must not lose.
+                **({"unresolved": dict(unresolved)} if unresolved else {}),
             },
         )
 
@@ -2109,6 +2130,18 @@ def _poll_capture_plan(
                         },
                     },
                 )
+                if verdict.get("terminal") is True:
+                    log_event(
+                        logger,
+                        "capture_relay.plan_terminal_result",
+                        level=logging.WARNING,
+                        session_id=session.session_id,
+                        index=index,
+                        attempt=attempt,
+                        code=str(verdict.get("code") or ""),
+                        outcome=str(verdict.get("terminal_outcome") or ""),
+                    )
+                    return outcomes
                 if accepted_count >= plan_target:
                     completion_pending = bool(
                         completion_signal_required is not None
@@ -2170,7 +2203,7 @@ def _poll_capture_plan(
                         # ``self._candidate`` guards it fire-once.
                         deadline = monotonic() + begin_budget(accepted_count + 1)
                         continue
-                    post_set_complete(accepted_count)
+                    post_set_complete(accepted_count, verdict)
                     log_event(
                         logger,
                         "capture_relay.plan_complete",

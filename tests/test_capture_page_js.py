@@ -214,7 +214,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260803.3",
+        "capture_page_build": "20260803.4",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -222,7 +222,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260803-3" in index_html
+    assert "main.js?v=20260803-4" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -271,9 +271,9 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "d02a4dcb23a4a05e8ed69671ed6a12e1231c94173c64159fdb400735eceddf09"
+    "f2ad5dac5e9fa038d5f1a437bc08783c12b94b3f54bdc6ecde719061db4be2d8"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.3"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.4"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -1043,13 +1043,13 @@ def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
     with no replacement copy. 3 pre-existing call sites (capture complete,
     ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, the
     phone-initiated Stop terminal screen (renderStoppedScreen), the run-19
-    dead-session terminal (renderSessionExpired), and the three new v3
+    dead-session terminal (renderSessionExpired), and the four v3
     session-plan terminals (renderPlanAllDone, renderPlanRefused,
-    renderPlanExhausted) all need the same fallback."""
+    renderPlanExhausted, renderPlanTerminal) all need the same fallback."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 9
-    assert main_js.count('text: "You can close this tab."') == 9
+    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 10
+    assert main_js.count('text: "You can close this tab."') == 10
 
 
 def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():

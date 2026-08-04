@@ -575,6 +575,81 @@ def test_rejected_attempt_retries_same_slot_with_fresh_attempt_and_blob_index():
     assert backend.phases(session.session_id)[-1] == "capture_set_complete"
 
 
+def test_terminal_capture_result_ends_without_waiting_for_a_dead_next_begin(caplog):
+    """A host terminal verdict is final on the capture that spends the bound."""
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend,
+        session,
+        verdicts={
+            2: {
+                "accepted": False,
+                "code": "snr_floor",
+                "reason": "The room was too loud. The measurement cannot continue.",
+                "terminal": True,
+                "terminal_outcome": "phase_cannot_proceed",
+            },
+        },
+    )
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, False),
+    ]
+    assert backend.phases(session.session_id)[-1] == "capture_result"
+    assert "capture_set_exhausted" not in backend.phases(session.session_id)
+    assert "capture_set_complete" not in backend.phases(session.session_id)
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["terminal"] is True
+    assert terminal["terminal_outcome"] == "phase_cannot_proceed"
+    assert "capture_relay.plan_terminal_result" in caplog.text
+
+
+def test_set_complete_repeats_a_final_unresolved_disclosure():
+    """The last-write-wins terminal cannot erase the final position outcome."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    unresolved = {
+        "index": 1,
+        "code": "locate_failed",
+        "diagnosis": "JTS could hear the speaker, but could not line up the tones.",
+    }
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend,
+        session,
+        verdicts={1: {"accepted": True, "unresolved": unresolved}},
+    )
+
+    run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert backend.host_events[session.session_id][-1] == {
+        "phase": "capture_set_complete",
+        "accepted": 1,
+        "capture_target": 1,
+        "unresolved": unresolved,
+    }
+
+
 def test_set_exhausted_when_attempt_budget_spent_before_target():
     backend = FakePlanRelayBackend()
     client, session, _phone = _mint_plan_session(

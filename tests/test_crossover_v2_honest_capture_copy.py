@@ -299,11 +299,21 @@ def test_budget_exhaustion_does_not_contradict_the_captures_that_caused_it():
 
     first = _run_phase(c, 1, 1)
     for attempt in range(2, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
-        _run_phase(c, 1, attempt)
+        final = _run_phase(c, 1, attempt)
+
+    diagnosis = locate_failed_diagnosis(True)
+    assert final["terminal"] is True
+    assert final["terminal_outcome"] == "phase_cannot_proceed"
+    assert final["reason"].startswith(diagnosis)
+    assert "try again" not in final["reason"].lower()
+    assert "cannot continue" in final["reason"].lower()
+    assert "volume" not in final["reason"].lower()
+
+    # A replayed next begin still gets the same defensive backstop, but the
+    # ordinary page never needs to reach it: the final capture was terminal.
     with pytest.raises(CaptureBeginRefused) as excinfo:
         c.authorize_begin(1, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
 
-    diagnosis = locate_failed_diagnosis(True)
     assert excinfo.value.code == REASON_LOCATE_FAILED
     assert first["reason"] == f"{diagnosis} Try again."
     assert excinfo.value.user_message.startswith(diagnosis)

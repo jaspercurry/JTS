@@ -483,10 +483,11 @@ extension):
   decrements, so the completion check and index→phase lookups are
   untouched. The Worker stays byte-opaque to all of it (events pass
   through; the marker is payload).
-- Budget: retake attempts ride the just-accepted slot's existing
-  attempt budget (`CLOUD_RETAKE_ALLOWANCE` at the plan level), shared
-  with failure retries — bounded by construction. The page hides the
-  Retake control when the budget is exhausted.
+- Budget: retake attempts ride the just-accepted position's pooled
+  `SlotAttempts` meter — the planned take plus three extras shared with
+  failure and geometry retries (#2097), while the plan-level max remains the
+  whole-session ceiling. The page hides the Retake control when the position's
+  extras are exhausted.
 - Scope: only the just-completed capture, and only until the next
   entry's begin is posted — no arbitrary-history retakes, no retake
   across a closed group. VERIFY retake is the existing `verify_retry`

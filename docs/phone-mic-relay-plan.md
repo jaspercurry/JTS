@@ -525,6 +525,17 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 malformed begins are refused loudly; per-event replay is already blocked by the
 authenticated-envelope sequence.
 
+A host consume verdict may carry `terminal: true` plus a named
+`terminal_outcome` when that just-finished capture proves the set cannot become
+usable (the crossover-v2 per-position bound below its phase/group floor is the
+shipped caller). The runner publishes that exact `capture_result` and returns
+immediately instead of waiting for a next begin that can only be refused. The
+page renders the host's terminal reason with no retry affordance. Separately,
+when an accepted final slot carries `unresolved`, the runner repeats that
+object on `capture_set_complete`: the relay's host-event slot is last-write-wins
+and completion can otherwise erase the final position's left-out disclosure
+before the phone polls.
+
 A `capture_set_exhausted` posted by a HOST (rather than by the runner reaching
 its attempt limit) may carry `budget: "step" | "link" | "none"` — which clock
 ran out, so the page stops calling a timeout an attempt limit (work order D8).

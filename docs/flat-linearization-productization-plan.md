@@ -566,8 +566,11 @@ restore paths (pinned by existing suites).
 *(Two mechanism deviations, recorded. **(a) The group is FIXED-LENGTH; there
 is no operator early-end.** The relay's plan runner completes a set at
 exactly `capture_target` accepted captures — `index == accepted_count + 1`
-and the only terminations are target-met or attempts-exhausted
-(`_poll_capture_plan`) — so a variable-length group is not expressible
+and the ordinary terminations are target-met or attempts-exhausted
+(`_poll_capture_plan`). Since #2097 a host verdict can also set
+`terminal=true` when the final allowed position attempt proves the set cannot
+reach its required floor; that ends the whole set honestly but does not make a
+short group operator-selectable. A variable-length group is still not expressible
 without changing that shared runner AND giving the phone an affordance to
 signal "I'm done", which this PR's own design contract rules out ("no new
 phone-side prompt mechanism"). N and M are therefore chosen
@@ -591,8 +594,11 @@ false of the retry path, and round-1 review falsified it: the deployed page
 extracted only `accepted`/`error` from `capture_result`, so the geometry
 retake's own guidance never reached the operator and every retake happened at
 the same spot. `capture-page/js/main.js` now forwards `reason`/`banner`/
-`prompt`/`code` and renders the server-supplied guidance, fail-soft in both
-directions. Source + tests land in PR-3b; the page DEPLOY is the architect's
+`prompt`/`code`, the bounded-retry `terminal` outcome, and an unresolved
+position's diagnosis, and renders the server-supplied guidance fail-soft in
+both directions. Final-position `unresolved` also rides
+`capture_set_complete` so last-write-wins completion cannot erase it. Source +
+tests land in PR-3b/#2097; the page DEPLOY is the architect's
 at ship time, page-first per the capture-page README's release ordering.)*
 
 *(**N raised 8 → 9** (adjudication 3a, round-1 review) so the delivered curve

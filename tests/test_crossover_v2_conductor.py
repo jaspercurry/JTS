@@ -3999,7 +3999,9 @@ def test_a_geometry_retried_position_keeps_its_ordinary_failure_budget(monkeypat
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_a_spent_cloud_position_is_attributed_and_the_group_continues(monkeypatch):
+def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
+    monkeypatch, caplog,
+):
     """The pooled bound is finite, and hitting it does NOT kill the session.
 
     Transformed from ``test_the_geometry_discount_is_capped_and_still_refuses_a_runaway``,
@@ -4011,6 +4013,7 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(monkeypatc
     """
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     attempt = _walk(c, (1, 2), 1)
     index = CLOUD_MEASURE_INDEXES[0]
 
@@ -4037,6 +4040,14 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(monkeypatc
         "diagnosis": locate_failed_diagnosis(True),
     }
     assert verdict["attempts"]["left"] == 0
+    spent = [
+        record.getMessage() for record in caplog.records
+        if "crossover_v2_position_attempts_spent" in record.getMessage()
+    ]
+    assert len(spent) == 1
+    assert f'diagnosis="{locate_failed_diagnosis(True)}"' in spent[0]
+    assert "pilot_heard=true" in spent[0]
+    assert "observed=locate_failed" in spent[0]
     # Nothing was retained for it — an unresolved position is not evidence.
     assert index not in {
         int(pid.rsplit("_", 1)[1])
@@ -4054,6 +4065,77 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(monkeypatc
 # everyone who can ask for one; exhaustion attributes and degrades rather than
 # killing the session with copy that says "try again".
 # ===========================================================================
+
+
+def test_every_retriable_reason_has_one_structured_diagnosis_source():
+    """Exhaustive negative guard for the count-only regression.
+
+    Every retriable registry row must carry a diagnosis, and its historical
+    retryable message/banner must be composed from that same value. Adding a
+    new retriable code as a bare literal fails here before exhaustion can ship
+    generic count-only copy for it.
+    """
+    retriable = {
+        code: spec for code, spec in REASON_REGISTRY.items()
+        if spec.retry_budget > 0
+    }
+    assert retriable
+    for code, spec in retriable.items():
+        assert spec.retry_copy is not None, code
+        assert (spec.message or spec.banner) == spec.retry_copy.message, code
+        assert flow.reason_diagnosis(code, spec), code
+
+
+@pytest.mark.parametrize(
+    ("analysis_kwargs", "expected_code"),
+    [
+        ({"linearity": False}, flow.REASON_AGC_BEHAVIORAL_FAIL),
+        ({"pilot_snr_ok": False}, flow.REASON_SNR_FLOOR),
+    ],
+)
+def test_non_special_reasons_keep_their_diagnosis_on_the_final_extra(
+    analysis_kwargs, expected_code,
+):
+    """Representative literal reasons terminate with X, never count alone."""
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(program, **analysis_kwargs)
+    c = _conductor(fakes)
+
+    for attempt in range(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+        verdict = _run_phase(c, 1, attempt)
+
+    diagnosis = flow.reason_diagnosis(
+        expected_code, REASON_REGISTRY[expected_code]
+    )
+    assert verdict["code"] == expected_code
+    assert verdict["terminal"] is True
+    assert verdict["reason"].startswith(diagnosis)
+    assert "try again" not in verdict["reason"].lower()
+    assert "cannot continue" in verdict["reason"].lower()
+
+
+def test_verify_inconclusive_keeps_its_measured_reflection_at_exhaustion():
+    """#2095 evidence and #2097 terminal action stay on the same capture."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(
+        program,
+        max_db=0.5,
+        gate_ms=5.0,
+        floor_source=gating.FLOOR_MEASURED,
+    )
+
+    for attempt in range(3, 3 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
+        verdict = _run_phase(c, 3, attempt)
+
+    diagnosis = flow.verify_inconclusive_diagnosis(True)
+    assert verdict["terminal"] is True
+    assert verdict["reflection_measured"] is True
+    assert verdict["reason"].startswith(diagnosis)
+    assert "try again" not in verdict["reason"].lower()
 
 
 def test_the_extra_try_bound_is_pooled_across_initiators(monkeypatch):
@@ -4178,10 +4260,17 @@ def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy()
         attempt += 1
         assert verdict["accepted"] is False
     assert verdict["attempts"]["left"] == 0
-    # Still a rejection — nothing was silently dropped — and the group did NOT
-    # close: there is no cloud to close with.
+    # The final capture itself is terminal — no retry screen/button survives
+    # until a doomed next begin — and the group did NOT close: there is no
+    # cloud to close with.
+    assert verdict["terminal"] is True
+    assert verdict["terminal_outcome"] == "below_position_floor"
+    assert verdict["reason"].startswith(locate_failed_diagnosis(True))
+    assert "try again" not in verdict["reason"].lower()
+    assert "too few positions" in verdict["reason"].lower()
     assert PHASE_CLOUD_VERIFY not in c.accepted_phases
 
+    # Defensive replay backstop remains diagnosis-identical.
     with pytest.raises(CaptureBeginRefused) as excinfo:
         c.authorize_begin(index, attempt)
     assert excinfo.value.code == REASON_LOCATE_FAILED, "attribute the observation"
