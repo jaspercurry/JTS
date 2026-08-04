@@ -598,8 +598,11 @@ the same spot. `capture-page/js/main.js` now forwards `reason`/`banner`/
 position's diagnosis, and renders the server-supplied guidance fail-soft in
 both directions. Final-position `unresolved` also rides
 `capture_set_complete` so last-write-wins completion cannot erase it. Source +
-tests land in PR-3b/#2097; the page DEPLOY is the architect's
-at ship time, page-first per the capture-page README's release ordering.)*
+tests ship in PR-3b/#2097. The public page and Pi rollout remain separate:
+publish and verify capture-page build `20260803.4` first, then deploy the Pi
+that can emit the terminal result. Rollback is Pi first, page second. The page
+DEPLOY is the architect's at ship time; repository merge alone is not that
+deployment.)*
 
 *(**N raised 8 → 9** (adjudication 3a, round-1 review) so the delivered curve
 rests on 8 summed sweeps — fundamental 1's floor is a count of CURVES, and a

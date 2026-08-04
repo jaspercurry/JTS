@@ -61,6 +61,12 @@ this doc is the current operational truth.
   emits it (add → page first), and must keep advertising it UNTIL no Pi
   emits it (remove → Pi first). The list holds exactly one entry today, so
   the two sides have to move close together.
+  **#2097 has a stricter page-first cut even though that protocol list does
+  not change:** capture-page build `20260803.4` understands the conductor's
+  terminal `capture_result`; an older page drops `terminal=true` and offers a
+  dead retry after the new runner exits. Publish and verify `20260803.4`
+  before deploying that Pi. Rollback is the inverse — Pi first, page second.
+  The repository contract does not assert either public rollout has happened.
 - **Relay Worker:** the Cloudflare Worker under
   [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
   **third independent release**, and like the page it ships **before**
@@ -1939,6 +1945,14 @@ capture_result is terminal immediately** (`terminal=true`,
 relay runner publishes it and returns, so the phone never receives a live
 retry button while the conductor waits to refuse the next begin;
 `authorize_begin` keeps only a replay/old-page backstop.
+
+That last statement requires capture-page build `20260803.4`. It is a
+page-first rollout fixture, not a symmetric additive field: the new page is
+tolerant of an old conductor that omits `terminal`, but page `20260803.3`
+misclassifies a new terminal result as retryable after the runner has exited.
+Forward rollout is page then Pi; rollback is Pi then page. The behavioral skew
+pair is pinned in `capture_plan_loop_test.mjs`, and the exact build/order words
+are pinned in `test_capture_page_js.py`.
 
 Diagnosis and action are distinct for **every retriable reason**. Each
 positive-budget `ReasonSpec` is built from one `RetryableReasonCopy`

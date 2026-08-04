@@ -384,6 +384,38 @@ def test_capture_page_new_phone_event_rollout_order_is_pinned():
     assert "complete_capture_set: true" in main_js
 
 
+def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
+    """#2097's terminal result is a page-first compatibility cut.
+
+    The protocol number did not move and the Pi validates only the build
+    stamp's format, so the release contract itself is load-bearing: publish
+    the tolerant page before any conductor can end on ``terminal: true``;
+    roll back in the inverse order. The JS harness behaviorally pins both skew
+    directions, while this guard pins the public artifact and exact ordering
+    words an operator follows.
+    """
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    version = json.loads(
+        (_REPO / "capture-page/version.json").read_text(encoding="utf-8")
+    )
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    harness = (
+        _REPO / "tests/js/capture_plan_loop_test.mjs"
+    ).read_text(encoding="utf-8")
+
+    assert version["capture_page_build"] == "20260803.4"
+    assert "Build `20260803.4` is the terminal-result fixture" in readme
+    assert "**Forward rollout → page first, Pi second.**" in readme
+    assert "**Rollback → Pi first, page second.**" in readme
+    assert "**Do not deploy the Pi first.**" in readme
+    # New page + old conductor: omission is deliberately false, not inferred.
+    assert "terminal: event.terminal === true" in main_js
+    # Old page + new conductor: the frozen .3 decision must stay in the
+    # behavioral suite, or the unsafe half can disappear while prose passes.
+    assert "legacy202608033Verdict" in harness
+    assert "testTerminalResultRequiresThe202608034PageFirstRollout" in harness
+
+
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
     """#1824 N3: the prelude line says "Listen for three beeps", which mirrors
     the composer's COURTESY_TONE_BEEP_COUNT. Spelled out rather than sent over

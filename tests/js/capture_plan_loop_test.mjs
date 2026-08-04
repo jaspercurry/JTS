@@ -979,6 +979,98 @@ async function testFinalExtraTerminalHasNoDeadRetryAffordance() {
   ok();
 }
 
+// ============================================================================
+// Build 20260803.4 release fixture (#2097). `terminal: true` is additive on
+// the wire but NOT compatible in both deployment directions:
+//
+//   * new page + old conductor is safe — omission is false, and the old
+//     runner is still alive for the ordinary retry;
+//   * old 20260803.3 page + new conductor is unsafe — its frozen projection
+//     dropped `terminal`, then its final `else` rendered a retry after the new
+//     runner had returned.
+//
+// This behavioral pair is why README says page first / Pi second and the
+// rollback inverse (Pi first / page second). A static prose assertion alone
+// would not prove the tolerance that ordering rests on.
+// ============================================================================
+async function testTerminalResultRequiresThe202608034PageFirstRollout() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  // Safe skew: this is an OLD conductor result — no `terminal` field — and
+  // its runner remains alive. The new page must preserve the retry path.
+  const spec = planSpec({ target: 2, maxAttempts: 4 });
+  const { client, posted } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 4,
+    resultFor: (_index, attempt) => attempt === 1
+      ? { accepted: false, reason: "The old conductor asked for another read." }
+      : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Try again"]);
+  await fire(primaryButton(ctx));
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  assert.deepEqual(
+    posted
+      .filter((event) => event.begin_capture && !event.armed)
+      .map((event) => [event.begin_capture.index, event.begin_capture.attempt]),
+    [[1, 1], [1, 2]],
+    "the new page can retry because the old runner did not terminate",
+  );
+
+  // Unsafe inverse skew: freeze the relevant 20260803.3 parser/decision
+  // shape. It projected the established fields but had no `terminal` member;
+  // runPlanCapture's final branch therefore treated every accepted=false
+  // result as retryable. Keep this tiny historical fixture here rather than
+  // depending on git history being available in CI.
+  const terminalEventFromNewConductor = {
+    phase: "capture_result",
+    index: 1,
+    attempt: 1,
+    accepted: false,
+    reason: "The measurement cannot continue.",
+    terminal: true,
+    terminal_outcome: "phase_cannot_proceed",
+  };
+  const legacy202608033Verdict = {
+    accepted: terminalEventFromNewConductor.accepted === true,
+    error: terminalEventFromNewConductor.error
+      ? String(terminalEventFromNewConductor.error)
+      : "",
+    reason: terminalEventFromNewConductor.reason
+      ? String(terminalEventFromNewConductor.reason)
+      : "",
+    banner: terminalEventFromNewConductor.banner
+      ? String(terminalEventFromNewConductor.banner)
+      : "",
+    prompt: terminalEventFromNewConductor.prompt
+      ? String(terminalEventFromNewConductor.prompt)
+      : "",
+    code: terminalEventFromNewConductor.code
+      ? String(terminalEventFromNewConductor.code)
+      : "",
+  };
+  assert.ok(
+    !("terminal" in legacy202608033Verdict),
+    "build 20260803.3 dropped the new terminal meaning",
+  );
+  const legacy202608033Screen = legacy202608033Verdict.accepted
+    ? "advance"
+    : "retry";
+  assert.equal(
+    legacy202608033Screen,
+    "retry",
+    "an old page would offer a dead retry after the new runner returned",
+  );
+  ok();
+}
+
 async function testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm() {
   statusHistory.length = 0;
   const { onPlanStart } = await loadModule();
@@ -4119,6 +4211,7 @@ const tests = [
   testTheRetryEyebrowCountsThisPositionsExtraTries,
   testAnUnresolvedPositionSaysSoInsteadOfTicking,
   testFinalExtraTerminalHasNoDeadRetryAffordance,
+  testTerminalResultRequiresThe202608034PageFirstRollout,
   testFinalStageOneUnresolvedRendersLeftOutBeforeConfirm,
   testFinalStageTwoUnresolvedSurvivesSetCompleteOverwrite,
   testRejectionCopyFallsBackWhenThePiSendsNoGuidance,
