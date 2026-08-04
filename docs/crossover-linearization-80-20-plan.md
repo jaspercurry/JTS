@@ -1,11 +1,11 @@
 # Active-speaker commissioning — 80/20 crossover + linearization revision
 
-> **Status: R14 documentation gate and contract ratified and complete
-> (2026-08-04); R14 administrative issue closeout pending.** The same
+> **Status: R14 complete (2026-08-04); R15 ready, not started.** The same
 > independent reviewer returned 0 blockers and 0 should-fixes on the third
-> delta-only review. Issue-comment reconciliation and the two missing tickets
-> remain before R15. This documentation-only repair made no issue writes and
-> started no product implementation, deployment, or measurements. This
+> delta-only review. PR #2105 merged the ratified contract; R14 administrative
+> closeout created R15 issue #2106 and R16 issue #2107, adopted #1654 for R15,
+> and reconciled #1654/#1894 with the campaign. No product implementation,
+> deployment, or measurements started. This
 > document owns the next implementation
 > slice for active two-way speaker
 > commissioning: protected raw-driver measurement, bounded LR4 crossover
@@ -697,17 +697,19 @@ the canonical disposition for this revision, not a copy of every issue body.
 | [#2104](https://github.com/jaspercurry/JTS/issues/2104) measured linearity/invertibility limits | Deferred sophistication | Does not block v1. Existing envelope behavior remains; later evidence may only narrow authority. |
 | [#1703](https://github.com/jaspercurry/JTS/issues/1703) 3-way support | Generalization | Explicitly outside this campaign. Prove the two-way contract first. |
 
-### Missing tickets — create only after R14 ratification
+### R14-created implementation tickets
 
-Only two uncovered scopes merit new issues:
+R14 created exactly the two uncovered scopes after ratification:
 
-1. **Neutral graph + RAW ANCHOR + frozen v1 contracts.** Route every pre-apply
+1. **[#2106](https://github.com/jaspercurry/JTS/issues/2106) — neutral graph +
+   RAW ANCHOR + frozen v1 contracts.** Route every pre-apply
    capture through one protection-only session graph; preserve the production
    profile; emit the anchor-only raw evidence, freeze the evidence/result
    schemas, implement the configured-Fc offline `M * C / P` total-transfer
    composition, and define `Start over`, failure cleanup, fingerprinting,
    conditioning, equivalence, and negative tests.
-2. **Raw per-driver lateral evidence.** Replace pre-apply live-graph summed
+2. **[#2107](https://github.com/jaspercurry/JTS/issues/2107) — raw per-driver
+   lateral evidence.** Replace pre-apply live-graph summed
    side sweeps with protected per-driver captures on a common timing ledger;
    persist the evidence needed by the selector while preserving the current
    Express action count and retry contract.
@@ -948,5 +950,11 @@ roles, Express prompt table, fitter/cloud evidence flow, layer and Room plans,
 the canonical adversarial-review prompt, and the linked GitHub issue bodies and
 states. No product code, issues, agent/measurement sessions, measurements, or
 DSP state were changed while drafting it.
+
+The 2026-08-04 R14 administrative closeout then verified #2105 merged as
+`a7e25f3ddb43457d1b08a9205542d880f3187591`, created exactly #2106 and
+#2107, updated #1654's stale shelved title, and posted the ratified scope links
+to #1654/#1894. That closeout changed no product code, deployment, DSP state,
+or measurement evidence.
 
 Last verified: 2026-08-04
