@@ -155,6 +155,8 @@ def _run_speaker_name_seed(
     deploy_hostname: str | None = None,
     saved_hostname: str | None = None,
     os_hostname: str = "raspberrypi",
+    fail_write: bool = False,
+    race_wizard_save: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run the creation-only installer seed against scratch state."""
 
@@ -175,6 +177,14 @@ def _run_speaker_name_seed(
     ]
     if deploy_hostname is not None:
         commands.append(f"export JASPER_HOSTNAME={shlex.quote(deploy_hostname)}")
+    if fail_write:
+        commands.append("printf() { builtin printf partial; return 1; }")
+    if race_wizard_save:
+        commands.append(
+            "ln() { "
+            "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' "
+            '> "${STATE_DIR}/speaker_name.env"; command ln "$@"; }'
+        )
     commands.append("seed_speaker_name_env")
     result = subprocess.run(
         ["bash", "-c", " && ".join(commands)],
@@ -241,6 +251,39 @@ def test_speaker_name_seed_preserves_existing_file_byte_for_byte(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert resolved == state_file
     assert state_file.read_bytes() == original
+
+
+def test_speaker_name_seed_write_failure_is_clean_and_retryable(tmp_path: Path):
+    failed, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        fail_write=True,
+    )
+    assert failed.returncode != 0
+    assert "ERROR: could not write fresh speaker name" in failed.stderr
+    assert not state_file.exists()
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+    retried, retry_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert retry_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="JTS4"\n'
+    )
+    assert list(retry_file.parent.glob(".speaker_name.env.seed.*")) == []
+
+
+def test_speaker_name_seed_does_not_clobber_concurrent_wizard_save(tmp_path: Path):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts4.local",
+        race_wizard_save=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert state_file.read_bytes() == b'JASPER_SPEAKER_NAME="Wizard Save"'
+    assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
 
 
 def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():

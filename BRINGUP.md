@@ -665,10 +665,11 @@ curl -s -X POST -H 'Content-Type: application/json' \
 Listen for fan noise + amp idle hum. If silence is suspiciously
 quiet, double-check the amp is on and speakers are connected.
 
-AirPlay something to "JTS" (or the display name configured at
-`http://jts.local/speaker/`; it should appear in your phone /
-laptop's AirPlay picker after a few seconds). At main_volume =
-−30 dB you should hear barely-audible audio. Now adjust the
+AirPlay something to the current display name shown at
+`http://jts.local/speaker/`; it should appear in your phone / laptop's
+AirPlay picker after a few seconds. See [speaker identity](docs/HANDOFF-identity.md)
+for how that name is initialized and managed. At main_volume = −30 dB you
+should hear barely-audible audio. Now adjust the
 **amp's physical gain knob** until that level is your
 "barely-audible" comfort floor. After that, raising main_volume
 toward 0 dB (the control surface's 100%) puts you at your calibrated

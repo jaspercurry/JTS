@@ -44,9 +44,34 @@ print(f"JASPER_SPEAKER_NAME={quote_env_value(name)}")
 PY
     )"
 
-    printf '%s\n' "${env_line}" > "${state_file}"
-    chmod 0644 "${state_file}"
-    echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
+    # Publish only after the complete line and final mode are ready.  A failed
+    # direct redirection would leave a partial canonical file that every later
+    # deploy correctly preserves.  The hard link is an atomic create-if-absent:
+    # if a wizard save appears after our first check, it remains authoritative.
+    local tmp
+    tmp="$(mktemp "${STATE_DIR}/.speaker_name.env.seed.XXXXXX")"
+    if ! printf '%s\n' "${env_line}" > "${tmp}"; then
+        rm -f -- "${tmp}"
+        echo "  ERROR: could not write fresh speaker name" >&2
+        return 1
+    fi
+    if ! chmod 0644 "${tmp}"; then
+        rm -f -- "${tmp}"
+        echo "  ERROR: could not set fresh speaker-name permissions" >&2
+        return 1
+    fi
+    if ln -- "${tmp}" "${state_file}" 2>/dev/null; then
+        rm -f -- "${tmp}"
+        echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
+        return 0
+    fi
+    rm -f -- "${tmp}"
+    if [[ -e "${state_file}" || -L "${state_file}" ]]; then
+        echo "  speaker name: preserving ${state_file}"
+        return 0
+    fi
+    echo "  ERROR: could not publish fresh speaker name" >&2
+    return 1
 }
 
 retire_esp32_accessory_files() {
