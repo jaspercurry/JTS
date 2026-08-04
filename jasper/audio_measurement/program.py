@@ -32,11 +32,10 @@ Design boundaries this module deliberately keeps:
   :class:`~jasper.audio_measurement.excitation_admission.FrequencyBand`) are
   imported, plus numpy for PCM rendering.
 
-Channel routing (design §5.4): CHECK/MEASURE programs use the protected-neutral
-graph's role channels (ch0 → woofer, ch1 → tweeter). Pre-apply summed capture
-uses that graph's ch2; post-apply VERIFY remains a mono sweep through the
-applied production graph. Per-driver sequencing lives in the WAV channels so
-the transient graph stays static and provable.
+Channel routing (design §5.4): CHECK/MEASURE programs use the real stereo
+correction carrier (ch0 → woofer, ch1 → tweeter), with the inactive lane
+sample-exact zero. Pre-apply summed capture puts identical PCM on both lanes;
+post-apply VERIFY remains mono through the applied production graph.
 
 **Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
 ``courtesy_prelude`` flag that splices a short "beep beep beep" + ~3 s of
@@ -921,7 +920,8 @@ def _insert_courtesy_prelude(
     for channel in range(channels):
         channel_gains = [
             seg.gain_db for seg in segments
-            if seg.kind in STIMULUS_KINDS and seg.channel == channel
+            if seg.kind in STIMULUS_KINDS
+            and (seg.channel == channel or seg.role == VERIFY_PILOT_ROLE)
         ]
         if not channel_gains:
             continue
@@ -1278,8 +1278,8 @@ def build_verify_program(
     ESS (~6 s) + tail,
     By default it is mono and played through the applied production graph.
     ``output_channel``/``total_channels``/``summed_role`` opt the pre-apply
-    cloud into the protected-neutral graph's summed lane without introducing a
-    second composer. ``fc_hz`` widens the low bound when the crossover is low
+    cloud into the protected-neutral graph's mirrored stereo carrier without
+    introducing a second composer. ``fc_hz`` widens the low bound when the crossover is low
     so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
@@ -1437,7 +1437,12 @@ def render_program_pcm(program: ExcitationProgram):
         else:
             continue
         assert seg.channel is not None
-        pcm[seg.start_sample:seg.start_sample + seg.n_samples, seg.channel] = stim
+        target = pcm[seg.start_sample:seg.start_sample + seg.n_samples]
+        if seg.role == VERIFY_PILOT_ROLE and program.channels == 2:
+            target[:, 0] = stim
+            target[:, 1] = stim
+        else:
+            target[:, seg.channel] = stim
     return pcm
 
 

@@ -5990,7 +5990,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
     probe cares only about the config_dir plumbing (graph emission and
     playback have their own coverage elsewhere)."""
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker import crossover_raw_evidence as raw_evidence_mod
+    from jasper.active_speaker import protected_neutral_graph as graph_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     import jasper.audio_measurement.program as program_mod
 
@@ -6014,7 +6014,7 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
     )
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
     monkeypatch.setattr(
-        raw_evidence_mod,
+        graph_mod,
         "validate_protected_neutral_program_routing",
         lambda program, graph: None,
     )
@@ -6081,7 +6081,7 @@ def test_cloud_measure_uses_protected_graph_and_exact_phase_program_only(
     monkeypatch, tmp_path
 ):
     """R15: pre-apply cloud enters the existing transient graph owner and its
-    three-channel artifact is never mixed into the mono applied-sum alias."""
+    protected-stereo artifact is never mixed into the mono applied-sum alias."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     import jasper.active_speaker.program_playback as program_playback_mod
     import jasper.audio_measurement.program as program_mod
@@ -6110,6 +6110,9 @@ def test_cloud_measure_uses_protected_graph_and_exact_phase_program_only(
         def identify_artifact(self, rel):
             return SimpleNamespace(fingerprint="fake")
 
+    from tests.test_active_speaker_program_config import _session_graph
+
+    session_graph = _session_graph()
     play = v2host.bind_production_play(
         run_async=asyncio.run,
         camilla_factory=lambda: object(),
@@ -6118,23 +6121,21 @@ def test_cloud_measure_uses_protected_graph_and_exact_phase_program_only(
         topology=object(),
         preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
-        session_graph=SimpleNamespace(
-            yaml_text="placeholder-graph-yaml",
-            identity={
-                "kind": "jts_crossover_protected_neutral_graph_v1",
-                "role_channels": {"woofer": 0, "tweeter": 1},
-                "summed_channel": 2,
-            },
-        ),
+        session_graph=session_graph,
         playback_device="hw:Test",
         safety_profile={},
         role_targets={},
         session_volume_db=-20.0,
     )
     cloud_program = SimpleNamespace(
-        channels=3,
+        channels=2,
         stimulus_segments=lambda: (
-            SimpleNamespace(role="summed", channel=2),
+            SimpleNamespace(
+                role="summed",
+                channel=0,
+                gain_db=-30.0,
+                effective_peak_dbfs=-50.0,
+            ),
         ),
     )
     play(PHASE_CLOUD_MEASURE, cloud_program)
@@ -6148,7 +6149,7 @@ def test_cloud_measure_uses_protected_graph_and_exact_phase_program_only(
     assert not (session_dir / "summed_program.wav").exists()
     assert written == [session_dir / "cloud_measure_program.wav"]
     assert len(played) == 1
-    assert played[0][1] == "placeholder-graph-yaml"
+    assert played[0][1] == session_graph.yaml_text
 
 
 def test_verify_play_does_not_overwrite_existing_summed_program_wav(

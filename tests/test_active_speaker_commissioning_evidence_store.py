@@ -1054,6 +1054,84 @@ def test_new_artifact_inherits_the_authority_directory_group(
     assert (store.bundle_dir / artifact.relative_path).stat().st_gid == observed[0]
 
 
+def test_raw_json_pair_rolls_back_raw_when_second_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _open_store(tmp_path)
+    raw_rel = "crossover_v2/pair/anchor.wav"
+    json_rel = "crossover_v2/pair/raw.json"
+
+    def fail_json(*_args, **_kwargs):
+        raise RuntimeError("second write failed")
+
+    real_publish_json = CommissioningEvidenceStore.publish_json_artifact
+
+    def fail_this_store(self, *args, **kwargs):
+        if self is store:
+            return fail_json(*args, **kwargs)
+        return real_publish_json(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        CommissioningEvidenceStore, "publish_json_artifact", fail_this_store
+    )
+    with pytest.raises(RuntimeError, match="second write"):
+        store.publish_raw_json_pair(
+            raw_relative_path=raw_rel,
+            raw_payload=b"RIFF",
+            json_relative_path=json_rel,
+            json_payload={"valid": True},
+            validate_json=lambda value: None,
+        )
+
+    assert not (store.bundle_dir / "artifacts" / raw_rel).exists()
+    assert not (store.bundle_dir / "artifacts" / json_rel).exists()
+
+
+def test_raw_json_pair_rolls_back_both_after_second_readback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _open_store(tmp_path)
+    raw_rel = "crossover_v2/pair-readback/anchor.wav"
+    json_rel = "crossover_v2/pair-readback/raw.json"
+
+    validation_calls = 0
+
+    def fail_second_validation(_value):
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 2:
+            raise RuntimeError("second readback failed")
+    with pytest.raises(RuntimeError, match="second readback"):
+        store.publish_raw_json_pair(
+            raw_relative_path=raw_rel,
+            raw_payload=b"RIFF",
+            json_relative_path=json_rel,
+            json_payload={"valid": True},
+            validate_json=fail_second_validation,
+        )
+
+    assert not (store.bundle_dir / "artifacts" / raw_rel).exists()
+    assert not (store.bundle_dir / "artifacts" / json_rel).exists()
+
+
+def test_raw_json_pair_never_deletes_a_preexisting_orphan(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    raw_rel = "crossover_v2/orphan/anchor.wav"
+    existing = store.publish_raw_artifact(raw_rel, b"existing")
+
+    with pytest.raises(CommissioningEvidenceStoreError) as raised:
+        store.publish_raw_json_pair(
+            raw_relative_path=raw_rel,
+            raw_payload=b"existing",
+            json_relative_path="crossover_v2/orphan/raw.json",
+            json_payload={"valid": True},
+            validate_json=lambda value: None,
+        )
+
+    assert raised.value.code is CommissioningEvidenceStoreErrorCode.PATH_CONFLICT
+    assert (store.bundle_dir / existing.relative_path).read_bytes() == b"existing"
+
+
 def test_total_bound_covers_the_proven_max_capture_matrix() -> None:
     assert MAX_COMMISSIONING_REGIONS == max(
         len(sides) * len(regions)

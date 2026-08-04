@@ -850,6 +850,94 @@ class CommissioningEvidenceStore:
         self.reopen_json_artifact(artifact)
         return artifact
 
+    def _rollback_just_created_payload(
+        self, relative_path: str, payload: bytes
+    ) -> None:
+        """Remove one exact artifact only when its bytes are still ours."""
+
+        normalized = _artifact_path(relative_path)
+        artifact = ArtifactIdentity(
+            bundle_kind=BUNDLE_KIND,
+            bundle_id=self.session_id,
+            relative_path=normalized,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            byte_size=len(payload),
+        )
+        try:
+            self._read_identity(artifact)
+        except CommissioningEvidenceStoreError as exc:
+            if exc.code == CommissioningEvidenceStoreErrorCode.MISSING:
+                return
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PERSIST_OUTCOME_UNKNOWN,
+                "paired evidence rollback refused non-matching bytes",
+            ) from exc
+        path = self._target(normalized)
+        try:
+            os.unlink(path)
+            _fsync_directory(path.parent)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PERSIST_OUTCOME_UNKNOWN,
+                "could not durably roll back paired evidence",
+            ) from exc
+
+    def publish_raw_json_pair(
+        self,
+        *,
+        raw_relative_path: str,
+        raw_payload: bytes,
+        json_relative_path: str,
+        json_payload: Mapping[str, Any],
+        validate_json: Callable[[Mapping[str, Any]], None],
+    ) -> tuple[ArtifactIdentity, ArtifactIdentity]:
+        """Publish one RAW/JSON pair or leave neither newly-created artifact.
+
+        Validation runs before writes and again on exact readback. A preexisting
+        orphan is never adopted or deleted: write-once evidence must already be
+        a complete matching pair. Rollback removes only bytes just created by
+        this call and only while their exact identity still matches.
+        """
+
+        if not isinstance(raw_payload, bytes):
+            raise TypeError("paired RAW evidence payload must be bytes")
+        if not isinstance(json_payload, Mapping):
+            raise TypeError("paired JSON evidence payload must be a mapping")
+        validate_json(json_payload)
+        raw_relative = _normalized_relative_path(raw_relative_path)
+        json_relative = _normalized_relative_path(json_relative_path)
+        raw_target = self._target(_artifact_path(raw_relative))
+        json_target = self._target(_artifact_path(json_relative))
+        raw_exists = raw_target.exists() or raw_target.is_symlink()
+        json_exists = json_target.exists() or json_target.is_symlink()
+        if raw_exists != json_exists:
+            raise CommissioningEvidenceStoreError(
+                CommissioningEvidenceStoreErrorCode.PATH_CONFLICT,
+                "paired evidence has a preexisting orphan",
+            )
+        if raw_exists:
+            raw_artifact = self.publish_raw_artifact(raw_relative, raw_payload)
+            json_artifact = self.publish_json_artifact(json_relative, json_payload)
+            reopened = self.reopen_json_artifact(json_artifact)
+            validate_json(reopened)
+            return raw_artifact, json_artifact
+
+        json_bytes = _canonical_json(json_payload)
+        try:
+            raw_artifact = self.publish_raw_artifact(raw_relative, raw_payload)
+            json_artifact = self.publish_json_artifact(json_relative, json_payload)
+            reopened = self.reopen_json_artifact(json_artifact)
+            validate_json(reopened)
+        except Exception:
+            # Reverse publication order. Both removals are identity-checked;
+            # preexisting or raced bytes can never be erased here.
+            self._rollback_just_created_payload(json_relative, json_bytes)
+            self._rollback_just_created_payload(raw_relative, raw_payload)
+            raise
+        return raw_artifact, json_artifact
+
     def reopen_json_artifact(self, artifact: ArtifactIdentity) -> dict[str, Any]:
         return _parse_canonical_object(self._read_identity(artifact))
 

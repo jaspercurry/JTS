@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -54,12 +55,27 @@ STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE"
 
 logger = logging.getLogger(__name__)
 
+RESTORE_MODE_STAGED_ANCHOR = "staged_anchor"
+RESTORE_MODE_INLINE_GRAPH = "inline_graph"
+_RESTORE_MODES = {RESTORE_MODE_STAGED_ANCHOR, RESTORE_MODE_INLINE_GRAPH}
+
+
+@dataclass(frozen=True)
+class CaptureEntryAnchor:
+    entry_config_path: str
+    restore_mode: str
+
 
 def state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
 
 
-def record_entry(entry_config_path: str, *, path: str | Path | None = None) -> None:
+def record_entry(
+    entry_config_path: str,
+    *,
+    restore_mode: str = RESTORE_MODE_STAGED_ANCHOR,
+    path: str | Path | None = None,
+) -> None:
     """Durably stash the production config path a capture sequence de-anchors.
 
     Called only when the persisted CamillaDSP path is NOT the staged anchor —
@@ -74,7 +90,12 @@ def record_entry(entry_config_path: str, *, path: str | Path | None = None) -> N
     entry = str(entry_config_path or "").strip()
     if not entry:
         raise ValueError("capture entry stash requires a production config path")
+    if restore_mode not in _RESTORE_MODES:
+        raise ValueError("capture entry stash restore mode is invalid")
     target = state_path(path)
+    pending = pending_anchor(path=target)
+    if pending is not None and pending != CaptureEntryAnchor(entry, restore_mode):
+        raise RuntimeError("a different capture entry restore is already pending")
     atomic_write_text(
         target,
         json.dumps(
@@ -82,6 +103,7 @@ def record_entry(entry_config_path: str, *, path: str | Path | None = None) -> N
                 "schema_version": SCHEMA_VERSION,
                 "kind": STATE_KIND,
                 "entry_config_path": entry,
+                "restore_mode": restore_mode,
                 "stored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             },
             indent=2,
@@ -96,10 +118,11 @@ def record_entry(entry_config_path: str, *, path: str | Path | None = None) -> N
         "active_speaker.capture_entry_anchor",
         action="record",
         entry_config_path=entry,
+        restore_mode=restore_mode,
     )
 
 
-def pending_entry(*, path: str | Path | None = None) -> str | None:
+def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | None:
     """The stashed production path awaiting sequence-level restore, or None.
 
     Fail-soft: an unreadable/malformed stash reads as ``None`` at WARN — the
@@ -136,7 +159,25 @@ def pending_entry(*, path: str | Path | None = None) -> str | None:
         )
         return None
     entry = str(raw.get("entry_config_path") or "").strip()
-    return entry or None
+    # State written before R15 belongs to the original staged-anchor owner.
+    restore_mode = str(raw.get("restore_mode") or RESTORE_MODE_STAGED_ANCHOR)
+    if not entry or restore_mode not in _RESTORE_MODES:
+        log_event(
+            logger,
+            "active_speaker.capture_entry_anchor",
+            level=logging.WARNING,
+            action="read",
+            status="malformed",
+        )
+        return None
+    return CaptureEntryAnchor(entry, restore_mode)
+
+
+def pending_entry(*, path: str | Path | None = None) -> str | None:
+    """Compatibility view of the exact pending restore target."""
+
+    pending = pending_anchor(path=path)
+    return pending.entry_config_path if pending is not None else None
 
 
 def clear(*, path: str | Path | None = None) -> None:

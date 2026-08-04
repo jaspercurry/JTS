@@ -124,11 +124,6 @@ from jasper.active_speaker.branch_chain import (
     sections_by_role,
 )
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_raw_evidence import (
-    configured_transfer_from_preset,
-    measurement_protection_from_role_bands,
-    role_polarity_signs,
-)
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
@@ -5418,9 +5413,15 @@ class CrossoverV2Conductor:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        self._measurement_protection_by_role: Mapping[
+            str, Sequence[Any]
+        ] | None
+        self._configured_transfer_by_role: Mapping[str, Sequence[Any]] | None
+        self._measurement_polarity_sign_by_role: Mapping[str, int] | None
+        self._configured_polarity_sign_by_role: Mapping[str, int] | None
         # Production passes the one graph object that playback and RAW
-        # publication also use. Pure conductor tests may omit it and derive
-        # the same contracts through the shared helpers.
+        # publication also use. Pure conductor tests may omit it; only the
+        # session-owned protected-neutral graph authorizes M*C/P composition.
         if session_graph is not None:
             self._measurement_protection_by_role = dict(
                 session_graph.protection_by_role
@@ -5428,17 +5429,17 @@ class CrossoverV2Conductor:
             self._configured_transfer_by_role = dict(
                 session_graph.configured_by_role
             )
-            self._polarity_sign_by_role = dict(
-                session_graph.polarity_sign_by_role
+            self._measurement_polarity_sign_by_role = dict(
+                session_graph.measurement_polarity_sign_by_role
+            )
+            self._configured_polarity_sign_by_role = dict(
+                session_graph.configured_polarity_sign_by_role
             )
         else:
-            self._measurement_protection_by_role = (
-                measurement_protection_from_role_bands(self._roles)
-            )
-            self._configured_transfer_by_role = configured_transfer_from_preset(
-                self._preset
-            )
-            self._polarity_sign_by_role = role_polarity_signs(self._preset)
+            self._measurement_protection_by_role = None
+            self._configured_transfer_by_role = None
+            self._measurement_polarity_sign_by_role = None
+            self._configured_polarity_sign_by_role = None
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5996,7 +5997,7 @@ class CrossoverV2Conductor:
             downstream_gain_db=self._session_volume_db,
             role_base_peak_dbfs=role_base,
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-            total_channels=3,
+            total_channels=2,
         )
 
     def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
@@ -6019,7 +6020,7 @@ class CrossoverV2Conductor:
             leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
             leading_pilot_role=self._woofer.role,
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-            total_channels=3,
+            total_channels=2,
         )
 
     def _compose_verify_program(
@@ -6056,8 +6057,11 @@ class CrossoverV2Conductor:
             downstream_gain_db=self._session_volume_db,
             leading_pilot_gains_db=self._pilot_gains(gain),
             courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-            output_channel=2 if protected_neutral else 0,
-            total_channels=3 if protected_neutral else 1,
+            # The real correction_substream carrier is stereo. Summed
+            # pre-apply stimulus is mirrored sample-exact onto both physical
+            # program lanes by render_program_pcm.
+            output_channel=0,
+            total_channels=2 if protected_neutral else 1,
             summed_role=VERIFY_PILOT_ROLE if protected_neutral else None,
         )
 
@@ -6093,7 +6097,12 @@ class CrossoverV2Conductor:
             ambient_report=self._check_ambient_report,
             measurement_protection_by_role=self._measurement_protection_by_role,
             configured_transfer_by_role=self._configured_transfer_by_role,
-            polarity_sign_by_role=self._polarity_sign_by_role,
+            measurement_polarity_sign_by_role=(
+                self._measurement_polarity_sign_by_role
+            ),
+            configured_polarity_sign_by_role=(
+                self._configured_polarity_sign_by_role
+            ),
         )
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -11989,6 +11998,7 @@ def bind_program_playback_seams(
 
     from jasper.dsp_apply import dsp_writer_lock
 
+    from . import capture_entry_anchor
     from .program_admission import readmit_program_from_wav
     from .program_playback import verified_program_aplay
 
@@ -12029,6 +12039,10 @@ def bind_program_playback_seams(
         "writer_lock": lambda: dsp_writer_lock(
             config_dir, source="crossover_v2_program"
         ),
+        "record_entry_anchor": lambda entry: capture_entry_anchor.record_entry(
+            entry, restore_mode=capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH
+        ),
+        "clear_entry_anchor": capture_entry_anchor.clear,
     }
 
 

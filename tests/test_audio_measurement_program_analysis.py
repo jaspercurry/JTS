@@ -124,6 +124,7 @@ from jasper.audio_measurement.program_analysis import (
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
+from jasper.audio_measurement.transfer_composition import LinearTransferSection
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
     CDHORN_ROOT,
@@ -5118,3 +5119,89 @@ def test_the_frame_gate_ruling_does_not_reach_a_session_whose_frames_agree(
     # healthy hardware would have to move it by more than four times the
     # residual #1929 left behind.
     assert LEVEL_FRAME_AGREEMENT_TOLERANCE_DB - disagreement_db > 2.0
+# R15 production-seam regression: measurement P and configured C have
+# independent polarity owners. This lives in the full analyzer suite (rather
+# than only transfer-array tests) so alignment, delay, candidate prescription,
+# and predicted sum all traverse the separated identities.
+def test_measure_analysis_separates_measurement_and_configured_polarity() -> None:
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
+    ]
+    program = build_measure_program(
+        {"woofer": -18.0, "tweeter": -20.0},
+        roles,
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    capture = _synthesize(
+        program,
+        woofer_ir=_band_impulse(230, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200, 300.0, 20000.0, 0.9),
+        epsilon=20e-6,
+        noise=0.0,
+    )
+    protection = {
+        "woofer": (
+            LinearTransferSection(True, 150.0),
+            LinearTransferSection(False, 6000.0),
+        ),
+        "tweeter": (
+            LinearTransferSection(True, 1600.0),
+            LinearTransferSection(False, 23000.0),
+        ),
+    }
+    configured = {
+        "woofer": (LinearTransferSection(False, FC_HZ),),
+        "tweeter": (LinearTransferSection(True, FC_HZ),),
+    }
+
+    def analyze(configured_tweeter_sign: int):
+        return analyze_program_capture(
+            program,
+            capture,
+            SR,
+            priors=MeasurementPriors(
+                crossover_fc_hz=FC_HZ,
+                alignment_delay_bounds_us=(0.0, 1000.0),
+                measurement_protection_by_role=protection,
+                configured_transfer_by_role=configured,
+                measurement_polarity_sign_by_role={"woofer": 1, "tweeter": 1},
+                configured_polarity_sign_by_role={
+                    "woofer": 1,
+                    "tweeter": configured_tweeter_sign,
+                },
+            ),
+        )
+
+    neutral = analyze(1)
+    configured_inverted = analyze(-1)
+    neutral_by_role = {
+        item.role: item for item in neutral.configured_driver_responses
+    }
+    inverted_by_role = {
+        item.role: item for item in configured_inverted.configured_driver_responses
+    }
+
+    np.testing.assert_allclose(
+        inverted_by_role["tweeter"].complex_tf,
+        -neutral_by_role["tweeter"].complex_tf,
+        rtol=0.0,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        inverted_by_role["woofer"].complex_tf,
+        neutral_by_role["woofer"].complex_tf,
+        rtol=0.0,
+        atol=1e-12,
+    )
+    candidate = configured_inverted.candidate
+    assert candidate is not None
+    assert math.isfinite(candidate.delay_us)
+    assert candidate.polarity in {"normal", "inverted"}
+    assert set(candidate.trim_db) == {"woofer", "tweeter"}
+    assert configured_inverted.predicted_sum is not None
+    assert np.all(np.isfinite(configured_inverted.predicted_sum[1]))
+    assert set(configured_inverted.transfer_composition_fingerprints) == {
+        "woofer",
+        "tweeter",
+    }

@@ -4620,15 +4620,15 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
 
 
 def test_preapply_cloud_uses_protected_graph_program_only():
-    """R15: CLOUD_MEASURE is the distinct three-channel protected-neutral
+    """R15: CLOUD_MEASURE is the distinct protected-stereo neutral
     program; post-apply VERIFY/CLOUD_VERIFY retain one mono production object."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     protected = c._program_for_phase(PHASE_CLOUD_MEASURE)
     applied = c._program_for_phase(PHASE_VERIFY)
     assert protected is not applied
-    assert protected.channels == 3
-    assert {segment.channel for segment in protected.stimulus_segments()} == {2}
+    assert protected.channels == 2
+    assert {segment.channel for segment in protected.stimulus_segments()} == {0}
     assert {segment.role for segment in protected.stimulus_segments()} == {"summed"}
     assert applied.channels == 1
     assert c._program_for_phase(PHASE_CLOUD_VERIFY) is c._program_for_phase(
@@ -5881,7 +5881,8 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     )
     assert set(seams) == {
         "read_current_config_path", "load_program_graph", "restore_graph",
-        "play_wav", "readmit", "writer_lock",
+        "play_wav", "readmit", "writer_lock", "record_entry_anchor",
+        "clear_entry_anchor",
     }
     assert asyncio.run(seams["read_current_config_path"]()) == str(entry)
     assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True

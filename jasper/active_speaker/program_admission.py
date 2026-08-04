@@ -198,6 +198,8 @@ def _dbfs(amplitude: float) -> float:
 def _channel_roles(program: ExcitationProgram) -> dict[int, str]:
     """Map each channel carrying a stimulus to its single role (fail-closed)."""
 
+    if _is_protected_summed(program):
+        return {0: "summed", 1: "summed"}
     roles: dict[int, str] = {}
     for segment in program.stimulus_segments():
         assert segment.channel is not None and segment.role is not None
@@ -205,6 +207,17 @@ def _channel_roles(program: ExcitationProgram) -> dict[int, str]:
         if existing != segment.role:
             raise _ChannelRoleInconsistent(segment.channel)
     return roles
+
+
+def _is_protected_summed(program: ExcitationProgram) -> bool:
+    stimuli = program.stimulus_segments()
+    return (
+        program.phase == PHASE_VERIFY
+        and program.channels == 2
+        and bool(stimuli)
+        and {segment.role for segment in stimuli} == {"summed"}
+        and {segment.channel for segment in stimuli} == {0}
+    )
 
 
 class _ChannelRoleInconsistent(Exception):
@@ -263,7 +276,9 @@ def _out_of_segment_mask(program: ExcitationProgram, channel: int, length: int) 
 
     mask = np.ones(length, dtype=bool)
     for segment in program.known_audible_segments():
-        if segment.channel != channel:
+        if segment.channel != channel and not (
+            _is_protected_summed(program) and segment.channel == 0
+        ):
             continue
         start = segment.start_sample
         end = min(length, segment.start_sample + segment.n_samples)
@@ -290,6 +305,7 @@ def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> flo
         float(segment.gain_db)
         for segment in program.stimulus_segments()
         if segment.channel == channel
+        or (_is_protected_summed(program) and segment.channel == 0)
     ]
     return max(peaks) if peaks else _dbfs(0.0)
 
@@ -384,8 +400,8 @@ def _evaluate_program(
                 if not prepared.execution_allowed:
                     refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
             continue
-        target_fingerprint = role_targets.get(role)
-        if not target_fingerprint:
+        isolated_target_fingerprint = role_targets.get(role)
+        if not isolated_target_fingerprint:
             refusals.append(ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
             segments.append(
                 SegmentAdmission(
@@ -401,7 +417,7 @@ def _evaluate_program(
             continue
         requested = _requested_segment_plan(
             segment,
-            target_fingerprint=target_fingerprint,
+            target_fingerprint=isolated_target_fingerprint,
             session_volume_db=session_volume_db,
             program_id=program.program_id,
         )
@@ -439,6 +455,22 @@ def _evaluate_program(
     if pcm.ndim != 2 or pcm.shape[1] != program.channels:
         refusals.append(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
     else:
+        protected_summed = _is_protected_summed(program)
+        if protected_summed and not np.array_equal(pcm[:, 0], pcm[:, 1]):
+            # Both physical program lanes must carry the same bytes. A
+            # level-only comparison would allow relative timing or phase to
+            # differ before the static protected-neutral branches.
+            refusals.append(ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY)
+        if not protected_summed:
+            # Every isolated stimulus owns exactly one lane; all other lanes
+            # are sample-exact zero for its scheduled window.
+            for segment in program.stimulus_segments():
+                assert segment.channel is not None
+                start = segment.start_sample
+                end = min(pcm.shape[0], start + segment.n_samples)
+                for channel in range(program.channels):
+                    if channel != segment.channel and np.any(pcm[start:end, channel]):
+                        refusals.append(ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY)
         for channel in sorted(channel_roles):
             role = channel_roles[channel]
             target_fingerprints = (
@@ -513,10 +545,7 @@ def _evaluate_program(
             if not peak_matches_manifest:
                 refusals.append(ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH)
 
-        # R15's static graph has three inputs in every pre-apply phase. Inputs
-        # unused by this program MUST be byte-silent: otherwise a tampered
-        # CHECK/MEASURE file could inject the shared summed lane (or a tampered
-        # cloud file a role lane) without appearing in ``channel_roles``.
+        # Inputs unused by this program MUST be byte-silent.
         for channel in sorted(set(range(program.channels)) - set(channel_roles)):
             column = np.asarray(pcm[:, channel], dtype=np.float32)
             peak = float(np.max(np.abs(column))) if column.size else 0.0
@@ -603,12 +632,7 @@ def _map_safety_plan_error(exc: ExcitationSafetyPlanError) -> ProgramAdmissionRe
 def _validate_program(program: ExcitationProgram) -> None:
     if not isinstance(program, ExcitationProgram):
         raise ProgramAdmissionError("program must be an ExcitationProgram")
-    protected_summed = (
-        program.phase == PHASE_VERIFY
-        and bool(program.stimulus_segments())
-        and {segment.role for segment in program.stimulus_segments()} == {"summed"}
-        and len({segment.channel for segment in program.stimulus_segments()}) == 1
-    )
+    protected_summed = _is_protected_summed(program)
     if program.phase not in {PHASE_CHECK, PHASE_MEASURE} and not protected_summed:
         raise ProgramAdmissionError(
             "program admission covers role-routed CHECK/MEASURE and the explicit "

@@ -65,7 +65,7 @@ _STATEFILE_CONFIG_RE = re.compile(
 # only ever emitted alongside a local subwoofer for bass management.
 _ACTIVE_SPLIT_RE = re.compile(r"\bsplit_active_(?P<way_count>[123])way\b")
 _ACTIVE_OUT_RE = re.compile(
-    r"channels:\s*\{\s*in:\s*(?:2|3)\s*,\s*out:\s*(?P<out>\d+)\s*\}"
+    r"channels:\s*\{\s*in:\s*2\s*,\s*out:\s*(?P<out>\d+)\s*\}"
 )
 _SOURCE_RE = re.compile(r"^#\s*Source:\s*(?P<source>\S+)\s*$", re.MULTILINE)
 

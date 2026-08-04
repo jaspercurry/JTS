@@ -874,18 +874,19 @@ full re-walk.
 
 ## The next campaign — 80/20 crossover + linearization revision
 
-**Status: R14 complete (2026-08-04); R15 ready, not started.** The same
-independent reviewer returned 0 blockers and 0 should-fixes on the third
-delta-only review. PR #2105 merged the contract; administrative closeout
-created #2106/#2107 and reconciled #1654/#1894. No product implementation,
-deployment, or measurements started.
+**Status (2026-08-04): R15 repair-round software implementation is active and
+awaits the independent correctness/evidence, hearing-safety/DSP, and
+resilience/observability delta gates plus fixed-microphone JTS3 validation.**
+It is not deployed, hardware-measured, gate-passed, or complete. R14 remains
+the last completed round; PR #2105 merged its contract and administrative
+closeout created #2106/#2107 and reconciled #1654/#1894.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
 [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
 This spine owns only status and order IDs:
-`R14 (complete) -> R15 (next) -> (R16 || pure R17) -> R18 -> R19 -> R20`.
+`R14 (complete) -> R15 (active; gate + JTS3 pending) -> (R16 || pure R17) -> R18 -> R19 -> R20`.
 
 ---
 
@@ -969,11 +970,10 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-04 (R14 complete: documentation gate ratified at
-                third-delta 0 blockers / 0 should-fixes; #2105 merged;
-                administrative closeout created #2106/#2107 and reconciled
-                #1654/#1894; no product implementation, deployment, or
-                measurements started)
+date:           2026-08-04 (R15 repair-round software exists on its local
+                implementation branch and awaits the independent three-lens
+                delta gate plus fixed-microphone JTS3 validation; no R15
+                deployment or physical measurement has occurred)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -983,9 +983,10 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   none — R14 is complete. R15 is ready for launch from current
-                remote main; no product implementation is active or was
-                started
+active_round:   R15 — software repair implementation active; independent
+                correctness/evidence, hearing-safety/DSP, and
+                resilience/observability delta gates pending, followed by
+                fixed-microphone JTS3 validation. Not complete
 last_round:     R13 (owner validation day; last fully completed product
                 round). R14 is the completed documentation/administrative
                 campaign round
@@ -1002,11 +1003,12 @@ follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 owns honest Full-stage progress and recovery disclosure;
                 #2106 owns R15 and #2107 owns R16. The new campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   launch the bounded #2106 R15 implementation task from freshly
-                fetched remote main. R16/#2107 and pure R17/#1894 start only
-                after R15 lands its frozen contracts
-blocked_on:     none — R14 is complete and R15's issue/contract prerequisites
-                exist. Product work has not yet started
+next_mission:   run the independent R15 delta panel against the repair commit;
+                return any findings to the same implementer/reviewers, then
+                perform the fixed-microphone JTS3 validation. R16/#2107 and
+                pure R17/#1894 remain blocked until R15 passes its gates
+blocked_on:     independent R15 delta gate and fixed-microphone JTS3 evidence;
+                this is an explicit validation gap, not a product completion
 ```
 
 ## How this document relates to session handoffs and issues

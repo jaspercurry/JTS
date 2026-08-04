@@ -2,313 +2,184 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Session-owned protected-neutral program graph emission (R15).
+"""R15 declared-protection graph contracts on the real stereo carrier."""
 
-The conductor plays three-channel pre-apply WAVs through one static graph:
-ch0 woofer, ch1 tweeter, ch2 summed. These tests pin routing, the declared
-protection-only filter set on the physical output channels, the 0 dB ceiling,
-the build-time protective-floor gate, and the build-and-prove return contract —
-including the adversarial pre-split-HP shape that ``tweeter_guard_present`` must
-reject even where ``output_highpass_protected`` alone would false-PASS.
-"""
 from __future__ import annotations
 
+import copy
+
 import pytest
-import yaml as yaml_lib
+import yaml
 
-from jasper.active_speaker import (
-    ActiveSpeakerConfigError,
-    ActiveSpeakerPreset,
-    emit_active_speaker_program_config,
+from jasper.active_speaker import ActiveSpeakerPreset
+from jasper.active_speaker.protected_neutral_graph import (
+    PROTECTED_NEUTRAL_GRAPH_EXCLUSIONS,
+    ProtectedNeutralGraphError,
+    build_protected_neutral_session_graph,
 )
-from jasper.active_speaker.camilla_yaml import (
-    _assert_program_graph_proven,
-    _driver_limiter_name,
-)
-from jasper.active_speaker.graph_safety import (
-    output_highpass_protected,
-    tweeter_guard_present,
-    unprotected_tweeter_outputs,
-    view_from_emitted_text,
-)
-from jasper.audio_measurement.transfer_composition import LinearTransferSection
-
-# Reuse the canonical preset fixtures (mono 2-way == JTS3 single cabinet:
-# output 0 = woofer, output 1 = tweeter).
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 ROLE_CHANNELS = {"woofer": 0, "tweeter": 1}
-PROTECTION = {
-    "woofer": (
-        LinearTransferSection(True, 150.0, reason="declared_hard_excitation_floor"),
-        LinearTransferSection(False, 6000.0, reason="declared_hard_excitation_ceiling"),
-    ),
-    "tweeter": (
-        LinearTransferSection(True, 1600.0, reason="declared_hard_excitation_floor"),
-        LinearTransferSection(False, 23000.0, reason="declared_hard_excitation_ceiling"),
-    ),
-}
 
 
-def _emit(preset: ActiveSpeakerPreset, **kwargs) -> str:
-    return emit_active_speaker_program_config(
-        preset,
-        role_channels=kwargs.pop("role_channels", ROLE_CHANNELS),
-        summed_channel=2,
-        measurement_protection_by_role=PROTECTION,
-        playback_device=kwargs.pop("playback_device", ACTIVE_PCM),
-        **kwargs,
+def _safety_profile(*, tweeter_hp_hz: float = 1600.0) -> dict:
+    return {
+        "profile_fingerprint": "a" * 64,
+        "targets": [
+            {
+                "role": "woofer",
+                "target_id": "speaker:woofer",
+                "target_fingerprint": "d" * 64,
+                "hard_excitation_band_hz": [500.0, 6000.0],
+                "crossover_search_band_hz": [1800.0, 2600.0],
+                "required_protection_filters": [
+                    {
+                        "kind": "highpass",
+                        "cutoff_hz": 150.0,
+                        "minimum_slope_db_per_octave": 24.0,
+                        "family_or_equivalent": "equivalent_or_steeper",
+                    },
+                    {
+                        "kind": "lowpass",
+                        "cutoff_hz": 6000.0,
+                        "minimum_slope_db_per_octave": 24.0,
+                        "family_or_equivalent": "equivalent_or_steeper",
+                    },
+                ],
+            },
+            {
+                "role": "tweeter",
+                "target_id": "speaker:tweeter",
+                "target_fingerprint": "e" * 64,
+                "hard_excitation_band_hz": [500.0, 23000.0],
+                "crossover_search_band_hz": [1900.0, 2800.0],
+                "required_protection_filters": [
+                    {
+                        "kind": "highpass",
+                        "cutoff_hz": tweeter_hp_hz,
+                        "minimum_slope_db_per_octave": 24.0,
+                        "family_or_equivalent": "equivalent_or_steeper",
+                    },
+                    {
+                        "kind": "lowpass",
+                        "cutoff_hz": 23000.0,
+                        "minimum_slope_db_per_octave": 24.0,
+                        "family_or_equivalent": "equivalent_or_steeper",
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def _preset(
+    layout: str = "mono",
+    *,
+    configured_inverted: bool = False,
+    configured_fc_hz: float = 1600.0,
+):
+    raw = _two_way_preset(layout)
+    raw["crossover_regions"][0]["fc_hz"] = configured_fc_hz
+    if configured_inverted:
+        raw["crossover_regions"][0]["upper_polarity"] = "inverted"
+    return ActiveSpeakerPreset.from_mapping(raw)
+
+
+def _session_graph(
+    preset: ActiveSpeakerPreset | None = None, *, profile: dict | None = None
+):
+    return build_protected_neutral_session_graph(
+        preset=preset or _preset(),
+        component_safety_profile=profile or _safety_profile(),
+        role_channels=ROLE_CHANNELS,
+        playback_device=ACTIVE_PCM,
     )
 
 
-def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
-    return ActiveSpeakerPreset.from_mapping(_two_way_preset(layout))
+def test_program_config_uses_the_real_two_lane_carrier() -> None:
+    graph = _session_graph()
+    parsed = yaml.safe_load(graph.yaml_text)
 
-
-def _low_fc_preset() -> ActiveSpeakerPreset:
-    """A 2-way preset whose tweeter crosses too low for the protective floor."""
-    builder = _two_way_preset("mono")
-    builder["crossover_regions"][0]["fc_hz"] = 300  # < TWEETER_PROTECTIVE_HP floor
-    return ActiveSpeakerPreset.from_mapping(builder)
-
-
-def test_program_config_routes_each_channel_to_its_driver_output():
-    preset = _preset("mono")
-    out = _emit(preset)
-    parsed = yaml_lib.safe_load(out)
-
-    # Capture is the program channel count; playback the physical output count.
-    assert parsed["devices"]["capture"]["channels"] == 3
+    assert parsed["devices"]["capture"]["channels"] == 2
     assert parsed["devices"]["volume_limit"] == 0.0
-
-    mixer = parsed["mixers"]["split_active_2way"]
+    assert graph.spec.stimulus_peak_ceiling_dbfs == -12.0
     routing = {
-        entry["dest"]: [s["channel"] for s in entry["sources"]]
-        for entry in mixer["mapping"]
-    }
-    # ch0 -> woofer output 0, ch1 -> tweeter output 1 (role-routed, not side-routed).
-    assert routing == {0: [0, 2], 1: [1, 2]}
-
-
-def test_program_config_carries_only_declared_measurement_protection():
-    preset = _preset("mono")
-    out = _emit(preset)
-    parsed = yaml_lib.safe_load(out)
-
-    assert "as_tweeter_protective_hp" not in parsed["filters"]
-    assert "as_tweeter_woofer_tweeter_hp" not in parsed["filters"]
-    hp = parsed["filters"]["as_tweeter_measure_p0_hp"]["parameters"]
-    assert hp == {"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 4}
-    assert parsed["filters"]["as_tweeter_measure_p1_lp"]["parameters"] == {
-        "type": "LinkwitzRileyLowpass",
-        "freq": 23000.0,
-        "order": 4,
-    }
-    assert parsed["filters"]["as_woofer_measure_p0_hp"]["parameters"] == {
-        "type": "LinkwitzRileyHighpass",
-        "freq": 150.0,
-        "order": 4,
-    }
-    assert parsed["filters"]["as_woofer_measure_p1_lp"]["parameters"] == {
-        "type": "LinkwitzRileyLowpass",
-        "freq": 6000.0,
-        "order": 4,
-    }
-    assert parsed["filters"]["as_woofer_delay"]["parameters"]["delay"] == 0
-    assert parsed["filters"]["as_tweeter_delay"]["parameters"]["delay"] == 0
-    assert set(parsed["filters"]) == {
-        "active_startup_headroom",
-        "as_woofer_measure_p0_hp",
-        "as_woofer_measure_p1_lp",
-        "as_woofer_delay",
-        "as_woofer_startup_limiter",
-        "as_tweeter_measure_p0_hp",
-        "as_tweeter_measure_p1_lp",
-        "as_tweeter_delay",
-        "as_tweeter_startup_limiter",
-        "as_out0_commission_mute",
-        "as_out1_commission_mute",
-    }
-    # Program headroom is the commissioning headroom (0 dB) so the effective-peak
-    # ledger is main_volume + program peak with no hidden graph attenuation.
-    assert parsed["filters"]["active_startup_headroom"]["parameters"]["gain"] in (
-        0.0,
-        -0.0,
-    )
-
-
-def test_program_config_preserves_declared_physical_polarity_only():
-    raw = _two_way_preset("mono")
-    raw["crossover_regions"][0]["upper_polarity"] = "inverted"
-    parsed = yaml_lib.safe_load(_emit(ActiveSpeakerPreset.from_mapping(raw)))
-    mapping = parsed["mixers"]["split_active_2way"]["mapping"]
-    tweeter_sources = next(item for item in mapping if item["dest"] == 1)["sources"]
-    assert [source["inverted"] for source in tweeter_sources] == [True, True]
-
-
-def test_program_config_passes_all_graph_safety_proofs():
-    preset = _preset("mono")
-    out = _emit(preset)
-    view = view_from_emitted_text(out)
-    tweeter = {1}
-
-    assert unprotected_tweeter_outputs(view, tweeter_channels=tweeter) == ()
-    assert output_highpass_protected(view, channel=1, allowed_channels=tweeter)
-    assert tweeter_guard_present(
-        view,
-        channels=tweeter,
-        hp_name="as_tweeter_measure_p0_hp",
-        limiter_name=_driver_limiter_name("tweeter"),
-        limiter_clip_ceiling_db=-12.0,
-    )
-
-
-def test_program_config_stereo_routes_both_woofers_and_both_tweeters():
-    preset = _preset("stereo")  # outputs 0,2 woofer; 1,3 tweeter
-    out = _emit(preset)
-    parsed = yaml_lib.safe_load(out)
-    routing = {
-        entry["dest"]: entry["sources"][0]["channel"]
+        entry["dest"]: [source["channel"] for source in entry["sources"]]
         for entry in parsed["mixers"]["split_active_2way"]["mapping"]
     }
-    # Both woofer outputs take program ch0; both tweeter outputs take ch1.
-    assert routing == {0: 0, 1: 1, 2: 0, 3: 1}
-    view = view_from_emitted_text(out)
-    assert unprotected_tweeter_outputs(view, tweeter_channels={1, 3}) == ()
+    assert routing == {0: [0], 1: [1]}
 
 
-def test_program_config_refuses_measurement_hp_below_protective_floor():
-    # Explicit floor above the 1600 Hz crossover -> build-time refusal.
-    with pytest.raises(ActiveSpeakerConfigError, match="below the declared protective"):
-        _emit(
-            _preset("mono"),
-            protective_hp_min_corner_hz=2000.0,
-        )
-    # The configured crossover is excluded and cannot alter graph admission.
-    out = _emit(_low_fc_preset())
-    assert "freq: 300" not in out
+def test_declared_required_filter_wins_over_mismatched_hard_floor() -> None:
+    graph = _session_graph(profile=_safety_profile(tweeter_hp_hz=5000.0))
+    parsed = yaml.safe_load(graph.yaml_text)
 
-
-def test_program_config_refuses_tweeter_hp_slope_below_floor():
-    with pytest.raises(ActiveSpeakerConfigError, match="slope"):
-        _emit(
-            _preset("mono"),
-            protective_hp_min_slope_db_per_octave=30.0,  # LR4 is 24 dB/oct
-        )
-
-
-def test_program_config_refuses_local_subwoofer_preset():
-    builder = _two_way_preset("mono")
-    builder["local_subwoofer"] = {
-        "physical_output_index": 2,
-        "crossover_fc_hz": 80,
-        "label": "sub",
+    assert parsed["filters"]["as_tweeter_measure_p0_hp"]["parameters"] == {
+        "type": "LinkwitzRileyHighpass",
+        "freq": 5000.0,
+        "order": 4,
     }
-    preset = ActiveSpeakerPreset.from_mapping(builder)
-    with pytest.raises(ActiveSpeakerConfigError, match="local subwoofer"):
-        _emit(preset)
+    assert graph.spec.role("tweeter").filters[0].cutoff_hz == 5000.0
+    assert graph.protection_by_role["tweeter"][0].frequency_hz == 5000.0
 
 
-def test_program_config_refuses_outputd_playback_lane():
-    with pytest.raises(ActiveSpeakerConfigError):
-        _emit(_preset("mono"), playback_device="jasper_out")
+def test_declared_floor_jts_shape_is_emitted_exactly() -> None:
+    graph = _session_graph(profile=_safety_profile(tweeter_hp_hz=1800.0))
+    assert graph.spec.role("tweeter").filters[0].cutoff_hz == 1800.0
+    assert "freq: 1800.0" in graph.yaml_text
 
 
-def test_program_config_refuses_non_two_way_preset():
-    # W2 scope: the conductor's program topology is designed for a 2-way; a
-    # 3-way needs a designed reshape, not a silent generalization.
-    preset = ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo"))
-    with pytest.raises(ActiveSpeakerConfigError, match="scoped to 2-way"):
-        _emit(
-            preset,
-            role_channels={"woofer": 0, "mid": 1, "tweeter": 2},
-        )
+def test_unrepresentable_declared_filter_fails_closed() -> None:
+    profile = _safety_profile()
+    profile["targets"][1]["required_protection_filters"][0][
+        "family_or_equivalent"
+    ] = "butterworth_only"
+    with pytest.raises(ProtectedNeutralGraphError, match="cannot be represented"):
+        _session_graph(profile=profile)
 
 
-# --- Adversarial: pre-split per-channel HP must be rejected (contract §1) -----
-#
-# On the 2-way preset program ch1 numerically coincides with tweeter output 1,
-# so a high-pass emitted PRE-mixer on channel [1] can false-PASS
-# ``output_highpass_protected`` (its channel set [1] is a subset of the tweeter
-# role set {1}). ``tweeter_guard_present`` is the discriminator: it requires the
-# high-pass AND the limiter together on exactly the tweeter output channels in
-# ONE post-mixer step, which a pre-split HP can never satisfy.
+def test_configured_preview_polarity_never_enters_measurement_graph() -> None:
+    graph = _session_graph(_preset(configured_inverted=True))
+    parsed = yaml.safe_load(graph.yaml_text)
+    tweeter_sources = parsed["mixers"]["split_active_2way"]["mapping"][1]["sources"]
 
-_TWEETER_HP = "as_tweeter_measure_p0_hp"
-_TWEETER_LIMITER = _driver_limiter_name("tweeter")
-
-_FILTERS_BLOCK = f"""filters:
-  {_TWEETER_HP}:
-    type: BiquadCombo
-    parameters: {{ type: LinkwitzRileyHighpass, freq: 1600.0, order: 4 }}
-  as_tweeter_delay:
-    type: Delay
-    parameters: {{ delay: 0.0, unit: ms }}
-  {_TWEETER_LIMITER}:
-    type: Limiter
-    parameters: {{ soft_clip: true, clip_limit: -12.0 }}
-"""
-
-_ROUTED_PIPELINE = f"""pipeline:
-  - type: Mixer
-    name: split_active_2way
-  - type: Filter
-    channels: [1]
-    names: [{_TWEETER_HP}, as_tweeter_delay, {_TWEETER_LIMITER}]
-"""
-
-_PRESPLIT_PIPELINE = f"""pipeline:
-  - type: Filter
-    channels: [1]
-    names: [{_TWEETER_HP}]
-  - type: Mixer
-    name: split_active_2way
-  - type: Filter
-    channels: [1]
-    names: [as_tweeter_delay, {_TWEETER_LIMITER}]
-"""
+    assert graph.measurement_polarity_sign_by_role["tweeter"] == 1
+    assert graph.configured_polarity_sign_by_role["tweeter"] == -1
+    assert tweeter_sources == [{"channel": 1, "gain": 0.0, "inverted": False}]
 
 
-def test_routed_hp_variant_passes_both_proofs():
-    view = view_from_emitted_text(_FILTERS_BLOCK + "\n" + _ROUTED_PIPELINE)
-    assert output_highpass_protected(view, channel=1, allowed_channels={1})
-    assert tweeter_guard_present(
-        view,
-        channels={1},
-        hp_name=_TWEETER_HP,
-        limiter_name=_TWEETER_LIMITER,
-        limiter_clip_ceiling_db=-12.0,
-    )
+def test_confirmed_physical_polarity_is_the_only_measurement_inversion() -> None:
+    profile = copy.deepcopy(_safety_profile())
+    profile["targets"][1]["physical_polarity"] = "inverted"
+    graph = _session_graph(_preset(configured_inverted=False), profile=profile)
+    parsed = yaml.safe_load(graph.yaml_text)
+    tweeter_source = parsed["mixers"]["split_active_2way"]["mapping"][1]["sources"][0]
+
+    assert graph.measurement_polarity_sign_by_role["tweeter"] == -1
+    assert graph.configured_polarity_sign_by_role["tweeter"] == 1
+    assert tweeter_source["inverted"] is True
 
 
-def test_pre_split_hp_variant_rejected_by_tweeter_guard():
-    view = view_from_emitted_text(_FILTERS_BLOCK + "\n" + _PRESPLIT_PIPELINE)
-    # output_highpass_protected alone false-PASSES the coincident-channel HP...
-    assert output_highpass_protected(view, channel=1, allowed_channels={1})
-    # ...but tweeter_guard_present rejects it: no single step wires HP + limiter
-    # together on the tweeter output channels.
-    assert not tweeter_guard_present(
-        view,
-        channels={1},
-        hp_name=_TWEETER_HP,
-        limiter_name=_TWEETER_LIMITER,
-        limiter_clip_ceiling_db=-12.0,
-    )
+def test_graph_spec_is_the_single_protection_and_identity_source() -> None:
+    graph = _session_graph()
+    spec = graph.identity["canonical_spec"]
+
+    assert spec == graph.spec.to_dict()
+    assert spec["excluded_filter_layers"] == list(PROTECTED_NEUTRAL_GRAPH_EXCLUSIONS)
+    assert graph.identity["canonical_spec_fingerprint"] == graph.spec.fingerprint
+    assert "configured_crossover" not in graph.yaml_text
+    filter_names = set(yaml.safe_load(graph.yaml_text)["filters"])
+    assert not any("linearization" in name for name in filter_names)
 
 
-def test_build_and_prove_refuses_pre_split_hp_graph():
-    preset = _preset("mono")
-    doctored = (
-        "---\n"
-        + _FILTERS_BLOCK
-        + "\nmixers:\n  split_active_2way:\n    channels: { in: 2, out: 2 }\n"
-        + _PRESPLIT_PIPELINE
-    )
-    with pytest.raises(ActiveSpeakerConfigError, match="provably high-pass"):
-        _assert_program_graph_proven(
-            doctored,
-            preset,
-            min_corner_hz=400.0,
-            tweeter_hp_name=_TWEETER_HP,
+def test_graph_rejects_non_two_way_or_wrong_lane_map() -> None:
+    with pytest.raises(ProtectedNeutralGraphError, match="2-way"):
+        _session_graph(ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo")))
+    with pytest.raises(ProtectedNeutralGraphError, match="woofer lane 0"):
+        build_protected_neutral_session_graph(
+            preset=_preset(),
+            component_safety_profile=_safety_profile(),
+            role_channels={"woofer": 1, "tweeter": 0},
+            playback_device=ACTIVE_PCM,
         )

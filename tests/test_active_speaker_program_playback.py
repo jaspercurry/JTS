@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -22,11 +23,17 @@ from jasper.active_speaker.program_playback import (
     ProgramPlaybackError,
     ProgramPlaybackRefused,
     play_program,
+    verified_program_aplay,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.playback import PlaybackResult
-from jasper.audio_measurement.program import RoleBand, build_measure_program
+from jasper.audio_measurement.program import (
+    RoleBand,
+    build_measure_program,
+    write_program_wav,
+)
 
 ENTRY_PATH = "/etc/camilladsp/active_speaker_baseline.yml"
 
@@ -109,6 +116,12 @@ def _run(program, boundary, plan, *, admission=None):
         boundary.order.append("readmit")
         return admission
 
+    def record_entry(path):
+        boundary.order.append(("record", path))
+
+    def clear_entry():
+        boundary.order.append("clear")
+
     return asyncio.run(
         play_program(
             program,
@@ -120,6 +133,8 @@ def _run(program, boundary, plan, *, admission=None):
             restore_graph=boundary.restore_graph,
             play_wav=boundary.play_wav,
             writer_lock=boundary.writer_lock,
+            record_entry_anchor=record_entry,
+            clear_entry_anchor=clear_entry,
         )
     )
 
@@ -134,9 +149,11 @@ def test_happy_path_stages_plays_then_restores():
     assert boundary.order == [
         "readmit",
         "lock",
+        ("record", ENTRY_PATH),
         ("load", "PROGRAM_YAML"),
         "play",
         ("restore", ENTRY_PATH),
+        "clear",
         "unlock",
     ]
 
@@ -148,7 +165,58 @@ def test_restore_runs_on_playback_failure():
         _run(program, boundary, FakePlan())
     # The prior graph is restored even though playback raised.
     assert ("restore", ENTRY_PATH) in boundary.order
+    assert "clear" in boundary.order
     assert boundary.order[-1] == "unlock"
+
+
+def test_abort_during_playback_restores_and_clears_exact_entry_anchor():
+    async def scenario():
+        program = _program()
+        boundary = Boundary()
+        started = asyncio.Event()
+
+        async def blocked_play():
+            boundary.order.append("play")
+            started.set()
+            await asyncio.Future()
+
+        boundary.play_wav = blocked_play
+
+        async def readmit():
+            boundary.order.append("readmit")
+            return _admission(program)
+
+        def record_entry(path):
+            boundary.order.append(("record", path))
+
+        def clear_entry():
+            boundary.order.append("clear")
+
+        task = asyncio.create_task(
+            play_program(
+                program,
+                program_graph_yaml="PROGRAM_YAML",
+                session_volume_plan=FakePlan(),
+                readmit=readmit,
+                read_current_config_path=boundary.read_current_config_path,
+                load_program_graph=boundary.load_program_graph,
+                restore_graph=boundary.restore_graph,
+                play_wav=boundary.play_wav,
+                writer_lock=boundary.writer_lock,
+                record_entry_anchor=record_entry,
+                clear_entry_anchor=clear_entry,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return boundary.order
+
+    order = asyncio.run(scenario())
+    assert ("restore", ENTRY_PATH) in order
+    assert "clear" in order
+    assert order[-1] == "unlock"
 
 
 def test_restore_runs_on_load_failure():
@@ -157,6 +225,7 @@ def test_restore_runs_on_load_failure():
     with pytest.raises(RuntimeError, match="rejected the program graph"):
         _run(program, boundary, FakePlan())
     assert ("restore", ENTRY_PATH) in boundary.order
+    assert "clear" in boundary.order
 
 
 def test_refused_readmission_never_stages():
@@ -194,6 +263,7 @@ def test_restore_failure_after_play_raises(caplog):
     # Play still happened and restore was attempted.
     assert "play" in boundary.order
     assert ("restore", ENTRY_PATH) in boundary.order
+    assert "clear" not in boundary.order
     # N3: the end marker must say restore_failed, never a false "completed".
     end_lines = [
         r.getMessage()
@@ -203,3 +273,47 @@ def test_restore_failure_after_play_raises(caplog):
     ]
     assert end_lines and all("result=restore_failed" in line for line in end_lines)
     assert not any("result=completed" in line for line in end_lines)
+
+
+def test_verified_program_aplay_uses_stereo_correction_substream_contract(
+    tmp_path, monkeypatch
+):
+    import jasper.active_speaker.program_playback as playback_module
+
+    path = tmp_path / "program.wav"
+    write_program_wav(path, _program())
+    raw = path.read_bytes()
+    artifact = ArtifactIdentity(
+        bundle_kind="test",
+        bundle_id="test",
+        relative_path="program.wav",
+        sha256=hashlib.sha256(raw).hexdigest(),
+        byte_size=len(raw),
+    )
+    observed = {}
+
+    async def fake_play(source, *, alsa_device, timeout_s):
+        observed.update(
+            channels=source.channels,
+            sample_rate_hz=source.sample_rate_hz,
+            alsa_device=alsa_device,
+            timeout_s=timeout_s,
+        )
+        return PlaybackResult(
+            wav_path=path,
+            alsa_device=alsa_device,
+            returncode=0,
+        )
+
+    monkeypatch.setattr(playback_module, "play_verified_wav", fake_play)
+    result = asyncio.run(
+        verified_program_aplay(tmp_path, artifact, timeout_s=3.0)
+    )
+
+    assert result.returncode == 0
+    assert observed == {
+        "channels": 2,
+        "sample_rate_hz": 48000,
+        "alsa_device": "correction_substream",
+        "timeout_s": 3.0,
+    }

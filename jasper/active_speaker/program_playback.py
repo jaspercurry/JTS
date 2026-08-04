@@ -153,6 +153,8 @@ async def play_program(
     restore_graph: RestoreGraph,
     play_wav: PlayWav,
     writer_lock: WriterLock,
+    record_entry_anchor,
+    clear_entry_anchor,
 ) -> ProgramPlaybackResult:
     """Play one pre-apply program through the real DSP chain, then restore.
 
@@ -194,6 +196,10 @@ async def play_program(
                 "no current DSP config to restore after the program; refusing to "
                 "load the program graph"
             )
+        # Durably record the exact persisted production config before the
+        # inline graph can outlive this process. Existing startup/idle recovery
+        # owns convergence; this function only clears after confirmed restore.
+        record_entry_anchor(entry_config_path)
         log_event(
             logger,
             "active_speaker.program_playback",
@@ -203,12 +209,16 @@ async def play_program(
             session_volume_db=f"{session_volume_plan.measurement_volume_db}",
         )
         try:
-            await load_program_graph(program_graph_yaml)
+            loaded = await load_program_graph(program_graph_yaml)
+            if loaded is not True:
+                raise ProgramPlaybackError("protected-neutral graph load was rejected")
             playback = await play_wav()
         finally:
             restored, _restore_error = await _safe_restore(
                 restore_graph, entry_config_path, program_id=program.program_id
             )
+            if restored:
+                clear_entry_anchor()
         # Reached only when load + play did not raise. A played program whose
         # prior graph did NOT come back is not "completed" — the speaker is in
         # the wrong graph, and the end marker must say so.

@@ -145,8 +145,8 @@ def test_protected_neutral_summed_program_reuses_role_plans_and_binding_cap():
         2000.0,
         gain_db=-46.0,
         downstream_gain_db=-20.0,
-        output_channel=2,
-        total_channels=3,
+        output_channel=0,
+        total_channels=2,
         summed_role="summed",
         sweep_s=3.0,
     )
@@ -159,21 +159,45 @@ def test_protected_neutral_summed_program_reuses_role_plans_and_binding_cap():
     )
     assert admission.allowed
     assert [segment.role for segment in admission.segments] == ["woofer", "tweeter"]
-    facts = {item.role: item for item in admission.channels}
-    assert facts["summed"].cap_dbfs == -65.0
-    assert sum(item.role == "unused" for item in admission.channels) == 2
+    assert [item.role for item in admission.channels] == ["summed", "summed"]
+    assert all(item.cap_dbfs == -65.0 for item in admission.channels)
 
 
-def test_unused_static_graph_channel_must_remain_byte_silent():
+def test_isolated_other_physical_lane_must_remain_sample_exact_zero():
     topology, profile, targets = _profile_and_targets()
     program = build_measure_program(
         {"woofer": -46.0, "tweeter": -46.0},
         _roles(),
         downstream_gain_db=-20.0,
-        total_channels=3,
+        total_channels=2,
     )
     pcm = render_program_pcm(program)
-    pcm[100, 2] = 1.0 / 32768.0  # one int16 LSB is still not byte-silence
+    sweep = program.segment("sweep_w")
+    pcm[sweep.start_sample + 100, 1] = 1.0 / 32768.0
+    admission = admit_excitation_program(
+        program,
+        topology=topology,
+        safety_profile=profile,
+        role_targets=targets,
+        session_volume_db=-20.0,
+        pcm=pcm,
+    )
+    assert ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY in admission.refusals
+
+
+def test_summed_physical_lanes_must_be_sample_exact_identical():
+    topology, profile, targets = _profile_and_targets()
+    program = build_verify_program(
+        2000.0,
+        gain_db=-46.0,
+        downstream_gain_db=-20.0,
+        output_channel=0,
+        total_channels=2,
+        summed_role="summed",
+        sweep_s=3.0,
+    )
+    pcm = render_program_pcm(program)
+    pcm[program.segment("sweep_verify").start_sample + 100, 1] += 1.0 / 32768.0
     admission = admit_excitation_program(
         program,
         topology=topology,

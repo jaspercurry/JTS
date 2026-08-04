@@ -2305,9 +2305,10 @@ async def restore_pending_capture_entry_config(
     - ``restored``: production reloaded, stash cleared.
     """
 
-    entry = capture_entry_anchor.pending_entry()
-    if not entry:
+    pending = capture_entry_anchor.pending_anchor()
+    if pending is None:
         return {"status": "idle"}
+    entry = pending.entry_config_path
     cam = camilla_factory()
     current, current_error = await read_current_config_path(cam)
     if current_error is not None or not current:
@@ -2322,9 +2323,15 @@ async def restore_pending_capture_entry_config(
             "status": "deferred",
             "reason": current_error or "current_config_unknown",
         }
-    staged = load_staged_startup_config()
-    staged_anchor_path = (staged.get("config") or {}).get("path")
-    if not staged_anchor_path or not _config_paths_match(current, staged_anchor_path):
+    if pending.restore_mode == capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH:
+        restore_owner_matches = _config_paths_match(current, entry)
+    else:
+        staged = load_staged_startup_config()
+        staged_anchor_path = (staged.get("config") or {}).get("path")
+        restore_owner_matches = bool(staged_anchor_path) and _config_paths_match(
+            current, staged_anchor_path
+        )
+    if not restore_owner_matches:
         capture_entry_anchor.clear()
         log_event(
             logger,
@@ -2334,7 +2341,6 @@ async def restore_pending_capture_entry_config(
         )
         return {"status": "superseded", "current_config_path": current}
     if not Path(entry).exists():
-        capture_entry_anchor.clear()
         log_event(
             logger,
             "active_speaker.capture_entry_restore",
@@ -2342,7 +2348,11 @@ async def restore_pending_capture_entry_config(
             status="entry_missing",
             entry_config_path=entry,
         )
-        return {"status": "entry_missing", "entry_config_path": entry}
+        return {
+            "status": "entry_missing",
+            "entry_config_path": entry,
+            "retained_for_recovery": True,
+        }
     restored = await cam.set_config_file_path(entry, best_effort=False)
     if restored is not True:
         log_event(

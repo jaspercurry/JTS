@@ -1,13 +1,11 @@
 # Active-speaker commissioning — 80/20 crossover + linearization revision
 
-> **Status: R14 complete (2026-08-04); R15 ready, not started.** The same
-> independent reviewer returned 0 blockers and 0 should-fixes on the third
-> delta-only review. PR #2105 merged the ratified contract; R14 administrative
-> closeout created R15 issue #2106 and R16 issue #2107, adopted #1654 for R15,
-> and reconciled #1654/#1894 with the campaign. No product implementation,
-> deployment, or measurements started. This
-> document owns the next implementation
-> slice for active two-way speaker
+> **Status summary (2026-08-04): R15 software implementation awaits the
+> independent gate and fixed-microphone JTS3 validation; it is not deployed,
+> measured, or complete.** The single current campaign position lives in
+> [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md#current-position).
+> This document owns the frozen R15–R20 contracts and implementation missions,
+> not their live status. It defines the next implementation slices for active two-way speaker
 > commissioning: protected raw-driver measurement, bounded LR4 crossover
 > selection, candidate-specific driver linearization, and same-session
 > verification. It changes no current behavior by itself. Current shipped
@@ -105,9 +103,9 @@ The commissioning graph contains only:
 
 - the confirmed driver/output mapping;
 - the declared hard excitation bands, including the HF driver's confirmed
-  minimum safe frequency;
-- measurement-only high-pass/low-pass protection needed to enforce those hard
-  bands;
+  minimum safe frequency, as policy bounds;
+- the exact confirmed `required_protection_filters`, including their declared
+  family/slope semantics or a fail-closed conservative equivalent;
 - limiters, conservative stimulus gain, and the existing volume ceiling;
 - declared physical polarity and component facts, including passive L-pad
   attenuation.
@@ -118,8 +116,9 @@ It excludes:
 - prior Room correction, bass extension, and preference/taste EQ;
 - crossover **shaping** whose Fc is still being adjudicated. A protection-only
   transfer may share a filter family with a crossover, but its identity and
-  corner are derived only from the confirmed hard excitation envelope and it
-  must not encode a selector candidate.
+corner are derived only from the confirmed protection declaration and it must
+not encode a selector candidate. Hard-band endpoints are never silently
+substituted for a distinct declared filter.
 
 "Neutral" therefore means **pre-candidate, not unprotected and not
 mathematically flat**. The measurement-protection transfer is part of the raw

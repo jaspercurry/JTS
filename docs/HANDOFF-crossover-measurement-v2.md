@@ -24,13 +24,17 @@ alternatives, the wave plan) is
 [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 this doc is the current operational truth.
 
-> **R15 foundation implemented, hardware validation pending (2026-08-04):**
-> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
-> remains canonical for the campaign. R15 now moves CHECK, mark-position
-> MEASURE, and the existing pre-apply summed cloud onto one session-owned
-> protected-neutral graph and publishes the anchor-only raw-evidence v1 record.
-> R16 lateral raw poses, R17 Fc selection, and the later VERIFY redesign remain
-> planned; the current Express/Full walks and configured-Fc proposal path remain.
+> **R15 software implementation awaiting independent gate and JTS3 validation
+> (2026-08-04):** the current campaign position lives only in
+> [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md#current-position),
+> and the frozen contract lives in
+> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md).
+> The repair branch routes CHECK, mark-position MEASURE, and the existing
+> pre-apply summed cloud through one session-owned protected-neutral graph and
+> constructs the anchor-only raw-evidence v1 record. It is not deployed,
+> hardware-measured, or gate-passed. R16 lateral raw poses, R17 Fc selection,
+> and the later VERIFY redesign remain planned; the current Express/Full walks
+> and configured-Fc proposal path remain.
 
 ## How to run it
 
@@ -91,17 +95,29 @@ this doc is the current operational truth.
 
 ### R15 protected-neutral anchor foundation (2026-08-04)
 
-Every stage-1 session now builds one immutable three-input measurement graph
-before its first stimulus: woofer role input, tweeter role input, and a shared
-summed input. Every pre-apply phase uses the existing transient
+The R15 branch builds one immutable measurement graph before the first
+stage-1 stimulus on the production transport's real two-channel carrier. The
+woofer and HF roles each own one physical program lane: an isolated stimulus
+leaves the other lane sample-exact zero, while a summed stimulus places the
+same PCM on both lanes. Every pre-apply phase uses the existing transient
 `program_playback.play_program` owner to load that exact graph under the DSP
-writer lock and restore the entry config on success, abort, or play failure.
-Stage 2 remains production-graph playback. The transient graph contains only
-the declared hard-band role protection `P`, declared physical polarity, zero
-delay, soft limiters, output pass gains, and the non-positive volume ceiling.
-Configured crossover shaping, prior automatic alignment/linearization, Room,
-bass extension, and preference EQ are absent. The persisted production profile
-and retained Undo are not mutated until the existing explicit Apply.
+writer lock. Before any swap, that owner durably records the exact entry
+production config through `capture_entry_anchor`; normal teardown restores it,
+and the existing startup/idle recovery reloads it after an abrupt web-process
+restart. The anchor clears only after a confirmed restore, so restore failure
+stays recoverable and protected. Stage 2 remains production-graph playback.
+
+The transient graph is derived from one typed specification containing the
+exact confirmed `required_protection_filters` (including family/slope
+semantics), role mapping, declared physical polarity or an explicit neutral
+`+1` when no physical-polarity fact exists, soft limiters, conservative gain,
+and the non-positive volume ceiling. The same specification drives CamillaDSP
+emission, `P(f)`, protection identity, and graph fingerprinting. It fails
+closed when a declaration cannot be represented; hard excitation-band edges
+are not silently substituted for declared filters. Configured crossover
+shaping and polarity, prior automatic alignment/linearization, Room, bass
+extension, and preference EQ are absent. The persisted production profile and
+retained Undo are not mutated until the existing explicit Apply.
 
 Mark-position MEASURE still captures the shipped three interleaved woofer/HF
 occurrences. After all existing acceptance gates pass, the existing
@@ -120,14 +136,16 @@ transfer replacing `P`; `C/P` is never emitted to hardware. The fitter and
 branch-target path receive only `S`, while raw evidence retains `M`. The exact
 finite-value rule, inclusive −12 dB `|P|` floor, inclusive +12 dB `|C/P|` cap,
 required-bin mask, transfers, ratio, and result are fingerprinted. The
-pre-apply summed cloud now enters the same protected-neutral graph through its
-shared third input and is re-admitted against both role limits; its prior
-production graph can no longer leak old correction into the "before" evidence.
+pre-apply summed cloud enters the same static protected-neutral graph by
+mirroring one summed program sample-exact across the two physical lanes and is
+re-admitted against both role limits; its prior production graph can no longer
+leak old correction into the "before" evidence.
 
-This slice is hardware-free tested only. A fixed-microphone JTS3 run still must
-confirm the declared-floor HF capture, audible gain, no limiter engagement,
-exact production-profile restoration, raw artifact publication, and unchanged
-configured-Fc proposal/Apply/Undo behavior on real CamillaDSP.
+This software implementation has hardware-free tests but has not passed the
+independent R15 gate. A fixed-microphone JTS3 run still must confirm the
+declared-floor HF capture, audible gain, no limiter engagement, exact
+production-profile restoration, paired raw artifact publication, and
+unchanged configured-Fc proposal/Apply/Undo behavior on real CamillaDSP.
 
 ### Live attempts loop (2026-08-03)
 
@@ -3254,12 +3272,15 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-08-04 — verified the R15 protected-neutral graph, raw-anchor
-publication, configured-Fc total-transfer composition, pre/post-apply routing,
-and lifecycle statements above against `crossover_raw_evidence.py`,
+Last verified: 2026-08-04 — verified the R15 branch's protected-neutral graph,
+paired raw-anchor publication path, configured-Fc total-transfer composition,
+two-lane pre/post-apply routing, and crash-restoration statements above against
+`protected_neutral_graph.py`, `camilla_yaml.py`,
+`crossover_raw_evidence.py`, `crossover_selector_contract.py`,
 `transfer_composition.py`, `crossover_v2_flow.py`,
-`correction_crossover_v2.py`, `program_admission.py`, and the targeted contract
-tests. Hardware validation remains explicitly open. The prior same-day pass
+`correction_crossover_v2.py`, `program_admission.py`,
+`program_playback.py`, `capture_entry_anchor.py`, and the targeted contract
+tests. Independent review and hardware validation remain explicitly open. The prior same-day pass
 added and verified the planning-vs-shipped orientation against the then-current
 phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,

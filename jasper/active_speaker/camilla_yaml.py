@@ -54,12 +54,11 @@ from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
 from .graph_safety import (
-    TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     bass_extension_block_valid,
     filter_param_matches,
-    output_highpass_protected,
+    pipeline_contains_chain,
     pipeline_reference_closure_errors,
-    tweeter_guard_present,
+    protection_requirement_present,
     unprotected_tweeter_outputs,
     view_from_emitted_text,
 )
@@ -84,6 +83,7 @@ if TYPE_CHECKING:
     # Type-only: the runtime import stays inside the two functions that need
     # it, so a cut-only emit never pulls numpy (see branch_chain's docstring).
     from .branch_chain import CrossoverSection
+    from .protected_neutral_graph import ProtectedNeutralGraphSpec
 
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
 STARTUP_HEADROOM_DB = 40.0
@@ -227,6 +227,17 @@ def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
     for role in required_driver_roles(preset.way_count):
         polarity.setdefault(role, False)
     return polarity
+
+
+def configured_role_polarity_signs(
+    preset: ActiveSpeakerPreset,
+) -> dict[str, int]:
+    """Configured crossover polarity, using the emitter's canonical reduction."""
+
+    return {
+        role: -1 if inverted else 1
+        for role, inverted in _role_polarity(preset).items()
+    }
 
 
 def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
@@ -2177,36 +2188,26 @@ pipeline:
 
 
 # --- session-owned protected-neutral program graph (R15) ---------------------
-# One static three-channel graph serves every pre-apply stimulus: ch0 woofer,
-# ch1 tweeter, ch2 summed.  It contains only the declared measurement protection
-# P, zero delay, the existing soft limiter, per-output pass gains, and the volume
-# ceiling.  The persisted production graph is restored exactly by the existing
-# transient playback owner; configured crossover, prior alignment/linearization,
-# Room, bass, and preference filters never enter this graph.
-
-# LR4 is the shipped protection shape; 24 dB/oct is the protective-HP floor
-# slope the emitted tweeter measurement high-pass must meet (design §5.4).
-PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
-
+# One static two-lane graph serves every pre-apply stimulus on the real
+# correction_substream carrier: ch0 woofer, ch1 tweeter. Isolated programs keep
+# the other lane sample-exact zero; summed programs put identical PCM on both.
+# Configured crossover, prior alignment/linearization, Room, bass, and
+# preference filters never enter this graph.
 
 def _emit_role_routed_mixer(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
     *,
-    summed_channel: int | None = None,
-    apply_region_polarity: bool = True,
+    polarity_sign_by_role: Mapping[str, int],
 ) -> str:
     """Emit the program graph's role-routed split mixer.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo program bus by output
-    *side*), this routes by driver *role*: every physical output of role ``r``
-    takes its role source from ``role_channels[r]`` and, when supplied, the one
-    shared ``summed_channel``. Programs keep those inputs mutually exclusive.
-    ``channels_in`` is the program channel count (max mapped channel + 1).
-    Region polarity is carried exactly as the commissioning mixer carries it,
-    so this mixer's routing differs only in source selection, never in polarity
-    or level. The surrounding protected-neutral filter graph is intentionally
-    different from the commissioning graph.
+    *side*), this routes the two physical correction-substream lanes by driver
+    *role*. Summed playback is represented by identical PCM on both lanes, not
+    by a third transport channel. Polarity comes only from the confirmed
+    physical-polarity fact in the protected graph specification; configured or
+    candidate crossover polarity is not consulted here.
 
     The emitted mixer is named ``split_active_{way_count}way`` — the SAME name
     :func:`_emit_split_mixer` uses — for two independent reasons that both land
@@ -2221,27 +2222,17 @@ def _emit_role_routed_mixer(
     (see above), never side-routed like the commissioning/baseline/startup
     split — only the NAME is shared.
     """
-    region_polarity = _role_polarity(preset)
-    polarity = (
-        region_polarity
-        if apply_region_polarity
-        else {role: False for role in region_polarity}
-    )
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
-    source_channels = [*role_channels.values()]
-    if summed_channel is not None:
-        source_channels.append(summed_channel)
-    channels_in = 1 + max(source_channels)
+    channels_in = 2
     mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
         (
             output.index,
             [
-                (role_channels[output.driver_role], 0.0, polarity[output.driver_role]),
-                *(
-                    [(summed_channel, 0.0, polarity[output.driver_role])]
-                    if summed_channel is not None
-                    else []
+                (
+                    role_channels[output.driver_role],
+                    0.0,
+                    polarity_sign_by_role[output.driver_role] == -1,
                 ),
             ],
         )
@@ -2303,50 +2294,6 @@ def measurement_protection_filter_name(
 ) -> str:
     suffix = "hp" if highpass else "lp"
     return f"as_{_name_token(role)}_measure_p{section_index}_{suffix}"
-
-
-def _validate_measurement_protection(
-    preset: ActiveSpeakerPreset,
-    protection_by_role: Mapping[str, Sequence[Any]],
-    *,
-    min_corner_hz: float,
-    min_slope_db_per_octave: float,
-) -> dict[str, tuple[Any, ...]]:
-    required = tuple(required_driver_roles(preset.way_count))
-    if set(protection_by_role) != set(required):
-        raise ActiveSpeakerConfigError(
-            "measurement protection must define exactly the woofer and tweeter roles"
-        )
-    normalized: dict[str, tuple[Any, ...]] = {}
-    for role in required:
-        sections = tuple(protection_by_role[role])
-        if len(sections) != 2 or [bool(item.highpass) for item in sections] != [True, False]:
-            raise ActiveSpeakerConfigError(
-                f"measurement protection for {role} must be exactly one high-pass "
-                "followed by one low-pass"
-            )
-        for section in sections:
-            frequency = _finite_float(section.frequency_hz, "measurement frequency_hz")
-            order = _positive_int(section.order, "measurement Linkwitz-Riley order")
-            if frequency <= 0.0 or frequency >= DEFAULT_SAMPLE_RATE / 2.0:
-                raise ActiveSpeakerConfigError(
-                    "measurement protection corner must stay inside 48 kHz Nyquist"
-                )
-            if order < 2 or order % 2:
-                raise ActiveSpeakerConfigError(
-                    "measurement protection Linkwitz-Riley order must be even and >= 2"
-                )
-        normalized[role] = sections
-    tweeter_hp = normalized["tweeter"][0]
-    if float(tweeter_hp.frequency_hz) < min_corner_hz:
-        raise ActiveSpeakerConfigError(
-            "tweeter measurement high-pass is below the declared protective floor"
-        )
-    if int(tweeter_hp.order) * 6.0 < min_slope_db_per_octave:
-        raise ActiveSpeakerConfigError(
-            "tweeter measurement high-pass slope is below the protective floor"
-        )
-    return normalized
 
 
 def _emit_protected_neutral_filter_definitions(
@@ -2479,96 +2426,96 @@ def _assert_program_graph_proven(
     yaml_text: str,
     preset: ActiveSpeakerPreset,
     *,
-    min_corner_hz: float,
-    tweeter_hp_name: str,
+    graph_spec: "ProtectedNeutralGraphSpec",
 ) -> None:
-    """Build-and-prove the emitted program graph against graph_safety (fail-closed).
+    """Prove every declared filter and limiter on the emitted output graph."""
 
-    Runs the reference-closure gate (:func:`_assert_pipeline_references_closed`)
-    plus the three L0 tweeter proofs on the EMITTED text — the same evidence a
-    later readback would inspect — and refuses to return a graph that does not
-    prove all four. This is the program builder's return contract: it cannot
-    emit a graph whose pipeline points at an undefined mixer/filter name, nor
-    one whose tweeter output is not high-pass protected (against the declared
-    floor) AND wrapped by its measurement high-pass + soft-clip limiter in one
-    post-mixer step. A pre-split per-channel high-pass (which
-    ``output_highpass_protected`` alone could false-PASS on the 2-way preset,
-    where program ch1 numerically coincides with tweeter output 1) is rejected
-    here because ``tweeter_guard_present`` requires the high-pass AND the limiter
-    together on exactly the tweeter output channels.
-    """
     _assert_pipeline_references_closed(yaml_text, preset)
-    tweeter_channels = _channels_for_role(preset, "tweeter")
-    if not tweeter_channels:
-        return
     view = view_from_emitted_text(yaml_text)
-    tweeter_set = set(tweeter_channels)
-    unprotected = unprotected_tweeter_outputs(
-        view, tweeter_channels=tweeter_set, min_corner_hz=min_corner_hz
-    )
-    highpass_ok = all(
-        output_highpass_protected(
-            view,
-            channel=channel,
-            allowed_channels=tweeter_set,
-            min_corner_hz=min_corner_hz,
+    checks: list[bool] = []
+    for role_spec in graph_spec.roles:
+        channels = set(_channels_for_role(preset, role_spec.role))
+        names = tuple(
+            measurement_protection_filter_name(
+                role_spec.role, index, highpass=item.kind == "highpass"
+            )
+            for index, item in enumerate(role_spec.filters)
+        ) + (_driver_delay_name(role_spec.role), _driver_limiter_name(role_spec.role))
+        checks.append(
+            pipeline_contains_chain(view, channels=channels, required_names=names)
         )
-        for channel in tweeter_channels
+        checks.append(
+            filter_param_matches(
+                view,
+                _driver_limiter_name(role_spec.role),
+                filter_type="Limiter",
+                params={
+                    "soft_clip": True,
+                    "clip_limit": graph_spec.limiter_threshold_dbfs,
+                },
+            )
+        )
+        for output_index in channels:
+            for requirement in role_spec.filters:
+                checks.append(
+                    protection_requirement_present(
+                        view,
+                        output_index=output_index,
+                        allowed_channels=channels,
+                        requirement={
+                            "kind": requirement.kind,
+                            "cutoff_hz": requirement.cutoff_hz,
+                            "minimum_slope_db_per_octave": (
+                                requirement.minimum_slope_db_per_octave
+                            ),
+                            "family_or_equivalent": requirement.family_or_equivalent,
+                        },
+                    )
+                )
+    try:
+        payload = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise ActiveSpeakerConfigError("protected graph YAML is invalid") from exc
+    devices = payload.get("devices") if isinstance(payload, Mapping) else None
+    checks.extend(
+        (
+            isinstance(devices, Mapping),
+            isinstance(devices, Mapping)
+            and devices.get("volume_limit") == graph_spec.volume_ceiling_db,
+            isinstance(devices, Mapping)
+            and isinstance(devices.get("capture"), Mapping)
+            and devices["capture"].get("channels") == 2,
+        )
     )
-    guard_ok = tweeter_guard_present(
-        view,
-        channels=tweeter_set,
-        hp_name=tweeter_hp_name,
-        limiter_name=_driver_limiter_name("tweeter"),
-        limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
-    )
-    if unprotected or not highpass_ok or not guard_ok:
+    if not all(checks):
         log_event(
             logger,
             "active_speaker.program_emit_gate",
             level=logging.ERROR,
             result="blocked_unproven_program_graph",
             preset_id=preset.preset_id,
-            unprotected=",".join(str(index + 1) for index in unprotected),
-            highpass_ok=highpass_ok,
-            guard_ok=guard_ok,
         )
         raise ActiveSpeakerConfigError(
-            "refusing to emit a program graph whose tweeter output(s) are not "
-            "provably high-pass protected and limiter-wrapped on the physical "
-            "output channels"
+            "refusing to emit a program graph that does not prove every "
+            "declared protection filter, limiter, and stereo transport rail"
         )
 
 
 def emit_active_speaker_program_config(
     preset: ActiveSpeakerPreset,
     *,
-    role_channels: dict[str, int],
-    summed_channel: int,
-    measurement_protection_by_role: Mapping[str, Sequence[Any]],
-    playback_device: str,
-    protective_hp_min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
-    protective_hp_min_slope_db_per_octave: float = (
-        PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE
-    ),
-    capture_device: str = DEFAULT_CAPTURE_DEVICE,
-    capture_format: str = DEFAULT_CAPTURE_FORMAT,
-    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
-    chunksize: int | None = None,
-    target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
-    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    graph_spec: "ProtectedNeutralGraphSpec",
     out_path: str | Path | None = None,
-    baseline_id: str | None = None,
 ) -> str:
     """Emit the one static protected-neutral graph for all pre-apply playback.
 
-    Role channels carry isolated CHECK/MEASURE stimuli and ``summed_channel``
-    carries CLOUD_MEASURE.  Only the declared role protection ``P``, zero delay,
-    soft limiters, pass gains, and the non-positive volume ceiling are emitted.
-    The configured crossover and every old correction layer are absent.
+    The typed graph specification is the only input: lane 0 carries woofer,
+    lane 1 carries HF, and summed CLOUD_MEASURE puts identical PCM on both.
+    Only declared role protection ``P``, confirmed physical polarity, zero
+    delay, soft limiters, pass gains, and the non-positive ceiling are emitted.
     """
+
+    from .protected_neutral_graph import ProtectedNeutralGraphSpec
 
     preset.validate()
     # W2 scope gate: the conductor's program topology (2 program channels,
@@ -2581,41 +2528,40 @@ def emit_active_speaker_program_config(
             "the crossover-measurement program graph is scoped to 2-way presets; "
             f"way_count={preset.way_count} requires a designed program reshape"
         )
-    role_channels = _validate_program_role_channels(preset, role_channels)
-    if type(summed_channel) is not int or summed_channel < 0:
-        raise ActiveSpeakerConfigError("summed_channel must be a non-negative integer")
-    all_channels = {*role_channels.values(), summed_channel}
-    if len(all_channels) != len(role_channels) + 1 or sorted(all_channels) != list(
-        range(len(all_channels))
-    ):
+    if not isinstance(graph_spec, ProtectedNeutralGraphSpec):
+        raise ActiveSpeakerConfigError("graph_spec must be ProtectedNeutralGraphSpec")
+    role_channels = _validate_program_role_channels(
+        preset, dict(graph_spec.role_channels)
+    )
+    if role_channels != {"woofer": 0, "tweeter": 1}:
         raise ActiveSpeakerConfigError(
-            "role and summed program channels must be distinct and contiguous from 0"
+            "protected-neutral graph must use the two correction_substream lanes"
         )
-    playback_device = _yaml_string(playback_device, "playback_device")
+    expected_outputs = tuple(
+        (item.index, item.driver_role)
+        for item in sorted(preset.channel_map.outputs, key=lambda item: item.index)
+    )
+    if (
+        graph_spec.preset_id != preset.preset_id
+        or graph_spec.output_roles != expected_outputs
+    ):
+        raise ActiveSpeakerConfigError("graph specification and physical routing differ")
+    playback_device = _yaml_string(graph_spec.playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
     if forbidden_token:
         raise ActiveSpeakerConfigError(
             "active-speaker templates require an explicit active playback "
             f"device, not the existing {forbidden_token} lane"
         )
-    capture_device = _yaml_string(capture_device, "capture_device")
-    capture_format = _yaml_string(capture_format, "capture_format")
-    playback_format = _yaml_string(playback_format, "playback_format")
-    sample_rate = _positive_int(sample_rate, "sample_rate")
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
-    chunksize = _positive_int(chunksize, "chunksize")
-    target_level = _positive_int(target_level, "target_level")
-    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
-    limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
-    protective_hp_min_corner_hz = _finite_float(
-        protective_hp_min_corner_hz, "protective_hp_min_corner_hz"
-    )
-    protective_hp_min_slope_db_per_octave = _finite_float(
-        protective_hp_min_slope_db_per_octave,
-        "protective_hp_min_slope_db_per_octave",
+    capture_device = _yaml_string(graph_spec.capture_device, "capture_device")
+    capture_format = _yaml_string(graph_spec.capture_format, "capture_format")
+    playback_format = _yaml_string(graph_spec.playback_format, "playback_format")
+    sample_rate = _positive_int(graph_spec.sample_rate_hz, "sample_rate")
+    chunksize = _positive_int(graph_spec.chunksize, "chunksize")
+    target_level = _positive_int(graph_spec.target_level, "target_level")
+    volume_limit_db = _finite_float(graph_spec.volume_ceiling_db, "volume_limit_db")
+    limiter_clip_limit_db = _finite_float(
+        graph_spec.limiter_threshold_dbfs, "limiter_clip_limit_db"
     )
     if volume_limit_db > 0:
         raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
@@ -2624,22 +2570,21 @@ def emit_active_speaker_program_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    measurement_protection_by_role = _validate_measurement_protection(
-        preset,
-        measurement_protection_by_role,
-        min_corner_hz=protective_hp_min_corner_hz,
-        min_slope_db_per_octave=protective_hp_min_slope_db_per_octave,
-    )
+    if graph_spec.graph_headroom_gain_db != 0.0:
+        raise ActiveSpeakerConfigError("protected-neutral graph headroom must be unity")
+    measurement_protection_by_role = graph_spec.sections_by_role()
 
     output_count = _output_count(preset)
-    program_channels = 1 + max(all_channels)
+    program_channels = 2
     filter_yaml = _emit_protected_neutral_filter_definitions(
         preset,
         measurement_protection_by_role,
         limiter_clip_limit_db=limiter_clip_limit_db,
     )
     mixer_yaml = _emit_role_routed_mixer(
-        preset, role_channels, summed_channel=summed_channel
+        preset,
+        role_channels,
+        polarity_sign_by_role=graph_spec.measurement_polarity_signs(),
     )
     pipeline_yaml = _emit_protected_neutral_pipeline(
         preset,
@@ -2649,22 +2594,19 @@ def emit_active_speaker_program_config(
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# role_channels={dict(sorted(role_channels.items()))}",
-        f"# summed_channel={summed_channel}",
         f"# program_channels={program_channels}",
         f"# filter_mode={PROTECTED_NEUTRAL_FILTER_MODE}",
+        f"# canonical_spec_fingerprint={graph_spec.fingerprint}",
     ]
-    if baseline_id:
-        baseline_id = _yaml_string(baseline_id, "baseline_id")
-        metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
     yaml = f"""---
 # Auto-generated active-speaker crossover-measurement program config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config
 {metadata_yaml}
-# DO NOT HAND-EDIT. Static channel-routed program graph: role channels and the
-# shared summed channel route to the same role-specific
-# declared measurement protection P + soft-clip limiter. Configured crossover,
+# DO NOT HAND-EDIT. Static stereo program graph: each physical lane routes to
+# its role-specific declared measurement protection P + soft-clip limiter;
+# summed programs carry identical PCM on both lanes. Configured crossover,
 # alignment, driver linearization, Room, bass, and preference filters are absent.
 # The software volume ceiling remains non-positive.
 
@@ -2702,10 +2644,7 @@ pipeline:
     _assert_program_graph_proven(
         yaml,
         preset,
-        min_corner_hz=protective_hp_min_corner_hz,
-        tweeter_hp_name=measurement_protection_filter_name(
-            "tweeter", 0, highpass=True
-        ),
+        graph_spec=graph_spec,
     )
 
     if out_path is not None:

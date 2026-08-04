@@ -734,11 +734,14 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     mic_tier: str | None = None
-    # R15's exact pre-apply transfer replacement. All three mappings are
+    # R15's exact pre-apply transfer replacement. All four mappings are
     # required together; absent means the legacy as-crossed analysis path.
+    # Measurement protection P owns only declared physical wiring polarity;
+    # configured transfer C owns the configured crossover polarity.
     measurement_protection_by_role: Mapping[str, Sequence[Any]] | None = None
     configured_transfer_by_role: Mapping[str, Sequence[Any]] | None = None
-    polarity_sign_by_role: Mapping[str, int] | None = None
+    measurement_polarity_sign_by_role: Mapping[str, int] | None = None
+    configured_polarity_sign_by_role: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -922,6 +925,9 @@ class DriverResponse:
     gating: dict[str, Any]
     snr: dict[str, Any] | None
     validity_floor_hz: float | None
+    # Exact originating located/admitted segment. RAW evidence pairs roles by
+    # the common program-cycle ledger, never by role-local tuple position.
+    segment_id: str = ""
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
 
@@ -2702,6 +2708,7 @@ def _driver_response(
     n_fft: int,
     radiated_band_hz: tuple[float, float] | None = None,
     capture_segment: np.ndarray | None = None,
+    segment_id: str = "",
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
@@ -2758,6 +2765,7 @@ def _driver_response(
         gating=gating_block,
         snr=snr_block,
         validity_floor_hz=validity_floor_hz,
+        segment_id=segment_id,
     )
 
 
@@ -4456,6 +4464,7 @@ def _repeat_driver_responses(
             capture_segment=_raw_sweep_segment(
                 capture, seg, global_offset + seg.start_sample,
             ),
+            segment_id=loc.segment_id,
         )
         out.append(replace(resp, repeat_index=repeat_index))
     return tuple(out)
@@ -4472,24 +4481,37 @@ def _total_transfer_for_role(
     maps = (
         priors.measurement_protection_by_role,
         priors.configured_transfer_by_role,
-        priors.polarity_sign_by_role,
+        priors.measurement_polarity_sign_by_role,
+        priors.configured_polarity_sign_by_role,
     )
     if all(item is None for item in maps):
         return None
     if any(item is None for item in maps):
-        raise ValueError("M*C/P analysis requires P, C, and polarity identities together")
+        raise ValueError(
+            "M*C/P analysis requires P, C, and both polarity identities together"
+        )
     protection = priors.measurement_protection_by_role
     configured = priors.configured_transfer_by_role
-    signs = priors.polarity_sign_by_role
-    assert protection is not None and configured is not None and signs is not None
-    if role not in protection or role not in configured or role not in signs:
+    measurement_signs = priors.measurement_polarity_sign_by_role
+    configured_signs = priors.configured_polarity_sign_by_role
+    assert (
+        protection is not None
+        and configured is not None
+        and measurement_signs is not None
+        and configured_signs is not None
+    )
+    if (
+        role not in protection
+        or role not in configured
+        or role not in measurement_signs
+        or role not in configured_signs
+    ):
         raise ValueError(f"M*C/P analysis identity is missing role {role!r}")
-    sign = int(signs[role])
     P = linkwitz_riley_response_complex(
-        freqs_hz, protection[role], polarity_sign=sign
+        freqs_hz, protection[role], polarity_sign=int(measurement_signs[role])
     )
     C = linkwitz_riley_response_complex(
-        freqs_hz, configured[role], polarity_sign=sign
+        freqs_hz, configured[role], polarity_sign=int(configured_signs[role])
     )
     return compose_total_transfer(
         measured, C, P, required_mask=np.asarray(required_mask, dtype=bool)
@@ -4594,6 +4616,7 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg_w, global_offset + seg_w.start_sample,
                 ),
+                segment_id=seg_w.segment_id,
             ),
             _driver_response(
                 seg_t.role, tweeter_full_ir, sample_rate,
@@ -4603,6 +4626,7 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg_t, global_offset + seg_t.start_sample,
                 ),
+                segment_id=seg_t.segment_id,
             ),
         )
     )
@@ -4712,6 +4736,20 @@ def _build_candidate(
         else lo
     )
     if total_transfer_priors is not None:
+        if any(
+            value is None
+            for value in (
+                woofer_sweep_lo_hz,
+                woofer_sweep_hi_hz,
+                tweeter_sweep_lo_hz,
+                tweeter_sweep_hi_hz,
+            )
+        ):
+            raise ValueError("total-transfer candidate requires both sweep bounds")
+        assert woofer_sweep_lo_hz is not None
+        assert woofer_sweep_hi_hz is not None
+        assert tweeter_sweep_lo_hz is not None
+        assert tweeter_sweep_hi_hz is not None
         role_masks = {
             woofer_role: (freqs >= float(woofer_sweep_lo_hz))
             & (freqs <= float(woofer_sweep_hi_hz)),

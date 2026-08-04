@@ -8,7 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_program_config
+from jasper.active_speaker import ActiveSpeakerPreset
 from jasper.active_speaker.environment import (
     classify_camilla_config_text,
     parse_aplay_playback_devices,
@@ -24,7 +24,6 @@ from jasper.active_speaker.path_safety import (
 )
 from tests.active_speaker_fixtures import valid_camilla_config as _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_program_config import PROTECTION
 
 
 _APLAY_STDOUT = """
@@ -203,13 +202,9 @@ def test_program_config_mixer_satisfies_active_split_ecosystem_contract() -> Non
     rename that satisfies the pipeline but drifts from the ecosystem
     vocabulary would fail here."""
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
-    text = emit_active_speaker_program_config(
-        preset,
-        role_channels={"woofer": 0, "tweeter": 1},
-        summed_channel=2,
-        measurement_protection_by_role=PROTECTION,
-        playback_device="hw:CARD=DAC8x,DEV=0",
-    )
+    from tests.test_active_speaker_program_config import _session_graph
+
+    text = _session_graph(preset).yaml_text
 
     active = classify_camilla_config_text(text)
 

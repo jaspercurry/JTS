@@ -1788,10 +1788,10 @@ def test_restore_pending_capture_entry_config_defers_and_supersedes(
     assert capture_entry_anchor.pending_entry() is None
 
 
-def test_restore_pending_capture_entry_config_missing_entry_stays_muted(
+def test_restore_pending_capture_entry_config_missing_entry_stays_recoverable(
     monkeypatch, tmp_path
 ):
-    """A vanished production config clears the stash and keeps the anchor.
+    """A vanished production config retains the exact restore obligation.
 
     Fail direction is muted-never-loud: with no valid restore target the
     speaker stays on the all-muted staged anchor rather than guessing.
@@ -1819,7 +1819,67 @@ def test_restore_pending_capture_entry_config_missing_entry_stays_muted(
         web.restore_pending_capture_entry_config(camilla_factory=Cam)
     )
     assert result["status"] == "entry_missing"
-    assert capture_entry_anchor.pending_entry() is None
+    assert result["retained_for_recovery"] is True
+    assert capture_entry_anchor.pending_entry() == str(tmp_path / "deleted.yml")
+
+
+def test_inline_graph_abrupt_process_restart_reloads_exact_production_config(
+    monkeypatch, tmp_path
+):
+    """Camilla outlives correction-web; startup reloads the persisted entry."""
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    entry = tmp_path / "production.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(
+        str(entry),
+        restore_mode=capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH,
+    )
+    calls = []
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            # SetConfig never changed the persisted path, even though the
+            # outliving daemon is still executing the inline R15 graph.
+            return str(entry)
+
+        async def set_config_file_path(self, path, *, best_effort):
+            calls.append((path, best_effort))
+            return True
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+
+    assert result == {"status": "restored", "config_path": str(entry)}
+    assert calls == [(str(entry), False)]
+    assert capture_entry_anchor.pending_anchor() is None
+
+
+def test_inline_graph_restart_restore_failure_retains_anchor(monkeypatch, tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    entry = tmp_path / "production.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(
+        str(entry),
+        restore_mode=capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return str(entry)
+
+        async def set_config_file_path(self, path, *, best_effort):
+            return False
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+
+    assert result["status"] == "failed"
+    assert capture_entry_anchor.pending_entry() == str(entry)
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(

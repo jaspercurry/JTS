@@ -3058,7 +3058,6 @@ def bind_raw_anchor_publisher(
     refs: dict[str, Any],
     *,
     session_graph: Any,
-    roles_bands: Sequence[Any],
     configured_fc_hz: float,
     safety_profile: Mapping[str, Any],
 ) -> Callable[[Any, Any, Any, int], None]:
@@ -3084,26 +3083,37 @@ def bind_raw_anchor_publisher(
             program=program,
             capture_wav=bytes(wav),
             attempt=int(attempt),
-            roles_bands=roles_bands,
-            measurement_graph=session_graph.identity,
-            protection_by_role=session_graph.protection_by_role,
-            polarity_sign_by_role=session_graph.polarity_sign_by_role,
+            session_graph=session_graph,
             configured_fc_hz=float(configured_fc_hz),
             component_safety_profile=safety_profile,
             calibration_identity=calibration,
-            limiter_threshold_dbfs=session_graph.limiter_threshold_dbfs,
         )
-        # Validate the complete identity envelope before making either
-        # write-once publication. A malformed accepted analysis must not leave
-        # a raw-WAV artifact that looks eligible for a missing evidence record.
-        raw_artifact = store.publish_raw_artifact(
-            f"crossover_v2/{relay_session_id}/{take_id}.wav", bytes(wav)
+        expected_identity = {
+            "graph": session_graph.identity["fingerprint"],
+            "safety": payload["component_safety_profile_identity"]["fingerprint"],
+            "calibration": payload["calibration_identity"]["fingerprint"],
+            "stimulus": payload["stimulus_identity"]["fingerprint"],
+        }
+
+        def _validate(value: Mapping[str, Any]) -> None:
+            validate_raw_evidence_v1(
+                value,
+                expected_session_id=relay_session_id,
+                expected_graph_fingerprint=expected_identity["graph"],
+                expected_safety_fingerprint=expected_identity["safety"],
+                expected_calibration_fingerprint=expected_identity["calibration"],
+                expected_stimulus_fingerprint=expected_identity["stimulus"],
+            )
+
+        raw_artifact, artifact = store.publish_raw_json_pair(
+            raw_relative_path=f"crossover_v2/{relay_session_id}/{take_id}.wav",
+            raw_payload=bytes(wav),
+            json_relative_path=(
+                f"crossover_v2/{relay_session_id}/raw_evidence_v1.json"
+            ),
+            json_payload=payload,
+            validate_json=_validate,
         )
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/raw_evidence_v1.json", payload
-        )
-        reopened = store.reopen_json_artifact(artifact)
-        validate_raw_evidence_v1(reopened, expected_session_id=relay_session_id)
         refs["raw_anchor_wav_artifact"] = raw_artifact.fingerprint
         refs["raw_evidence_artifact"] = artifact.fingerprint
         refs["raw_evidence_set_fingerprint"] = payload[
@@ -3871,7 +3881,7 @@ def bind_production_play(
 
     def _play(phase: str, program: Any) -> None:
         if phase not in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
-            from jasper.active_speaker.crossover_raw_evidence import (
+            from jasper.active_speaker.protected_neutral_graph import (
                 validate_protected_neutral_program_routing,
             )
 
@@ -3890,7 +3900,7 @@ def bind_production_play(
         artifact = evidence_store.identify_artifact(wav_rel)
         if phase in {PHASE_VERIFY, PHASE_CLOUD_VERIFY}:
             # Issue #1976's stable applied-sum alias. R15's pre-apply cloud
-            # is deliberately a different three-channel artifact for the
+            # is deliberately a different protected-stereo artifact for the
             # protected-neutral graph and remains under its exact phase name;
             # mixing that identity into this mono production alias would make
             # offline replay nondeterministic. Best-effort as before.
@@ -5310,15 +5320,14 @@ def prepare_v2_session(
         # One signal per session, shared by the play seam (which fires it) and
         # the runner (which installs the armed capture's phase ladder on it).
         playback_started = PlaybackStartSignal()
-        from jasper.active_speaker.crossover_raw_evidence import (
+        from jasper.active_speaker.protected_neutral_graph import (
             build_protected_neutral_session_graph,
         )
 
         session_graph = build_protected_neutral_session_graph(
             preset=context.preset,
-            roles_bands=context.roles_bands,
+            component_safety_profile=context.safety_profile,
             role_channels=context.role_channels,
-            summed_channel=2,
             playback_device=context.playback_device,
         )
         play = bind_production_play(
@@ -5374,7 +5383,6 @@ def prepare_v2_session(
                     relay_session_id,
                     refs,
                     session_graph=session_graph,
-                    roles_bands=context.roles_bands,
                     configured_fc_hz=context.fc_hz,
                     safety_profile=context.safety_profile,
                 ),

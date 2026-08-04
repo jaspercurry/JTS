@@ -100,6 +100,46 @@ def resample_log(
     return log_freqs.astype(np.float64), interp.astype(np.float64)
 
 
+def resample_complex_response(
+    freqs_hz: np.ndarray,
+    complex_response: np.ndarray,
+    grid_hz: np.ndarray,
+) -> np.ndarray:
+    """Interpolate one finite complex response onto an existing shared grid.
+
+    This is the complex-valued companion to :func:`resample_log`. It does not
+    choose or persist a grid; callers reuse their domain's canonical basis.
+    Real and imaginary components are interpolated independently so phase is
+    retained without unwrapping ambiguity.
+    """
+
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    values = np.asarray(complex_response, dtype=np.complex128)
+    grid = np.asarray(grid_hz, dtype=np.float64)
+    if (
+        freqs.ndim != 1
+        or values.ndim != 1
+        or grid.ndim != 1
+        or freqs.size < 2
+        or values.shape != freqs.shape
+        or grid.size < 2
+        or not np.all(np.isfinite(freqs))
+        or not np.all(np.isfinite(values.real))
+        or not np.all(np.isfinite(values.imag))
+        or not np.all(np.isfinite(grid))
+        or not np.all(np.diff(freqs) > 0.0)
+        or not np.all(np.diff(grid) > 0.0)
+        or grid[0] < freqs[0]
+        or grid[-1] > freqs[-1]
+    ):
+        raise ValueError("complex response and target grid must be finite and bounded")
+    return np.asarray(
+        np.interp(grid, freqs, values.real)
+        + 1j * np.interp(grid, freqs, values.imag),
+        dtype=np.complex128,
+    )
+
+
 def spatial_average_db(
     magnitudes_db: list[np.ndarray],
 ) -> np.ndarray:
