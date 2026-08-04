@@ -872,6 +872,23 @@ full re-walk.
 
 ---
 
+## The next campaign — 80/20 crossover + linearization revision
+
+**Status: R14 documentation gate and contract ratified and complete
+(2026-08-04); R14 administrative issue closeout pending.** The same
+independent reviewer returned 0 blockers and 0 should-fixes on the third
+delta-only review. This documentation-only repair made no issue writes and
+started no product implementation, deployment, or measurements.
+
+The canonical missions, exits, measurement/result contracts, issue
+disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
+briefs live only in
+[`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
+This spine owns only status and order IDs:
+`R14 (documentation gate passed; administrative issue closeout pending) -> R15 -> (R16 || pure R17) -> R18 -> R19 -> R20`.
+
+---
+
 ## The research index
 
 Five artifacts banked 2026-07-31. **Read them there; this spine never restates
@@ -952,26 +969,26 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-03 (R13 owner validation day; #2097 repository
-                contract shipped; page-first public rollout and jts3
-                validation remain pending)
-jts3_sha:       7cf87029ac1eecf7e3f6016819ad231a41908772 — verified deployed
-                2026-08-03 18:41 EDT (build.txt status=ok); post-settle
-                jasper-doctor: 0 failed / 5 non-critical warnings. Includes
-                #2096's robust VERIFY timeline anchor
-active_round:   none — the campaign remains closed. R13's hands-on record,
-                corrections, and overnight findings live in #2083 and
-                captures/glitch-forensics-20260803/
-last_round:     R13 (owner validation day). #2087 ruled that the predicted-
-                ripple ceiling becomes a brief disclosure, not a hard
-                refusal; shipped in #2088. #2086 records the finite, honest,
-                per-position retry intent; #2097 is the shipped repository
-                implementation of the owner's diagnosis-vs-action ruling on
-                top of #2095. Its capture-page build 20260803.4 must publish
-                before any Pi carrying the new terminal-result conductor;
-                neither that public page rollout nor the jts3 deployment is
-                asserted by this block. #2091's renderer parking is
-                deprioritized / ordinary backlog
+date:           2026-08-04 (R14 documentation gate ratified at third-delta
+                0 blockers / 0 should-fixes; administrative issue closeout
+                pending; no issue writes, product implementation, deployment,
+                or measurements started)
+capture_page:   public capture_page_build read-only verified 2026-08-04 at
+                20260803.4
+jts3_sha:       build marker read-only verified 2026-08-04 at
+                d742b37bec8293b72f1897194d9bf8e10b85cb08, status=ok;
+                jasper-doctor: 0 failed / 5 non-critical warnings
+compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
+                is the compatible current public-capture-page / JTS3 pair.
+                These read-only observations establish current state, not
+                deployment order or chronology
+active_round:   R14 — administrative issue closeout only. The documentation
+                gate passed the same-reviewer third delta-only review at
+                0 blockers / 0 should-fixes. No product implementation is
+                active or was started
+last_round:     R13 (owner validation day; last fully completed product
+                round). R14's documentation gate has passed, but the round
+                remains in administrative closeout
 validation:     applied=true, tier=full, session phases verify/cloud_verify.
                 Local at-mark VERIFY passed (max raw 0.9835 dB; offset
                 -5.868 dB), but only 4 of 5 cloud positions were accepted;
@@ -982,21 +999,16 @@ rollback:       Undo remains banked through the retained pre_apply_profile;
                 restoration was not exercised during this run
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
-                owns honest Full-stage progress and recovery disclosure
-next_mission:   publish capture-page build 20260803.4 and verify the public
-                version.json first; only then deploy the repository build to
-                jts3 and rerun the entire Full stage 2: local VERIFY plus all
-                five cloud positions. The current protocol cannot honestly
-                resume from only the missing fifth position
-blocked_on:     the page-first capture rollout, followed by jts3 deployment
-                and a hardware pass. Do not deploy the Pi first: an old page
-                drops terminal=true and offers a dead retry after the new
-                runner exits. The #2095/#2097 product question is resolved in
-                the shipped repository contract: diagnosis X is evidence-
-                identical across retry and exhaustion; retry advice appears
-                only while an attempt exists; terminal copy names the exact
-                outcome on the final capture. None of that is yet the deployed
-                jts3 state named above
+                owns honest Full-stage progress and recovery disclosure. The
+                new campaign's complete issue sweep lives only in
+                crossover-linearization-80-20-plan.md
+next_mission:   reconcile existing issue comments and create only the two
+                missing implementation tickets documented by the ratified
+                plan. R15 starts only after that issue setup; those writes
+                have not happened in this repair
+blocked_on:     no R14 documentation blocker. R14 administrative closeout and
+                R15 remain gated only on the planned issue reconciliation and
+                missing-ticket setup
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1006,21 +1018,22 @@ One writer per fact. Drift between these is a bug, not a style question.
 | Fact | Lives in | Never in |
 |---|---|---|
 | **Strategy** — charter, rungs, sequencing, what supersedes what | **this document** | handoffs, issues |
-| **Campaign** — which round owns which territory, and its exit criterion | **this document** | handoffs, issues |
+| Campaign status/order — active round and dependency-ordered IDs | **this document** | handoffs, issues |
+| R14–R20 mission, territory, exit, and launch contract | [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md) | this spine, handoffs, issues |
 | Session state — where we are right now | the CURRENT POSITION block above | a handoff's prose |
-| The current round's mission and what just moved | `captures/NEXT-SESSION-PROMPT-*.md` (a **mission brief**) | this document |
+| Current session execution state and what just moved | `captures/NEXT-SESSION-PROMPT-*.md` (a **session brief**) | this document |
 | A single task: its defect, evidence, and fix | its **GitHub issue** | this document, handoffs |
 | Method — conductor rule, adversarial gate, values | [`AGENTS.md`](../AGENTS.md) | everywhere else |
 
-Three planning layers, deliberately: **strategy** (the ladder — what order the
-problems get solved in), **campaign** (the rounds — which round solves which,
-and where in the tree), **session** (one round's brief). The middle layer is the
-one the program was missing; without it every handoff re-planned the program
-from scratch.
+Three planning layers, deliberately: **strategy** (this spine's ladder),
+**campaign** (the canonical R14–R20 plan linked above, with this spine retaining
+only status/order), and **session** (one round's brief). Without the middle
+layer every handoff re-plans the program from scratch.
 
 From round 9 on, a session handoff is: **current position + what moved + next
-mission**, pointing here. If a handoff starts re-deriving strategy or
-re-sequencing rounds, that content belongs in this file instead.
+bounded action**, pointing here and to the canonical campaign plan. If a
+handoff starts re-deriving strategy or re-sequencing rounds, move the campaign
+contract to the canonical plan and retain only the status/order marker here.
 
 ---
 
@@ -1671,16 +1684,30 @@ into a second file would defeat the one-spine purpose, so the length is a
 deliberate, recorded exception — not licence for the spine's *prose* to grow.
 
 **Verification scope.** A **2026-08-03 post-R13 pass** re-verified exactly the
-CURRENT POSITION block against jts3's deployed build marker and doctor result,
+then-current position against jts3's build marker and doctor result,
 the retained crossover-v2 state and capture ledger, the owner rulings on #2087
 and #2086, #2091's recorded deprioritization, #2097's ruled integration state
-(shipped in the repository; capture-page 20260803.4 and jts3 not yet deployed),
-#2083's corrected evidence trail, and the filed contracts #2098–#2100. It did
-**not** re-verify the charter, rung bodies, campaign narrative, research index,
-phase→issue reconciliation, or historical appendix; their previously recorded
-verification scopes remain unchanged.
+(shipped in the repository), #2083's corrected evidence trail, and the filed
+contracts #2098–#2100. That pass did not establish public-page/Pi deployment
+chronology; the compatible current pair is separately read-only verified in
+CURRENT POSITION on 2026-08-04. It did **not** re-verify the charter, rung
+bodies, campaign narrative, research index, phase→issue reconciliation, or
+historical appendix; their previously recorded verification scopes remain
+unchanged.
 
-**Verification scope.** A **second 2026-08-02 pass (the post-campaign
+**Verification scope.** A **2026-08-04 planning/contract-repair pass** verified
+the R14–R20 status/order against
+[`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md),
+re-read the linked issue bodies/states, confirmed local `main` at
+`d742b37bec8293b72f1897194d9bf8e10b85cb08`, read-only verified the public
+`capture_page_build` at `20260803.4`, and read-only verified jts3's matching
+build marker with `status=ok` plus `jasper-doctor` at 0 failures / 5
+non-critical warnings. Those observations establish the compatible current
+pair, not deployment order or chronology. It did not run a measurement or
+change product/DSP state. The older campaign narrative and historical appendix
+were not re-verified by this pass.
+
+A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
 these sections:
 
@@ -1719,4 +1746,4 @@ below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** �
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
 
-Last verified: 2026-08-03
+Last verified: 2026-08-04

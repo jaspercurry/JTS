@@ -13,6 +13,12 @@
 > executed — results and the attribution correction" section below
 > supersedes the original comb-attribution evidence in "Evidence — why the
 > instrument must change" § 1.
+> **Next-campaign note (2026-08-04; not shipped):**
+> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
+> preserves this plan's gated/spatial honesty research but gives the anchor,
+> lateral samples, candidate solver, and later Room cloud separate jobs. It
+> wins for future implementation sequencing; this document remains the
+> research/spec authority.
 
 ## Mission
 
