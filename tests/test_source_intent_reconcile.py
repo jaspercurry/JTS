@@ -998,6 +998,34 @@ def test_failed_desired_on_source_resets_before_start():
     assert host.unit_failed(unit) is False
 
 
+def test_airplay_resets_failed_required_companion_before_start():
+    main = "shairport-sync.service"
+    required = "nqptp.service"
+    host = _FakeHost(failed_units={required})
+    run_unit = host.run_unit
+
+    def dependency_aware_run(unit: str, verb: str) -> tuple[int, str]:
+        if unit == main and verb == "start" and host.unit_failed(required):
+            host.calls.append((verb, unit))
+            return 1, f"required unit {required} is start-limited"
+        result = run_unit(unit, verb)
+        if unit == main and verb == "start" and result[0] == 0:
+            host.active[required] = True
+        return result
+
+    ops = replace(host.ops(), run_unit=dependency_aware_run)
+
+    assert source_intent._apply_source(Source.AIRPLAY, True, True, ops) == "on"
+    assert host.calls == [
+        ("enable", main),
+        ("enable", required),
+        ("reset-failed", required),
+        ("start", main),
+    ]
+    assert host.unit_active(main) is True
+    assert host.unit_active(required) is True
+
+
 def test_healthy_desired_on_source_does_not_reset_or_start():
     unit = "librespot.service"
     host = _FakeHost(enabled={unit: True}, active={unit: True})
@@ -1013,6 +1041,35 @@ def test_healthy_desired_on_source_does_not_reset_or_start():
     )
 
     assert host.calls == []
+
+
+@pytest.mark.parametrize("post_reset_state", [True, None])
+def test_desired_on_does_not_start_when_reset_does_not_clear_failed_state(
+    tmp_path,
+    caplog,
+    post_reset_state,
+):
+    unit = "librespot.service"
+    host = _FakeHost(failed_units={unit})
+    unit_failed = host.unit_failed
+    unit_probe_results = iter((True, post_reset_state))
+    ops = replace(
+        host.ops(),
+        unit_failed=lambda candidate: (
+            next(unit_probe_results) if candidate == unit else unit_failed(candidate)
+        ),
+    )
+    env = _write(tmp_path, f"{_key(Source.SPOTIFY)}=enabled\n")
+
+    with caplog.at_level("WARNING"):
+        rc = source_intent.reconcile(env_path=env, ops=ops)
+
+    assert rc == 1
+    assert ("reset-failed", unit) in host.calls
+    assert ("start", unit) not in host.calls
+    assert "event=source.reconcile source=spotify" in caplog.text
+    assert "result=failed" in caplog.text
+    assert f"{unit} failed state did not reset to inactive" in caplog.text
 
 
 @pytest.mark.parametrize("failed_action", ["reset-failed", "start"])

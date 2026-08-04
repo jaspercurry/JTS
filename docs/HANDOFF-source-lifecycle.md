@@ -169,11 +169,13 @@ enablement, then starts them only when desired and local sources are allowed.
 Off means disabled and stopped. A bonded follower keeps desired enablement but
 stops the runtime, so unpairing can restore the household choice.
 
-Before an intentional desired-On start, the coordinator probes the unit's
-failed state and clears and verifies any stale failure/start-limit latch. A
-healthy active unit receives neither `reset-failed` nor another start. Reset
-or start failures remain bounded, fail the owning source loudly, and do not
-prevent the other sources from converging.
+Before the first intentional desired-On start, the ordinary applier probes all
+runtime units owned by that source and clears and verifies any stale
+failure/start-limit latch. This preflight includes required companions such as
+NQPTP, because starting the intent unit may ask systemd to bring them up before
+their later explicit verification turn. A healthy active unit receives neither
+`reset-failed` nor another start. Reset or start failures remain bounded, fail
+the owning source loudly, and do not prevent the other sources from converging.
 
 USB and Bluetooth select their concrete ordered appliers first. Any remaining
 lifecycle declaration with `intent_unit is not None` uses this ordinary

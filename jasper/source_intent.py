@@ -994,11 +994,12 @@ def _ensure_active(
     desired: bool,
     *,
     force: bool = False,
+    failed_state_preflighted: bool = False,
 ) -> bool:
     current = ops.unit_active(unit)
     if current is desired and not force:
         return _reset_failed_if_needed(ops, unit) if not desired else False
-    if desired:
+    if desired and not failed_state_preflighted:
         _reset_failed_if_needed(ops, unit)
     verb = "start" if desired else "stop"
     rc, detail = ops.run_unit(unit, verb)
@@ -1057,6 +1058,11 @@ def _reconcile_systemd_source(
     if effective_on:
         for unit in lifecycle.runtime_units:
             _ensure_enabled(ops, unit, True)
+        # Clear every owned latch before the first start. The intent unit may
+        # pull companions in through Requires=, so resetting companions only
+        # when their explicit verification turn arrives is too late.
+        for unit in lifecycle.runtime_units:
+            _reset_failed_if_needed(ops, unit)
     else:
         # Off and follower parking are safety transitions. A failed unit-file
         # mutation must not prevent later resources from being stopped; the
@@ -1092,6 +1098,7 @@ def _reconcile_systemd_source(
         lifecycle.intent_unit,
         effective_on,
         force=False,
+        failed_state_preflighted=True,
     )
     for unit in lifecycle.runtime_units:
         if unit != lifecycle.intent_unit:
@@ -1100,6 +1107,7 @@ def _reconcile_systemd_source(
                 unit,
                 effective_on,
                 force=False,
+                failed_state_preflighted=True,
             )
     return "on"
 
