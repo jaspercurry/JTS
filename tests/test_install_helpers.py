@@ -133,7 +133,7 @@ def _run_install_helper(
 ) -> subprocess.CompletedProcess[str]:
     env_dir = tmp_path / "etc"
     state_dir = tmp_path / "state"
-    env_dir.mkdir(exist_ok=True)
+    env_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(exist_ok=True)
     script = (
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
@@ -147,6 +147,122 @@ def _run_install_helper(
         text=True,
         timeout=5,
     )
+
+
+def _run_speaker_name_seed(
+    tmp_path: Path,
+    *,
+    deploy_hostname: str | None = None,
+    saved_hostname: str | None = None,
+    os_hostname: str = "raspberrypi",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the creation-only installer seed against scratch state."""
+
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    if saved_hostname is not None:
+        (env_dir / "jasper.env").write_text(
+            f'JASPER_HOSTNAME="{saved_hostname}"\n',
+            encoding="utf-8",
+        )
+    commands = [
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+        f"ENV_DIR={shlex.quote(str(env_dir))}",
+        f"STATE_DIR={shlex.quote(str(state_dir))}",
+        "unset JASPER_HOSTNAME",
+        f"hostname() {{ printf '%s\\n' {shlex.quote(os_hostname)}; }}",
+    ]
+    if deploy_hostname is not None:
+        commands.append(f"export JASPER_HOSTNAME={shlex.quote(deploy_hostname)}")
+    commands.append("seed_speaker_name_env")
+    result = subprocess.run(
+        ["bash", "-c", " && ".join(commands)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return result, state_dir / "speaker_name.env"
+
+
+@pytest.mark.parametrize(
+    ("hostname", "expected"),
+    [
+        ("jts.local", 'JASPER_SPEAKER_NAME="JTS"\n'),
+        ("jts4.local", 'JASPER_SPEAKER_NAME="JTS4"\n'),
+        ("kitchen.local", 'JASPER_SPEAKER_NAME="Kitchen"\n'),
+    ],
+)
+def test_fresh_speaker_name_seed_uses_deploy_hostname(
+    tmp_path: Path,
+    hostname: str,
+    expected: str,
+):
+    result, state_file = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname=hostname,
+    )
+    assert result.returncode == 0, result.stderr
+    assert state_file.read_text(encoding="utf-8") == expected
+
+
+def test_speaker_name_seed_falls_back_to_saved_then_os_hostname(tmp_path: Path):
+    saved_result, saved_file = _run_speaker_name_seed(
+        tmp_path / "saved",
+        saved_hostname="den.local",
+        os_hostname="ignored",
+    )
+    assert saved_result.returncode == 0, saved_result.stderr
+    assert saved_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="Den"\n'
+    )
+
+    os_result, os_file = _run_speaker_name_seed(
+        tmp_path / "os",
+        os_hostname="workshop",
+    )
+    assert os_result.returncode == 0, os_result.stderr
+    assert os_file.read_text(encoding="utf-8") == (
+        'JASPER_SPEAKER_NAME="Workshop"\n'
+    )
+
+
+def test_speaker_name_seed_preserves_existing_file_byte_for_byte(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / "speaker_name.env"
+    original = b'# household formatting\n  JASPER_SPEAKER_NAME = "My Kitchen"'
+    state_file.write_bytes(original)
+
+    result, resolved = _run_speaker_name_seed(
+        tmp_path,
+        deploy_hostname="jts99.local",
+    )
+    assert result.returncode == 0, result.stderr
+    assert resolved == state_file
+    assert state_file.read_bytes() == original
+
+
+def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
+    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
+    body = renderers[
+        renderers.index("install_renderers() {"):
+        renderers.index("\n}\n\nreconcile_usb_data_role()")
+    ]
+    assert body.count("seed_speaker_name_env") == 1
+    assert body.index("seed_speaker_name_env") < body.index(
+        "/usr/local/sbin/jasper-apply-airplay-mode"
+    )
+    assert body.index("seed_speaker_name_env") < body.index(
+        'bash "${REPO_DIR}/deploy/configure-bluez.sh"'
+    )
+
+    main = _INSTALL_SH.read_text(encoding="utf-8")
+    assert sum(line.strip() == "install_renderers" for line in main.splitlines()) == 2
+    runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text(
+        encoding="utf-8",
+    )
+    assert runtime.count('JASPER_SPEAKER_NAME="JTS"') == 0
 
 
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each
