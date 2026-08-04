@@ -45,6 +45,20 @@ def _role(**overrides) -> UsbPortRoleState:
     return UsbPortRoleState(**values)
 
 
+def _zero_host_role() -> UsbPortRoleState:
+    return _role(
+        board_model="Raspberry Pi Zero 2 W Rev 1.0",
+        board_topology="shared_otg_port",
+        desired_role="host",
+        configured_role="host",
+        active_role="host",
+        gadget_available=False,
+        reason="shared_otg_usb_output_requires_host",
+        decision_reason="shared_otg_usb_output_requires_host",
+        management_transport_available=False,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _available_usb_role(monkeypatch):
     monkeypatch.setattr(doctor.usbsink, "current_usb_data_role", _role)
@@ -60,17 +74,7 @@ def test_usb_data_role_intentional_zero_host_is_ok(monkeypatch):
     monkeypatch.setattr(
         doctor.usbsink,
         "current_usb_data_role",
-        lambda: _role(
-            board_model="Raspberry Pi Zero 2 W Rev 1.0",
-            board_topology="shared_otg_port",
-            desired_role="host",
-            configured_role="host",
-            active_role="host",
-            gadget_available=False,
-            reason="shared_otg_usb_output_requires_host",
-            decision_reason="shared_otg_usb_output_requires_host",
-            management_transport_available=False,
-        ),
+        _zero_host_role,
     )
     r = doctor.check_usb_data_role()
     assert r.status == "ok"
@@ -1092,6 +1096,50 @@ def test_usb_mic_doctor_accepts_clean_off_descriptor(monkeypatch, tmp_path):
 
     assert result.status == "ok"
     assert "disabled" in result.detail
+
+
+def test_usb_mic_doctor_skips_intent_when_zero_gadget_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "current_usb_data_role",
+        _zero_host_role,
+    )
+
+    def unexpected_intent_read():
+        raise AssertionError("unavailable hardware must gate durable intent")
+
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        unexpected_intent_read,
+    )
+
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == "ok"
+    assert "not applicable" in result.detail
+    assert "single USB data port" in result.detail
+
+
+def test_usb_mic_doctor_still_rejects_missing_intent_when_gadget_available(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        lambda: SimpleNamespace(
+            valid=False,
+            enabled=False,
+            detail="USB microphone preference is missing.",
+        ),
+    )
+
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == "fail"
+    assert result.detail == "USB microphone preference is missing."
 
 
 def test_usb_mic_doctor_rejects_stale_on_descriptor_revision(

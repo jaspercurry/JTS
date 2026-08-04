@@ -801,7 +801,9 @@ contrast case. See `tests/test_http_security.py`.
   `http://10.12.194.1/system/data.json` with `Host: <JASPER_HOSTNAME>`
   expecting 200 (mirrors the deploy-time `/system/data.json` verification
   and `check_management_surface` — this pins nginx bind + guard acceptance
-  of the fallback URL without needing hardware).
+  of the fallback URL without needing hardware). The USB-microphone export
+  check first reads that same resolved hardware role and skips cleanly before
+  requiring wizard-owned intent when the topology cannot expose a gadget.
 - `/state` carries a compact `usb_network` block
   (`{enabled, iface_present, carrier, address}`), read fresh from
   `/sys/class/net/usb0/*` and the kill-switch env on every call — never
