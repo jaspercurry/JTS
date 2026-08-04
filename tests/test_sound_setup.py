@@ -16,6 +16,7 @@ import threading
 import urllib.error
 import urllib.request
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -4437,8 +4438,6 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     save_snapshots = []
     emitted = []
     reconciled_floors = []
-    responses = {}
-    errors = []
     worker_context = threading.local()
 
     real_save = sound_setup.save_sound_settings
@@ -4495,41 +4494,33 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
         {"headroom_trim_db": 6.0, "volume_floor_db": -30.0},
     )
 
-    def worker(index: int) -> None:
-        try:
-            start.wait(timeout=2.0)
-            attempted[index].set()
-            worker_context.index = index
-            response = asyncio.run(
-                sound_setup._apply_settings(
-                    patches[index],
-                    profile_path=profile_path,
-                    config_dir=config_dir,
-                    camilla_factory=lambda: None,
-                )
+    def worker(index: int):
+        start.wait(timeout=2.0)
+        attempted[index].set()
+        worker_context.index = index
+        response = asyncio.run(
+            sound_setup._apply_settings(
+                patches[index],
+                profile_path=profile_path,
+                config_dir=config_dir,
+                camilla_factory=lambda: None,
             )
-            with call_lock:
-                responses[index] = response
-        except BaseException as exc:  # noqa: BLE001 - surfaced in main thread
-            errors.append(exc)
+        )
+        return index, response
 
-    threads = [threading.Thread(target=worker, args=(index,)) for index in range(2)]
-    for thread in threads:
-        thread.start()
-    start.wait(timeout=2.0)
-    assert attempted[0].wait(timeout=1.0)
-    assert attempted[1].wait(timeout=1.0)
-    assert reemit_entered.wait(timeout=1.0)
-    assert len(save_snapshots) == 1
-    allow_reemit.set()
-    assert reconcile_entered.wait(timeout=1.0)
-    assert len(save_snapshots) == 1
-    allow_reconcile.set()
-    for thread in threads:
-        thread.join(timeout=3.0)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(worker, index) for index in range(2)]
+        start.wait(timeout=2.0)
+        assert attempted[0].wait(timeout=1.0)
+        assert attempted[1].wait(timeout=1.0)
+        assert reemit_entered.wait(timeout=1.0)
+        assert len(save_snapshots) == 1
+        allow_reemit.set()
+        assert reconcile_entered.wait(timeout=1.0)
+        assert len(save_snapshots) == 1
+        allow_reconcile.set()
+        responses = dict(future.result(timeout=3.0) for future in futures)
 
-    assert not any(thread.is_alive() for thread in threads)
-    assert errors == []
     merged = load_sound_settings()
     assert merged == SoundSettings(
         headroom_trim_db=6.0,
@@ -4594,8 +4585,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
     live_emits = []
     reconciled_floors = []
     settings_reads = []
-    responses = {}
-    errors = []
+    worker_role = threading.local()
 
     class ObservedSoundStateLock:
         """Expose the second worker's exact attempt at the real boundary."""
@@ -4605,7 +4595,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
             self._owner: int | None = None
 
         def __enter__(self):
-            if threading.current_thread().name == "sound-second-operation":
+            if getattr(worker_role, "value", None) == "second":
                 second_boundary_attempted.set()
             self._lock.acquire()
             self._owner = threading.get_ident()
@@ -4627,10 +4617,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
     real_load_sound_settings = sound_setup.load_sound_settings
 
     def observed_load_sound_settings(*args, **kwargs):
-        if threading.current_thread().name in {
-            "sound-first-operation",
-            "sound-second-operation",
-        }:
+        if getattr(worker_role, "value", None) in {"first", "second"}:
             with record_lock:
                 settings_reads.append(observed_state_lock.owned_by_current_thread())
         return real_load_sound_settings(*args, **kwargs)
@@ -4687,60 +4674,45 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
         fake_reconcile,
     )
 
-    def run(operation: str) -> None:
-        try:
-            if operation == "profile":
-                response = asyncio.run(
-                    sound_setup._apply_profile(
-                        requested_profile,
-                        profile_path=profile_path,
-                        config_dir=config_dir,
-                        camilla_factory=lambda: None,
-                    )
+    def run(operation: str, role: str):
+        worker_role.value = role
+        if operation == "profile":
+            return asyncio.run(
+                sound_setup._apply_profile(
+                    requested_profile,
+                    profile_path=profile_path,
+                    config_dir=config_dir,
+                    camilla_factory=lambda: None,
                 )
-            else:
-                response = asyncio.run(
-                    sound_setup._apply_settings(
-                        requested_settings.to_dict(),
-                        profile_path=profile_path,
-                        config_dir=config_dir,
-                        camilla_factory=lambda: None,
-                    )
-                )
-            with record_lock:
-                responses[operation] = response
-        except BaseException as exc:  # noqa: BLE001 - surfaced in main thread
-            errors.append(exc)
+            )
+        return asyncio.run(
+            sound_setup._apply_settings(
+                requested_settings.to_dict(),
+                profile_path=profile_path,
+                config_dir=config_dir,
+                camilla_factory=lambda: None,
+            )
+        )
 
     second_operation = "settings" if first_operation == "profile" else "profile"
-    first_thread = threading.Thread(
-        target=run,
-        args=(first_operation,),
-        name="sound-first-operation",
-    )
-    first_thread.start()
-    first_inside_emit.wait(timeout=2.0)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(run, first_operation, "first")
+        first_inside_emit.wait(timeout=2.0)
 
-    second_thread = threading.Thread(
-        target=run,
-        args=(second_operation,),
-        name="sound-second-operation",
-    )
-    second_thread.start()
-    assert second_boundary_attempted.wait(timeout=1.0)
-    # Before the first transaction is released, the second must be waiting at
-    # the shared ordering boundary rather than entering the DSP transaction.
-    assert not second_entered_emit.wait(timeout=0.25)
-    assert entered_sources == [
-        "sound" if first_operation == "profile" else "sound_settings"
-    ]
-    release_first_emit.set()
+        second_future = executor.submit(run, second_operation, "second")
+        assert second_boundary_attempted.wait(timeout=1.0)
+        # Before the first transaction is released, the second must be waiting at
+        # the shared ordering boundary rather than entering the DSP transaction.
+        assert not second_entered_emit.wait(timeout=0.25)
+        assert entered_sources == [
+            "sound" if first_operation == "profile" else "sound_settings"
+        ]
+        release_first_emit.set()
 
-    for thread in (first_thread, second_thread):
-        thread.join(timeout=3.0)
-    assert not first_thread.is_alive()
-    assert not second_thread.is_alive()
-    assert errors == []
+        responses = {
+            first_operation: first_future.result(timeout=3.0),
+            second_operation: second_future.result(timeout=3.0),
+        }
 
     final_profile = load_profile(profile_path)
     final_settings = load_sound_settings()
