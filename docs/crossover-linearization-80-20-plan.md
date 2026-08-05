@@ -191,11 +191,16 @@ than folded into `C_c`'s sections. It is in this composition because the
 protected-neutral emitter deliberately omits region polarity — its mixer runs
 with region polarity off exactly while protection sections are emitted — so `M`
 is polarity-free and the sign is reinjected once, offline, over the whole role
-spectrum: the composed trusted bins and the out-of-band bins carried forward but
-never claimed alike, so no bin is left in a different polarity convention from
-its neighbours. `S_c(f)`, with magnitude
-rederived from its complex values, is the only input handed to the
-crossover-shaped fitter and branch-target path. The division is **offline
+spectrum, leaving no bin in a different polarity convention from its
+neighbours. The composition is applied the same way: **one filter across the
+whole rfft support, never spliced into a sub-band**. Every bin carries that
+same ratio, its magnitude saturated at the conditioning policy's own +12 dB
+ceiling and its phase preserved (bins where `P` is exactly zero carry no ratio).
+Saturation changes nothing on the candidate-required bins — the policy below has
+already refused anything above that ceiling there — so what it actually does is
+bound the off-required bins rather than leave a seam at the band edge.
+`S_c(f)`, with magnitude rederived from its complex values, is the only input
+handed to the crossover-shaped fitter and branch-target path. The division is **offline
 evidence math only**: no inverse, de-embedding, or recovery filter is emitted
 to hardware, and the applied graph emits `C_c` once rather than `P * C_c`.
 
@@ -206,8 +211,10 @@ finite. A candidate is inadmissible with
 `abs(P) < 10^(-12/20)` (approximately `0.251189` linear, more than 12 dB of
 measurement-protection attenuation), or if `abs(C_c/P) > 10^(12/20)`
 (approximately `3.981072`, more than 12 dB of recovery). Equality at either
-12 dB boundary is allowed. There is no clipping, interpolation, or silent bin
-omission. Fingerprints bind `P`, `C_c`, the ratio-policy constants and formula,
+12 dB boundary is allowed. On the candidate-required bins there is no clipping,
+interpolation, or silent omission — a candidate refuses rather than being
+trimmed to fit.
+Fingerprints bind `P`, `C_c`, the ratio-policy constants and formula,
 the exact required-bin mask, `C_c/P`, and the resulting `S_c` transform. If
 this drops every candidate, the ordinary `no_admissible_candidate` refusal
 applies.
@@ -446,6 +453,18 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | **Checkpoint — Prove** | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair |
 | **R16–R19 — provisional labels** | Fresh Gate 0 defines complete verticals pairing each producer with a current consumer; it may co-scope lateral capture + selector or name a real immediate consumer | unassigned | §9 ceilings only; no artifact-first dependency or implementation authority |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
+
+**R15 outcome — two recorded deviations, both by ruling.** The one-PR exit was
+met by two PRs: the boost gate was split into #2138 under the deferral ruling
+recorded on
+[#2106](https://github.com/jaspercurry/JTS/issues/2106#issuecomment-5192592743),
+because that gate is shared with every v2 session and moving it inside #2126
+would have changed legacy cloud-path refusal semantics. Production landed at
+**674 gross adds across 7 files** — over the original 500 absolute stop — under
+ledger re-ratifications recorded on the same issue (500 → 610 → 670 → 675 held),
+each conditioned on every addition above 400 mapping to a named requirement.
+R16's Gate 0 reads that chain as the precedent for how an overage gets
+authorized, not as headroom it inherits.
 
 The only dependency graph is:
 

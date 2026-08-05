@@ -1011,9 +1011,11 @@ follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 fixed-Fc checkpoint. The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
 next_mission:   the owner-run fixed-2-kHz hardware checkpoint on jts3. Deploy
-                first with scripts/deploy-to-pi.sh — jts3's installed build
-                (jts3_sha above) predates R15 — then a fresh Gate 0 before any
-                later round
+                first with PI_HOST=jts3.local bash scripts/deploy-to-pi.sh —
+                jts3's installed build (jts3_sha above) predates R15, and the
+                peer_id guard only validates the target already recorded, so a
+                fresh checkout with the default target is not caught — then a
+                fresh Gate 0 before any later round
 blocked_on:     the fixed-2-kHz hardware checkpoint
 ```
 
