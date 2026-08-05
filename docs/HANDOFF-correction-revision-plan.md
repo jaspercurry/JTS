@@ -969,9 +969,9 @@ Update **this block** at the end of every round together with the
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-05 (conductor architecture review of R15 and PR #2126;
-                cap-ladder, boost, and governance rulings recorded on #2106;
-                rejected prototype remains unmerged and unmeasured)
+date:           2026-08-05 (R15 complete — #2126 and #2138 merged at their
+                review bars; code only, nothing deployed or measured, so the
+                fixed-2-kHz hardware checkpoint is now the gate)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -981,31 +981,42 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   R15 — in flight. PR #2126 is a draft under a conductor-directed
-                fix round; its rulings are recorded on #2106. The fixed-2-kHz
-                hardware checkpoint follows merge; nothing is deployed or
-                measured in this round
-last_round:     R13 (owner validation day; last fully completed product
-                round). R14 is the completed documentation/administrative
-                campaign round
-validation:     applied=true, tier=full, session phases verify/cloud_verify.
+active_round:   none — R15 complete. #2126 landed the protected-neutral
+                CHECK/MEASURE and the exact configured-Fc composition (merged
+                ab548e1f3; three-lens gate 0/0 on every lens after two fix
+                rounds and a reconciliation); #2138 landed the driver-only
+                boost gate per the #2106 owner ruling (merged b94790f4f;
+                two-lens gate 0/0)
+last_round:     R15 (atomic fixed-Fc proof — code merged, not deployed and not
+                measured). R13 remains the last round validated on hardware;
+                R14 was the documentation/administrative campaign round
+validation:     R13's validation day, still the last on-hardware result:
+                applied=true, tier=full, session phases verify/cloud_verify.
                 Local at-mark VERIFY passed (max raw 0.9835 dB; offset
                 -5.868 dB), but only 4 of 5 cloud positions were accepted;
                 cloud=null and the group ended on locate_failed. This is not
                 an "unverified" tune and not an "applied and graded" Full
                 result
 rollback:       Undo remains banked through the retained pre_apply_profile;
-                restoration was not exercised during this run
+                restoration was not exercised during that run
+owed_on_device: R15's two unproven-on-hardware claims, both for the checkpoint:
+                post-apply VERIFY over a driver-only session that actually
+                boosts has never run on hardware; and the SetConfig→GetConfig
+                round trip, which the flow's readback gate exercises live, was
+                probe-measured on the load path only
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
-                #2106 owns atomic R15; #2107 is deferred beyond the fixed-Fc
-                checkpoint. The campaign's complete
+                #2106 (atomic R15) is closed; #2107 is deferred beyond the
+                fixed-Fc checkpoint. The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   land #2126's fix round at three-lens 0/0, then run the
-                reviewed fixed-Fc hardware checkpoint before later rounds
-blocked_on:     #2126's fix round reaching 0/0 and merging; the hardware
-                checkpoint follows it
+next_mission:   the owner-run fixed-2-kHz hardware checkpoint on jts3. Deploy
+                first with PI_HOST=jts3.local bash scripts/deploy-to-pi.sh —
+                jts3's installed build (jts3_sha above) predates R15, and the
+                peer_id guard only validates the target already recorded, so a
+                fresh checkout with the default target is not caught — then a
+                fresh Gate 0 before any later round
+blocked_on:     the fixed-2-kHz hardware checkpoint
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1726,6 +1737,16 @@ else — charter, rungs, campaign narrative, research index, issue index, and
 historical appendix carry prior verification forward. The footer below moves
 only when a pass re-verifies load-bearing claims; this one did not. It claims
 no product/issue write, review passage, deployment, DSP change, or measurement.
+
+**Verification scope.** A **2026-08-05 R15 close-out status pass** updated only
+CURRENT POSITION. It verified that #2126 merged as `ab548e1f3` and #2138 as
+`b94790f4f`, that #2106 is closed, and that jts3's recorded build is an
+ancestor of `ab548e1f3` — which is why the checkpoint needs a deploy first. It
+re-verified nothing else, and it read no hardware: `capture_page`, `jts3_sha`,
+and `compatibility` carry their 2026-08-04 observations forward unchanged, and
+R13 remains the last on-hardware validation. The footer below is unchanged for
+the same reason as the pass above. No product/issue write, deployment, DSP
+change, or measurement.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
