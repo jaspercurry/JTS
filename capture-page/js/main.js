@@ -30,6 +30,12 @@ import {
   watchVisibilityAbort,
   watchVisibilityReacquire,
 } from "./wakelock.js";
+import {
+  createIntegrityWatch,
+  summarizeCaptureIntegrity,
+  INTEGRITY_LOST_FOCUS_MESSAGE,
+  INTEGRITY_LOST_FOCUS_NOTE,
+} from "./capture-integrity.js?v=20260805-1";
 import { runLevelRampProtocol } from "./level-events.js?v=20260802-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
@@ -48,7 +54,7 @@ import {
   delayMs,
   float32ToWavBlob,
   rmsToDbfs,
-} from "./measurement-audio.js?v=20260711-4";
+} from "./measurement-audio.js?v=20260805-1";
 import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260802-1";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
@@ -2709,7 +2715,11 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
 }
 
 function renderPlanRetry(
-  ctx, { index, attempt, target, reason, prompt, retake = false, attempts = null },
+  ctx,
+  {
+    index, attempt, target, reason, prompt, retake = false, attempts = null,
+    integrity = null,
+  },
 ) {
   // The CURRENT capture's own entry, if any — its progress and (absent
   // server guidance) its instruction carry over; the rejection `reason`
@@ -2748,15 +2758,22 @@ function renderPlanRetry(
   // is the Pi's copy about what happened acoustically, and this is about the
   // household's own patience being spent on their behalf.
   const attribution = extraTryAttribution(attempts);
+  // The likely cause, but ONLY when this page measured it (#2151). The host's
+  // own rejection copy stays a claim about the acoustics; this note is the
+  // page reporting something it observed on the take being retried, so it
+  // never guesses at a cause it has no evidence for.
+  const notes = [];
+  if (attribution) notes.push(el("p", { class: "cap-note", text: attribution }));
+  if (integrity && integrity.focus_lost) {
+    notes.push(el("p", { class: "cap-note", text: INTEGRITY_LOST_FOCUS_NOTE }));
+  }
   renderStepScreen(ctx, {
     progress:
       `${String(screenCopy.progress || `Measurement ${index} of ${target}`)}`
       + extraTrySuffix(attempts),
     headline,
     detail: message,
-    notes: attribution
-      ? [el("p", { class: "cap-note", text: attribution })]
-      : [],
+    notes,
     primary: retry,
     // THE ESCAPE FROM A REJECTED VOLUNTARY RETAKE (review blocker B1). This
     // slot is ALREADY accepted — the design's fail-safe is that a rejected
@@ -3614,6 +3631,10 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
   // header for why an offer must never outlive the runner's own window.
   shutRetakeWindow(ctx);
   let disposeWatch = () => {};
+  // Per-take integrity accounting (#2151) — passive bookkeeping alongside
+  // `disposeWatch`'s session abort, never a second abort path. See
+  // capture-integrity.js for why a focus loss is labelled rather than aborted.
+  let integrityWatch = null;
   // Whether this round's `armed` post was ATTEMPTED (set just before the
   // await — a lost response may still have armed the Pi). It splits the
   // generic catch below: before arming, the round has not started on the
@@ -3733,6 +3754,11 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     const noise = await captureAmbientNoise(recorder, spec, entryNoiseNote(spec, index));
     if (controller.aborted) return;
 
+    // Armed only for the recording window itself — the idle gap between rounds
+    // is a legitimate time to look away, and warning then would be crying wolf.
+    integrityWatch = createIntegrityWatch({
+      onLoss: () => setStatus(INTEGRITY_LOST_FOCUS_MESSAGE, "error"),
+    });
     recorder.start();
     setStatus(
       capture.decision.degraded
@@ -3750,20 +3776,21 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     // the only way to use the slot the speaker is holding open. The recorder
     // is already running, so this recovers in place: no screen teardown, no
     // re-record, same capture.
+    const armedEvent = {
+      armed: true,
+      degraded: capture.decision.degraded,
+      device: capture.device,
+      noise_floor: { duration_ms: noise.duration_ms, rms_dbfs: noise.rms_dbfs },
+      // The armed event re-states its own begin context; carry the retake
+      // marker here too, so a Pi poll that lands on THIS event rather than the
+      // begin still reads the same (index, attempt, retake) request.
+      begin_capture: beginCapturePayload({ index, attempt, retake }),
+      setup: setupWirePayload(),
+      acknowledgement: ctx.planAcknowledgement,
+      ...ambientStatsFieldsFor(spec, noise),
+    };
     await withRelayReconnect(
-      () => client.postEvent({
-        armed: true,
-        degraded: capture.decision.degraded,
-        device: capture.device,
-        noise_floor: { duration_ms: noise.duration_ms, rms_dbfs: noise.rms_dbfs },
-        // The armed event re-states its own begin context; carry the retake
-        // marker here too, so a Pi poll that lands on THIS event rather than the
-        // begin still reads the same (index, attempt, retake) request.
-        begin_capture: beginCapturePayload({ index, attempt, retake }),
-        setup: setupWirePayload(),
-        acknowledgement: ctx.planAcknowledgement,
-        ...ambientStatsFieldsFor(spec, noise),
-      }),
+      () => client.postEvent(armedEvent),
       () => controller.aborted,
     );
     if (controller.aborted) return;
@@ -3778,6 +3805,14 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     await delayMs(Math.max(0, Number(spec.post_roll_ms) || 700));
     if (controller.aborted) return;
     const samples = await recorder.stop({ timeoutMs: 5000 });
+    // The recording window is over: stop watching before the upload leg, whose
+    // own focus losses say nothing about the samples already in hand.
+    const integrity = summarizeCaptureIntegrity({
+      watch: integrityWatch,
+      stats: typeof recorder.captureStats === "function" ? recorder.captureStats() : null,
+    });
+    if (integrityWatch) integrityWatch.dispose();
+    integrityWatch = null;
     if (controller.aborted) return;
     if (recorder.__trackEnded) {
       // The mic track died during THIS round's own recording window — a
@@ -3802,6 +3837,25 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       failure.sweepFailed = true;
       throw failure;
     }
+    // Report this take's capture-side condition BEFORE the blob (#2151). The
+    // ordering is the whole guarantee: the relay's phone-event slot is
+    // last-write-wins and the Pi reads both from the same status document, so
+    // posting first means any poll that sees the blob has already seen the
+    // integrity report — no race, no extra handshake. It re-sends the ENTIRE
+    // armed payload rather than the new field alone, because overwriting the
+    // slot with a partial event would strand a Pi that had not yet polled
+    // `armed: true`. Re-posting an identical armed event is already the
+    // documented-safe no-op the connectivity retry above relies on.
+    //
+    // Best-effort by construction: a diagnostic must never cost the household
+    // the capture it describes, so a failed post is swallowed and the upload
+    // proceeds. The host then simply has no report for this take.
+    try {
+      await client.postEvent({ ...armedEvent, capture_integrity: integrity });
+    } catch {
+      /* diagnostics are never worth failing a good capture over */
+    }
+    if (controller.aborted) return;
     // Each admitted attempt's blob rides its OWN relay key
     // (capture_index = attempt - 1) so a retried slot never clobbers the
     // prior attempt's upload.
@@ -3886,6 +3940,10 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         prompt: verdict.prompt,
         retake,
         attempts: verdict.attempts,
+        // THIS take's own report (#2151), passed rather than stashed on ctx:
+        // the value is a local of the round being rejected, so there is no
+        // cross-take staleness question to reason about at all.
+        integrity,
       });
     }
   } catch (err) {
@@ -3934,6 +3992,9 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     }
   } finally {
     disposeWatch();
+    // Every escape from the recording window, including the failure paths that
+    // never reach the post-stop dispose above.
+    if (integrityWatch) integrityWatch.dispose();
   }
 }
 

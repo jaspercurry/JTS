@@ -515,6 +515,13 @@ class PollState:
     device: dict | None = None
     noise_floor: dict | None = None
     setup: dict | None = None
+    # The phone's own account of the capture it just recorded (issue #2151):
+    # whether the page lost the foreground during the recording window, and the
+    # render-graph block counters. Diagnostic ONLY — nothing in the runner
+    # branches on it; it exists so splice forensics can separate a capture-side
+    # discontinuity from a host-side one without re-analysing the WAV. `None`
+    # from any page that does not report it.
+    capture_integrity: dict | None = None
     setup_identity: dict | None = None
     setup_validate: bool = False
     setup_token: str = ""
@@ -548,6 +555,12 @@ class CaptureResult:
     device: dict | None = None
     noise_floor: dict | None = None
     setup: dict | None = None
+    # The phone's per-take capture-integrity report (issue #2151). Diagnostic
+    # only; carried so a retained capture can be self-describing about the
+    # conditions it was recorded under. Threaded by the capture-PLAN runner,
+    # which is the path the page that reports it actually uses — the
+    # single-capture runner would only ever set it to `None`.
+    capture_integrity: dict | None = None
 
 
 class PhoneEventVerifier:
@@ -659,6 +672,11 @@ def classify_status(status_payload: dict) -> PollState:
         else None
     )
     setup = event.get("setup") if isinstance(event.get("setup"), dict) else None
+    capture_integrity = (
+        event.get("capture_integrity")
+        if isinstance(event.get("capture_integrity"), dict)
+        else None
+    )
     setup_identity = (
         event.get("setup_identity")
         if isinstance(event.get("setup_identity"), dict)
@@ -700,6 +718,7 @@ def classify_status(status_payload: dict) -> PollState:
         device=device,
         noise_floor=noise_floor,
         setup=setup,
+        capture_integrity=capture_integrity,
         setup_identity=setup_identity,
         setup_validate=setup_validate,
         setup_token=setup_token,
@@ -1626,6 +1645,7 @@ def _poll_capture_plan(
     capture_device: dict | None = None
     capture_noise_floor: dict | None = None
     capture_setup: dict | None = None
+    capture_integrity: dict | None = None
     setup_tokens_seen: set[str] = set()
     event_verifier = PhoneEventVerifier(session)
     # The FIRST begin (before any capture) may legitimately outlast the general
@@ -1702,6 +1722,12 @@ def _poll_capture_plan(
             capture_noise_floor = state.noise_floor
         if state.setup is not None:
             capture_setup = state.setup
+        # The page posts this strictly BEFORE its blob, and both are read from
+        # the same status document — so any poll that finds the blob ready has
+        # already carried the report past this line. Nothing waits for it: a
+        # page that never sends one simply leaves it `None`.
+        if state.capture_integrity is not None:
+            capture_integrity = state.capture_integrity
 
         if state.aborted:
             raise CaptureAborted(
@@ -1957,6 +1983,13 @@ def _poll_capture_plan(
                         last_deferral = None
                         processed.add(pair)
                         current = pair
+                        # A new attempt reports its OWN condition or none at
+                        # all. The page's report is best-effort (a diagnostic
+                        # never costs it a good capture), so without this clear
+                        # a dropped report would let the previous attempt's
+                        # verdict describe this one's WAV — the exact
+                        # mis-attribution the field exists to prevent.
+                        capture_integrity = None
                         current_retake = is_retake
                         attempts_used = attempt
                         armed_fired = False
@@ -2069,6 +2102,7 @@ def _poll_capture_plan(
                     device=capture_device,
                     noise_floor=capture_noise_floor,
                     setup=capture_setup,
+                    capture_integrity=capture_integrity,
                 )
                 log_event(
                     logger,

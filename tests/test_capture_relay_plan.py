@@ -290,6 +290,31 @@ class PhonePlanDriver:
         )
         self.armed_for = self.begun
 
+    def report_integrity(self, report):
+        """The page's post-stop capture-integrity report (issue #2151).
+
+        Mirrors ``capture-page/js/main.js``'s post-recorder-stop event: the
+        WHOLE armed payload again, plus ``capture_integrity``, posted before
+        the blob. Re-sending everything is deliberate — the relay's phone-event
+        slot is last-write-wins, so a partial event would stand the Pi down
+        from ``armed`` mid-round, and the runner's own arm-once guard makes the
+        repeat a no-op.
+        """
+        index, attempt = self.begun
+        begin_capture = {"index": index, "attempt": attempt}
+        if (index, attempt) in self.retakes_posted:
+            begin_capture["retake"] = True
+        self._post(
+            {
+                "armed": True,
+                "begin_capture": begin_capture,
+                "capture_page": self.page,
+                "acknowledgement": self._acknowledgement(),
+                "device": {"label": "UMIK-1"},
+                "capture_integrity": report,
+            }
+        )
+
     def abort(self, reason="backgrounded"):
         self._post({"aborted": True, "abort_reason": reason})
         self.finished = True
@@ -532,6 +557,134 @@ def test_first_round_result_setup_reflects_whatever_event_carried_it(caplog):
     assert outcomes[0].index == 1
     assert outcomes[0].attempt == 1
     assert outcomes[0].result.setup == phone.setup
+
+
+def test_capture_integrity_report_rides_the_result_it_describes():
+    """Issue #2151: the phone's per-take integrity report reaches the host.
+
+    The page posts it AFTER the recorder stops and BEFORE the blob — re-sending
+    the whole armed payload, since the relay's phone-event slot is
+    last-write-wins. That ordering is the entire guarantee: the runner and the
+    blob-ready flag are read from the SAME status document, so a poll that finds
+    the blob has necessarily already carried the report. This models the page's
+    exact sequence (report, then upload) inside ``on_armed``.
+    """
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    report = {
+        "focus_lost": True,
+        "focus_losses": 2,
+        "focus_events": [{"kind": "blur", "ms": 3120}],
+        "blocks": 940,
+        "block_gaps": 1,
+        "block_gap_frames": 128,
+        "silent_blocks": 0,
+    }
+    consumed: list[tuple[int, int, dict | None]] = []
+
+    def authorize(index, attempt):
+        return None
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        phone.report_integrity(report)
+        backend.phone_upload(
+            session.session_id,
+            session.content_key,
+            _wav(attempt),
+            index=attempt - 1,
+        )
+
+    def consume(index, attempt, result):
+        consumed.append((index, attempt, result.capture_integrity))
+        return {"accepted": True}
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert consumed == [(1, 1, report)]
+    assert outcomes[0].result.capture_integrity == report
+    # The report never displaces what the arming post already established —
+    # re-sending the whole payload is what keeps `device` alive across the
+    # last-write-wins slot.
+    assert outcomes[0].result.device == {"label": "UMIK-1"}
+
+
+def test_a_page_that_reports_no_capture_integrity_leaves_it_none():
+    """ABSENT, never synthesized (#2151). An older capture page sends nothing,
+    and the host must carry that through as `None` rather than inventing a
+    clean record — a corpus reader has to be able to tell "not reported" from
+    "reported and sound"."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert outcomes[0].result.capture_integrity is None
+
+
+def test_one_attempts_integrity_report_never_describes_the_next_attempt():
+    """The report is best-effort on the page (a diagnostic must never cost a
+    good capture), so a dropped post is expected. Without a per-attempt clear
+    the previous attempt's report would silently ride the NEXT attempt's WAV —
+    turning an attribution aid into an attribution error, which is worse than
+    having none. Attempt 1 reports a lost-focus take; attempt 2 reports
+    nothing and must come back `None`."""
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=2
+    )
+    first = {"focus_lost": True, "focus_losses": 1, "focus_events": []}
+    seen: list[tuple[int, dict | None]] = []
+
+    def authorize(index, attempt):
+        return None
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        if attempt == 1:
+            phone.report_integrity(first)
+        backend.phone_upload(
+            session.session_id,
+            session.content_key,
+            _wav(attempt),
+            index=attempt - 1,
+        )
+
+    def consume(index, attempt, result):
+        seen.append((attempt, result.capture_integrity))
+        return {"accepted": attempt == 2}
+
+    run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert seen == [(1, first), (2, None)]
 
 
 def test_rejected_attempt_retries_same_slot_with_fresh_attempt_and_blob_index():

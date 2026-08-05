@@ -27,7 +27,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
 import { runTestFunctions } from "./run_test_functions.mjs";
@@ -333,7 +333,22 @@ function makeRecorder() {
   return recorder;
 }
 
+// #2151's per-take integrity accounting is injected as the REAL module rather
+// than a stub — it is pure (no DOM, no network) and stubbing it would make this
+// harness blind to the wire field it exists to carry. Absolute file: URL because
+// the module under test is loaded from a data: URL, where a relative specifier
+// has nothing to resolve against.
+const CAPTURE_INTEGRITY_URL = pathToFileURL(
+  resolve(here, "../../capture-page/js/capture-integrity.js"),
+).href;
+
 const injected = `
+import {
+  createIntegrityWatch,
+  summarizeCaptureIntegrity,
+  INTEGRITY_LOST_FOCUS_MESSAGE,
+  INTEGRITY_LOST_FOCUS_NOTE,
+} from ${JSON.stringify(CAPTURE_INTEGRITY_URL)};
 const acceptedAcknowledgement = (spec, refs) => (
   spec && spec.acknowledgement
     ? { schema_version: 1, id: spec.acknowledgement.id, binding_id: spec.acknowledgement.binding_id, accepted: true }
@@ -472,6 +487,9 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   let nextBeginSeen = false;
   let currentRetake = false;
   let completions = 0;
+  // Which admitted attempts have already armed — the runner's `armed_fired`,
+  // per (index, attempt). See the armed branch below.
+  const armedSeen = new Set();
   const client = {
     async postEvent(event) {
       posted.push(event);
@@ -520,13 +538,26 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
         };
       } else if (event.armed) {
         const { index, attempt } = event.begin_capture;
-        last = { phase: "sweep_complete" };
-        pendingResult = {
-          index,
-          attempt,
-          retake: currentRetake,
-          verdict: resultFor(index, attempt),
-        };
+        // FIDELITY (#2151) — the ONE tolerance this mirror's header said a
+        // future re-post test would need. The runner arms once per admitted
+        // attempt (`phase == "awaiting_arm" and state.armed and not
+        // armed_fired`), so a repeat of the IDENTICAL armed event is a no-op.
+        // Two shipped page behaviours depend on that: the connectivity retry
+        // around the armed post, and the post-stop `capture_integrity` report,
+        // which re-sends the whole armed payload so overwriting the
+        // last-write-wins phone slot can never stand a Pi down from `armed`.
+        // Without this branch the fake re-staged the verdict and rewound its
+        // host slot to `sweep_complete` — behaviour no runner has.
+        if (!armedSeen.has(`${index}:${attempt}`)) {
+          armedSeen.add(`${index}:${attempt}`);
+          last = { phase: "sweep_complete" };
+          pendingResult = {
+            index,
+            attempt,
+            retake: currentRetake,
+            verdict: resultFor(index, attempt),
+          };
+        }
       }
       return { ok: true };
     },
@@ -541,7 +572,16 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
       return status;
     },
     async putBlob(blob, plaintextLen, sha256, captureIndex) {
-      blobPuts.push({ length: blob.length, plaintextLen, sha256, captureIndex });
+      blobPuts.push({
+        length: blob.length,
+        plaintextLen,
+        sha256,
+        captureIndex,
+        // #2151 ordering witness: how many capture-integrity reports had been
+        // posted when this blob went up. The page must report before it
+        // uploads, so this counter has to have advanced for THIS round.
+        integrityReportsBefore: posted.filter((e) => e.capture_integrity).length,
+      });
       if (pendingResult) {
         const { index, attempt, retake, verdict } = pendingResult;
         pendingResult = null;
@@ -701,12 +741,41 @@ async function testFullAcceptedRoundTripEndsAllDone() {
     beginEvents.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
     [[1, 1], [2, 2], [3, 3]],
   );
+  // TWO armed posts per round since #2151: the arming post, then the post-stop
+  // repeat that carries `capture_integrity`. The repeat re-sends the WHOLE
+  // armed payload on purpose — the relay's phone-event slot is last-write-wins,
+  // so a partial event could stand a Pi down from `armed` mid-round — and the
+  // runner's own `armed_fired` guard makes the repeat a no-op.
   const armedEvents = posted.filter((e) => e.armed);
   assert.deepEqual(
     armedEvents.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.acknowledgement.accepted]),
-    [[1, 1, true], [2, 2, true], [3, 3, true]],
+    [[1, 1, true], [1, 1, true], [2, 2, true], [2, 2, true], [3, 3, true], [3, 3, true]],
   );
+  // Exactly one integrity report per round, and it is a strict SUPERSET of the
+  // arming post — dropping a field there is what the last-write-wins slot
+  // punishes.
+  const integrityEvents = posted.filter((e) => e.capture_integrity);
+  assert.deepEqual(
+    integrityEvents.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [2, 2], [3, 3]],
+  );
+  for (const report of integrityEvents) {
+    assert.equal(report.armed, true);
+    assert.ok(report.device, "the integrity repeat keeps the armed payload's device");
+    assert.ok(report.noise_floor, "…and its noise floor");
+    // A clean round reports a clean take: watched, and nothing lost.
+    assert.equal(report.capture_integrity.focus_lost, false);
+  }
   assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1, 2]);
+  // ORDERING IS THE GUARANTEE (#2151): the report is posted BEFORE the blob, so
+  // any Pi poll that finds the blob ready has already carried the report past
+  // the runner. Invert it and the Pi can consume a capture whose report never
+  // arrived — the field would then be silently unreliable rather than absent.
+  assert.deepEqual(
+    blobPuts.map((b) => b.integrityReportsBefore),
+    [1, 2, 3],
+    "each blob is uploaded only after its own round's integrity report",
+  );
   ok();
 }
 
@@ -760,6 +829,162 @@ async function testRejectedResultOffersTryAgainSameSlot() {
     "the retry re-uses index 1 with a fresh attempt number",
   );
   assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1, 2]);
+  ok();
+}
+
+// ============================================================================
+// 1b. #2151 — the capture window losing FOCUS (not visibility) during the
+//     recording window. On a desktop browser this fires no `visibilitychange`
+//     at all, so wakelock.js's hide-abort never saw it and a spliced take
+//     uploaded silently. Three properties, all page-owned:
+//       - the household is told WHILE the sweep plays, not after the verdict;
+//       - the wire carries `capture_integrity.focus_lost` on that take;
+//       - the rejection screen names the cause, and only on a take that
+//         actually lost focus.
+// ============================================================================
+
+// A window stub that records listeners, so a test can fire `blur` at the exact
+// moment the page is recording. Deliberately NOT installed by the other tests:
+// its absence is what pins that a page with no window API still runs.
+function installWindow() {
+  const handlers = new Map();
+  globalThis.window = {
+    addEventListener(kind, fn) {
+      if (!handlers.has(kind)) handlers.set(kind, new Set());
+      handlers.get(kind).add(fn);
+    },
+    removeEventListener(kind, fn) {
+      if (handlers.has(kind)) handlers.get(kind).delete(fn);
+    },
+  };
+  return {
+    fire(kind) {
+      for (const fn of handlers.get(kind) || []) fn();
+    },
+    listeners(kind) {
+      return (handlers.get(kind) || new Set()).size;
+    },
+  };
+}
+
+async function testFocusLossDuringRecordingIsReportedAndNamed() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  const fakeWindow = installWindow();
+  const recorder = makeRecorder();
+  // Lose focus the instant the sweep recording starts — the owner's case was a
+  // click into another window a second or two in. Gated on a blur listener
+  // being registered, which is true only inside the armed recording window
+  // (the same recorder also runs the ambient-noise window, which is NOT
+  // watched); and ONCE, so the retry below is a genuinely clean take.
+  let blurred = 0;
+  const start = recorder.start;
+  recorder.start = () => {
+    start();
+    if (blurred === 0 && fakeWindow.listeners("blur") > 0) {
+      blurred += 1;
+      fakeWindow.fire("blur");
+    }
+  };
+  globalThis.__recorder = recorder;
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 3 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 3,
+    // Attempts 1 AND 2 rejected the way the host actually refused the owner's
+    // takes — but only attempt 1 loses focus. The second rejection is what
+    // proves the cause note is per-take evidence rather than sticky state.
+    resultFor: (index, attempt) =>
+      attempt <= 2
+        ? { accepted: false, reason: "The capture glitched." }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // (1) Said WHILE the sweep played — before the "Encrypting and uploading…"
+  // line, which is the next thing the page says after the recorder stops.
+  const warnAt = statusHistory.indexOf(
+    "Keep this page in front while the speaker plays — this measurement will be retaken.",
+  );
+  const uploadAt = statusHistory.indexOf("Encrypting and uploading…");
+  assert.ok(warnAt >= 0, "the household is warned about the focus loss");
+  assert.ok(warnAt < uploadAt, "…while it is still recording, not after");
+
+  // (2) On the wire, attached to the take it describes.
+  const reports = posted.filter((e) => e.capture_integrity);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].begin_capture.attempt, 1);
+  assert.equal(reports[0].capture_integrity.focus_lost, true);
+  assert.equal(reports[0].capture_integrity.focus_losses, 1);
+  assert.equal(reports[0].capture_integrity.focus_events[0].kind, "blur");
+
+  // (3) The rejection screen names the cause, alongside the host's own reason.
+  assert.equal(noteText(ctx.screenEl), "The capture glitched.");
+  assert.ok(
+    noteTexts(ctx.screenEl).includes(
+      "This page lost focus while that measurement was recording, which can break the recording.",
+    ),
+    "the glitch screen names the likely cause it actually observed",
+  );
+
+  // The watch does not outlive the round it was armed for.
+  assert.equal(fakeWindow.listeners("blur"), 0);
+
+  // THE PER-TAKE CLEAR. Retry the same slot WITHOUT losing focus: attempt 2 is
+  // rejected too, and its screen must carry only the host's reason. A note that
+  // lingered would tell the household to fix something they already fixed, and
+  // would send a support read chasing a focus loss that never happened on the
+  // take being looked at.
+  const retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await retry._listeners.click[0]();
+
+  assert.deepEqual(
+    noteTexts(ctx.screenEl),
+    ["The capture glitched."],
+    "the cause note does not follow the household onto a later take",
+  );
+  const secondReport = posted.filter((e) => e.capture_integrity)[1];
+  assert.equal(secondReport.begin_capture.attempt, 2);
+  assert.equal(secondReport.capture_integrity.focus_lost, false);
+
+  delete globalThis.window;
+  ok();
+}
+
+// The other half of (3): a take that did NOT lose focus must not inherit the
+// hint. A cause note that shows up on every rejection is a guess, not evidence.
+async function testAQuietTakeRejectionCarriesNoFocusHint() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  installWindow();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const { client, posted } = makeFakePlanClient({
+    target: 1,
+    maxAttempts: 2,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? { accepted: false, reason: "The capture glitched." }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(posted.filter((e) => e.capture_integrity)[0].capture_integrity.focus_lost, false);
+  assert.deepEqual(noteTexts(ctx.screenEl), ["The capture glitched."]);
+  assert.equal(
+    statusHistory.some((s) => String(s).startsWith("Keep this page in front")),
+    false,
+    "no warning is shown for a take that kept the foreground",
+  );
+  delete globalThis.window;
   ok();
 }
 
@@ -3534,7 +3759,10 @@ async function testArmedPostAbortRetriesTheSameCaptureInPlace() {
   let armedPosts = 0;
   const client = {
     async postEvent(event) {
-      if (event.armed) {
+      // ARMING posts only. The post-stop `capture_integrity` repeat (#2151)
+      // re-sends the same armed payload after the sweep; this test is measuring
+      // the connectivity retry of the ARM, not that later report.
+      if (event.armed && !event.capture_integrity) {
         armedPosts += 1;
         if (armedPosts === 1) {
           // The POST landed in the relay's slot or it did not — the phone
@@ -3543,7 +3771,7 @@ async function testArmedPostAbortRetriesTheSameCaptureInPlace() {
           throw RELAY_TIMEOUT;
         }
         last = { phase: "sweep_complete" };
-      } else if (event.begin_capture) {
+      } else if (event.begin_capture && !event.armed) {
         const { index, attempt } = event.begin_capture;
         last = { phase: "capture_authorized", index, attempt };
       }
@@ -3573,7 +3801,7 @@ async function testArmedPostAbortRetriesTheSameCaptureInPlace() {
     1,
     "the retry re-posts `armed`, never a second begin for a consumed slot",
   );
-  const armed = posted.filter((e) => e.armed);
+  const armed = posted.filter((e) => e.armed && !e.capture_integrity);
   assert.deepEqual(
     armed.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
     [[1, 1]],
@@ -4212,6 +4440,8 @@ async function testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm() {
 
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
+  testFocusLossDuringRecordingIsReportedAndNamed,
+  testAQuietTakeRejectionCarriesNoFocusHint,
   testRejectedResultOffersTryAgainSameSlot,
   testGeometryRetakeRendersTheServerSuppliedGuidance,
   testTheRetryEyebrowCountsThisPositionsExtraTries,

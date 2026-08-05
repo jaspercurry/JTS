@@ -48,6 +48,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
+| `js/capture-integrity.js` | Per-take focus/visibility log + block-accounting summary (#2151) | `capture_integrity_test.mjs`, `capture_plan_loop_test.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
@@ -203,6 +204,29 @@ D9):
   page keeps the attempt-limit copy, which is what the runner's own exhaustion
   event genuinely means.
 
+Build `20260805.1` is the same class in the OTHER direction (#2151): the PAGE
+starts sending something new — a `capture_integrity` field on a repeat of the
+armed event, posted after the recorder stops and before the blob — and the Pi
+records it in the retained operator sidecar when present. Either order is safe,
+by the strict test above:
+
+- **New page, old Pi.** The field is an unknown key in the authenticated event
+  payload. The payload is any JSON object (only the ENVELOPE's shape is fixed —
+  `jasper/capture_relay/integrity.py`), and `classify_status` reads named keys
+  only, so an older Pi ignores it. Everything the household sees on a focus loss
+  — the live warning and the cause note on the rejection screen — is page-owned
+  and works against any Pi.
+- **Old page, new Pi.** No report arrives, `CaptureResult.capture_integrity`
+  stays `None`, and the sidecar simply has no `capture_integrity` key. That is
+  not a degraded fallback, it is exactly what every sidecar written before this
+  build looks like.
+
+The one thing that is NOT optional in either direction: the field must ride a
+repeat of the WHOLE armed payload, never a partial event. The relay's
+phone-event slot is last-write-wins, so a partial event could stand a Pi down
+from `armed` mid-round. The runner's own arm-once guard makes the repeat a
+no-op; `tests/js/capture_plan_loop_test.mjs` pins both halves.
+
 (The relay Worker is a third independent release with its own ordering rule for
 relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
 "Release order". That rule puts the Pi last, which matches the ADD direction
@@ -267,6 +291,7 @@ node tests/js/capture_relay_client_test.mjs  # phone-side relay requests
 node tests/js/capture_fragment_test.mjs      # fragment parse + upload cap
 node tests/js/capture_constraints_test.mjs   # realized-constraints verify/degrade
 node tests/js/capture_wakelock_test.mjs      # Screen Wake Lock + visibility abort
+node tests/js/capture_integrity_test.mjs     # per-take focus log + block accounting
 node tests/js/capture_return_url_test.mjs    # sanitized local-Pi return URL
 node tests/js/capture_level_events_test.mjs  # batched phone-side level events
 node tests/js/capture_setup_store_test.mjs   # sliding + absolute setup expiry

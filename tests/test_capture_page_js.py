@@ -54,6 +54,7 @@ _HARNESSES = [
     "capture_calibration_confirm_test.mjs",
     "capture_defect_fixes_test.mjs",
     "capture_time_budget_test.mjs",
+    "capture_integrity_test.mjs",
 ]
 
 
@@ -214,7 +215,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260803.4",
+        "capture_page_build": "20260805.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -222,10 +223,10 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260803-4" in index_html
+    assert "main.js?v=20260805-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
-    assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
+    assert 'from "./measurement-audio.js?v=20260805-1"' in main_js
     # Bumped with #1941 R4: constraints.js's realized-constraint describe()
     # feeds household copy, so a warm-cache browser holding the old module
     # would keep attributing the browser's own track settings to the
@@ -271,9 +272,9 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "f2ad5dac5e9fa038d5f1a437bc08783c12b94b3f54bdc6ecde719061db4be2d8"
+    "c1f0899f607798ef7a8db62fa46aedbf91ac7e8d14ef6554829b50d160050e85"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.4"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260805.1"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -384,6 +385,22 @@ def test_capture_page_new_phone_event_rollout_order_is_pinned():
     assert "complete_capture_set: true" in main_js
 
 
+# The build that first shipped a page tolerant of a terminal `capture_result`
+# (#2097). A frozen historical marker, not the current build — see the test.
+_TERMINAL_RESULT_FIXTURE_BUILD = "20260803.4"
+
+
+def _build_stamp_key(stamp: str) -> tuple[int, int]:
+    """Order a ``YYYYMMDD.N`` build stamp NUMERICALLY.
+
+    String compare is wrong for exactly the case a busy release day produces:
+    ``"20260803.10" < "20260803.4"`` lexically, so a tenth same-day build would
+    read as older than the fourth.
+    """
+    date, _, serial = stamp.partition(".")
+    return (int(date), int(serial or 0))
+
+
 def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
     """#2097's terminal result is a page-first compatibility cut.
 
@@ -393,6 +410,16 @@ def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
     roll back in the inverse order. The JS harness behaviorally pins both skew
     directions, while this guard pins the public artifact and exact ordering
     words an operator follows.
+
+    **What the build assertion means, restated (issue #2151).** It was written
+    as strict equality while ``20260803.4`` was the tip, which read as "the
+    published build IS the fixture" — true then, but it would have failed the
+    next ordinary page fix for no safety reason. The property #2097 actually
+    needs is that the published page is NOT BELOW the tolerant fixture, since
+    rolling under it recreates the unsafe skew. That is what is asserted now,
+    ordered on the parsed stamp rather than on string compare — ``20260803.10``
+    sorts BELOW ``20260803.4`` lexically, which would have silently inverted
+    the very check this line exists to make.
     """
     readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
     version = json.loads(
@@ -403,8 +430,17 @@ def test_capture_page_terminal_result_202608034_rollout_order_is_pinned():
         _REPO / "tests/js/capture_plan_loop_test.mjs"
     ).read_text(encoding="utf-8")
 
-    assert version["capture_page_build"] == "20260803.4"
-    assert "Build `20260803.4` is the terminal-result fixture" in readme
+    assert _build_stamp_key(version["capture_page_build"]) >= _build_stamp_key(
+        _TERMINAL_RESULT_FIXTURE_BUILD
+    ), (
+        "the published capture page must never roll below "
+        f"{_TERMINAL_RESULT_FIXTURE_BUILD}, the build that tolerates a "
+        "conductor's terminal capture_result (#2097). Rolling under it "
+        "recreates the unsafe skew: the older parser reads a terminal "
+        "rejection as retryable and offers a live Try again after the runner "
+        "has already returned."
+    )
+    assert f"Build `{_TERMINAL_RESULT_FIXTURE_BUILD}` is the terminal-result fixture" in readme
     assert "**Forward rollout → page first, Pi second.**" in readme
     assert "**Rollback → Pi first, page second.**" in readme
     assert "**Do not deploy the Pi first.**" in readme

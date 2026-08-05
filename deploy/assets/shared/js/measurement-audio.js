@@ -231,14 +231,32 @@ export async function createMonoRecorder(options = {}) {
   let sourceNode = null;
   let workletNode = null;
   let stopState = null;
+  let lastCaptureStats = null;
 
   try {
+    // Block accounting (issue #2151) rides the recorder because the render
+    // thread is the only place it can be observed. While recording, the worklet
+    // checks that `currentFrame` advances by exactly the previous quantum's
+    // length: a render thread that skipped quanta leaves a hole, and one skipped
+    // quantum is precisely the ±128-sample splice class the host refuses as
+    // `drift_baselines_disagree`.
+    //
+    // WHAT IT CANNOT SEE, stated so nobody over-reads a zero: this counts quanta
+    // the worklet was HANDED. A drop or duplicate inside the browser's own
+    // microphone capture FIFO, upstream of the audio graph, still delivers an
+    // unbroken run of quanta — the frames are contiguous, only their CONTENT has
+    // a discontinuity. `block_gaps === 0` therefore means "the render graph was
+    // continuous", never "the recording is clean". Paired with the page's focus
+    // log it still separates the two: a splice with focus lost and no render gap
+    // places the fault upstream of the worklet.
     const workletSrc =
       'class JtsMonoRecorder extends AudioWorkletProcessor {' +
         'constructor(){super();this.recording=false;this.buf=[];' +
+          'this.blocks=0;this.gaps=0;this.gapFrames=0;this.silent=0;this.next=-1;' +
           'this.port.onmessage=(e)=>{' +
             'if(e.data&&e.data.type==="start"){' +
               'this.buf=[];this.recording=true;' +
+              'this.blocks=0;this.gaps=0;this.gapFrames=0;this.silent=0;this.next=-1;' +
             '}else if(e.data&&e.data.type==="stop"){' +
               'this.recording=false;' +
               'var total=0;for(var i=0;i<this.buf.length;i++)total+=this.buf[i].length;' +
@@ -247,12 +265,21 @@ export async function createMonoRecorder(options = {}) {
                 'out.set(this.buf[j],pos);pos+=this.buf[j].length;' +
               '}' +
               'this.buf=[];' +
-              'this.port.postMessage({type:"capture",buffer:out.buffer},[out.buffer]);' +
+              'this.port.postMessage({type:"capture",buffer:out.buffer,stats:{' +
+                'blocks:this.blocks,block_gaps:this.gaps,' +
+                'block_gap_frames:this.gapFrames,silent_blocks:this.silent' +
+              '}},[out.buffer]);' +
             '}};}' +
         'process(inp){' +
           'var ch=inp[0]&&inp[0][0];' +
-          'if(ch&&this.recording){' +
-            'var copy=new Float32Array(ch.length);copy.set(ch);this.buf.push(copy);' +
+          'if(this.recording){' +
+            'if(ch){' +
+              'if(this.next>=0&&currentFrame!==this.next){' +
+                'this.gaps++;this.gapFrames+=currentFrame-this.next;' +
+              '}' +
+              'this.next=currentFrame+ch.length;this.blocks++;' +
+              'var copy=new Float32Array(ch.length);copy.set(ch);this.buf.push(copy);' +
+            '}else{this.silent++;}' +
           '}' +
           'return true;' +
         '}}' +
@@ -266,6 +293,10 @@ export async function createMonoRecorder(options = {}) {
         const state = stopState;
         stopState = null;
         clearTimeout(state.timer);
+        // Additive: `stop()` still resolves to the samples alone, so every
+        // existing caller is untouched. The counters are read separately by
+        // whoever wants them.
+        lastCaptureStats = ev.data.stats || null;
         state.resolve(new Float32Array(ev.data.buffer));
       }
     };
@@ -281,7 +312,14 @@ export async function createMonoRecorder(options = {}) {
       // Make that normalized output contract explicit so callers do not
       // confuse USB source width with the mono evidence JTS actually records.
       capturedChannelCount: 1,
+      // Render-graph block accounting for the capture that `stop()` just
+      // returned, or null when the worklet reported none (an older bundle).
+      // Callers that do not ask are unaffected.
+      captureStats() {
+        return lastCaptureStats;
+      },
       start() {
+        lastCaptureStats = null;
         workletNode.port.postMessage({type: 'start'});
       },
       stop(stopOptions = {}) {
