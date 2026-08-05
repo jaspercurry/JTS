@@ -902,10 +902,58 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
         "restore_pending_capture_entry_config",
         restore_capture_entry,
     )
+    async def recover_program():
+        claims.append("program")
+
+    monkeypatch.setattr(
+        correction_setup, "_restore_protected_neutral_program_graph", recover_program,
+    )
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "level", "commissioning", "capture_entry"]
+    assert claims == ["repeat", "level", "commissioning", "capture_entry", "program"]
+
+
+def test_program_graph_startup_recovery_is_exact_and_fail_closed(monkeypatch, tmp_path):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from jasper.active_speaker import camilla_yaml
+    from jasper import dsp_apply
+
+    anchor = tmp_path / "production.yml"
+    anchor.write_text("devices: {}\n", encoding="utf-8")
+
+    class Cam:
+        active, loaded, calls = "neutral", True, []
+
+        async def get_active_config_raw(self, *, best_effort):
+            self.calls.append("raw")
+            return self.active
+        async def get_config_file_path(self, *, best_effort):
+            self.calls.append("path")
+            return str(anchor)
+        async def set_active_config_raw(self, text, *, best_effort):
+            self.calls.append("set")
+            if self.loaded:
+                self.active = text
+            return self.loaded
+
+    @asynccontextmanager
+    async def lock(*_args, **_kwargs):
+        yield
+
+    cam = Cam()
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
+    monkeypatch.setattr(camilla_yaml, "protected_neutral_program_origin", lambda raw: raw == "neutral")
+    asyncio.run(correction_setup._restore_protected_neutral_program_graph())
+    assert cam.calls == ["raw", "path", "set", "raw"]
+    cam.active, cam.calls = "other", []
+    asyncio.run(correction_setup._restore_protected_neutral_program_graph())
+    assert cam.calls == ["raw"]
+    cam.active, cam.loaded = "neutral", False
+    with pytest.raises(RuntimeError, match="was not confirmed"):
+        asyncio.run(correction_setup._restore_protected_neutral_program_graph())
 
 
 def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
@@ -1003,6 +1051,7 @@ def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
 
 
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
+    from unittest.mock import AsyncMock
     from jasper.active_speaker import repeat_admission
     from jasper.web import correction_crossover_backend
 
@@ -1022,6 +1071,7 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
         "claim_commissioning_run_owner",
         lambda: claims.append("commissioning"),
     )
+    monkeypatch.setattr(correction_setup, "_restore_protected_neutral_program_graph", AsyncMock())
 
     correction_setup._claim_crossover_state_owners()
 

@@ -51,8 +51,8 @@ MEASURE / VERIFY their own short pre-pilot room-listening window.
 
 Reuses the measurement kernel (:mod:`~jasper.audio_measurement.sweep` /
 ``deconv`` / ``gating`` / ``snr_policy`` / ``analysis``) and mirrors
-``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O, no product
-policy, no ``jasper.active_speaker`` import.
+``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O; the
+optional configured-path seam uses the active-speaker branch transfer SSOT.
 """
 from __future__ import annotations
 
@@ -64,6 +64,10 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection,
+    crossover_response_complex,
+)
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
@@ -114,6 +118,15 @@ LOCATOR_RATE_HZ = 16_000
 CLIP_RUN_SAMPLES = 3
 CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
 DBFS_FLOOR = -120.0
+ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding"
+
+
+class ConfiguredPathConditioningError(ValueError):
+    slug = ILL_CONDITIONED_PROTECTION_DEEMBEDDING
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{self.slug}: {detail}")
+
 
 # A capture is rejected when the drift baselines disagree by more than this many
 # samples-equivalent, or the primary drift exceeds the ppm bound (design §5.6.3).
@@ -728,6 +741,13 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     mic_tier: str | None = None
+    measurement_protection_sections_by_role: Mapping[
+        str, Sequence[CrossoverSection]
+    ] | None = None
+    configured_crossover_sections_by_role: Mapping[
+        str, Sequence[CrossoverSection]
+    ] | None = None
+    configured_polarity_sign_by_role: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -4393,6 +4413,63 @@ def _analyze_check(
     )
 
 
+def _compose_configured_path_ir(
+    role: str,
+    full_ir: np.ndarray,
+    sample_rate: int,
+    trusted_band_hz: tuple[float, float],
+    priors: MeasurementPriors,
+) -> np.ndarray:
+    """Replace exact emitted protection ``P`` with configured crossover ``C``.
+
+    Every inclusive trusted bin becomes ``S=M*C/P`` or the capture is refused.
+    Outside the emitted sweep band ``M`` is retained but never claimed.
+    """
+    maps = (
+        priors.measurement_protection_sections_by_role,
+        priors.configured_crossover_sections_by_role,
+        priors.configured_polarity_sign_by_role,
+    )
+    if all(value is None for value in maps):
+        return full_ir
+    if any(value is None for value in maps):
+        raise ConfiguredPathConditioningError("incomplete priors")
+    protection_by_role, configured_by_role, polarity_by_role = maps
+    try:
+        protection_sections = protection_by_role[role]  # type: ignore[index]
+        configured_sections = configured_by_role[role]  # type: ignore[index]
+        polarity_sign = polarity_by_role[role]  # type: ignore[index]
+    except KeyError as exc:
+        raise ConfiguredPathConditioningError(f"missing role {role}") from exc
+    if type(polarity_sign) is not int or polarity_sign not in (-1, 1):
+        raise ConfiguredPathConditioningError(f"invalid polarity for {role}")
+    samples = np.asarray(full_ir, dtype=np.float64)
+    measured = np.fft.rfft(samples)
+    freqs = np.fft.rfftfreq(samples.size, 1.0 / sample_rate)
+    lo_hz, hi_hz = (float(value) for value in trusted_band_hz)
+    trusted = (freqs >= lo_hz) & (freqs <= hi_hz)
+    if not np.any(trusted):
+        raise ConfiguredPathConditioningError(f"no trusted bins for {role}")
+    protection = crossover_response_complex(freqs, protection_sections)
+    configured = crossover_response_complex(freqs, configured_sections)
+    for label, response in (("P", protection), ("C", configured)):
+        if not np.all(np.isfinite(response[trusted])):
+            raise ConfiguredPathConditioningError(f"non-finite {label} for {role}")
+    minimum = 10.0 ** (-12.0 / 20.0)
+    if np.any(np.abs(protection[trusted]) < minimum):
+        raise ConfiguredPathConditioningError(f"P below -12 dB for {role}")
+    ratio = configured[trusted] / protection[trusted]
+    maximum = 10.0 ** (12.0 / 20.0)
+    if not np.all(np.isfinite(ratio)) or np.any(np.abs(ratio) > maximum):
+        raise ConfiguredPathConditioningError(f"C/P above +12 dB for {role}")
+    composed = measured[trusted] * ratio * polarity_sign
+    if not np.all(np.isfinite(composed)):
+        raise ConfiguredPathConditioningError(f"non-finite S for {role}")
+    spectrum = measured * polarity_sign
+    spectrum[trusted] = composed
+    return np.fft.irfft(spectrum, n=samples.size)
+
+
 def _repeat_driver_responses(
     program: ExcitationProgram,
     capture: np.ndarray,
@@ -4406,6 +4483,7 @@ def _repeat_driver_responses(
     ambient_report: Mapping[str, Any] | None,
     fc_hz: float,
     n_fft: int,
+    priors: MeasurementPriors,
 ) -> tuple[DriverResponse, ...]:
     """Deconvolve + gate + TF every occurrence AFTER the first (design item 7,
     sweep-composition PR-A #1668): free per-repeat evidence for a future PR's
@@ -4430,6 +4508,9 @@ def _repeat_driver_responses(
         full_ir, _pre = _deconvolve_window(
             capture, seg, global_offset + seg.start_sample, sample_rate,
             epsilon=epsilon,
+        )
+        full_ir = _compose_configured_path_ir(
+            role, full_ir, sample_rate, _radiated_band_hz(seg), priors
         )
         resp = _driver_response(
             role, full_ir, sample_rate,
@@ -4467,6 +4548,12 @@ def _analyze_measure(
         capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
         epsilon=epsilon,
     )
+    woofer_full_ir = _compose_configured_path_ir(
+        seg_w.role, woofer_full_ir, sample_rate, _radiated_band_hz(seg_w), priors
+    )
+    tweeter_full_ir = _compose_configured_path_ir(
+        seg_t.role, tweeter_full_ir, sample_rate, _radiated_band_hz(seg_t), priors
+    )
     pre_samples = min(pre_w, pre_t)
     n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
 
@@ -4486,6 +4573,7 @@ def _analyze_measure(
                 role=resp.role,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
+                priors=priors,
             ),
         )
         for resp in (

@@ -224,6 +224,18 @@ def test_classifier_returns_none_outside_the_program_family():
     assert v2host.classify_program_failure(TimeoutError("read timed out")) is None
 
 
+def test_classifier_preserves_typed_conditioning_slug():
+    from jasper.audio_measurement.program_analysis import (
+        ConfiguredPathConditioningError,
+        ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
+    )
+
+    exc = ConfiguredPathConditioningError("P below -12 dB for tweeter")
+    assert v2host.classify_program_failure(exc) == (
+        REASON_PROGRAM_UNPLAYABLE, (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,),
+    )
+
+
 def test_the_flow_reason_code_is_the_admission_slug():
     """The 1:1 that makes ``state["failure"]`` correlatable with the journal.
     Pinned so the two vocabularies cannot drift apart silently."""

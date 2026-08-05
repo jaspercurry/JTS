@@ -510,9 +510,10 @@ class FakeSeams:
 
 def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
     seams = kwargs.pop("seams", fakes.seams())
+    source_preset = kwargs.pop("source_preset", _preset())
     return CrossoverV2Conductor(
         session_id=SESSION,
-        source_preset=_preset(),
+        source_preset=source_preset,
         roles_bands=_roles(),
         fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS,
@@ -1241,6 +1242,33 @@ def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target(
     raw["crossover_regions"][0]["delay_target_driver"] = None
     fresh = ActiveSpeakerPreset.from_mapping(raw)
     assert alignment_delay_search_bounds_us(fresh) == expected
+
+
+def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["upper_polarity"] = "inverted"
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+    woofer = flow.CrossoverSection(6000.0, 4, False)
+    tweeter = flow.CrossoverSection(300.0, 4, True)
+    supplied = {"woofer": [woofer], "tweeter": [tweeter]}
+    c = _conductor(
+        FakeSeams(), source_preset=preset,
+        measurement_protection_sections_by_role=supplied,
+    )
+    supplied["woofer"].clear()
+    supplied["tweeter"] = [woofer]
+    priors = c._measure_priors()
+    assert priors.measurement_protection_sections_by_role == {
+        "woofer": (woofer,), "tweeter": (tweeter,),
+    }
+    assert priors.configured_crossover_sections_by_role == flow.sections_by_role(
+        preset.crossover_regions
+    )
+    assert priors.configured_polarity_sign_by_role == {"woofer": 1, "tweeter": -1}
+    legacy = _conductor(FakeSeams())._measure_priors()
+    assert legacy.measurement_protection_sections_by_role is None
+    assert legacy.configured_crossover_sections_by_role is None
+    assert legacy.configured_polarity_sign_by_role is None
 
 
 def test_measure_program_gains_back_off_from_caps():
@@ -5861,6 +5889,8 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     calls: list = []
 
     class _FakeCam:
+        readback = "# normalized readback\nprogram: graph\n"
+
         async def get_config_file_path(self, *, best_effort):
             calls.append(("get_path", best_effort))
             return str(tmp_path / "entry.yml")
@@ -5869,13 +5899,18 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
             calls.append(("set_raw", text, best_effort))
             return True
 
+        async def get_active_config_raw(self, *, best_effort):
+            calls.append(("get_raw", best_effort))
+            return self.readback
+
         async def set_config_file_path(self, *args, **kwargs):  # pragma: no cover
             raise AssertionError("must never repoint the persisted statefile")
 
     entry = tmp_path / "entry.yml"
     entry.write_text("prior: graph\n", encoding="utf-8")
+    cam = _FakeCam()
     seams = bind_program_playback_seams(
-        _FakeCam(),
+        cam,
         bundle_dir=str(tmp_path),
         artifact=object(),
         config_dir=str(tmp_path),
@@ -5896,8 +5931,14 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     assert calls == [
         ("get_path", False),
         ("set_raw", "program: graph\n", False),
+        ("get_raw", False),
         ("set_raw", "prior: graph\n", False),
     ]
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+
+    cam.readback = "different: graph\n"
+    with pytest.raises(ProgramPlaybackError, match="load was not confirmed"):
+        asyncio.run(seams["load_program_graph"]("program: graph\n"))
 
 
 def _dummy_program():

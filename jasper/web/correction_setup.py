@@ -7742,6 +7742,45 @@ def _idle_exit_restore_capture_entry() -> None:
         )
 
 
+async def _restore_protected_neutral_program_graph() -> None:
+    """Converge an abandoned inline R15 program graph to its boot anchor."""
+
+    from jasper.active_speaker.camilla_yaml import protected_neutral_program_origin
+    from jasper.active_speaker.commissioning_admission import (
+        ActiveCommissioningAdmissionError,
+        running_graph_fingerprint,
+    )
+    from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
+    from jasper.dsp_apply import dsp_writer_lock
+
+    cam = _camilla()
+    async with dsp_writer_lock(
+        DEFAULT_CAMILLA_CONFIG_DIR,
+        source="crossover_v2_program_startup_recovery",
+    ):
+        running = await cam.get_active_config_raw(best_effort=True)
+        if protected_neutral_program_origin(running) is not True:
+            return
+        config_path = await cam.get_config_file_path(best_effort=False)
+        if not isinstance(config_path, str) or not config_path:
+            raise RuntimeError("protected-neutral recovery anchor is unavailable")
+        expected = Path(config_path).read_text(encoding="utf-8")
+        loaded = await cam.set_active_config_raw(expected, best_effort=False)
+        try:
+            confirmed = loaded and running_graph_fingerprint(
+                await cam.get_active_config_raw(best_effort=False)
+            ) == running_graph_fingerprint(expected)
+        except ActiveCommissioningAdmissionError as exc:
+            raise RuntimeError("protected-neutral recovery readback is invalid") from exc
+        if not confirmed:
+            raise RuntimeError("protected-neutral recovery was not confirmed")
+        log_event(
+            logger,
+            "correction.crossover_v2_program_recovered",
+            config_path=config_path,
+        )
+
+
 def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
@@ -7776,6 +7815,12 @@ def _claim_crossover_state_owners() -> None:
                 level=logging.ERROR,
                 reason=type(exc).__name__,
             )
+    # This claim is deliberately fail-closed once the active graph positively
+    # identifies R15's inline program shape: accepting requests while its
+    # persisted production anchor failed to reload could resume ordinary audio
+    # through role-routed measurement wiring. Camilla-down reads return no
+    # positive identity and retain the unchanged statefile boot recovery.
+    _run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
 
 
 def main(argv: list[str] | None = None) -> int:

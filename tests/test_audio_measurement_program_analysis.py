@@ -74,6 +74,8 @@ from jasper.audio_measurement.program_analysis import (
     GCC_UPSAMPLE,
     IR_POST_MS,
     IR_PRE_MS,
+    ConfiguredPathConditioningError,
+    ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
     GAIN_BOUND_CAPTURE_FLOOR,
     GAIN_BOUND_DEGENERATE_AMBIENT,
     GAIN_BOUNDS,
@@ -101,6 +103,7 @@ from jasper.audio_measurement.program_analysis import (
     _band_exclusive_pieces,
     _build_candidate,
     _complex_tf,
+    _compose_configured_path_ir,
     _deconvolve_window,
     _gate_floor_hz,
     _gcc_local_peak_snap,
@@ -124,6 +127,7 @@ from jasper.audio_measurement.program_analysis import (
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
+from jasper.active_speaker.branch_chain import CrossoverSection
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
     CDHORN_ROOT,
@@ -180,6 +184,15 @@ def _synthesize(
     return cap
 
 
+def _configured_path_priors(protection, configured, *, tweeter_sign=-1):
+    return MeasurementPriors(
+        crossover_fc_hz=FC_HZ,
+        measurement_protection_sections_by_role=protection,
+        configured_crossover_sections_by_role=configured,
+        configured_polarity_sign_by_role={"woofer": 1, "tweeter": tweeter_sign},
+    )
+
+
 # --------------------------------------------------------------------------- #
 # MEASURE — the combined drift/delay/polarity/trim round-trip
 # --------------------------------------------------------------------------- #
@@ -228,6 +241,144 @@ def test_measure_round_trip_recovers_drift_delay_polarity_trims(polarity_amp, ex
     trims = res.candidate.trim_db
     assert trims["woofer"] == pytest.approx(20.0 * np.log10(0.7), abs=0.3)
     assert trims["tweeter"] == pytest.approx(0.0, abs=0.3)
+
+
+def test_configured_path_matches_legacy_through_analyzer_and_fitter(monkeypatch):
+    """One shared H makes neutral M*C/P and legacy H*C equivalent end to end."""
+    protection = {
+        "woofer": (CrossoverSection(6000.0, 4, False),),
+        "tweeter": (CrossoverSection(300.0, 4, True),),
+    }
+    configured = {
+        "woofer": (CrossoverSection(FC_HZ, 4, False),),
+        "tweeter": (CrossoverSection(FC_HZ, 4, True),),
+    }
+    n_fft = 16_384
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    plants = {
+        "woofer": (0.8 + 0.1 * np.cos(freqs / 911.0)) * np.exp(-2j * np.pi * freqs * 180 / SR),
+        "tweeter": (0.6 + 0.1 * np.sin(freqs / 733.0)) * np.exp(-2j * np.pi * freqs * 205 / SR),
+    }
+    plants["woofer"][(freqs < 150) | (freqs > 6000)] = 0.0
+    plants["tweeter"][(freqs < 300) | (freqs > 20000)] = 0.0
+    mode = {"neutral": True}
+
+    def exact_deconvolution(_capture, segment, *_args, **_kwargs):
+        role = segment.role
+        sections = protection[role] if mode["neutral"] else configured[role]
+        sign = -1 if role == "tweeter" and not mode["neutral"] else 1
+        response = program_analysis.crossover_response_complex(freqs, sections)
+        return np.fft.irfft(plants[role] * response * sign, n=n_fft), 192
+
+    monkeypatch.setattr(program_analysis, "_deconvolve_window", exact_deconvolution)
+    program = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    capture = _synthesize(
+        program, woofer_ir=_band_impulse(180, 150, 6000, 0.8),
+        tweeter_ir=_band_impulse(205, 300, 20000, -0.6), noise=0.0,
+    )
+    neutral = analyze_program_capture(
+        program, capture, SR,
+        priors=dataclasses.replace(
+            _configured_path_priors(protection, configured), mic_tier="reference",
+        ),
+    )
+    mode["neutral"] = False
+    legacy = analyze_program_capture(
+        program, capture, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ, mic_tier="reference"),
+    )
+
+    def assert_same(left, right):
+        if isinstance(left, np.ndarray):
+            np.testing.assert_allclose(left, right, rtol=0, atol=1e-6)
+        elif isinstance(left, dict):
+            assert left.keys() == right.keys()
+            for key in left:
+                assert_same(left[key], right[key])
+        elif isinstance(left, (list, tuple)):
+            assert len(left) == len(right)
+            for a, b in zip(left, right):
+                assert_same(a, b)
+        elif isinstance(left, (float, int, np.number)):
+            assert float(left) == pytest.approx(float(right), abs=1e-6)
+        else:
+            assert left == right
+
+    assert_same(dataclasses.asdict(neutral), dataclasses.asdict(legacy))
+    from tests.test_crossover_v2_conductor import FakeSeams, _conductor
+    fitted = []
+    for analysis in (neutral, legacy):
+        conductor = _conductor(FakeSeams())
+        conductor._measure_program = program
+        fitted.append((*conductor._fit_linearization(analysis, analysis.candidate),
+                       conductor._last_linearized_predicted_sum))
+    assert_same(fitted[0], fitted[1])
+
+
+def test_configured_path_conditioning_accepts_both_inclusive_boundaries(monkeypatch):
+    protection = (CrossoverSection(1.0, 2, False),)
+    configured = (CrossoverSection(2.0, 2, False),)
+    floor = 10.0 ** (-12.0 / 20.0)
+    limit = 10.0 ** (12.0 / 20.0)
+
+    def _response(freqs, sections):
+        value = floor if sections == protection else floor * limit
+        return np.full(freqs.shape, value, dtype=np.complex128)
+
+    monkeypatch.setattr(program_analysis, "crossover_response_complex", _response)
+    impulse = np.zeros(64)
+    impulse[3] = 1.0
+    priors = _configured_path_priors(
+        {"woofer": protection}, {"woofer": configured}, tweeter_sign=1
+    )
+    composed = _compose_configured_path_ir(
+        "woofer", impulse, SR, (0.0, SR / 2), priors
+    )
+    np.testing.assert_allclose(composed, impulse * limit, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("p_nonfinite", "non-finite P"),
+        ("c_nonfinite", "non-finite C"),
+        ("p_underfloor", "P below -12 dB"),
+        ("ratio_over", r"C/P above \+12 dB"),
+        ("s_nonfinite", "non-finite S"),
+    ],
+)
+def test_configured_path_conditioning_refuses_without_clipping(
+    monkeypatch, case, message,
+):
+    protection = (CrossoverSection(1.0, 2, False),)
+    configured = (CrossoverSection(2.0, 2, False),)
+    floor = 10.0 ** (-12.0 / 20.0)
+    limit = 10.0 ** (12.0 / 20.0)
+    p_value, c_value = 1.0, 1.0
+    if case == "p_nonfinite": p_value = np.nan
+    if case == "c_nonfinite": c_value = np.inf
+    if case == "p_underfloor": p_value = floor * (1.0 - 1e-6)
+    if case == "ratio_over": c_value = limit * (1.0 + 1e-6)
+
+    def _response(freqs, sections):
+        value = p_value if sections == protection else c_value
+        return np.full(freqs.shape, value, dtype=np.complex128)
+
+    monkeypatch.setattr(program_analysis, "crossover_response_complex", _response)
+    impulse = np.zeros(64)
+    impulse[3] = np.nan if case == "s_nonfinite" else 1.0
+    priors = _configured_path_priors(
+        {"woofer": protection}, {"woofer": configured}, tweeter_sign=1
+    )
+    with pytest.raises(
+        ConfiguredPathConditioningError,
+        match=f"{ILL_CONDITIONED_PROTECTION_DEEMBEDDING}.*{message}",
+    ) as exc_info:
+        _compose_configured_path_ir("woofer", impulse, SR, (0.0, SR / 2), priors)
+    assert exc_info.value.slug == ILL_CONDITIONED_PROTECTION_DEEMBEDDING
 
 
 def test_measure_negative_drift_round_trip():

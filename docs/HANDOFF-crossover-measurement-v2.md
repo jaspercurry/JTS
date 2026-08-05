@@ -24,12 +24,21 @@ alternatives, the wave plan) is
 [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 this doc is the current operational truth.
 
-> **Planned revision, not current behavior (2026-08-04):**
-> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
-> owns the next campaign to keep the Express walk while moving all pre-apply
-> captures onto protected raw per-driver evidence, evaluating bounded
-> Fc-specific prescriptions, and verifying crossed branches plus their sum.
-> Until that campaign lands, the operational behavior below remains exact.
+> **R15 candidate status (2026-08-05):** [#2106](https://github.com/jaspercurry/JTS/issues/2106)
+> owns the re-ratified atomic contract. Implementation and the conductor
+> checkpoint and docs alignment are complete; review, PR, and merge remain, with
+> no deployment or measurement claimed. Once merged, stage 1 is exactly CHECK
+> then MEASURE through confirmed role protection, limiter, 0 dB commissioning
+> headroom, and physical routing. Configured crossover/delay/polarity,
+> linearization, bass, Room, and preference filters are absent; analysis
+> reconstructs `M*C_configured/P` for the existing fitter/review/Apply/Undo path.
+> Fresh semantic graph readback gates playback; the existing restore transaction
+> and crash anchor remain sole recovery. Pre-apply cloud is skipped, while the
+> reusable cloud machinery remains available for future Room work. R15 adds no
+> durable anchor/schema/module. Required order is R15 → R16 → R17 → R18 →
+> R19 → studio checkpoint → read-only R20; lean contracts live in the
+> [canonical plan](crossover-linearization-80-20-plan.md). The deployed pre-R15
+> flow remains described below.
 
 ## How to run it
 
@@ -42,9 +51,9 @@ this doc is the current operational truth.
   commission has completed on this topology** — S4, adversarial review of
   PR #1780 — then Quick tune does, so an express-only household is never
   nudged away from the wider walk that mitigates §1.3's HF-null row), tap
-  Start, then follow the phone — apply is automatic (owner ruling,
-  2026-07-20; gotcha #18), no
-  browser-tab step in between. Since flat-linearization PR-3b the phone
+  Start, then follow the phone; after measurement, return to jts.local's review
+  screen and choose Apply explicitly. Nothing applies inside a capture session.
+  Since flat-linearization PR-3b the deployed phone
   also prompts a series of small mic moves inside the measure and verify
   steps (the spatial cloud); the wizard's five screens are unchanged,
   because the cloud changed how many captures a step takes, not what the
@@ -86,7 +95,7 @@ this doc is the current operational truth.
   (`event=capture_relay.plan_capacity_refused`). Full rule in
   [`relay/README.md`](../relay/README.md) "Release order".
 
-## Current status (2026-07-22)
+## Current status (2026-08-05)
 
 ### Live attempts loop (2026-08-03)
 
@@ -464,7 +473,12 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — measure (`POST /crossover/v2/session`), 10 captures at Full:**
+**R15 candidate Stage 1 (pending review/merge/deploy):** exactly two captures,
+index 1 `check` and index 2 `measure`. Production passes the same resolved
+protection mapping to the protected-neutral emitter and configured-path
+analysis, and emits no `cloud_measure` phase or prompt. Stage 2 is unchanged.
+
+**Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
@@ -3207,7 +3221,11 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-08-04 — added and verified the planning-vs-shipped
+**2026-08-05 verification scope:** opening/capture-flow only against the current
+R15 diff; no review, merge, deployment, or measurement claim. Remaining
+operational detail and history were not re-verified.
+
+Last verified: 2026-08-05 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the

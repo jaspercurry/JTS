@@ -123,6 +123,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.camilla_yaml import _role_polarity
 from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
@@ -1250,6 +1251,7 @@ def build_v2_cloud_index_phase_map(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
+    include_cloud_measure: bool = True,
 ) -> dict[int, str]:
     """Capture-plan index → conductor phase for a STAGE-1 (measure) session.
 
@@ -1282,6 +1284,8 @@ def build_v2_cloud_index_phase_map(
     )
     n = shape.cloud_measure_positions
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
+    if not include_cloud_measure:
+        return mapping
     for offset in range(n - 1):
         mapping[3 + offset] = PHASE_CLOUD_MEASURE
     return mapping
@@ -5384,6 +5388,9 @@ class CrossoverV2Conductor:
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
+        measurement_protection_sections_by_role: Mapping[
+            str, Sequence[CrossoverSection]
+        ] | None = None,
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
         attempt_floor: FloorStats | None = None,
@@ -5420,6 +5427,12 @@ class CrossoverV2Conductor:
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
+        self._measurement_protection_sections_by_role = None
+        if measurement_protection_sections_by_role is not None:
+            self._measurement_protection_sections_by_role = {
+                str(role): tuple(sections)
+                for role, sections in measurement_protection_sections_by_role.items()
+            }
         # S3's lifecycle state. Attempts belong to the commissioning journey,
         # not to this relay session (stage 2 always mints a new one). The
         # conductor owns the bounded history; the injected floor/store writer
@@ -6027,6 +6040,7 @@ class CrossoverV2Conductor:
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
     def _measure_priors(self) -> MeasurementPriors:
+        protection = self._measurement_protection_sections_by_role
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
@@ -6040,6 +6054,16 @@ class CrossoverV2Conductor:
             # in which case the verdict stays honestly absent rather than
             # guessed.
             ambient_report=self._check_ambient_report,
+            measurement_protection_sections_by_role=protection,
+            configured_crossover_sections_by_role=(
+                sections_by_role(self._preset.crossover_regions)
+                if protection is not None else None
+            ),
+            configured_polarity_sign_by_role=(
+                {role: -1 if inverted else 1 for role, inverted in
+                 _role_polarity(self._preset).items()}
+                if protection is not None else None
+            ),
         )
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -11238,23 +11262,18 @@ def build_v2_capture_plan(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
+    include_cloud_measure: bool = True,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan (§5.7 + flat-linearization PR-3b).
 
-    10 entries at the full tier's shipped defaults (6 for express): CHECK,
-    MEASURE, ``N-1`` prompted pre-apply positions — the layout
+    CHECK and MEASURE are required; the pre-apply cloud is optional. The layout
     ``build_v2_cloud_index_phase_map`` documents, built from that same function
     so prompt and phase cannot disagree.
 
-    **Stage 1 stops at the pre-apply cloud** (two-stage commission work order
-    D1). It used to carry VERIFY and the post-apply group too, and to apply a
-    correction mid-session three seconds before VERIFY; the household decides
-    the apply now, in an untimed interlude on jts.local, and the post-apply
-    walk is stage 2's own session (:func:`build_v2_verify_capture_plan` with a
-    plan shape). The final cloud position is therefore the plan's TARGET, which
-    is why the host holds the set open for the household's explicit completion
-    signal rather than letting ``capture_set_complete`` end it (see
-    ``capture_relay.session.run_capture_plan``'s held-set contract).
+    When included, the pre-apply cloud ends stage 1 and holds for an explicit
+    completion signal. R15 omits that cloud, so its CHECK/MEASURE plan closes
+    normally. Both shapes leave Apply to the untimed jts.local review interlude;
+    post-apply capture remains stage 2's own session.
 
     **Screen grammar (flow-simplification §2.1).** Every entry's ``screen``
     carries ``progress`` (the one server-derived counter), ``title`` (ONE
@@ -11308,8 +11327,10 @@ def build_v2_capture_plan(
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
-    index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
-    target = shape.measure_capture_target
+    index_phase = build_v2_cloud_index_phase_map(
+        plan_shape=shape, include_cloud_measure=include_cloud_measure,
+    )
+    target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     entries: list[Any] = [
         CapturePlanEntry(
@@ -11408,7 +11429,10 @@ def build_v2_capture_plan(
         )
     return CapturePlan(
         capture_target=target,
-        max_attempts=shape.measure_max_attempts,
+        max_attempts=(
+            shape.measure_max_attempts
+            if include_cloud_measure else target + CLOUD_RETAKE_ALLOWANCE
+        ),
         schema_version=2,
         entries=tuple(entries),
     )
@@ -11819,13 +11843,14 @@ def build_v2_session_spec(
     tier: Any = None,
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
+    include_cloud_measure: bool = True,
     **spec_kwargs: Any,
 ) -> Any:
-    """One relay v3 session spec spanning every phase of a cloud session (§5.7).
+    """One relay v3 stage-1 spec, optionally including the pre-apply cloud (§5.7).
 
     Rides the existing ``build_crossover_sweep_spec`` (same kind, transport,
-    and placement-acknowledgement machinery) with the cloud plan attached, and
-    passes ``guided_captures`` so the spec selects the GUIDED consent copy —
+    and placement-acknowledgement machinery) with its stage-1 plan attached, and
+    selects guided consent only when that plan includes the pre-apply cloud —
     the fixed-on-axis wording that builder emits by default promises a
     stationary mic for the whole session, which is exactly what a cloud
     breaks. The guided copy still names the mark as the starting point; the
@@ -11845,7 +11870,10 @@ def build_v2_session_spec(
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
-    plan = build_v2_capture_plan(roles_bands, fc_hz, plan_shape=shape)
+    plan = build_v2_capture_plan(
+        roles_bands, fc_hz, plan_shape=shape,
+        include_cloud_measure=include_cloud_measure,
+    )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     return build_crossover_sweep_spec(
         driver_label="crossover",
@@ -11856,16 +11884,19 @@ def build_v2_session_spec(
         # The consent surface must describe the walk, not a stationary mic —
         # the count is every capture the household is prompted through, which
         # is the plan's own target.
-        guided_captures=plan.capture_target,
+        guided_captures=plan.capture_target if include_cloud_measure else 0,
         # …and which INSTRUMENT that walk is, so the announcement screen can
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).
-        guided_tier=shape.tier,
+        guided_tier=shape.tier if include_cloud_measure else "",
         # …and how far the walk reaches, in one line (work order D7's intent,
         # #1941 R1's presentation). Derived HERE, from the same table and the
         # same group size the per-entry screens above are built from, so the
         # orientation and the prompts cannot describe different walks.
-        walk_shape=cloud_walk_shape(shape.cloud_measure_positions),
+        walk_shape=(
+            cloud_walk_shape(shape.cloud_measure_positions) if include_cloud_measure
+            else ""
+        ),
         **spec_kwargs,
     )
 
@@ -11899,7 +11930,7 @@ def bind_program_playback_seams(
     * ``read_current_config_path`` — ``cam.get_config_file_path`` (the persisted
       statefile boot anchor, the restore target).
     * ``load_program_graph`` — INLINE ``cam.set_active_config_raw`` (CamillaDSP
-      ``SetConfig``): applies the program graph WITHOUT repointing the persisted
+      ``SetConfig``): applies, then confirms by fresh semantic readback without repointing the
       statefile, preserving the crash-recovery-MUTED structural invariant
       exactly as :func:`jasper.active_speaker.commission_wiring.commission_load_config`
       documents. A crash mid-program reboots onto the staged anchor, never the
@@ -11924,14 +11955,27 @@ def bind_program_playback_seams(
 
     from jasper.dsp_apply import dsp_writer_lock
 
+    from .commissioning_admission import (
+        ActiveCommissioningAdmissionError,
+        running_graph_fingerprint,
+    )
     from .program_admission import readmit_program_from_wav
-    from .program_playback import verified_program_aplay
+    from .program_playback import ProgramPlaybackError, verified_program_aplay
 
     async def _read_current_config_path() -> str | None:
         return await cam.get_config_file_path(best_effort=False)
 
     async def _load_program_graph(program_graph_yaml: str) -> bool:
-        return await cam.set_active_config_raw(program_graph_yaml, best_effort=False)
+        loaded = await cam.set_active_config_raw(program_graph_yaml, best_effort=False)
+        try:
+            matched = loaded and running_graph_fingerprint(
+                await cam.get_active_config_raw(best_effort=False)
+            ) == running_graph_fingerprint(program_graph_yaml)
+        except ActiveCommissioningAdmissionError as exc:
+            raise ProgramPlaybackError("program graph readback is invalid") from exc
+        if not matched:
+            raise ProgramPlaybackError("program graph load was not confirmed")
+        return True
 
     async def _restore_graph(entry_config_path: str) -> bool:
         text = Path(entry_config_path).read_text(encoding="utf-8")

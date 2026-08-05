@@ -57,6 +57,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLES,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_CORRECTION_MODEL_ERROR,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
@@ -454,37 +455,28 @@ def _build_runner(conductor, volume, **kwargs):
 # --- happy path through the REAL plan runner -----------------------------------
 
 
-def test_happy_path_stage_1_ends_on_the_household_signal():
-    """RE-DERIVED from ``…three_phases_with_deferred_verify_release``.
-
-    That test's subject — VERIFY soft-held behind an in-session apply, released
-    by a ``capture_deferred`` round trip — is gone with auto-apply (work order
-    D1/D10). What survives is the walk itself, and the new ending: the set is
-    HELD open past its target until the household signals, and only then does
-    the Pi close the group, fit the candidate, and complete the set.
-    """
+def test_production_happy_path_is_local_check_measure_then_review():
+    """The shipped protected-neutral path reaches review without cloud."""
     backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
+        include_cloud_measure=False,
+    )
     client, session, phone = _mint_v2_session(backend, spec)
     published: list = []
     phases_seen: list = []
     conductor = _conductor(
-        backend, session, phone, published=published, phases_seen=phases_seen
+        backend, session, phone, published=published, phases_seen=phases_seen,
+        index_phase_map=build_v2_cloud_index_phase_map(include_cloud_measure=False),
     )
     volume = VolumeRecorder()
     _run(_build_runner(conductor, volume), client, session)
 
-    # Every phase this session runs, accepted through ONE relay session.
     assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome is None  # stage 1 verifies nothing
+    assert conductor.accepted_phases == {PHASE_CHECK, PHASE_MEASURE}
     assert [kind for kind, _ in published] == ["check", "candidate"]
-    # No hold: nothing in this session waits on an apply any more.
-    phases = backend.phases(session.session_id)
-    assert "capture_deferred" not in phases
-    assert phone.deferrals_seen == 0
-    # The set ended on the household's explicit signal, not on the counter.
-    assert phone.completions_posted == 1
-    assert phases[-1] == "capture_set_complete"
+    assert PHASE_CLOUD_MEASURE not in conductor.session_phases
+    assert phone.completions_posted == 0
     # Fix 2 (W6.4): the CHECK capture's host-event sequence includes the sweep
     # progress pair a real phone's `waitForSweepComplete`
     # (capture-page/js/main.js) polls for around its own play wait --
@@ -518,14 +510,9 @@ def test_happy_path_stage_1_ends_on_the_household_signal():
     # The relay session was purged on completion.
     assert session.session_id not in backend.sessions
 
-    # Durable state: stage 1 walked, a candidate PROPOSED, nothing applied.
     state = v2host.load_v2_state()
-    assert set(state["accepted_phases"]) == {
-        PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-    }
-    assert state["session_phases"] == [
-        PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-    ]
+    assert state["accepted_phases"] == [PHASE_CHECK, PHASE_MEASURE]
+    assert state["session_phases"] == [PHASE_CHECK, PHASE_MEASURE]
     assert state.get("applied") is not True
     assert state.get("verify") is None
     assert state["failure"] is None
@@ -535,12 +522,7 @@ def test_happy_path_stage_1_ends_on_the_household_signal():
     # rendered purely from the host-persisted status blocks (S1b).
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
 
-    # The status projection walked stage 1 in order: CHECK, MEASURE, the
-    # pre-apply cloud. No `applying` — nothing applies inside this session.
-    assert [phase for _p, phase in phases_seen] == (
-        [PHASE_CHECK, PHASE_MEASURE]
-        + [PHASE_CLOUD_MEASURE] * (DEFAULT_CLOUD_MEASURE_POSITIONS - 1)
-    )
+    assert [phase for _p, phase in phases_seen] == [PHASE_CHECK, PHASE_MEASURE]
     class _NoRecovery:
         needs_recovery = False
 
@@ -553,17 +535,9 @@ def test_happy_path_stage_1_ends_on_the_household_signal():
             "crossover_v2": {"phase": block_phase, "needs_recovery": False},
         })
 
-    # The wizard journey the household sees is UNCHANGED by the cloud: the
-    # position groups render inside the measure screen they belong to (the
-    # phone carries the per-spot prompts), so the sequence still reads
-    # check → measure with no new step in the ladder.
     screens = [_envelope_for(p)["screen"] for _s, p in phases_seen]
-    assert screens[0] == "microphone_check"
-    assert set(screens[1:]) == {"measure"}
-    assert len(screens) == resolve_plan_shape().measure_capture_target
-    # …and the session's OWN terminal is the review interlude, not "done".
-    final_block = v2host.crossover_v2_status_block()
-    assert final_block["phase"] == "review"
+    assert screens == ["microphone_check", "measure"]
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
 
 
 # --- the split: nothing applies without an explicit household POST (D1) ------
@@ -863,6 +837,40 @@ def _skip_purge_grace(monkeypatch):
         return None
 
     monkeypatch.setattr(asyncio, "sleep", _instant)
+
+
+def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypatch):
+    _skip_purge_grace(monkeypatch)
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
+        include_cloud_measure=False,
+    )
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        index_phase_map=build_v2_cloud_index_phase_map(include_cloud_measure=False),
+    )
+    real_consume = conductor.consume_capture
+
+    def refuse_measure(index, attempt, result, entry=None):
+        if index == 2:
+            raise conductor._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
+        return real_consume(index, attempt, result, entry)
+
+    monkeypatch.setattr(conductor, "consume_capture", refuse_measure)
+    volume = VolumeRecorder()
+    with pytest.raises(CaptureBeginRefused):
+        _run(_build_runner(conductor, volume), client, session)
+
+    event = backend.host_events[session.session_id][-1]
+    assert (event["phase"], event["index"], event["code"]) == (
+        "capture_result", 2, REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+    )
+    assert _persisted_failure(v2host.load_v2_state()) == {
+        "code": REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+    }
+    assert volume.events == ["open", "abandon"]
 
 
 def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
@@ -3388,6 +3396,32 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     )
 
 
+def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
+    monkeypatch,
+):
+    class _Ready:
+        needs_recovery = False
+
+    def _unrepresentable(*_args):
+        raise ValueError("unsupported confirmed filter")
+
+    from jasper.active_speaker import branch_chain
+
+    v2host.set_volume_plan_for_tests(_Ready())
+    monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *_: None)
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context",
+        lambda _status: SimpleNamespace(safety_profile={}, role_targets={}),
+    )
+    monkeypatch.setattr(branch_chain, "confirmed_protection_sections", _unrepresentable)
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store",
+        lambda *_: pytest.fail("bundle opened before protection preflight"),
+    )
+    with pytest.raises(v2host.CrossoverV2Refused, match="confirmed driver protection"):
+        v2host.prepare_v2_session({}, status={}, run_async=None, camilla_factory=None)
+
+
 def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
     """§1.2's whole point: the emitted plan and the conductor's index→phase map
     come from ONE resolved shape, so a tier can never reach one and not the
@@ -3399,7 +3433,11 @@ def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
     source = inspect.getsource(v2host.prepare_v2_session)
     assert 'resolve_plan_shape(raw.get("tier")' in source
     assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
-    assert "build_v2_cloud_index_phase_map(plan_shape=plan_shape)" in source
+    assert "include_cloud_measure = False" in source
+    assert source.count("include_cloud_measure=include_cloud_measure") == 2
+    assert "confirmed_protection_sections(" in source
+    assert "protection_sections_by_role=protection_sections" in source
+    assert "measurement_protection_sections_by_role=protection_sections" in source
     assert "tier=plan_shape.tier," in source
 
 
@@ -5983,7 +6021,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 # --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
 
 
-def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
+def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, Any]:
     """Drive ``bind_production_play`` far enough to observe the ``config_dir``
     it threads into ``bind_program_playback_seams`` — short-circuiting via a
     sentinel exception BEFORE any real DSP graph emission/playback, since this
@@ -6006,11 +6044,13 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
         flow_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
     )
     _patch_measurement_window(monkeypatch, [])
-    monkeypatch.setattr(
-        camilla_yaml_mod,
-        "emit_active_speaker_program_config",
-        lambda *a, **kw: "placeholder-graph-yaml",
-    )
+    protection = {"woofer": (), "tweeter": ()}
+
+    def _emit(*args, **kwargs):
+        captured["emitter_protection"] = kwargs["protection_sections_by_role"]
+        return "placeholder-graph-yaml"
+
+    monkeypatch.setattr(camilla_yaml_mod, "emit_active_speaker_program_config", _emit)
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
 
     class _FakeEvidenceStore:
@@ -6031,10 +6071,12 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
         safety_profile={},
         role_targets={},
         session_volume_db=-20.0,
+        protection_sections_by_role=protection,
     )
     with pytest.raises(_ShortCircuit):
         play(PHASE_CHECK, object())
-    return captured["config_dir"]
+    captured["source_protection"] = protection
+    return captured
 
 
 def test_bind_production_play_default_config_dir_matches_ssot(monkeypatch, tmp_path):
@@ -6046,7 +6088,7 @@ def test_bind_production_play_default_config_dir_matches_ssot(monkeypatch, tmp_p
     pin: if either side's default drifts away from the other, this fails."""
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
-    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)["config_dir"]
     assert resolved == str(DEFAULT_CAMILLA_CONFIG_DIR)
 
 
@@ -6061,8 +6103,13 @@ def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camill
     first play."""
     from jasper.dsp_apply import dsp_apply_lock_path
 
-    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)["config_dir"]
     assert str(dsp_apply_lock_path(resolved)).startswith("/var/lib/camilladsp")
+
+
+def test_bind_production_play_threads_exact_protection_to_emitter(monkeypatch, tmp_path):
+    captured = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    assert captured["emitter_protection"] is captured["source_protection"]
 
 
 # --- Issue #1976: the summed-sweep stimulus must also land at a stable name --
