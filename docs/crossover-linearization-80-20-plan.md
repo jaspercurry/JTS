@@ -442,7 +442,7 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | Round | Mission | One primary territory | Exit |
 |---|---|---|---|
 | **R14 — Ratify** | Review this contract, reconcile issue comments, create only the two missing tickets | docs/issues; no product code | owner approval + independent docs gate at 0 blockers / 0 should-fixes |
-| **R15 — Atomic fixed-Fc proof** | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement |
+| **R15 — Atomic fixed-Fc proof** *(complete)* | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement — met by #2126 (`ab548e1f3`) and its boost-gate follow-up #2138 (`b94790f4f`) |
 | **Checkpoint — Prove** | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair |
 | **R16–R19 — provisional labels** | Fresh Gate 0 defines complete verticals pairing each producer with a current consumer; it may co-scope lateral capture + selector or name a real immediate consumer | unassigned | §9 ceilings only; no artifact-first dependency or implementation authority |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
@@ -593,5 +593,13 @@ The resulting cap-ladder, boost, and governance rulings are recorded on
 [#2106](https://github.com/jaspercurry/JTS/issues/2106), which this amendment
 reconciles into the plan. This changed docs only; no product code, deployment,
 DSP state, or measurement evidence moved.
+
+**2026-08-05 R15 close-out scope.** A status-only pass. It verified that #2126
+merged as `ab548e1f3` and #2138 as `b94790f4f`, that #2106 is closed, and that
+the merged boost gate matches the ruling recorded above; it re-verified only
+§11's R15 row. The measurement contracts, ceilings, issue sweep, and launch
+briefs were not re-read, and no round after R15 is authorized by this pass —
+the checkpoint and a fresh Gate 0 still gate that. Docs only; nothing was
+deployed or measured, so R15 remains code-complete and hardware-unproven.
 
 Last verified: 2026-08-05
