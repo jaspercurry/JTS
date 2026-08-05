@@ -406,11 +406,14 @@ Component entry (#1665) declares the class; the class drives which layers'
 wizard steps exist. **Landed so far (2026-07-24, the component-entry
 slice):** per-driver `driver_class` (compression_horn/soft_dome/metal_dome/
 beryllium_diamond_dome/ribbon_amt/unknown — `DRIVER_CLASSES` in
-[`jasper/active_speaker/_common.py`](../jasper/active_speaker/_common.py)),
-`radiating_diameter_mm`/`horn_coverage_deg` geometry, and the declared
-in-line pad (`jasper/active_speaker/driver_pad.py`) all feed the
-correction-envelope's `class_prior_limit` term and the effective-sensitivity
-readers (`declared_effective_driver_sensitivities`). **Still open:** the
+[`jasper/active_speaker/_common.py`](../jasper/active_speaker/_common.py))
+feeds the correction-envelope's `class_prior_limit` term, which takes the
+declared class and nothing else; the declared in-line pad
+(`jasper/active_speaker/driver_pad.py`) feeds the effective-sensitivity
+readers (`declared_effective_driver_sensitivities`); `radiating_diameter_mm`
+feeds #1675's simple-v1 ka-beaming crossover hint in `/sound/`; and
+`horn_coverage_deg` is a declaration/display surface only until #1675's
+Bessel beamwidth match lands. **Still open:** the
 SPEAKER-level class this table's columns describe (2-way / 3-way / passive)
 is not yet driven by a component-entry step — that routing is #1669/#1671's
 job — and the research-prefill auto-populate + full consumed-value-audit

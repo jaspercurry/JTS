@@ -2599,7 +2599,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (options.savedOnly) return savedHtml;
     if (!driverResearch.parsed) {
       return savedHtml +
-        '<p class="setting-row__hint">Paste JSON from the assistant to sanity-check the shape. JTS will not apply it automatically.</p>';
+        '<p class="setting-row__hint">Paste the JSON code block the assistant returns to sanity-check the shape. JTS will not apply it automatically.</p>';
     }
     var summary = driverResearch.parsed;
     return savedHtml + '<div class="driver-research__summary">' +
@@ -5903,9 +5903,43 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     status(copied ? 'Copied driver research prompt.' :
       'Copy was blocked by the browser. Prompt text is selected.', !copied);
   }
+  // The research prompt asks for one ```json fenced block, and a chat UI's copy
+  // button copies the block's contents — but people also paste the whole reply,
+  // fence markers and surrounding prose included. A raw JSON.parse on that hands
+  // back a V8 message about a character offset, which tells an operator nothing.
+  // Recover the object first: prefer the first fenced block, else the widest
+  // {...} span, and only then parse. Both paste entry points go through here so
+  // the two cannot drift.
+  function extractDriverResearchJson(text) {
+    var raw = String(text == null ? '' : text).trim();
+    // Strictly additive: the untouched paste is tried first, so anything that
+    // parses today still parses to exactly the same value. Only a paste that
+    // already fails reaches the recovery candidates.
+    var candidates = [raw];
+    var fenced = raw.match(/```[^\S\n]*[A-Za-z0-9_-]*[^\S\n]*\n([\s\S]*?)```/);
+    if (fenced) candidates.push(fenced[1].trim());
+    var open = raw.indexOf('{');
+    var close = raw.lastIndexOf('}');
+    if (open !== -1 && close > open) candidates.push(raw.slice(open, close + 1));
+    // Report the LAST candidate's parser message: it comes from the most
+    // recovered text, so it names the junk inside the object rather than
+    // complaining about the fence the operator was told to paste.
+    var lastError = null;
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        return JSON.parse(candidates[i]);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw new Error(
+      "Couldn't read that as JSON — paste the complete code block the assistant returned. (" +
+      lastError.message + ')'
+    );
+  }
   function parseDriverResearchImport() {
     try {
-      var payload = JSON.parse(driverResearch.importText || '');
+      var payload = extractDriverResearchJson(driverResearch.importText);
       driverResearch.parsed = summarizeDriverResearchPayload(payload);
       driverResearch.importedPayload = payload;
       applyDriverResearchToManualSettings(payload);
@@ -5954,7 +5988,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var importWarning = '';
     if ((driverResearch.importText || '').trim()) {
       try {
-        researchPayload = JSON.parse(driverResearch.importText);
+        researchPayload = extractDriverResearchJson(driverResearch.importText);
         driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
         driverResearch.importedPayload = researchPayload;
         if (driverResearch.parsed.schemaVersion === 2 &&

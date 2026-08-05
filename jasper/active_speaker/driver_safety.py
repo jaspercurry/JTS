@@ -631,12 +631,15 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "gain_offset_db_provenance",
     "notes",
     "sources",
-    # #1665 component entry: driver_class/radiating_diameter_mm/
-    # horn_coverage_deg are researchable (build_driver_research_prompt asks
-    # for them). pad is not prompted (operator-only fact) but is accepted
-    # here too for structural parity with the shared _normalise_driver_common
-    # schema -- a v2 result never legitimately carries it, but rejecting it
-    # here would just be a second, redundant place that gate could drift.
+    # #1665 component entry: build_driver_research_prompt asks for
+    # driver_class and radiating_diameter_mm. horn_coverage_deg is still
+    # accepted here but is no longer requested -- Bessel beamwidth matching
+    # (#1675) is deferred, so nothing computes from it today; a reply that
+    # still carries it normalises exactly as before. pad is not prompted
+    # (operator-only fact) but is accepted here too for structural parity
+    # with the shared _normalise_driver_common schema -- a v2 result never
+    # legitimately carries it, but rejecting it here would just be a second,
+    # redundant place that gate could drift.
     "driver_class",
     "radiating_diameter_mm",
     "horn_coverage_deg",
@@ -1057,41 +1060,127 @@ def finalise_research_result(
     return {**core, "result_fingerprint": _fingerprint(core)}
 
 
-def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
-    """Return the copyable v2 research prompt for one exact request."""
+_PROMPT_TARGET_KEYS = (
+    "target_id",
+    "target_fingerprint",
+    "role",
+    "manufacturer_and_model",
+    "driver_style",
+    "speaker_group_id",
+    "speaker_group_mode",
+    "operator_declared_context",
+)
 
-    request_json = json.dumps(request, indent=2, sort_keys=True)
+# Keys whose value directly bounds what the speaker is allowed to excite. Only
+# these carry per-field provenance in the ask: demanding confidence + basis +
+# URLs for every field is what turned a data reply into an essay, and the
+# remaining fields are advisory prefill an operator reviews anyway.
+_PROMPT_PROVENANCE_KEYS = (
+    "hard_excitation_band_hz",
+    "do_not_test_below_hz",
+    "required_protection_filters",
+    "level_duration_limits",
+    "sensitivity_db_2v83_1m",
+)
+
+
+def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
+    """Return the compact target projection the assistant actually needs."""
+
+    targets = [
+        {
+            key: target[key]
+            for key in _PROMPT_TARGET_KEYS
+            if target.get(key) is not None
+        }
+        for target in request.get("targets", [])
+        if isinstance(target, Mapping)
+    ]
+    projection: dict[str, Any] = {
+        "request_fingerprint": request.get("request_fingerprint"),
+        "targets": targets,
+    }
+    if request.get("build_notes"):
+        projection["build_notes"] = request["build_notes"]
+    return json.dumps(projection, indent=1, sort_keys=True)
+
+
+def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
+    """Return the copyable v2 research prompt for one exact request.
+
+    The contract with the assistant is exactly one fenced ``json`` block back,
+    so the browser's paste box can recover the object from an ordinary chat
+    reply.  What the prompt embeds is a *projection* of ``request`` — the
+    target identities, models, and operator-declared context — never the whole
+    request: the ``hardware`` block and the physical output/topology labels are
+    server bookkeeping the assistant cannot use, and they were most of the
+    prompt's length.  ``request`` itself stays the single source of truth; it
+    is what the browser posts back and what the server binds against.
+
+    The ask is deliberately a strict *subset* of what the parser accepts
+    (see ``_V2_RESEARCH_DRIVER_FIELDS``).  Asking for less cannot invalidate a
+    previously-saved or more verbose result; acceptance is unchanged.
+    """
+
+    # Dropped from the ASK (still accepted, still normalised, still prefilled
+    # when a reply includes them):
+    #   manufacturer          -- display-only; the browser import never copies
+    #                            it into manual_settings, and the one reader
+    #                            (staging._driver_spec_from_preview) has an
+    #                            "Operator research" fallback.
+    #   recommended_lowpass_hz-- no computational consumer; an Advanced field
+    #                            the operator can type.
+    #   horn_coverage_deg     -- same, and its intended consumer (ka-beaming
+    #                            guidance) is not built yet.
+    #   gain_offset_db        -- a guessed level that outranks a derived one.
+    #                            The browser tags an imported gain
+    #                            "research_estimate", and baseline_profile's
+    #                            ladder is measured > pinned > ESTIMATE >
+    #                            sensitivity -- so the guess pre-empts the trim
+    #                            that same reply's sensitivities would have
+    #                            produced through a physical model. Level
+    #                            authority is measurement's and the operator's.
+    # The result shape is fenced because a chat UI's copy button copies the
+    # code block's contents, not the prose around it.
+    target_count = len(request.get("targets", []))
+    entries = "entry" if target_count == 1 else "entries"
     return "\n".join(
         (
-            "You are researching speaker components and safe starting constraints for a JTS speaker.",
-            "Research manufacturer datasheets first, then reputable independent measurements.",
-            "Do not invent missing facts. Put every unresolved fact in unknowns and use null where appropriate.",
-            "Every field assertion needs confidence, a short basis, and source URLs. Research is advisory; the operator will review every value before confirmation.",
-            "A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
+            "You are a loudspeaker-driver datasheet researcher. Your entire reply is data for a machine to parse, not prose for a human.",
+            "",
+            "OUTPUT RULE",
+            "Reply with exactly one ```json fenced code block containing exactly one JSON object. No text before the fence, no text after it. Do not ask clarifying questions; record any ambiguity in unknowns instead.",
+            "",
+            "TASK",
+            "Research the real published specifications of each target below. Use the manufacturer datasheet first and reputable independent measurements second. When sources conflict, prefer the datasheet and record the conflict in unknowns.",
+            "If you can browse, browse silently: no search narration, no source summaries outside the JSON.",
+            "",
+            "TARGETS",
+            _driver_research_prompt_targets(request),
+            "",
+            "ACCURACY",
+            "Report only values you actually found. A field you cannot verify is null plus one entry in that driver's unknowns; null is a correct answer, not a failure.",
+            "Never estimate from a similar model or from typical values for the type. These numbers set hardware-protection limits.",
             "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
-            "Identify the driver's technology class (compression_horn, soft_dome, metal_dome, beryllium_diamond_dome, ribbon_amt, or unknown), its radiating diameter for a cone or dome driver, and its nominal horn coverage angle for a compression-horn driver, only when supported by evidence.",
-            "Return JSON only. Echo request_fingerprint and every target_id/target_fingerprint exactly.",
+            "For a tweeter or compression driver, do_not_test_below_hz and required_protection_filters are the priority lookups.",
+            "A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
             "",
-            "Exact server-authored request:",
-            request_json,
-            "",
-            "Return this result shape:",
+            "RESULT SHAPE",
+            "```json",
             "{",
             '  "artifact_schema_version": 2,',
             f'  "kind": "{DRIVER_RESEARCH_KIND}",',
-            '  "request_fingerprint": "echo from request",',
+            '  "request_fingerprint": "echo from TARGETS",',
             '  "drivers": [{',
-            '    "target_id": "echo from request",',
-            '    "target_fingerprint": "echo from request",',
+            '    "target_id": "echo from TARGETS",',
+            '    "target_fingerprint": "echo from TARGETS",',
             '    "role": "full_range|woofer|mid|tweeter",',
-            '    "model": "exact model",',
-            '    "manufacturer": "string|null",',
+            '    "model": "echo manufacturer_and_model from TARGETS",',
             '    "nominal_impedance_ohm": 8,',
             '    "sensitivity_db_2v83_1m": 90,',
             '    "usable_frequency_range_hz": [80, 5000],',
             '    "recommended_highpass_hz": 80,',
-            '    "recommended_lowpass_hz": 2200,',
             '    "do_not_test_below_hz": 1200,',
             '    "hard_excitation_band_hz": [1200, 20000],',
             '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":1800,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}],',
@@ -1101,15 +1190,31 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
-            '    "horn_coverage_deg": null,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"hard_excitation_band_hz":{"confidence":"low|medium|high|unknown","basis":"short explanation","sources":["https://..."]}},',
-            '    "gain_offset_db": -6,',
-            '    "notes": "concise safety summary",',
+            '    "field_provenance": {"hard_excitation_band_hz":{"confidence":"low|medium|high|unknown","basis":"short basis","sources":["https://..."]}},',
+            '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",
-            '  "crossover_candidates": [{"between_roles":["woofer","tweeter"],"frequency_hz":2500,"filter_type":"Linkwitz-Riley","slope_db_per_octave":24,"confidence":"low|medium|high","rationale":"safe starting point","warnings":[]}]',
+            '  "crossover_candidates": [{"between_roles":["woofer","tweeter"],"frequency_hz":2500,"filter_type":"Linkwitz-Riley","slope_db_per_octave":24,"confidence":"low|medium|high","rationale":"why this point","warnings":[]}]',
             "}",
+            "```",
+            "",
+            f"Return exactly {target_count} {entries} in drivers[] — one per target above, in the same order. Copy target_id, target_fingerprint, and model verbatim.",
+            "",
+            "KEY GUIDE",
+            "- Every numeric key names its own unit (_hz, _ohm, _db, _mm, _s, _dbfs).",
+            "- All numbers are bare JSON numbers. No units, no comments, no text after a value.",
+            '- Confidence vocabulary is "low", "medium", "high", or "unknown".',
+            "- field_provenance covers only these five keys: "
+            + ", ".join(_PROMPT_PROVENANCE_KEYS)
+            + ". Each entry is confidence + basis (12 words or fewer) + at most 2 source URLs.",
+            "- sources: at most 3 URLs you actually consulted for that driver.",
+            "- notes: one sentence, 15 words or fewer.",
+            "- crossover_candidates[].rationale: 15 words or fewer.",
+            "",
+            "STOP",
+            'No introduction ("Here is the JSON:"), no summary, no caveats outside the object, nothing after the closing fence.',
+            "Begin the ```json block now.",
         )
     )
 
