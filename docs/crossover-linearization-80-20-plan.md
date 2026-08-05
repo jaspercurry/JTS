@@ -400,7 +400,8 @@ any line above 400 must map directly to an unmet acceptance requirement. Five
 production files is soft, a sixth requires a named-file conductor/owner
 ratification, and new production modules are zero absent re-ratification. Tests
 are 500 gross, over which the conductor may ratify an honesty-fixture overage
-recorded on the owning issue. Docs 120. R16 350, R17 400, R18 180, R19 580
+recorded on the owning issue. Docs 120. R16 350, R17 400, R18 460 (re-ratified
+from 180 — §11), R19 580
 across at most two independent PRs, and R20 zero. These budget a round's
 **implementation** PRs; a conductor-authored campaign-governance docs PR that
 amends this plan rather than implementing a round carries its own ≤120
@@ -453,7 +454,7 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | **R14 — Ratify** | Review this contract, reconcile issue comments, create only the two missing tickets | docs/issues; no product code | owner approval + independent docs gate at 0 blockers / 0 should-fixes |
 | **R15 — Atomic fixed-Fc proof** *(complete)* | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement — met by #2126 (`ab548e1f3`) and its boost-gate follow-up #2138 (`b94790f4f`) |
 | **Checkpoint — Prove** *(passed)* | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair — passed 2026-08-05 on jts3 as an instrument proof |
-| **R18 — Verification widening** | Widen VERIFY so the selector has an honest referee: judge the crossover region the current 2000–4000 Hz band misses (#1868, #1654) | verification | lands FIRST; ceiling 180; two lenses (correctness, hearing-safety) |
+| **R18 — Verification widening** | Widen VERIFY so the selector has an honest referee: judge the crossover region the current 2000–4000 Hz band misses (#1868, #1654) | verification | lands FIRST; ceiling **≤460** production / ≤5 files / 0 new modules, tests ≤600, docs ≤120 — re-ratified from 180 after a measured STOP at 441, [recorded on #1868](https://github.com/jaspercurry/JTS/issues/1868#issuecomment-5197236195); two lenses (correctness, hearing-safety) |
 | **R16 — Lateral evidence producer** | Produce the lateral walk's evidence, paired in the same vertical with R17 as its current consumer (#2107) | lateral capture | ceiling 350; two lenses (correctness, resilience) |
 | **R17 — Fc selector** | Consume R16's lateral evidence to adjudicate Fc within limits (#1894), taking the declared driver diameter as a beaming/ka prior (#1675, owner ruling) | selector | ceiling 400; three lenses — it decides applied DSP |
 | **R19** | Unchanged by Gate 0 | unassigned | §9 ceilings only (580 across at most two independent PRs) |
