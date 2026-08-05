@@ -106,8 +106,8 @@ commissioner/reset events.
 Success atomically publishes only
 `/var/lib/jasper/chip-aec-alignment.json`: schema-v2 identity (XVF factory
 iSerial, firmware/beam/fixed-profile identity, physical USB-output serial or
-I2S profile/card identity, the registry-declared final-edge sample format
-outputd reports as `dac.format`, and negotiated output geometry) plus `K`. The
+I2S profile/card identity, the final-edge sample format outputd NEGOTIATED and
+reports as `dac.format`, and negotiated output geometry) plus `K`. The
 lifecycle relationship is
 `K = commissioned SYS_DELAY + commissioned median reference queue`. On
 boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples
@@ -131,8 +131,11 @@ handled above, where the existing artifact was operationally *enriched* rather
 than recommissioned. The two cases are not alike. v1→v2 added fields
 describing hardware that had not moved and was not about to, so enrichment
 could not certify anything false. `output_format` exists to guard the
-electrical edge that the outputd native-format write is about to start moving,
-and enrichment machinery would be a fail-open mechanism at exactly the point
+electrical edge that the outputd native-format write moves — outputd now
+requests the registry-declared format at the edge and reads the installed
+`hw_params` back to prove it, so `dac.format` is what the DAC is running, not a
+declaration about it — and enrichment machinery would be a fail-open mechanism
+at exactly the point
 the guard has to be trustworthy — it would hand a box a "valid" artifact for an
 edge nobody re-measured. At the current fleet size (two lab boxes) one
 foreground recommission per box is cheaper and safer than shipping migration

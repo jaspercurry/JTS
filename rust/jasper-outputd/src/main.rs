@@ -34,6 +34,7 @@ use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
+use jasper_outputd::types::SampleFormat;
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -223,6 +224,17 @@ impl RuntimeAlsaSink {
         }
     }
 
+    /// The sample format this sink's final edge actually negotiated.
+    fn dac_format(&self) -> SampleFormat {
+        match self {
+            Self::Single(sink) => sink.dac_format(),
+            // Composite children are S16-pinned in `PairedCompositeSink::new`
+            // — the native-format write is scoped to the coherent single DAC.
+            // Report what they run, not what the profile declared.
+            Self::Composite(_) => SampleFormat::S16Le,
+        }
+    }
+
     fn counters(&self) -> IoCounters {
         match self {
             Self::Single(sink) => sink.counters(),
@@ -317,6 +329,9 @@ fn run_alsa(
     // reaching READY or writing the physical DAC.
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown, Arc::clone(state));
     state.set_negotiated(sink.content_negotiated(), sink.dac_negotiated());
+    // The final edge is open and its format is readback-verified: STATUS
+    // `dac.format` stops echoing the declaration and reports what is running.
+    state.set_dac_format(sink.dac_format());
     sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
     // the published reference is always stereo (a wide sink folds to L == R).
@@ -1536,7 +1551,7 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jasper_outputd::config::{ContentBridgeConfig, DacEdgeFormat};
+    use jasper_outputd::config::ContentBridgeConfig;
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1688,7 +1703,7 @@ mod tests {
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             dac_pcm: "outputd_dac".to_string(),
-            declared_dac_format: DacEdgeFormat::S16Le,
+            declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
             dual_require_link: false,
