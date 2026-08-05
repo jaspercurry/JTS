@@ -602,6 +602,122 @@ def test_reconcile_innomaker_stays_passive_without_a_legal_active_graph(
     assert "active_graph=none" not in result.stderr
 
 
+def _lane_query_python(tmp_path: Path, *, name: str, action: str) -> Path:
+    """Real python for everything EXCEPT the lane-cap registry query.
+
+    The reconciler feeds that query as a heredoc on stdin (``python -`` ), so
+    the shim has to route on stdin content rather than argv the way the other
+    fake pythons here do. ``action`` is shell run in place of the real query:
+    ``exit 1`` simulates the spawn dying, a preamble+passthrough simulates a
+    different registry. Every other spawn — crucially the
+    ``jasper.output_hardware`` recognition probe — still runs for real, which
+    is what puts us on the recognized-single-DAC branch.
+    """
+
+    shim = tmp_path / name
+    shim.write_text(
+        "#!/bin/bash\n"
+        'if [ "${1:-}" = "-" ]; then\n'
+        '  src="$(cat)"\n'
+        '  case "$src" in\n'
+        f"    *active_outputd_lane_channels_for*) {action} ;;\n"
+        "  esac\n"
+        f'  printf %s "$src" | "{sys.executable}" "$@"\n'
+        "  exit $?\n"
+        "fi\n"
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def test_reconcile_lane_probe_failure_is_named_apart_from_a_lane_less_dac(
+    tmp_path: Path,
+):
+    """A TRANSIENT failure of the lane-cap probe must not be reported as "this
+    DAC has no active lane".
+
+    ``active_lane_channels_for_dac`` swallows its own spawn failure
+    (``2>/dev/null || true``), so an OOM-kill or fork-EAGAIN hitting THAT one
+    spawn — the mid-install window AGENTS.md warns about — yields an empty cap
+    while every other probe succeeds and the DAC is still RECOGNIZED. Before
+    this token split that landed on ``dac_no_active_lane``, whose remedy
+    ("re-running cannot change it; choose a different layout") is FALSE here:
+    the condition is transient and the next reconcile pass converges.
+
+    Resolving passive is still the correct fail-closed outcome — only the
+    reported reason changes.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _lane_query_python(tmp_path, name="flaky-python", action="exit 1")
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "active_graph=lane_probe_failed" in result.stderr
+    assert "active_graph=dac_no_active_lane" not in result.stderr
+    # Fail-closed is unchanged: the box is passive either way.
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+
+
+def test_reconcile_lane_less_profile_still_reports_dac_no_active_lane(
+    tmp_path: Path,
+):
+    """The other side of the split: a DAC whose profile genuinely declares no
+    lane keeps the actionable token.
+
+    Exercises the REAL resolver against a patched registry — the shim prepends
+    a preamble that rewrites the InnoMaker entry to a lane-less clone, then
+    runs the reconciler's own query heredoc — so this pins the `none` sentinel
+    end to end rather than faking the resolver's answer. That is the token's
+    surviving population: the next passive-only board the registry meets.
+    """
+    preamble = (
+        "import dataclasses as _dc;"
+        "import jasper.audio_hardware.dac as _d;"
+        "_p = _dc.replace("
+        "_d.INNOMAKER_HIFI_AMP_PRO,"
+        " supports_active_outputd_lane=False,"
+        " active_outputd_lane_channels=None);"
+        "_d._BY_ID = {**_d._BY_ID, _p.id: _p}"
+    )
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _lane_query_python(
+                    tmp_path,
+                    name="lane-less-python",
+                    # Prepend the registry patch, then run the real query.
+                    action=f'src="{preamble}"$\'\\n\'"$src"',
+                )
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "active_graph=dac_no_active_lane" in result.stderr
+    assert "active_graph=lane_probe_failed" not in result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+
+
 def test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph(
     tmp_path: Path,
 ):
