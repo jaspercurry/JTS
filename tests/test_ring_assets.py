@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from jasper import ring_assets
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 
 
 def test_asset_path_constants_match_p1_ship_locations():
@@ -283,9 +284,12 @@ def test_ring_header_offsets_match_rust_layout():
 # --- Per-box render: the conf.d slot period follows the DAC's declared floor ---
 #
 # The rule this pins: a per-box ring conf.d is rendered ONLY from a DECLARED
-# LatencyFloor. render_ring_conf_period is the write half of the conf.d format
-# whose read half is ring_conf_period_frames above; both use one regex, so a
-# conf.d the parser accepts is one the renderer can update.
+# LatencyFloor, and ONLY when that floor equals RING_SLOT_FRAMES — Ring A's slot
+# size is fan-in's compile-time constant, so any other period would make the
+# ioplug attach against a geometry fan-in never builds (RING_ATTACH_FATAL at
+# arm). render_ring_conf_period is the write half of the conf.d format whose
+# read half is ring_conf_period_frames above; both use one regex, so a conf.d
+# the parser accepts is one the renderer can update.
 
 SHIPPED_RING_CONF = (
     Path(__file__).resolve().parents[1]
@@ -299,37 +303,57 @@ def _shipped_conf_copy(tmp_path):
     return conf
 
 
+def _drifted_conf_copy(tmp_path, period_frames=1024):
+    """The shipped conf.d with its period drifted off the transport slot.
+
+    The remaining live write path: a hand-edited or half-installed conf.d that
+    the render converges back onto RING_SLOT_FRAMES.
+    """
+    conf = _shipped_conf_copy(tmp_path)
+    conf.write_text(
+        conf.read_text(encoding="utf-8").replace(
+            f"period_frames {RING_SLOT_FRAMES}", f"period_frames {period_frames}"
+        ),
+        encoding="utf-8",
+    )
+    return conf
+
+
 def test_render_ring_conf_period_is_a_no_op_when_it_already_matches(tmp_path):
-    # The GOLDEN case: an Apple box's declared floor IS the shipped 128, so the
+    # The GOLDEN case: an Apple box's declared floor IS the shipped slot, so the
     # render leaves the file byte- AND mtime-identical. "Renders to the shipped
     # value" and "never rendered" must be indistinguishable on disk.
     conf = _shipped_conf_copy(tmp_path)
     before_bytes = conf.read_bytes()
     before_mtime = conf.stat().st_mtime_ns
 
-    outcome = ring_assets.render_ring_conf_period(128, conf_d=str(conf))
+    outcome = ring_assets.render_ring_conf_period(
+        RING_SLOT_FRAMES, conf_d=str(conf)
+    )
 
     assert outcome.changed is False
-    assert outcome.period_frames == 128
-    assert outcome.previous_period_frames == 128
+    assert outcome.period_frames == RING_SLOT_FRAMES
+    assert outcome.previous_period_frames == RING_SLOT_FRAMES
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
 
 
 def test_render_ring_conf_period_moves_only_the_period_values(tmp_path):
-    # A non-Apple floor: both PCM blocks follow, and NOTHING else moves —
-    # comments, n_slots, path, type, and indentation survive verbatim.
-    conf = _shipped_conf_copy(tmp_path)
+    # Converging a drifted conf.d: both PCM blocks follow, and NOTHING else
+    # moves — comments, n_slots, path, type, and indentation survive verbatim.
+    conf = _drifted_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
 
-    outcome = ring_assets.render_ring_conf_period(1024, conf_d=str(conf))
+    outcome = ring_assets.render_ring_conf_period(
+        RING_SLOT_FRAMES, conf_d=str(conf)
+    )
 
     assert outcome.changed is True
-    assert outcome.previous_period_frames == 128
+    assert outcome.previous_period_frames == 1024
     after = conf.read_text(encoding="utf-8")
-    assert ring_assets.ring_conf_period_frames(str(conf)) == 1024
-    assert after.count("    period_frames 1024") == 2
-    assert "period_frames 128" not in after
+    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    assert after.count(f"    period_frames {RING_SLOT_FRAMES}") == 2
+    assert "period_frames 1024" not in after
     # Every other line is untouched.
     assert [
         line for line in before.splitlines()
@@ -343,12 +367,14 @@ def test_render_ring_conf_period_moves_only_the_period_values(tmp_path):
 def test_render_ring_conf_period_second_pass_writes_nothing(tmp_path):
     # Idempotence: reconcile runs on every boot/udev event, so a converged box
     # must stop writing (no mtime churn, no torn-read window).
-    conf = _shipped_conf_copy(tmp_path)
-    ring_assets.render_ring_conf_period(1024, conf_d=str(conf))
+    conf = _drifted_conf_copy(tmp_path)
+    ring_assets.render_ring_conf_period(RING_SLOT_FRAMES, conf_d=str(conf))
     settled_bytes = conf.read_bytes()
     settled_mtime = conf.stat().st_mtime_ns
 
-    outcome = ring_assets.render_ring_conf_period(1024, conf_d=str(conf))
+    outcome = ring_assets.render_ring_conf_period(
+        RING_SLOT_FRAMES, conf_d=str(conf)
+    )
 
     assert outcome.changed is False
     assert conf.read_bytes() == settled_bytes
@@ -358,29 +384,31 @@ def test_render_ring_conf_period_second_pass_writes_nothing(tmp_path):
 def test_render_ring_conf_period_preserves_mode(tmp_path):
     # The conf.d must stay renderer-user resolvable (the PR #214 class): 0644
     # survives the temp-file replace.
-    conf = _shipped_conf_copy(tmp_path)
+    conf = _drifted_conf_copy(tmp_path)
     conf.chmod(0o644)
 
-    ring_assets.render_ring_conf_period(1024, conf_d=str(conf))
+    ring_assets.render_ring_conf_period(RING_SLOT_FRAMES, conf_d=str(conf))
 
     assert conf.stat().st_mode & 0o777 == 0o644
 
 
 def test_render_ring_conf_period_converges_a_torn_conf(tmp_path):
     # A torn conf.d (the two PCMs disagreeing) has no single previous value to
-    # report, but converging both onto the target IS the repair.
+    # report, but converging both onto the transport slot IS the repair.
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n}\n"
+        f"pcm.jts_ring_capture {{\n    period_frames {RING_SLOT_FRAMES}\n}}\n"
         "pcm.jts_ring_playback {\n    period_frames 1024\n}\n",
         encoding="utf-8",
     )
 
-    outcome = ring_assets.render_ring_conf_period(256, conf_d=str(conf))
+    outcome = ring_assets.render_ring_conf_period(
+        RING_SLOT_FRAMES, conf_d=str(conf)
+    )
 
     assert outcome.changed is True
     assert outcome.previous_period_frames is None
-    assert ring_assets.ring_conf_period_frames(str(conf)) == 256
+    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
 
 
 def test_render_ring_conf_period_refuses_to_invent_a_period_line(tmp_path):
@@ -390,18 +418,27 @@ def test_render_ring_conf_period_refuses_to_invent_a_period_line(tmp_path):
     conf.write_text("pcm.jts_ring_capture { type jts_ring }\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="no period_frames"):
-        ring_assets.render_ring_conf_period(1024, conf_d=str(conf))
+        ring_assets.render_ring_conf_period(RING_SLOT_FRAMES, conf_d=str(conf))
     assert conf.read_text(encoding="utf-8") == (
         "pcm.jts_ring_capture { type jts_ring }\n"
     )
 
 
-def test_render_ring_conf_period_rejects_a_nonpositive_target(tmp_path):
+@pytest.mark.parametrize("target", [0, -128, RING_SLOT_FRAMES * 2])
+def test_render_ring_conf_period_rejects_any_non_slot_target(tmp_path, target):
+    # Ring A's slot is fan-in's compile-time constant, so the writer cannot emit
+    # any other period even if a caller asks — the ioplug attach would hard-fail
+    # (RING_ATTACH_FATAL) and CRASH shm_ring at arm rather than refuse it.
     conf = _shipped_conf_copy(tmp_path)
-    with pytest.raises(ValueError, match="must be > 0"):
-        ring_assets.render_ring_conf_period(0, conf_d=str(conf))
+    before_bytes = conf.read_bytes()
+
+    with pytest.raises(ValueError, match="RING_SLOT_FRAMES"):
+        ring_assets.render_ring_conf_period(target, conf_d=str(conf))
+    assert conf.read_bytes() == before_bytes
 
 
 def test_render_ring_conf_period_raises_on_a_missing_conf(tmp_path):
     with pytest.raises(OSError):
-        ring_assets.render_ring_conf_period(1024, conf_d=str(tmp_path / "missing.conf"))
+        ring_assets.render_ring_conf_period(
+            RING_SLOT_FRAMES, conf_d=str(tmp_path / "missing.conf")
+        )

@@ -11,7 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from jasper.audio_hardware.dac import final_edge_format_for
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -2181,7 +2184,7 @@ def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None
 # --- render-ring-conf-period: the floor is DATA -------------------------------
 
 
-def _render_ring_conf(conf: Path) -> tuple[int, str, str]:
+def _render_ring_conf(conf: Path) -> int:
     from jasper.cli.audio_config import main as audio_config_main
 
     return audio_config_main(
@@ -2195,23 +2198,44 @@ def _render_ring_conf(conf: Path) -> tuple[int, str, str]:
     )
 
 
-def test_render_subcommand_follows_a_synthesized_non_apple_floor(
+def _drifted_ring_conf(tmp_path: Path, period_frames: int = 1024) -> Path:
+    """The shipped conf.d with its period drifted off the transport slot.
+
+    The remaining live write path once non-slot floors are refused: a
+    hand-edited or half-installed conf.d the render converges back.
+    """
+    conf = _staged_ring_conf(tmp_path)
+    conf.write_text(
+        conf.read_text(encoding="utf-8").replace(
+            f"period_frames {RING_SLOT_FRAMES}", f"period_frames {period_frames}"
+        ),
+        encoding="utf-8",
+    )
+    return conf
+
+
+def _synthetic_floor(period_frames: int):
+    from jasper.audio_hardware.dac import LatencyFloor
+
+    return LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=period_frames,
+        outputd_dac_buffer_frames=8 * period_frames,
+    )
+
+
+def test_render_subcommand_renders_for_any_profile_declaring_the_slot_floor(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
-    # Only the Apple dongle declares a floor today, so synthesize one on a
-    # different profile: the slot period follows the DATA, with no code branch
-    # per DAC. This is the shape PR-5 lands for real for the InnoMaker.
-    from jasper.audio_hardware.dac import LatencyFloor
-
-    conf = _staged_ring_conf(tmp_path)
-    synthetic = LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
-        outputd_period_frames=1024,
-        outputd_dac_buffer_frames=4096,
-    )
+    # The floor is DATA, not an Apple special case: synthesize a
+    # RING_SLOT_FRAMES floor on a different profile and a drifted conf.d
+    # converges. (A floor that is NOT the slot is refused — see the test
+    # below; that is the #2147 boundary, not a per-DAC code branch.)
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
     monkeypatch.setattr(
         "jasper.cli.audio_config.latency_floor_for",
         lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
@@ -2220,13 +2244,63 @@ def test_render_subcommand_follows_a_synthesized_non_apple_floor(
     assert _render_ring_conf(conf) == 0
     out = capsys.readouterr().out
     assert "result rendered" in out
-    assert "period_frames 1024" in out
-    assert "previous_period_frames 128" in out
+    assert f"period_frames {RING_SLOT_FRAMES}" in out
+    assert "previous_period_frames 1024" in out
 
     from jasper import ring_assets
 
-    assert ring_assets.ring_conf_period_frames(str(conf)) == 1024
-    assert conf.read_text(encoding="utf-8").count("    period_frames 1024") == 2
+    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    assert (
+        conf.read_text(encoding="utf-8").count(
+            f"    period_frames {RING_SLOT_FRAMES}"
+        )
+        == 2
+    )
+
+
+def test_render_subcommand_refuses_a_floor_the_ring_slot_cannot_carry(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Ring A's slot is fan-in's COMPILE-TIME RING_SLOT_FRAMES (128, no env
+    # override): rust/jasper-fanin/src/config.rs pins it and mixer.rs creates
+    # the ring with it. Rendering a non-128 period into pcm.jts_ring_capture
+    # would make CamillaDSP's ioplug attach expect N against fan-in's 128-frame
+    # ring — a hard RING_ATTACH_FATAL geometry error that CRASHES shm_ring at
+    # arm rather than refusing it. So a declared floor that is not exactly
+    # RING_SLOT_FRAMES must leave the conf.d untouched. See issue #2147.
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+    before_mtime = conf.stat().st_mtime_ns
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda _profile_id: _synthetic_floor(2 * RING_SLOT_FRAMES),
+    )
+
+    assert _render_ring_conf(conf) == 0
+    out = capsys.readouterr().out
+    assert "result skipped" in out
+    assert f"reason ring_slot_fixed_{RING_SLOT_FRAMES}" in out
+    assert conf.read_bytes() == before_bytes
+    assert conf.stat().st_mtime_ns == before_mtime
+
+
+def test_render_ring_conf_period_itself_refuses_a_non_slot_period(
+    tmp_path: Path,
+) -> None:
+    # Defence in depth: the writer cannot emit a period the ring transport
+    # will not carry, even if a future caller forgets the floor gate.
+    from jasper import ring_assets
+
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+
+    with pytest.raises(ValueError, match="RING_SLOT_FRAMES"):
+        ring_assets.render_ring_conf_period(
+            2 * RING_SLOT_FRAMES, conf_d=str(conf)
+        )
+    assert conf.read_bytes() == before_bytes
 
 
 def test_render_subcommand_is_idempotent(
@@ -2236,17 +2310,10 @@ def test_render_subcommand_is_idempotent(
 ) -> None:
     # Reconcile runs on every boot and udev event; a converged box must stop
     # writing rather than churn the mtime on each pass.
-    from jasper.audio_hardware.dac import LatencyFloor
-
-    conf = _staged_ring_conf(tmp_path)
+    conf = _drifted_ring_conf(tmp_path)
     monkeypatch.setattr(
         "jasper.cli.audio_config.latency_floor_for",
-        lambda profile_id: LatencyFloor(
-            camilla_chunksize=256,
-            camilla_target_level=1536,
-            outputd_period_frames=1024,
-            outputd_dac_buffer_frames=4096,
-        ),
+        lambda _profile_id: _synthetic_floor(RING_SLOT_FRAMES),
     )
 
     assert _render_ring_conf(conf) == 0
@@ -2265,18 +2332,11 @@ def test_render_subcommand_reports_a_torn_conf_instead_of_inventing_one(
     monkeypatch,
     capsys,
 ) -> None:
-    from jasper.audio_hardware.dac import LatencyFloor
-
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text("pcm.jts_ring_capture { type jts_ring }\n", encoding="utf-8")
     monkeypatch.setattr(
         "jasper.cli.audio_config.latency_floor_for",
-        lambda profile_id: LatencyFloor(
-            camilla_chunksize=256,
-            camilla_target_level=1536,
-            outputd_period_frames=1024,
-            outputd_dac_buffer_frames=4096,
-        ),
+        lambda _profile_id: _synthetic_floor(RING_SLOT_FRAMES),
     )
 
     assert _render_ring_conf(conf) == 1

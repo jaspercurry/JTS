@@ -41,6 +41,15 @@ def _stage(monkeypatch, tmp_path, *, dac_id, conf_text=None):
     return conf
 
 
+def _conf_text(period_frames):
+    return (
+        f"pcm.jts_ring_capture {{\n    period_frames {period_frames}\n"
+        "    n_slots 2\n}\n"
+        f"pcm.jts_ring_playback {{\n    period_frames {period_frames}\n"
+        "    n_slots 2\n}\n"
+    )
+
+
 def _synthetic_floor(period_frames):
     return LatencyFloor(
         camilla_chunksize=256,
@@ -72,16 +81,44 @@ def test_ok_when_the_conf_matches_the_declared_floor(monkeypatch, tmp_path):
     assert "apple_usb_c_dongle" in result.detail
 
 
+def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
+    # State 4, the product boundary: Ring A's slot is fan-in's COMPILE-TIME
+    # RING_SLOT_FRAMES, so a DAC whose floor is not exactly that never gets a
+    # rendered conf.d — shm_ring is simply unavailable on it until #2147.
+    # That is a documented boundary, NOT drift, so it reports ok.
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    monkeypatch.setattr(
+        audio,
+        "latency_floor_for",
+        lambda _id: _synthetic_floor(2 * RING_SLOT_FRAMES),
+    )
+    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+
+    result = audio.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    # Honest: names both numbers, says what is unavailable and what still works.
+    assert str(2 * RING_SLOT_FRAMES) in result.detail
+    assert str(RING_SLOT_FRAMES) in result.detail
+    assert "shm_ring" in result.detail
+    assert "loopback" in result.detail.lower()
+    assert "#2147" in result.detail
+
+
 def test_warns_when_the_conf_diverges_from_the_declared_floor(
     monkeypatch, tmp_path
 ):
-    # State 3: a declared floor the conf.d has not been rendered to. Warn, not
-    # fail — the conf.d is inert unless shm_ring is armed, and the coupling
+    # State 5, real drift: the Apple dongle's floor IS renderable (it equals
+    # RING_SLOT_FRAMES) but this box's conf.d was never rendered to it. Warn,
+    # not fail — the conf.d is inert unless shm_ring is armed, and the coupling
     # reconciler independently fail-closes to loopback on this mismatch.
-    monkeypatch.setattr(
-        audio, "latency_floor_for", lambda _id: _synthetic_floor(1024)
+    _stage(
+        monkeypatch,
+        tmp_path,
+        dac_id="apple_usb_c_dongle",
+        conf_text=_conf_text(1024),
     )
-    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
 
     result = audio.check_ring_conf_floor_render()
 
@@ -105,11 +142,8 @@ def test_warns_when_the_conf_diverges_from_the_declared_floor(
 def test_warns_when_the_conf_period_is_indeterminate(
     monkeypatch, tmp_path, conf_text
 ):
-    monkeypatch.setattr(
-        audio, "latency_floor_for", lambda _id: _synthetic_floor(1024)
-    )
     _stage(
-        monkeypatch, tmp_path, dac_id="hifiberry_dac8x", conf_text=conf_text
+        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", conf_text=conf_text
     )
 
     result = audio.check_ring_conf_floor_render()
@@ -120,11 +154,8 @@ def test_warns_when_the_conf_period_is_indeterminate(
 
 
 def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        audio, "latency_floor_for", lambda _id: _synthetic_floor(1024)
-    )
     monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
-    monkeypatch.setattr(audio, "_active_audio_dac_id", lambda: "hifiberry_dac8x")
+    monkeypatch.setattr(audio, "_active_audio_dac_id", lambda: "apple_usb_c_dongle")
 
     result = audio.check_ring_conf_floor_render()
 

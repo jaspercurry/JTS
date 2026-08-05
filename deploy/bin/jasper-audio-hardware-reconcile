@@ -863,13 +863,16 @@ render_asound_if_needed() {
 
 # Render the shm-ring conf.d slot period from the ACTIVE DAC's DECLARED latency
 # floor (the follow-up deploy/alsa/conf.d/60-jts-ring.conf's own header asks
-# for). The ring slot IS one outputd DAC period, so a box whose DAC declares a
-# floor needs its conf.d to pin that floor's period instead of the shipped 128.
+# for). The ring slot IS one outputd DAC period.
 #
-# The rule is narrow on purpose: a DAC with NO declared floor — and any
-# unrecognized DAC — leaves the shipped conf.d untouched and therefore keeps
-# whatever coupling that box has today. So this is a no-op on every box until
-# floor data is declared for its profile.
+# The rule is narrow on purpose. A DAC with NO declared floor, any unrecognized
+# DAC, and a declared floor whose period is not fan-in's compile-time
+# RING_SLOT_FRAMES all leave the shipped conf.d untouched, so that box keeps
+# whatever coupling it has today. The last case is the #2147 boundary: fan-in
+# always builds Ring A at RING_SLOT_FRAMES, so rendering another period would
+# CRASH shm_ring at arm (ioplug RING_ATTACH_FATAL) instead of refusing it. The
+# Python layer emits a distinct reason token for it, and that DAC still gets its
+# floor's outputd period/buffer geometry through outputd.env.
 #
 # Deliberately triggers NO restart and feeds no restart flag. The conf.d is read
 # by ALSA at the next PCM open, and arming is owned by the coupling reconciler,

@@ -73,6 +73,15 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # Ring A/B slot size in frames. Mirrors rust/jasper-fanin/src/config.rs
 # RING_SLOT_FRAMES and c/jts-ring-ioplug/pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD.
 # The conf.d period parser and contract tests pin those copies to this value.
+#
+# The Rust side is a COMPILE-TIME const with no env override — fan-in always
+# creates Ring A with it — so this is the only slot size the transport carries.
+# The conf.d WRITER is pinned here too: jasper.ring_assets.render_ring_conf_period
+# refuses any target that is not this value, and its caller refuses a DAC
+# LatencyFloor whose outputd_period_frames differs, because writing another
+# period would make CamillaDSP's ioplug attach against a geometry fan-in never
+# builds (RING_ATTACH_FATAL -> shm_ring crashes at arm instead of refusing).
+# Making the slot floor-derived across all four components is issue #2147.
 RING_SLOT_FRAMES = 128
 DEFAULT_FANIN_RING_SLOTS = 2
 RING_CAMILLA_CHUNKSIZE = 128

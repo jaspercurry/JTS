@@ -44,7 +44,7 @@ from jasper.audio_runtime_overrides import (
     set_runtime_override,
 )
 from jasper.env_load import read_env_file_state
-from jasper.fanin_coupling import COUPLING_ENV_VAR
+from jasper.fanin_coupling import COUPLING_ENV_VAR, RING_SLOT_FRAMES
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_period
 
 DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
@@ -126,10 +126,23 @@ def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
     """Render the shm-ring conf.d slot period from a DAC's DECLARED floor.
 
     The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
-    declared ``LatencyFloor``. A profile that declares none (and an unrecognized
+    declared ``LatencyFloor`` whose ``outputd_period_frames`` equals
+    ``RING_SLOT_FRAMES``. A profile that declares no floor (and an unrecognized
     id) leaves the SHIPPED conf.d untouched and therefore keeps whatever
     coupling that box has today — so this command is a no-op until floor data
     exists for a profile.
+
+    Why the second condition: Ring A's slot size is fan-in's COMPILE-TIME
+    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env override).
+    Rendering any other period would make CamillaDSP's ioplug attach against a
+    geometry fan-in never builds — a hard ``RING_ATTACH_FATAL`` that CRASHES
+    shm_ring at arm instead of refusing it. So a non-matching floor is REFUSED
+    here, with its own reason token so the reconcile journal names why. Such a
+    DAC keeps loopback coupling and still gets the floor's outputd
+    period/buffer geometry through ``outputd.env``, which is where most of the
+    floor's value lives; teaching the ring slot to follow the floor across
+    fan-in, the ioplug, the CamillaDSP emitter, and the negotiation model is
+    issue #2147.
 
     The registry owns the floor and ``jasper.ring_assets`` owns the conf.d
     format; this command only joins them, which is why it re-reads the floor
@@ -144,6 +157,12 @@ def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
     if floor is None:
         print("result skipped")
         print("reason no_declared_floor")
+        print(f"conf {conf_d}")
+        return 0
+    if floor.outputd_period_frames != RING_SLOT_FRAMES:
+        print("result skipped")
+        print(f"reason ring_slot_fixed_{RING_SLOT_FRAMES}")
+        print(f"period_frames {floor.outputd_period_frames}")
         print(f"conf {conf_d}")
         return 0
     try:

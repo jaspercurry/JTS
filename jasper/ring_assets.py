@@ -25,8 +25,9 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   module's ``period_frames`` regex to REWRITE the value it also parses, so the
   reader and the writer of the conf.d format cannot drift.
 
-Import-cheap (stdlib only) so the reconciler and the socket-activated web
-surfaces can resolve asset presence without pulling in the doctor.
+Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
+so the reconciler and the socket-activated web surfaces can resolve asset
+presence without pulling in the doctor.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
 # Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
@@ -179,11 +182,23 @@ def render_ring_conf_period(
     """Rewrite the ring conf.d ``period_frames`` lines to ``period_frames``.
 
     The ring slot IS one outputd DAC period, so a box whose DAC declares a
-    latency floor needs the conf.d to pin that floor's period rather than the
-    shipped 128. This is the per-box render the conf.d's own header calls for;
-    the CALLER decides whether a render is warranted (the rule is "only from a
-    DECLARED :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this
-    function never consults the DAC registry itself.
+    latency floor needs the conf.d to pin that floor's period. This is the
+    per-box render the conf.d's own header calls for; the CALLER decides
+    whether a render is warranted (the rule is "only from a DECLARED
+    :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this function never
+    consults the DAC registry itself.
+
+    **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
+    Ring A's slot size is fan-in's COMPILE-TIME constant
+    (``rust/jasper-fanin/src/config.rs`` ``RING_SLOT_FRAMES``, with no env
+    override; ``mixer.rs`` creates the ring with it), so writing any other
+    period into ``pcm.jts_ring_capture`` would make CamillaDSP's ioplug attach
+    expect a geometry fan-in never builds — a hard ``RING_ATTACH_FATAL``
+    ("ring header does not match expected geometry") that CRASHES shm_ring at
+    arm rather than refusing it. Asking for a different period is therefore a
+    caller bug and raises; making the slot floor-derived across fan-in, the
+    ioplug, the CamillaDSP emitter, and the negotiation model is issue #2147.
+    This guard is defence in depth behind the caller's own floor gate.
 
     **Write-on-change only.** When the conf already declares exactly
     ``period_frames`` the file is left GENUINELY untouched — no rewrite, no
@@ -197,12 +212,18 @@ def render_ring_conf_period(
     ``path`` values, and every comment survive verbatim, because the rewrite is
     a substitution over the same regex :func:`ring_conf_period_frames` reads.
 
-    Raises ``ValueError`` for a non-positive target or a conf.d that declares no
-    ``period_frames`` line at all (a torn / foreign file — never invent one),
-    and ``OSError`` when the file cannot be read or replaced.
+    Raises ``ValueError`` for a target that is not ``RING_SLOT_FRAMES`` or a
+    conf.d that declares no ``period_frames`` line at all (a torn / foreign
+    file — never invent one), and ``OSError`` when the file cannot be read or
+    replaced.
     """
-    if period_frames <= 0:
-        raise ValueError(f"period_frames must be > 0, got {period_frames}")
+    if period_frames != RING_SLOT_FRAMES:
+        raise ValueError(
+            f"period_frames must equal RING_SLOT_FRAMES ({RING_SLOT_FRAMES}), "
+            f"got {period_frames}: Ring A's slot size is fan-in's compile-time "
+            "constant, so any other conf.d period fails the ioplug attach. "
+            "Refuse the render instead (see issue #2147)"
+        )
     path = RING_CONF_D if conf_d is None else conf_d
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
