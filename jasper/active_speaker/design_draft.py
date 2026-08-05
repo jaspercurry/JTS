@@ -88,6 +88,7 @@ _MANUAL_DRIVER_FIELDS = {
     "driver_class",
     "radiating_diameter_mm",
     "horn_coverage_deg",
+    "physical_polarity",
     "pad",
 }
 _CANDIDATE_FIELDS = {
@@ -372,6 +373,9 @@ def _normalise_driver_common(
             raw.get("horn_coverage_deg"),
             f"{prefix}.horn_coverage_deg",
         ),
+        "physical_polarity": _polarity(
+            raw.get("physical_polarity"), f"{prefix}.physical_polarity"
+        ),
     }
     if include_sources:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
@@ -383,11 +387,12 @@ def _normalise_driver_common(
                 include_research_evidence=include_research_safety_evidence,
             )
         )
-        # Pad is deliberately outside normalise_driver_safety_fields (a
-        # research/safety-profile surface pad is never part of): it is an
-        # operator-only, never-researched fact, folded into effective
+        # Pad is deliberately outside normalise_driver_safety_fields: it is an
+        # operator-only, never-researched component fact, folded into effective
         # sensitivity by declared_effective_driver_sensitivities() below and
-        # by baseline_profile._derive_corrections, not a safety limit.
+        # by baseline_profile._derive_corrections, not a safety limit. The
+        # confirmed component profile carries the same normalized fact so a
+        # measurement graph can bind its identity without synthesizing EQ.
         driver["pad"] = normalise_pad(
             raw.get("pad"),
             nominal_impedance_ohm=nominal_impedance_ohm,

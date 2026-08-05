@@ -12,11 +12,19 @@ import pytest
 import yaml
 
 from jasper.active_speaker import ActiveSpeakerPreset
+from jasper.active_speaker.driver_safety import (
+    build_driver_safety_profile,
+    evaluate_driver_safety_profile,
+)
+from jasper.active_speaker.design_draft import normalise_manual_settings
 from jasper.active_speaker.protected_neutral_graph import (
     PROTECTED_NEUTRAL_GRAPH_EXCLUSIONS,
+    PROTECTED_NEUTRAL_LIMITER_MARGIN_DB,
     ProtectedNeutralGraphError,
     build_protected_neutral_session_graph,
 )
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_active_speaker_driver_safety import _manual_settings
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -104,6 +112,23 @@ def test_program_config_uses_the_real_two_lane_carrier() -> None:
     assert parsed["devices"]["capture"]["channels"] == 2
     assert parsed["devices"]["volume_limit"] == 0.0
     assert graph.spec.stimulus_peak_ceiling_dbfs == -12.0
+    assert parsed["filters"]["active_startup_headroom"]["parameters"]["gain"] == (
+        -PROTECTED_NEUTRAL_LIMITER_MARGIN_DB
+    )
+    assert graph.spec.worst_case_limiter_margin_db == pytest.approx(
+        PROTECTED_NEUTRAL_LIMITER_MARGIN_DB
+    )
+    assert parsed["pipeline"][0] == {
+        "type": "Filter",
+        "channels": [0, 1],
+        "names": ["active_startup_headroom"],
+    }
+    tweeter_pipeline = next(
+        item
+        for item in parsed["pipeline"]
+        if item.get("type") == "Filter" and item.get("channels") == [1]
+    )
+    assert tweeter_pipeline["names"][-1] == "as_tweeter_startup_limiter"
     routing = {
         entry["dest"]: [source["channel"] for source in entry["sources"]]
         for entry in parsed["mixers"]["split_active_2way"]["mapping"]
@@ -159,6 +184,53 @@ def test_confirmed_physical_polarity_is_the_only_measurement_inversion() -> None
     assert graph.measurement_polarity_sign_by_role["tweeter"] == -1
     assert graph.configured_polarity_sign_by_role["tweeter"] == 1
     assert tweeter_source["inverted"] is True
+
+
+def test_confirmed_component_builder_carries_physical_polarity_and_pad_to_graph() -> None:
+    topology = mono_output_topology(card_id=None)
+    manual = _manual_settings()
+    tweeter = manual["drivers"][1]
+    tweeter["nominal_impedance_ohm"] = 8.0
+    tweeter["physical_polarity"] = "inverted"
+    tweeter["pad"] = {"kind": "direct_db", "attenuation_db": -3.0}
+    normalized = normalise_manual_settings(manual)
+    assert normalized is not None
+    manual = normalized
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-08-04T12:00:00Z",
+    )
+
+    assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
+    assert profile["targets"][1]["physical_polarity"] == "inverted"
+    assert profile["targets"][1]["pad"] == {
+        "kind": "direct_db",
+        "attenuation_db": -3.0,
+    }
+    changed = copy.deepcopy(manual)
+    changed["drivers"][1]["pad"]["attenuation_db"] = -4.0
+    changed_profile = build_driver_safety_profile(
+        topology,
+        manual_settings=changed,
+        driver_research=None,
+    )
+    assert changed_profile["profile_fingerprint"] != profile["profile_fingerprint"]
+
+    graph = _session_graph(_preset(configured_fc_hz=5000.0), profile=profile)
+    parsed = yaml.safe_load(graph.yaml_text)
+    tweeter_spec = graph.spec.role("tweeter")
+    assert tweeter_spec.physical_polarity_sign == -1
+    assert tweeter_spec.pad == profile["targets"][1]["pad"]
+    assert graph.identity["canonical_spec"]["roles"][1]["pad"] == tweeter_spec.pad
+    tweeter_source = parsed["mixers"]["split_active_2way"]["mapping"][1]["sources"][0]
+    assert tweeter_source["inverted"] is True
+    assert all(
+        definition.get("parameters", {}).get("gain") != -3.0
+        for definition in parsed["filters"].values()
+    )
 
 
 def test_graph_spec_is_the_single_protection_and_identity_source() -> None:

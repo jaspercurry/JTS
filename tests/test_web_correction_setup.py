@@ -887,7 +887,46 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "level", "commissioning", "capture_entry"]
+    assert claims == ["capture_entry", "repeat", "level", "commissioning"]
+
+
+@pytest.mark.parametrize("status", ["idle", "restored", "superseded"])
+def test_capture_entry_startup_allows_only_confirmed_terminal_outcomes(
+    monkeypatch, status
+):
+    from jasper.active_speaker import web_commissioning
+
+    async def restore(*, camilla_factory):
+        del camilla_factory
+        return {"status": status}
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", restore
+    )
+    assert correction_setup._restore_capture_entry()["status"] == status
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "corrupt", "reason": "malformed"},
+        {"status": "deferred", "restore_mode": "inline_graph"},
+        {"status": "failed", "restore_mode": "inline_graph"},
+        {"status": "entry_missing", "restore_mode": "inline_graph"},
+    ],
+)
+def test_capture_entry_inline_obligation_blocks_startup(monkeypatch, result):
+    from jasper.active_speaker import web_commissioning
+
+    async def restore(*, camilla_factory):
+        del camilla_factory
+        return result
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", restore
+    )
+    with pytest.raises(RuntimeError, match="blocked startup"):
+        correction_setup._restore_capture_entry()
 
 
 def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):

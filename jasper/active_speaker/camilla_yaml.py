@@ -56,7 +56,6 @@ from jasper.sound.profile import SoundProfile
 from .graph_safety import (
     bass_extension_block_valid,
     filter_param_matches,
-    pipeline_contains_chain,
     pipeline_reference_closure_errors,
     protection_requirement_present,
     unprotected_tweeter_outputs,
@@ -2301,9 +2300,10 @@ def _emit_protected_neutral_filter_definitions(
     protection_by_role: Mapping[str, Sequence[Any]],
     *,
     limiter_clip_limit_db: float,
+    headroom_gain_db: float,
 ) -> str:
     lines: list[str] = []
-    lines.extend(emit_gain_filter("active_startup_headroom", 0.0))
+    lines.extend(emit_gain_filter("active_startup_headroom", headroom_gain_db))
     for role in required_driver_roles(preset.way_count):
         for index, section in enumerate(protection_by_role[role]):
             lines.extend(
@@ -2433,6 +2433,14 @@ def _assert_program_graph_proven(
     _assert_pipeline_references_closed(yaml_text, preset)
     view = view_from_emitted_text(yaml_text)
     checks: list[bool] = []
+    checks.append(
+        filter_param_matches(
+            view,
+            "active_startup_headroom",
+            filter_type="Gain",
+            params={"gain": graph_spec.graph_headroom_gain_db},
+        )
+    )
     for role_spec in graph_spec.roles:
         channels = set(_channels_for_role(preset, role_spec.role))
         names = tuple(
@@ -2442,7 +2450,10 @@ def _assert_program_graph_proven(
             for index, item in enumerate(role_spec.filters)
         ) + (_driver_delay_name(role_spec.role), _driver_limiter_name(role_spec.role))
         checks.append(
-            pipeline_contains_chain(view, channels=channels, required_names=names)
+            any(
+                step.channels == frozenset(channels) and step.names == names
+                for step in view.pipeline_steps
+            )
         )
         checks.append(
             filter_param_matches(
@@ -2477,6 +2488,7 @@ def _assert_program_graph_proven(
     except yaml.YAMLError as exc:
         raise ActiveSpeakerConfigError("protected graph YAML is invalid") from exc
     devices = payload.get("devices") if isinstance(payload, Mapping) else None
+    pipeline = payload.get("pipeline") if isinstance(payload, Mapping) else None
     checks.extend(
         (
             isinstance(devices, Mapping),
@@ -2485,6 +2497,14 @@ def _assert_program_graph_proven(
             isinstance(devices, Mapping)
             and isinstance(devices.get("capture"), Mapping)
             and devices["capture"].get("channels") == 2,
+            isinstance(pipeline, list)
+            and bool(pipeline)
+            and pipeline[0]
+            == {
+                "type": "Filter",
+                "channels": [0, 1],
+                "names": ["active_startup_headroom"],
+            },
         )
     )
     if not all(checks):
@@ -2512,7 +2532,8 @@ def emit_active_speaker_program_config(
     The typed graph specification is the only input: lane 0 carries woofer,
     lane 1 carries HF, and summed CLOUD_MEASURE puts identical PCM on both.
     Only declared role protection ``P``, confirmed physical polarity, zero
-    delay, soft limiters, pass gains, and the non-positive ceiling are emitted.
+    delay, the fixed limiter headroom, soft limiters, and the non-positive
+    volume ceiling are emitted.
     """
 
     from .protected_neutral_graph import ProtectedNeutralGraphSpec
@@ -2570,8 +2591,10 @@ def emit_active_speaker_program_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    if graph_spec.graph_headroom_gain_db != 0.0:
-        raise ActiveSpeakerConfigError("protected-neutral graph headroom must be unity")
+    if graph_spec.worst_case_limiter_margin_db <= 0.0:
+        raise ActiveSpeakerConfigError(
+            "protected-neutral graph must remain strictly below its limiter"
+        )
     measurement_protection_by_role = graph_spec.sections_by_role()
 
     output_count = _output_count(preset)
@@ -2580,6 +2603,7 @@ def emit_active_speaker_program_config(
         preset,
         measurement_protection_by_role,
         limiter_clip_limit_db=limiter_clip_limit_db,
+        headroom_gain_db=graph_spec.graph_headroom_gain_db,
     )
     mixer_yaml = _emit_role_routed_mixer(
         preset,

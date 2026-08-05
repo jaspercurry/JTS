@@ -29,7 +29,9 @@ from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     driver_protection_profile,
 )
+from .driver_pad import DriverPadError, normalise_pad
 from .measurement import active_driver_targets, physical_driver_target
+from .profile import SUPPORTED_POLARITY
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DRIVER_RESEARCH_REQUEST_KIND = "jts_active_crossover_driver_research_request"
@@ -82,6 +84,7 @@ _MANUAL_DRIVER_FIELDS = {
     "driver_class",
     "radiating_diameter_mm",
     "horn_coverage_deg",
+    "physical_polarity",
     "pad",
 }
 _MANUAL_CANDIDATE_FIELDS = {
@@ -212,6 +215,16 @@ def _positive_float(value: Any, field_name: str) -> float | None:
     if out is not None and out <= 0:
         raise DriverSafetyProfileError(f"{field_name} must be > 0")
     return out
+
+
+def _physical_polarity(value: Any, field_name: str) -> str | None:
+    result = _text(value, field_name, max_chars=20)
+    if result is not None and result not in SUPPORTED_POLARITY:
+        supported = ", ".join(sorted(SUPPORTED_POLARITY))
+        raise DriverSafetyProfileError(
+            f"{field_name} must be one of: {supported}"
+        )
+    return result
 
 
 def _bounded_int(
@@ -1239,6 +1252,27 @@ def _normalise_profile_manual_settings(
             value = _text(raw.get(key), f"{field_name}.{key}", max_chars=max_chars)
             if value:
                 driver[key] = value
+        nominal_impedance = _positive_float(
+            raw.get("nominal_impedance_ohm"),
+            f"{field_name}.nominal_impedance_ohm",
+        )
+        if nominal_impedance is not None:
+            driver["nominal_impedance_ohm"] = nominal_impedance
+        physical_polarity = _physical_polarity(
+            raw.get("physical_polarity"), f"{field_name}.physical_polarity"
+        )
+        if physical_polarity is not None:
+            driver["physical_polarity"] = physical_polarity
+        try:
+            pad = normalise_pad(
+                raw.get("pad"),
+                nominal_impedance_ohm=nominal_impedance,
+                field_name=f"{field_name}.pad",
+            )
+        except DriverPadError as exc:
+            raise DriverSafetyProfileError(str(exc)) from exc
+        if pad is not None:
+            driver["pad"] = pad
         driver.update(
             normalise_driver_safety_fields(
                 raw,
@@ -1466,6 +1500,9 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
+            "nominal_impedance_ohm": visible.get("nominal_impedance_ohm"),
+            "physical_polarity": visible.get("physical_polarity"),
+            "pad": visible.get("pad"),
             "hard_excitation_band_hz": visible.get("hard_excitation_band_hz"),
             "required_protection_filters": visible.get(
                 "required_protection_filters", []
@@ -1736,6 +1773,9 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "physical_output_index",
                 "model",
                 "manufacturer",
+                "nominal_impedance_ohm",
+                "physical_polarity",
+                "pad",
                 "hard_excitation_band_hz",
                 "required_protection_filters",
                 "measurement_band_hz",
@@ -1786,6 +1826,39 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 required=False,
                 max_chars=120,
             )
+        if "nominal_impedance_ohm" in target:
+            nominal_impedance = _positive_float(
+                target.get("nominal_impedance_ohm"),
+                f"{field_name}.nominal_impedance_ohm",
+            )
+            if target.get("nominal_impedance_ohm") != nominal_impedance:
+                raise DriverSafetyProfileError(
+                    f"{field_name}.nominal_impedance_ohm is not canonical"
+                )
+        else:
+            nominal_impedance = None
+        if "physical_polarity" in target:
+            physical_polarity = _physical_polarity(
+                target.get("physical_polarity"),
+                f"{field_name}.physical_polarity",
+            )
+            if target.get("physical_polarity") != physical_polarity:
+                raise DriverSafetyProfileError(
+                    f"{field_name}.physical_polarity is not canonical"
+                )
+        try:
+            normalized_pad = normalise_pad(
+                target.get("pad"),
+                nominal_impedance_ohm=nominal_impedance,
+                field_name=f"{field_name}.pad",
+            )
+        except DriverPadError as exc:
+            raise DriverSafetyProfileError(str(exc)) from exc
+        if ("pad" in target) != (normalized_pad is not None) or (
+            normalized_pad is not None
+            and _canonical_json(target.get("pad")) != _canonical_json(normalized_pad)
+        ):
+            raise DriverSafetyProfileError(f"{field_name}.pad is not canonical")
         _require_canonical_text_field(
             target,
             "driver_style",

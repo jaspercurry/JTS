@@ -2288,24 +2288,38 @@ async def restore_pending_capture_entry_config(
 ) -> dict[str, Any]:
     """Restore the stashed production entry config once, at sequence exit.
 
-    The counterpart of ``capture_entry_anchor.record_entry``: automatic
-    capture attempts leave the persisted CamillaDSP path on the all-muted
-    staged anchor between attempts, and this converges it back to the
-    production config from sequence entry. Called from recovery surfaces
-    (jasper-correction-web's service-start claim boundary). Outcomes:
+    The counterpart of ``capture_entry_anchor.record_entry``. Legacy automatic
+    capture may leave the persisted path on its all-muted staged anchor; R15
+    may instead leave the outliving daemon on an inline protected-neutral graph
+    while the persisted path still names production. ``restore_mode`` selects
+    the exact ownership check, and both converge by reloading the entry config.
+    Called from recovery surfaces (jasper-correction-web's service-start claim
+    boundary). Outcomes:
 
-    - ``idle``: no stash — nothing pending.
+    - ``idle``: the stash is truly absent — nothing pending.
+    - ``corrupt``: a stash exists but cannot be interpreted; retained and
+      request acceptance must remain blocked.
     - ``deferred``: CamillaDSP unreachable; stash retained (muted-safe) so a
       later surface can converge.
     - ``superseded``: the persisted path is no longer the staged anchor —
       another owner (a crossover apply, an operator) repointed production;
       the stash is obsolete and cleared without touching CamillaDSP.
-    - ``entry_missing``: the stashed config file no longer exists; stash
-      cleared, speaker stays on the anchor (muted, never loud).
+    - ``entry_missing``: the stashed config file no longer exists; obligation
+      retained, speaker stays protected, and request acceptance stays blocked.
     - ``restored``: production reloaded, stash cleared.
     """
 
-    pending = capture_entry_anchor.pending_anchor()
+    try:
+        pending = capture_entry_anchor.pending_anchor(fail_on_corrupt=True)
+    except capture_entry_anchor.CaptureEntryAnchorStateError as exc:
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            level=logging.ERROR,
+            status="corrupt",
+            reason=str(exc),
+        )
+        return {"status": "corrupt", "reason": str(exc)}
     if pending is None:
         return {"status": "idle"}
     entry = pending.entry_config_path
@@ -2322,6 +2336,7 @@ async def restore_pending_capture_entry_config(
         return {
             "status": "deferred",
             "reason": current_error or "current_config_unknown",
+            "restore_mode": pending.restore_mode,
         }
     if pending.restore_mode == capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH:
         restore_owner_matches = _config_paths_match(current, entry)
@@ -2352,8 +2367,25 @@ async def restore_pending_capture_entry_config(
             "status": "entry_missing",
             "entry_config_path": entry,
             "retained_for_recovery": True,
+            "restore_mode": pending.restore_mode,
         }
-    restored = await cam.set_config_file_path(entry, best_effort=False)
+    try:
+        restored = await cam.set_config_file_path(entry, best_effort=False)
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        log_event(
+            logger,
+            "active_speaker.capture_entry_restore",
+            level=logging.WARNING,
+            status="failed",
+            entry_config_path=entry,
+            reason=type(exc).__name__,
+        )
+        return {
+            "status": "failed",
+            "entry_config_path": entry,
+            "reason": type(exc).__name__,
+            "restore_mode": pending.restore_mode,
+        }
     if restored is not True:
         log_event(
             logger,
@@ -2362,7 +2394,11 @@ async def restore_pending_capture_entry_config(
             status="failed",
             entry_config_path=entry,
         )
-        return {"status": "failed", "entry_config_path": entry}
+        return {
+            "status": "failed",
+            "entry_config_path": entry,
+            "restore_mode": pending.restore_mode,
+        }
     capture_entry_anchor.clear()
     log_event(
         logger,

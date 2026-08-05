@@ -1061,18 +1061,15 @@ def test_raw_json_pair_rolls_back_raw_when_second_write_fails(
     raw_rel = "crossover_v2/pair/anchor.wav"
     json_rel = "crossover_v2/pair/raw.json"
 
-    def fail_json(*_args, **_kwargs):
-        raise RuntimeError("second write failed")
+    real_write = CommissioningEvidenceStore._write_once_with_ownership
 
-    real_publish_json = CommissioningEvidenceStore.publish_json_artifact
-
-    def fail_this_store(self, *args, **kwargs):
-        if self is store:
-            return fail_json(*args, **kwargs)
-        return real_publish_json(self, *args, **kwargs)
+    def fail_this_store(self, relative_path, payload):
+        if self is store and relative_path.endswith("raw.json"):
+            raise RuntimeError("second write failed")
+        return real_write(self, relative_path, payload)
 
     monkeypatch.setattr(
-        CommissioningEvidenceStore, "publish_json_artifact", fail_this_store
+        CommissioningEvidenceStore, "_write_once_with_ownership", fail_this_store
     )
     with pytest.raises(RuntimeError, match="second write"):
         store.publish_raw_json_pair(
@@ -1083,8 +1080,53 @@ def test_raw_json_pair_rolls_back_raw_when_second_write_fails(
             validate_json=lambda value: None,
         )
 
-    assert not (store.bundle_dir / "artifacts" / raw_rel).exists()
-    assert not (store.bundle_dir / "artifacts" / json_rel).exists()
+    artifact_root = store.bundle_dir / "evidence" / "v1" / "artifacts"
+    assert not (artifact_root / raw_rel).exists()
+    assert not (artifact_root / json_rel).exists()
+
+
+def test_raw_json_pair_same_bytes_race_never_rolls_back_other_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _open_store(tmp_path)
+    raw_rel = "crossover_v2/pair-race/anchor.wav"
+    json_rel = "crossover_v2/pair-race/raw.json"
+    raw_payload = b"RIFF-raced-identical"
+    real_write = CommissioningEvidenceStore._write_once_with_ownership
+    raced = False
+
+    def interleave(self, relative_path, payload):
+        nonlocal raced
+        if self is store and relative_path.endswith("anchor.wav") and not raced:
+            raced = True
+            other_artifact, other_created = real_write(self, relative_path, payload)
+            assert other_created is True
+            adopted_artifact, adopted_created = real_write(self, relative_path, payload)
+            assert adopted_artifact == other_artifact
+            assert adopted_created is False
+            return adopted_artifact, adopted_created
+        if self is store and relative_path.endswith("raw.json"):
+            raise RuntimeError("JSON write/readback failed")
+        return real_write(self, relative_path, payload)
+
+    monkeypatch.setattr(
+        CommissioningEvidenceStore, "_write_once_with_ownership", interleave
+    )
+    with pytest.raises(RuntimeError, match="JSON write/readback"):
+        store.publish_raw_json_pair(
+            raw_relative_path=raw_rel,
+            raw_payload=raw_payload,
+            json_relative_path=json_rel,
+            json_payload={"valid": True},
+            validate_json=lambda value: None,
+        )
+
+    assert (
+        store.bundle_dir / "evidence" / "v1" / "artifacts" / raw_rel
+    ).read_bytes() == raw_payload
+    assert not (
+        store.bundle_dir / "evidence" / "v1" / "artifacts" / json_rel
+    ).exists()
 
 
 def test_raw_json_pair_rolls_back_both_after_second_readback_failure(
@@ -1110,8 +1152,9 @@ def test_raw_json_pair_rolls_back_both_after_second_readback_failure(
             validate_json=fail_second_validation,
         )
 
-    assert not (store.bundle_dir / "artifacts" / raw_rel).exists()
-    assert not (store.bundle_dir / "artifacts" / json_rel).exists()
+    artifact_root = store.bundle_dir / "evidence" / "v1" / "artifacts"
+    assert not (artifact_root / raw_rel).exists()
+    assert not (artifact_root / json_rel).exists()
 
 
 def test_raw_json_pair_never_deletes_a_preexisting_orphan(tmp_path: Path) -> None:

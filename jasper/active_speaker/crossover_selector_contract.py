@@ -360,13 +360,13 @@ def validate_selector_result_v1(
         or not isinstance(counts, Mapping)
         or set(counts) != {"common", "roles", "candidates"}
         or type(counts["common"]) is not int
-        or counts["common"] <= 0
+        or counts["common"] < 3
         or not isinstance(counts["roles"], Mapping)
         or tuple(counts["roles"]) != ROLE_ORDER
-        or not all(type(value) is int and value > 0 for value in counts["roles"].values())
+        or not all(type(value) is int and value >= 3 for value in counts["roles"].values())
         or not isinstance(counts["candidates"], Mapping)
         or list(counts["candidates"]) != candidate_keys
-        or not all(type(value) is int and value > 0 for value in counts["candidates"].values())
+        or not all(type(value) is int and value >= 3 for value in counts["candidates"].values())
     ):
         raise SelectorContractError("selector masks or bin counts are incomplete")
     candidates = _candidate_records(raw["candidate_records"], grid)
@@ -441,64 +441,57 @@ def validate_selector_result_v1(
         or any(reason not in _OUTCOME_REASONS for reason in outcome["reason_codes"])
     ):
         raise SelectorContractError("selector outcome envelope is invalid")
-    status = outcome["status"]
-    if status == "selected":
-        selected = outcome["selected_fc_hz"]
-        if (
-            outcome["retained_fc_hz"] is not None
-            or selected not in admissible_grid
-            or outcome["reason_codes"] != ["unique_lexicographic_dominance"]
-            or baseline_unbeaten != [float(selected)]
-            or any(values != [float(selected)] for values in sensitivity_unbeaten.values())
-        ):
-            raise SelectorContractError("selected outcome is inconsistent")
-    elif status == "abstained":
-        retained = outcome["retained_fc_hz"]
-        if (
-            outcome["selected_fc_hz"] is not None
-            or retained != float(configured_fc_hz)
-            or retained not in admissible_grid
-        ):
-            raise SelectorContractError("abstained outcome fallback is inconsistent")
-        if not baseline_unbeaten:
-            expected_reason = "cyclic_comparison"
-        elif len(baseline_unbeaten) != 1:
-            expected_reason = "metric_uncertainty_tie"
-        elif any(
-            sensitivity_unbeaten[key] != baseline_unbeaten
-            for key in ("left_only", "right_only")
-        ):
-            expected_reason = "left_right_winner_instability"
-        elif any(
-            sensitivity_unbeaten[key] != baseline_unbeaten
-            for key in ("omit_left_40_cm", "omit_right_40_cm")
-        ):
-            expected_reason = "leave_one_wide_side_winner_instability"
-        else:
-            raise SelectorContractError("abstained outcome has no measured instability")
-        if expected_reason not in outcome["reason_codes"]:
-            raise SelectorContractError("abstained outcome reason is inconsistent")
+    instability_reason: str | None
+    if not baseline_unbeaten:
+        instability_reason = "cyclic_comparison"
+    elif len(baseline_unbeaten) != 1:
+        instability_reason = "metric_uncertainty_tie"
+    elif any(
+        sensitivity_unbeaten[key] != baseline_unbeaten
+        for key in ("left_only", "right_only")
+    ):
+        instability_reason = "left_right_winner_instability"
+    elif any(
+        sensitivity_unbeaten[key] != baseline_unbeaten
+        for key in ("omit_left_40_cm", "omit_right_40_cm")
+    ):
+        instability_reason = "leave_one_wide_side_winner_instability"
     else:
-        if outcome["selected_fc_hz"] is not None or outcome["retained_fc_hz"] is not None:
-            raise SelectorContractError("refused outcome cannot carry an Fc")
-        invalid_evidence_reasons = {
-            "invalid_evidence_schema",
-            "invalid_evidence_identity",
-            "invalid_measurement_authority",
+        instability_reason = None
+
+    expected_outcome: dict[str, Any]
+    if not admissible:
+        expected_outcome = {
+            "status": "refused",
+            "selected_fc_hz": None,
+            "retained_fc_hz": None,
+            "reason_codes": ["no_admissible_candidate"],
         }
-        reasons = set(outcome["reason_codes"])
-        if reasons & invalid_evidence_reasons:
-            pass
-        elif not admissible:
-            if "no_admissible_candidate" not in reasons:
-                raise SelectorContractError("no-admissible refusal reason is missing")
-        elif float(configured_fc_hz) not in admissible_grid:
-            if "configured_fc_inadmissible_for_abstention" not in reasons:
-                raise SelectorContractError(
-                    "configured-fallback refusal reason is missing"
-                )
+    elif instability_reason is not None:
+        configured = float(configured_fc_hz)
+        if configured in admissible_grid:
+            expected_outcome = {
+                "status": "abstained",
+                "selected_fc_hz": None,
+                "retained_fc_hz": configured,
+                "reason_codes": [instability_reason],
+            }
         else:
-            raise SelectorContractError("refused outcome reason is inconsistent")
+            expected_outcome = {
+                "status": "refused",
+                "selected_fc_hz": None,
+                "retained_fc_hz": None,
+                "reason_codes": ["configured_fc_inadmissible_for_abstention"],
+            }
+    else:
+        expected_outcome = {
+            "status": "selected",
+            "selected_fc_hz": baseline_unbeaten[0],
+            "retained_fc_hz": None,
+            "reason_codes": ["unique_lexicographic_dominance"],
+        }
+    if outcome != expected_outcome:
+        raise SelectorContractError("selector outcome is inconsistent with its evidence")
     core = {key: value for key, value in raw.items() if key != "fingerprint"}
     if raw["fingerprint"] != json_fingerprint(core):
         raise SelectorContractError("selector result fingerprint mismatch")

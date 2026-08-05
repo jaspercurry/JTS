@@ -23,16 +23,23 @@ during the sequence comes back muted, never loud). Production is restored
 exactly once from this stash at sequence exit / recovery surfaces
 (``web_commissioning.restore_pending_capture_entry_config``).
 
+R15 reuses this same durable owner for its inline protected-neutral graph swap.
+That mode does not repoint CamillaDSP's persisted config path, but CamillaDSP
+can outlive correction-web while still executing the inline graph. The stored
+``restore_mode`` distinguishes the legacy staged-anchor obligation from this
+inline obligation; restart recovery reloads the exact entry config before
+correction-web may accept another request.
+
 Fail direction: a stash that is never restored leaves the speaker on the
 all-muted staged anchor — muted, never loud. Recovery surfaces:
 jasper-correction-web's own idle shutdown (the common abandon — the user
 closes the tab and the wizard idles out minutes later), the service-start
 claim boundary (a process that crashed/restarted mid-sequence), and any later
 crossover apply (which repoints production itself and makes the stash inert).
-After those, the only stranded-muted case left is a hard crash/reboot
-mid-sequence — unchanged from before this stash existed, and exactly the
-crash-recovery-MUTED posture the startup-load S3 guard prescribes; it
-converges at the next correction-web start.
+An inline-graph obligation is stricter: correction-web does not accept
+requests after restart until the exact production config has reloaded or a
+new production owner has demonstrably superseded it. Unreadable state remains
+a blocking obligation rather than being conflated with an absent stash.
 """
 
 from __future__ import annotations
@@ -66,6 +73,10 @@ class CaptureEntryAnchor:
     restore_mode: str
 
 
+class CaptureEntryAnchorStateError(RuntimeError):
+    """The durable restore obligation exists but cannot be interpreted."""
+
+
 def state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
 
@@ -93,7 +104,7 @@ def record_entry(
     if restore_mode not in _RESTORE_MODES:
         raise ValueError("capture entry stash restore mode is invalid")
     target = state_path(path)
-    pending = pending_anchor(path=target)
+    pending = pending_anchor(path=target, fail_on_corrupt=True)
     if pending is not None and pending != CaptureEntryAnchor(entry, restore_mode):
         raise RuntimeError("a different capture entry restore is already pending")
     atomic_write_text(
@@ -122,12 +133,16 @@ def record_entry(
     )
 
 
-def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | None:
+def pending_anchor(
+    *,
+    path: str | Path | None = None,
+    fail_on_corrupt: bool = False,
+) -> CaptureEntryAnchor | None:
     """The stashed production path awaiting sequence-level restore, or None.
 
-    Fail-soft: an unreadable/malformed stash reads as ``None`` at WARN — the
-    speaker then stays on the all-muted staged anchor (muted, never loud)
-    until an operator reapplies a profile.
+    Compatibility callers may retain the historical fail-soft ``None`` view.
+    Recovery owners pass ``fail_on_corrupt=True`` so unreadable state blocks
+    request acceptance and cannot masquerade as an absent obligation.
     """
 
     target = state_path(path)
@@ -135,7 +150,7 @@ def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | No
         raw: Any = json.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         log_event(
             logger,
             "active_speaker.capture_entry_anchor",
@@ -144,11 +159,28 @@ def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | No
             status="unreadable",
             reason=type(exc).__name__,
         )
+        if fail_on_corrupt:
+            raise CaptureEntryAnchorStateError(
+                f"capture entry anchor is unreadable: {type(exc).__name__}"
+            ) from exc
         return None
     if (
         not isinstance(raw, Mapping)
+        or set(raw)
+        not in (
+            {"schema_version", "kind", "entry_config_path", "stored_at"},
+            {
+                "schema_version",
+                "kind",
+                "entry_config_path",
+                "restore_mode",
+                "stored_at",
+            },
+        )
         or raw.get("kind") != STATE_KIND
         or raw.get("schema_version") != SCHEMA_VERSION
+        or not isinstance(raw.get("stored_at"), str)
+        or not raw.get("stored_at")
     ):
         log_event(
             logger,
@@ -157,6 +189,8 @@ def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | No
             action="read",
             status="malformed",
         )
+        if fail_on_corrupt:
+            raise CaptureEntryAnchorStateError("capture entry anchor is malformed")
         return None
     entry = str(raw.get("entry_config_path") or "").strip()
     # State written before R15 belongs to the original staged-anchor owner.
@@ -169,6 +203,8 @@ def pending_anchor(*, path: str | Path | None = None) -> CaptureEntryAnchor | No
             action="read",
             status="malformed",
         )
+        if fail_on_corrupt:
+            raise CaptureEntryAnchorStateError("capture entry anchor is malformed")
         return None
     return CaptureEntryAnchor(entry, restore_mode)
 

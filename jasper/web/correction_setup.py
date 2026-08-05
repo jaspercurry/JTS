@@ -7702,29 +7702,46 @@ def make_server(
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
-def _restore_capture_entry() -> None:
+def _restore_capture_entry() -> dict[str, Any]:
     """Converge an abandoned automatic capture sequence back to production.
 
-    An automatic capture sequence leaves the persisted CamillaDSP path on the
-    all-muted staged anchor between attempts; the production path is stashed
-    durably (capture_entry_anchor). This runs at both in-process lifecycle
-    exits — service start (`_claim_crossover_state_owners`, covering a
-    previous process that crashed/restarted mid-sequence) and this process's
-    own idle shutdown (`main`'s IdleShutdownTracker hook, covering the common
-    abandon: the user closes the tab, correction-web idles out minutes later).
-    Fail direction if it cannot run (CamillaDSP unreachable): the speaker
-    stays on the all-muted anchor — muted, never loud — and the stash is
-    retained for the next opportunity.
+    The existing capture-entry owner durably distinguishes a persisted
+    all-muted staged-anchor obligation from an R15 inline-graph obligation.
+    This runs at both in-process lifecycle exits — service start
+    (`_claim_crossover_state_owners`, covering a previous process that
+    crashed/restarted mid-sequence) and this process's own idle shutdown
+    (`main`'s IdleShutdownTracker hook, covering the common abandon: the user
+    closes the tab, correction-web idles out minutes later).
+    Fail direction if exact restore cannot be confirmed: the speaker remains
+    protected, the obligation is retained, and service startup raises before
+    the request socket is accepted. Only absent, restored, or demonstrably
+    superseded state permits startup to continue.
     """
 
-    from jasper.active_speaker import web_commissioning
+    from jasper.active_speaker import capture_entry_anchor, web_commissioning
 
-    _run_async(
+    result = _run_async(
         web_commissioning.restore_pending_capture_entry_config(
             camilla_factory=_camilla,
         ),
         timeout=15.0,
     )
+    if not isinstance(result, dict):
+        raise RuntimeError("capture entry restore blocked startup: invalid")
+    if result.get("status") in {
+        "idle",
+        "restored",
+        "superseded",
+    }:
+        return result
+    if (
+        result.get("status") == "corrupt"
+        or result.get("restore_mode")
+        == capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH
+    ):
+        status = result.get("status")
+        raise RuntimeError(f"capture entry restore blocked startup: {status}")
+    return result
 
 
 def _idle_exit_restore_capture_entry() -> None:
@@ -7748,6 +7765,10 @@ def _claim_crossover_state_owners() -> None:
     from jasper.active_speaker import repeat_admission
     from . import correction_crossover_backend
 
+    # Inline CamillaDSP state outlives this process. Restore it before claiming
+    # any new correction state owner; a retained/corrupt obligation blocks the
+    # service rather than letting production-assuming requests run against it.
+    _restore_capture_entry()
     claims = (
         (
             "correction.crossover_repeat_admission_unavailable",
@@ -7760,10 +7781,6 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.active_commissioning_run_unavailable",
             correction_crossover_backend.claim_commissioning_run_owner,
-        ),
-        (
-            "correction.capture_entry_restore_unavailable",
-            _restore_capture_entry,
         ),
     )
     for event, claim in claims:

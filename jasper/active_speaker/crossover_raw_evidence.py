@@ -413,8 +413,7 @@ def _linearity_proof(
     *,
     analysis: Any,
     program: Any,
-    threshold_dbfs: float,
-    stimulus_gain_ceiling_dbfs: float,
+    spec: ProtectedNeutralGraphSpec,
 ) -> dict[str, Any]:
     integrity = analysis.capture_integrity
     clipped = (
@@ -422,18 +421,16 @@ def _linearity_proof(
         if integrity is not None
         else [item.segment_id for item in analysis.locations if item.clipped]
     )
-    maximum_peak = max(
-        float(segment.effective_peak_dbfs) for segment in program.stimulus_segments()
-    )
     maximum_programmed_gain = max(
         float(segment.gain_db) for segment in program.stimulus_segments()
     )
+    maximum_peak = spec.worst_case_limiter_input_peak_dbfs
+    margin = spec.worst_case_limiter_margin_db
     if (
         analysis.linearity_ok is not True
         or clipped
-        or maximum_programmed_gain > float(stimulus_gain_ceiling_dbfs)
-        or maximum_peak > float(stimulus_gain_ceiling_dbfs)
-        or maximum_peak >= float(threshold_dbfs)
+        or maximum_programmed_gain > spec.stimulus_peak_ceiling_dbfs
+        or margin <= 0.0
     ):
         raise RawEvidenceError(
             "accepted raw evidence must prove linear capture and limiter non-engagement"
@@ -441,11 +438,14 @@ def _linearity_proof(
     return _fingerprinted(
         "jts_crossover_limiter_linearity_proof_v1",
         {
-            "limiter_threshold_dbfs": float(threshold_dbfs),
-            "stimulus_gain_ceiling_dbfs": float(stimulus_gain_ceiling_dbfs),
+            "proof_basis": "emitted_graph_worst_case_at_volume_ceiling",
+            "limiter_threshold_dbfs": spec.limiter_threshold_dbfs,
+            "stimulus_gain_ceiling_dbfs": spec.stimulus_peak_ceiling_dbfs,
+            "volume_ceiling_db": spec.volume_ceiling_db,
+            "graph_headroom_gain_db": spec.graph_headroom_gain_db,
             "maximum_programmed_stimulus_gain_dbfs": maximum_programmed_gain,
             "maximum_effective_stimulus_peak_dbfs": maximum_peak,
-            "threshold_margin_db": float(threshold_dbfs) - maximum_peak,
+            "threshold_margin_db": margin,
             "boundary_rule": "stimulus_peak_must_be_strictly_below_threshold",
             "limiter_engaged": False,
             "capture_linearity_passed": True,
@@ -581,8 +581,7 @@ def build_raw_evidence_v1(
     proof = _linearity_proof(
         analysis=analysis,
         program=program,
-        threshold_dbfs=spec.limiter_threshold_dbfs,
-        stimulus_gain_ceiling_dbfs=spec.stimulus_peak_ceiling_dbfs,
+        spec=spec,
     )
     targets = {role: spec.role(role).to_dict() for role in ROLE_ORDER}
     component_identity = _fingerprinted(
@@ -864,14 +863,15 @@ def _validate_ledger(
     return ledger
 
 
-def _validate_linearity_proof(
-    raw: Any, *, threshold: float, stimulus_gain_ceiling_dbfs: float
-) -> None:
+def _validate_linearity_proof(raw: Any, *, spec: ProtectedNeutralGraphSpec) -> None:
     proof = _validate_fingerprinted(
         raw,
         fields={
+            "proof_basis",
             "limiter_threshold_dbfs",
             "stimulus_gain_ceiling_dbfs",
+            "volume_ceiling_db",
+            "graph_headroom_gain_db",
             "maximum_programmed_stimulus_gain_dbfs",
             "maximum_effective_stimulus_peak_dbfs",
             "threshold_margin_db",
@@ -885,20 +885,34 @@ def _validate_linearity_proof(
     )
     limiter = proof["limiter_threshold_dbfs"]
     ceiling = proof["stimulus_gain_ceiling_dbfs"]
+    volume_ceiling = proof["volume_ceiling_db"]
+    headroom = proof["graph_headroom_gain_db"]
     programmed = proof["maximum_programmed_stimulus_gain_dbfs"]
     peak = proof["maximum_effective_stimulus_peak_dbfs"]
     margin = proof["threshold_margin_db"]
     if (
         not all(
             _finite_number(value)
-            for value in (limiter, ceiling, programmed, peak, margin)
+            for value in (
+                limiter,
+                ceiling,
+                volume_ceiling,
+                headroom,
+                programmed,
+                peak,
+                margin,
+            )
         )
-        or float(limiter) != threshold
-        or float(ceiling) != stimulus_gain_ceiling_dbfs
+        or proof["proof_basis"] != "emitted_graph_worst_case_at_volume_ceiling"
+        or float(limiter) != spec.limiter_threshold_dbfs
+        or float(ceiling) != spec.stimulus_peak_ceiling_dbfs
+        or float(volume_ceiling) != spec.volume_ceiling_db
+        or float(headroom) != spec.graph_headroom_gain_db
         or float(programmed) > float(ceiling)
-        or float(peak) > float(ceiling)
+        or float(peak) != spec.worst_case_limiter_input_peak_dbfs
         or float(peak) >= float(limiter)
-        or float(margin) != float(limiter) - float(peak)
+        or float(margin) != spec.worst_case_limiter_margin_db
+        or float(margin) <= 0.0
         or proof["boundary_rule"] != "stimulus_peak_must_be_strictly_below_threshold"
         or proof["limiter_engaged"] is not False
         or proof["capture_linearity_passed"] is not True
@@ -916,6 +930,7 @@ def _validate_driver(
     take_id: str,
     freqs: np.ndarray,
     expected_identity: Mapping[str, str],
+    expected_segment_ids: Sequence[str],
     groups: Sequence[Mapping[str, Any]],
     protection: np.ndarray,
     configured: np.ndarray,
@@ -936,6 +951,8 @@ def _validate_driver(
         or len(responses) != len(response_ids)
     ):
         raise RawEvidenceError("raw driver repeat evidence is incomplete")
+    if len(expected_segment_ids) != len(response_ids):
+        raise RawEvidenceError("raw driver responses do not cover the timing ledger")
     values_by_id: dict[str, np.ndarray] = {}
     segment_by_id: dict[str, str] = {}
     for order, response in enumerate(responses):
@@ -962,6 +979,8 @@ def _validate_driver(
             response["complex_response"], length=freqs.size
         )
         segment_by_id[response["response_id"]] = response["source_segment_id"]
+    if [segment_by_id[item] for item in response_ids] != list(expected_segment_ids):
+        raise RawEvidenceError("raw driver response order differs from the timing ledger")
     selector_ids = [group[f"{role}_response_id"] for group in groups]
     selector_segments = [group[f"{role}_segment_id"] for group in groups]
     if any(
@@ -1077,9 +1096,32 @@ def _validate_pose(
         or len({group["program_cycle_id"] for group in groups}) != 3
     ):
         raise RawEvidenceError("raw pose requires exactly three ordered paired groups")
-    located_ids = {item["segment_id"] for item in ledger["located_timing_corrections"]}
+    sweep_locations = [
+        item
+        for item in ledger["located_timing_corrections"]
+        if item["kind"] == KIND_SWEEP
+    ]
+    if (
+        len(sweep_locations) < ANCHOR_REPEAT_GROUP_COUNT * len(ROLE_ORDER)
+        or len(sweep_locations) % len(ROLE_ORDER)
+        or any(
+            left["scheduled_start"] >= right["scheduled_start"]
+            for left, right in zip(sweep_locations, sweep_locations[1:])
+        )
+    ):
+        raise RawEvidenceError("timing ledger has no canonical ordered sweep cycles")
+    ledger_cycles: list[dict[str, str]] = []
+    for index in range(0, len(sweep_locations), len(ROLE_ORDER)):
+        pair = sweep_locations[index : index + len(ROLE_ORDER)]
+        if tuple(item["role"] for item in pair) != ROLE_ORDER:
+            raise RawEvidenceError("timing ledger sweep cycle roles are noncanonical")
+        ledger_cycles.append(
+            {role: str(item["segment_id"]) for role, item in zip(ROLE_ORDER, pair)}
+        )
+    located_ids = {item["segment_id"] for item in sweep_locations}
     stimulus_gains = ledger["stimulus_gain_db_by_segment"]
-    for group in groups:
+    for group_order, group in enumerate(groups):
+        cycle = ledger_cycles[group_order]
         if any(
             not isinstance(group[key], str) or not group[key]
             for key in (
@@ -1089,6 +1131,14 @@ def _validate_pose(
                 "tweeter_segment_id",
                 "woofer_response_id",
                 "tweeter_response_id",
+            )
+        ) or (
+            group["group_id"] != f"selector_repeat_{group_order:02d}"
+            or group["program_cycle_id"] != f"measure_cycle_{group_order:02d}"
+            or group["stimulus_order"] != group_order
+            or group["accepted_order"] != group_order
+            or any(
+                group[f"{role}_segment_id"] != cycle[role] for role in ROLE_ORDER
             )
         ) or any(
             group[key] != pose[value]
@@ -1106,8 +1156,7 @@ def _validate_pose(
             raise RawEvidenceError("raw paired group timing/capture identity is mixed")
     _validate_linearity_proof(
         pose["linearity_limiter_proof"],
-        threshold=spec.limiter_threshold_dbfs,
-        stimulus_gain_ceiling_dbfs=spec.stimulus_peak_ceiling_dbfs,
+        spec=spec,
     )
     drivers = pose["drivers"]
     if not isinstance(drivers, Mapping) or tuple(drivers) != ROLE_ORDER:
@@ -1122,6 +1171,7 @@ def _validate_pose(
             take_id=pose["take_id"],
             freqs=freqs,
             expected_identity=_role_identity(spec, role),
+            expected_segment_ids=[cycle[role] for cycle in ledger_cycles],
             groups=groups,
             protection=P,
             configured=C,

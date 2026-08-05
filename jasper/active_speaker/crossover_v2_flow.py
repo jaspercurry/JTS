@@ -11971,13 +11971,16 @@ def bind_program_playback_seams(
     session_volume_plan=..., **bind_program_playback_seams(...))`` consumes:
 
     * ``read_current_config_path`` — ``cam.get_config_file_path`` (the persisted
-      statefile boot anchor, the restore target).
+      statefile boot anchor and exact production restore target; the durable
+      capture-entry owner blocks correction-web startup until an outliving
+      inline graph is restored or demonstrably superseded).
     * ``load_program_graph`` — INLINE ``cam.set_active_config_raw`` (CamillaDSP
       ``SetConfig``): applies the program graph WITHOUT repointing the persisted
       statefile, preserving the crash-recovery-MUTED structural invariant
       exactly as :func:`jasper.active_speaker.commission_wiring.commission_load_config`
-      documents. A crash mid-program reboots onto the staged anchor, never the
-      program graph.
+      documents. Because CamillaDSP can outlive correction-web, the exact entry
+      config is durably recorded before this swap and startup recovery gates
+      new requests until it has been reloaded.
     * ``restore_graph`` — reads the entry config path's bytes and re-applies
       them inline (same SetConfig transport; the statefile stays untouched).
     * ``play_wav`` — the verified-WAV source

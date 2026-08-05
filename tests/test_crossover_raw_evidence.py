@@ -29,6 +29,10 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.transfer_composition import SELECTOR_RESULT_KIND
+from jasper.audio_measurement.transfer_composition import (
+    complex_fingerprint,
+    compose_total_transfer,
+)
 from tests.test_active_speaker_program_config import _preset, _safety_profile, _session_graph
 
 SESSION = "cap_r15_anchor"
@@ -163,6 +167,18 @@ def _refingerprint(value: dict) -> None:
     )
 
 
+def _complex_values(record: dict) -> np.ndarray:
+    return np.asarray(record["real"]) + 1j * np.asarray(record["imag"])
+
+
+def _replace_complex(record: dict, values: np.ndarray) -> None:
+    record["real"] = values.real.tolist()
+    record["imag"] = values.imag.tolist()
+    record["fingerprint"] = complex_fingerprint(
+        values, kind="jts_crossover_complex_response"
+    )
+
+
 def test_anchor_raw_record_has_exact_groups_grid_and_role_specific_transfers() -> None:
     payload = _build()
     validate_raw_evidence_v1(payload, expected_session_id=SESSION)
@@ -239,6 +255,94 @@ def test_extra_accepted_repeats_are_retained_but_not_selector_inputs() -> None:
     validate_raw_evidence_v1(payload)
 
 
+def test_refingerprinted_groups_cannot_swap_tweeter_cycles() -> None:
+    payload = _build()
+    groups = payload["poses"][0]["selector_repeat_groups"]
+    for key in ("tweeter_segment_id", "tweeter_response_id"):
+        groups[0][key], groups[1][key] = groups[1][key], groups[0][key]
+    _resign(payload)
+
+    with pytest.raises(RawEvidenceError, match="timing|cycle"):
+        validate_raw_evidence_v1(payload)
+
+
+def test_refingerprinted_ledger_cannot_relabel_selected_hf_as_woofer() -> None:
+    payload = _build()
+    pose = payload["poses"][0]
+    segment_id = pose["selector_repeat_groups"][0]["tweeter_segment_id"]
+    ledger = pose["timing_gain_ledger"]
+    next(
+        item
+        for item in ledger["located_timing_corrections"]
+        if item["segment_id"] == segment_id
+    )["role"] = "woofer"
+    _refingerprint(ledger)
+    _resign(payload)
+
+    with pytest.raises(RawEvidenceError, match="cycle roles"):
+        validate_raw_evidence_v1(payload)
+
+
+def test_fourth_pair_cannot_be_promoted_after_recomputing_all_derived_data() -> None:
+    payload = _build(repeat_count=4)
+    pose = payload["poses"][0]
+    groups = pose["selector_repeat_groups"]
+    ledger_sweeps = [
+        item
+        for item in pose["timing_gain_ledger"]["located_timing_corrections"]
+        if item["kind"] == "sweep"
+    ]
+    fourth = {
+        item["role"]: item["segment_id"] for item in ledger_sweeps[6:8]
+    }
+    for role in ("woofer", "tweeter"):
+        driver = pose["drivers"][role]
+        fourth_response = next(
+            item
+            for item in driver["responses"]
+            if item["source_segment_id"] == fourth[role]
+        )
+        groups[2][f"{role}_segment_id"] = fourth[role]
+        groups[2][f"{role}_response_id"] = fourth_response["response_id"]
+        by_id = {item["response_id"]: item for item in driver["responses"]}
+        rows = np.stack(
+            [
+                _complex_values(by_id[group[f"{role}_response_id"]]["complex_response"])
+                for group in groups
+            ]
+        )
+        nominal = np.mean(rows, axis=0, dtype=np.complex128)
+        uncertainty = np.std(
+            20.0 * np.log10(np.maximum(np.abs(rows), 1e-12)),
+            axis=0,
+            dtype=np.float64,
+        )
+        _replace_complex(driver["nominal_complex_response"], nominal)
+        driver["nominal_magnitude_db"] = (
+            20.0 * np.log10(np.maximum(np.abs(nominal), 1e-12))
+        ).tolist()
+        driver["repeat_uncertainty_db"] = uncertainty.tolist()
+        transfer = next(
+            item
+            for item in payload["measurement_protection_by_role"]
+            if item["role"] == role
+        )
+        composition = compose_total_transfer(
+            nominal,
+            _complex_values(transfer["complex_transfer_C"]),
+            _complex_values(transfer["complex_transfer_P"]),
+            required_mask=np.asarray(driver["valid_mask"], dtype=bool),
+        )
+        _replace_complex(driver["configured_fitter_input_S"], composition.fitter_input)
+        driver["configured_composition_fingerprints"] = dict(
+            composition.fingerprints
+        )
+    _resign(payload)
+
+    with pytest.raises(RawEvidenceError, match="timing|cycle"):
+        validate_raw_evidence_v1(payload)
+
+
 def test_production_size_fft_is_bounded_below_the_real_store_limit() -> None:
     payload = _build(n_source_bins=524_288 // 2 + 1)
     encoded = json.dumps(
@@ -259,6 +363,29 @@ def test_hf_declared_floor_remains_in_the_bounded_raw_mask() -> None:
     first_valid = np.asarray(payload["frequency_basis_hz"])[hf["valid_mask"]][0]
     assert first_valid >= 1600.0
     assert first_valid < 1700.0
+
+
+def test_limiter_non_engagement_uses_graph_worst_case_at_remote_volume_ceiling() -> None:
+    payload = _build()
+    proof = payload["poses"][0]["linearity_limiter_proof"]
+
+    assert proof["proof_basis"] == "emitted_graph_worst_case_at_volume_ceiling"
+    assert proof["volume_ceiling_db"] == 0.0
+    assert proof["maximum_effective_stimulus_peak_dbfs"] == -12.01
+    assert proof["threshold_margin_db"] == pytest.approx(0.01)
+    assert proof["limiter_engaged"] is False
+
+
+def test_limiter_non_engagement_rejects_the_strict_threshold_boundary() -> None:
+    payload = _build()
+    proof = payload["poses"][0]["linearity_limiter_proof"]
+    proof["maximum_effective_stimulus_peak_dbfs"] = -12.0
+    proof["threshold_margin_db"] = 0.0
+    _refingerprint(proof)
+    _resign(payload)
+
+    with pytest.raises(RawEvidenceError, match="limiter proof"):
+        validate_raw_evidence_v1(payload)
 
 
 @pytest.mark.parametrize(
@@ -542,7 +669,7 @@ def test_selector_abstention_requires_the_exact_admissible_configured_fallback()
     _resign_selector(value)
 
     validate_selector_result_v1(value, configured_fc_hz=1900.0)
-    with pytest.raises(SelectorContractError, match="fallback"):
+    with pytest.raises(SelectorContractError, match="outcome"):
         validate_selector_result_v1(value, configured_fc_hz=2100.0)
 
 
@@ -570,7 +697,70 @@ def test_selector_no_admissible_refusal_requires_its_exact_reason() -> None:
         "configured_fc_inadmissible_for_abstention"
     ]
     _resign_selector(value)
-    with pytest.raises(SelectorContractError, match="no-admissible"):
+    with pytest.raises(SelectorContractError, match="outcome"):
+        validate_selector_result_v1(value, configured_fc_hz=1900.0)
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("mask_kind", ["common", "role", "candidate"])
+def test_selector_requires_three_finite_bins_per_required_mask(
+    count: int, mask_kind: str
+) -> None:
+    value = _selector()
+    counts = value["mask_bin_counts"]
+    if mask_kind == "common":
+        counts["common"] = count
+    elif mask_kind == "role":
+        counts["roles"]["tweeter"] = count
+    else:
+        counts["candidates"]["2100"] = count
+    _resign_selector(value)
+
+    with pytest.raises(SelectorContractError, match="masks|counts"):
+        validate_selector_result_v1(value, configured_fc_hz=1900.0)
+
+
+@pytest.mark.parametrize(
+    "surplus_reason",
+    ["left_right_winner_instability", "invalid_evidence_schema"],
+)
+def test_selector_tie_abstention_rejects_surplus_contradictory_reason(
+    surplus_reason: str,
+) -> None:
+    value = _selector()
+    same_metrics = copy.deepcopy(value["candidate_records"][0]["scalar_metrics"])
+    value["candidate_records"][1]["scalar_metrics"] = same_metrics
+    value["comparison_trace"] = [_tie_trace(1900.0, 2100.0, same_metrics, same_metrics)]
+    for sensitivity in value["sensitivity_check_results"]:
+        sensitivity["candidate_scalar_metrics"]["2100"] = copy.deepcopy(same_metrics)
+        sensitivity["comparison_trace"] = [
+            _tie_trace(1900.0, 2100.0, same_metrics, same_metrics)
+        ]
+        sensitivity["unbeaten_fc_hz"] = [1900.0, 2100.0]
+        sensitivity["subreason"] = "metric_uncertainty_tie"
+    value["outcome"] = {
+        "status": "abstained",
+        "selected_fc_hz": None,
+        "retained_fc_hz": 1900.0,
+        "reason_codes": ["metric_uncertainty_tie", surplus_reason],
+    }
+    _resign_selector(value)
+
+    with pytest.raises(SelectorContractError, match="outcome"):
+        validate_selector_result_v1(value, configured_fc_hz=1900.0)
+
+
+def test_selector_valid_complete_candidate_set_cannot_claim_invalid_evidence_refusal() -> None:
+    value = _selector()
+    value["outcome"] = {
+        "status": "refused",
+        "selected_fc_hz": None,
+        "retained_fc_hz": None,
+        "reason_codes": ["invalid_evidence_schema"],
+    }
+    _resign_selector(value)
+
+    with pytest.raises(SelectorContractError, match="outcome"):
         validate_selector_result_v1(value, configured_fc_hz=1900.0)
 
 

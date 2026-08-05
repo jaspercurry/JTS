@@ -104,15 +104,20 @@ same PCM on both lanes. Every pre-apply phase uses the existing transient
 writer lock. Before any swap, that owner durably records the exact entry
 production config through `capture_entry_anchor`; normal teardown restores it,
 and the existing startup/idle recovery reloads it after an abrupt web-process
-restart. The anchor clears only after a confirmed restore, so restore failure
-stays recoverable and protected. Stage 2 remains production-graph playback.
+restart. For an inline obligation, correction-web does not claim new owners or
+accept requests until exact restore is confirmed or a new production owner has
+demonstrably superseded it. Corrupt/deferred/failed state remains durable and
+blocking; the anchor clears only after a confirmed restore or supersession.
+Stage 2 remains production-graph playback.
 
 The transient graph is derived from one typed specification containing the
 exact confirmed `required_protection_filters` (including family/slope
 semantics), role mapping, declared physical polarity or an explicit neutral
-`+1` when no physical-polarity fact exists, soft limiters, conservative gain,
-and the non-positive volume ceiling. The same specification drives CamillaDSP
-emission, `P(f)`, protection identity, and graph fingerprinting. It fails
+`+1` when no physical-polarity fact exists, the normalized installed pad fact
+(identity only, never synthesized digital EQ/gain), soft limiters, a fixed
+0.01 dB headroom before the split, conservative stimulus gain, and the
+non-positive volume ceiling. The same specification drives CamillaDSP emission,
+`P(f)`, protection identity, and graph fingerprinting. It fails
 closed when a declaration cannot be represented; hard excitation-band edges
 are not silently substituted for declared filters. Configured crossover
 shaping and polarity, prior automatic alignment/linearization, Room, bass
@@ -122,11 +127,16 @@ retained Undo are not mutated until the existing explicit Apply.
 Mark-position MEASURE still captures the shipped three interleaved woofer/HF
 occurrences. After all existing acceptance gates pass, the existing
 commissioning evidence store publishes their exact capture WAV and one
-`jts_crossover_raw_evidence_v1` anchor record: exactly three accepted-order
-paired groups, one timing/gain ledger, both drivers' raw complex responses and
+`jts_crossover_raw_evidence_v1` anchor record: exactly the first three
+accepted program cycles from the sole ordered timing/gain ledger become paired
+selector groups; later accepted repeats remain ordered evidence and cannot be
+promoted. The record carries both drivers' raw complex responses and
 repeat uncertainty/SNR evidence, exact emitted role-specific `P(f)`, confirmed
 component/calibration/stimulus/graph identities, and a proof that the accepted
-capture stayed linear with its stimulus peak strictly below the limiter.
+capture stayed linear. Limiter non-engagement is derived from the emitted
+graph's admitted stimulus ceiling, live-volume ceiling, and fixed headroom, so
+it remains strictly below the -12 dBFS limiter even if live volume moves to the
+ceiling during the session.
 Schema or identity drift invalidates the entire record; it is never repaired or
 mixed with another session.
 
@@ -1627,9 +1637,12 @@ the page's ~250 ms poll reads it.
    is unchanged.)
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
     graph, `devices.volume_limit = 0.0` and positive writes clamp to
-    0 dB. The protected-neutral graph adds no headroom beyond the main volume,
-    emits the declared hard-floor/high-ceiling `P` independently for each
-    role, and keeps the existing soft limiter after each role's protection.
+    0 dB. The protected-neutral graph applies a fixed -0.01 dB common headroom
+    before the split, emits each role's exact confirmed
+    `required_protection_filters` as `P` (not hard-band endpoints), and keeps
+    the existing -12 dBFS soft limiter after each role's protection. Therefore
+    the admitted -12 dBFS stimulus remains strictly below the limiter even at
+    the permitted live-volume ceiling.
 
     **10a. The apply boundary's level move is DECLARED, never
     compensated (#1811).** The household's explicit Apply POST swaps the
@@ -3273,8 +3286,10 @@ legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
 Last verified: 2026-08-04 — verified the R15 branch's protected-neutral graph,
-paired raw-anchor publication path, configured-Fc total-transfer composition,
-two-lane pre/post-apply routing, and crash-restoration statements above against
+component-fact identity, canonical first-three-cycle RAW binding, paired
+raw-anchor publication path, graph-level limiter margin, configured-Fc
+total-transfer composition, two-lane pre/post-apply routing, and startup-gated
+crash-restoration statements above against
 `protected_neutral_graph.py`, `camilla_yaml.py`,
 `crossover_raw_evidence.py`, `crossover_selector_contract.py`,
 `transfer_composition.py`, `crossover_v2_flow.py`,

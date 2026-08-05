@@ -1740,6 +1740,23 @@ def test_restore_pending_capture_entry_config_restores_exactly_once(monkeypatch,
     assert set_calls == [str(entry)]  # exactly once
 
 
+def test_restore_pending_capture_entry_config_corrupt_state_is_not_absent(tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    state = capture_entry_anchor.state_path()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("{not-json", encoding="utf-8")
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(
+            camilla_factory=lambda: pytest.fail("corrupt state must block before Camilla")
+        )
+    )
+
+    assert result["status"] == "corrupt"
+    assert state.read_text(encoding="utf-8") == "{not-json"
+
+
 def test_restore_pending_capture_entry_config_defers_and_supersedes(
     monkeypatch, tmp_path
 ):
@@ -1879,7 +1896,56 @@ def test_inline_graph_restart_restore_failure_retains_anchor(monkeypatch, tmp_pa
     )
 
     assert result["status"] == "failed"
+    assert result["restore_mode"] == capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH
     assert capture_entry_anchor.pending_entry() == str(entry)
+
+
+def test_inline_graph_restart_deferred_restore_retains_and_blocks(tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    entry = tmp_path / "production.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(
+        str(entry),
+        restore_mode=capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            raise RuntimeError("Camilla unavailable")
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+
+    assert result["status"] == "deferred"
+    assert result["restore_mode"] == capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH
+    assert capture_entry_anchor.pending_entry() == str(entry)
+
+
+def test_inline_graph_restart_superseded_clears_and_allows_startup(tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    entry = tmp_path / "production.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(
+        str(entry),
+        restore_mode=capture_entry_anchor.RESTORE_MODE_INLINE_GRAPH,
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return str(tmp_path / "newly-applied.yml")
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("superseded inline state must not reload")
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+
+    assert result["status"] == "superseded"
+    assert capture_entry_anchor.pending_anchor() is None
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(

@@ -28,9 +28,12 @@ from jasper.audio_measurement.excitation import (
 )
 from jasper.audio_measurement.transfer_composition import LinearTransferSection
 
+from .driver_pad import DriverPadError, normalise_pad
+
 ROLE_ORDER = ("woofer", "tweeter")
 PROTECTED_NEUTRAL_GRAPH_KIND = "jts_crossover_protected_neutral_graph_v1"
 PROTECTED_NEUTRAL_SPEC_KIND = "jts_crossover_protected_neutral_spec_v1"
+PROTECTED_NEUTRAL_LIMITER_MARGIN_DB = 0.01
 PROTECTED_NEUTRAL_GRAPH_EXCLUSIONS = (
     "prior_alignment",
     "prior_driver_linearization",
@@ -164,6 +167,8 @@ class ProtectedRoleSpec:
     crossover_search_band_hz: tuple[float, float]
     physical_polarity_sign: int
     physical_polarity_source: str
+    nominal_impedance_ohm: float | None
+    pad: Mapping[str, Any] | None
     filters: tuple[DeclaredProtectionFilter, ...]
 
     @classmethod
@@ -175,6 +180,8 @@ class ProtectedRoleSpec:
             "crossover_search_band_hz",
             "physical_polarity_sign",
             "physical_polarity_source",
+            "nominal_impedance_ohm",
+            "pad",
             "required_protection_filters",
         }
         if not isinstance(raw, Mapping) or set(raw) != expected:
@@ -206,6 +213,24 @@ class ProtectedRoleSpec:
         source = str(raw["physical_polarity_source"])
         if source == "neutral_plus_one_no_declared_physical_fact" and sign != 1:
             raise ProtectedNeutralGraphError("neutral physical polarity must be +1")
+        nominal_raw = raw["nominal_impedance_ohm"]
+        nominal = (
+            None
+            if nominal_raw is None
+            else _finite(nominal_raw, "nominal impedance")
+        )
+        if nominal is not None and nominal <= 0.0:
+            raise ProtectedNeutralGraphError("nominal impedance must be positive")
+        try:
+            pad = normalise_pad(
+                raw["pad"],
+                nominal_impedance_ohm=nominal,
+                field_name="protected role pad",
+            )
+        except DriverPadError as exc:
+            raise ProtectedNeutralGraphError(str(exc)) from exc
+        if raw["pad"] != pad:
+            raise ProtectedNeutralGraphError("protected role pad is noncanonical")
         normalized = tuple(DeclaredProtectionFilter.from_dict(item) for item in filters)
         if len({item.kind for item in normalized}) != len(normalized):
             raise ProtectedNeutralGraphError("protected role repeats filter kind")
@@ -218,6 +243,8 @@ class ProtectedRoleSpec:
             crossover_search_band_hz=(lo, hi),
             physical_polarity_sign=sign,
             physical_polarity_source=source,
+            nominal_impedance_ohm=nominal,
+            pad=pad,
             filters=normalized,
         )
 
@@ -229,6 +256,8 @@ class ProtectedRoleSpec:
             "crossover_search_band_hz": list(self.crossover_search_band_hz),
             "physical_polarity_sign": self.physical_polarity_sign,
             "physical_polarity_source": self.physical_polarity_source,
+            "nominal_impedance_ohm": self.nominal_impedance_ohm,
+            "pad": dict(self.pad) if self.pad is not None else None,
             "required_protection_filters": [item.to_dict() for item in self.filters],
         }
 
@@ -252,7 +281,7 @@ class ProtectedNeutralGraphSpec:
     limiter_threshold_dbfs: float
     stimulus_peak_ceiling_dbfs: float
     volume_ceiling_db: float
-    graph_headroom_gain_db: float = 0.0
+    graph_headroom_gain_db: float = -PROTECTED_NEUTRAL_LIMITER_MARGIN_DB
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "ProtectedNeutralGraphSpec":
@@ -376,7 +405,7 @@ class ProtectedNeutralGraphSpec:
             not -120.0 <= threshold <= 0.0
             or stimulus_ceiling != AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
             or ceiling > 0.0
-            or headroom > 0.0
+            or headroom != -PROTECTED_NEUTRAL_LIMITER_MARGIN_DB
         ):
             raise ProtectedNeutralGraphError("protected graph gain contract is unsafe")
         return cls(
@@ -465,6 +494,20 @@ class ProtectedNeutralGraphSpec:
     def measurement_polarity_signs(self) -> dict[str, int]:
         return {role: self.role(role).physical_polarity_sign for role in ROLE_ORDER}
 
+    @property
+    def worst_case_limiter_input_peak_dbfs(self) -> float:
+        """Maximum admitted peak at the limiter for any permitted live volume."""
+
+        return (
+            self.stimulus_peak_ceiling_dbfs
+            + self.volume_ceiling_db
+            + self.graph_headroom_gain_db
+        )
+
+    @property
+    def worst_case_limiter_margin_db(self) -> float:
+        return self.limiter_threshold_dbfs - self.worst_case_limiter_input_peak_dbfs
+
 
 @dataclass(frozen=True)
 class ProtectedNeutralSessionGraph:
@@ -521,6 +564,24 @@ def _profile_roles(
             raise ProtectedNeutralGraphError(
                 f"confirmed {role} physical polarity cannot be represented"
             )
+        nominal_raw = raw.get("nominal_impedance_ohm")
+        nominal = (
+            None
+            if nominal_raw is None
+            else _finite(nominal_raw, f"{role} nominal impedance")
+        )
+        if nominal is not None and nominal <= 0.0:
+            raise ProtectedNeutralGraphError(
+                f"confirmed {role} nominal impedance is invalid"
+            )
+        try:
+            pad = normalise_pad(
+                raw.get("pad"),
+                nominal_impedance_ohm=nominal,
+                field_name=f"confirmed {role} pad",
+            )
+        except DriverPadError as exc:
+            raise ProtectedNeutralGraphError(str(exc)) from exc
         normalized_filters = tuple(
             DeclaredProtectionFilter.from_mapping(item, sample_rate_hz=sample_rate_hz)
             for item in filters
@@ -538,6 +599,8 @@ def _profile_roles(
             crossover_search_band_hz=(lo, hi),
             physical_polarity_sign=polarity_sign,
             physical_polarity_source=polarity_source,
+            nominal_impedance_ohm=nominal,
+            pad=pad,
             filters=normalized_filters,
         )
     if set(by_role) != set(ROLE_ORDER):
@@ -653,6 +716,7 @@ def build_protected_neutral_session_graph(
         limiter_threshold_dbfs=limiter,
         stimulus_peak_ceiling_dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
         volume_ceiling_db=ceiling,
+        graph_headroom_gain_db=-PROTECTED_NEUTRAL_LIMITER_MARGIN_DB,
     )
     yaml_text = emit_active_speaker_program_config(preset, graph_spec=spec)
     identity = protected_neutral_graph_identity(yaml_text, spec)

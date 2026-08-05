@@ -483,8 +483,11 @@ def resolve_driver_excitation_ceilings(
     ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``.
     On the proven protected-program path it instead uses the DECLARED hard
     floor, not the narrower analysis-window floor, so R15 can capture the HF
-    response down to its declared safe floor (#1654). The emitted protection P
-    carries that same hard floor. The UPPER permitted edge is
+    response down to its declared safe floor (#1654). This permitted stimulus
+    band does not define emitted protection ``P``: the protected-neutral graph
+    emits the confirmed target's exact ``required_protection_filters``, whose
+    cutoff may intentionally differ from the hard-band edge. The UPPER
+    permitted edge is
     ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
     ``measurement_band[1]`` is deliberately EXCLUDED from it.
     ``measurement_band`` is analysis-window metadata (what the wizard tells

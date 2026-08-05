@@ -705,7 +705,11 @@ class CommissioningEvidenceStore:
             ) from exc
         return total
 
-    def _write_once(self, relative_path: str, payload: bytes) -> ArtifactIdentity:
+    def _write_once_with_ownership(
+        self, relative_path: str, payload: bytes
+    ) -> tuple[ArtifactIdentity, bool]:
+        """Write once and report whether this exact call created the path."""
+
         if type(payload) is not bytes:
             raise TypeError("evidence payload must be exact bytes")
         if len(payload) > _max_bytes_for_path(relative_path):
@@ -731,7 +735,7 @@ class CommissioningEvidenceStore:
                     CommissioningEvidenceStoreErrorCode.PERSIST_OUTCOME_UNKNOWN,
                     "existing evidence could not be confirmed directory-durable",
                 ) from exc
-            return self._verified_payload_identity(relative_path, payload)
+            return self._verified_payload_identity(relative_path, payload), False
 
         if self._authoritative_total() + len(payload) > MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES:
             raise CommissioningEvidenceStoreError(
@@ -789,7 +793,7 @@ class CommissioningEvidenceStore:
                     _fsync_directory(path.parent)
                 except OSError as exc:
                     raise _PublishOutcomeUnknown(str(exc)) from exc
-                return self._verified_payload_identity(relative_path, payload)
+                return self._verified_payload_identity(relative_path, payload), False
             published = True
             try:
                 os.unlink(temporary)
@@ -823,7 +827,11 @@ class CommissioningEvidenceStore:
                 except OSError:
                     pass
 
-        return self._verified_payload_identity(relative_path, payload)
+        return self._verified_payload_identity(relative_path, payload), True
+
+    def _write_once(self, relative_path: str, payload: bytes) -> ArtifactIdentity:
+        artifact, _created = self._write_once_with_ownership(relative_path, payload)
+        return artifact
 
     def publish_raw_artifact(
         self,
@@ -925,16 +933,24 @@ class CommissioningEvidenceStore:
             return raw_artifact, json_artifact
 
         json_bytes = _canonical_json(json_payload)
+        raw_created = False
+        json_created = False
         try:
-            raw_artifact = self.publish_raw_artifact(raw_relative, raw_payload)
-            json_artifact = self.publish_json_artifact(json_relative, json_payload)
+            raw_artifact, raw_created = self._write_once_with_ownership(
+                _artifact_path(raw_relative), raw_payload
+            )
+            json_artifact, json_created = self._write_once_with_ownership(
+                _artifact_path(json_relative), json_bytes
+            )
             reopened = self.reopen_json_artifact(json_artifact)
             validate_json(reopened)
         except Exception:
-            # Reverse publication order. Both removals are identity-checked;
-            # preexisting or raced bytes can never be erased here.
-            self._rollback_just_created_payload(json_relative, json_bytes)
-            self._rollback_just_created_payload(raw_relative, raw_payload)
+            # Reverse publication order, but only for paths this call proved it
+            # created. Identical bytes adopted from a racing writer are not ours.
+            if json_created:
+                self._rollback_just_created_payload(json_relative, json_bytes)
+            if raw_created:
+                self._rollback_just_created_payload(raw_relative, raw_payload)
             raise
         return raw_artifact, json_artifact
 

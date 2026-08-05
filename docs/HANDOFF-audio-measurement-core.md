@@ -1505,19 +1505,26 @@ instead of crashing the oneshot. Hardware-free (code + tests); on-device H2
 acoustic sanity on jts5 still owed (confirm a real DE250 2-way commissions
 through the gate and is audibly band-limited).
 
-**R15 protected-neutral program emitter (2026-08-04; hardware validation
-pending):** `emit_active_speaker_program_config` is no longer the configured
-as-crossed graph. One three-input transient graph serves every pre-apply
-crossover stimulus. Its physical output chains contain the confirmed
-role-specific hard-band Linkwitz-Riley high-pass/low-pass transfer `P`, zero
-delay, the existing soft limiter, and pass gain; old crossover shaping,
-alignment, driver linearization, Room, bass, and preference filters are absent.
-The emitted HF high-pass is validated against the declared floor before the
-existing L0 emitted-text proof checks its physical-output placement and limiter
-guard. CHECK/MEASURE use the two role inputs and pre-apply summed capture uses
-the third; unused inputs must be byte-silent and playback re-admits the summed
-input against both role limits. The existing transient playback transaction
-still owns exact graph restore and the volume ceiling.
+**R15 protected-neutral program emitter (2026-08-04; software implementation
+awaits independent gate and fixed-microphone JTS3 validation):**
+`emit_active_speaker_program_config` is no longer the configured as-crossed
+graph. One stereo transient graph serves every pre-apply crossover stimulus on
+the real `correction_substream` carrier: lane 0 is woofer and lane 1 is HF.
+Isolated stimuli keep the other lane sample-exact zero; summed CLOUD playback
+mirrors identical PCM onto both lanes. Each physical output chain contains the
+exact confirmed role-specific `required_protection_filters` transfer `P`
+(including declared cutoff, family/equivalence, and minimum-slope semantics),
+confirmed physical wiring polarity, zero delay, fixed limiter headroom, and the
+existing -12 dBFS soft limiter. A passive installed pad is identity evidence,
+not synthesized digital gain or EQ. Prior crossover shaping, alignment, driver
+linearization, Room, bass, and preference filters are absent. The emitted-text
+proof verifies those exact declared filters, limiter placement, fixed headroom,
+stereo routing, and non-positive volume ceiling. The existing playback owner
+durably records the exact entry production config before an inline swap;
+correction-web restart blocks new requests until exact restoration is confirmed
+or a new production owner demonstrably supersedes the obligation. This is a
+software claim only: the live campaign status and remaining gates are owned by
+[HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md).
 
 **Next slice (Phase 2 — kernel extraction):** move pure `sweep`/`deconv`/
 `analysis`/`quality` into `jasper/audio_measurement/` behind characterization
@@ -1901,6 +1908,7 @@ read absolutely it made the room look far quieter than it was. Separate
 causes, opposite signs.
 
 Last verified: 2026-08-04 — R15's protected-neutral program-emitter paragraph
-and its referenced safety/lifecycle claims were checked against the emitter,
-program admission, playback, and graph contract tests. The prior full-document
-verification remains the 2026-08-02 pass described above.
+and its referenced protection, stereo transport, fixed-headroom, and restart-
+recovery claims were checked against the implementation and contract tests.
+Independent delta gate and fixed-microphone JTS3 validation remain open. The
+prior full-document verification remains the 2026-08-02 pass described above.
