@@ -602,6 +602,12 @@ schema. Each pose holds one `LateralPoseCurve` per role: complex values
 × 2 roles × 6 poses. Deliberately coarse — #1968 calls lateral samples a coarse
 gate, and this is not a polar measurement.
 
+The RAW-WAV side is not free, though: flag-on takes stage 1 from 2 captures to
+8, so an operator running with the dump ring enabled ("Operator capture
+retention" below) keeps roughly a quarter as many past sessions in the same
+fixed-size ring. Worth knowing before a debugging session that expects last
+week's captures to still be there.
+
 `lateral_mark_return_drift_db()` is the walk's own honesty screen: per-role
 worst |Δ dB| between the two at-mark poses, in band. **Reported, never gated** —
 no evidence in this campaign fixes a threshold — and `None`, never `0.0`, when
