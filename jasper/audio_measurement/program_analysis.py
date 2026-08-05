@@ -649,6 +649,27 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # distinct construction on purpose — see `_analyze_verify`'s own comment on
 # interpretation call (B).
 #
+# Absolute-verify (`verify_absolute`, R18 / issue #1868) is a THIRD thing, and
+# it does NOT duplicate the LIVE spec gauge — `crossover_v2_flow`'s
+# `assemble_cloud_group_result` "flatness" (`flat_spec.spec_flatness_gauge`).
+# The two are deliberately NOT peers, and which owns what is fixed:
+#
+#   * "is the speaker flat?" -> the cloud gauge. Spatial power mean over the
+#     post-apply positions, self-referenced to its own 250 Hz-8 kHz mean,
+#     graded in `SPEC_BANDS`' three wide bands. Unchanged by R18.
+#   * "did THIS crossover hand off as designed?" (plan §7 claim 3) -> this
+#     record, and only this one.
+#
+# Three structural reasons the gauge cannot be that owner, not preferences: it
+# is assembled when a position GROUP CLOSES, after `_verify_verdict` has run,
+# so it does not exist when VERIFY is graded; Express and the R15 driver-only
+# path have no post-apply cloud at all, so it never exists there; and its
+# spatial mean partially fills a design-axis null in (#1868's forensics: the
+# 8-position mean was shallower than any single position). Its self-reference
+# is also the wrong zero — a crossover dip competes with every deviation in
+# 250 Hz-8 kHz for the worst-band pointer (#1857's failure mode), where the
+# candidate's own crossover transfer reads the region directly.
+#
 # Naming note kept from #1668 PR-D: do not name anything here bare "flatness"
 # — `CrossoverCandidate.flatness_improvement_db` is an UNRELATED Layer-1b
 # metric (anchor-vs-selected-delay ripple improvement), not a spec claim.
@@ -1288,6 +1309,14 @@ class ProgramAnalysis:
     # :func:`_analyze_verify`'s frame-discipline block for why the tilt is
     # disclosed rather than corrected for.
     verify_tracking: dict[str, Any] | None = None
+    # The ABSOLUTE crossover-region result for one VERIFY capture (R18, #1868)
+    # — see ``_verify_absolute_result``. Its own field rather than a key inside
+    # ``verify_tracking``: different reference, different presence condition
+    # (tracking needs ``predicted_sum``, this needs the candidate's crossover
+    # transfers), and folding them together is how a defect the MODEL also
+    # predicts stays invisible. Always a dict on a VERIFY analysis — the
+    # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
+    verify_absolute: dict[str, Any] | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the
     # tracking scalars above were reduced from (linearization-integrity PR-L5).
     # A separate field rather than a key inside ``verify_tracking`` because
@@ -2848,6 +2877,54 @@ def overlap_band_hz(
     if woofer_sweep_hi_hz is not None:
         hi = min(hi, float(woofer_sweep_hi_hz))
     return lo, hi
+
+
+def crossover_region_band_hz(
+    fc_hz: float,
+    *,
+    trusted_floor_hz: float | None,
+    radiated_band_hz: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    """The crossover region a SUMMED capture can be judged over, or ``None``.
+
+    ``[Fc/ρ, Fc·ρ]`` intersected with
+    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` — this
+    capture's own gate-derived trusted floor and the band its stimulus actually
+    radiated, so the floor is always the evidence's own and never a literal.
+    ``None`` when that intersection is empty: no band this capture supports, so
+    no number is invented for one.
+
+    **Deliberately NOT :func:`overlap_band_hz`** (issues #1868 / #1654). That
+    one clamps ``lo`` UP to the tweeter's MEASURE sweep floor because its
+    consumers read the TWEETER BRANCH ALONE, which below that floor is
+    deconvolution noise from a driver that was never excited. A VERIFY summed
+    capture has no such problem — one mono sweep through the applied graph
+    spanning ``[min(150, Fc/2), 20 kHz]`` — so the composite is real below the
+    tweeter's sweep floor, which is exactly where a null lands when the tweeter
+    is swept from Fc. Widening the MODEL-tracking band there WOULD be
+    dishonest; this band is for the absolute claim, which needs no per-branch
+    model.
+
+    Evidence (#1894 Gate 0 record): the 2026-08-05 JTS3 checkpoint graded
+    ``[2000, 4000] Hz`` (``tracking_band_lo_hz=2000.0``, that session's
+    ``verify_diag``) and passed at 0.919 dB against 1.5 dB, while that same
+    session's post-apply cloud measured **−4.80 dB at 1656 Hz** — 344 Hz below
+    the graded floor, so nothing in the tracking verdict could see it.
+
+    That figure is signal-derived, not read off a chart (#2152 is why that
+    distinction is load-bearing), and is stated **at 1/3-octave smoothing** —
+    the spec gauge's convention. This function's consumer smooths at
+    :data:`VERIFY_TRACKING_SMOOTHING_FRACTION` (1/6 octave), which resolves a
+    narrow dip more sharply, so the two numbers are not expected to match.
+    """
+    if not math.isfinite(fc_hz) or fc_hz <= 0.0:
+        return None
+    trusted = gate_disclosure.evaluation_band_hz(trusted_floor_hz, radiated_band_hz)
+    if trusted is None:
+        return None
+    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, trusted[0])
+    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, trusted[1])
+    return (lo, hi) if lo < hi else None
 
 
 def _estimate_alignment(
@@ -4959,6 +5036,79 @@ def _build_candidate(
     return candidate, (freqs, predicted_db)
 
 
+#: ``verify_absolute["not_evaluated"]`` reasons. Named, because a screen and a
+#: log both branch on them and "nobody graded this" must never be renderable as
+#: "this passed".
+ABSOLUTE_NO_FC = "no_crossover_fc"
+ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
+ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
+
+
+def _verify_absolute_result(summed, segment, fc_hz, priors) -> dict[str, Any]:
+    """Measured summed response vs the CANDIDATE'S OWN crossover target across
+    the crossover region — plan §7 claim 3's absolute half (issue #1868).
+
+    The target is ``20log10|Σ_role sign_role·C_role(f)|``: the coherent sum of
+    the committed crossover transfers, carrying each region's configured
+    polarity. That is what separates this from the tracking pair.
+    ``priors.predicted_sum`` is built from the MEASURED branches and so
+    reproduces whatever the real branch phases do, null included; this curve is
+    built from the crossover alone and says what the candidate is SUPPOSED to
+    sum to. No level or trim enters it — the fitter puts both branches on one
+    shared level frame, and the grader below is offset-invariant, which it must
+    be: the measured curve carries mic sensitivity, distance and session gain
+    that no filter target has.
+
+    Numbers only. The tolerance and the verdict belong to ``crossover_v2_flow``,
+    exactly as ``VERIFY_TOLERANCE_DB`` does for tracking. ``worst_db`` is
+    SIGNED and carries its frequency because a dip and a peak through the
+    handoff are opposite defects and a magnitude hides which one shipped.
+    Measured is smoothed and the target is not: the target is an analytic
+    response with no noise to smooth, and smoothing would round the knee.
+    """
+    if fc_hz is None:
+        return {"not_evaluated": ABSOLUTE_NO_FC}
+    transfers = priors.configured_crossover_response_by_role
+    if not transfers:
+        return {"not_evaluated": ABSOLUTE_NO_TARGET}
+    band = crossover_region_band_hz(
+        fc_hz,
+        trusted_floor_hz=summed.validity_floor_hz,
+        radiated_band_hz=_radiated_band_hz(segment),
+    )
+    if band is None:
+        return {"not_evaluated": ABSOLUTE_NO_TRUSTED_BAND}
+    mask = (summed.freqs_hz >= band[0]) & (summed.freqs_hz <= band[1])
+    if not np.any(mask):
+        return {"not_evaluated": ABSOLUTE_NO_TRUSTED_BAND}
+    freqs = np.asarray(summed.freqs_hz, dtype=np.float64)
+    total = np.zeros(freqs.shape, dtype=np.complex128)
+    signs = priors.configured_polarity_sign_by_role or {}
+    for role, response in transfers.items():
+        sign = -1 if int(signs.get(role, 1)) < 0 else 1
+        total = total + sign * np.asarray(response(freqs), dtype=np.complex128)
+    target_db = 20.0 * np.log10(np.maximum(np.abs(total), 1e-12))
+    measured_db = analysis_mod.smooth_fractional_octave(
+        freqs, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
+    )
+    # The SAME offset-invariant grader the tracking pair uses, so two numbers
+    # on one screen mean the same kind of thing.
+    rms_db, max_db = analysis_mod.tracking_error_db(
+        freqs, measured_db, target_db, band,
+    )
+    deviation = measured_db[mask] - target_db[mask]
+    deviation = deviation - float(np.mean(deviation))
+    worst = int(np.argmax(np.abs(deviation)))
+    return {
+        "band_hz": [float(band[0]), float(band[1])],
+        "rms_db": float(rms_db),
+        "max_db": float(max_db),
+        "worst_db": float(deviation[worst]),
+        "worst_hz": float(freqs[mask][worst]),
+        "n_bins": int(np.count_nonzero(mask)),
+    }
+
+
 def _analyze_verify(
     program, capture, sample_rate, global_offset, locations,
     calibration, priors,
@@ -5178,6 +5328,7 @@ def _analyze_verify(
         summed_response=summed,
         summed_ripple_db=ripple,
         verify_tracking=tracking,
+        verify_absolute=_verify_absolute_result(summed, seg, fc_hz, priors),
         verify_tracking_curve=tracking_curve,
         pilots=pilots,
         linearity_ok=linearity_ok,

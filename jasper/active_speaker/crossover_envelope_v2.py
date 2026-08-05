@@ -62,6 +62,7 @@ from .attempts_loop import (
 )
 from .crossover_v2_flow import (
     ATTEMPT_REASON_NO_FLOOR,
+    CLAIM_NO_PER_BRANCH_CAPTURE,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -386,6 +387,41 @@ def _verify_graded_band_lines(status: Mapping[str, Any]) -> list[str]:
     return [f"checked {lo:.0f}–{hi:.0f} Hz"]
 
 
+def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
+    """What the crossover-region check found, and what was never checked.
+
+    **One owner, rendered on every outcome** (R18, #1868), like
+    :func:`_verify_graded_band_lines` above and for a stronger version of its
+    reason: that line says how WIDE the tracking claim is, this says which of
+    §7's claims were made at all — and two of the four never are, so a
+    "Verified." badge over an unstated claim set reads as four proofs where
+    there are two.
+
+    The crossover-region line prints on a PASS too, because the number IS the
+    disclosure and a household that only meets it on a failure cannot know a
+    passing handoff was measured at all. A not-evaluated region claim prints
+    nothing: its reasons are measurement-internal (no trusted band, no
+    candidate target), no household action follows, and a sentence for each
+    would be noise in the one paragraph that must stay readable.
+    """
+    claims = _mapping(_mapping(_v2(status).get("verify")).get("claims"))
+    lines: list[str] = []
+    absolute = _mapping(claims.get("absolute"))
+    worst_db = _finite(absolute.get("worst_db"))
+    worst_hz = _finite(absolute.get("worst_hz"))
+    tolerance_db = _finite(absolute.get("tolerance_db"))
+    if worst_db is not None and worst_hz is not None and tolerance_db is not None:
+        lines.append(
+            f"crossover blend {worst_db:+.2f} dB at {worst_hz:.0f} Hz "
+            f"(limit {tolerance_db:.1f} dB)"
+        )
+    if _mapping(claims.get("woofer_branch")).get("reason") == CLAIM_NO_PER_BRANCH_CAPTURE:
+        # Household terms: the reason code is about a capture plan, the
+        # sentence is about what nobody knows yet.
+        lines.append("each driver on its own was not checked")
+    return lines
+
+
 def _verify_frame_lines(
     status: Mapping[str, Any], *, raw_already_shown: bool,
 ) -> list[str]:
@@ -620,6 +656,11 @@ def _verify_expert_details(
     # printing them twice.
     raw_already_shown = bool(lines)
     lines.extend(_verify_graded_band_lines(status))
+    # WHICH §7 claims were proved (R18, #1868) — same independent-presence
+    # terms as the band above, and next to it: the band bounds the tracking
+    # claim's width, this says tracking is not the only claim nor the one a
+    # handoff dip lands in.
+    lines.extend(_verify_claims_lines(status))
     # The frame those numbers were measured ACROSS (rung P1), appended for the
     # same reason and on the same terms as the band above: independent of the
     # evidence guard, because it has its own presence condition and a screen
@@ -3001,8 +3042,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # gated out reads as "reflections removed" to every household that
             # has ever seen one — and on the 2026-07-30 corpus that reading was
             # wrong on every capture (#1966).
+            # R18 adds the fourth (#1868), and on THIS screen it matters most:
+            # until now the only claim behind "Verified." was measured-vs-model,
+            # which cannot fail on a null the model reproduces.
             expert_details=(
                 _verify_graded_band_lines(status)
+                + _verify_claims_lines(status)
                 + _verify_frame_lines(status, raw_already_shown=False)
                 + _verify_gate_lines(status)
                 + _verify_level_reference_lines(status)

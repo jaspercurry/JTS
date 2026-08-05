@@ -1517,6 +1517,109 @@ def test_verify_fail_states_the_band_even_when_the_numbers_are_missing():
     assert "checked 2000–4000 Hz" in env["expert_details"]
 
 
+_R18_CLAIMS_FAIL = {
+    "woofer_branch": {
+        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+    },
+    "hf_branch": {
+        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+    },
+    "integration": {
+        "status": "pass", "max_db": 0.069, "tolerance_db": 1.5,
+        "band_hz": [2000.0, 4000.0],
+    },
+    # SYNTHETIC numbers: the 2026-08-05 checkpoint's dip depth came off a
+    # rendered chart (#2152) and is not restated as a measurement anywhere.
+    "absolute": {
+        "status": "fail", "max_db": 3.98, "rms_db": 1.2,
+        "worst_db": -3.98, "worst_hz": 1700.0,
+        "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
+    },
+}
+
+
+def test_done_screen_names_the_crossover_region_finding_and_the_unchecked_claims():
+    """R18 (#1868) — the screen that says "Verified." must name what the
+    handoff measured and which of §7's claims nobody made.
+
+    Two of the four are structurally not-evaluated (VERIFY plays one summed
+    sweep), and a badge over an unstated claim set reads as four proofs.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass", "graded_band_hz": [2000.0, 4000.0],
+            "claims": _R18_CLAIMS_FAIL,
+        },
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    assert "crossover blend -3.98 dB at 1700 Hz (limit 2.0 dB)" in env["expert_details"]
+    assert "each driver on its own was not checked" in env["expert_details"]
+
+
+def test_verify_fail_screen_names_the_crossover_region_finding():
+    """The same disclosure on the failure screen, where the household is
+    choosing between §7's bounded actions."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": "verify_crossover_region"},
+        verify={
+            "outcome": "fail", "graded_band_hz": [2000.0, 4000.0],
+            "claims": _R18_CLAIMS_FAIL,
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    assert "crossover blend -3.98 dB at 1700 Hz (limit 2.0 dB)" in env["expert_details"]
+    assert "didn't blend as designed" in env["nudges"][0]["text"]
+    # §7's bounded actions, and nothing automatic: the household chooses.
+    assert env["next_action"]["id"] == "verify_retry"
+    assert {a["id"] for a in env["alternate_actions"]} == {
+        "verify_undo", "verify_remeasure",
+    }
+
+
+def test_a_passing_crossover_region_is_disclosed_not_silent():
+    """The number IS the claim: a household that only meets it on a failure
+    cannot know a passing handoff was measured at all."""
+    claims = {
+        **_R18_CLAIMS_FAIL,
+        "absolute": {
+            "status": "pass", "max_db": 0.69, "rms_db": 0.3,
+            "worst_db": 0.69, "worst_hz": 1050.0,
+            "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
+        },
+    }
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "claims": claims},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert "crossover blend +0.69 dB at 1050 Hz (limit 2.0 dB)" in env["expert_details"]
+
+
+def test_a_not_evaluated_crossover_region_renders_no_number():
+    """Absence stays absence — a claim nobody could grade must not produce a
+    sentence a household could read as a result."""
+    claims = {
+        **_R18_CLAIMS_FAIL,
+        "absolute": {
+            "status": "not_evaluated", "reason": "no_trusted_crossover_region",
+        },
+    }
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "claims": claims},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert not any("crossover blend" in line for line in env["expert_details"])
+    # The per-branch gap is still named — it is a different claim.
+    assert "each driver on its own was not checked" in env["expert_details"]
+
+
 def test_done_screen_claims_no_band_when_verify_graded_none():
     """#1868 — absence stays absence. A done screen reached without a
     tracking comparison (express confirms at the mark by a different route)

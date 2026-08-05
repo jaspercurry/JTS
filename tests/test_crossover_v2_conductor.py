@@ -101,6 +101,12 @@ from jasper.active_speaker.crossover_v2_flow import (
     PILOT_LEVEL_DELTA_DB,
     PILOT_SNR_UNUSABLE_DB,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+    CLAIM_FAIL,
+    CLAIM_NOT_EVALUATED,
+    CLAIM_NO_PER_BRANCH_CAPTURE,
+    CLAIM_PASS,
+    REASON_VERIFY_CROSSOVER_REGION,
+    verify_absolute_tolerance_db,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_DRIVER_LEVELS_DISAGREE,
@@ -412,6 +418,7 @@ def _verify_analysis(
     pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
     n_graded_bins=120,
     integrity=_INTEGRITY_FROM_LOCATIONS,
+    verify_absolute=None,
 ) -> ProgramAnalysis:
     locations = (
         _loc(
@@ -446,6 +453,11 @@ def _verify_analysis(
             "max_db_notch_excluded": max_db,
             "frame": {"n_bins": n_graded_bins},
         },
+        # R18 (#1868): ``None`` is the honest default for a fixture that
+        # supplies no crossover-region evidence — the kernel records that as
+        # not-evaluated, which never gates. Tests that exercise the claim pass
+        # a record explicitly.
+        verify_absolute=verify_absolute,
         linearity_ok=linearity,
         pilot_snr_ok=pilot_snr_ok,
         pilots=(
@@ -12204,3 +12216,195 @@ def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
         _walk_measure_cloud_to_close(c)
 
     assert seen and all(bands == ((1500.0, 1900.0),) for bands in seen)
+
+
+# --------------------------------------------------------------------------- #
+# R18 — honest post-apply verification (issues #1868 / #1654)
+# --------------------------------------------------------------------------- #
+#
+# The numbers in these records are SYNTHETIC and labelled so. The 2026-08-05
+# JTS3 checkpoint's dip depth reached this work through a rendered chart, and a
+# chart in this flow has already been found rendering prediction under a
+# measured title (#2152), so it is not restated as ground truth anywhere. The
+# journal-verified fact these fixtures DO reproduce is the graded band:
+# ``tracking_band_lo_hz=2000.0`` on a box whose tweeter is swept from Fc.
+
+
+def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
+    """A kernel ``verify_absolute`` record, in the shape the analyzer emits."""
+    return {
+        "band_hz": [band[0], band[1]],
+        "rms_db": max_db / 2.0,
+        "max_db": max_db,
+        "worst_db": -max_db if worst_db is None else worst_db,
+        "worst_hz": worst_hz,
+        "n_bins": 16384,
+    }
+
+
+def test_absolute_crossover_region_failure_fails_a_verify_the_model_agrees_with():
+    """#1868's defect class, at the conductor. Tracking is WELL inside its own
+    tolerance — the model reproduced the defect — and the session still fails,
+    with its own reason code naming the claim that actually broke."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.069, verify_absolute=_absolute(3.98),
+    )
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_VERIFY_CROSSOVER_REGION
+    assert c.verify_outcome == "fail"
+    claims = c.verify_claims
+    assert claims["integration"]["status"] == CLAIM_PASS  # the model agreed
+    assert claims["absolute"]["status"] == CLAIM_FAIL
+    assert claims["absolute"]["tolerance_db"] == 2.0
+    assert claims["absolute"]["worst_hz"] == 1700.0
+    # §7's bounded actions, not an auto-revert: VERIFY reports, the household
+    # decides. A rollback code would mean the flow chose for them.
+    assert verdict["code"] not in TRANSIENT_AUTO_RETRY_CODES
+
+
+def test_the_same_capture_passed_before_the_absolute_claim_existed():
+    """The other direction of the mutation, at the conductor: the identical
+    tracking evidence with NO crossover-region record still passes. So the new
+    verdict is what changed the answer, not some unrelated tightening."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.069)
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    assert c.verify_outcome == "pass"
+    assert c.verify_claims["absolute"]["status"] == CLAIM_NOT_EVALUATED
+
+
+def test_absolute_claim_inside_tolerance_passes_and_still_reports_its_numbers():
+    """A passing handoff is disclosed, not silent — the number IS the claim."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.9, verify_absolute=_absolute(0.69),
+    )
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    absolute = c.verify_claims["absolute"]
+    assert absolute["status"] == CLAIM_PASS
+    assert absolute["max_db"] == 0.69
+    assert absolute["band_hz"] == [1000.0, 4000.0]
+
+
+def test_not_evaluated_claims_never_gate_and_keep_the_kernels_own_reason():
+    """Refusing on a measurement nobody made would be the same dishonesty in
+    the other direction — and a re-labelled reason would erase which one it
+    was."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.9,
+        verify_absolute={"not_evaluated": "no_trusted_crossover_region"},
+    )
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    absolute = c.verify_claims["absolute"]
+    assert absolute["status"] == CLAIM_NOT_EVALUATED
+    assert absolute["reason"] == "no_trusted_crossover_region"
+
+
+def test_per_branch_claims_are_named_not_evaluated_never_silently_claimed():
+    """Plan §7 names three claims; VERIFY plays ONE summed sweep, so two of
+    them have no evidence at all. R18 does not widen the capture plan — it
+    refuses to let "Verified." imply those two were proved."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.9, verify_absolute=_absolute(0.5),
+    )
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    claims = c.verify_claims
+    for name in ("woofer_branch", "hf_branch"):
+        assert claims[name] == {
+            "status": CLAIM_NOT_EVALUATED, "reason": CLAIM_NO_PER_BRANCH_CAPTURE,
+        }
+
+
+def test_claims_reset_on_an_early_return_so_no_stale_claim_leaks():
+    """Same discipline as the graded band and the frame beside them: an early
+    refusal graded nothing and must not surface a prior attempt's claims."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.9, verify_absolute=_absolute(0.5),
+    )
+    _run_phase(c, 3, 3)
+    assert c.verify_claims is not None
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
+    _run_phase(c, 3, 4)
+    assert c.verify_outcome == "inconclusive"
+    # Absent, not stale — "nothing was graded" is the honest record here, and
+    # every consumer renders absence as silence rather than as a pass.
+    assert c.verify_claims is None
+
+
+def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
+    """The threshold has no literal of its own: it is the loosest
+    ``flat_spec.SPEC_BANDS`` entry the crossover region overlaps, so revising
+    that table with hardware data moves this without a second edit."""
+    from jasper.active_speaker import flat_spec
+
+    assert verify_absolute_tolerance_db([1000.0, 4000.0]) == max(
+        tol for lo, hi, tol in flat_spec.SPEC_BANDS if lo < 4000.0 and 1000.0 < hi
+    )
+    # It is NOT the model-tracking tolerance wearing a different name.
+    assert verify_absolute_tolerance_db([1000.0, 4000.0]) != flow.VERIFY_TOLERANCE_DB
+    # A region the spec table declines to grade yields no bar at all, and the
+    # claim is recorded not-evaluated rather than held to an invented one.
+    assert verify_absolute_tolerance_db([17_000.0, 20_000.0]) is None
+    assert verify_absolute_tolerance_db([1000.0]) is None
+
+
+def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():
+    """SSOT: the two absolute grades are NOT peers, and the reason is
+    structural rather than stylistic (R18 review finding).
+
+    ``assemble_cloud_group_result``'s ``flatness`` answers "is the speaker
+    flat" from the spatial mean, self-referenced to its own 250 Hz-8 kHz mean.
+    It cannot own plan §7 claim 3 because it does not EXIST when the verdict
+    that claim gates is computed — it is assembled at group close, after
+    VERIFY — and on a session with no post-apply cloud it never exists at all.
+    This pins that the crossover-region verdict stands on a capture the cloud
+    has not contributed to, so a future consolidation cannot quietly delete
+    the claim on the paths that have no cloud.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.069, verify_absolute=_absolute(3.98),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == REASON_VERIFY_CROSSOVER_REGION
+    # No cloud has closed on this conductor, so no flatness gauge exists —
+    # and the §7 claim was still made and still failed.
+    assert c.group_cloud_result(PHASE_CLOUD_VERIFY) is None
+    assert c.verify_claims["absolute"]["status"] == CLAIM_FAIL
+
+
+def test_verify_diag_names_every_claim_and_the_crossover_region_numbers(caplog):
+    """The operator's grep target carries the whole claim record — including
+    the two nobody graded — so a corpus sweep counts what was judged instead
+    of inferring it from a bare ``accepted=true``."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.069, verify_absolute=_absolute(3.98),
+    )
+    with caplog.at_level(logging.INFO):
+        _run_phase(c, 3, 3)
+    line = next(
+        r.message for r in caplog.records
+        if "correction.crossover_v2_verify_diag" in r.message
+    )
+    assert f"woofer_branch:not_evaluated({CLAIM_NO_PER_BRANCH_CAPTURE})" in line
+    assert f"hf_branch:not_evaluated({CLAIM_NO_PER_BRANCH_CAPTURE})" in line
+    assert "integration:pass" in line
+    assert "absolute:fail" in line
+    assert "absolute_worst_hz=1700.0" in line
+    assert "absolute_tolerance_db=2.0" in line
+    assert "absolute_band_lo_hz=1000.0" in line
