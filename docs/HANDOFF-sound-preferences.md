@@ -62,7 +62,12 @@ Sound Setup has one power-style **Enable I²S audio HAT** control for the
 supported InnoMaker HiFi AMP Pro. The label and boot overlay come from its
 `DacProfile`; browser logic does not own driver metadata. The persisted intent
 is `/var/lib/jasper/i2s_hat.env`; absence means **Auto / Off**. The control is
-hidden on Streambox and unavailable on unrecognized/non-Pi hardware.
+available on full and Streambox installs when the output-hardware state reports
+a recognized Raspberry Pi topology; it remains unavailable on unrecognized or
+non-Pi hardware. On a Zero-class Streambox, enabling the HAT makes the existing
+USB-role resolver reserve its shared OTG port for peripheral/gadget mode after
+reboot, so that port no longer carries a host-side USB output DAC. The canonical
+role matrix lives in [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#usb-data-role-policy).
 
 `POST /sound/i2s-hat` is a bounded, CSRF/Host-guarded JSON write. It saves the
 single desired fact, then synchronously starts the already-allowlisted
@@ -1064,7 +1069,10 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Verification scope (2026-08-04): PR-1 route/current-surface scope: `/eq/` and
+Verification scope (2026-08-05): Streambox I²S-HAT visibility and reconcile
+ownership were rechecked against the recognized-Pi topology gate, shared USB-role
+resolver, canonical `/sound/setup/` deploy probe, and focused tests. Prior
+2026-08-04: PR-1 route/current-surface scope: `/eq/` and
 `/sound/setup/` page-mode ownership, bonded-follower delegation versus local
 commissioning, the fresh-read recognized-field `SoundSettings` merge and one
 lock through DSP/volume convergence, and full/streambox ingress were rechecked
@@ -1110,4 +1118,4 @@ config-preservation/refusal updates for graph-carrier dispatch; see
 HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
 active-speaker UI / commission-ramp work.)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-05

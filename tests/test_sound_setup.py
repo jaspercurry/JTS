@@ -844,7 +844,6 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
         "usb_data_role": {"board_topology": "shared_otg_port"},
     }
     monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
-    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
     monkeypatch.setattr(sound_setup, "_output_hardware_dict", lambda: hardware)
 
     payload = sound_setup._i2s_hat_payload(intent_path=intent)
@@ -852,11 +851,9 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     assert payload["desired_enabled"] is False
     assert payload["runtime_active"] is True
     assert payload["restart_required"] is True
+    assert payload["visibility"] == "visible"
+    assert payload["available"] is True
 
-    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "streambox")
-    assert sound_setup._i2s_hat_payload(intent_path=intent)["visibility"] == "hidden"
-
-    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
     assert sound_setup._i2s_hat_payload(intent_path=intent)["available"] is False

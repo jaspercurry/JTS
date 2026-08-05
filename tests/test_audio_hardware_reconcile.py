@@ -473,7 +473,7 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     assert "error=boot_config_published_not_durable" in result.stderr
 
 
-def test_streambox_skips_i2s_boot_mutation(tmp_path: Path):
+def test_streambox_applies_i2s_boot_intent(tmp_path: Path):
     original = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
     (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
     (tmp_path / "i2s_hat.env").write_text(
@@ -484,7 +484,9 @@ def test_streambox_skips_i2s_boot_mutation(tmp_path: Path):
     result = _run_reconcile(tmp_path, "", initial_boot_config=original)
 
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "config.txt").read_text(encoding="utf-8") == original
+    rendered = (tmp_path / "config.txt").read_text(encoding="utf-8")
+    assert "dtoverlay=merus-amp" in rendered
+    assert "dtoverlay=dwc2,dr_mode=peripheral" in rendered
 
 
 def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):

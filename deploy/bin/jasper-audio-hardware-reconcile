@@ -35,7 +35,6 @@ ACTIVE_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 I2S_HAT_INTENT_FILE="${JASPER_I2S_HAT_INTENT_FILE:-/var/lib/jasper/i2s_hat.env}"
 I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper-output-hardware/i2s-hat-reboot-required}"
-INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
@@ -232,19 +231,7 @@ observe_output_hardware_state() {
 }
 
 reconcile_i2s_hat_boot() {
-    local install_profile="full" payload topology changed
-    if [[ -r "$INSTALL_PROFILE_FILE" ]]; then
-        install_profile="$(sed -n '1{s/[[:space:]]//g;p;}' "$INSTALL_PROFILE_FILE")"
-    fi
-    if [[ "$install_profile" == "streambox" ||
-          "$install_profile" == "endpoint" ||
-          "$install_profile" == "satellite" ]]; then
-        log_event "i2s_hat_apply" "result=unavailable install_profile=${install_profile}"
-        return 0
-    elif [[ -n "$install_profile" && "$install_profile" != "full" ]]; then
-        log_event "i2s_hat_apply" "result=error error=invalid_install_profile"
-        exit 66
-    fi
+    local payload topology changed
     if payload="$(
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.usb_port_role \
             --reconcile-boot \
