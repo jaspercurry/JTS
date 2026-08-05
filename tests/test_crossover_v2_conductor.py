@@ -8022,9 +8022,11 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     #
     # WHICH pair the adjudication would pick when they DO differ is not this
     # test's claim and never was (see the paragraph above); its own pins are
-    # `test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_
-    # optimal` and `test_a_disagreeing_frame_whose_realized_check_passes_banks_
-    # and_proceeds`. What this test still pins, and what stays discriminating,
+    # `test_wild_trim_fallback_follows_levels_not_drift` and
+    # `test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused`.
+    # (NOT `test_eligible_candidate_fits_both_roles_and_moves_trim_toward_
+    # ripple_optimal`, which #2138's review showed stays green when the
+    # adjudication is severed.) What this test still pins, and what stays
     # is #1668's subject: the scan is SEEDED by the anchored give-back
     # (asserted on `seed_trim_db`/`trim_w_db` above) and what ships is never
     # the raw trim.
@@ -11119,10 +11121,11 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     resolved == anchored`` here once more, which makes claim 3's assertions
     below true but no longer DISCRIMINATING about which pair the adjudication
     picked. That discrimination is not lost — it lives in
-    ``test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_
-    optimal`` — and the claim this test is actually about, that the placement
-    follows the core median, is asserted below as an identity rather than as a
-    choice between pairs.
+    ``test_wild_trim_fallback_follows_levels_not_drift`` and
+    ``test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused`` —
+    and the claim this test is actually about, that the placement follows the
+    core median, is asserted below as an identity rather than as a choice
+    between pairs.
 
     **Why every magnitude here moved ~0.03-0.13 dB at R10b** (the claim-seam
     change; first-principles panel CC-2(b)).
