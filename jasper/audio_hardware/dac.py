@@ -440,25 +440,38 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
         r"\bsnd_rpi_merus_amp\b",
         r"\bmerus audio amp ma120x0p-amp-0\b",
     ),
-    # This board is a passive stereo endpoint only. In particular it does not
-    # declare the active-output lane. Verified causal chain: the kernel DAI
-    # (ma120x0p.c) advertises only S24_LE|S32_LE at continuous 44.1-192 kHz
-    # rates — a driver-advertisement limit, not a documented silicon one
-    # (the driver's own hw_params has an unadvertised S16 branch) — JTS
-    # pins 48 kHz/2ch.
-    # The outputd native-format write HAS shipped: outputd opens this sink at
-    # the declared S32_LE itself, so "outputd can only do S16" is no longer
-    # what holds the active lane back. The render cutover has ALSO shipped
-    # (PR-4, format-foundation): deploy/lib/jasper-asound-render.sh no longer
-    # puts an ALSA plug in front of this card — it opens the raw `hw:` device
-    # directly, like every other recognized single DAC, so the S32_LE
-    # hardware-edge guarantee now lives at that open (outputd's own
-    # client-edge readback IS the hardware edge on a raw `hw:` device) instead
-    # of a pinned plug slave. One gate remains before this flag moves:
-    #   The active-lane design pass itself — clock-domain contract,
-    #   activation gates, fail-closed partial states, /state + doctor
-    #   observability (AGENTS.md "Config ownership").
-    supports_active_outputd_lane=False,
+    # Why this board declares S32_LE, historically: the kernel DAI (ma120x0p.c)
+    # advertises only S24_LE|S32_LE at continuous 44.1-192 kHz rates — a
+    # driver-advertisement limit, not a documented silicon one (the driver's own
+    # hw_params has an unadvertised S16 branch) — and JTS pins 48 kHz/2ch. That
+    # advertisement is what kept the board passive-only while outputd could
+    # write S16 alone.
+    #
+    # It now carries the active-output lane, on the same width-2 shape the
+    # single Apple USB-C dongle already runs (one coherent ALSA device, one
+    # mono active 2-way, identity channel map). What retired the blockers:
+    # outputd asks ALSA for the declared S32_LE itself (PR-3) and opens the card
+    # RAW — deploy/lib/jasper-asound-render.sh renders `outputd_dac` as a plain
+    # `type hw` alias like every other registered single DAC (PR-4,
+    # format-foundation) — so no conversion layer sits at the final edge and
+    # outputd's own client-edge readback IS the hardware edge. That edge is
+    # self-proving at runtime rather than assumed: outputd parks at exit 78 if
+    # the device installs a format other than the one requested, so a box that
+    # is playing is a box whose native S32 open succeeded.
+    #
+    # Declaring the lane is not arming it. jasper-audio-hardware-reconcile
+    # enters active mode only when a LEGAL active graph is already the live
+    # CamillaDSP config (active_graph_status -> outputd_active_lane_decision),
+    # which only commissioning produces — so this flag makes the layout
+    # SELECTABLE at /sound/setup/ and leaves a running box byte-identically
+    # passive until it is commissioned.
+    #
+    # Remaining per-board work, neither of which gates the lane: measured
+    # latency-floor data (no latency_floor declared, so it ships the
+    # conservative global default), and chip-AEC qualification, which stays
+    # needs_calibration below.
+    supports_active_outputd_lane=True,
+    active_outputd_lane_channels=2,
     final_edge_format="S32_LE",
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"

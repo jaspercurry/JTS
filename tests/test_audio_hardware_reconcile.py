@@ -565,16 +565,53 @@ def test_reconcile_innomaker_uses_registry_identity_and_renders_raw_hw(
     assert _render_log(tmp_path) == "render\n"
 
 
-def test_reconcile_innomaker_logs_why_the_active_graph_was_not_consulted(
+def test_reconcile_innomaker_stays_passive_without_a_legal_active_graph(
     tmp_path: Path,
 ):
-    """A roleful saved topology on a DAC with no active lane still resolves
-    passive — and says WHY in one unambiguous token.
+    """THE FAIL-CLOSED ACTIVATION PROPERTY — the reason flipping the InnoMaker's
+    lane flag cannot change any running box.
 
-    ``active_graph=none`` conflated two different states: "the width gate ran
-    and declined" and "the gate never ran because this DAC declares no active
-    outputd lane". Only the second is actionable at /sound/setup/, so an
-    operator reading the journal must be able to tell them apart.
+    Declaring the lane makes ``active_lane_channels_for_dac`` return 2, which
+    only means the width gate now RUNS. Active mode still needs a legal active
+    graph to already be the live CamillaDSP config, which only commissioning
+    produces. With no statefile staged the gate declines, and the box resolves
+    byte-identically passive: stereo content lane, no width, no active-lane
+    marker.
+
+    The journal token proves WHICH state this is. It used to read
+    ``dac_no_active_lane`` (the gate never ran); it must now name the gate's own
+    decline reason, because "choose a different layout at /sound/setup/" is no
+    longer the remedy — commissioning is.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    # The gate RAN and declined — it is no longer skipped for this DAC.
+    assert "active_graph=camilla_statefile_missing" in result.stderr
+    assert "active_graph=dac_no_active_lane" not in result.stderr
+    assert "active_graph=none" not in result.stderr
+
+
+def test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph(
+    tmp_path: Path,
+):
+    """The other half of the gate: with a legal width-2 active graph live, the
+    InnoMaker arms the active lane at exactly that width.
+
+    Drive-what-we-use — the emitted width is the config's ACTUAL driven width,
+    and the explicit ``JASPER_OUTPUTD_ACTIVE_LANE=1`` marker fences off the
+    stereo-only TTS mixer / rate-match so full-range audio cannot reach a bare
+    tweeter through outputd.
     """
     result = _run_reconcile(
         tmp_path,
@@ -587,11 +624,14 @@ def test_reconcile_innomaker_logs_why_the_active_graph_was_not_consulted(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
-    assert "active_graph=dac_no_active_lane" in result.stderr
-    assert "active_graph=none" not in result.stderr
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
+    # The declared final-edge format is unchanged by arming the lane.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
+    assert "mode=single_alsa_active" in result.stderr
+    assert "active_channels=2" in result.stderr
+    assert "active_lane_cap=2" in result.stderr
 
 
 def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):

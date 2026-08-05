@@ -59,7 +59,7 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) == 2
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) == 8
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) == 8
-    assert dac.active_outputd_lane_channels_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
+    assert dac.active_outputd_lane_channels_for(INNOMAKER_HIFI_AMP_PRO_ID) == 2
     assert dac.active_outputd_lane_channels_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.active_outputd_lane_channels_for("unknown_usb_dac") is None
     assert dac.clock_domain_contract_for(APPLE_USB_C_DONGLE_ID) == "single_device"
@@ -164,22 +164,62 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
     assert dac.profile_for_card_label("Mystery USB DAC") is None
 
 
-def test_innomaker_hifi_amp_pro_profile_matches_observed_passive_i2s_shape() -> None:
+def test_innomaker_hifi_amp_pro_declares_the_width_two_active_i2s_shape() -> None:
     profile = INNOMAKER_HIFI_AMP_PRO
 
     assert profile.kind == "single"
     assert profile.physical_output_count == 2
     assert profile.connection == "i2s"
     assert profile.dtoverlay == "merus-amp"
-    assert profile.supports_active_outputd_lane is False
-    assert profile.active_outputd_lane_channels is None
     assert profile.usb_ids == ()
+    # THE FLIP: this board carries the active-output lane at width 2 — the
+    # same shape the single Apple USB-C dongle already runs (one coherent
+    # ALSA device, one mono active 2-way).
+    assert profile.supports_active_outputd_lane is True
+    assert profile.active_outputd_lane_channels == 2
+    assert profile.is_coherent_single() is True
+    # The lane can never ask for more than the board physically has.
+    assert profile.active_outputd_lane_channels <= profile.physical_output_count
+    # No explicit channel map => the transport builds an identity map.
+    assert profile.dac_channel_map is None
+    # The declared format the raw `hw:` open lands on. Unchanged by the flip,
+    # and load-bearing: outputd requests it and parks at exit 78 if the device
+    # installs something else.
+    assert profile.final_edge_format == "S32_LE"
     assert (
         dac.profile_for_card_label(
             "snd_rpi_merus_amp, Merus Audio Amp ma120x0p-amp-0"
         )
         is profile
     )
+
+
+def test_innomaker_lane_does_not_claim_the_narrower_launch_scopes() -> None:
+    """Declaring the transport lane is not a claim about measured scopes.
+
+    Two deliberately-narrower capabilities stay off, each with its own
+    qualification evidence that this board has not been through:
+
+    * ``supports_active_crossover_commissioning`` gates ONLY the AUTOMATIC
+      measured summed-region capture service
+      (``CommissioningCaptureService._current``), which is DAC8x-scoped. The
+      guided/manual commissioning flow reads no DacProfile field beyond the
+      route capability — which is exactly how the Apple USB-C dongle, also
+      ``False`` here, ran a commissioned mono active 2-way.
+    * ``chip_aec_qualification`` needs per-profile timing calibration.
+
+    The registry validator would ACCEPT commissioning=True post-flip
+    (``is_coherent_single() and supports_active_outputd_lane``), so nothing but
+    this test stops it drifting on without the measurements behind it.
+    """
+
+    assert INNOMAKER_HIFI_AMP_PRO.supports_active_crossover_commissioning is False
+    assert APPLE_USB_C_DONGLE.supports_active_crossover_commissioning is False
+    assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
+    assert INNOMAKER_HIFI_AMP_PRO.chip_aec_qualification == "needs_calibration"
+    # No measured buffer floor yet => the conservative global default ships.
+    assert INNOMAKER_HIFI_AMP_PRO.latency_floor is None
+    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO.id) is None
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:

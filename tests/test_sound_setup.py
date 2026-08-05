@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
@@ -57,6 +58,11 @@ from jasper.sound.settings import (
 from jasper.volume_curve import percent_to_db
 from jasper.web import sound_setup
 
+from .active_speaker_fixtures import (
+    PASSIVE_ONLY_DAC_ID,
+    PASSIVE_ONLY_DAC_LABEL,
+    register_passive_only_dac,
+)
 from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
@@ -1552,17 +1558,20 @@ INNOMAKER_DEVICE_LABEL = "InnoMaker HiFi AMP Pro"
 
 
 def _innomaker_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
-    """A save posted against a DAC that declares no active outputd lane.
+    """A save posted against the two-output InnoMaker HiFi AMP Pro.
 
-    ``active=True`` is the impossible shape: a roleful active 2-way layout on
-    ``supports_active_outputd_lane=False`` hardware. Saving it is what left a
-    box structurally mute — CamillaDSP runs the roleful graph into an aloop
-    lane nothing drains while outputd captures the passive one.
+    ``active=True`` is the mono active 2-way layout the wizard REFUSED on this
+    board until it gained the width-2 active outputd lane. The refusal was
+    correct while the board declared no lane — the save left a box structurally
+    mute, CamillaDSP running the roleful graph into an aloop lane nothing
+    drains while outputd captured the passive one.
 
     ``subwoofer=True`` is the second roleful shape a household reaches through
     the wizard: passive mono mains plus a local sub. It is roleful through the
-    subwoofer branch rather than an active crossover, so it is refused for the
-    same reason and the copy has to cover it.
+    subwoofer branch rather than an active crossover.
+
+    Both roleful shapes are ACCEPTED here now. The refusal itself is still
+    pinned, against ``_no_lane_topology_payload`` below.
     """
 
     if subwoofer:
@@ -1667,6 +1676,26 @@ def _innomaker_topology_payload(*, active: bool, subwoofer: bool = False) -> dic
     }
 
 
+def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
+    """The same roleful shapes, posted against a DAC that declares NO lane.
+
+    The save guard's subject. Every profile in the shipped registry now declares
+    an active lane, so the guard is pinned against the synthetic stand-in for the
+    NEXT passive-only DAC — the population it actually protects — rather than
+    against whichever real profile happens not to have been flipped yet.
+    """
+
+    payload = _innomaker_topology_payload(active=active, subwoofer=subwoofer)
+    payload["name"] = PASSIVE_ONLY_DAC_LABEL
+    payload["hardware"] = {
+        "device_id": PASSIVE_ONLY_DAC_ID,
+        "device_label": PASSIVE_ONLY_DAC_LABEL,
+        "physical_output_count": 2,
+        "card_id": "benchpassive",
+    }
+    return payload
+
+
 def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
     monkeypatch,
     tmp_path: Path,
@@ -1674,16 +1703,17 @@ def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
     """Save-time capability guard: the wizard must not accept a layout this
     box can never drive. Before this guard the save landed with blockers=0 and
     the speaker went silent with every daemon reporting healthy."""
+    register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     with pytest.raises(ValueError) as excinfo:
         sound_setup._save_output_topology_payload(
-            _innomaker_topology_payload(active=True)
+            _no_lane_topology_payload(active=True)
         )
 
     message = str(excinfo.value)
-    assert INNOMAKER_DEVICE_LABEL in message
+    assert PASSIVE_ONLY_DAC_LABEL in message
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. The
     # household is being steered there, so the consequence travels with it.
@@ -1701,28 +1731,82 @@ def test_passive_mains_plus_local_sub_are_refused_on_the_same_dac(
     """The subwoofer branch is roleful too, and the wizard offers it as a
     one-tap add-on — so the refusal copy must name subwoofer layouts, not only
     active crossovers."""
+    register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     with pytest.raises(ValueError) as excinfo:
         sound_setup._save_output_topology_payload(
-            _innomaker_topology_payload(active=False, subwoofer=True)
+            _no_lane_topology_payload(active=False, subwoofer=True)
         )
 
     message = str(excinfo.value)
     assert "subwoofer layouts" in message
-    assert INNOMAKER_DEVICE_LABEL in message
+    assert PASSIVE_ONLY_DAC_LABEL in message
     assert not topo_path.exists()
 
 
-def test_passive_layout_on_the_same_dac_still_saves(monkeypatch, tmp_path: Path):
-    """The guard keys strictly on the capability flag, so the ordinary passive
-    stereo layout this board DOES support is untouched."""
+def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path):
+    """The guard keys strictly on rolefulness, so the ordinary passive stereo
+    layout a lane-less board DOES support is untouched."""
+    register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     saved = sound_setup._save_output_topology_payload(
-        _innomaker_topology_payload(active=False)
+        _no_lane_topology_payload(active=False)
+    )
+
+    assert saved["output_topology"]["hardware"]["device_id"] == PASSIVE_ONLY_DAC_ID
+    assert topo_path.exists()
+
+
+def test_active_layout_on_the_innomaker_is_accepted(monkeypatch, tmp_path: Path):
+    """THE FLIP, at the surface the owner hit: /sound/setup/ refused a mono
+    active 2-way on the InnoMaker, and now accepts it.
+
+    The board declares the width-2 active outputd lane, so the one predicate
+    behind the refusal (``active_lane_capability_gap``) no longer fires and the
+    layout persists. Accepting the layout is NOT arming it — the reconciler
+    still gates active mode on a legal active graph already being live, which
+    only commissioning produces. That fail-closed property is pinned in
+    tests/test_audio_hardware_reconcile.py.
+    """
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=True)
+    )
+
+    assert saved["output_topology"]["hardware"]["device_id"] == INNOMAKER_DEVICE_ID
+    group = saved["output_topology"]["speaker_groups"][0]
+    assert group["mode"] == "active_2_way"
+    assert [channel["role"] for channel in group["channels"]] == [
+        "woofer",
+        "tweeter",
+    ]
+    assert topo_path.exists()
+
+    # The route the accepted layout resolves to: the width-2 outputd active
+    # lane, no blockers. A save the box cannot drive is exactly what the guard
+    # exists to stop, so acceptance has to come with a drivable route.
+    route = saved["active_playback_route"]
+    assert route["playback_device_source"] == OUTPUTD_ACTIVE_LANE_SOURCE
+    assert route["transport_channel_count"] == 2
+    assert route["issues"] == []
+    assert route["ready"] is True
+
+
+def test_local_sub_on_the_innomaker_is_accepted(monkeypatch, tmp_path: Path):
+    """The subwoofer branch rides the same lane declaration, so it unblocks
+    with it — the refusal copy named both shapes and both were gated on the
+    one predicate."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False, subwoofer=True)
     )
 
     assert saved["output_topology"]["hardware"]["device_id"] == INNOMAKER_DEVICE_ID
@@ -1775,6 +1859,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
     to arrive as a non-2xx with an ``error`` string, and must NOT take the 409
     branch (that one re-ingests the server's topology and would wipe the draft).
     """
+    register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     try:
@@ -1786,7 +1871,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
             base,
             "/output-topology",
             {
-                "output_topology": _innomaker_topology_payload(active=True),
+                "output_topology": _no_lane_topology_payload(active=True),
                 # The page always echoes the revision it last read; "missing"
                 # is what the endpoint reports before anything is saved.
                 "topology_revision": "missing",
@@ -1795,7 +1880,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
         )
         payload = json.loads(resp.read().decode("utf-8"))
 
-        assert INNOMAKER_DEVICE_LABEL in payload["error"]
+        assert PASSIVE_ONLY_DAC_LABEL in payload["error"]
         assert "output_topology" not in payload
         assert not topo_path.exists()
     finally:

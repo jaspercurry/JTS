@@ -26,6 +26,12 @@ from jasper.control.audio_incidents import (
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.control.server import _make_handler
 
+from .active_speaker_fixtures import (
+    PASSIVE_ONLY_DAC_ID,
+    PASSIVE_ONLY_DAC_LABEL,
+    register_passive_only_dac,
+)
+
 
 def _airplay(
     *,
@@ -277,8 +283,15 @@ _ROUTE_DISCONNECTED = (
 )
 
 
-def _innomaker_active_two_way():
-    """Roleful active 2-way saved against a DAC with no active outputd lane."""
+def _no_lane_active_two_way():
+    """Roleful active 2-way saved against a DAC with no active outputd lane.
+
+    Uses the synthetic passive-only profile: every DAC in the shipped registry
+    now declares an active lane, so the capability-gap surfaces are pinned
+    against the stand-in for the next lane-less board rather than against
+    whichever real profile happens not to have been flipped yet. Callers must
+    register it with ``register_passive_only_dac(monkeypatch)``.
+    """
 
     from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
@@ -289,8 +302,8 @@ def _innomaker_active_two_way():
         "name": "Mono active 2-way",
         "status": "verified",
         "hardware": {
-            "device_id": "innomaker_hifi_amp_pro",
-            "device_label": "InnoMaker HiFi AMP Pro",
+            "device_id": PASSIVE_ONLY_DAC_ID,
+            "device_label": PASSIVE_ONLY_DAC_LABEL,
             "physical_output_count": 2,
         },
         "speaker_groups": [
@@ -383,14 +396,16 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
 
 
 def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
+    monkeypatch,
 ) -> None:
     """One derivation feeds the health model: the same detector doctor uses,
     plus the DAC-capability reason resolved from the saved topology."""
+    register_passive_only_dac(monkeypatch)
     state = audio_health._transport_state(
         coupling="loopback",
         outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": "outputd_content_capture"},
         camilla_devices={"playback_device": "outputd_active_content_playback"},
-        topology=_innomaker_active_two_way(),
+        topology=_no_lane_active_two_way(),
     )
 
     assert any(
@@ -398,8 +413,8 @@ def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
         for error in state["coherence_errors"]
     )
     assert state["capability_gap"] == {
-        "device_id": "innomaker_hifi_amp_pro",
-        "device_label": "InnoMaker HiFi AMP Pro",
+        "device_id": PASSIVE_ONLY_DAC_ID,
+        "device_label": PASSIVE_ONLY_DAC_LABEL,
     }
 
 
@@ -420,7 +435,8 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     from jasper import audio_runtime_plan
     from jasper.active_speaker.runtime_contract import build_parked_muted_graph
 
-    topology = _innomaker_active_two_way()
+    register_passive_only_dac(monkeypatch)
+    topology = _no_lane_active_two_way()
     text, graph = build_parked_muted_graph(topology)
     assert graph.allowed
     config = tmp_path / "active_speaker_parked.yml"
@@ -459,8 +475,8 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     assert "no staged startup graph" in state["coherence_errors"][0]
     # The DAC-capability clause still rides along after this reason.
     assert state["capability_gap"] == {
-        "device_id": "innomaker_hifi_amp_pro",
-        "device_label": "InnoMaker HiFi AMP Pro",
+        "device_id": PASSIVE_ONLY_DAC_ID,
+        "device_label": PASSIVE_ONLY_DAC_LABEL,
     }
 
     health = _compose(transport=state)
@@ -492,12 +508,13 @@ def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> Non
     assert second["coherence_errors"] == []
 
 
-def test_transport_state_is_clean_when_the_paired_lanes_agree() -> None:
+def test_transport_state_is_clean_when_the_paired_lanes_agree(monkeypatch) -> None:
+    register_passive_only_dac(monkeypatch)
     state = audio_health._transport_state(
         coupling="loopback",
         outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": "outputd_content_capture"},
         camilla_devices={"playback_device": "outputd_content_playback"},
-        topology=_innomaker_active_two_way(),
+        topology=_no_lane_active_two_way(),
     )
 
     assert state["coherence_errors"] == []

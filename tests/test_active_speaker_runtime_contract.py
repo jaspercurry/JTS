@@ -3319,12 +3319,14 @@ def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
 
 
 def _innomaker_active_2way() -> OutputTopology:
-    """The jts5 shape from #2135: mono active 2-way on a DAC with NO active lane.
+    """The jts5 shape from #2135: mono active 2-way on the InnoMaker.
 
-    The InnoMaker HiFi AMP Pro declares ``supports_active_outputd_lane=False``,
-    so this topology can never resolve an active playback route — an ALSA-sink
-    parked graph would have nothing legal to open. Parking must still work here,
-    because this is the box the issue was filed from.
+    Parking is the state a roleful topology sits in BEFORE it is commissioned —
+    drivers declared, no startup graph staged — so it must work on this box
+    whatever the DAC declares. (When #2135 was filed the InnoMaker declared no
+    active lane at all and could never resolve an active route; it now carries
+    the width-2 lane, and parking is still what a deploy hits until the layout
+    is commissioned.) This is the box the issue was filed from.
     """
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,

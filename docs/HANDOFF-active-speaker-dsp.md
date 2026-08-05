@@ -4,7 +4,9 @@ This doc is the canonical handoff for JTS speakers where CamillaDSP
 directly drives woofer/midrange/tweeter amplifier channels (an
 "active" speaker) instead of a passive in-cabinet crossover. JTS3
 (DAC8x + a real bi/tri-amp speaker) is the only hardware running this
-path today; other production units use the passive stereo path.
+path today; other production units run passive until commissioned. The
+InnoMaker HiFi AMP Pro now declares a width-2 active lane, so the active
+layout is selectable there too.
 
 It owns DSP topology, layer boundaries, and hardware-safety contracts.
 Product behavior, the manual-vs-measured parameter split, the guided
@@ -1440,7 +1442,8 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `type hw` (card/device/subdevice only — the `hw` plugin rejects
   channels/rate/format; width is set by the openers and locked by snd-aloop),
   `type plug`/`plughw:` banned. The active-capable product `DacProfile`s declare
-  `supports_active_outputd_lane=True` (Apple USB-C dongle cap 2,
+  `supports_active_outputd_lane=True` (Apple USB-C dongle cap 2, InnoMaker
+  HiFi AMP Pro cap 2,
   DAC8x/DAC8x-Studio cap 8, dual-Apple composite cap 4). Because the gate accepts
   the config's actual width, the existing
   per-speaker emitters (driver-count configs) engage active mode directly — **no

@@ -297,6 +297,44 @@ def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(
     }
 
 
+def test_state_resilience_parked_detail_offers_commissioning_on_the_innomaker(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """The other side of the same advice: now that the InnoMaker declares the
+    width-2 active lane, "finish crossover preview" is a road WITH an end, so
+    the parked banner must offer it instead of steering the household back to
+    passive.
+
+    This is the household-visible half of the flip. The box the #2135 issue was
+    filed from used to be told its DAC "cannot drive an active speaker layout".
+    """
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _innomaker_active_2way
+
+    topology = _innomaker_active_2way()
+    text, _graph = build_parked_muted_graph(topology)
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    snapshot = state_aggregate._active_speaker_parked_snapshot()
+
+    assert snapshot["parked"] is True
+    assert "finish crossover preview" in snapshot["detail"]
+    assert "cannot drive an active speaker layout" not in snapshot["detail"]
+    assert "attach an active-capable DAC" not in snapshot["detail"]
+
+
 def test_state_resilience_parked_detail_drops_an_impossible_exit(
     monkeypatch,
     tmp_path,
@@ -304,9 +342,14 @@ def test_state_resilience_parked_detail_drops_an_impossible_exit(
     """On a DAC with no active outputd lane, "finish crossover preview" is a
     road with no end — the detail must not lead with it."""
     from jasper.active_speaker.runtime_contract import build_parked_muted_graph
-    from tests.test_audio_health import _innomaker_active_two_way
+    from tests.active_speaker_fixtures import (
+        PASSIVE_ONLY_DAC_LABEL,
+        register_passive_only_dac,
+    )
+    from tests.test_audio_health import _no_lane_active_two_way
 
-    topology = _innomaker_active_two_way()
+    register_passive_only_dac(monkeypatch)
+    topology = _no_lane_active_two_way()
     text, _graph = build_parked_muted_graph(topology)
     parked = tmp_path / "active_speaker_parked.yml"
     parked.write_text(text, encoding="utf-8")
@@ -327,7 +370,7 @@ def test_state_resilience_parked_detail_drops_an_impossible_exit(
 
     assert snapshot["parked"] is True
     assert "finish crossover preview" not in snapshot["detail"]
-    assert "InnoMaker HiFi AMP Pro" in snapshot["detail"]
+    assert PASSIVE_ONLY_DAC_LABEL in snapshot["detail"]
     assert "reset output topology to passive" in snapshot["detail"]
 
 
