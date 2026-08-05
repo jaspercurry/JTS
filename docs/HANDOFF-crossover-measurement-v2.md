@@ -698,10 +698,15 @@ not happened yet — so the analysis release can never be reached twice.
    ±half-period comb lobe inside the range; GCC is deliberately not the lobe
    prior because its periodic peak can identify a neighboring comb basin.
 **Layer 1a driver linearization (#1668 PR-C).** MEASURE additionally fits
-a per-driver cut-only linearization (a rising-slope Highshelf + Peaking cuts,
-plus the CD-horn top-octave give-back stage — a Lowshelf backbone + optional
-trailing Highshelf taper, #1668 — honoring the correction envelope's per-bin
-depth ceiling) whenever the mic resolved to the "reference" trust tier AND both
+a per-driver linearization (a rising-slope Highshelf + Peaking cuts, plus the
+CD-horn top-octave give-back stage — a Lowshelf backbone + optional trailing
+Highshelf taper, #1668 — honoring the correction envelope's per-bin depth
+ceiling). It is **cut-only unless the evidence gate grants a lift vocabulary**
+— see `allow_boost` in `crossover_v2_flow._fit_linearization` and the boost
+rationale in
+[HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md); the
+same envelope ceiling bounds a boost as bounds a cut. Fitted whenever the mic
+resolved to the "reference" trust tier AND both
 drivers cleared a paired ≥3-occurrence gate — otherwise the candidate is
 byte-identical to the plain trims-only shape from before this PR. When eligible,
 the fit is applied to each branch in the linear domain BEFORE the trim solve, so
@@ -1316,8 +1321,11 @@ envelope response as `cloud`, so the split does not reduce that response's
 byte cost, only its shape for a `cloud`-only reader.
 
 **The chart plots each phase relative to its OWN `reference_db`, never a
-shared one.** Linearization is cut-only, so `cloud_verify`'s reference is
-always at or below `cloud_measure`'s; an early draft plotted both curves in
+shared one.** The two references differ — when the fit is cut-only,
+`cloud_verify`'s sits at or below `cloud_measure`'s, and since the boost
+ruling (#2106) a permitted lift can move it the other way, which the
+per-phase reference handles without caring about the direction. An early
+draft plotted both curves in
 absolute dB against `cloud_verify`'s reference alone, which displaced the
 whole "Before" curve by a level change the spec never grades, under a
 corridor that was not testing what it claimed to (caught by review,

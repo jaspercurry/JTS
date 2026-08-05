@@ -474,8 +474,14 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
 # tweeter hard [1600,20000], measurement [2000,18000], protection high-pass
 # 2000 Hz order 4; woofer hard [45,4000], measurement [60,4000], NO required
 # protection filters, driven (150,4000).
+#
+# The tweeter's DRIVEN band is (2000, 20000) — its upper edge is the resolver's
+# hard edge, not the measurement band's 18000. Recorded because the two differ
+# only at the top and the fixture previously took both edges from the
+# measurement band (routed nit from #2126's gate). Nothing this module asserts
+# moves with it: every margin below is |P| at the LOWER edge.
 _CHECKPOINT_FC_HZ = 2000.0
-_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (2000.0, 18000.0)}
+_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (2000.0, 20000.0)}
 _CHECKPOINT_PROTECTION = {
     "woofer": (), "tweeter": (CrossoverSection(2000.0, 4, True),),
 }

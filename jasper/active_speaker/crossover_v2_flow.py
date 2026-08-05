@@ -10704,54 +10704,73 @@ class CrossoverV2Conductor:
             if role in frame_trims_db
         }
 
-        # Boost permission is EVIDENCE-gated, and this is the gate. TWO
-        # conditions, both necessary:
+        # Boost permission is EVIDENCE-gated, and this is the gate. ONE
+        # necessary condition, plus a clause that distinguishes two different
+        # ways a cloud can be missing.
         #
-        # 1. The JOURNEY will MEASURE what the speaker did with the boost
-        #    (`self._post_apply_verifies`). Today every plan shape declares a
-        #    post-apply check, so this reads as always-on — but it is the
-        #    correct condition rather than a constant, so a future tier that
-        #    drops the post-apply sweep drops boost with it instead of
+        # 1. NECESSARY: the JOURNEY will MEASURE what the speaker did with the
+        #    boost (`self._post_apply_verifies`). Today every plan shape
+        #    declares a post-apply check, so this reads as always-on — but it
+        #    is the correct condition rather than a constant, so a future tier
+        #    that drops the post-apply sweep drops boost with it instead of
         #    shipping an unverified one. Since the two-stage split that check
         #    is a SEPARATE session, which is why this reads a declared fact
         #    rather than this session's own phase list — see the field's own
         #    comment in ``__init__``.
         #
-        # 2. The cloud verdict actually reached the envelope (`cloud is not
-        #    None`). This is the owner ruling's ONE retained constraint —
-        #    null-exclusion stays a measured, registry-gated fact — and without
-        #    it the ruling is unenforceable rather than merely unenforced.
-        #    `_cloud_fit_evidence` has two reachable None paths (the positions
-        #    could not be combined; the honesty pipeline was unavailable), and
-        #    on both, `compose_envelope` receives `excluded_bands_hz=None`, so
+        # 2. The cloud clause, and the OWNER RULING (#2106, 2026-08-05) that
+        #    rewrote it. R15 removed the pre-apply cloud from stage 1
+        #    (`STAGE1_INCLUDES_CLOUD_MEASURE`), so on the shipped driver-only
+        #    path there is no cloud to wait for and the old `cloud is not
+        #    None` demand would have demoted every R15 correction to cut-only
+        #    for want of evidence the plan never collects. The ruling permits
+        #    boost there, on the named and accepted risk that a boost can land
+        #    on a position-specific artifact an at-mark verification cannot
+        #    detect, adjudicated by post-apply VERIFY, household listening,
+        #    and retained Undo. See the "Boost ruling" block in
+        #    `docs/crossover-linearization-80-20-plan.md` §4.2.
+        #
+        #    What did NOT change is the case the retired condition was written
+        #    for. `_cloud_fit_evidence` has two reachable None paths (the
+        #    positions could not be combined; the honesty pipeline was
+        #    unavailable) — a session that PLANNED a cloud and LOST it. On
+        #    both, `compose_envelope` receives `excluded_bands_hz=None`, so
         #    `allowed_depth_db` is NOT zeroed in the registry's interference
-        #    nulls. Granting boost there would let the fit EQ a null — and a
-        #    filled null reads `matched` at the mark while the spatial arm, the
-        #    one instrument that could contradict it, is absent on exactly
-        #    these paths. Cut-only still proceeds; only the lift vocabulary is
-        #    withheld, and the absence is already disclosed by
+        #    nulls, and granting boost would let the fit EQ a null the
+        #    session's own instrument was supposed to have found. Absent by
+        #    DESIGN and absent by FAILURE share the `cloud is None` signature
+        #    and are different evidence states; `PHASE_CLOUD_MEASURE not in
+        #    self._phases` is what tells them apart, read off the same
+        #    `index_phase_map` the session walks (so the permission cannot
+        #    disagree with the plan). A session that planned a cloud and lost
+        #    it stays cut-only; the absence is disclosed by
         #    `event=correction.crossover_v2_fit_without_cloud`.
         #
-        # Condition 2 is necessary but NOT sufficient, and #1967 is why.
-        # `cloud is not None` asks whether the cloud REACHED the envelope; it
-        # does not ask whether the corroborating instrument could examine the
-        # band a boost lands in. Below `ECHO_BAND_HF_REGIME_FLOOR_HZ` the
-        # registry contributes no exclusions at all, so `allowed_depth_db` is
-        # never zeroed there and the hazard named above — "granting boost
-        # there would let the fit EQ a null" — is exactly what the gate
-        # cannot rule out in the band where it is blind. The 2026-07-30
-        # session's largest prescribed boost sat 366 Hz under the floor; see
-        # `_boost_excluded_bands_hz` for the figure and its provenance.
+        # What bounds a boost once permitted, on EITHER path: the envelope's
+        # own depth limits, the realized-cascade stopband-gain guard, the
+        # headroom charge, post-apply VERIFY, and Undo. The gate grants a
+        # vocabulary, never a filter.
         #
-        # `boost_excluded_bands_hz` is the substantive half. It is composed
-        # by `_boost_excluded_bands_hz` from the SAME closed cloud, carries
-        # only the bins that cloud's own positions disagree about, and binds
-        # the lift stage alone — cuts keep the full fit band. Read that
-        # method before changing this: it withholds on contradicting
-        # evidence and never grants on absent evidence, which is the shape
-        # the owner's ruling asks for.
+        # The exclusion bands were never sufficient anyway, and #1967 is why:
+        # below `ECHO_BAND_HF_REGIME_FLOOR_HZ` the registry contributes no
+        # exclusions at all, so even a cloud session's `allowed_depth_db` is
+        # never zeroed there. The 2026-07-30 session's largest prescribed
+        # boost sat 366 Hz under that floor; see `_boost_excluded_bands_hz`
+        # for the figure and its provenance.
+        #
+        # `boost_excluded_bands_hz` is the substantive half where a cloud
+        # exists. It is composed by `_boost_excluded_bands_hz` from the SAME
+        # closed cloud, carries only the bins that cloud's own positions
+        # disagree about, and binds the lift stage alone — cuts keep the full
+        # fit band. Read that method before changing this: it withholds on
+        # contradicting evidence and never grants on absent evidence. It is
+        # `()` on the driver-only path because there is no spatial evidence to
+        # compose, which is the accepted risk the ruling names — not a
+        # silently-empty exclusion set.
         vocabulary = FitVocabulary(
-            allow_boost=self._post_apply_verifies and cloud is not None,
+            allow_boost=self._post_apply_verifies and (
+                cloud is not None or PHASE_CLOUD_MEASURE not in self._phases
+            ),
             boost_excluded_bands_hz=(
                 cloud.boost_excluded_bands_hz if cloud is not None else ()
             ),

@@ -7991,6 +7991,12 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # polish is seeded from the anchor), in opposite directions: the anchor's
     # realized level error |-0.258| -> |-0.134| dB, the polish's |0.142| ->
     # |0.166| dB. That is what crossed them over. No filter moved.
+    #
+    # #2106 then collapsed the two pairs into one. The boost the ruling permits
+    # (+3.72 dB at 399 Hz on the woofer here) reshapes the linearized branches
+    # whose SUMMED ripple the scan minimizes, and the minimum now sits exactly
+    # on the anchored seed — so the scan's walk is 0.000 dB and there are no
+    # longer two candidates to cross over. Asserted below.
     resolved_trim_t, _ripple, _seed = real_solve(
         call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
         lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
@@ -8007,10 +8013,23 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     )
     assert committed_t != pytest.approx(raw_trim["tweeter"])
     # …and the fixture-specific outcome, stated precisely rather than hedged, so
-    # a future flip back is visible here rather than silent. The scan did move
-    # (0.300 dB off its seed) — it simply did not level better.
+    # a future flip back is visible here rather than silent. Since #2106 the
+    # scan does not move AT ALL on this pair — it returns its own seed, so the
+    # anchor and the polish are one number and `committed_t == anchored` is
+    # true without discriminating between them. That is asserted here as the
+    # equality it now is, rather than left as an inequality that would fail
+    # for a reason the reader has to reconstruct.
+    #
+    # WHICH pair the adjudication would pick when they DO differ is not this
+    # test's claim and never was (see the paragraph above); its own pins are
+    # `test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_
+    # optimal` and `test_a_disagreeing_frame_whose_realized_check_passes_banks_
+    # and_proceeds`. What this test still pins, and what stays discriminating,
+    # is #1668's subject: the scan is SEEDED by the anchored give-back
+    # (asserted on `seed_trim_db`/`trim_w_db` above) and what ships is never
+    # the raw trim.
     assert committed_t == pytest.approx(expected_anchored["tweeter"])
-    assert resolved_trim_t != pytest.approx(expected_anchored["tweeter"])
+    assert resolved_trim_t == pytest.approx(expected_anchored["tweeter"])
 
 
 def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
@@ -9861,9 +9880,8 @@ def test_boost_is_granted_only_to_a_journey_that_will_verify():
 
 
 def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
-    """**The null-exclusion gate** (adversarial review B2). The owner's ruling
-    kept exactly one constraint on boost — null-exclusion stays a measured,
-    registry-gated fact — and without this the ruling is unenforceable.
+    """**The null-exclusion gate** (adversarial review B2), and the ONE case it
+    still decides after the owner's boost ruling (#2106, 2026-08-05).
 
     ``_cloud_fit_evidence`` has two reachable ``None`` paths (the positions
     could not be combined; the honesty pipeline was unavailable). On both,
@@ -9871,13 +9889,29 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
     ``allowed_depth_db`` is NOT zeroed in the registry's interference nulls —
     and a boost designed into a null reads MATCHED at the mark while the
     spatial arm, the one instrument that could contradict it, is absent on
-    exactly those paths. So boost is withheld; cut-only proceeds."""
+    exactly those paths. So boost is withheld; cut-only proceeds.
+
+    **What the ruling changed, and why this test survived it.** The gate used
+    to read ``cloud is not None`` for EVERY session, which also caught R15's
+    driver-only path — where the cloud is absent BY DESIGN and there is
+    nothing to lose. The two states share the ``cloud is None`` signature and
+    are different evidence, so the gate now asks the session's own plan which
+    one it is. This fixture is the *planned-and-lost* one, and the precondition
+    is asserted rather than inherited from the helper: a session that went
+    looking for spatial evidence and came back without it does not get to
+    boost. Its sibling
+    ``test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud`` is
+    the other side."""
     fakes = FakeSeams()
     seen: list[bool] = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
         c = _cloud_conductor(fakes)
+        # THE precondition this test now turns on: the session PLANNED a cloud.
+        # Without it the fixture would be indistinguishable from R15's
+        # driver-only path, which the same gate deliberately allows.
+        assert PHASE_CLOUD_MEASURE in c.session_phases
         mp.setattr(c, "_cloud_fit_evidence", lambda combined: None)
         _walk_measure_cloud_to_close(c)
     assert seen and not any(seen)
@@ -9890,6 +9924,272 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
     )
     # …and the absence is already disclosed, not silent.
     assert c.candidate.exclusion_evidence == {}
+
+
+def _vocabularies_seen(seen: list):
+    """Spy recording the WHOLE ``FitVocabulary``, not just ``allow_boost``.
+
+    ``_boost_vocabulary_spy`` answers "was boost permitted"; the ruling also
+    makes a claim about what the permission came WITH (an empty exclusion set,
+    because there is no spatial evidence to compose), so that needs the object.
+    """
+    real_fit = flow.fit_driver_linearization
+
+    def _spy(resp, envelope, **kwargs):
+        seen.append(kwargs["vocabulary"])
+        return real_fit(resp, envelope, **kwargs)
+
+    return _spy
+
+
+def _emitted_boosts(candidate) -> list[dict]:
+    return [
+        f
+        for fit in candidate.linearization.values()
+        for f in fit["filters"]
+        if f["gain"] > 0.0
+    ]
+
+
+def test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud():
+    """**The owner's boost ruling** (#2106, 2026-08-05), on the path it is
+    about — recorded in the "Boost ruling" block of
+    ``docs/crossover-linearization-80-20-plan.md`` §4.2.
+
+    R15 took the pre-apply cloud out of stage 1 (``STAGE1_INCLUDES_CLOUD_
+    MEASURE``), so a driver-only session has no cloud verdict to wait for. The
+    retired ``cloud is not None`` demand would have demoted every R15
+    correction to cut-only for want of evidence the plan never collects — a
+    speaker with a fillable dip would have been handed a fit that cannot fill
+    it, forever, with nothing in the journey that could ever change the answer.
+
+    The ruling permits boost here on a NAMED accepted risk: a boost can land on
+    a position-specific artifact that an at-mark verification cannot detect.
+    What adjudicates it instead is post-apply ``VERIFY``, household listening,
+    and retained Undo, with the standing rails (envelope depth, the
+    realized-cascade stopband guard, the headroom charge) still bounding the
+    filter — each pinned by its own test below.
+
+    **Asserted as a filter actually PLACED, not as a permission carried in the
+    vocabulary.** The gate grants a vocabulary; the point of the ruling is that
+    the lift stage downstream of it runs. A version of this test that asserted
+    only ``allow_boost is True`` would stay green if ``_lift_stage`` were
+    disconnected tomorrow.
+    """
+    fakes = FakeSeams()
+    seen: list = []
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _vocabularies_seen(seen))
+        c = _conductor(fakes)
+        # The scope precondition, asserted rather than inherited: this session's
+        # own capture plan contains no pre-apply cloud phase. That — not
+        # "``cloud`` came back ``None``" — is what the gate reads, and it is what
+        # separates this fixture from its planned-and-lost sibling above.
+        assert PHASE_CLOUD_MEASURE not in c.session_phases
+        assert c._post_apply_verifies is True
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 2)
+
+    assert seen and all(v.allow_boost for v in seen)
+    # The accepted risk, made explicit rather than left as a silently-empty
+    # set: there is no spatial evidence on this path, so there are no
+    # cloud-derived exclusions to carry. The plan records the risk; this
+    # records that the code is honest about where it comes from.
+    assert all(v.boost_excluded_bands_hz == () for v in seen)
+
+    boosts = _emitted_boosts(c.candidate)
+    assert boosts, "the ruling is about a boost the fit actually places"
+
+
+def test_a_cut_only_journey_on_the_same_fixture_places_no_boost():
+    """The other half of the pair above, on the IDENTICAL fixture, so the
+    difference is the gate and nothing else.
+
+    ``post_apply_verifies=False`` is the surviving necessary condition (nothing
+    will measure what the speaker did), so the same session that boosts above
+    is cut-only here — and the fit's own post-hoc invariant
+    (``fit_driver_linearization``'s "emitted a boost under a cut-only
+    vocabulary" ``RuntimeError``) is what makes that structural rather than
+    incidental.
+    """
+    fakes = FakeSeams()
+    seen: list = []
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _vocabularies_seen(seen))
+        c = _conductor(fakes, post_apply_verifies=False)
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 2)
+
+    assert seen and not any(v.allow_boost for v in seen)
+    assert _emitted_boosts(c.candidate) == []
+
+
+def test_the_ruling_lets_a_candidate_pass_that_cut_only_refused_as_no_improvement():
+    """**An intended behaviour change, pinned as intent rather than discovered
+    as a regression** (#2106, conductor ruling).
+
+    Boost expands the ACHIEVABLE set, so a candidate the improvement gate
+    previously refused can now clear it on the same evidence. That is
+    legitimate at the mark — the gate asks whether the proposed correction is
+    materially better than doing nothing, and a fit that may fill a dip has a
+    strictly larger set of answers than one that may only cut — and it is
+    adjudicated downstream by post-apply ``VERIFY``, household listening, and
+    retained Undo rather than by withholding the vocabulary.
+
+    ``_healthy_crossed_over_pair`` is the case, and it is a real one rather
+    than a contrivance: its only defects are two in-band DIPS. A cut-only fit
+    cannot fill a dip at any depth (#1809's own doctrine), so it had nothing
+    material to offer and was refused — twice over, in both arms of
+    ``test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused``.
+
+    Both arms here run the same session; only the gate differs. This is also
+    the mutation evidence for the gate itself: restoring the cut-only
+    vocabulary restores the refusal.
+    """
+    woofer_db, tweeter_db, trim_db = _healthy_crossed_over_pair()
+
+    def session(**kwargs):
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(
+            program, woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
+        )
+        c = _conductor(fakes, **kwargs)
+        _run_phase(c, 1, 1)
+        return c
+
+    # --- cut-only: refused, with nothing material to offer ---
+    cut_only = session(post_apply_verifies=False)
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        _run_phase(cut_only, 2, 2)
+    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    assert cut_only.candidate is None
+
+    # --- the shipped driver-only gate: the same session completes ---
+    boosted = session()
+    verdict = _run_phase(boosted, 2, 2)
+    assert verdict["accepted"] is True
+    assert boosted.candidate is not None
+    # …and it is the BOOST that made the difference, not some unrelated drift:
+    # what the cut-only arm could not do is fill the dips, and this arm does.
+    assert _emitted_boosts(boosted.candidate)
+
+
+def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
+    """**Rail 1 of the ruling's three**, on the path the ruling opened.
+
+    ``allowed_depth_db`` is direction-agnostic — the same per-bin array bounds
+    a cut and a boost — and it is composed from mic trust, repeatability,
+    linearity, invertibility and the class prior, none of which the cloud
+    supplied. So it binds identically with no cloud present, and this asserts
+    that by CLAMPING it: capped at 1.0 dB, the fit may no longer place the
+    boost it places unclamped.
+
+    Written as a clamp rather than as an observation of the shipped number
+    because an observation would stay green if the envelope were disconnected
+    from the lift stage — the uncapped arm below is what makes the capped one
+    mean something.
+
+    Asserted on what the FIT emitted rather than on the committed candidate,
+    because clamping the envelope shrinks the CUTS too: at 1.0 dB this fixture
+    no longer clears the prediction gate's 0.5 dB improvement floor and the
+    session is refused. That refusal is the envelope binding just as much as a
+    smaller boost is, but it would leave no candidate to read, and the claim
+    here is about the bound rather than about admission.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+
+    cap_db = 1.0
+    real_compose = flow.compose_envelope
+    real_fit = flow.fit_driver_linearization
+
+    def _capped(*args, **kwargs):
+        env = real_compose(*args, **kwargs)
+        return replace(
+            env,
+            allowed_depth_db=np.minimum(env.allowed_depth_db, cap_db),
+        )
+
+    fitted: list = []
+
+    def _record(resp, envelope, **kwargs):
+        fit = real_fit(resp, envelope, **kwargs)
+        fitted.append(fit)
+        return fit
+
+    # Unclamped first, so the assertion below is not vacuous: this fixture
+    # really does want more boost than the cap allows.
+    free = _conductor(fakes)
+    _run_phase(free, 1, 1)
+    _run_phase(free, 2, 2)
+    free_boosts = [f["gain"] for f in _emitted_boosts(free.candidate)]
+    assert free_boosts and max(free_boosts) > cap_db
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "compose_envelope", _capped)
+        mp.setattr(flow, "fit_driver_linearization", _record)
+        capped = _conductor(fakes)
+        _run_phase(capped, 1, 1)
+        try:
+            _run_phase(capped, 2, 2)
+        except CaptureBeginRefused as exc:
+            assert exc.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    # The envelope bound it. Either shape is the rail working — a smaller
+    # boost, or a lift the realization gate suppressed entirely — so the claim
+    # is the bound, not a particular filter count.
+    assert fitted, "the fit must have run for this to assert anything"
+    for fit in fitted:
+        for f in fit.filters:
+            assert f.gain <= cap_db + 1e-9, f
+
+
+def test_the_headroom_charge_is_paid_for_a_driver_only_boost():
+    """**Rail 3 of the three.** A boost is not free: the branch CHAIN's
+    realized peak is charged as headroom at emission
+    (``camilla_yaml.linearization_headroom_db`` via
+    ``branch_chain.branch_headroom_db``), and the runtime contract re-derives
+    the same peak from the emitted graph text and refuses to prove a graph that
+    did not pay it (``runtime_contract._consume_linearization_chain``).
+
+    Deliberately asserted here only as far as the CONDUCTOR's own disclosure —
+    the charge exists and is the committed chain's own peak. Everything below
+    that seam reads the emitted graph and is blind to which gate granted the
+    boost, so it needs no driver-only variant; its pins live in
+    ``tests/test_active_speaker_linearization_emission.py``
+    (``test_linearization_boost_is_accepted_and_absorbed_by_baseline_
+    headroom``, ``test_reproof_blocks_boost_beyond_the_absorbed_headroom``).
+    """
+    from jasper.active_speaker.branch_chain import branch_headroom_db
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+
+    assert PHASE_CLOUD_MEASURE not in c.session_phases
+    boosted_roles = {
+        role
+        for role, fit in c.candidate.linearization.items()
+        if any(f["gain"] > 0.0 for f in fit["filters"])
+    }
+    assert boosted_roles, "the fixture must boost for the charge to mean anything"
+    for role, fit in c.candidate.linearization.items():
+        assert fit["headroom_cost_db"] == pytest.approx(
+            branch_headroom_db(
+                fit["filters"],
+                sections=c._branch_crossover_sections(role),
+                trim_db=c.candidate.role_attenuations_db[role],
+            )
+        )
+    # …and the charge is REAL on the boosted branch, not a zero that happens to
+    # match a zero (``linearization_headroom_db`` short-circuits to 0.0 when no
+    # emitted filter has positive gain, so an all-cut role legitimately reads
+    # 0.0 and would satisfy the equality above by itself).
+    for role in boosted_roles:
+        assert c.candidate.linearization[role]["headroom_cost_db"] > 0.0
 
 
 def test_every_non_matched_verdict_reaches_a_household_surface():
@@ -10344,9 +10644,9 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
 
     **What the #1866 ruling changed about the pre-#1929 arm, and what it did
     not.** That arm used to die at the frame gate. It no longer does — its
-    6.16 dB disagreement is banked as a finding and the session continues — but
-    it still does not COMPLETE: item 2 refuses it as
-    ``correction_not_an_improvement``.
+    6.16 dB disagreement is banked as a finding and the session continues.
+    Since the boost ruling (#2106) it also COMPLETES; before it, item 2 refused
+    it as ``correction_not_an_improvement``.
 
     **What R10a (#1817) changed, and what it did not — read this before
     trusting the older account.** Two of this test's claims were true only
@@ -10360,21 +10660,30 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
       −9.80 dB for a driver whose passband is ~0 dB, and it drew ~9 dB of
       broadband cut to reach it. With the shaped target the tweeter draws ZERO
       filters, and what is left is a pair whose only defects are two in-band
-      DIPS a cut-only fit cannot fill (#1809's own doctrine). So the improvement
-      gate refuses both arms — at 0.036 dB (pre) and 0.035 dB (post) against a
-      0.5 dB floor — and it is right to. The full depth sweep, and the bump
-      variant that does not restore the straddle either, are in
-      ``_healthy_crossed_over_pair``'s docstring. The honest reading is that
-      this fixture can no longer separate the two arms on the OUTCOME, because
-      a gate downstream of #1929 now decides both of them identically.
+      DIPS. The full depth sweep, and the bump variant that does not restore
+      the straddle either, are in ``_healthy_crossed_over_pair``'s docstring.
+      The honest reading is that this fixture can no longer separate the two
+      arms on the OUTCOME, because a gate downstream of #1929 decides both of
+      them identically.
+
+    **What the BOOST ruling (#2106, 2026-08-05) then changed, and why it is not
+    a regression here.** Between R10a and that ruling, "identically" meant
+    identically REFUSED: a cut-only fit cannot fill a dip at any depth (#1809's
+    own doctrine), so the improvement gate saw 0.036 dB (pre) and 0.035 dB
+    (post) against a 0.5 dB floor and turned both arms away. The ruling permits
+    boost on this driver-only path, the fit fills the dips, and both arms now
+    COMPLETE — still identically, so what this test separates is unchanged.
+    The flip is intended and is pinned as intent by
+    ``test_the_ruling_lets_a_candidate_pass_that_cut_only_refused_as_no_
+    improvement``, which runs this same fixture through both vocabularies.
     * *"the committed trim lands the two branches 0.32 dB apart where the
       pre-#1929 trim left them 2.85 dB apart."* **No longer true, and the reason
       is a genuine improvement.** Those were 2.847 and −0.321 dB under the flat
-      target; they are now 0.973 and 1.005 dB — the two arms land within 0.04 dB
+      target; they are now 0.693 and 0.725 dB — the two arms land within 0.04 dB
       of each other and both pass. **R10a made the pipeline robust to the
       pre-#1929 frame error.** The frame still mislevels the ANCHOR by its full
-      6.16 dB, but the ripple-optimal scan now walks it back: 5.4 dB in the
-      pre-#1929 arm against 0.2 dB in the shipped one, asserted below. Under the
+      6.16 dB, but the ripple-optimal scan now walks it back: 6.0 dB in the
+      pre-#1929 arm against 0.8 dB in the shipped one, asserted below. Under the
       flat target the scan could not, because the fit had already buried ~9 dB
       of spurious cut in the branch it was scanning, and the mislevel survived
       into the shipped pair. So the realized instrument no longer corroborates
@@ -10437,12 +10746,12 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
         )
         mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
         before = session()
-        with pytest.raises(CaptureBeginRefused) as excinfo:
-            _run_phase(before, 2, 2)
-    # Still refused, and still on this session's own evidence — but since the
-    # #1866 ruling the frame BANKS its 6.16 dB rather than stopping on it, and
-    # the refusal comes from the prediction gate.
-    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+        before_verdict = _run_phase(before, 2, 2)
+    # Completes since the boost ruling (#2106) — and NOT because the frame
+    # stopped disagreeing. Since the #1866 ruling the frame BANKS its 6.16 dB
+    # rather than stopping on it; what changed at #2106 is downstream of that,
+    # in the prediction gate, which now has a fit that can fill the dips.
+    assert before_verdict["accepted"] is True
     assert before._last_level_frame_disagreement_db == pytest.approx(6.16, abs=0.1)
     assert (
         before._last_level_frame_disagreement_db
@@ -10456,21 +10765,20 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # reaches a household, so it has to be read on both.
     assert "event=correction.crossover_v2_level_frame_refused" not in caplog.text
     assert "event=correction.crossover_v2_level_frame_finding" in caplog.text
-    assert before.candidate is None
+    assert before.candidate is not None
 
     # --- and with the radiating band: the identical session, judged fairly ---
     caplog.clear()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
         after = session()
-        # Refused too, since R10a — and NOT for anything the level frame said;
-        # see this test's docstring for the measured account and
-        # ``_healthy_crossed_over_pair``'s for the depth sweep. A cut-only fit
-        # cannot fill this pair's two in-band dips, so there is no material
-        # improvement to grade, at any depth, in either arm.
-        with pytest.raises(CaptureBeginRefused) as after_excinfo:
-            _run_phase(after, 2, 2)
-    assert after_excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+        # Completes too, and NOT for anything the level frame said — see this
+        # test's docstring for the measured account and
+        # ``_healthy_crossed_over_pair``'s for the depth sweep. Both arms end
+        # the same way, which is why the difference this test pins is the
+        # FINDING below rather than the outcome.
+        after_verdict = _run_phase(after, 2, 2)
+    assert after_verdict["accepted"] is True
     assert after._last_level_frame_disagreement_db == pytest.approx(0.99, abs=0.1)
     assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     # THE DIFFERENCE THAT STILL REACHES A HOUSEHOLD, and the reason this test is
@@ -10492,8 +10800,8 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # trimmed pair, "One estimator, not a second opinion" per its own docstring.)
     before_difference_db = before._last_realized_level_match.difference_db
     after_difference_db = after._last_realized_level_match.difference_db
-    assert before_difference_db == pytest.approx(0.973, abs=0.05)
-    assert after_difference_db == pytest.approx(1.005, abs=0.05)
+    assert before_difference_db == pytest.approx(0.693, abs=0.05)
+    assert after_difference_db == pytest.approx(0.725, abs=0.05)
     assert abs(before_difference_db - after_difference_db) < 0.1
     assert before._last_realized_level_match.matched is True
     assert after._last_realized_level_match.matched is True
@@ -10508,16 +10816,34 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     #
     # Both walks grew 0.2 dB at R10b (5.4 -> 5.6 and 0.2 -> 0.4) because
     # the anchor each is measured FROM now carries the realized biquad cascade's
-    # give-back rather than `predicted_response`'s Lorentzian. The ratio the
-    # claim rests on survives with room to spare, and the two arms' realized
-    # level match — the actual subject above — moved by under 0.04 dB.
+    # give-back rather than `predicted_response`'s Lorentzian, and again at
+    # #2106 (5.6 -> 6.0 and 0.4 -> 0.8) because the boost the ruling permits
+    # reshapes both linearized branches the scan reads. The ratio the claim
+    # rests on survives — 7.5x, where the assertion asks for 5x — and the two
+    # arms' realized level match, the actual subject above, still lands them
+    # within 0.04 dB of each other.
+    #
+    # The 10x the ratio assertion used to ask for is deliberately not kept.
+    # The claim is that the scan's rescue SCALES with the frame error the arm
+    # carries — large where the anchor is mislevelled by 6.16 dB, small where
+    # it is right — and 7.5x states that as clearly as 14x did. A threshold
+    # tightened to whatever the fixture last happened to produce tests the
+    # fixture rather than the claim; both magnitudes are pinned to +-0.1 dB
+    # directly above it, which is the stricter statement anyway.
     assert len(graded) == 4, graded
     (pre_resolved, pre_anchored, post_resolved, post_anchored) = graded
     pre_walk_db = abs(pre_resolved["tweeter"] - pre_anchored["tweeter"])
     post_walk_db = abs(post_resolved["tweeter"] - post_anchored["tweeter"])
-    assert pre_walk_db == pytest.approx(5.6, abs=0.1)
-    assert post_walk_db == pytest.approx(0.4, abs=0.1)
-    assert pre_walk_db > 10.0 * post_walk_db
+    assert pre_walk_db == pytest.approx(6.0, abs=0.1)
+    assert post_walk_db == pytest.approx(0.8, abs=0.1)
+    assert pre_walk_db > 5.0 * post_walk_db
+    # …and the pre-#1929 walk now sits EXACTLY ON the wild-trim guard's margin,
+    # which is a strict `>` — so the guard does not fire, by 0.0 dB. Pinned
+    # because it is one 0.1 dB scan step from firing: a future change that
+    # nudges this fixture up would silently move the pre-arm onto the guard's
+    # fallback branch and change which pair it commits.
+    assert pre_walk_db == pytest.approx(LINEARIZATION_TRIM_SANITY_MARGIN_DB, abs=0.05)
+    assert not pre_walk_db > LINEARIZATION_TRIM_SANITY_MARGIN_DB
 
 
 def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
@@ -10754,19 +11080,28 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     comment in ``_assert_accountable`` derives all of this.
 
     **Where claim 3's old "byte-for-byte the anchor" wording went (R10a,
-    #1817).** Before R10a the ripple-optimal scan returned its own seed on this
-    fixture, so committed, anchored and resolved were one number and the claim
-    could be written as an identity on the anchor. It never was one:
-    ``_fit_linearization`` grades BOTH candidate pairs — the anchor and the
-    scan's ripple polish — against the realized-level instrument
-    unconditionally, and commits whichever LEVELS better ("inter-driver level is
-    the load-bearing property, summed ripple is the polish"). Once the fit stops
-    burying the pair under crossover-fighting cuts the linearized branches
-    differ, the scan finds a genuinely better ripple point 0.400 dB off its
-    seed, and that pair levels better as well (|−0.952| against |−1.352| dB), so
-    it is what ships. The polish sits well inside the 6.0 dB sanity margin, so
-    no guard runs. The claim itself is unchanged and is asserted below in the
-    form it always had: the placement follows the core median.
+    #1817), and where it came back (#2106).** Before R10a the ripple-optimal
+    scan returned its own seed on this fixture, so committed, anchored and
+    resolved were one number and the claim could be written as an identity on
+    the anchor. It never was one: ``_fit_linearization`` grades BOTH candidate
+    pairs — the anchor and the scan's ripple polish — against the
+    realized-level instrument unconditionally, and commits whichever LEVELS
+    better ("inter-driver level is the load-bearing property, summed ripple is
+    the polish"). Between R10a and #2106 those pairs separated: the scan found
+    a ripple point 0.400 dB off its seed which also levelled better (|−0.952|
+    against |−1.352| dB), so the polish shipped.
+
+    Under the boost ruling they coincide again — the scan returns its seed
+    exactly, drift 0.000 dB — because the permitted boost reshapes the
+    linearized branches whose SUMMED ripple the scan minimizes, and on this
+    pair the minimum lands back on the anchored placement. So ``committed ==
+    resolved == anchored`` here once more, which makes claim 3's assertions
+    below true but no longer DISCRIMINATING about which pair the adjudication
+    picked. That discrimination is not lost — it lives in
+    ``test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_
+    optimal`` — and the claim this test is actually about, that the placement
+    follows the core median, is asserted below as an identity rather than as a
+    choice between pairs.
 
     **Why every magnitude here moved ~0.03-0.13 dB at R10b** (the claim-seam
     change; first-principles panel CC-2(b)).
@@ -10777,7 +11112,17 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     all of them shifted together; the DISAGREEMENT (3.894 dB) did not, because
     the give-back cancels out of it. No filter moved, and every verdict — the
     session completes, the finding banks, the polish ships, no guard fires — is
-    the same. The numbers in this docstring are the post-R10b ones.
+    the same.
+
+    **And why they moved ~1.26 dB again at #2106**, by the same mechanism and
+    with the same invariant. The ruling lets the fit place a +3.43 dB boost at
+    399 Hz on the woofer, which changes what that branch's realized cascade
+    removes — so ``correction_giveback_db`` moves, and the placement (0.756 ->
+    −0.502 dB) and the trim-solve's counterfactual (4.650 -> 3.391 dB) move
+    with it, by the SAME 1.259 dB, in the same direction. The disagreement is
+    still 3.894 dB and the two identities below still close to 1e-3, which is
+    the evidence that this is the give-back moving rather than the frame
+    breaking. The numbers in this docstring are the post-#2106 ones.
 
     **Why the trim-solve estimator's own number moved once before** (#1938 gate
     follow-up). ``_tilted_woofer_fixture`` used to hand a coherent-looking but
@@ -10840,7 +11185,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         c._last_level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     assert c._last_realized_level_match.difference_db == pytest.approx(
-        -0.952, abs=0.02
+        -0.402, abs=0.02
     )
     assert c._last_realized_level_match.matched is True
 
@@ -10849,7 +11194,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     record = banked[0]
     assert record["disagreement_db"] == pytest.approx(3.894, abs=0.02)
     assert record["tolerance_db"] == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    assert record["realized_difference_db"] == pytest.approx(-0.952, abs=0.02)
+    assert record["realized_difference_db"] == pytest.approx(-0.402, abs=0.02)
     for role in ("woofer", "tweeter"):
         # estimator 1 (the fit's median) and estimator 2 (the trim solve's
         # own level-match term) — the two numbers that disagreed
@@ -10877,14 +11222,14 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     committed = dict(c.candidate.role_attenuations_db)
     resolved, anchored = graded[0], graded[1]
     assert set(anchored) == set(committed) == set(resolved)
-    # The scan's ripple polish is what ships here, because the adjudication
-    # commits whichever pair LEVELS better and this one does. That is the
-    # ordinary trusted path, not a fallback: the polish is 0.400 dB off its own
-    # seed, an order of magnitude inside the sanity margin, so no guard ran.
+    # The two graded pairs COINCIDE on this fixture since #2106 (see the
+    # docstring): the scan returns its seed, so what ships is both of them and
+    # the adjudication had nothing to choose between. Asserted as the drift
+    # rather than as a winner, precisely because there is no winner to name.
     for role, value in resolved.items():
         assert committed[role] == pytest.approx(value, abs=1e-9)
     drift_db = max(abs(resolved[role] - anchored[role]) for role in anchored)
-    assert drift_db == pytest.approx(0.400, abs=0.02)
+    assert drift_db == pytest.approx(0.0, abs=1e-9)
     assert drift_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
     assert "event=correction.crossover_v2_linearization_trim_rejected" not in (
         caplog.text
@@ -10895,9 +11240,10 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # trim term cancels out of ``anchor_base + giveback + level_frame_offset``,
     # leaving ``giveback + system − core``, so the anchored inter-driver
     # placement follows the CORE MEDIAN — the disputed estimator. Read off the
-    # ANCHOR and not off ``committed`` because the ripple polish above moves the
-    # committed pair by its own 0.400 dB, which is the scan's business and not
-    # the frame's; the anchor is the number the frame produced. Asserted as the
+    # ANCHOR and not off ``committed`` because the ripple polish is the scan's
+    # business and not the frame's — it happens to move the committed pair by
+    # 0.000 dB on this fixture today, but reading the anchor is what keeps this
+    # a claim about the frame either way. Asserted as the
     # identity rather than as a magic number: the placement the trim solve would
     # have produced differs from the anchored one by exactly the banked
     # disagreement.
@@ -10918,8 +11264,8 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # each core level to 3 dp, so ``core_frame`` carries up to a half-step of
     # rounding on each of its two terms.
     assert placed == pytest.approx(core_frame, abs=1e-3)
-    assert placed == pytest.approx(0.756, abs=0.02)
-    assert trim_frame == pytest.approx(4.650, abs=0.02)
+    assert placed == pytest.approx(-0.502, abs=0.02)
+    assert trim_frame == pytest.approx(3.391, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
         c._last_level_frame_disagreement_db, abs=1e-3
     )
@@ -11155,23 +11501,47 @@ def test_no_boost_lands_in_a_drivers_own_crossover_stopband():
     radiating band is the CONDUCTOR's to solve (it owns the preset's crossover
     regions); a wiring regression here would silently restore the defect with
     the fit engine's own tests still green.
+
+    **Both journey shapes**, since #2106. The guard is rail 2 of the three the
+    boost ruling leans on, and the ruling opened a path — a driver-only session
+    with no pre-apply cloud — that this test did not previously reach. The
+    guard reads the branch's own crossover sections and knows nothing about
+    clouds, so it should hold identically; asserting it is what makes that a
+    fact rather than an expectation.
     """
     from jasper.active_speaker.branch_chain import radiating_band_hz
 
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes)
-    _walk_measure_cloud_to_close(c)
+    def _cloud_session():
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(program)
+        c = _cloud_conductor(fakes)
+        _walk_measure_cloud_to_close(c)
+        return c
 
-    boosts_seen = False
-    for role, fit in c.candidate.linearization.items():
-        sections = c._branch_crossover_sections(role)
-        lo_hz, hi_hz = radiating_band_hz(sections)
-        for f in fit["filters"]:
-            if f["gain"] > 0.0:
-                boosts_seen = True
-                assert lo_hz <= f["freq"] <= hi_hz, (role, f)
-    assert boosts_seen, "the fixture must emit a boost for this to mean anything"
+    def _driver_only_session():
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(program)
+        c = _conductor(fakes)
+        assert PHASE_CLOUD_MEASURE not in c.session_phases
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 2)
+        return c
+
+    for label, build in (
+        ("cloud", _cloud_session), ("driver-only", _driver_only_session),
+    ):
+        c = build()
+        boosts_seen = False
+        for role, fit in c.candidate.linearization.items():
+            sections = c._branch_crossover_sections(role)
+            lo_hz, hi_hz = radiating_band_hz(sections)
+            for f in fit["filters"]:
+                if f["gain"] > 0.0:
+                    boosts_seen = True
+                    assert lo_hz <= f["freq"] <= hi_hz, (label, role, f)
+        assert boosts_seen, (
+            f"the {label} fixture must emit a boost for this to mean anything"
+        )
 
 
 def test_the_stamped_headroom_cost_is_the_committed_chains_own_peak():

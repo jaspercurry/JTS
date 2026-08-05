@@ -1646,18 +1646,47 @@ verify on hardware* below does not shrink because a scenario went green.
 
 ### Why this matters now
 
-The boost-permission gate is `allow_boost` in `crossover_v2_flow`, and it is
-evidence-gated on two conditions: the journey will MEASURE what the speaker did
-with the boost (`_post_apply_verifies`), and the cloud verdict actually reached
-the envelope. Without the second, `compose_envelope` receives no
+The boost-permission gate is `allow_boost` in `crossover_v2_flow`. One
+condition is necessary: the journey will MEASURE what the speaker did with the
+boost (`_post_apply_verifies`). A second clause then distinguishes two ways a
+cloud verdict can be missing, and the **owner's boost ruling (#2106,
+2026-08-05)** is what separated them.
+
+The gate used to require `cloud is not None` for every session. R15 removed the
+pre-apply cloud from stage 1 (`STAGE1_INCLUDES_CLOUD_MEASURE`), so on the
+shipped driver-only path that demand would have demoted every correction to
+cut-only for want of evidence the plan never collects. The ruling permits boost
+there, on a named and accepted risk — a boost can land on a position-specific
+artifact an at-mark verification cannot detect — adjudicated by post-apply
+`VERIFY`, household listening, and retained Undo. The ruling's own text is the
+"Boost ruling" block in `docs/crossover-linearization-80-20-plan.md` §4.2.
+
+What did NOT change is the case the retired condition was written for: a
+session that PLANNED a cloud and LOST it (`_cloud_fit_evidence` has two
+reachable `None` paths — the positions could not be combined; the honesty
+pipeline was unavailable). There `compose_envelope` receives no
 `excluded_bands_hz`, `allowed_depth_db` is never zeroed in the registry's
 interference nulls, and the fit could design a boost straight into a null — one
 that reads `matched` at the mark while the spatial arm, the one instrument that
-could contradict it, is absent.
+could contradict it, is absent. Absent-by-design and absent-by-failure share
+the `cloud is None` signature, so the gate asks the session's own capture plan
+(`PHASE_CLOUD_MEASURE not in self._phases`) which one it is; planned-and-lost
+stays cut-only.
 
-Both halves of that permission decision have conductor tests
+What bounds a boost once permitted, on either path, is unchanged: the
+envelope's own `allowed_depth_db` (direction-agnostic, and composed from terms
+the cloud never supplied), the realized-cascade stopband-gain guard, the
+headroom charge, post-apply `VERIFY`, and Undo. The gate grants a vocabulary,
+never a filter.
+
+Every branch of that permission decision has conductor tests
 (`test_boost_is_granted_only_to_a_journey_that_will_verify`,
-`test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope`), and
+`test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud`,
+`test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope`), the
+rails have their own on the driver-only path
+(`test_the_envelope_still_bounds_a_boost_on_the_driver_only_path`,
+`test_the_headroom_charge_is_paid_for_a_driver_only_boost`,
+`test_no_boost_lands_in_a_drivers_own_crossover_stopband`), and
 a constructed comb cloud proves the honesty mask binds the envelope
 (`test_the_clouds_honesty_verdict_reaches_the_fit_envelope`, all in
 `tests/test_crossover_v2_conductor.py`). What is missing is not the wiring —
