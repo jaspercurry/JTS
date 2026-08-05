@@ -110,20 +110,31 @@ def ring_asset_presence(
     )
 
 
-# The ring's slot geometry is NOT a hardcoded 128: the `jts_ring_playback` ioplug
-# opens Ring B with the conf.d's ``period_frames``, and jasper-outputd's
-# ``ShmRingSource`` attaches with ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per
-# DAC period — see rust/jasper-outputd/src/config.rs "the ring's period_frames is
-# always outputd's period_frames"). A geometry mismatch against an existing ring
-# is a hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
-# existing ring is an open() error"). The shipped ``60-jts-ring.conf`` pins 128
-# (the Apple-dongle floor); on a box whose resolved outputd period is not 128
-# (the packaged default is 1024), CamillaDSP's ring open would fail and the arm
-# would roll back with a confusing daemon-level error. So the coupling
-# reconciler PREFLIGHTs this match and fail-closes to loopback with a crisp
-# reason, and :func:`render_ring_conf_period` renders the per-box value from the
-# active DAC's DECLARED latency floor (mirrors scripts/ring-proto/arm.sh, which
-# renders the conf period from outputd's resolved env per box).
+# The ring's slot geometry IS fixed at ``RING_SLOT_FRAMES`` (128). jasper-fanin
+# creates Ring A with that COMPILE-TIME constant
+# (rust/jasper-fanin/src/config.rs, no env override) and both conf.d PCM blocks
+# share one period value, so the conf.d period is pinned to it too — this file
+# is not free to follow a DAC. Making the slot derivable is issue #2147.
+#
+# The mismatch this parser exists to catch is the OTHER side: the
+# ``jts_ring_playback`` ioplug opens Ring B with the conf.d's ``period_frames``,
+# and jasper-outputd's ``ShmRingSource`` attaches with
+# ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per DAC period — see
+# rust/jasper-outputd/src/config.rs "the ring's period_frames is always
+# outputd's period_frames"). A geometry mismatch against an existing ring is a
+# hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
+# existing ring is an open() error"). On a box whose resolved outputd period is
+# not 128 (the packaged default is 1024, and only a DAC declaring a 128-frame
+# latency floor lowers it), CamillaDSP's ring open would fail and the arm would
+# roll back with a confusing daemon-level error — so the coupling reconciler
+# PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
+# is always to bring the OUTPUTD period to the slot, never to raise this file.
+#
+# :func:`render_ring_conf_period` therefore has exactly one live job: converging
+# a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand edit, a half
+# install) back onto it. It refuses any other target. (scripts/ring-proto/arm.sh
+# renders the conf period from outputd's resolved env per box — that is the lab
+# prototype, which predates the fixed-slot product path and is not this rule.)
 #
 # One regex, two directions: the ``indent``/``frames`` groups let the renderer
 # rewrite exactly the lines this parser reads, so a conf.d the parser accepts is
@@ -310,9 +321,16 @@ def ring_geometry_matches_outputd(
                 f"ring conf.d period_frames={conf_period} != outputd resolved "
                 f"JASPER_OUTPUTD_PERIOD_FRAMES={outputd_period_frames}; the ring "
                 "slot is one outputd DAC period, so CamillaDSP's ring open would "
-                "fail against outputd's ring. Match them (set the conf.d period to "
-                f"{outputd_period_frames} or the outputd period to {conf_period}) "
-                "before arming"
+                f"fail against outputd's ring. The ring slot is FIXED at "
+                f"{RING_SLOT_FRAMES} by fan-in's compile-time RING_SLOT_FRAMES, so "
+                "do NOT raise the conf.d period to match outputd — that is a "
+                "geometry fan-in never builds and the attach fails hard. Align on "
+                f"{RING_SLOT_FRAMES}: if the conf.d has drifted off it, run sudo "
+                "systemctl start jasper-audio-hardware-reconcile.service (it "
+                "converges the conf.d back); if the OUTPUTD period is off it, this "
+                f"DAC declares no {RING_SLOT_FRAMES}-frame latency floor and "
+                "shm_ring is unavailable to it — stay on loopback until issue "
+                "#2147 makes the slot derivable"
             ),
         )
     return RingGeometryMatch(
