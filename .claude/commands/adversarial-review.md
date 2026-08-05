@@ -69,6 +69,27 @@ smallest durable shape that fits the existing system wins.
 - **Verify, don't assume:** if you claim a guard/test/doc covers something, cite
   the file and function you re-read to confirm it.
 
+## Gate 0 — necessity and complexity (run before detailed correctness)
+
+First prove that the change is the smallest durable implementation of a
+current need. Correct code can still fail this gate. Report production, test,
+and documentation diffstats separately, and honor any explicit owner line
+budget as a stop condition rather than a target.
+
+For every new production file, public API, and persisted/schema field, name:
+
+- the current need it satisfies;
+- its current producer and current consumer; and
+- why an existing owner or a smaller alternative is insufficient.
+
+Compare the diff with the smallest viable alternative in the existing seams.
+Flag future-only code, speculative flexibility, duplicated validation or
+ownership, single-use abstractions, and framework machinery whose only
+justification is a later round. If a public API or schema field has no current
+producer and consumer, or the diff exceeds an owner budget without explicit
+approval, it is a blocker. Complete this gate before reviewing whether the
+chosen implementation is correct.
+
 ## The product-grade lens (apply to the design, not just the diff)
 
 - **Separation of concerns and modularity** (invariant 1): does each change land

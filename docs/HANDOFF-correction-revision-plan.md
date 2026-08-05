@@ -874,18 +874,17 @@ full re-walk.
 
 ## The next campaign — 80/20 crossover + linearization revision
 
-**Status: R14 complete (2026-08-04); R15 ready, not started.** The same
-independent reviewer returned 0 blockers and 0 should-fixes on the third
-delta-only review. PR #2105 merged the contract; administrative closeout
-created #2106/#2107 and reconciled #1654/#1894. No product implementation,
-deployment, or measurements started.
+**Live status:** see [CURRENT POSITION](#current-position). R14 remains
+complete. The first R15 prototype at `05822244` was rejected as a merge
+candidate for violating the 80/20 scope; no R15 product code was merged,
+deployed, or measured. A fresh minimal R15 implementation is next.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
 [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
 This spine owns only status and order IDs:
-`R14 (complete) -> R15 (next) -> (R16 || pure R17) -> R18 -> R19 -> R20`.
+`R14 (complete) -> R15 (next) -> R16 -> R17 -> R18 -> R19 -> R20`.
 
 ---
 
@@ -969,11 +968,10 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-04 (R14 complete: documentation gate ratified at
-                third-delta 0 blockers / 0 should-fixes; #2105 merged;
-                administrative closeout created #2106/#2107 and reconciled
-                #1654/#1894; no product implementation, deployment, or
-                measurements started)
+date:           2026-08-04 (R15 scope reset: prototype 05822244 rejected as a
+                merge candidate after expanding to 38 files and approximately
+                4,334 production additions; no R15 product code merged,
+                deployed, or measured)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -983,9 +981,8 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   none — R14 is complete. R15 is ready for launch from current
-                remote main; no product implementation is active or was
-                started
+active_round:   none — R14 is complete. Fresh minimal R15 is next; the rejected
+                prototype is not landed behavior or an implementation base
 last_round:     R13 (owner validation day; last fully completed product
                 round). R14 is the completed documentation/administrative
                 campaign round
@@ -1000,13 +997,13 @@ rollback:       Undo remains banked through the retained pre_apply_profile;
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
-                #2106 owns R15 and #2107 owns R16. The new campaign's complete
+                #2106 owns minimal R15 and #2107 owns R16. The new campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   launch the bounded #2106 R15 implementation task from freshly
-                fetched remote main. R16/#2107 and pure R17/#1894 start only
-                after R15 lands its frozen contracts
-blocked_on:     none — R14 is complete and R15's issue/contract prerequisites
-                exist. Product work has not yet started
+next_mission:   start #2106 fresh from current remote main, cherry-picking no
+                prototype commit. R16/#2107 follows landed R15; R17/#1894
+                follows landed R16
+blocked_on:     none — the minimal scope is explicit; product work has not
+                restarted
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1713,6 +1710,17 @@ updated #1654's stale shelved title, and posted the ratified scope links to
 POSITION, and the canonical plan's two-ticket disposition. It changed no
 product code, deployment, DSP state, or measurement evidence; older campaign
 narrative and the historical appendix were not re-verified.
+
+**Verification scope.** A distinct **2026-08-04 R15 80/20 reset pass** checked
+only the revised next-campaign status/order and CURRENT POSITION against the
+canonical campaign plan, `origin/main` at
+`2e620bea7143bd31d4a1b1970740eced2e1c8279`, the now-updated #2106/#2107
+issue contracts, and the #1894 scope comment. It records the rejected
+prototype's size as independently re-derived in the
+[canonical campaign plan](crossover-linearization-80-20-plan.md), not merely
+implementer-reported; it does not claim product implementation, review passage,
+deployment, measurement, or hardware validation. The original R14 verification
+remains recorded above, and the historical appendix was not re-verified.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
