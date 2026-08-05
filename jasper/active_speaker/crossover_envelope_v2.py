@@ -67,6 +67,7 @@ from .crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
+    PHASE_LATERAL,
     PHASE_MEASURE,
     CLOUD_CLOSE_RUNNING,
     PHASE_CLOSING,
@@ -157,6 +158,12 @@ _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
+    # R16's lateral walk is still measuring, so it shares the MEASURE step for
+    # the same reason the cloud does. Registered even though
+    # ``STAGE1_INCLUDES_LATERAL`` is off: the fallback for an unmapped phase is
+    # ``microphone_check``, so a missing entry would silently park the stepper
+    # on step 1 for the whole six-pose walk the moment the flag flips.
+    PHASE_LATERAL: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
     # It shares the step with PHASE_APPLYING deliberately — the stepper tracks
@@ -2730,6 +2737,26 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "JTS is measuring from a few different spots — follow the "
                 "prompts on the measurement page. Moving the microphone between "
                 "spots is what lets JTS tell the speaker apart from the room."
+            ),
+            next_action=None,
+            status=status,
+        )
+    elif phase == PHASE_LATERAL:
+        # R16's lateral walk (plan §4.4). Same wizard screen and step as the
+        # two above, and bespoke copy for the cloud's reason plus one of its
+        # own: the household is MOVING the microphone, so MEASURE's keep-still
+        # verdict is wrong here — but so is the cloud's, which explains the
+        # moves as telling the speaker apart from the room. These poses are
+        # sampling how the crossover's handoff behaves off the design axis, and
+        # they end back on the mark, which the copy has to lead with or the
+        # last prompt reads as a mistake.
+        env = _envelope(
+            screen="measure", active_step="measure",
+            verdict=(
+                "JTS is measuring from a few spots either side of the mark, and "
+                "then back on it — follow the prompts on the measurement page. "
+                "Moving the microphone is what shows how the speaker's drivers "
+                "hand over to each other away from the middle."
             ),
             next_action=None,
             status=status,

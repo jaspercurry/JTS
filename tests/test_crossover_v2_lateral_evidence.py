@@ -199,6 +199,55 @@ def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
     assert c.lateral_mark_return_drift_db() is None
 
 
+def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
+    """The third guard of the completeness claim, and the one that fails if a
+    surface was missed rather than a rule broken.
+
+    ``_PHASE_STEP``'s fallback for an unmapped phase is ``microphone_check``,
+    so an unregistered ``PHASE_LATERAL`` would silently park the wizard stepper
+    on step 1 for the whole six-pose walk — flag-on, mid-walk, with nothing
+    raising. Driven end to end: a real conductor's recorded ``session_phases``,
+    through ``_phase_from_state``, into the envelope.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.web.correction_crossover_v2 import _phase_from_state
+
+    fakes = FakeSeams()
+    c = _lateral_conductor(fakes)
+    _walk(c, through=FIRST_LATERAL_INDEX)  # anchor done, walk under way
+    session_phases = c.snapshot().session_phases
+    assert PHASE_LATERAL in session_phases
+
+    # What the durable state looks like standing at pose two of six.
+    phase = _phase_from_state({
+        "session_phases": list(session_phases),
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": False,
+    })
+    assert phase == PHASE_LATERAL
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {"phase": phase},
+    })
+    assert env["screen"] == "measure"
+    verdict = env["verdict_text"]
+    # Movement-appropriate: MEASURE's keep-still instruction would be wrong
+    # while the household walks poses, and the cloud's explanation is about a
+    # different question (telling the speaker apart from the room).
+    assert "still" not in verdict.lower()
+    assert "apart from the room" not in verdict.lower()
+    assert "either side of the mark" in verdict
+    assert "back on it" in verdict  # the walk ends at the mark
+    # The stepper is genuinely past step 1.
+    steps = {s["id"]: s["status"] for s in env["steps"]}
+    assert steps["microphone_check"] == "done"
+    assert steps["measure"] == "active"
+
+
 # --- the capture plan ---------------------------------------------------------
 
 
