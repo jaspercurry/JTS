@@ -190,6 +190,81 @@ function renderCallouts(container, specSource) {
   container.replaceChildren(...rows);
 }
 
+// The section's own framing (issue #2152). One section serves two screens,
+// and until now it asserted the POST-VERIFY one on both: "Before and after /
+// What the microphone heard".
+//
+// That heading was true while the pre-apply CLOUD_MEASURE existed. R15 removed
+// it by design (#2106), so on the driver-only review screen the ONLY curve is
+// the prediction — leaving a heading that claimed measurement directly above a
+// legend reading "(not measured)". The household was asked to approve a change
+// on the strength of a chart that overstated what it was.
+//
+// The heading now follows what is actually on the canvas. Nothing here decides
+// WHAT to draw; it only stops the frame from claiming more than the contents.
+// The vocabulary is the one this flow already uses — "what the microphone
+// heard" for measured, "what JTS expects" for modelled (see chart.js's dashed
+// stroke, the visual half of the same distinction). Every string below is
+// household-facing, so it is hardware-blind by the same rule the rest of this
+// page's authored copy follows.
+// TWO aria-labels, because the markup has two: one on the <section> (the
+// region) and one on the <canvas> (the graphic). Both were static, and fixing
+// only the section would have left the chart element itself still announcing
+// "before and after correction" on a screen with no before and no after.
+const MEASURED_FRAMING = {
+  eyebrow: 'Before and after',
+  title: 'What the microphone heard',
+  ariaLabel: 'Before and after measurement',
+  chartAriaLabel: 'Frequency response before and after correction',
+  basis: '',
+};
+const PREDICTED_FRAMING = {
+  eyebrow: 'Predicted result',
+  title: 'What JTS expects after correction',
+  ariaLabel: 'Predicted frequency response after correction',
+  // The canvas label carries "not measured" where the section label does not.
+  // A sighted household is told the curve is a model by chart.js's dashed
+  // stroke; someone reading the canvas through a screen reader gets none of
+  // that, so the words have to do what the dash does.
+  chartAriaLabel: 'Predicted frequency response after correction, not measured',
+  // Says where the line comes from, that it is not a measurement, and when a
+  // real one arrives — the last part matters, because it is what makes this a
+  // step in a process rather than a hedge.
+  //
+  // "the measurements JTS just took", not the parts they were taken from:
+  // household copy on this page is hardware-blind by rule (the page shell's
+  // own `_assert_hardware_blind` guard, and the same reason the verdict text
+  // says "worked out from the measurement, not measured"). Naming the parts
+  // would describe the speaker by device taxonomy instead of by evidence.
+  basis:
+    'Worked out from the measurements JTS just took — a prediction, not a '
+    + 'measurement. The microphone measures the real result right after you '
+    + 'apply.',
+};
+
+function updateSectionFraming(els, payload) {
+  // Prediction-only is the pre-apply review screen. The moment ANY measured
+  // curve is on the canvas the measured framing is the honest one again, so
+  // the post-verify chart — whose fidelity is confirmed — is untouched.
+  const measured = Boolean(payload.measureCurve || payload.verifyCurve);
+  const framing = measured ? MEASURED_FRAMING : PREDICTED_FRAMING;
+  if (els.cloudEyebrow) els.cloudEyebrow.textContent = framing.eyebrow;
+  if (els.cloudTitle) els.cloudTitle.textContent = framing.title;
+  // Screen-reader users read these instead of the heading and the picture, so
+  // leaving either on the measured wording would fix the claim for sighted
+  // households only.
+  if (els.cloud && typeof els.cloud.setAttribute === 'function') {
+    els.cloud.setAttribute('aria-label', framing.ariaLabel);
+  }
+  if (els.cloudChart && typeof els.cloudChart.setAttribute === 'function') {
+    els.cloudChart.setAttribute('aria-label', framing.chartAriaLabel);
+  }
+  if (els.cloudBasis) {
+    els.cloudBasis.textContent = framing.basis;
+    els.cloudBasis.hidden = !framing.basis;
+  }
+}
+
 // Legend + "still measuring" caption, shown progressively (review S-5): a
 // session that has only walked the pre-correction cloud has no verify curve,
 // no spec bands, and no carve-outs yet, so a legend advertising all four
@@ -255,6 +330,7 @@ export function renderCloud(els, env) {
   els.cloudGeometry.textContent = guidance;
   els.cloudGeometry.hidden = !guidance;
 
+  updateSectionFraming(els, payload);
   updateLegend(els, payload, tier);
   renderCallouts(els.cloudCallouts, specSource);
 

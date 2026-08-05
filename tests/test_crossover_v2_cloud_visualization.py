@@ -120,6 +120,14 @@ def test_page_shell_carries_every_element_id_the_renderer_reads():
         "crossover-cloud-geometry",
         "crossover-cloud-callouts",
         "crossover-cloud-pending",
+        # Issue #2152: the section's own framing is set at render time from
+        # what is actually on the canvas, so these three are exactly the
+        # silent-drift shape this test exists for — rename one and the
+        # heading silently reverts to claiming a measurement the driver-only
+        # review screen does not have.
+        "crossover-cloud-eyebrow",
+        "crossover-cloud-title",
+        "crossover-cloud-basis",
         "crossover-chart-legend-measure",
         "crossover-chart-legend-verify",
         "crossover-chart-legend-corridor",
