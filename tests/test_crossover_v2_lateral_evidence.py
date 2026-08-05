@@ -188,22 +188,42 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
     assert without.max_attempts == (
         without.capture_target + flow.CLOUD_RETAKE_ALLOWANCE
     )
-    # And the walk grows the budget with itself rather than borrowing.
-    walked = build_v2_capture_plan(
-        _roles(), FC_HZ, plan_shape=shape,
-        include_cloud_measure=False, include_lateral=True,
-    )
-    assert walked.max_attempts == without.max_attempts + LATERAL_COUNT
+    # And the walk grows the budget with itself rather than borrowing. Both
+    # shapes, because the cloud-OFF one is satisfied by the OLD derivation too
+    # (its ``target`` already counted the poses); only the cloud-ON one
+    # distinguishes them, and that is the case the change exists for — a plan
+    # whose entries exceed ``shape.measure_capture_target``.
+    for include_cloud, baseline in ((False, without), (True, with_cloud)):
+        walked = build_v2_capture_plan(
+            _roles(), FC_HZ, plan_shape=shape,
+            include_cloud_measure=include_cloud, include_lateral=True,
+        )
+        assert walked.capture_target == baseline.capture_target + LATERAL_COUNT
+        assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
 def test_the_relay_capacity_guard_counts_the_lateral_walk():
-    """Mutation: the guard must fail if the relay ceiling drops below what the
-    worst-case plan (cloud + lateral) needs, not below the cloud alone."""
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds today
-    with pytest.MonkeyPatch.context() as mp:
-        import jasper.capture_relay.spec as spec
+    """The worst case the relay must carry is cloud PLUS walk, not cloud alone.
 
-        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", 24)
+    Re-derived rather than asserted: ``ceiling`` is picked to sit strictly
+    between the cloud-only requirement and the cloud-plus-walk one, so the
+    guard passing there would prove it had stopped counting the poses.
+    """
+    import jasper.capture_relay.spec as spec
+
+    flow.assert_cloud_plan_fits_relay_capacity()  # holds today
+    cloud_only = flow.cloud_plan_max_attempts(
+        cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
+    )
+    with_walk = cloud_only + LATERAL_COUNT
+    assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
+        "the shipped relay ceiling no longer carries the worst-case plan"
+    )
+    ceiling = cloud_only + 1
+    assert ceiling < with_walk, "the walk must be long enough to be countable"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
 
@@ -370,6 +390,48 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
     assert flow._primary_sweep_bands(mutated) == honest
     for curve in c.lateral_poses[0].curves:
         assert curve.band_hz == honest[curve.role]
+
+
+def test_the_anchor_solution_is_held_fixed_across_the_walk():
+    """§4.4's load-bearing rule, at the level of behaviour rather than shape.
+
+    Every pose here reports a WILDLY different alignment from the anchor's. If
+    any of them were allowed to re-solve, the applied trim/delay/polarity would
+    move; holding the anchor fixed is what keeps the off-axis consequence
+    visible instead of absorbed.
+    """
+    # The reference: the same session with no walk at all, whose candidate is
+    # built from the anchor alone. Re-derived, never hand-written, so this
+    # cannot drift from what the fitter actually produces.
+    reference = _conductor(
+        FakeSeams(), index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE},
+    )
+    _run_phase(reference, 1, 1)
+    _run_phase(reference, 2, 1)
+    expected = reference.candidate
+    assert expected is not None
+
+    fakes = FakeSeams()
+    c = _lateral_conductor(fakes)
+    _walk(c, through=FIRST_LATERAL_INDEX - 1)
+
+    def elsewhere(program):
+        return _measure_analysis(
+            program,
+            alignment=_alignment(delay_us=-900.0, polarity="inverted"),
+        )
+
+    fakes.measure = elsewhere
+    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+        assert _run_phase(c, index, 1)["accepted"] is True
+    assert len(c.lateral_poses) == LATERAL_COUNT
+
+    walked = c.candidate
+    assert walked is not None
+    assert walked.alignment == expected.alignment
+    assert walked.role_attenuations_db == expected.role_attenuations_db
+    assert walked.fingerprint == expected.fingerprint
+    assert walked.alignment.polarity != "inverted"
 
 
 def test_a_retaken_pose_replaces_its_earlier_take():

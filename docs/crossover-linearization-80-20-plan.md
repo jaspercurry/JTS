@@ -304,6 +304,26 @@ They may not:
 Holding the anchor solution fixed at the sides is load-bearing: re-aligning at
 each pose would erase the off-axis consequence the samples are meant to expose.
 
+*Implemented scope (R16).* The walk is six prompted poses — the mark, ±12 cm
+and ±40 cm left/right, and a return to the mark — as a stage-1 position group
+(`PHASE_LATERAL`) that replays the **anchor's own MEASURE program object**
+through the protected-neutral graph, so each pose carries both drivers on one
+timing ledger. The two at-mark poses bracket the walk; the opening one exists
+because the anchor's evidence is composed at analysis time and a pose's is not,
+so a drift bracket drawn between them would compare a composition to its
+absence. A pose is analyzed with the configured-path composition maps withheld,
+leaving the retained curve as `M` for the consumer to compose per candidate;
+`LateralPose` has no trim/delay/polarity field and the three MEASURE gates that
+judge the alignment solve do not run at a pose. The walk's position floor is
+zero — a dropped pose is disclosed, not fatal — and the walk's close becomes
+the last capture before the apply, so the reviewed proposal never predates the
+evidence the household just produced. Retention is in-memory
+(`CrossoverV2Conductor.lateral_poses`): per role, complex values sampled at the
+nearest native bin of a fixed 1/12-octave basis plus that role's driven band.
+No durable schema, no beamwidth/directivity claim, and no consumer of the
+curves inside R16 itself beyond `lateral_mark_return_drift_db()`, the walk's
+own reported-never-gated repeat-measurement bracket.
+
 ### 4.5 Room evidence remains a different instrument
 
 Room correction starts only from a verified applied speaker profile. Its

@@ -548,10 +548,71 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**R15 candidate Stage 1 (pending review/merge/deploy):** exactly two captures,
-index 1 `check` and index 2 `measure`. Production passes the same resolved
-protection mapping to the protected-neutral emitter and configured-path
-analysis, and emits no `cloud_measure` phase or prompt. Stage 2 is unchanged.
+**R15 Stage 1 (merged, hardware-proven 2026-08-05):** two captures, index 1
+`check` and index 2 `measure`. Production passes the same resolved protection
+mapping to the protected-neutral emitter and configured-path analysis, and emits
+no `cloud_measure` phase or prompt. Stage 2 is unchanged.
+
+**R16 Stage 1 (`STAGE1_INCLUDES_LATERAL`), 8 captures at either tier:**
+
+| index | phase | gate | what it is |
+|---|---|---|---|
+| 1 | `check` | tap | microphone check |
+| 2 | `measure` | tap | design-axis anchor, per-driver |
+| 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) |
+
+The walk is the mark, ±12 cm and ±40 cm left/right, and a return to the mark.
+Four things about it are load-bearing and easy to undo by accident:
+
+- **It replays the ANCHOR's program object**, not the summed sweep every cloud
+  position plays (`_program_for_phase`). §4.4's uses are per-driver
+  comparisons, which a summed curve cannot answer; and the return-to-mark
+  bracket is only a repeat measurement because the stimulus and the solved
+  gains are identical. So `lateral` is deliberately NOT in `SUMMED_SWEEP_PHASES`
+  — a pose plays through the protected-neutral commissioning graph.
+- **A pose is analyzed NEUTRALLY.** `_lateral_priors` withholds the three
+  configured-path composition maps the anchor gets, so the retained curve is
+  `M = plant · P` and §4.2's `sign_c · M · C_c / P` stays a per-candidate step
+  in the consumer. `configured_path_composed` is therefore `False` on a pose,
+  and the fitter's uncomposed-capture rail is what keeps one out of a
+  prescription: a pose is never fitted.
+- **The anchor solution is held fixed.** `LateralPose` has no trim/delay/
+  polarity field, and the three MEASURE gates that judge the alignment SOLVE
+  (delay-search status, GCC trust floor, plausibility backstop) do not run at a
+  pose — a microphone 40 cm to the side legitimately fails them, and refusing on
+  them would keep only the poses that align like the anchor. Every other MEASURE
+  capture-integrity screen does run, in MEASURE's order.
+- **Its position floor is ZERO** (`_group_position_floor`). A cloud below
+  `MIN_RESOLVED_CLOUD_POSITIONS` has nothing to combine and ends the session; a
+  dropped pose costs a robustness sample and nothing else, so the walk continues
+  and the consumer discloses that it decided on fewer positions than planned.
+
+Retention is `CrossoverV2Conductor.lateral_poses` — in memory, no durable
+schema. Each pose holds one `LateralPoseCurve` per role: complex values
+**sampled** (never interpolated) at the nearest native bin of a fixed
+1/12-octave 20 Hz–20 kHz basis, plus that role's driven sweep band. ~120 points
+× 2 roles × 6 poses. Deliberately coarse — #1968 calls lateral samples a coarse
+gate, and this is not a polar measurement.
+
+`lateral_mark_return_drift_db()` is the walk's own honesty screen: per-role
+worst |Δ dB| between the two at-mark poses, in band. **Reported, never gated** —
+no evidence in this campaign fixes a threshold — and `None`, never `0.0`, when
+a bracket pose is missing. Journalled at the walk's close as
+`event=correction.crossover_v2_lateral_walk_closed`.
+
+**The fit runs at the last capture before the apply**, and R16 makes the walk's
+close that capture (`_close_lateral_walk`) rather than MEASURE's accept. Same
+rule the cloud's own deferral implements, for the same reason: a proposal built
+before the walk would predate five minutes of evidence the household was just
+asked to produce. A walk whose FINAL pose is dropped still closes — the anchor's
+coefficients were never the poses' to withhold.
+
+**Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
+
+| index | phase | gate | what it is |
+|---|---|---|---|
+| 1 | `check` | tap | microphone check |
+| 2 | `measure` | tap | design-axis anchor, per-driver |
 
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
@@ -3307,6 +3368,12 @@ crossover-measurement flow now.
 **2026-08-05 verification scope:** opening/capture-flow only against the current
 R15 diff; no review, merge, deployment, or measurement claim. Remaining
 operational detail and history were not re-verified.
+
+**2026-08-05 R16 scope:** the capture-flow section only, rewritten against the
+R16 lateral-evidence diff and its tests. The lateral walk is code-complete and
+**hardware-unproven** — no session has walked it, so every claim here is about
+what the code does, not about what a household or a microphone did. Position
+groups, failure taxonomy, benchmarks, and history were not re-verified.
 
 Last verified: 2026-08-05 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
