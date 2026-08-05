@@ -3836,11 +3836,8 @@ def active_graph_is_parked(config_path: str | Path | None) -> bool:
         return False
     try:
         text = Path(config_path).read_text(encoding="utf-8")
-    except (OSError, UnicodeError, ValueError):
-        return False
-    try:
         summary = classify_camilla_config_text(text)
-    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
+    except (OSError, UnicodeError, ValueError, TypeError, RecursionError, yaml.YAMLError):
         return False
     return summary.get("classification") == CAMILLA_CLASS_ACTIVE_PARKED
 

@@ -443,19 +443,17 @@ def _active_speaker_parked_snapshot(
     proven-silent parked graph so the deploy can complete; nothing is broken and
     nothing is audible, but the household has to finish or undo commissioning.
     Two keys only — the config path is already in ``/state.audio``, so it is not
-    restated here. Fail-soft like every other resilience section: an unreadable
-    graph reads as not-parked rather than taking /state down.
+    restated here. Fail-soft like every other resilience section, but the
+    fail-soft lives in the reader: ``active_graph_is_parked`` is total (an
+    unreadable or unparseable graph reads as not-parked), so this needs no
+    second guard of its own.
     """
     from ..active_speaker.runtime_contract import (
         PARKED_MUTED_EXITS,
         active_graph_is_parked,
     )
 
-    try:
-        parked = active_graph_is_parked(active_config_path)
-    except Exception:  # noqa: BLE001
-        logger.debug("active speaker parked snapshot read failed", exc_info=True)
-        parked = False
+    parked = active_graph_is_parked(active_config_path)
     return {"parked": parked, "detail": PARKED_MUTED_EXITS if parked else None}
 
 
