@@ -553,7 +553,15 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 mapping to the protected-neutral emitter and configured-path analysis, and emits
 no `cloud_measure` phase or prompt. Stage 2 is unchanged.
 
-**R16 Stage 1 (`STAGE1_INCLUDES_LATERAL`), 8 captures at either tier:**
+**R16 Stage 1 — built, and OFF until R17 lands.** `STAGE1_INCLUDES_LATERAL` is
+`False`, so no shipped session walks this yet and stage 1 is still the two
+captures above. Gate 0 pairs every producer with a current consumer, and this
+one's is R17's Fc selector, which is deferred: at the checkpoint's declared
+2 kHz tweeter measurement floor every sub-2 kHz candidate has its own handoff
+clamped out of `overlap_band_hz`, so the selector cannot honestly score the
+direction the evidence points. #1654 (sweep the HF driver to its declared
+1600 Hz floor) is the unblocker; R17 is the flipper. What follows describes the
+shape the moment it flips — **8 captures at either tier:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
@@ -3370,10 +3378,11 @@ R15 diff; no review, merge, deployment, or measurement claim. Remaining
 operational detail and history were not re-verified.
 
 **2026-08-05 R16 scope:** the capture-flow section only, rewritten against the
-R16 lateral-evidence diff and its tests. The lateral walk is code-complete and
-**hardware-unproven** — no session has walked it, so every claim here is about
-what the code does, not about what a household or a microphone did. Position
-groups, failure taxonomy, benchmarks, and history were not re-verified.
+R16 lateral-evidence diff and its tests. The lateral walk is code-complete,
+**shipped OFF**, and **hardware-unproven** — no session has walked it and none
+can until `STAGE1_INCLUDES_LATERAL` flips with R17, so every claim about it is
+about what the code does, not about what a household or a microphone did.
+Position groups, failure taxonomy, benchmarks, and history were not re-verified.
 
 Last verified: 2026-08-05 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass

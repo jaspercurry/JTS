@@ -304,7 +304,13 @@ They may not:
 Holding the anchor solution fixed at the sides is load-bearing: re-aligning at
 each pose would erase the off-axis consequence the samples are meant to expose.
 
-*Implemented scope (R16).* The walk is six prompted poses — the mark, ±12 cm
+*Implemented scope (R16), shipped DORMANT.* `STAGE1_INCLUDES_LATERAL` is
+`False`: this section's producer is built and tested but no session walks it,
+because Gate 0 pairs every producer with a current consumer and R16's is R17's
+selector — deferred, since at the checkpoint's declared 2 kHz tweeter
+measurement floor every sub-2 kHz candidate has its own handoff clamped out of
+`overlap_band_hz`. #1654 is the unblocker and R17 is the flipper. What follows
+describes the shape the moment it flips. The walk is six prompted poses — the mark, ±12 cm
 and ±40 cm left/right, and a return to the mark — as a stage-1 position group
 (`PHASE_LATERAL`) that replays the **anchor's own MEASURE program object**
 through the protected-neutral graph, so each pose carries both drivers on one
