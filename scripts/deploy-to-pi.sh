@@ -746,7 +746,7 @@ sources=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
 http://127.0.0.1/sources/state || echo 000); \
 sound=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
 -H $(shell_quote "Host: ${HOSTNAME_FOR_INSTALL}") \
-http://127.0.0.1/sound/ || echo 000); \
+http://127.0.0.1/sound/setup/ || echo 000); \
 spotify=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
 -H $(shell_quote "Host: ${HOSTNAME_FOR_INSTALL}") \
 http://127.0.0.1/spotify/ || echo 000); \
@@ -756,7 +756,7 @@ http://127.0.0.1/spotify/ || echo 000); \
 sleep 3; done; \
 echo \"streambox probes failed: control=\$control root=\$root system=\$system sources=\$sources sound=\$sound spotify=\$spotify\" >&2; exit 1"
     if ssh_remote "$verify_cmd"; then
-        echo "  ✓ /, /system/data.json, /sources/state, /sound/, /spotify/, and :8780/healthz answer"
+        echo "  ✓ /, /system/data.json, /sources/state, /sound/setup/, /spotify/, and :8780/healthz answer"
     else
         finish_airplay_health_maintenance
         trap - EXIT

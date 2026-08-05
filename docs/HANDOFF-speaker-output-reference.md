@@ -386,8 +386,9 @@ What exists:
   Before observing hardware, the same root reconciler reads the optional
   `/var/lib/jasper/i2s_hat.env` intent and atomically composes the InnoMaker
   profile's `dtoverlay=merus-amp` with the managed USB-role block in
-  `config.txt`. Absence disables the managed overlay. Unsupported boards and
-  Streambox do not mutate the Pi boot file. A boot-setting change creates the
+  `config.txt`. Absence disables the managed overlay. Unsupported boards do not
+  mutate it; recognized Pi hardware reconciles it on both install profiles, while
+  only exact `full` (or a genuinely absent historical marker) permits voice/AEC restart. A boot-setting change creates the
   ephemeral I²S restart marker only while desired and observed runtime differ;
   reboot clears it, and a missing/unusable HAT cannot recreate it afterward.
   `jasper-doctor` uses the observed hardware profile to make
@@ -1555,7 +1556,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-04 (InnoMaker passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78 rechecked; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-08-05 (InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the

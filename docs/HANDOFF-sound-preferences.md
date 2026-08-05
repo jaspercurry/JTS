@@ -62,7 +62,10 @@ Sound Setup has one power-style **Enable I²S audio HAT** control for the
 supported InnoMaker HiFi AMP Pro. The label and boot overlay come from its
 `DacProfile`; browser logic does not own driver metadata. The persisted intent
 is `/var/lib/jasper/i2s_hat.env`; absence means **Auto / Off**. The control is
-hidden on Streambox and unavailable on unrecognized/non-Pi hardware.
+available on full and Streambox installs on a recognized Pi; it is unavailable elsewhere. On a Zero-class Streambox, enabling it moves output from the shared USB host port to
+the HAT after restart and reserves that port for gadget mode. A powered micro-USB host
+cable can back-power a HAT-powered Pi; use a VBUS-isolated connection or disconnect it.
+See the canonical [USB role matrix](HANDOFF-usb-gadget.md#usb-data-role-policy).
 
 `POST /sound/i2s-hat` is a bounded, CSRF/Host-guarded JSON write. It saves the
 single desired fact, then synchronously starts the already-allowlisted
@@ -78,8 +81,8 @@ when that reconcile actually changed the managed HAT setting and runtime still
 disagrees. Agreement removes it; unrelated reconciles neither create nor clear
 a pending mismatch, and reboot clears it naturally. The message links to the
 existing System Restart control and confirmation flow. The card also warns to
-remove all power before fitting/removing the HAT, never power through HAT and
-USB-C simultaneously, never hot-plug, and begin playback at very low level.
+remove all power before fitting/removing the HAT, never power the Pi through the
+HAT and another power input simultaneously, never hot-plug, and start very low.
 
 While a speaker is an active bonded follower, `/eq/` is a delegated
 surface: the page shows a leader-owned notice and does not load the
@@ -1064,7 +1067,7 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Verification scope (2026-08-04): PR-1 route/current-surface scope: `/eq/` and
+Verification scope (2026-08-05): Streambox I²S-HAT visibility/reconcile, USB-role safety, and `/sound/setup/` deploy ingress were rechecked. Prior 2026-08-04: PR-1 route/current-surface scope: `/eq/` and
 `/sound/setup/` page-mode ownership, bonded-follower delegation versus local
 commissioning, the fresh-read recognized-field `SoundSettings` merge and one
 lock through DSP/volume convergence, and full/streambox ingress were rechecked
@@ -1110,4 +1113,4 @@ config-preservation/refusal updates for graph-carrier dispatch; see
 HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
 active-speaker UI / commission-ramp work.)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-05

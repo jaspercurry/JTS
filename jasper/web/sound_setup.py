@@ -95,7 +95,6 @@ from jasper.audio_hardware.usb_port_role import (
     read_i2s_hat_intent,
     write_i2s_hat_intent,
 )
-from jasper.install_profile import FULL_INSTALL_PROFILE, read_install_profile
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -363,15 +362,12 @@ def _i2s_hat_payload(
     if profile is None:
         raise RuntimeError("supported I2S HAT profile is missing")
     hardware = _output_hardware_dict() or {}
-    hidden = read_install_profile() != FULL_INSTALL_PROFILE
     topology = str(
         (hardware.get("usb_data_role") or {}).get("board_topology") or "unknown"
     )
-    available = not hidden and topology in {"shared_otg_port", "separate_host_ports"}
+    available = topology in {"shared_otg_port", "separate_host_ports"}
     reason = ""
-    if hidden:
-        reason = "I²S HAT setup is unavailable on Streambox installs."
-    elif not available:
+    if not available:
         reason = "I²S HAT setup requires a recognized Raspberry Pi."
     intent_error = ""
     try:
@@ -384,8 +380,9 @@ def _i2s_hat_payload(
         for child in hardware.get("child_devices", ())
     )
     return {
-        "visibility": "hidden" if hidden else "visible",
+        "visibility": "visible",
         "available": available,
+        "shared_usb_data_port": topology == "shared_otg_port",
         "reason": reason,
         "intent_error": intent_error,
         "profile_label": profile.label,

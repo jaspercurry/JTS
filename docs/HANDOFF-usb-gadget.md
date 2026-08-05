@@ -15,8 +15,8 @@ Input intent and its ordered lifecycle transition are owned by
 
 ## Mission
 
-A laptop plugged into the speaker's USB-C port (via the 8086 splitter's data
-leg, or a USB-A→C cable on a bare Pi) gets a network link to the Pi so
+A laptop plugged into the speaker's USB data port — USB-C on Pi 4/5 (including the 8086 splitter's data leg) or micro-USB OTG on Zero-class hardware — gets a network
+link to the Pi so
 `http://<JASPER_HOSTNAME>/` works even when the Pi has no Wi-Fi. When Wi-Fi
 and USB are both up, the experience is invisible — same hostname, either
 path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
@@ -950,7 +950,7 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-30 (live Mac Studio total-audio wedge localized to the
+Last verified: 2026-08-05 (board-neutral USB data-port mission wording and Pi 4/5 versus Zero connector mapping rechecked; prior 2026-07-30 pass covered the live Mac Studio total-audio wedge localized to the
 JTS composite DWC2 path and recovered by a gadget-only restart; pre-reset,
 post-start, and opt-in RAM-bounded rolling controller capture added and covered
 by focused tests; the active-plan-derived computer-microphone source
