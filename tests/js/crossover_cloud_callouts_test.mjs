@@ -491,9 +491,22 @@ check(
     && !HEARD_CLAIM.test(els.cloudEyebrow.textContent),
   "prediction-only: neither heading nor eyebrow claims the microphone heard anything",
 );
+// BOTH aria-labels. The markup carries one on the <section> and one on the
+// <canvas>; correcting only the section would leave the chart element itself
+// announcing "before and after correction" on a screen with neither.
 check(
   els.cloud.getAttribute("aria-label") === "Predicted frequency response after correction",
-  "prediction-only: the aria-label is corrected too — not a sighted-only fix",
+  "prediction-only: the SECTION aria-label is corrected — not a sighted-only fix",
+);
+check(
+  els.cloudChart.getAttribute("aria-label")
+    === "Predicted frequency response after correction, not measured",
+  "prediction-only: the CANVAS aria-label is corrected too, and carries 'not measured'",
+);
+check(
+  !HEARD_CLAIM.test(els.cloud.getAttribute("aria-label"))
+    && /not measured/.test(els.cloudChart.getAttribute("aria-label")),
+  "prediction-only: the words do for a screen reader what the dashed stroke does for the eye",
 );
 check(
   els.cloudBasis.hidden === false
@@ -530,7 +543,12 @@ check(
 );
 check(
   els.cloud.getAttribute("aria-label") === "Before and after measurement",
-  "measured: the aria-label returns to the measured wording",
+  "measured: the SECTION aria-label returns to the measured wording",
+);
+check(
+  els.cloudChart.getAttribute("aria-label")
+    === "Frequency response before and after correction",
+  "measured: the CANVAS aria-label returns to the exact wording the markup ships",
 );
 check(
   els.cloudBasis.hidden === true && els.cloudBasis.textContent === "",

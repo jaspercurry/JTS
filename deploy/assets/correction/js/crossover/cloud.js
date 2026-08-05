@@ -207,16 +207,26 @@ function renderCallouts(container, specSource) {
 // stroke, the visual half of the same distinction). Every string below is
 // household-facing, so it is hardware-blind by the same rule the rest of this
 // page's authored copy follows.
+// TWO aria-labels, because the markup has two: one on the <section> (the
+// region) and one on the <canvas> (the graphic). Both were static, and fixing
+// only the section would have left the chart element itself still announcing
+// "before and after correction" on a screen with no before and no after.
 const MEASURED_FRAMING = {
   eyebrow: 'Before and after',
   title: 'What the microphone heard',
   ariaLabel: 'Before and after measurement',
+  chartAriaLabel: 'Frequency response before and after correction',
   basis: '',
 };
 const PREDICTED_FRAMING = {
   eyebrow: 'Predicted result',
   title: 'What JTS expects after correction',
   ariaLabel: 'Predicted frequency response after correction',
+  // The canvas label carries "not measured" where the section label does not.
+  // A sighted household is told the curve is a model by chart.js's dashed
+  // stroke; someone reading the canvas through a screen reader gets none of
+  // that, so the words have to do what the dash does.
+  chartAriaLabel: 'Predicted frequency response after correction, not measured',
   // Says where the line comes from, that it is not a measurement, and when a
   // real one arrives — the last part matters, because it is what makes this a
   // step in a process rather than a hedge.
@@ -240,10 +250,14 @@ function updateSectionFraming(els, payload) {
   const framing = measured ? MEASURED_FRAMING : PREDICTED_FRAMING;
   if (els.cloudEyebrow) els.cloudEyebrow.textContent = framing.eyebrow;
   if (els.cloudTitle) els.cloudTitle.textContent = framing.title;
+  // Screen-reader users read these instead of the heading and the picture, so
+  // leaving either on the measured wording would fix the claim for sighted
+  // households only.
   if (els.cloud && typeof els.cloud.setAttribute === 'function') {
-    // Screen-reader users read this instead of the heading, so leaving it on
-    // the measured wording would fix the claim for sighted households only.
     els.cloud.setAttribute('aria-label', framing.ariaLabel);
+  }
+  if (els.cloudChart && typeof els.cloudChart.setAttribute === 'function') {
+    els.cloudChart.setAttribute('aria-label', framing.chartAriaLabel);
   }
   if (els.cloudBasis) {
     els.cloudBasis.textContent = framing.basis;
