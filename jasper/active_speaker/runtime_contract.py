@@ -4277,6 +4277,7 @@ def _materialise_parked_muted_config(
     """
 
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
+    from jasper.dsp_apply import validate_camilla_config
 
     topology = topology or load_output_topology_strict()
     text, graph = build_parked_muted_graph(topology, config_path=config_path)
@@ -4288,4 +4289,22 @@ def _materialise_parked_muted_config(
         )
     target = Path(config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # CamillaDSP preflight before these bytes become the box's boot graph. An
+    # unloadable parked config would crash-loop jasper-camilla, which is a worse
+    # outcome than the blocked deploy this whole path replaces — so a rejected
+    # graph degrades back to blocked rather than shipping. Checked on a sibling
+    # temp path so a rejected graph never lands on the real name; a missing
+    # camilladsp binary (dev host, CI) passes through, the same `ok_to_apply`
+    # contract protected staging uses.
+    probe = target.with_name(f".{target.name}.check")
+    try:
+        atomic_write_text(probe, text, mode=0o640)
+        validation = validate_camilla_config(probe)
+    finally:
+        probe.unlink(missing_ok=True)
+    if not validation.ok_to_apply:
+        raise ActiveSpeakerConfigError(
+            "generated parked active-speaker graph failed CamillaDSP "
+            f"validation ({validation.status.value}): {validation.error}"
+        )
     atomic_write_text(target, text, mode=0o640)

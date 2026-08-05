@@ -3567,6 +3567,50 @@ def test_parked_statefile_write_repairs_a_missing_parked_config(
     assert parked_path.exists()
 
 
+def test_parked_write_refuses_a_config_camilladsp_rejects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An unloadable parked graph degrades back to BLOCKED, never to a crash loop.
+
+    jasper-camilla loads whatever the statefile names; a config CamillaDSP will
+    not accept turns a merely-uncommissioned box into a restart-looping one.
+    The writer preflights and refuses, and nothing lands on the real name.
+    """
+    from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+    import jasper.dsp_apply as dsp_apply_mod
+
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /nonexistent.yml\n", encoding="utf-8")
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert decision.status == PARKED_MUTED_STATUS
+
+    monkeypatch.setattr(
+        dsp_apply_mod,
+        "validate_camilla_config",
+        lambda path: CamillaConfigValidationResult(
+            status=ValidationStatus.INVALID_CONFIG,
+            path=str(path),
+            error="mixer channel count mismatch",
+        ),
+    )
+    with pytest.raises(ActiveSpeakerConfigError, match="failed CamillaDSP"):
+        apply_safe_graph_decision_to_statefile(
+            decision, statefile_path=statefile, topology=topology
+        )
+
+    assert not parked_path.exists()
+    assert not list(tmp_path.glob(".*.check"))
+    assert "config_path: /nonexistent.yml" in statefile.read_text(encoding="utf-8")
+
+
 def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
     tmp_path: Path,
 ) -> None:

@@ -1141,7 +1141,9 @@ dependency; `jasper-camilla` integrates with it through a shared
 CamillaDSP statefile (`outputd-statefile.yml`, seeded from
 the active-speaker runtime contract: flat `outputd-cutover.yml` only when
 the saved output topology permits it, otherwise a matching all-muted active
-startup graph) rather than a systemd dependency. In solo mode,
+startup graph, and — when a roleful topology has not staged one yet — a
+generated DAC-less all-muted **parked** graph so a mid-commission box can
+still take deploys) rather than a systemd dependency. In solo mode,
 assistant TTS/cues route to fan-in's outputd-compatible local socket
 (`JASPER_TTS_TRANSPORT=outputd`,
 `JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock`,
