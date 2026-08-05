@@ -3596,6 +3596,82 @@ async function testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings(
   return { driverResearchImportCopiesPolarityAndDelayIntoManualSettings: true };
 }
 
+// The prompt asks for one ```json fenced block, but an operator pastes what the
+// chat window gave them: fence markers, a "Here's what I found" preamble, a
+// trailing offer to explain. A raw JSON.parse on that failed with a V8 character
+// offset, which reads as "your research is broken" rather than "paste the block".
+async function testDriverResearchImportToleratesFencesAndProse() {
+  const payload = {
+    artifact_schema_version: 1,
+    kind: "jts_active_crossover_driver_research",
+    drivers: [
+      { role: "woofer", model: "Imported Woofer" },
+      { role: "tweeter", model: "Imported Tweeter" },
+    ],
+    crossover_candidates: [],
+  };
+  const body = JSON.stringify(payload, null, 2);
+  const accepted = [
+    ["bare object", body],
+    ["fenced block", "```json\n" + body + "\n```"],
+    ["unlabelled fence", "```\n" + body + "\n```"],
+    [
+      "fence with prose on both sides",
+      "Here is what I found for your drivers:\n\n```json\n" + body +
+        "\n```\n\nLet me know if you want the measurements too.",
+    ],
+    [
+      "prose-wrapped object with no fence",
+      "Sure! " + body + "\n\nHappy to dig deeper on the tweeter.",
+    ],
+  ];
+  for (const [label, text] of accepted) {
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    }));
+    await loadAndSetActiveState(harness);
+    harness.dispatchInput({ "data-driver-import": "" }, text);
+    harness.dispatchClick({ "data-act": "parse-driver-research" });
+    await harness.flush();
+    const statusText = harness.elements.get("status").textContent;
+    if (!statusText.includes("Imported driver research.")) {
+      fail(`paste-back should accept a ${label}`, { label, statusText });
+    }
+    const html = harness.elements.get("view-body").innerHTML;
+    if (!html.includes("import ready")) {
+      fail(`paste-back should summarize a ${label}`, { label });
+    }
+  }
+
+  // Junk after a value inside the object — a unit suffix or a comment — is the
+  // shape the operator actually hit. No recovery can rescue it, so the message
+  // has to lead with the action, not the offset.
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-import": "" },
+    '```json\n{"kind": "jts_active_crossover_driver_research", "sensitivity_db_2v83_1m": 90 dB}\n```');
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes(
+    "Couldn't read that as JSON — paste the complete code block the assistant returned."
+  )) {
+    fail("unparseable paste should lead with the action, not the parser offset", { statusText });
+  }
+  if (!/\([\s\S]+\)$/.test(statusText)) {
+    fail("unparseable paste should still carry the parser detail in parentheses", { statusText });
+  }
+  // The detail must come from the recovered block, not from the outer fence:
+  // "Unexpected token '`'" would send the operator after the thing they were
+  // told to paste instead of the junk inside their JSON.
+  if (statusText.includes("```") || statusText.includes("'`'")) {
+    fail("parser detail should describe the object, not the fence", { statusText });
+  }
+  return { driverResearchImportToleratesFencesAndProse: true };
+}
+
 async function testDriverResearchImportPreservesOperatorInstalledConfiguration() {
   const designSaves = [];
   const draft = {
@@ -6404,6 +6480,7 @@ results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());
 results.push(await testManualCrossoverDelayWithoutTargetBlocksSaveClientSide());
 results.push(await testManualCrossoverAlignmentIsAlwaysVisibleOnSavedDelay());
 results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings());
+results.push(await testDriverResearchImportToleratesFencesAndProse());
 results.push(await testDriverResearchImportPreservesOperatorInstalledConfiguration());
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
 results.push(await testLoadedResearchHidesStalePreparedPreview());

@@ -490,8 +490,15 @@ independently amplified active drivers.
 
 After the component cards and Build notes, **Copy prompt** asks the server to generate one
 exact, fingerprinted request from the current topology, per-output models,
-visible safety context, cabinet facts, and build notes. The operator pastes the
-JSON response and selects **Load information**. A compact proposed-crossover
+visible safety context, cabinet facts, and build notes. The copied text embeds a
+compact *projection* of that request — target identities, models, driver style,
+and operator-declared context — not the whole object; the hardware inventory and
+physical output labels are server bookkeeping an assistant cannot use. It asks
+for exactly one fenced `json` block back, and asks only for fields something
+downstream reads (the parser still accepts the wider v2 schema, so a more
+verbose reply is not rejected). The operator pastes the assistant's reply —
+fence markers and surrounding prose are tolerated — and selects
+**Load information**. A compact proposed-crossover
 summary appears before a single collapsed **Advanced** editor. Advanced groups
 driver specifications, hard never-test-beyond frequency edges, narrower
 measurement and crossover-search bands, required high/low-pass cutoff and

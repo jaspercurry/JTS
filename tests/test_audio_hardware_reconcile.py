@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jasper.audio_hardware.dac import final_edge_format_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -540,12 +541,17 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    # Registry-declared final-edge format, transported dormant (#final-edge
+    # format program PR-1): nothing consumes this key yet.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "type plug" in template
     assert "card sndrpimerusamp" in template
     assert "rate 48000" in template
     assert "channels 2" in template
-    assert "format S32_LE" in template
+    # Couples the asound-render.sh literal to the registry declaration: if
+    # either changes alone, this fails instead of the two silently drifting.
+    assert f"format {final_edge_format_for('innomaker_hifi_amp_pro')}" in template
     assert _render_log(tmp_path) == "render\n"
 
 
@@ -558,6 +564,9 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    # Registry-declared final-edge format, transported dormant (#final-edge
+    # format program PR-1): nothing consumes this key yet.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
@@ -687,6 +696,10 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The registry-declared final-edge format (dormant; no consumer yet)
+        # is part of the steady state now — seed it so a second reconcile is
+        # a true no-op.
+        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         # The single stereo path now also manages the wide-lane width knob,
         # cleared so a stale active width can't mis-size the stereo lane.
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
@@ -966,6 +979,10 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
+    # Parked/unrecognized: no profile to query, so the declared format clears
+    # too — explicit empty, matching how ACTIVE_CHANNELS/ACTIVE_LANE clear
+    # elsewhere in this same branch.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" in outputd_env
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert "action=park_until_active_graph" in result.stderr
@@ -1336,6 +1353,10 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The registry-declared final-edge format (dormant; no consumer yet)
+        # is part of the steady state now — seed it so the floor stays the
+        # sole delta.
+        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
@@ -1479,6 +1500,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The registry-declared final-edge format (dormant; no consumer yet)
+        # is part of the steady state now — seed it so nothing commits.
+        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"

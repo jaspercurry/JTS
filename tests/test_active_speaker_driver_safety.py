@@ -23,12 +23,14 @@ from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_REQUEST_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
     DriverSafetyProfileError,
+    _V2_RESEARCH_DRIVER_FIELDS,
     build_driver_research_prompt,
     build_driver_research_request,
     build_driver_safety_profile,
     driver_research_targets,
     evaluate_driver_safety_profile,
     validate_driver_research_request,
+    validate_driver_research_result_shape,
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.output_topology import OutputTopology
@@ -286,6 +288,26 @@ def _refingerprint_profile(profile: dict) -> None:
         profile["confirmation"]["confirmed_fingerprint"] = fingerprint
 
 
+def _prompt_targets_block(prompt: str) -> str:
+    """Return the compact request projection the prompt embeds."""
+
+    head, _, rest = prompt.partition("\nTARGETS\n")
+    assert head, "prompt has no TARGETS section"
+    block, _, _ = rest.partition("\n\nACCURACY\n")
+    assert block, "prompt TARGETS section is not followed by ACCURACY"
+    return block
+
+
+def _prompt_result_shape(prompt: str) -> str:
+    """Return the fenced result-shape template the assistant must fill in."""
+
+    _, _, rest = prompt.partition("\nRESULT SHAPE\n```json\n")
+    assert rest, "prompt has no fenced RESULT SHAPE block"
+    block, _, _ = rest.partition("\n```\n")
+    assert block, "prompt RESULT SHAPE fence is unterminated"
+    return block
+
+
 def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     topology = mono_output_topology(card_id=None)
     manual_settings = _manual_settings()
@@ -324,8 +346,181 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     assert "Never infer physical installation choices" in prompt
     assert "Treat operator_declared_context as authoritative" in prompt
     assert "preserving any operator-declared enclosure choice" in prompt
-    assert "Echo request_fingerprint" in prompt
-    assert request["request_fingerprint"] in prompt
+
+    # Binding is what the server re-checks on paste-back, so every identity the
+    # result must echo has to be legible in the prompt itself.
+    targets_block = _prompt_targets_block(prompt)
+    assert request["request_fingerprint"] in targets_block
+    for target in request["targets"]:
+        assert target["target_fingerprint"] in targets_block
+        assert target["target_id"] in targets_block
+        assert target["manufacturer_and_model"] in targets_block
+    assert "Copy target_id, target_fingerprint, and model verbatim." in prompt
+
+
+def test_prompt_demands_one_fenced_json_object_and_exact_driver_count() -> None:
+    """The paste box parses JSON, so the ask is one fenced object and nothing
+    else — and one drivers[] entry per physical target, counted for THIS
+    topology rather than left to the model to infer from an example."""
+
+    two_way = mono_output_topology(card_id=None)
+    prompt = build_driver_research_prompt(
+        build_driver_research_request(two_way, _operator_inputs(), _manual_settings())
+    )
+
+    assert "exactly one ```json fenced code block" in prompt
+    assert "No text before the fence, no text after it." in prompt
+    assert "Begin the ```json block now." in prompt
+    assert "nothing after the closing fence" in prompt
+    assert "Do not ask clarifying questions" in prompt
+    # The pasted-back position-340 failures were junk after a value (a unit
+    # suffix or a trailing comment), which the old prompt never forbade.
+    assert "All numbers are bare JSON numbers. No units, no comments, no text after a value." in prompt
+    assert "Return exactly 2 entries in drivers[]" in prompt
+
+    one_target = mono_output_topology(mode="full_range_passive", card_id=None)
+    single = build_driver_research_prompt(
+        build_driver_research_request(
+            one_target,
+            {"full_range": "Example FR8", "target_models": {"mono:full_range": "Example FR8"}},
+            None,
+        )
+    )
+    assert "Return exactly 1 entry in drivers[]" in single
+
+
+def test_prompt_projects_targets_without_the_server_hardware_block() -> None:
+    """The prompt embeds a projection, not the whole request: the hardware
+    inventory and the physical output/topology labels are server bookkeeping
+    the assistant cannot use, and they were most of the prompt's length. The
+    request object itself is unchanged and still carries them."""
+
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(
+        topology, _operator_inputs(), _manual_settings()
+    )
+    prompt = build_driver_research_prompt(request)
+    targets_block = _prompt_targets_block(prompt)
+
+    assert request["hardware"]["outputs"]
+    assert request["targets"][0]["physical_output_label"]
+    # Absent from the whole prompt, not merely from the projection.
+    assert '"hardware"' not in prompt
+    assert "clock_domain" not in prompt
+    assert "physical_output_label" not in prompt
+    assert "physical_output_index" not in prompt
+    assert "topology_id" not in prompt
+    assert request["hardware"]["device_label"] not in prompt
+    assert '"state": "unused"' not in prompt
+    # ...while every key the assistant is asked to reason about survives.
+    assert "artifact_schema_version" not in targets_block
+    for key in (
+        "target_id",
+        "target_fingerprint",
+        "role",
+        "manufacturer_and_model",
+        "driver_style",
+        "speaker_group_id",
+        "speaker_group_mode",
+        "operator_declared_context",
+    ):
+        assert f'"{key}"' in targets_block
+
+
+def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
+    """The ask is a strict subset of what the parser accepts. Four fields were
+    dropped: three have no computational consumer — they prefill an Advanced
+    field the operator can type (recommended_lowpass_hz, horn_coverage_deg) or
+    are display-only with a fallback (manufacturer) — and one asserts level
+    authority that belongs to measurement and the operator (gain_offset_db).
+    Acceptance is unchanged;
+    ``test_dropped_ask_fields_are_still_accepted_and_normalised`` pins that."""
+
+    topology = mono_output_topology(card_id=None)
+    prompt = build_driver_research_prompt(
+        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    )
+    result_shape = _prompt_result_shape(prompt)
+
+    for dropped in (
+        "recommended_lowpass_hz",
+        "horn_coverage_deg",
+        "gain_offset_db",
+    ):
+        assert dropped not in prompt
+    # "manufacturer_and_model" is the request-side key and stays; the standalone
+    # result-side "manufacturer" field is what was dropped.
+    assert '"manufacturer"' not in prompt
+    assert '"manufacturer_and_model"' in prompt
+
+    for kept in (
+        "nominal_impedance_ohm",
+        "sensitivity_db_2v83_1m",
+        "usable_frequency_range_hz",
+        "recommended_highpass_hz",
+        "do_not_test_below_hz",
+        "hard_excitation_band_hz",
+        "required_protection_filters",
+        "measurement_band_hz",
+        "crossover_search_band_hz",
+        "level_duration_limits",
+        "cabinet",
+        "driver_class",
+        "radiating_diameter_mm",
+        "unknowns",
+        "field_provenance",
+        "notes",
+        "sources",
+    ):
+        assert f'"{kept}"' in result_shape
+    for sub_key in (
+        "max_effective_peak_dbfs",
+        "max_sweep_duration_s",
+        "max_repeat_count",
+        "minimum_cooldown_s",
+    ):
+        assert sub_key in result_shape
+    for candidate_key in (
+        "between_roles",
+        "frequency_hz",
+        "filter_type",
+        "slope_db_per_octave",
+        "confidence",
+        "rationale",
+        "warnings",
+    ):
+        assert f'"{candidate_key}"' in result_shape
+
+
+def test_prompt_scopes_provenance_to_the_five_limit_setting_keys() -> None:
+    """Per-field provenance across every field is what turned a data reply into
+    an essay. Only the keys that bound what the speaker may excite carry it."""
+
+    from jasper.active_speaker.driver_safety import _PROMPT_PROVENANCE_KEYS
+
+    topology = mono_output_topology(card_id=None)
+    prompt = build_driver_research_prompt(
+        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    )
+
+    assert _PROMPT_PROVENANCE_KEYS == (
+        "hard_excitation_band_hz",
+        "do_not_test_below_hz",
+        "required_protection_filters",
+        "level_duration_limits",
+        "sensitivity_db_2v83_1m",
+    )
+    scope_line = next(
+        line for line in prompt.splitlines() if line.startswith("- field_provenance")
+    )
+    assert "only these five keys" in scope_line
+    for key in _PROMPT_PROVENANCE_KEYS:
+        assert key in scope_line
+    assert "at most 2 source URLs" in scope_line
+    # The old ask demanded confidence + basis + URLs for every field assertion.
+    assert "Every field assertion needs confidence" not in prompt
+    assert "at most 3 URLs you actually consulted" in prompt
+    assert "notes: one sentence, 15 words or fewer." in prompt
 
 
 def test_passive_full_range_component_has_research_only_physical_target() -> None:
@@ -381,22 +576,75 @@ def test_passive_full_range_component_has_research_only_physical_target() -> Non
 
 
 def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
-    """#1665: driver_class/radiating_diameter_mm/horn_coverage_deg are
-    AI-researchable and must appear in both the instruction prose and the
-    result-shape JSON; pad is operator-only and must never be prompted for."""
+    """#1665: driver_class/radiating_diameter_mm are AI-researchable and must
+    appear in the result-shape JSON; pad is operator-only and must never be
+    prompted for.  ``horn_coverage_deg`` was researchable too but is no longer
+    asked for — it has no computational consumer today — while staying
+    accepted; see ``test_prompt_asks_only_for_fields_with_a_consumer``."""
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_request(topology, _operator_inputs(), _manual_settings())
     prompt = build_driver_research_prompt(request)
+    result_shape = _prompt_result_shape(prompt)
 
-    assert "driver_class" in prompt
-    assert "radiating_diameter_mm" in prompt
-    assert "horn_coverage_deg" in prompt
-    assert "compression_horn" in prompt
+    assert '"driver_class"' in result_shape
+    assert '"radiating_diameter_mm"' in result_shape
+    assert "compression_horn" in result_shape
     # Never prompted: pad is an operator-only fact (they wired the resistors),
     # never something research can discover.
     assert '"pad"' not in prompt
     assert "in-line" not in prompt.lower()
     assert "l-pad" not in prompt.lower()
+
+
+def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
+    """The ask shrank; acceptance did not.  A reply that still carries the four
+    fields the prompt stopped asking for — an older chat, a more thorough
+    model, a hand-edited paste — must validate and normalise exactly as before,
+    or slimming the prompt would have silently become a schema change."""
+
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
+    research = _research_result(request)
+    verbose = {
+        "manufacturer": "Example Acoustics",
+        "recommended_lowpass_hz": 3000,
+        "horn_coverage_deg": 90,
+        "gain_offset_db": -6,
+        "gain_offset_db_provenance": "research_estimate",
+    }
+    for driver in research["drivers"]:
+        driver.update(verbose)
+    # The browser copies researched editable values into the visible record
+    # before saving, and _validate_v2_research_prefill checks the two agree.
+    # `manufacturer` is deliberately NOT mirrored: it is not a comparable
+    # field, so it round-trips research-only.
+    manual_settings = _manual_settings()
+    for driver in manual_settings["drivers"]:
+        driver.update({k: v for k, v in verbose.items() if k != "manufacturer"})
+
+    # Every accept-side gate, not just the one the paste-back path happens to
+    # hit first.
+    validate_driver_research_result_shape(research)
+    draft = build_design_draft(
+        topology,
+        driver_research_request=request,
+        driver_research=research,
+        manual_settings=manual_settings,
+        operator_inputs=_operator_inputs(),
+    )
+
+    for driver in draft["driver_research"]["drivers"]:
+        assert driver["manufacturer"] == "Example Acoustics"
+        assert driver["recommended_lowpass_hz"] == 3000.0
+        assert driver["horn_coverage_deg"] == 90.0
+        assert driver["gain_offset_db"] == -6.0
+        assert driver["gain_offset_db_provenance"] == "research_estimate"
+    for field in verbose:
+        assert field in _V2_RESEARCH_DRIVER_FIELDS
 
 
 def test_v2_research_refuses_stale_request_or_target_binding() -> None:

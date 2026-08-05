@@ -81,10 +81,12 @@ _MANUAL_DRIVER_FIELDS = {
     "level_duration_limits",
     "cabinet",
     "source",
-    # #1665 component entry. driver_class/radiating_diameter_mm/
-    # horn_coverage_deg are AI-researchable (see driver_safety's research
-    # prompt); pad is deliberately NOT researched -- the operator is the only
-    # one who knows what resistors they actually wired in.
+    # #1665 component entry. driver_class/radiating_diameter_mm are
+    # AI-researchable (see driver_safety's research prompt);
+    # horn_coverage_deg is still accepted but no longer asked for -- Bessel
+    # beamwidth matching (#1675) is deferred; pad is deliberately NOT
+    # researched -- the operator is the only one who knows what resistors
+    # they actually wired in.
     "driver_class",
     "radiating_diameter_mm",
     "horn_coverage_deg",
