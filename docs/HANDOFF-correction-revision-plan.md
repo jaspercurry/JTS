@@ -983,10 +983,12 @@ compatibility:  20260803.4 + 79239e0c6 is the pair the checkpoint ran on; the
                 capture_page observation above is still the 2026-08-04 one.
                 These establish what was seen, not deployment order or
                 chronology
-active_round:   Gate 0 ratified (2026-08-05) — R18 in flight, then R16 + R17 as
-                one co-scoped vertical in two PRs. Missions, ceilings, and panel
-                scopes live only in crossover-linearization-80-20-plan.md §11;
-                the Gate 0 record is the #1894 comment
+active_round:   R18 (verification widening) — dispatched, implementation in
+                flight, no PR open yet. Gate 0 ratified it on 2026-08-05 to
+                land first, ahead of the R16 + R17 vertical. Missions,
+                ceilings, and panel scopes live only in
+                crossover-linearization-80-20-plan.md §11; the Gate 0 record is
+                the #1894 comment
 last_round:     R15 (atomic fixed-Fc proof — #2126 ab548e1f3, #2138 b94790f4f),
                 exercised end-to-end on hardware by the checkpoint below. R14
                 was the documentation/administrative campaign round
@@ -1001,20 +1003,35 @@ validation:     the 2026-08-05 evening checkpoint on jts3 — now the current
                 validation day (4 of 5 positions, cloud=null, locate_failed) is
                 the superseded predecessor
 findings:       two facts, neither judged by the checkpoint and both read off
-                the rendered chart rather than the journal (#2152 is open on
-                that gap): a -4.5 dB crossover-region dip at ~1.6-1.8 kHz,
-                predicted from measured branch phases and faithfully realized,
-                sitting BELOW VERIFY's 2000-4000 Hz band and therefore ungraded
-                (what R18 exists to judge; #1868/#1654 made concrete); and +2 to
-                +4 dB across 200-1000 Hz at the mark, Room-layer territory per
-                #2099's Gate 0 boundary ruling, not a speaker-layer defect
+                the rendered AFTER-chart rather than the journal. That chart's
+                fidelity is unconfirmed: #2152 was extended by scope comment to
+                cover the chart-fidelity family (its original report was the
+                pre-apply review chart), and a signal-level re-derivation from
+                the retained verify WAV is in flight. The two: a -4.5 dB
+                crossover-region dip at ~1.6-1.8 kHz, predicted from measured
+                branch phases and reported as realized, sitting BELOW VERIFY's
+                2000-4000 Hz band and therefore ungraded (what R18 exists to
+                judge; #1868/#1654 made concrete); and +2 to +4 dB across
+                200-1000 Hz at the mark, Room-layer territory per #2099's
+                Gate 0 boundary ruling, not a speaker-layer defect
 rollback:       the tune was left applied with Undo banked through the retained
                 pre_apply_profile; restoration was not exercised
-owed_on_device: R18's verify slice and the R16/R17 lateral walk, both owner-run
-                (morning). Retired: the boost path — a driver-only session that
-                actually boosts was verified live in this checkpoint. Still
-                open: SetConfig->GetConfig, exercised live by the flow's
-                readback gate but probe-measured on the load path only
+owed_on_device: the boost path is STILL OWED. An earlier reading of this
+                checkpoint claimed it retired; a read-only probe of jts3's
+                applied profile corrected that — tonight's candidate is
+                cut-only (zero positive gains; the six positive gains in the
+                state file belong to the banked pre_apply_profile held for
+                Undo). #2138's gate is live but no boosting prescription has
+                run on hardware. Open observation, not a finding: the
+                driver-only fit placed no boosts at this mark, plausibly
+                because the gated responses carried no in-band deficit above
+                the envelope's bar — the ~-4.5 dB dip is crossover
+                integration, which boost does not fix — so the selector rounds
+                should confirm boost engages when a genuine deficit exists.
+                Correction record: #1894 (2026-08-05 late). Also owed: R18's
+                verify slice and the R16/R17 lateral walk, both owner-run
+                (morning); and SetConfig->GetConfig, exercised live by the
+                flow's readback gate but probe-measured on the load path only
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
@@ -1024,11 +1041,10 @@ follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2152 (review chart shows only the unmeasured prediction).
                 The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   R18 — widen VERIFY so the crossover region the checkpoint
-                measured is actually judged, then the R16 + R17 vertical
-blocked_on:     nothing. R18 is dispatchable now; the owner's morning items
-                (R18's verify slice, the R16/R17 lateral walk) are evidence
-                the later rounds consume, not gates on starting R18
+next_mission:   after R18 lands: the R16 + R17 co-scoped vertical (lateral
+                producer, then the Fc selector that consumes it)
+blocked_on:     R16/R17 are blocked on R18 landing and on the owner's morning
+                lateral walk. R18 itself is blocked on nothing
 ```
 
 ## How this document relates to session handoffs and issues

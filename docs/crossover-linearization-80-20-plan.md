@@ -479,18 +479,32 @@ headroom they inherit.
 **Gate 0 outcome — 2026-08-05, owner-ratified in session.** The checkpoint
 passed on jts3 as an instrument proof, and its evidence promoted the selector
 from deferred direction to demonstrated need: the applied configured-2 kHz
-result carries a measured **−4.5 dB crossover-region dip at ~1.6–1.8 kHz**,
-predicted by the model from measured branch phases and faithfully realized,
-sitting *below* VERIFY's 2000–4000 Hz tracking band and therefore unjudged.
-That is why R18 lands first — a selector needs an honest referee before it
-chooses. R16 and R17 are **one co-scoped vertical in two PRs**, pairing the
+result carries a **−4.5 dB crossover-region dip at ~1.6–1.8 kHz**, predicted by
+the model from measured branch phases and reported as realized, sitting *below*
+VERIFY's 2000–4000 Hz tracking band and therefore unjudged; alongside it,
+**+2–4 dB across ~200–1000 Hz** at the mark, which #2099's Gate 0 boundary
+ruling places in Room-layer territory rather than the speaker layer. Both
+magnitudes were **read off the rendered after-chart, not journal-recorded**,
+and that chart's fidelity is unconfirmed — it belongs to the chart-fidelity
+family [#2152 was extended to
+cover](https://github.com/jaspercurry/JTS/issues/2152#issuecomment-5197201186),
+with a signal-level re-derivation from the retained verify WAV in flight.
+Numbers and their provenance:
+[#1894's evidence record](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5197063549).
+R18's premise survives whatever that re-derivation returns — an unjudged band
+below the tracking window is a gap at any depth — but the depth itself is not
+campaign fact yet. That is why R18 lands first: a selector needs an honest
+referee before it chooses. R16 and R17 are **one co-scoped vertical in two PRs**, pairing the
 lateral producer with its current consumer, and R17 takes the declared driver
 diameter as a beaming/ka prior per the owner ruling on
 [#1675](https://github.com/jaspercurry/JTS/issues/1675#issuecomment-5196969046).
 Panel scopes were fixed at decision time — R17 three lenses, R16 two
 (correctness + resilience), R18 two (correctness + hearing-safety) — the
-practice R15's late-recorded lens count taught. Full record: the Gate 0 comment
-on [#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5196968895).
+practice R15's late-recorded lens count taught. These ratified per-round scopes
+are authoritative and govern where they differ from §9 item 11's and §12's
+general rule, the same way the per-round ceilings govern over item 9; a round
+with no ratified scope falls back to that general rule. Full record: the Gate 0
+comment on [#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5196968895).
 §9.8 is unchanged: configured 2 kHz stays the golden one-candidate mode until
 the multi-candidate path proves equivalence and then improvement.
 
@@ -524,8 +538,9 @@ coordination, and final reconciliation. It does not implement product code.
 Landing loop for every product round:
 
 1. refresh `origin/main`; give the implementer one round, one file territory,
-   explicit non-goals, and a measurable DONE condition. After R15, stop for
-   the fixed-Fc hardware checkpoint; each later round then re-enters Gate 0;
+   explicit non-goals, and a measurable DONE condition. The R15 checkpoint and
+   its Gate 0 are done (§11); a round that produces new hardware evidence stops
+   for an owner-run checkpoint of its own before the next one is scoped;
 2. implement/test in an isolated worktree; one PR, no unrelated cleanup;
 3. conductor spot-checks the diff and load-bearing reported numbers;
 4. all three independent reviewers read
