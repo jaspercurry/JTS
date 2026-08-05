@@ -633,10 +633,13 @@ PY
 # (e.g. 8 for a HiFiBerry DAC8x — the most active outputs outputd will drive on
 # this DAC) or nothing for a DAC whose profile declares no active lane, or when
 # Python is unavailable — both of which keep the DAC on the ordinary stereo
-# single path. Every profile in the registry currently declares a lane, so in
-# practice the empty result means Python was unavailable. The cap is the upper
-# bound; the ACTUAL driven width is the loaded config's playback width,
-# validated against this cap by the gate.
+# single path. Every profile in the registry currently declares a lane, and an
+# unavailable/broken Python already fails recognition upstream in
+# observe_output_hardware_state (so that path reaches the parked branch, not
+# this one) — meaning the empty result is currently unreachable. It is retained
+# as the correct answer for the next profile that declares no lane. The cap is
+# the upper bound; the ACTUAL driven width is the loaded config's playback
+# width, validated against this cap by the gate.
 active_lane_channels_for_dac() {
     local dac_id="$1"
     if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
