@@ -80,11 +80,9 @@ def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
 
 
 def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
-    """§4.4: "reuses the existing ±12 cm and ±40 cm left/right moves".
-
-    Derived by PREDICATE off ``CLOUD_POSITION_PROMPTS``, so the two tables
-    cannot state different distances for the same move, and bracketed by the
-    two at-mark poses the drift check reads.
+    """§4.4: "reuses the existing ±12 cm and ±40 cm left/right moves" — derived
+    by PREDICATE off ``CLOUD_POSITION_PROMPTS`` so the two tables cannot state
+    different distances, and bracketed by the two at-mark poses.
     """
     poses = flow.LATERAL_POSE_PROMPTS
     assert poses[0] is flow.LATERAL_MARK_PROMPT
@@ -136,15 +134,10 @@ def test_the_walk_derivation_refuses_a_cloud_table_that_lost_a_lateral_row():
 
 
 def test_the_walk_is_off_and_stage_1_is_byte_identical_to_pre_r16():
-    """Gate 0 pairs every producer with a CURRENT consumer, and R16's is R17's
-    selector — deferred, because at the checkpoint's declared 2 kHz tweeter
-    measurement floor every sub-2 kHz candidate has its own handoff clamped out
-    of ``overlap_band_hz``. So the walk ships DORMANT, and a household must see
-    exactly the pre-R16 session until it is turned on.
-
-    Asserted against the pre-R16 contract written out independently, not against
-    the flag — a test that only re-read ``STAGE1_INCLUDES_LATERAL`` would pass
-    for a flag-off build that had changed the shape some other way.
+    """The walk ships DORMANT until R17, so a household must see exactly the
+    pre-R16 session. Asserted against that contract written out independently,
+    not against the flag — a test that only re-read ``STAGE1_INCLUDES_LATERAL``
+    would pass for a flag-off build that had changed the shape some other way.
     """
     assert flow.STAGE1_INCLUDES_LATERAL is False
 
@@ -184,11 +177,9 @@ def test_the_walk_is_off_and_stage_1_is_byte_identical_to_pre_r16():
 
 
 def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
-    """End-to-end dormancy: the fit-timing move is IN but must not fire.
-
-    ``_measure_verdict``'s deferral keys off ``PHASE_LATERAL in self._phases``,
-    so with no lateral group in the index map MEASURE stays the last capture
-    before the apply and builds its candidate exactly as it did pre-R16.
+    """End-to-end dormancy: the fit-timing move is IN but must not fire. Its
+    deferral keys off ``PHASE_LATERAL in self._phases``, so with no lateral
+    group MEASURE stays the last capture before the apply.
     """
     fakes = FakeSeams()
     c = _conductor(
@@ -281,11 +272,9 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
 
 
 def test_the_relay_capacity_guard_counts_the_lateral_walk():
-    """The worst case the relay must carry is cloud PLUS walk, not cloud alone.
-
-    Re-derived rather than asserted: ``ceiling`` is picked to sit strictly
-    between the cloud-only requirement and the cloud-plus-walk one, so the
-    guard passing there would prove it had stopped counting the poses.
+    """Worst case is cloud PLUS walk, not cloud alone. ``ceiling`` is re-derived
+    to sit strictly between the two, so the guard passing there would prove it
+    had stopped counting the poses.
     """
     import jasper.capture_relay.spec as spec
 
@@ -436,14 +425,11 @@ def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity()
 
 
 def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
-    """``_primary_sweep_bands`` selects on ``KIND_SWEEP``, and it must.
-
-    A v2 MEASURE program OPENS with a leading pilot pair that carries a role
-    and a band, so a role-only match would take the pilot's. Today the two
-    bands are equal (both are built from the same intersected ``RoleBand``), so
-    this is not a live bug — which is exactly why the coupling is pinned here
-    rather than assumed: the mutation below breaks it and shows which segment
-    the evidence follows.
+    """A v2 MEASURE program OPENS with a leading pilot pair carrying a role and
+    a band, so a role-only match would take the pilot's. Today the two bands are
+    equal (same intersected ``RoleBand``), so this is not a live bug — which is
+    why the coupling is pinned rather than assumed: the mutation below breaks it
+    and shows which segment the evidence follows.
     """
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)
@@ -471,12 +457,9 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
 
 
 def test_the_anchor_solution_is_held_fixed_across_the_walk():
-    """§4.4's load-bearing rule, at the level of behaviour rather than shape.
-
-    Every pose here reports a WILDLY different alignment from the anchor's. If
-    any of them were allowed to re-solve, the applied trim/delay/polarity would
-    move; holding the anchor fixed is what keeps the off-axis consequence
-    visible instead of absorbed.
+    """§4.4's load-bearing rule as BEHAVIOUR, not shape. Every pose here reports
+    a wildly different alignment; if any were allowed to re-solve, the applied
+    trim/delay/polarity would move.
     """
     # The reference: the same session with no walk at all, whose candidate is
     # built from the anchor alone. Re-derived, never hand-written, so this
