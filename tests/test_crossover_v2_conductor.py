@@ -1344,12 +1344,17 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     """
     info = flow.tier_display_info()
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # Stage 1 is CHECK + MEASURE + R16's lateral walk, and the tiers genuinely
-    # do not differ there — so the numbers must not imply that they do. The
-    # walk is the ANCHOR's own robustness sample, not a spatial cloud, so it is
-    # the same six poses at either tier; what still differs is stage 2.
-    assert flow.STAGE1_INCLUDES_LATERAL is True
-    expected_stage1 = 2 + len(flow.LATERAL_POSE_PROMPTS)
+    # DERIVED from the two flags rather than hardcoded, so the chooser is
+    # pinned to whatever stage 1 actually runs. R16's walk is off until R17
+    # lands (see STAGE1_INCLUDES_LATERAL), so today this is 2; the day it
+    # flips, this test moves with it instead of going stale.
+    expected_stage1 = 2 + (
+        len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0
+    )
+    # The tiers genuinely no longer differ in stage 1 — so the numbers must not
+    # imply that they do. (The lateral walk would not change that: it is the
+    # ANCHOR's own robustness sample, not a spatial cloud, so it is the same
+    # poses at either tier.)
     assert info["full"]["stage1_captures"] == expected_stage1
     assert info["express"]["stage1_captures"] == expected_stage1
     # Stage 2 is where they still differ, and the chooser copy says so.
@@ -1359,9 +1364,9 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
         assert detail["capture_target"] == (
             detail["stage1_captures"] + detail["stage2_captures"]
         ), tier
-        # Honest minutes: a real duration, and small enough to be stage 1 plus
-        # its verify walk rather than a ten-position cloud on top.
-        assert 0 < detail["estimated_minutes"] <= 15, tier
+        # Honest minutes: a real duration, and small enough to be a two-capture
+        # stage 1 plus its verify walk rather than a ten-position cloud.
+        assert 0 < detail["estimated_minutes"] <= 10, tier
 
     # The degraded fallback answers with the SAME numbers, so a failure in the
     # memoized build cannot quietly restore the cloud-inclusive figures.

@@ -8,6 +8,8 @@ copies of a conductor factory is two definitions of what a session is.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import replace
 from types import SimpleNamespace
@@ -128,6 +130,82 @@ def test_the_walk_derivation_refuses_a_cloud_table_that_lost_a_lateral_row():
         + (flow.LATERAL_MARK_RETURN_PROMPT,)
     )
     assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
+
+
+# --- dormancy: the household sees nothing until R17 lands ---------------------
+
+
+def test_the_walk_is_off_and_stage_1_is_byte_identical_to_pre_r16():
+    """Gate 0 pairs every producer with a CURRENT consumer, and R16's is R17's
+    selector — deferred, because at the checkpoint's declared 2 kHz tweeter
+    measurement floor every sub-2 kHz candidate has its own handoff clamped out
+    of ``overlap_band_hz``. So the walk ships DORMANT, and a household must see
+    exactly the pre-R16 session until it is turned on.
+
+    Asserted against the pre-R16 contract written out independently, not against
+    the flag — a test that only re-read ``STAGE1_INCLUDES_LATERAL`` would pass
+    for a flag-off build that had changed the shape some other way.
+    """
+    assert flow.STAGE1_INCLUDES_LATERAL is False
+
+    index_phase = build_v2_cloud_index_phase_map(
+        tier="full",
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+    )
+    plan = build_v2_capture_plan(
+        _roles(), FC_HZ, tier="full",
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+    )
+
+    # The pre-R16 stage 1, stated in full.
+    assert index_phase == {1: PHASE_CHECK, 2: PHASE_MEASURE}
+    assert [e.kind_label for e in plan.entries] == ["check", "measure"]
+    assert plan.capture_target == 2
+    assert plan.max_attempts == 2 + flow.CLOUD_RETAKE_ALLOWANCE
+    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 2
+
+    # Nothing R16 added reaches the wire.
+    raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+    assert b"lateral" not in raw
+    assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
+        794, "3f33662b312a89ef23851d7d008651ff9f5783f3f8fc143273189802f6c635c7",
+    ), "the shipped stage-1 plan's wire bytes moved while the walk is off"
+
+    # …and the consent screen still describes a stationary microphone.
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+    )
+    notes = [c["text"] for c in spec.screen if c["type"] == "note"]
+    assert not any("of the mark" in note for note in notes)
+
+
+def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
+    """End-to-end dormancy: the fit-timing move is IN but must not fire.
+
+    ``_measure_verdict``'s deferral keys off ``PHASE_LATERAL in self._phases``,
+    so with no lateral group in the index map MEASURE stays the last capture
+    before the apply and builds its candidate exactly as it did pre-R16.
+    """
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes,
+        index_phase_map=build_v2_cloud_index_phase_map(
+            tier="full",
+            include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+            include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        ),
+    )
+    assert PHASE_LATERAL not in c._group_indexes
+    _run_phase(c, 1, 1)
+    accepted = _run_phase(c, 2, 1)
+    assert "candidate_fingerprint" in accepted
+    assert c.candidate is not None
+    assert c.lateral_poses == ()
+    assert c.lateral_mark_return_drift_db() is None
 
 
 # --- the capture plan ---------------------------------------------------------

@@ -1346,12 +1346,23 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # groups answer different questions and are separately authorized — the
 # pre-apply cloud stays off.
 #
-# Like ``STAGE1_INCLUDES_CLOUD_MEASURE`` this is applied at the PRODUCTION seams
+# **OFF until R17 lands.** Gate 0 pairs every producer with a CURRENT consumer,
+# and R16's is R17's Fc selector, which is deferred: at the checkpoint's declared
+# tweeter measurement floor (2000 Hz, equal to the configured Fc) every candidate
+# below 2 kHz has its own handoff clamped out of ``overlap_band_hz``, so the
+# selector cannot honestly score the direction the evidence points. #1654 (sweep
+# the HF driver to its declared 1600 Hz floor) is the unblocker, and R17 is the
+# flipper — turning this on before then would ask a household for six extra
+# captures nothing reads. Everything behind it, including the fit-timing move in
+# ``_measure_verdict``, is complete and dormant: the invariant "the fit runs at
+# the last capture before the apply" holds the moment this flips.
+#
+# Like ``STAGE1_INCLUDES_CLOUD_MEASURE`` it is applied at the PRODUCTION seams
 # (``_stage1_capture_target`` and ``prepare_v2_session``), not as a builder
 # default: ``build_v2_capture_plan`` / ``build_v2_cloud_index_phase_map`` keep
 # whatever a caller asks for, so a caller constructing a cloud session to
 # exercise the cloud still gets exactly that.
-STAGE1_INCLUDES_LATERAL = True
+STAGE1_INCLUDES_LATERAL = False
 
 
 def _stage1_capture_target(shape: Any) -> int:
