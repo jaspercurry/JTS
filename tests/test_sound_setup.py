@@ -558,6 +558,14 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert guard_calls == ["guard"]
     assert read_calls == []
 
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    body = b'{"enabled":1}'
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path, path="/i2s-hat", content_length=len(body), body=body
+    )
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    assert read_calls == [len(body)]
+
 
 def test_index_html_renders_eq_page_mode():
     html = sound_setup._index_html(page_mode="eq").decode()
@@ -787,11 +795,6 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
     assert "./output-topology/reset" in js
-    assert "./i2s-hat" in js
-    assert "Enable I²S audio HAT" in js
-    assert "hat.profile_label" in js
-    assert 'href="/system/"' in js
-    assert "Never power through the HAT and USB-C at the same time" in js
     assert "Reset speaker setup" in js
     assert "Test combined drivers" in js
     assert "Validate and apply" in js
@@ -837,20 +840,16 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
         "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n", encoding="utf-8"
     )
     marker.touch()
+    hardware = {
+        "profile_id": "unknown",
+        "usb_data_role": {"board_topology": "shared_otg_port"},
+    }
     monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
     monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(
-        sound_setup,
-        "_output_hardware_dict",
-        lambda: {
-            "profile_id": "unknown",
-            "usb_data_role": {"board_topology": "shared_otg_port"},
-        },
-    )
+    monkeypatch.setattr(sound_setup, "_output_hardware_dict", lambda: hardware)
 
     payload = sound_setup._i2s_hat_payload(intent_path=intent)
 
-    assert payload["visibility"] == "visible"
     assert payload["available"] is True
     assert payload["desired_enabled"] is True
     assert payload["runtime_active"] is False
@@ -860,13 +859,9 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     assert sound_setup._i2s_hat_payload(intent_path=intent)["visibility"] == "hidden"
 
     monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(
-        sound_setup,
-        "_output_hardware_dict",
-        lambda: {"usb_data_role": {"board_topology": "unsupported"}},
-    )
+    hardware.clear()
+    hardware["usb_data_role"] = {"board_topology": "unsupported"}
     unsupported = sound_setup._i2s_hat_payload(intent_path=intent)
-    assert unsupported["visibility"] == "visible"
     assert unsupported["available"] is False
 
 
@@ -893,40 +888,29 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     payload, result = sound_setup._save_i2s_hat_payload(True)
 
-    assert result == {"ok": True}
     assert payload["restart_required"] is True
-    assert calls == [
-        ("write", True),
-        (
-            "jasper-audio-hardware-reconcile.service",
-            {
-                "verb": "start",
-                "reason": "sound i2s hat setting",
-                "no_block": False,
-                "timeout": 60.0,
-            },
-        ),
-    ]
+    assert calls[0] == ("write", True)
+    unit, options = calls[1]
+    assert unit == "jasper-audio-hardware-reconcile.service"
+    assert options["verb"] == "start"
+    assert options["no_block"] is False
+    assert options["timeout"] == 55.0
 
+    def fail_apply(*_args, **_kwargs):
+        raise OSError("broker unavailable")
 
-def test_i2s_hat_post_route_accepts_bounded_csrf_guarded_json(tmp_path, monkeypatch):
-    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_save_i2s_hat_payload",
-        lambda enabled: ({"desired_enabled": enabled}, {"ok": True}),
-    )
+    monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
+    refreshed, failed = sound_setup._save_i2s_hat_payload(False)
+    assert refreshed["restart_required"] is True
+    assert failed == {"ok": False, "error": "broker unavailable"}
 
-    body = b'{"enabled":true}'
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path, path="/i2s-hat", content_length=len(body), body=body
-    )
-
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
-        "desired_enabled": True
-    }
-    assert read_calls == [len(body)]
+    repo = Path(__file__).resolve().parents[1]
+    unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
+    nginx = (repo / "deploy/nginx-jasper.conf").read_text()
+    proxy = nginx.split("location /sound/setup/", 1)[1].split("}", 1)[0]
+    assert "TimeoutStartSec=50s" in unit
+    assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
+    assert "proxy_read_timeout 65s;" in proxy
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():

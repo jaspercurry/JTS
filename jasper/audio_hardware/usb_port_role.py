@@ -299,25 +299,20 @@ def configured_i2s_overlays(
 def read_i2s_hat_intent(
     path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> str | None:
-    """Read the one supported HAT choice; an absent file means Auto / Off."""
-
     try:
-        text = read_regular_bytes_nofollow(
-            path, max_bytes=1024
-        ).decode("utf-8")
+        text = read_regular_bytes_nofollow(path, max_bytes=1024).decode("utf-8")
     except FileNotFoundError:
         return None
-    assignments = parse_env_lines(text)
-    if any(key != I2S_HAT_INTENT_KEY for key, _value in assignments):
-        raise ValueError("I2S HAT intent contains an unsupported key")
     values = {
-        value.strip().strip("'\"")
-        for _key, value in assignments
-        if value is not None and value.strip()
+        key: (value or "").strip().strip("'\"")
+        for key, value in parse_env_lines(text)
     }
-    if not values:
+    if set(values) - {I2S_HAT_INTENT_KEY}:
+        raise ValueError("I2S HAT intent contains an unsupported key")
+    choice = values.get(I2S_HAT_INTENT_KEY)
+    if not choice:
         return None
-    if values != {INNOMAKER_HIFI_AMP_PRO_ID}:
+    if choice != INNOMAKER_HIFI_AMP_PRO_ID:
         raise ValueError("I2S HAT intent names an unsupported profile")
     return INNOMAKER_HIFI_AMP_PRO_ID
 
@@ -326,14 +321,9 @@ def write_i2s_hat_intent(
     enabled: bool,
     path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> None:
-    """Persist the supported HAT choice atomically; Off is represented by absence."""
-
     target = Path(path)
     if not enabled:
-        try:
-            target.unlink()
-        except FileNotFoundError:
-            pass
+        target.unlink(missing_ok=True)
         return
     atomic_write_text(
         target,
@@ -550,8 +540,6 @@ def _without_managed_role_lines(content: str) -> str:
 
 
 def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
-    """Remove only JTS's HAT block and an exact legacy/manual overlay line."""
-
     output: list[str] = []
     section = "global"
     in_managed_block = False
@@ -598,8 +586,6 @@ def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
 
 
 def render_i2s_hat_boot_config(content: str, profile_id: str | None) -> str:
-    """Render the deliberately narrow InnoMaker HAT setting from registry data."""
-
     if profile_id not in {None, INNOMAKER_HIFI_AMP_PRO_ID}:
         raise ValueError("unsupported I2S audio-HAT profile")
     profile = by_id(INNOMAKER_HIFI_AMP_PRO_ID)
@@ -649,12 +635,10 @@ def reconcile_boot_config(
     boot_config_path: str | Path,
     udc_class_dir: str | Path,
     i2s_hat_intent_path: str | Path | None = None,
-) -> tuple[UsbPortRoleState, bool, bool, str | None]:
-    desired_profile = (
-        read_i2s_hat_intent(i2s_hat_intent_path)
-        if i2s_hat_intent_path is not None
-        else None
-    )
+) -> tuple[UsbPortRoleState, bool, bool, str | None, bool]:
+    desired_profile = None
+    if i2s_hat_intent_path is not None:
+        desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
     config_path = Path(boot_config_path)
     if not config_path.is_file():
         state = resolve_system_usb_port_role(
@@ -664,7 +648,7 @@ def reconcile_boot_config(
         )
         if i2s_hat_intent_path is not None and state.board_topology != "unsupported":
             raise FileNotFoundError(f"boot config does not exist: {config_path}")
-        return state, False, False, desired_profile
+        return state, False, False, desired_profile, False
     original = config_path.read_text(encoding="utf-8")
     initial = resolve_usb_port_role(
         board_model=_read_text(model_path),
@@ -672,7 +656,7 @@ def reconcile_boot_config(
         active_role=observed_active_role(udc_class_dir),
     )
     if initial.board_topology == "unsupported":
-        return initial, False, False, desired_profile
+        return initial, False, False, desired_profile, False
     hat_changed = False
     with_hat = original
     if i2s_hat_intent_path is not None:
@@ -690,19 +674,25 @@ def reconcile_boot_config(
     ).desired_role
     rendered = render_boot_config(with_hat, desired_role)
     changed = rendered != original
+    durability_failed = False
     if changed:
-        atomic_write_text(
-            config_path,
-            rendered,
-            mode=stat.S_IMODE(config_path.stat().st_mode),
-            durable=True,
-        )
+        try:
+            atomic_write_text(
+                config_path,
+                rendered,
+                mode=stat.S_IMODE(config_path.stat().st_mode),
+                durable=True,
+            )
+        except OSError:
+            if config_path.read_text(encoding="utf-8") != rendered:
+                raise
+            durability_failed = True
     state = resolve_usb_port_role(
         board_model=initial.board_model,
         boot_config=rendered,
         active_role=initial.active_role,
     )
-    return state, changed, hat_changed, desired_profile
+    return state, changed, hat_changed, desired_profile, durability_failed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -725,13 +715,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     hat_changed = False
     desired_hat_profile: str | None = None
+    durability_failed = False
     if args.reconcile_boot:
-        state, changed, hat_changed, desired_hat_profile = reconcile_boot_config(
+        result = reconcile_boot_config(
             model_path=args.model_file,
             boot_config_path=args.boot_config,
             udc_class_dir=args.udc_class_dir,
             i2s_hat_intent_path=args.i2s_hat_intent_file,
         )
+        state, changed, hat_changed, desired_hat_profile, durability_failed = result
     else:
         state = resolve_system_usb_port_role(
             model_path=args.model_file,
@@ -752,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.i2s_hat_intent_file:
         fields["i2s_hat_profile"] = desired_hat_profile or ""
         fields["i2s_hat_boot_config_changed"] = hat_changed
+        fields["boot_config_published_not_durable"] = durability_failed
     print(json.dumps(fields, sort_keys=True))
     print(
         "event=hardware.usb_role_resolved "
@@ -767,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
             "event=hardware.boot_config_changed "
             f"reboot_required={int(state.reboot_required)}"
         )
-    return 0
+    return os.EX_IOERR if durability_failed else 0
 
 
 if __name__ == "__main__":

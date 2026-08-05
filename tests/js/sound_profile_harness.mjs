@@ -675,6 +675,7 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const dispatchChange = (target) => {
+    if (!target.getAttribute) target.getAttribute = () => "";
     if (target && target.id) {
       if (!elements.has(target.id)) elements.set(target.id, makeEl(target.id));
       elements.get(target.id).value = target.value || "";
@@ -963,15 +964,33 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
     }
   }
 
-  const setupFetched = [];
-  const setupBase = baseFetch();
+  const setupFetched = [], hatPosts = [];
+  const hat = {
+    visibility: "visible", available: true, reason: "", intent_error: "",
+    profile_label: "InnoMaker HiFi AMP Pro", desired_enabled: false,
+    runtime_active: false, restart_required: false,
+  };
+  const setupBase = baseFetch({
+    "./output-topology": () => response({
+      output_topology: topologyPayload(), i2s_hat: hat,
+    }),
+    "./i2s-hat": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      hatPosts.push(body);
+      const failed = hatPosts.length > 1;
+      return response({
+        ...hat, desired_enabled: body.enabled, runtime_active: failed,
+        restart_required: !failed, error: failed ? "apply failed" : "",
+      }, !failed, failed ? 502 : 200);
+    },
+  });
   const setup = setupHarness((path, options = {}) => {
     setupFetched.push(path);
     return setupBase(path, options);
   }, { mode: "setup" });
   await setup.flush(); await setup.flush(); await setup.flush();
   const setupHtml = setup.elements.get("view-body").innerHTML;
-  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup"]) {
+  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup", "Enable I²S audio HAT"]) {
     if (!setupHtml.includes(expected)) {
       fail("Setup mode omitted an owned control", { expected, setupHtml });
     }
@@ -983,6 +1002,21 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   }
   if (!setupFetched.includes("./output-topology")) {
     fail("Setup mode should load local topology", { setupFetched });
+  }
+  setup.dispatchChange({ id: "set-i2s-hat", checked: true });
+  await loadAndSetActiveState(setup);
+  let hatHtml = setup.elements.get("view-body").innerHTML;
+  if (typeof hatPosts[0].enabled !== "boolean" || !hatPosts[0].enabled)
+    fail("the HAT control must POST a typed boolean", { hatPosts });
+  if (!hatHtml.includes("Restart required."))
+    fail("the HAT response must add its restart callout", { hatHtml });
+  setup.dispatchChange({ id: "set-i2s-hat", checked: false });
+  await loadAndSetActiveState(setup);
+  hatHtml = setup.elements.get("view-body").innerHTML;
+  const message = setup.elements.get("status").textContent;
+  if (message !== "Setting saved, but the boot change could not be applied." ||
+      !hatHtml.includes("Saved: Auto / Off") || hatHtml.includes("Restart required.")) {
+    fail("partial HAT apply must adopt state and distinguish persistence", { message, hatHtml });
   }
   return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
 }

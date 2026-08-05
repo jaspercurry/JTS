@@ -81,7 +81,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     match_loudness: false,
     volume_floor_db: volumeFloorDefault()
   };  // global output settings
-  var i2sHat = null, i2sHatSaving = false;
+  var i2sHat = null;
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
   var curvesById = {};
@@ -562,7 +562,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderI2sHatSetting() {
     var hat = i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
-    var disabled = !hat.available || i2sHatSaving;
     var desired = hat.desired_enabled ? 'Enabled' : 'Auto / Off';
     var runtime = hat.runtime_active ? 'Active now' : 'Not active now';
     var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
@@ -575,7 +574,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               ' boot setting. Saved: ' + desired + '. Detected: ' + runtime + '.</p>' +
           '</div>' +
           '<label class="toggle"><input type="checkbox" id="set-i2s-hat"' +
-            (hat.desired_enabled ? ' checked' : '') + (disabled ? ' disabled' : '') +
+            (hat.desired_enabled ? ' checked' : '') + (!hat.available ? ' disabled' : '') +
             ' aria-label="Enable I²S audio HAT"><span class="track"></span></label>' +
         '</div>' +
         (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
@@ -4389,7 +4388,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   async function saveI2sHat(input) {
-    i2sHatSaving = true;
     input.disabled = true;
     try {
       var resp = await fetch('./i2s-hat', {
@@ -4398,13 +4396,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (typeof payload.desired_enabled === 'boolean') i2sHat = payload;
+      if (!resp.ok && typeof payload.desired_enabled === 'boolean')
+        return status('Setting saved, but the boot change could not be applied.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
       status(payload.restart_required ?
         'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');
     } catch (e) {
       status('Could not save I²S HAT setting: ' + e.message, true);
     } finally {
-      i2sHatSaving = false;
       render();
     }
   }

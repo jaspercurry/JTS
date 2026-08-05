@@ -368,13 +368,11 @@ def _i2s_hat_payload(
         (hardware.get("usb_data_role") or {}).get("board_topology") or "unknown"
     )
     available = not hidden and topology in {"shared_otg_port", "separate_host_ports"}
-    reason = (
-        "I²S HAT setup is unavailable on Streambox installs."
-        if hidden
-        else "I²S HAT setup requires a recognized Raspberry Pi."
-        if not available
-        else ""
-    )
+    reason = ""
+    if hidden:
+        reason = "I²S HAT setup is unavailable on Streambox installs."
+    elif not available:
+        reason = "I²S HAT setup requires a recognized Raspberry Pi."
     intent_error = ""
     try:
         desired_profile = read_i2s_hat_intent(intent_path)
@@ -383,6 +381,7 @@ def _i2s_hat_payload(
         intent_error = str(exc)
     desired_enabled = desired_profile == profile.id
     runtime_active = hardware.get("profile_id") == profile.id
+    marker_present = Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file()
     return {
         "visibility": "hidden" if hidden else "visible",
         "available": available,
@@ -391,10 +390,7 @@ def _i2s_hat_payload(
         "profile_label": profile.label,
         "desired_enabled": desired_enabled,
         "runtime_active": runtime_active,
-        "restart_required": (
-            Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file()
-            and desired_enabled != runtime_active
-        ),
+        "restart_required": marker_present and desired_enabled != runtime_active,
     }
 
 
@@ -406,13 +402,16 @@ def _save_i2s_hat_payload(enabled: bool) -> tuple[dict[str, Any], Mapping[str, A
         if not status["available"]:
             raise ValueError(status["reason"] or "I²S HAT setup is unavailable")
         write_i2s_hat_intent(enabled)
-        result = manage_units(
-            I2S_HAT_RECONCILE_UNIT,
-            verb="start",
-            reason="sound i2s hat setting",
-            no_block=False,
-            timeout=60.0,
-        )
+        try:
+            result = manage_units(
+                I2S_HAT_RECONCILE_UNIT,
+                verb="start",
+                reason="sound i2s hat setting",
+                no_block=False,
+                timeout=55.0,
+            )
+        except (OSError, RuntimeError) as exc:
+            result = {"ok": False, "error": str(exc)}
         payload = _i2s_hat_payload()
     outcome = "applied" if result.get("ok") else "error"
     desired = "enabled" if enabled else "auto"
@@ -5121,11 +5120,8 @@ def _make_handler(
                         self._send_json({"error": str(e)}, status=502)
                         return
                     if not result.get("ok"):
-                        payload["error"] = str(
-                            result.get("error")
-                            or result.get("stderr")
-                            or "hardware apply failed"
-                        )
+                        error = result.get("error") or result.get("stderr")
+                        payload["error"] = str(error or "hardware apply failed")
                     self._send_json(payload, status=200 if result.get("ok") else 502)
                     return
                 if path == "/active-speaker/stop":

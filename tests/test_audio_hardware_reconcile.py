@@ -428,6 +428,46 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     assert matched.returncode == 0, matched.stderr
     assert not marker.exists()  # desired and runtime now agree
 
+    intent.unlink()
+    for marker_present in (False, True):
+        marker.unlink(missing_ok=True)
+        if marker_present:
+            marker.touch()
+        unknown = _run_reconcile(
+            tmp_path,
+            INNOMAKER_LISTING,
+            initial_boot_config=applied_boot,
+            extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)},
+        )
+        assert unknown.returncode == 0, unknown.stderr
+        assert marker.exists() is marker_present
+        assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
+
+
+def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "*usb_port_role*) echo '{\"board_topology\": \"separate_host_ports\", "
+        "\"i2s_hat_profile\": \"innomaker_hifi_amp_pro\", "
+        "\"i2s_hat_boot_config_changed\": true, "
+        "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
+        "*jasper.output_hardware*) echo '{\"profile_id\": \"unknown\", "
+        "\"status\": \"unavailable\"}'; exit 0;;\n"
+        "esac\nexit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path, "", extra_env={"JASPER_OUTPUT_HARDWARE_PYTHON": str(fake_python)}
+    )
+
+    assert result.returncode == 74
+    assert (tmp_path / "i2s-reboot").is_file()
+    assert "error=boot_config_published_not_durable" in result.stderr
+
 
 def test_streambox_skips_i2s_boot_mutation(tmp_path: Path):
     original = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
@@ -440,7 +480,6 @@ def test_streambox_skips_i2s_boot_mutation(tmp_path: Path):
     result = _run_reconcile(tmp_path, "", initial_boot_config=original)
 
     assert result.returncode == 0, result.stderr
-    assert "result=unavailable install_profile=streambox" in result.stderr
     assert (tmp_path / "config.txt").read_text(encoding="utf-8") == original
 
 

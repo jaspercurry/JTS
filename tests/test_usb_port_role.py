@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,18 @@ PI5 = "Raspberry Pi 5 Model B Rev 1.0"
 I2S = "[all]\ndtoverlay=hifiberry-dac8x\n"
 PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
 HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
+
+
+def _boot_paths(
+    tmp_path: Path, *, model_text: str = PI5, boot_config: str = PERIPHERAL
+):
+    model, config, intent, udc = (
+        tmp_path / name for name in ("model", "config.txt", "i2s_hat.env", "udc")
+    )
+    model.write_text(model_text, encoding="utf-8")
+    config.write_text(boot_config, encoding="utf-8")
+    udc.mkdir()
+    return model, config, intent, udc
 
 
 def _serialized_role(**overrides) -> dict[str, object]:
@@ -180,12 +193,10 @@ def test_i2s_hat_renderer_manages_only_global_overlay() -> None:
     assert I2S_HAT_BLOCK_BEGIN not in disabled
 
 
-def test_hat_changed_tracks_setting_not_managed_block_format(tmp_path: Path) -> None:
-    model = tmp_path / "model"
-    config = tmp_path / "config.txt"
-    intent = tmp_path / "i2s_hat.env"
-    udc = tmp_path / "udc"
-    model.write_text(PI5, encoding="utf-8")
+def test_hat_change_and_published_durability_are_reported(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    model, config, intent, udc = _boot_paths(tmp_path)
     config.write_text(
         "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
@@ -193,7 +204,7 @@ def test_hat_changed_tracks_setting_not_managed_block_format(tmp_path: Path) -> 
     write_i2s_hat_intent(True, intent)
     (udc / "3f980000.usb").mkdir(parents=True)
 
-    _, changed, hat_changed, desired = reconcile_boot_config(
+    _, changed, hat_changed, desired, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
@@ -218,19 +229,33 @@ def test_hat_changed_tracks_setting_not_managed_block_format(tmp_path: Path) -> 
         )
     assert config.read_text(encoding="utf-8") == invalid
 
+    def publish_then_fail(path, text, **_kwargs):
+        Path(path).write_text(text, encoding="utf-8")
+        raise OSError("simulated directory fsync failure")
+
+    config.write_text(PERIPHERAL, encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_hardware.usb_port_role.atomic_write_text", publish_then_fail
+    )
+    monkeypatch.setenv("JASPER_PI_MODEL_FILE", str(model))
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(config))
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc))
+    result = main(["--reconcile-boot", "--i2s-hat-intent-file", str(intent)])
+    payload = json.loads(capsys.readouterr().out.splitlines()[0])
+
+    assert result == 74
+    assert payload["boot_config_published_not_durable"] is True
+    assert "dtoverlay=merus-amp" in config.read_text(encoding="utf-8")
+
 
 def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> None:
-    model = tmp_path / "model"
-    config = tmp_path / "config.txt"
-    intent = tmp_path / "i2s_hat.env"
-    udc = tmp_path / "udc"
     original = "[all]\ndtparam=audio=on\n"
-    model.write_text("Acme SBC", encoding="utf-8")
-    config.write_text(original, encoding="utf-8")
+    model, config, intent, udc = _boot_paths(
+        tmp_path, model_text="Acme SBC", boot_config=original
+    )
     write_i2s_hat_intent(True, intent)
-    udc.mkdir()
 
-    state, changed, hat_changed, _ = reconcile_boot_config(
+    state, changed, hat_changed, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
@@ -323,13 +348,13 @@ def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     )
     udc.mkdir()
 
-    state, changed, _, _ = reconcile_boot_config(
+    state, changed, _, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
     )
     first = config.read_text(encoding="utf-8")
-    _, changed_again, _, _ = reconcile_boot_config(
+    _, changed_again, _, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,

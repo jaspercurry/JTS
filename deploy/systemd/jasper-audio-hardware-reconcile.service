@@ -7,6 +7,7 @@ Before=jasper-outputd.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=50s
 EnvironmentFile=-/etc/jasper/jasper.env
 # Hardware path overrides are hermetic-test seams, not production config. The
 # root reconciler must always observe the real board, boot config, and UDC.
