@@ -528,3 +528,42 @@ def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
     # the non-breaking signal the reconciler treats as "use shipped default".
     assert dac.latency_floor_for(HIFIBERRY_DAC8X_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
+
+
+# --- final-edge format (PR-1, final-edge format program) ---------------------
+
+
+def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
+    for profile in dac.all_profiles():
+        assert profile.final_edge_format in ("S16_LE", "S32_LE"), (
+            f"{profile.id}: {profile.final_edge_format!r}"
+        )
+
+
+def test_final_edge_format_matches_known_hardware() -> None:
+    assert APPLE_USB_C_DONGLE.final_edge_format == "S16_LE"
+    assert HIFIBERRY_DAC8X.final_edge_format == "S16_LE"
+    assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
+    assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
+
+
+def test_final_edge_format_rejects_unsupported_value() -> None:
+    with pytest.raises(ValueError, match="unsupported final_edge_format"):
+        DacProfile(
+            id="bad_final_edge_format",
+            label="Bad",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("bad",),
+            final_edge_format="S24_LE",
+        )
+
+
+def test_final_edge_format_for_round_trips_for_bash() -> None:
+    assert dac.final_edge_format_for(INNOMAKER_HIFI_AMP_PRO_ID) == "S32_LE"
+    assert dac.final_edge_format_for(APPLE_USB_C_DONGLE_ID) == "S16_LE"
+    assert dac.final_edge_format_for("no_such_dac") is None

@@ -161,6 +161,15 @@ class DacProfile:
     chip_aec_detail: str = ""
     udev_rule: str | None = None
     dtoverlay: str | None = None
+    # The sample format the DAC's hw device is opened at, at the final ALSA
+    # edge. Single source of truth for that fact; jasper-audio-hardware-
+    # reconcile shells into final_edge_format_for() to emit it as
+    # JASPER_OUTPUTD_DAC_FORMAT. Today outputd opens every ALSA sink at S16
+    # and a profile declaring S32_LE (the InnoMaker) is bridged by an ALSA
+    # plug at that declared format; the native-format write in outputd is a
+    # planned follow-up, so this field stays accurate both before and after
+    # that lands.
+    final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
     # global default). The reconciler emits this profile floor into the
@@ -208,6 +217,10 @@ class DacProfile:
             raise ValueError(
                 f"{self.id}: unsupported chip_aec_qualification "
                 f"{self.chip_aec_qualification!r}"
+            )
+        if self.final_edge_format not in ("S16_LE", "S32_LE"):
+            raise ValueError(
+                f"{self.id}: unsupported final_edge_format {self.final_edge_format!r}"
             )
         if not self.outputd_sink.strip():
             raise ValueError(f"{self.id}: outputd_sink is required")
@@ -424,9 +437,16 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
         r"\bmerus audio amp ma120x0p-amp-0\b",
     ),
     # This board is a passive stereo endpoint only. In particular it does not
-    # declare the active-output lane: the hardware needs an ALSA plug for its
-    # fixed S32_LE slave format, and conversion is forbidden after a crossover.
+    # declare the active-output lane. Verified causal chain: the kernel DAI
+    # (ma120x0p.c) advertises only S24_LE|S32_LE at continuous 44.1-192 kHz
+    # rates — a driver-advertisement limit, not a silicon one (the driver's
+    # own hw_params has an unadvertised S16 branch) — JTS pins 48 kHz/2ch.
+    # outputd currently opens every sink at S16 only, so the final edge is
+    # bridged by an ALSA plug, which is banned on the active path. So: no
+    # active lane YET — this flips once the outputd native-format write
+    # (final_edge_format-driven) ships.
     supports_active_outputd_lane=False,
+    final_edge_format="S32_LE",
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),
@@ -583,6 +603,24 @@ def active_outputd_lane_channels_for(profile_id: str) -> int | None:
     return profile.active_outputd_lane_channels
 
 
+def final_edge_format_for(profile_id: str) -> str | None:
+    """Return the profile-declared final-edge ALSA sample format, or None.
+
+    The reconciler shells out to this (mirroring
+    :func:`active_outputd_lane_channels_for`) to emit the recognized DAC's
+    format into the wizard-owned env as JASPER_OUTPUTD_DAC_FORMAT. None means
+    an unrecognized profile id — every known profile declares a format
+    (default "S16_LE"), so unlike :func:`latency_floor_for`'s None (which
+    also covers "no floor declared"), None here is purely an unknown-id
+    signal.
+    """
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.final_edge_format
+
+
 def latency_floor_for(profile_id: str) -> LatencyFloor | None:
     """Return the profile-declared stable buffer floor, or None.
 
@@ -647,6 +685,7 @@ __all__ = [
     "by_id",
     "clock_domain_contract_for",
     "clock_domain_label_for",
+    "final_edge_format_for",
     "is_known_profile_id",
     "known_profile_ids",
     "label_for",

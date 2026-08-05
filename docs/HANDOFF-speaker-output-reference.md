@@ -360,10 +360,13 @@ What exists:
   USB-C dongle; DAC8x-family lab installs use the enumerated
   `snd_rpi_hifiberry_dac8x` card. An enabled InnoMaker HiFi AMP Pro uses the
   enumerated `sndrpimerusamp` card. Its profile-scoped final
-  alias is a passive-only `plug`: outputd remains a 48 kHz stereo S16 client,
-  while the hardware slave is fixed to 48 kHz, stereo, S32_LE. The renderer
-  rejects active-output mode for this profile. `jasper-audio-hardware-reconcile`
-  runs at install/boot and from udev `controlC*` add/remove/change
+  alias is a passive-only `plug`: outputd remains a 48 kHz stereo S16
+  client, while the hardware slave is pinned to 48 kHz, stereo, S32_LE
+  because the kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at
+  continuous 44.1-192 kHz rates — a driver-advertisement limit, not a
+  silicon one. The renderer rejects active-output mode for this profile.
+  `jasper-audio-hardware-reconcile` runs at install/boot and from udev
+  `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
   `hifiberry_dac8x`, `hifiberry_dac8x_studio`,
   `innomaker_hifi_amp_pro`, or the raw fallback card token when no known role
