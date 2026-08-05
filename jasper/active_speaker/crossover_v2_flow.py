@@ -5728,10 +5728,12 @@ class CrossoverV2Conductor:
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a linearization (#1668 PR-C): per-role driver class, used by
-        # class_prior_limit(). "unknown" (the conservative default) until
-        # #1665 lands component-entry declarations — no production caller
-        # populates this yet, matching linearization_envelope.compose_envelope's
-        # own "unknown" default.
+        # class_prior_limit(). #1665's component-entry declarations HAVE landed
+        # and both production construction sites populate this
+        # (``correction_crossover_v2.prepare_v2_session`` /
+        # ``prepare_v2_verify``, from ``_resolve_driver_class_by_role``); the
+        # empty default remains for callers with no declaration, matching
+        # linearization_envelope.compose_envelope's own "unknown".
         self._driver_class_by_role = (
             dict(driver_class_by_role) if driver_class_by_role else {}
         )
