@@ -50,38 +50,6 @@ EOF
         return
     fi
     jasper_asound_require_output_dac_card || return $?
-    if [[ "${OUTPUT_DAC_ID:-}" == "innomaker_hifi_amp_pro" ]]; then
-        # The Merus amp's kernel DAI (ma120x0p.c) advertises only S24_LE|
-        # S32_LE at continuous 44.1-192 kHz rates -- a driver-advertisement
-        # limit, not a documented silicon one. JTS pins 48 kHz/2ch. outputd now
-        # opens this alias at S32_LE ITSELF (widening its i16 program at the
-        # final write), so the plug converts nothing -- and the pinned S32_LE
-        # slave below is what still guarantees the hardware edge, since a plug
-        # is invisible to outputd's own client-side format readback.
-        # Belt-and-braces: the live gate is the registry's
-        # supports_active_outputd_lane=False; this just fails loudly if that
-        # ever drifts.
-        if [[ "${OUTPUTD_ACTIVE_MODE:-0}" != "0" || -n "${OUTPUTD_ACTIVE_CHANNELS:-}" ]]; then
-            echo "jasper-asound-render: InnoMaker HiFi AMP Pro is passive stereo only" >&2
-            return 64
-        fi
-        cat <<EOF
-pcm.outputd_dac {
-    type plug
-    slave {
-        pcm {
-            type hw
-            card ${OUTPUT_DAC_CARD}
-            device 0
-        }
-        rate 48000
-        channels 2
-        format S32_LE
-    }
-}
-EOF
-        return
-    fi
     cat <<EOF
 pcm.outputd_dac {
     type hw

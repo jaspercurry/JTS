@@ -594,16 +594,20 @@ four-output shape without implying that outputd has switched to a dual-sink
 runtime graph.
 
 The old DAC8x final-output alias route has been removed. `outputd_dac`
-renders directly to an ordinary recognized final-output card. The sole
-profile-scoped format exception is the passive-stereo InnoMaker HiFi AMP Pro:
-the kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous
-44.1-192 kHz rates (a driver-advertisement limit, not a documented silicon
-one), so its registry profile declares an `S32_LE` final edge. outputd requests
-that format directly and widens its i16 program to i32 at the final write; the
-`plug` alias still in front of the card pins the slave at JTS's 48 kHz and two
-channels and now converts nothing, and is retired separately. That
-profile does not declare an active-output lane, and its renderer rejects
-active-mode input so the plug cannot sit after an active crossover.
+renders directly to an ordinary recognized final-output card for every
+registered single DAC profile — no profile gets a converting `plug` in
+front of it (PR-4, format-foundation, deleted the last one). The
+passive-stereo InnoMaker HiFi AMP Pro is still the sole profile-scoped
+*format* exception: the kernel DAI (`ma120x0p.c`) advertises only
+S24_LE/S32_LE at continuous 44.1-192 kHz rates (a driver-advertisement
+limit, not a documented silicon one), so its registry profile declares an
+`S32_LE` final edge. outputd requests that format directly on the raw
+`hw:` open and widens its i16 program to i32 at the final write; because
+there is no conversion layer in front of the card, outputd's own
+client-edge readback is now the hardware-edge proof — the pinned-slave
+`plug` that used to own that guarantee is gone. That profile does not
+declare an active-output lane, and its renderer rejects active-mode input
+regardless.
 Active-speaker channel
 ownership lives in `/var/lib/jasper/output_topology.json` and the generated
 active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
@@ -718,7 +722,12 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-04 (InnoMaker final-edge format ownership — outputd
+Last verified: 2026-08-05 (InnoMaker HiFi AMP Pro's final-edge `plug` deleted
+from `jasper-asound-render.sh`, PR-4 format-foundation — every registered
+single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
+`type hw` alias, and the S32_LE hardware-edge proof moved from the render's
+pinned slave to outputd's own client-edge readback). Prior 2026-08-04:
+InnoMaker final-edge format ownership — outputd
 requests the declared S32_LE itself and the plug converts nothing — and the
 passive-only active-lane exclusion rechecked; atomic turn-start volume context and outputd's
 missing/rejected-context silence rule checked against both Rust consumers and

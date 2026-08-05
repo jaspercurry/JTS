@@ -526,7 +526,7 @@ def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
 
 
-def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
+def test_reconcile_innomaker_uses_registry_identity_and_renders_raw_hw(
     tmp_path: Path,
 ):
     result = _run_reconcile(
@@ -549,16 +549,19 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     # REQUESTS this format on its DAC PCM, and parks if the device installs a
     # different one. STATUS dac.format then reports what outputd's client edge
     # negotiated (not an echo of this value), and the chip-AEC alignment
-    # identity records that.
+    # identity records that. This coupling is now the ONLY place the
+    # registry's declared format reaches the hardware edge: PR-4
+    # (format-foundation) deleted the render's own pinned-slave copy, so a
+    # raw `hw:` open is what outputd's format request lands on.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
+    assert final_edge_format_for("innomaker_hifi_amp_pro") == "S32_LE"
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "type plug" in template
+    # No profile-scoped plug anymore: InnoMaker renders identically to every
+    # other recognized single DAC, a raw hw alias to the detected card.
+    assert "type plug" not in template
+    assert "type hw" in template
     assert "card sndrpimerusamp" in template
-    assert "rate 48000" in template
-    assert "channels 2" in template
-    # Couples the asound-render.sh literal to the registry declaration: if
-    # either changes alone, this fails instead of the two silently drifting.
-    assert f"format {final_edge_format_for('innomaker_hifi_amp_pro')}" in template
+    assert "device 0" in template
     assert _render_log(tmp_path) == "render\n"
 
 
