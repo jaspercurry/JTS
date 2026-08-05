@@ -40,7 +40,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
 )
 
-from tests.test_crossover_v2_conductor import (  # noqa: E402
+from tests.test_crossover_v2_conductor import (
     FC_HZ,
     FakeSeams,
     _alignment,
