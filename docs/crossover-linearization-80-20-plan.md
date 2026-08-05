@@ -1,12 +1,13 @@
 # Active-speaker commissioning — 80/20 crossover + linearization revision
 
-> **Status: R14 complete (2026-08-04); R15 ready, not started.** The same
-> independent reviewer returned 0 blockers and 0 should-fixes on the third
-> delta-only review. PR #2105 merged the ratified contract; R14 administrative
-> closeout created R15 issue #2106 and R16 issue #2107, adopted #1654 for R15,
-> and reconciled #1654/#1894 with the campaign. No product implementation,
-> deployment, or measurements started. This
-> document owns the next implementation
+> **Scope reset (2026-08-04).** R14 remains complete. The first R15 prototype
+> at `05822244` is explicitly rejected as a merge candidate: its 38-file,
+> approximately 4,334-production-line expansion violated this campaign's 80/20
+> constraint. It is prototype evidence only, not landed behavior, and no commit
+> from it may be cherry-picked into the fresh implementation. No R15 product
+> code was merged, deployed, or measured. Live round status lives only in the
+> [program CURRENT POSITION](HANDOFF-correction-revision-plan.md#current-position).
+> This document owns the next implementation
 > slice for active two-way speaker
 > commissioning: protected raw-driver measurement, bounded LR4 crossover
 > selection, candidate-specific driver linearization, and same-session
@@ -154,8 +155,8 @@ they are not first forced universally flat. Each candidate later fits each
 driver only against that candidate's acoustic branch target and only where the
 driver contributes usefully.
 
-R15 owns this anchor capture, the shared evidence schema below, and the
-configured-Fc compatibility seam. For each role and shared-basis frequency
+R15 owns this immutable anchor capture and the configured-Fc compatibility
+seam. For each role and shared-basis frequency
 bin, define the measured neutral evidence and desired candidate-shaped fitter
 input exactly as:
 
@@ -219,93 +220,29 @@ unable to meet one of the deterministic numeric tolerances must produce a
 named, evidence-backed R15 re-scope before the tolerance changes; "materially
 equivalent" without a number is not an exit.
 
-### 4.3 One versioned evidence contract for R15/R16/R17
+### 4.3 Artifacts are owned by the round that uses them
 
-R15 freezes logical schema version 1. R16 appends four poses to the same
-evidence set, and R17 consumes it unchanged. This is **not a second persistence
-framework**: storage remains in the existing crossover evidence bundles and
-uses the existing `DriverResponse`, `ProgramAnalysis`, `CaptureIdentity`, exact
-DSP-state identity, accepted-attempt mapping, calibration, stimulus, and JSON
-fingerprint primitives. The schema below specifies the versioned payload those
-owners must expose and validate.
+R15 emits one immutable **current anchor artifact**. It uses the existing
+`DriverResponse`, `ProgramAnalysis`, `CaptureIdentity`, exact DSP-state,
+accepted-attempt, calibration, stimulus, evidence-store, and fingerprint
+primitives. It contains exactly the existing three accepted woofer/HF pairs on
+their common ledger plus the role-specific `P(f)` and identity needed by the
+current configured-Fc `S = M * C / P` consumer. It does not carry lateral pose
+slots, future-selector fields, or a generalized transaction/validation layer.
+Every field must have the R15 anchor producer and a current R15 consumer.
 
-The raw-evidence record is `schema_version=1`,
-`kind="jts_crossover_raw_evidence_v1"`, with these required fields:
+R16 owns a **separate lateral-evidence artifact**. That artifact references the
+immutable R15 anchor by identity and fingerprint; it does not mutate, append to,
+or redefine the anchor. R16 may define and version only the extension its real
+capture producer and later selector consumer require when R16 is implemented.
 
-| Field | Type / exact ownership |
-|---|---|
-| `session_id`, `session_fingerprint`, `evidence_set_id`, `evidence_set_fingerprint` | non-empty strings plus canonical SHA-256 fingerprints; the session fingerprint binds the immutable session inputs and the evidence-set fingerprint binds every fingerprinted field below |
-| `measurement_graph` | protected-neutral graph artifact identity/fingerprint, exact DSP-state identity, and protection-proof identity |
-| `measurement_protection_by_role` | ordered `woofer`/`tweeter` records containing the exact emitted complex `P(f)` on `frequency_basis_hz`, its filter identity, and canonical fingerprint |
-| `total_transfer_composition_policy` | the exact `M * C / P` formula, finite-value rule, `10^(-12/20)` protection floor, `10^(12/20)` recovery cap, boundary inclusivity, and canonical policy fingerprint |
-| `component_safety_profile_identity` | identity and fingerprint of the confirmed, current component declaration; absence or staleness is invalid evidence |
-| `calibration_identity`, `stimulus_identity` | existing calibration and admitted-excitation artifact identities/fingerprints |
-| `sample_rate_hz`, `frequency_basis_hz` | one positive integer and one strictly increasing finite float64 basis used by every response; no per-candidate interpolation grid |
-| `configured_lr4_fc_hz`, `legal_fc_bounds_hz` | exact configured Fc and the confirmed closed `[lo, hi]` component-policy bounds, all finite positive Hz |
-| `poses` | the ordered records below; pose order is fingerprinted |
-
-The fingerprinted pose order and signed lateral-offset convention are frozen:
-
-| `pose_id` | order | lateral offset | `pose_role` | current evidence role |
-|---|---:|---:|---|---|
-| `anchor_00` | 0 | `0 cm` | `anchor` | design axis |
-| `left_12_cm` | 1 | `-12 cm` | `lateral` | `onax` |
-| `right_12_cm` | 2 | `+12 cm` | `lateral` | `onax` |
-| `left_40_cm` | 3 | `-40 cm` | `lateral` | `offax` |
-| `right_40_cm` | 4 | `+40 cm` | `lateral` | `offax` |
-
-Each pose record owns one `timing_gain_ledger` shared by both drivers and
-exactly three `selector_repeat_groups` in stimulus/accepted order. Every group
-pairs one accepted woofer response with one accepted HF response through that
-common ledger and carries the two capture/take identities; it is never formed
-by matching independent driver indexes after capture. Extra retained repeats
-remain evidence but are not selector-v1 inputs. A missing or incomplete group,
-or anything other than exactly three complete selector groups, invalidates the
-whole evidence set.
-
-The pose also has an ordered `drivers` mapping with exactly `woofer` and
-`tweeter`. Each driver record requires: the existing target/role identity;
-canonical `capture_id` and accepted-attempt/take identity; raw
-`complex_response` (`complex128` real/imag on `frequency_basis_hz`, post the
-stored role-specific `P(f)` but pre candidate transfer); magnitude derived from
-that complex response; the ordered accepted repeat IDs and their raw complex
-responses; the valid/trustworthy boolean mask and closed trustworthy band; SNR
-evidence; and repeat uncertainty evidence. For selector v1, the nominal driver
-`complex_response` is exactly the arithmetic complex mean of that driver's
-three ordered selector-group responses at each shared-basis bin.
-The timing/gain ledger includes the located segment/timing corrections,
-inter-driver drift correction, stimulus gain, capture gain/level solve, and
-anchor trim/delay/polarity frame needed to reproduce a candidate without
-re-solving a pose independently.
-
-R15 emits a complete, valid anchor-only record containing `anchor_00`. R16
-atomically appends the other four records in the exact order above without
-changing `schema_version`, field meanings, anchor bytes, or storage owner.
-Schema/kind mismatch; any graph, safety, calibration, stimulus, sample-rate,
-frequency-basis, session, evidence-set, pose, capture, or repeat identity
-mismatch; a missing required field; or a fingerprint mismatch invalidates the
-whole evidence set and R17 refuses with `invalid_evidence_identity`. It never
-repairs, coerces, or mixes identities.
-
-R15 also freezes the selector-result envelope that R17 will populate:
-`schema_version=1`, `kind="jts_crossover_selector_result_v1"`. Its required
-fields are `evidence_set_id`, `evidence_set_fingerprint`,
-`grid_policy_fingerprint`, the fingerprints of every bound contributing to the
-closed candidate interval, the interval itself, the serialized ascending
-candidate `grid_fc` and its fingerprint, `metric_policy_fingerprint`, the
-frozen common/per-role/per-candidate mask fingerprints and bin counts,
-`repeat_realization_policy_fingerprint`, `comparison_policy_fingerprint`,
-ordered `candidate_records` for every generated candidate, the complete
-pairwise `comparison_trace`, all sensitivity-check results, and `outcome`.
-Every candidate record contains Fc; fingerprints for `P`, `C_c`, the ratio
-policy and exact required-bin mask, `C_c/P`, and resulting `S_c`; complete
-prescription fingerprint; the six ordered scalar keys from §6.3 (including the
-symmetric uncertainty half-width for each); and either `admissible=true` or one
-or more named `inadmissibility_reason_codes`. It never contains a partial
-usable prescription. `outcome.status` is exactly `selected`,
-`abstained`, or `refused`, and carries `selected_fc_hz` only for `selected`,
-`retained_fc_hz` only for `abstained`, plus ordered reason codes. Reporting
-order is ascending Fc and is not decision authority.
+R17 owns the selector-result contract when both the R17 selector producer and
+the R18 apply/review consumer exist. R15 therefore does **not** freeze
+`jts_crossover_selector_result_v1`, a five-pose/R16 schema, dynamic-Fc fields,
+future-only validators, or generalized mutation/transaction machinery.
+Sections 6.1–6.3 remain design inputs for R17, not schemas or public APIs R15
+must implement. R17 ratifies their smallest viable realized form against the
+landed R15 anchor and R16 lateral artifact before writing code.
 
 ### 4.4 Side evidence owns robustness, not the target
 
@@ -365,8 +302,9 @@ Between actions 6 and 7, the Pi evaluates candidates offline and the household
 reviews one proposed winner. Candidate evaluation adds compute, not a physical
 walk and not one apply per candidate.
 
-R16 appends exactly the four named lateral poses to the R15 anchor; it does not
-add Full-only pre-apply positions or change the schema. Existing Full-only
+R16 records exactly the four named lateral poses in its separate artifact,
+referencing the immutable R15 anchor; it does not add Full-only pre-apply
+positions or mutate the anchor. Existing Full-only
 pre-apply captures may continue serving their shipped purpose, but they are not
 selector evidence in schema v1. Admitting another selector pose requires a
 later schema version. Full retains its additional post-apply summed cloud, and
@@ -453,7 +391,7 @@ least one other candidate remains; no admissible candidate produces `refused`.
 Invalid schema, identity, or measurement authority always invalidates the
 whole result and produces `refused`.
 
-The frozen candidate-level reason-code vocabulary is
+The proposed R17-owned candidate-level reason-code vocabulary is
 `unsupported_comparison_bins`, `ill_conditioned_protection_deembedding`,
 `stopband_correction_required`, `protection_contract_violated`,
 `headroom_contract_violated`, `fit_failed`, `runtime_contract_invalid`, and
@@ -531,7 +469,8 @@ this exact lexicographic order:
 
 The first three acoustic keys carry a symmetric uncertainty half-width `u`.
 The nominal responses are the arithmetic complex means of the three selector
-groups frozen in §4.3. For each anchor key, R17 enumerates the three paired
+groups exposed by the landed anchor/lateral artifacts. For each anchor key,
+R17 enumerates the three paired
 anchor groups, recomputes the same metric on the same frozen mask, and sets
 `u = max(abs(realization_value - nominal_value))`. For the lateral key, it
 enumerates the full Cartesian product of one paired selector group from each
@@ -591,7 +530,7 @@ unbeaten sensitivity result produces `abstained` with the applicable
 tie/cycle subreason. Abstention retains the exact configured Fc only when that
 configured candidate is admissible. If it is inadmissible, the outcome is
 `refused`.
-The frozen outcome reason vocabulary includes
+The proposed R17-owned outcome reason vocabulary includes
 `unique_lexicographic_dominance`, `metric_uncertainty_tie`,
 `cyclic_comparison`, `left_right_winner_instability`,
 `leave_one_wide_side_winner_instability`, `invalid_evidence_schema`,
@@ -669,6 +608,11 @@ These are acceptance constraints, not preferences:
    conflicting evidence, and let the conductor re-scope.
 8. The configured 2 kHz path remains a golden one-candidate mode until the
    multi-candidate path proves equivalence and then improvement.
+9. **R15 size stop:** forecast and report before exceeding 900 net new
+   production lines; stop absolutely at 1,000 without explicit owner approval.
+   Tests and docs are counted separately and must still be necessary. Every
+   new production module, public API, and schema field names its current need,
+   producer, and consumer.
 
 ## 10. Existing-ticket sweep
 
@@ -702,17 +646,17 @@ the canonical disposition for this revision, not a copy of every issue body.
 R14 created exactly the two uncovered scopes after ratification:
 
 1. **[#2106](https://github.com/jaspercurry/JTS/issues/2106) — neutral graph +
-   RAW ANCHOR + frozen v1 contracts.** Route every pre-apply
+   immutable current RAW ANCHOR.** Route every pre-apply
    capture through one protection-only session graph; preserve the production
-   profile; emit the anchor-only raw evidence, freeze the evidence/result
-   schemas, implement the configured-Fc offline `M * C / P` total-transfer
+   profile; emit the current anchor artifact from existing evidence primitives,
+   implement the configured-Fc offline `M * C / P` total-transfer
    composition, and define `Start over`, failure cleanup, fingerprinting,
    conditioning, equivalence, and negative tests.
 2. **[#2107](https://github.com/jaspercurry/JTS/issues/2107) — raw per-driver
    lateral evidence.** Replace pre-apply live-graph summed
    side sweeps with protected per-driver captures on a common timing ledger;
-   persist the evidence needed by the selector while preserving the current
-   Express action count and retry contract.
+   write a separately versioned artifact referencing R15's immutable anchor
+   while preserving the current Express action count and retry contract.
 
 Do not create a phone-positioning ticket, a new Room umbrella, a topology
 search ticket, or a second Fc issue. Existing issues already own those facts.
@@ -722,9 +666,9 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | Round | Mission | One primary territory | Exit |
 |---|---|---|---|
 | **R14 — Ratify** | Review this contract, reconcile issue comments, create only the two missing tickets | docs/issues; no product code | owner approval + independent docs gate at 0 blockers / 0 should-fixes |
-| **R15 — Baseline + anchor contract** | Land the usable protection-only graph, route every pre-apply stimulus through it, capture RAW ANCHOR including declared-floor support, freeze both v1 schemas, and recover the configured-Fc path through offline total-transfer composition | commissioning lifecycle / anchor evidence + schema binding | old correction cannot affect evidence; anchor-only raw evidence and role-specific `P` are valid; generic same-evidence configured-Fc total-transfer equivalence, including the required `P=C` identity-ratio subfixture, meets the frozen tolerances; conditioning, production graph, and Undo contracts remain intact; focused tests + fixed-mic mechanical pass |
-| **R16 — Lateral instrument** | Append only the four existing lateral raw-driver poses with no extra actions or schema change | capture program + measurement evidence | exact five-pose v1 record with three paired groups per pose; seven-action Express plan; protected bands and retry/identity contracts; no selector or new pose vocabulary |
-| **R17 — Pure selector** | Build the exact bounded LR4 Fc grid, total-transfer composition, frozen-mask evaluator, comparison trace, and selection/abstention/refusal policy against R15's schemas | offline prescription/fit math | synthetic and banked-corpus tests prove configured-Fc equivalence, conditioning/grid/mask policy, bounded 243/27/81-realization uncertainty, unique dominance/cycle handling, every abstention/refusal path, and sensitivity behavior; no I/O, deploy, hardware, or apply |
+| **R15 — Baseline + current anchor** | Land one usable protected-neutral two-lane graph, route every pre-apply stimulus through it, capture one immutable current RAW ANCHOR with the existing three woofer/HF pairs, and recover the configured-Fc path through offline total-transfer composition | commissioning lifecycle / anchor evidence | old correction cannot affect evidence; role-specific protection, limiter/headroom, pad/polarity identity, production/Undo preservation, restoration, and configured-Fc equivalence are pinned; no future selector or lateral schema; no deploy or physical measurement in the implementation session |
+| **R16 — Lateral instrument** | Capture only the four existing lateral raw-driver poses into a separate artifact referencing R15's immutable anchor | capture program + lateral evidence | seven-action Express plan; protected bands and retry/identity contracts; R16 versions only its real extension; no selector or anchor mutation |
+| **R17 — Pure selector** | With the landed anchor and lateral producers available, define the selector-result contract and build the bounded LR4 Fc evaluator | offline prescription/fit math | synthetic and banked-corpus tests prove the adopted configured-Fc equivalence, grid/mask, uncertainty, dominance/abstention/refusal, and sensitivity contracts; no I/O, deploy, hardware, or apply |
 | **R18 — Apply** | Thread one winner through proposal/review and explicit transactional Apply | conductor/review/apply surface | one candidate shown/applied; production profile + Undo correct; no verification redesign hidden in the PR |
 | **R19 — Verify** | Verify crossed branches + sum and own honest mark/spatial result scope | verify program + result/report projection | branch + sum proof; #1868/#2098 pinned; Express/Full claims correct end-to-end |
 | **R20 — Prove** | Run the fresh new-horn JTS3 campaign and reconcile docs/issues from evidence | hardware/evidence only | fixed-2 kHz golden run, bounded-selector run, retained evidence ledger, doctor/runtime checks, owner listening verdict; general evidence may inform but does not replace/close #1848's controlled level A/B; no code unless a new bounded round is opened |
@@ -732,13 +676,12 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 The only dependency graph is:
 
 ```text
-R14 -> R15 -> R16 --\
-                +--> R18 -> R19 -> R20
-           R17 --/
+R14 -> R15 -> R16 -> R17 -> R18 -> R19 -> R20
 ```
 
-R16 and pure R17 may run in parallel from R15 because R15 freezes both schemas
-and their exact semantics; R18 waits for both to land. Each round must leave
+R16 follows R15 because its artifact references the landed immutable anchor.
+R17 follows R16 because it owns the result contract only when the actual
+anchor/lateral producers and R18 consumer are concrete. Each round must leave
 the current product working; no long half-migration waits for R19 to become
 coherent. A round that encounters a contradiction stops at the smallest
 working state and returns to the conductor for re-scoping.
@@ -748,9 +691,8 @@ working state and returns to the conductor for re-scoping.
 The campaign uses **nine supporting Codex sessions plus the root conductor**,
 with at most four active at once:
 
-- five separate bounded implementers, one each for R15–R19; after R15, the R16
-  capture implementer and pure R17 selector implementer may work concurrently
-  because their territories meet only at R15's frozen schemas;
+- five separate bounded implementers, one each for R15–R19; R15, R16, and R17
+  run sequentially so no round guesses a later round's artifact;
 - three recurring independent reviewers: correctness/evidence, hearing-safety/
   DSP, and resilience/observability;
 - one read-only R20 evidence analyst.
@@ -766,9 +708,8 @@ coordination, and final reconciliation. It does not implement product code.
 Landing loop for every product round:
 
 1. refresh `origin/main`; give the implementer one round, one file territory,
-   explicit non-goals, and a measurable DONE condition. R16 and R17 both start
-   from landed R15; R18 does not start until both independently reviewed
-   branches have landed;
+   explicit non-goals, and a measurable DONE condition. R16 starts from landed
+   R15, R17 starts from landed R16, and R18 starts from landed R17;
 2. implement/test in an isolated worktree; one PR, no unrelated cleanup;
 3. conductor spot-checks the diff and load-bearing reported numbers;
 4. all three independent reviewers read
@@ -813,10 +754,9 @@ unwritten design decision, stop and report the exact dependency. Do not build
 around confusion. Do not open/close issues, merge, push, deploy, or modify
 unrelated code.
 
-Dependency rule: R15 freezes the evidence and selector-result schemas. R16 and
-pure R17 may then run independently from R15; R18 starts only after both land.
-Do not make R17 wait for R16 hardware or let either branch revise a frozen
-field meaning on its own.
+Dependency rule: R15 lands only the current anchor artifact. R16 then owns its
+separate lateral extension, and R17 then owns its selector-result contract.
+Do not pre-build a later round's schema, validator, or transaction machinery.
 
 The owner's bar is separation of concerns, one source of truth, elegant and
 modular boundaries, bounded resource use, resilience, observability,
@@ -831,50 +771,57 @@ should-fixes, and any fix returns to the same reviewers for delta review.
 ### R15 mission — baseline graph + RAW ANCHOR
 
 ```text
-Locate exactly why CLOUD_MEASURE traverses the production graph while the
-other pre-apply phases can use commissioning routing. Land the smallest usable
-session-owned protection-only graph/binding that every pre-apply stimulus
-shares, and make the mark-position MEASURE action emit RAW ANCHOR: repeated
-neutral woofer/HF complex responses in exactly three paired selector groups on
-one timing/gain ledger. Land the declared-floor capture support required by
-#1654. Persist the exact emitted role-specific `P` transfers and freeze both v1
-schemas exactly as this plan specifies. For the configured Fc, derive
-`S = M * C_configured / P` offline before today's crossover-shaped fitter and
-branch-target path; pin the finite-value, 12 dB conditioning, fingerprint, and
-generic same-evidence configured-Fc total-transfer equivalence contract in
-§4.2, including the required `P=C` identity-ratio subfixture. Keep
-the production profile untouched until explicit Apply and retain Undo. Pin
-Start over, abort, play failure, process restart, schema/identity mismatch, and
-cleanup behavior. Do not capture lateral raw poses, select another Fc, change
-Room, or change household layout. DONE when old linearization/Room/preference
-filters provably cannot affect any pre-apply artifact, a valid anchor-only v1
-record including `P` exists, and the configured-Fc total-transfer path meets
-every frozen deterministic equivalence tolerance without emitting an inverse
-filter.
+Start from freshly fetched current remote main; cherry-pick no commit from the
+rejected `05822244` prototype. Locate exactly why CLOUD_MEASURE traverses the
+production graph while other pre-apply phases can use commissioning routing.
+Land the smallest usable session-owned protected-neutral **two-lane** graph,
+derived from confirmed component facts, and route CHECK, MEASURE, and
+CLOUD_MEASURE through it. Exclude prior alignment/linearization, Room, bass,
+preference, and configured-crossover shaping while retaining declared
+protection, limiter, conservative headroom, pad/polarity identity, the
+production profile, and Undo.
+
+Make the current mark-position MEASURE action emit one immutable RAW ANCHOR
+using exactly the existing three accepted woofer/HF pairs and existing
+`ProgramAnalysis`, `DriverResponse`, capture-identity, and evidence-store
+primitives. Persist only the role-specific `P` and identities consumed now by
+the configured-Fc `S = M * C_configured / P` transform and restoration path.
+Pin Start over, abort, play failure, and process-restart restoration. Do not
+freeze a lateral/five-pose or selector-result schema, select another Fc, add a
+generalized mutation/transaction framework, change Room, deploy, or run a
+physical measurement.
+
+Forecast and stop for review before 900 net new production lines; 1,000 is an
+absolute stop without explicit owner approval. Count tests/docs separately,
+and name the current producer and consumer for every new module, public API,
+and schema field. DONE when prior filters cannot affect any pre-apply artifact,
+the current immutable anchor and configured-Fc transform work through existing
+owners, production/Undo/restoration are pinned, and the necessity gate plus
+focused hardware-free tests pass within budget.
 ```
 
 ### R16 mission — four lateral poses
 
 ```text
 On R15 main, preserve Express's seven capture actions and the existing
-±12/±40 cm prompts. Append exactly left_12_cm, right_12_cm, left_40_cm,
-and right_40_cm to R15's anchor-only v1 evidence in that order, retaining both
-protected raw drivers on each pose's common timing/gain ledger. Do not change
-schema_version, field meanings, anchor bytes, or the storage owner. Use existing
-program-analysis, retry, retention, and identity seams. Each appended pose must
-expose exactly three accepted-order selector groups pairing woofer and HF; reuse
-R15's already-landed declared-floor support for #1654. Do not select Fc, add
-Full or other poses to selector evidence, redesign the page, fix unrelated
-geometry policy, or touch Room. DONE when the same schema atomically holds the
-anchor plus those four poses, every identity/retry/grouping contract is pinned,
-and no side capture uses the production graph.
+±12/±40 cm prompts. Record exactly left_12_cm, right_12_cm, left_40_cm,
+and right_40_cm in a separately versioned lateral-evidence artifact that
+references R15's immutable anchor identity/fingerprint without mutating its
+bytes or field meanings. Define only fields used by the real lateral producer
+and R17 consumer. Reuse existing program-analysis, retry, retention, identity,
+and declared-floor seams. Do not select Fc, add Full or other poses, redesign
+the page, fix unrelated geometry policy, or touch Room. DONE when the separate
+artifact holds the four protected raw-driver poses, every identity/retry/pairing
+contract is pinned, and no side capture uses the production graph.
 ```
 
 ### R17 mission — pure Fc selector
 
 ```text
-On R15 main, in parallel with R16, implement a pure offline evaluator against
-R15's frozen evidence/result schemas. Generate at most five LR4 Fc candidates
+On R16 main, define the smallest selector-result contract now that the R15
+anchor and R16 lateral producers exist and R18 is its named consumer. Then
+implement a pure offline evaluator against those landed artifacts. Generate at
+most five LR4 Fc candidates
 by the exact interval/grid policy in §6.1. Each candidate gets its own offline
 `M * C_c / P` total-transfer composition, conditioning verdict,
 crossover-shaped branch fit, trim, delay, polarity, modeled anchor and
@@ -883,8 +830,8 @@ inadmissibility. Emit §6.3's frozen masks, unweighted RMS metrics, exact
 three-group baseline and 243/27/81-realization uncertainty contracts,
 first-deciding-key pairwise trace, unbeaten-set/cycle outcome, sensitivity
 reruns, and
-selected/abstained/refused result. Use frozen five-pose fixtures; do not depend
-on R16 hardware or change the schema. The configured 2 kHz path uses generic
+selected/abstained/refused result. Use fixtures representing the landed
+anchor/lateral contracts; do not depend on new hardware. The configured 2 kHz path uses generic
 same-evidence configured-Fc total-transfer equivalence for each role-specific
 `P`, including the required `P=C` identity-ratio subfixture; `P=C` is not a
 generic JTS3 premise. No I/O, conductor, UI,
@@ -902,10 +849,11 @@ candidates drop.
 ### R18 mission — propose and apply
 
 ```text
-On main after both R16 and R17 land, thread exactly one selector result through
+On main after R17 lands, thread exactly one selector result through
 #1806's planned proposal/review boundary and the existing transactional apply
 machinery. Reject a result whose evidence, grid, candidate, prescription, or
-outcome identity does not match the complete five-pose session record. Apply
+outcome identity does not match the immutable anchor plus referenced lateral
+evidence. Apply
 only the chosen complete prescription; retain and surface the prior production
 profile for Undo. Reuse current report/UI components and minimal copy. Do not
 redesign VERIFY, add a chart framework, or touch Room. DONE when measurement
