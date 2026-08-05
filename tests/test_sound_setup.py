@@ -64,6 +64,22 @@ from ._web_test_helpers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_privileged_unit_actions(monkeypatch):
+    """Keep the suite from asking systemd to start units.
+
+    Saving an output topology kicks ``jasper-audio-hardware-reconcile`` through
+    the restart broker, so every topology-save test would otherwise reach for a
+    privileged action (and would really run ``systemctl`` if the suite is run as
+    root). Tests that assert on the broker contract re-patch this in their own
+    body, which wins because it is applied after the fixture.
+    """
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda *units, **kwargs: {"ok": False, "error": "stubbed in tests"},
+    )
+
+
 def _follower_post_status(base: str, path: str, session: dict) -> int:
     """POST an empty JSON body to ``path`` and return the HTTP status code.
 
@@ -1529,6 +1545,262 @@ def _sub_channel_from_saved(saved: dict) -> dict:
         if group.get("kind") == "subwoofer" or group.get("mode") == "subwoofer":
             return group["channels"][0]
     raise AssertionError("no subwoofer group in saved topology")
+
+
+INNOMAKER_DEVICE_ID = "innomaker_hifi_amp_pro"
+INNOMAKER_DEVICE_LABEL = "InnoMaker HiFi AMP Pro"
+
+
+def _innomaker_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
+    """A save posted against a DAC that declares no active outputd lane.
+
+    ``active=True`` is the impossible shape: a roleful active 2-way layout on
+    ``supports_active_outputd_lane=False`` hardware. Saving it is what left a
+    box structurally mute — CamillaDSP runs the roleful graph into an aloop
+    lane nothing drains while outputd captures the passive one.
+
+    ``subwoofer=True`` is the second roleful shape a household reaches through
+    the wizard: passive mono mains plus a local sub. It is roleful through the
+    subwoofer branch rather than an active crossover, so it is refused for the
+    same reason and the copy has to cover it.
+    """
+
+    if subwoofer:
+        groups = [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [
+                    {
+                        "role": "subwoofer",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+        ]
+        routing = {"mono_group_id": "mono", "subwoofer_group_ids": ["sub"]}
+    elif active:
+        groups = [
+            {
+                "id": "main",
+                "label": "Main active speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            }
+        ]
+        routing = {"mono_group_id": "main"}
+    else:
+        groups = [
+            {
+                "id": "left",
+                "label": "Left",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+        ]
+        routing = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "default",
+        "name": "Bench InnoMaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": INNOMAKER_DEVICE_ID,
+            "device_label": INNOMAKER_DEVICE_LABEL,
+            "physical_output_count": 2,
+            "card_id": "sndrpimerusamp",
+        },
+        "speaker_groups": groups,
+        "routing": routing,
+    }
+
+
+def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Save-time capability guard: the wizard must not accept a layout this
+    box can never drive. Before this guard the save landed with blockers=0 and
+    the speaker went silent with every daemon reporting healthy."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    with pytest.raises(ValueError) as excinfo:
+        sound_setup._save_output_topology_payload(
+            _innomaker_topology_payload(active=True)
+        )
+
+    message = str(excinfo.value)
+    assert INNOMAKER_DEVICE_LABEL in message
+    # Passive is not a free remedy: it sends full-range into every assigned
+    # output, which on an actively-wired cabinet reaches a bare tweeter. The
+    # household is being steered there, so the consequence travels with it.
+    assert "full-range audio to every output" in message
+    assert "built-in passive crossover" in message
+    assert "attach an active-capable DAC" in message
+    # Refused means refused: nothing was written.
+    assert not topo_path.exists()
+
+
+def test_passive_mains_plus_local_sub_are_refused_on_the_same_dac(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The subwoofer branch is roleful too, and the wizard offers it as a
+    one-tap add-on — so the refusal copy must name subwoofer layouts, not only
+    active crossovers."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    with pytest.raises(ValueError) as excinfo:
+        sound_setup._save_output_topology_payload(
+            _innomaker_topology_payload(active=False, subwoofer=True)
+        )
+
+    message = str(excinfo.value)
+    assert "subwoofer layouts" in message
+    assert INNOMAKER_DEVICE_LABEL in message
+    assert not topo_path.exists()
+
+
+def test_passive_layout_on_the_same_dac_still_saves(monkeypatch, tmp_path: Path):
+    """The guard keys strictly on the capability flag, so the ordinary passive
+    stereo layout this board DOES support is untouched."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert saved["output_topology"]["hardware"]["device_id"] == INNOMAKER_DEVICE_ID
+    assert topo_path.exists()
+
+
+def test_topology_save_kicks_the_audio_hardware_reconcile(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """A save changes what the running graph must be, so it converges the box
+    the way the reset path does. Without this the wizard wrote a new layout
+    and nothing re-resolved outputd's env until the next boot."""
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    calls: list[dict] = []
+    sentinel = {"ok": True, "action": "start"}
+
+    def fake_manage_units(*units, **kwargs):
+        calls.append({"units": units, **kwargs})
+        return sentinel
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", fake_manage_units
+    )
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert calls and calls[0]["units"] == ("jasper-audio-hardware-reconcile.service",)
+    assert calls[0]["verb"] == "start"
+    # Fire-and-forget: the wizard saves a draft at every card, so a save must
+    # not block on a multi-second oneshot.
+    assert calls[0]["no_block"] is True
+    assert saved["reconcile"] is sentinel
+
+
+def test_refused_layout_reaches_the_page_as_a_rendered_error(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Pin the wire shape the page already knows how to render.
+
+    ``deploy/assets/sound-profile/js/main.js``'s ``saveOutputTopology`` does
+    ``if (!resp.ok) throw new Error(payload.error || ...)`` and surfaces the
+    message while keeping the operator's draft on screen — so the refusal has
+    to arrive as a non-2xx with an ``error`` string, and must NOT take the 409
+    branch (that one re-ingests the server's topology and would wipe the draft).
+    """
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/output-topology",
+            {
+                "output_topology": _innomaker_topology_payload(active=True),
+                # The page always echoes the revision it last read; "missing"
+                # is what the endpoint reports before anything is saved.
+                "topology_revision": "missing",
+            },
+            expect_status=400,
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        assert INNOMAKER_DEVICE_LABEL in payload["error"]
+        assert "output_topology" not in payload
+        assert not topo_path.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_subwoofer_crossover_fc_round_trips_through_topology_save(

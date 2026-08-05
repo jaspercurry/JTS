@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.audio_hardware.dac import by_id as _dac_by_id
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     EXPLICIT_SOURCE,
@@ -43,7 +44,9 @@ __all__ = [
     "EXPLICIT_SOURCE",
     "MISSING_SOURCE",
     "OUTPUTD_ACTIVE_LANE_SOURCE",
+    "ActiveLaneCapabilityGap",
     "ActivePlaybackRouteCapability",
+    "active_lane_capability_gap",
     "active_playback_route_capability",
     "resolve_active_playback_device",
 ]
@@ -81,6 +84,57 @@ def _highest_assigned_output(groups: list[SpeakerGroup]) -> int | None:
         if channel.physical_output_index is not None
     ]
     return max(indexes) if indexes else None
+
+
+@dataclass(frozen=True)
+class ActiveLaneCapabilityGap:
+    """A saved layout needs the active outputd lane; this DAC declares none."""
+
+    device_id: str
+    device_label: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"device_id": self.device_id, "device_label": self.device_label}
+
+
+def active_lane_capability_gap(
+    topology: OutputTopology,
+) -> ActiveLaneCapabilityGap | None:
+    """Return why ``topology`` can never reach hardware on this DAC, or None.
+
+    The one predicate for a permanently-undrivable pairing: the layout needs a
+    roleful (crossover / protected / subwoofer) graph, but the resolved
+    ``DacProfile`` declares no active outputd lane. CamillaDSP then plays the
+    roleful graph into the active loopback lane while outputd captures the
+    passive one, and the speaker emits digital silence with every daemon
+    healthy. Re-running a reconciler cannot fix it — only a different layout
+    or different hardware can.
+
+    Every surface that explains this state (``/state`` audio health, doctor's
+    remedy, the ``/sound/setup/`` save guard) resolves it here and phrases its
+    own sentence; the predicate itself has one owner.
+
+    Strict on purpose: an unrecognized ``device_id`` has no profile to read a
+    capability off, so it returns ``None`` rather than guessing a gap that
+    would block a save on hardware the registry simply has not met.
+    """
+
+    from jasper.active_speaker.runtime_contract import (
+        active_topology_requires_roleful_graph,
+    )
+
+    if not active_topology_requires_roleful_graph(topology):
+        return None
+    device_id = topology.hardware.device_id
+    profile = _dac_by_id(device_id)
+    if profile is None or profile.supports_active_outputd_lane:
+        return None
+    return ActiveLaneCapabilityGap(
+        device_id=device_id,
+        # The registry owns the DAC's name; the topology's saved label is
+        # detection data that can be stale.
+        device_label=profile.label or topology.hardware.device_label or device_id,
+    )
 
 
 def resolve_active_playback_device(

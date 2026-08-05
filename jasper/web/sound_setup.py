@@ -233,6 +233,15 @@ class OutputTopologyRevisionConflict(ValueError):
     """Raised when a browser posts a topology based on stale saved state."""
 
 
+class OutputTopologyCapabilityBlocked(ValueError):
+    """Raised when a posted layout needs hardware this DAC does not have.
+
+    A ``ValueError`` so the POST dispatcher's existing validation branch returns
+    it as ``{"error": ...}`` with 400 — the shape the page already renders as a
+    layout error while keeping the operator's unsaved draft on screen.
+    """
+
+
 # Serializes the optimistic-concurrency revision-compare and the topology write
 # in ``_save_output_topology_payload``. The wizard runs on ThreadingHTTPServer
 # (one thread per request), so without this the compare and the write are a
@@ -442,6 +451,87 @@ def _output_topology_payload() -> dict[str, Any]:
     }
 
 
+def _refuse_undrivable_layout(topology: OutputTopology) -> None:
+    """Refuse a layout this box's DAC can never drive, before anything is saved.
+
+    A roleful (crossover / protected / subwoofer) layout on a DAC that declares
+    no active outputd lane leaves CamillaDSP playing into the active loopback
+    lane while outputd captures the passive one: the speaker goes structurally
+    silent with every daemon reporting healthy. Nothing downstream can repair
+    it, so the wizard must not accept it in the first place.
+    """
+
+    from jasper.active_speaker.playback_route import active_lane_capability_gap
+
+    gap = active_lane_capability_gap(topology)
+    if gap is None:
+        return
+    log_event(
+        logger,
+        "sound.output_topology_save",
+        level=logging.WARNING,
+        result="blocked",
+        reason="dac_no_active_lane",
+        device_id=gap.device_id,
+        topology_id=topology.topology_id,
+    )
+    raise OutputTopologyCapabilityBlocked(
+        f"{gap.device_label} does not support the active speaker lane. Active "
+        "crossover and subwoofer layouts need an active-capable DAC; choose a "
+        "passive speaker layout for this hardware (passive sends full-range "
+        "audio to every output — only safe when the speaker has its own "
+        "built-in passive crossover), or attach an active-capable DAC."
+    )
+
+
+def _trigger_topology_reconcile() -> dict[str, Any]:
+    """Re-derive the runtime env from a freshly-saved layout, best-effort.
+
+    Same broker-mediated ``start`` the reset path uses (only ``start`` of this
+    unit is permitted to non-root clients). Never raises: a failed kick leaves
+    the saved layout intact and the previous graph running, which self-heals on
+    the next reconcile or boot, so it must not turn a successful save into a
+    failed one. The outcome is reported to the page instead.
+
+    This converges intent, it does not apply a layout: the reconciler enters
+    active mode only when a legal active graph is already the live CamillaDSP
+    config. Convergence is real, not inert — on a box running a commissioned
+    active graph, an edit that invalidates it flips the gate back to passive
+    and bounces outputd, so output parks (loudly, behind the parked banner)
+    until the layout is re-commissioned or reverted.
+
+    Unlike the reset command this does NOT wait for the oneshot: the reset is a
+    one-shot operator action, while ``/sound/setup/`` saves a draft at every
+    card, and nothing in the response depends on the converged env. Blocking
+    each save on a multi-second reconcile would stall the wizard for no gain,
+    so ``ok`` here means the start was accepted, not that it finished.
+    """
+
+    from jasper.cli.output_topology_reset import RECONCILE_UNIT
+    from jasper.control.restart_broker import manage_units
+
+    try:
+        result = manage_units(
+            RECONCILE_UNIT,
+            verb="start",
+            reason="sound output topology save",
+            no_block=True,
+        )
+    except (OSError, RuntimeError) as exc:
+        result = {"ok": False, "error": str(exc)}
+    if not result.get("ok"):
+        # Failure only: the happy path is already carried by the save event's
+        # reconcile_ok field, so this line exists to be loud, not to narrate.
+        log_event(
+            logger,
+            "sound.output_topology_save_reconcile",
+            level=logging.WARNING,
+            unit=RECONCILE_UNIT,
+            error=result.get("error"),
+        )
+    return result
+
+
 def _save_output_topology_payload(
     raw: dict[str, Any],
     *,
@@ -466,11 +556,13 @@ def _save_output_topology_payload(
                 )
         raw_topology = raw.get("output_topology", raw)
         topology = OutputTopology.from_mapping(raw_topology)
+        _refuse_undrivable_layout(topology)
         topology, guards_changed = _active_speaker_request_missing_software_guards(
             topology
         )
         save_output_topology(topology)
         saved_revision = _output_topology_revision()
+    reconcile = _trigger_topology_reconcile()
     evaluation = topology.evaluation()
     log_event(
         logger,
@@ -483,6 +575,7 @@ def _save_output_topology_payload(
         blockers=len(evaluation["blockers"]),
         warnings=len(evaluation["warnings"]),
         software_guards_requested=str(guards_changed),
+        reconcile_ok=bool(reconcile.get("ok")),
     )
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
@@ -491,6 +584,7 @@ def _save_output_topology_payload(
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
         "active_playback_route": _active_speaker_playback_route_payload(topology),
+        "reconcile": reconcile,
     }
 
 

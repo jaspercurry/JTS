@@ -302,8 +302,8 @@ distinguish the active runtime role from the best observed physical shape.
 
 **Audio health is one normalized, cached production surface.**
 [`jasper/control/audio_health.py`](../jasper/control/audio_health.py) composes
-the existing bounded AirPlay collector, one local outputd `STATUS` read, and a
-slow route/artifact assessment into `/state.audio_health` and
+the existing bounded AirPlay collector, a local outputd `STATUS` read, and a
+slow route/transport/artifact assessment into `/state.audio_health` and
 `/system/snapshot.audio_health`. The browser renders those conclusions; it
 does not run probes or classify raw counters. Production starts one
 `AudioHealthSampler` thread in place of the former standalone AirPlay sampler
@@ -321,8 +321,15 @@ AirPlay, USB, Spotify, and Bluetooth activity predicates, so free-running
 silent lanes do not become fake sessions and audio health adds no duplicate
 per-source probe cadence. Missing or unreadable mux state fails closed as
 "Playback activity unavailable" and preserves an already-observed session;
-it is never presented as healthy idle. Audio health does not spawn a second
-`systemctl` cadence.
+it is never presented as healthy idle. A broken post-DSP transport — CamillaDSP
+and outputd on different loopback lanes, so nothing reaches the drivers however
+healthy each daemon looks — is read on the slow cadence from the same
+`transport_coherence_errors` detector `jasper-doctor` uses, on the same evidence
+(both statefiles, plus outputd's live capture PCM), and reported as a parked
+signal path rather than "Audio is ready". When the cause is a saved layout the
+DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
+because no reconcile or restart can clear that one. Audio health does not spawn
+a second `systemctl` cadence.
 
 The contract separates playback continuity from timing. A USB `l2_fallback`
 is a latency warning while playback remains protected; `l0_locked` is runtime
