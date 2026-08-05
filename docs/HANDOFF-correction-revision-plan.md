@@ -969,54 +969,82 @@ Update **this block** at the end of every round together with the
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-05 (R15 complete — #2126 and #2138 merged at their
-                review bars; code only, nothing deployed or measured, so the
-                fixed-2-kHz hardware checkpoint is now the gate)
+date:           2026-08-05 evening (the fixed-2-kHz hardware checkpoint RAN on
+                jts3 and PASSED as an instrument proof; Gate 0 ratified the
+                later slate in the same session)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
-jts3_sha:       build marker read-only verified 2026-08-04 at
-                d742b37bec8293b72f1897194d9bf8e10b85cb08, status=ok;
-                jasper-doctor: 0 failed / 5 non-critical warnings
-compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
-                is the compatible current public-capture-page / JTS3 pair.
-                These read-only observations establish current state, not
-                deployment order or chronology
-active_round:   none — R15 complete. #2126 landed the protected-neutral
-                CHECK/MEASURE and the exact configured-Fc composition (merged
-                ab548e1f3; three-lens gate 0/0 on every lens after two fix
-                rounds and a reconciliation); #2138 landed the driver-only
-                boost gate per the #2106 owner ruling (merged b94790f4f;
-                two-lens gate 0/0)
-last_round:     R15 (atomic fixed-Fc proof — code merged, not deployed and not
-                measured). R13 remains the last round validated on hardware;
-                R14 was the documentation/administrative campaign round
-validation:     R13's validation day, still the last on-hardware result:
-                applied=true, tier=full, session phases verify/cloud_verify.
-                Local at-mark VERIFY passed (max raw 0.9835 dB; offset
-                -5.868 dB), but only 4 of 5 cloud positions were accepted;
-                cloud=null and the group ended on locate_failed. This is not
-                an "unverified" tune and not an "applied and graded" Full
-                result
-rollback:       Undo remains banked through the retained pre_apply_profile;
-                restoration was not exercised during that run
-owed_on_device: R15's two unproven-on-hardware claims, both for the checkpoint:
-                post-apply VERIFY over a driver-only session that actually
-                boosts has never run on hardware; and the SetConfig→GetConfig
-                round trip, which the flow's readback gate exercises live, was
-                probe-measured on the load path only
+jts3_sha:       79239e0c6 — the build jts3 ran the checkpoint on. Deployed
+                15:19 EDT 2026-08-05, status=ok, read-only verified via
+                /var/lib/jasper/build.txt before the 16:01 walk. It contains
+                R15 (ab548e1f3 is an ancestor), which is what let the checkpoint
+                exercise the protected-neutral flow at all
+compatibility:  20260803.4 + 79239e0c6 is the pair the checkpoint ran on; the
+                capture_page observation above is still the 2026-08-04 one.
+                These establish what was seen, not deployment order or
+                chronology
+active_round:   R18 (verification widening) — dispatched, implementation in
+                flight, no PR open yet. Gate 0 ratified it on 2026-08-05 to
+                land first, ahead of the R16 + R17 vertical. Missions,
+                ceilings, and panel scopes live only in
+                crossover-linearization-80-20-plan.md §11; the Gate 0 record is
+                the #1894 comment
+last_round:     R15 (atomic fixed-Fc proof — #2126 ab548e1f3, #2138 b94790f4f),
+                exercised end-to-end on hardware by the checkpoint below. R14
+                was the documentation/administrative campaign round
+validation:     the 2026-08-05 evening checkpoint on jts3 — now the current
+                on-hardware result. It passed as an INSTRUMENT proof: the flow
+                ran and its numbers are trustworthy, which is a different
+                claim from the tune being optimal. CHECK/MEASURE ran through the
+                protected-neutral graph, Apply committed candidate 9acf3389,
+                mark VERIFY accepted at max_db_notch_excluded=0.919 dB against
+                a 1.5 dB tolerance, and the first complete Full stage-2 spatial
+                grade closed with all 5 cloud positions accepted. R13's
+                validation day (4 of 5 positions, cloud=null, locate_failed) is
+                the superseded predecessor
+findings:       two facts, neither judged by the checkpoint and both read off
+                the rendered AFTER-chart rather than the journal. That chart's
+                fidelity is unconfirmed: #2152 was extended by scope comment to
+                cover the chart-fidelity family (its original report was the
+                pre-apply review chart), and a signal-level re-derivation from
+                the retained verify WAV is in flight. The two: a -4.5 dB
+                crossover-region dip at ~1.6-1.8 kHz, predicted from measured
+                branch phases and reported as realized, sitting BELOW VERIFY's
+                2000-4000 Hz band and therefore ungraded (what R18 exists to
+                judge; #1868/#1654 made concrete); and +2 to +4 dB across
+                200-1000 Hz at the mark, Room-layer territory per #2099's
+                Gate 0 boundary ruling, not a speaker-layer defect
+rollback:       the tune was left applied with Undo banked through the retained
+                pre_apply_profile; restoration was not exercised
+owed_on_device: the boost path is STILL OWED. An earlier reading of this
+                checkpoint claimed it retired; a read-only probe of jts3's
+                applied profile corrected that — tonight's candidate is
+                cut-only (zero positive gains; the six positive gains in the
+                state file belong to the banked pre_apply_profile held for
+                Undo). #2138's gate is live but no boosting prescription has
+                run on hardware. Open observation, not a finding: the
+                driver-only fit placed no boosts at this mark, plausibly
+                because the gated responses carried no in-band deficit above
+                the envelope's bar — the ~-4.5 dB dip is crossover
+                integration, which boost does not fix — so the selector rounds
+                should confirm boost engages when a genuine deficit exists.
+                Correction record: #1894 (2026-08-05 late). Also owed: R18's
+                verify slice and the R16/R17 lateral walk, both owner-run
+                (morning); and SetConfig->GetConfig, exercised live by the
+                flow's readback gate but probe-measured on the load path only
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
-                #2106 (atomic R15) is closed; #2107 is deferred beyond the
-                fixed-Fc checkpoint. The campaign's complete
+                #2106 (atomic R15) is closed; #2107 (lateral evidence) is now
+                R16's territory. The checkpoint walk filed two defects: #2151
+                (capture page loses the recording on window-focus loss) and
+                #2152 (review chart shows only the unmeasured prediction).
+                The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   the owner-run fixed-2-kHz hardware checkpoint on jts3. Deploy
-                first with PI_HOST=jts3.local bash scripts/deploy-to-pi.sh —
-                jts3's installed build (jts3_sha above) predates R15, and the
-                peer_id guard only validates the target already recorded, so a
-                fresh checkout with the default target is not caught — then a
-                fresh Gate 0 before any later round
-blocked_on:     the fixed-2-kHz hardware checkpoint
+next_mission:   after R18 lands: the R16 + R17 co-scoped vertical (lateral
+                producer, then the Fc selector that consumes it)
+blocked_on:     R16/R17 are blocked on R18 landing and on the owner's morning
+                lateral walk. R18 itself is blocked on nothing
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1747,6 +1775,14 @@ and `compatibility` carry their 2026-08-04 observations forward unchanged, and
 R13 remains the last on-hardware validation. The footer below is unchanged for
 the same reason as the pass above. No product/issue write, deployment, DSP
 change, or measurement.
+
+**Verification scope.** A **2026-08-05 checkpoint / Gate-0 record pass** updated
+only CURRENT POSITION. It re-read the Gate 0 comments on #1894, #1675, and
+#2099 from `gh` and confirmed #2151/#2152 exist as filed. It ran no hardware:
+every checkpoint number here, the build SHA included, is transcribed from the
+durable evidence record on #1894, which the conductor posted after this pass
+flagged that they lived only in session context. The footer is unchanged for
+the same reason as the two passes above.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly

@@ -12,7 +12,8 @@
 > This document owns R15's next slice: protected-neutral driver CHECK/MEASURE,
 > configured-Fc composition, and the existing review/Apply/VERIFY path.
 > Crossover selection, candidate linearization, and expanded verification below
-> are deferred direction pending the hardware checkpoint and fresh Gate 0.
+> were deferred direction until 2026-08-05, when the checkpoint passed and
+> Gate 0 ratified them as R18, R16, and R17 (§11).
 > This changes no current behavior by itself. Current shipped
 > behavior remains in
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
@@ -280,8 +281,8 @@ same post-apply `VERIFY`, household listening, and Undo adjudicate it.
 
 ### 4.4 Side evidence owns robustness, not the target
 
-If fresh Gate 0 authorizes lateral evidence, the smallest direction reuses the
-existing ±12 cm and ±40 cm left/right moves. Each pose would capture both
+Gate 0 authorized lateral evidence as R16's territory; the smallest direction
+reuses the existing ±12 cm and ±40 cm left/right moves. Each pose would capture both
 drivers on one timing ledger; W–HF–W may bracket drift.
 
 The side captures may:
@@ -399,7 +400,8 @@ any line above 400 must map directly to an unmet acceptance requirement. Five
 production files is soft, a sixth requires a named-file conductor/owner
 ratification, and new production modules are zero absent re-ratification. Tests
 are 500 gross, over which the conductor may ratify an honesty-fixture overage
-recorded on the owning issue. Docs 120. R16 350, R17 400, R18 180, R19 580
+recorded on the owning issue. Docs 120. R16 350, R17 400, R18 460 (re-ratified
+from 180 — §11), R19 580
 across at most two independent PRs, and R20 zero. These budget a round's
 **implementation** PRs; a conductor-authored campaign-governance docs PR that
 amends this plan rather than implementing a round carries its own ≤120
@@ -414,8 +416,8 @@ the canonical disposition for this revision, not a copy of every issue body.
 |---|---|---|
 | [#1665](https://github.com/jaspercurry/JTS/issues/1665) component facts/L-pad | Safety input | Consume the one confirmed declaration seam; do not absorb the remaining research-prefill UX work. R14/R15 gate. |
 | [#1654](https://github.com/jaspercurry/JTS/issues/1654) HF sweep to declared floor | Raw instrument | R15 measures through the declared safe envelope; any later lateral reuse waits for the fixed-Fc checkpoint. |
-| [#1675](https://github.com/jaspercurry/JTS/issues/1675) ka/directivity guidance | Selector prior | Owns deferred prior/window guidance; any consumer waits for fresh Gate 0. |
-| [#1894](https://github.com/jaspercurry/JTS/issues/1894) measurement-adjudicated Fc/topology | Primary selector tracker | Owns deferred Fc-within-limits work; fresh Gate 0 decides any implementation vertical. |
+| [#1675](https://github.com/jaspercurry/JTS/issues/1675) ka/directivity guidance | Selector prior | Promoted by Gate 0 from deferred prior to a REQUIRED R17 selector input: the declared driver diameter becomes a beaming/ka prior. |
+| [#1894](https://github.com/jaspercurry/JTS/issues/1894) measurement-adjudicated Fc/topology | Primary selector tracker | Owns Fc-within-limits work; Gate 0 ran and assigned it to R17, consuming R16's lateral evidence. |
 | [#1968](https://github.com/jaspercurry/JTS/issues/1968) crossover decision research | Research authority | Authority for deferred selector research, not implementation; lateral samples remain a coarse gate. |
 | [#1806](https://github.com/jaspercurry/JTS/issues/1806) measure/review/apply/verify split | Apply chassis | R15 preserves the current path; the issue owns any deferred apply integration. |
 | [#1868](https://github.com/jaspercurry/JTS/issues/1868) model-reproduced null passes VERIFY | Verification truth | Owns the deferred absolute crossover-region and branch-realization gap. |
@@ -445,14 +447,17 @@ R14 created exactly the two uncovered scopes after ratification:
 Do not create a phone-positioning ticket, a new Room umbrella, a topology
 search ticket, or a second Fc issue. Existing issues already own those facts.
 
-## 11. Campaign and provisional later labels
+## 11. Campaign and ratified later rounds
 
 | Round | Mission | One primary territory | Exit |
 |---|---|---|---|
 | **R14 — Ratify** | Review this contract, reconcile issue comments, create only the two missing tickets | docs/issues; no product code | owner approval + independent docs gate at 0 blockers / 0 should-fixes |
 | **R15 — Atomic fixed-Fc proof** *(complete)* | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement — met by #2126 (`ab548e1f3`) and its boost-gate follow-up #2138 (`b94790f4f`) |
-| **Checkpoint — Prove** | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair |
-| **R16–R19 — provisional labels** | Fresh Gate 0 defines complete verticals pairing each producer with a current consumer; it may co-scope lateral capture + selector or name a real immediate consumer | unassigned | §9 ceilings only; no artifact-first dependency or implementation authority |
+| **Checkpoint — Prove** *(passed)* | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair — passed 2026-08-05 on jts3 as an instrument proof |
+| **R18 — Verification widening** | Widen VERIFY so the selector has an honest referee: judge the crossover region the current 2000–4000 Hz band misses (#1868, #1654) | verification | lands FIRST; ceiling **≤460** production / ≤5 files / 0 new modules, tests ≤600, docs ≤120 — re-ratified from 180 after a measured STOP at 441, [recorded on #1868](https://github.com/jaspercurry/JTS/issues/1868#issuecomment-5197236195); two lenses (correctness, hearing-safety) |
+| **R16 — Lateral evidence producer** | Produce the lateral walk's evidence, paired in the same vertical with R17 as its current consumer (#2107) | lateral capture | ceiling 350; two lenses (correctness, resilience) |
+| **R17 — Fc selector** | Consume R16's lateral evidence to adjudicate Fc within limits (#1894), taking the declared driver diameter as a beaming/ka prior (#1675, owner ruling) | selector | ceiling 400; three lenses — it decides applied DSP |
+| **R19** | Unchanged by Gate 0 | unassigned | §9 ceilings only (580 across at most two independent PRs) |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
 
 **R15 outcome — three recorded deviations, all by ruling.** The one-PR exit was
@@ -468,24 +473,57 @@ each conditioned on every addition above 400 mapping to a named requirement.
 And #2138 ran a two-lens panel where §9 item 11 asks three for apply/DSP work,
 [ratified on that PR](https://github.com/jaspercurry/JTS/pull/2138#issuecomment-5195727007)
 — recorded late, which is itself the lesson: a lens-count decision belongs on
-the record when it is made, not when a reviewer asks for it. R16's Gate 0 reads
+the record when it is made, not when a reviewer asks for it. Later rounds read
 this chain as the precedent for how a deviation gets authorized, not as
-headroom it inherits.
+headroom they inherit.
 
-The only dependency graph is:
+**Gate 0 outcome — 2026-08-05, owner-ratified in session.** The checkpoint
+passed on jts3 as an instrument proof, and its evidence promoted the selector
+from deferred direction to demonstrated need: the applied configured-2 kHz
+result carries a **−4.5 dB crossover-region dip at ~1.6–1.8 kHz**, predicted by
+the model from measured branch phases and reported as realized, sitting *below*
+VERIFY's 2000–4000 Hz tracking band and therefore unjudged; alongside it,
+**+2–4 dB across ~200–1000 Hz** at the mark, which #2099's Gate 0 boundary
+ruling places in Room-layer territory rather than the speaker layer. Both
+magnitudes were **read off the rendered after-chart, not journal-recorded**,
+and that chart's fidelity is unconfirmed — it belongs to the chart-fidelity
+family [#2152 was extended to
+cover](https://github.com/jaspercurry/JTS/issues/2152#issuecomment-5197201186),
+with a signal-level re-derivation from the retained verify WAV in flight.
+Numbers and their provenance:
+[#1894's evidence record](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5197063549).
+R18's premise survives whatever that re-derivation returns — an unjudged band
+below the tracking window is a gap at any depth — but the depth itself is not
+campaign fact yet. That is why R18 lands first: a selector needs an honest
+referee before it chooses. R16 and R17 are **one co-scoped vertical in two PRs**, pairing the
+lateral producer with its current consumer, and R17 takes the declared driver
+diameter as a beaming/ka prior per the owner ruling on
+[#1675](https://github.com/jaspercurry/JTS/issues/1675#issuecomment-5196969046).
+Panel scopes were fixed at decision time — R17 three lenses, R16 two
+(correctness + resilience), R18 two (correctness + hearing-safety) — the
+practice R15's late-recorded lens count taught. These ratified per-round scopes
+are authoritative and govern where they differ from §9 item 11's and §12's
+general rule, the same way the per-round ceilings govern over item 9; a round
+with no ratified scope falls back to that general rule. Full record: the Gate 0
+comment on [#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5196968895).
+§9.8 is unchanged: configured 2 kHz stays the golden one-candidate mode until
+the multi-candidate path proves equivalence and then improvement.
+
+The dependency graph is now:
 
 ```text
-R14 -> R15 -> fixed-2-kHz hardware checkpoint -> fresh Gate 0
+R14 -> R15 -> fixed-2-kHz hardware checkpoint (passed) -> Gate 0 (ratified)
+    -> R18 -> R16 + R17 (one vertical, two PRs)
 ```
 
-R16–R19 are provisional labels, not a dependency order. Fresh Gate 0 must pair
-each later producer with its current consumer; contradiction or a cap forecast
-stops for owner re-ratification.
+R19 and R20 keep their prior standing. A contradiction or a cap forecast in any
+of these rounds still stops for owner re-ratification.
 
 ## 12. Agent topology and landing protocol
 
 R15 uses one bounded implementer and three independent reviewers, with at most
-four active at once. Later agent count and ownership wait for fresh Gate 0.
+four active at once. Gate 0 fixed each later round's panel scope in §11; agent
+count follows from it.
 
 - three recurring independent reviewers: correctness/evidence, hearing-safety/
   DSP, and resilience/observability;
@@ -501,8 +539,9 @@ coordination, and final reconciliation. It does not implement product code.
 Landing loop for every product round:
 
 1. refresh `origin/main`; give the implementer one round, one file territory,
-   explicit non-goals, and a measurable DONE condition. After R15, stop for
-   the fixed-Fc hardware checkpoint; each later round then re-enters Gate 0;
+   explicit non-goals, and a measurable DONE condition. The R15 checkpoint and
+   its Gate 0 are done (§11); a round that produces new hardware evidence stops
+   for an owner-run checkpoint of its own before the next one is scoped;
 2. implement/test in an isolated worktree; one PR, no unrelated cleanup;
 3. conductor spot-checks the diff and load-bearing reported numbers;
 4. all three independent reviewers read
@@ -546,9 +585,9 @@ unwritten design decision, stop and report the exact dependency. Do not build
 around confusion. Do not open/close issues, merge, push, deploy, or modify
 unrelated code.
 
-Dependency rule: R15 is one atomic fixed-Fc vertical and skips pre-apply cloud.
-R16–R19 remain provisional labels after its hardware checkpoint. Fresh Gate 0
-must pair each later producer with its current consumer.
+Dependency rule: R15 landed and its hardware checkpoint passed. Gate 0 ratified
+the order R18 -> R16 + R17, with R16/R17 one co-scoped vertical in two PRs.
+Each producer must reach a current consumer inside that vertical.
 
 The owner's bar is separation of concerns, one source of truth, elegant and
 modular boundaries, bounded resource use, resilience, observability,
@@ -585,10 +624,12 @@ not deploy or measure. DONE is the complete configured-Fc path, restoration and
 deterministic equivalence pinned by focused tests.
 ```
 
-### Post-checkpoint launch contracts — not yet authorized
+### Post-checkpoint launch contracts — authorized 2026-08-05
 
-Fresh Gate 0 must define complete producer-plus-current-consumer verticals.
-It may co-scope lateral capture and selector; R16–R19 are labels/ceilings only.
+Gate 0 ran and ratified the slate in §11: R18 first, then R16 + R17 as one
+co-scoped vertical in two PRs. Each round's mission, ceiling, and panel scope
+live in that table; a round prompt is still the shared contract above plus
+exactly one mission. R19 remains unscoped.
 
 **Original R14 planning/contract verification scope.** On 2026-08-04, before
 the R15 scope reset, this plan was checked against then-current `main`
@@ -626,5 +667,15 @@ the merged boost gate matches the ruling recorded above; it re-verified only
 briefs were not re-read, and no round after R15 is authorized by this pass —
 the checkpoint and a fresh Gate 0 still gate that. Docs only; nothing was
 deployed or measured, so R15 remains code-complete and hardware-unproven.
+
+**2026-08-05 checkpoint / Gate-0 record scope.** Recorded the checkpoint pass
+and the ratified slate against the Gate 0 comments on #1894, #1675, and #2099,
+re-read from `gh`, plus the two defect issues the walk filed (#2151, #2152).
+It re-verified §11, §13's dependency rule and launch-contract block, the #1675
+and #1894 sweep rows, §4.4's opening, and §12's agent-count line — every place
+that called the later slate provisional. The measurement contracts, ceilings,
+and issue sweep beyond those two rows were not re-read. No hardware was read
+by this pass: the checkpoint numbers are the session's, recorded here, not
+re-measured. Docs only.
 
 Last verified: 2026-08-05
