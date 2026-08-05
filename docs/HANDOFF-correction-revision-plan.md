@@ -1711,11 +1711,16 @@ POSITION, and the canonical plan's two-ticket disposition. It changed no
 product code, deployment, DSP state, or measurement evidence; older campaign
 narrative and the historical appendix were not re-verified.
 
-**Verification scope.** A **2026-08-04 R15 80/20 reset pass** re-verified only
-the next-campaign status/order and CURRENT POSITION against the revised
-canonical campaign plan. It records the rejected prototype's reported scope;
-it does not claim product implementation, review passage, deployment, or
-hardware validation. The historical appendix was not re-verified.
+**Verification scope.** A distinct **2026-08-04 R15 80/20 reset pass** checked
+only the revised next-campaign status/order and CURRENT POSITION against the
+canonical campaign plan, `origin/main` at
+`2e620bea7143bd31d4a1b1970740eced2e1c8279`, the now-updated #2106/#2107
+issue contracts, and the #1894 scope comment. It records the rejected
+prototype's size as independently re-derived in the
+[canonical campaign plan](crossover-linearization-80-20-plan.md), not merely
+implementer-reported; it does not claim product implementation, review passage,
+deployment, measurement, or hardware validation. The original R14 verification
+remains recorded above, and the historical appendix was not re-verified.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly

@@ -302,13 +302,14 @@ Between actions 6 and 7, the Pi evaluates candidates offline and the household
 reviews one proposed winner. Candidate evaluation adds compute, not a physical
 walk and not one apply per candidate.
 
-R16 records exactly the four named lateral poses in its separate artifact,
-referencing the immutable R15 anchor; it does not add Full-only pre-apply
-positions or mutate the anchor. Existing Full-only
+R16 records exactly the four named lateral poses in its own separately
+versioned lateral artifact, referencing the immutable R15 anchor; it does not
+add Full-only pre-apply positions or mutate the anchor. Existing Full-only
 pre-apply captures may continue serving their shipped purpose, but they are not
-selector evidence in schema v1. Admitting another selector pose requires a
-later schema version. Full retains its additional post-apply summed cloud, and
-only completed post-apply positions widen the verified spatial claim. Neither
+part of R16's lateral artifact. Adding another selector pose requires an
+explicit later contract revision once a real capture producer and selector
+consumer exist. Full retains its additional post-apply summed cloud, and only
+completed post-apply positions widen the verified spatial claim. Neither
 changes what owns the design-axis coefficients.
 
 ## 6. Bounded crossover + linearization solve
@@ -892,17 +893,30 @@ not that issue's controlled reference-level versus SNR-solved MEASURE-level
 A/B and must not replace or close it.
 ```
 
-**Verification scope.** On 2026-08-04, this plan was checked against current
-`main` (`d742b37bec8293b72f1897194d9bf8e10b85cb08`), the shipped v2 phase
-roles, Express prompt table, fitter/cloud evidence flow, layer and Room plans,
-the canonical adversarial-review prompt, and the linked GitHub issue bodies and
+**Original R14 planning/contract verification scope.** On 2026-08-04, before
+the R15 scope reset, this plan was checked against then-current `main`
+(`d742b37bec8293b72f1897194d9bf8e10b85cb08`), the shipped v2 phase roles,
+Express prompt table, fitter/cloud evidence flow, layer and Room plans, the
+canonical adversarial-review prompt, and the linked GitHub issue bodies and
 states. No product code, issues, agent/measurement sessions, measurements, or
 DSP state were changed while drafting it.
 
-The 2026-08-04 R14 administrative closeout then verified #2105 merged as
+**R14 administrative-closeout verification scope.** The 2026-08-04 closeout
+verified #2105 merged as
 `a7e25f3ddb43457d1b08a9205542d880f3187591`, created exactly #2106 and
 #2107, updated #1654's stale shelved title, and posted the ratified scope links
 to #1654/#1894. That closeout changed no product code, deployment, DSP state,
 or measurement evidence.
+
+**2026-08-04 R15 scope-reset verification scope.** The revised current
+contract was checked against `origin/main` at
+`2e620bea7143bd31d4a1b1970740eced2e1c8279`, the now-updated #2106/#2107
+issue contracts, and the #1894 scope comment. This pass re-verified only the
+campaign status, dependency order, ownership boundaries, and bounded R15
+mission. It also independently re-derived the rejected `05822244` prototype
+against its base as 38 files: production +4,334/-485, tests +1,891/-314, and
+docs +167/-52. It did not implement, deploy, or measure product, DSP, or
+hardware behavior. The original R14 results remain recorded above; this pass
+did not rewrite or retroactively broaden them.
 
 Last verified: 2026-08-04
