@@ -661,8 +661,11 @@ PY
 # (empty/unset == S16_LE). Any other value fails its config parse and parks the
 # FINAL-OUTPUT OWNER at exit 78 — jasper-outputd-failure-reconcile grants one
 # bounded retry per window, then the unit stays failed and the speaker is
-# silent. outputd also echoes the value into STATUS dac.format, where the
-# chip-AEC alignment identity records it, so CHANGING a profile's declared
+# silent. outputd REQUESTS this format on its DAC PCM and parks if the device
+# installs a different one, so a value the hardware cannot serve silences the
+# speaker rather than being quietly converted. STATUS dac.format then reports
+# what outputd's client edge negotiated — not an echo of this value — and the
+# chip-AEC alignment identity records that, so CHANGING a profile's declared
 # format invalidates every commissioned artifact on that hardware and forces a
 # foreground `sudo jasper-aec-commission`. Emit sites are in
 # apply_audio_runtime_env.

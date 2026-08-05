@@ -359,13 +359,20 @@ What exists:
   selected final-output card. Public/default installs use the Apple
   USB-C dongle; DAC8x-family lab installs use the enumerated
   `snd_rpi_hifiberry_dac8x` card. An enabled InnoMaker HiFi AMP Pro uses the
-  enumerated `sndrpimerusamp` card. Its profile-scoped final
-  alias is a passive-only `plug`: outputd remains a 48 kHz stereo S16
-  client, while the hardware slave is pinned to 48 kHz, stereo, S32_LE
-  because the kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at
-  continuous 44.1-192 kHz rates — a driver-advertisement limit, not a
-  documented silicon one. The renderer rejects active-output mode for this
-  profile.
+  enumerated `sndrpimerusamp` card. It is the one profile that declares a
+  non-S16 final edge (`DacProfile.final_edge_format = S32_LE`), because the
+  kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous
+  44.1-192 kHz rates — a driver-advertisement limit, not a documented silicon
+  one. outputd REQUESTS that declared format on the PCM and fails closed unless
+  the installed `hw_params` report it, widening its i16 program to i32 at the
+  final write only. The profile-scoped `plug` alias still in front of the card
+  therefore converts nothing — but that follows from the alias pinning its
+  slave at `format S32_LE`, NOT from outputd's readback: a readback sees only
+  the client side of the PCM outputd opened, and a plug installs the client's
+  own request there. While the plug exists the render's slave pin is what
+  guarantees the hardware edge; deleting the plug (a separate change) moves
+  that guarantee onto the raw-`hw:` open. The renderer rejects active-output
+  mode for this profile.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
   `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,

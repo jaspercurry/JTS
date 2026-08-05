@@ -9,15 +9,27 @@
 //! content becomes silence. This keeps the final output loop alive
 //! even when renderers are idle.
 
-use alsa::pcm::{Access, Format, HwParams, State, PCM};
+use alsa::pcm::{Access, Format, HwParams, State, IO, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::types::{CHANNELS, SAMPLE_RATE};
+use crate::types::{SampleFormat, CHANNELS, SAMPLE_RATE};
 
-const FORMAT: Format = Format::S16LE;
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
+
+/// The single mapping from outputd's format vocabulary into ALSA's own.
+///
+/// Everything else in the crate speaks [`SampleFormat`]; this is the one place
+/// that knows what ALSA calls it. `S16Le` maps to the same `Format::S16LE` the
+/// retired module-level `FORMAT` const held, so an S16 edge asks ALSA for
+/// exactly what it always asked for.
+fn alsa_format(format: SampleFormat) -> Format {
+    match format {
+        SampleFormat::S16Le => Format::S16LE,
+        SampleFormat::S32Le => Format::S32LE,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NegotiatedPcm {
@@ -279,6 +291,18 @@ pub struct AlsaBackend {
     /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
     /// width stays `CHANNELS=2` (the published reference is always stereo).
     channels: u16,
+    /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
+    /// registry declaration and checked against the installed `hw_params` by
+    /// `configure_pcm`'s dac readback, so this is what outputd is running, not
+    /// an intention. On a raw `hw:` device it is also the hardware edge;
+    /// through a `plug` it is not (see that readback's comment). It selects the
+    /// write path in `write_dac_period` and is what `/state` reports as
+    /// `dac.format`.
+    dac_format: SampleFormat,
+    /// Reused widening staging for an `S32Le` edge — allocated once, at open,
+    /// and never on the audio path. Empty (zero bytes) on an `S16Le` edge,
+    /// which writes `samples` straight through with no staging at all.
+    dac_widen_buf: Vec<i32>,
 }
 
 /// Paired-composite transport: two clock-independent child DACs driven as one
@@ -359,6 +383,9 @@ impl AlsaBackend {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: config.content_channels,
+                // Camilla's post-DSP loopback lane is outputd's INTERNAL
+                // program, not the hardware edge — it stays i16.
+                format: SampleFormat::S16Le,
                 buffer_frames: config.content_buffer_frames,
                 manual_start: false,
             })
@@ -386,18 +413,22 @@ impl AlsaBackend {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: config.content_channels,
+                // The one role that asks for the DECLARED edge rather than a
+                // constant. `configure_pcm`'s dac readback checks the installed
+                // client-side format against it before this returns.
+                format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
             })
             .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm)),
         )?;
 
-        // `format` is the DECLARED final HARDWARE edge (see
-        // config::DacEdgeFormat), NOT what this backend writes: outputd's own
-        // client stays S16 (the `FORMAT` const `configure_pcm` sets and the
-        // `io_i16` writers), and on a plug-bridged DAC the plug converts up to
-        // the declared edge. The native-write change makes the two agree and
-        // turns this into a readback.
+        // `format` is what outputd's OWN CLIENT EDGE negotiated: what
+        // `configure_pcm` asked ALSA for (the registry declaration), checked
+        // against the installed hw_params. That equals the hardware edge on a
+        // raw `hw:` device, not through a `plug` — see the dac readback's
+        // comment. outputd's internal program is i16 whatever it says; a wider
+        // edge is served by widening at the final write.
         eprintln!(
             "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_pcm,
@@ -426,12 +457,28 @@ impl AlsaBackend {
             counters: IoCounters::default(),
             fill_log: FillLogGate::default(),
             channels: config.content_channels,
+            // `configure_pcm`'s dac readback checked the installed client-side
+            // format against this requested one, so storing the request stores
+            // what outputd is running — it never reached here otherwise.
+            dac_format: config.declared_dac_format,
+            dac_widen_buf: widen_staging(
+                config.declared_dac_format,
+                config.period_frames,
+                config.content_channels,
+            ),
         })
     }
 
     /// The runtime DAC/content channel width this backend reads and writes.
     pub fn channels(&self) -> u16 {
         self.channels
+    }
+
+    /// The format outputd's own client edge negotiated (readback-checked at
+    /// open; equals the hardware edge on a raw `hw:` device, not through a
+    /// `plug`).
+    pub fn dac_format(&self) -> SampleFormat {
+        self.dac_format
     }
 
     pub fn counters(&self) -> IoCounters {
@@ -491,50 +538,55 @@ impl AlsaBackend {
         Ok(classified.read)
     }
 
+    /// Write one already-mixed i16 period to the final edge.
+    ///
+    /// The period arriving here IS the reference the caller publishes to the
+    /// chip/software AEC (inv-A: reference == final DAC content). Widening for
+    /// an S32 edge happens INSIDE this call, on a private staging buffer —
+    /// `samples` is never mutated, so the published i16 reference and the
+    /// widened samples are the same audio at two scales, sample for sample.
     pub fn write_dac_period(&mut self, samples: &[i16]) -> Result<()> {
-        let frames_total = samples.len() / (self.channels as usize);
-        let io = self
-            .dac
-            .io_i16()
-            .context("getting i16 IO handle for outputd DAC")?;
-        let mut frames_done = 0usize;
-        let mut recoveries = 0u32;
-
-        while frames_done < frames_total {
-            let offset = frames_done * (self.channels as usize);
-            match io.writei(&samples[offset..]) {
-                Ok(n) => {
-                    frames_done += n;
-                    if n == 0 {
-                        recoveries += 1;
-                        if recoveries > MAX_RECOVERIES_PER_PERIOD {
-                            anyhow::bail!("outputd DAC writei returned 0 frames repeatedly");
-                        }
-                    }
+        let channels = self.channels as usize;
+        let frames_total = samples.len() / channels;
+        match self.dac_format {
+            // DEFAULT PATH — every S16_LE edge, which is every commissioned
+            // box today. Same `io_i16()` handle, same loop, same samples as
+            // before the native-format write: nothing is staged or converted.
+            SampleFormat::S16Le => {
+                let io = self
+                    .dac
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd DAC")?;
+                write_dac_frames(
+                    &io,
+                    &self.dac,
+                    &self.dac_pcm,
+                    samples,
+                    channels,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+            }
+            SampleFormat::S32Le => {
+                if self.dac_widen_buf.len() != samples.len() {
+                    // Steady state never resizes: `new` sized this for the run
+                    // loop's period. A geometry that ever differs reallocates
+                    // once and then stays put — it must not silently write a
+                    // short or stale period.
+                    self.dac_widen_buf.resize(samples.len(), 0);
                 }
-                Err(e) => {
-                    let errno = e.errno();
-                    if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                        self.counters.dac_xrun_count += 1;
-                        let pending = frames_total - frames_done;
-                        eprintln!(
-                            "event=outputd.xrun source=dac pcm={} count={} frames_pending={}",
-                            self.dac_pcm, self.counters.dac_xrun_count, pending
-                        );
-                        self.dac
-                            .try_recover(e, true)
-                            .context("recovering outputd DAC xrun")?;
-                        recoveries += 1;
-                        if recoveries > MAX_RECOVERIES_PER_PERIOD {
-                            anyhow::bail!(
-                                "outputd DAC xrun recovery exceeded {} attempts in one period",
-                                MAX_RECOVERIES_PER_PERIOD
-                            );
-                        }
-                    } else {
-                        return Err(e).context(format!("writing outputd DAC PCM {}", self.dac_pcm));
-                    }
-                }
+                widen_i16_to_i32(samples, &mut self.dac_widen_buf)?;
+                let io = self
+                    .dac
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd DAC")?;
+                write_dac_frames(
+                    &io,
+                    &self.dac,
+                    &self.dac_pcm,
+                    &self.dac_widen_buf,
+                    channels,
+                    &mut self.counters.dac_xrun_count,
+                )?;
             }
         }
         self.counters.dac_frames_written += frames_total as u64;
@@ -577,6 +629,7 @@ impl PairedCompositeSink {
             sample_rate: config.sample_rate,
             period_frames: config.period_frames,
             channels: config.content_channels,
+            format: SampleFormat::S16Le,
             buffer_frames: config.content_buffer_frames,
             manual_start: false,
         })
@@ -602,6 +655,10 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
+                // Composite children stay S16-pinned: the native-format write
+                // is scoped to the coherent single DAC, and no registered
+                // composite profile declares another edge format.
+                format: SampleFormat::S16Le,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
             })
@@ -620,6 +677,7 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
+                format: SampleFormat::S16Le,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
             })
@@ -858,6 +916,9 @@ pub fn open_playback_pcm(
         sample_rate,
         period_frames,
         channels: CHANNELS,
+        // The chip-AEC reference leg's only caller; its native contract is
+        // 16 kHz/2ch/S16_LE and `validate_chip_ref_geometry` enforces it.
+        format: SampleFormat::S16Le,
         buffer_frames,
         manual_start: true,
     })
@@ -872,6 +933,11 @@ struct PcmConfig<'a> {
     sample_rate: u32,
     period_frames: u32,
     channels: u16,
+    /// The format to REQUEST from ALSA for this PCM. Only the coherent
+    /// single-DAC `dac` role varies it (from the registry-declared final edge);
+    /// every other role passes `S16Le` explicitly, which is byte-identical to
+    /// the retired module-level `FORMAT` const they used to inherit.
+    format: SampleFormat,
     buffer_frames: u32,
     manual_start: bool,
 }
@@ -894,9 +960,11 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         sample_rate,
         period_frames,
         channels,
+        format,
         buffer_frames,
         manual_start,
     } = config;
+    let requested_format = alsa_format(format);
     let negotiated;
     {
         let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
@@ -904,8 +972,8 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             .with_context(|| format!("set_channels({})", channels))?;
         hwp.set_rate(sample_rate, ValueOr::Nearest)
             .with_context(|| format!("set_rate({})", sample_rate))?;
-        hwp.set_format(FORMAT)
-            .with_context(|| format!("set_format({:?})", FORMAT))?;
+        hwp.set_format(requested_format)
+            .with_context(|| format!("set_format({:?})", requested_format))?;
         hwp.set_access(Access::RWInterleaved)
             .context("set_access(RWInterleaved)")?;
         hwp.set_period_size(period_frames as i64, ValueOr::Nearest)
@@ -918,6 +986,37 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             buffer_frames: hwp.get_buffer_size().context("get_buffer_size")? as u32,
         };
         pcm.hw_params(&hwp).context("installing HwParams")?;
+    }
+    if role == "dac" {
+        // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
+        // it is not what was requested. Read the scope of that claim honestly,
+        // because it is narrower than it looks:
+        //
+        // `hw_params_current` returns the CLIENT-side params of the PCM outputd
+        // opened. On a raw `hw:` device the client edge IS the hardware edge,
+        // so there this is a hardware-edge proof. Through a `plug` it is NOT: a
+        // plug installs the client's own request client-side and converts on
+        // the slave side, so the readback agrees BY CONSTRUCTION and can never
+        // see what the DAC is really doing. Evidence, not theory — `main` today
+        // opens the InnoMaker plug at S16 and alsa-rs's per-period `io_i16`
+        // check (the same `hw_params_current` read) passes.
+        //
+        // What this therefore catches is a device that installs something OTHER
+        // than requested and reports it honestly. The InnoMaker's HARDWARE edge
+        // is guaranteed elsewhere: today by the `format S32_LE` slave pinned in
+        // deploy/lib/jasper-asound-render.sh, and once that plug is deleted by
+        // the absence of any conversion layer at all.
+        //
+        // WHOEVER DELETES THAT PLUG OWNS THE PROOF MOVING — from the render's
+        // slave pin to the raw-`hw:` open. This readback is not that proof and
+        // will not start being it.
+        let current = pcm
+            .hw_params_current()
+            .context("reading installed outputd DAC HwParams")?;
+        let installed = current
+            .get_format()
+            .context("get installed outputd DAC format")?;
+        verify_dac_format(pcm_name, format, installed)?;
     }
     if role == "chip_ref" {
         let current = pcm
@@ -958,6 +1057,52 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     }
     validate_negotiated(role, pcm_name, negotiated, sample_rate, period_frames)?;
     Ok(negotiated)
+}
+
+/// Fail closed unless the format ALSA installed on OUTPUTD'S OWN CLIENT EDGE
+/// is exactly the one requested.
+///
+/// Scope: the client edge equals the hardware edge only on a raw `hw:` device.
+/// See `configure_pcm`'s dac readback comment for why a `plug` is structurally
+/// invisible to this check, and where the InnoMaker's hardware-edge guarantee
+/// actually lives.
+///
+/// Separate from `validate_negotiated` because the failure is a different kind:
+/// a rate or period mismatch means the device could not serve outputd's
+/// geometry, while this means it served a DIFFERENT sample format than the one
+/// the alignment identity would be certified against. Called only
+/// from `configure_pcm`'s `dac` role, whose caller wraps it in
+/// `final_sink_startup` — so a mismatch parks the unit at EX_CONFIG 78 rather
+/// than restart-looping against hardware that cannot change.
+///
+/// It is NOT redundant with `alsa`'s own `io_i16`/`io_i32` format check. That
+/// one runs per period, deep on the audio path, and reports an opaque
+/// `unsupported io_xx`; this runs once, at startup, names both formats, and
+/// reaches the operator as a park rather than as a restart loop.
+fn verify_dac_format(pcm_name: &str, requested: SampleFormat, installed: Format) -> Result<()> {
+    let want = alsa_format(requested);
+    if installed != want {
+        anyhow::bail!(
+            "outputd dac PCM {pcm_name} installed format {:?} but outputd requested {} ({:?})",
+            installed,
+            requested.as_str(),
+            want
+        );
+    }
+    Ok(())
+}
+
+/// The i16 -> i32 widening staging for one period at `format`.
+///
+/// An `S16Le` edge writes its caller's slice straight to ALSA and stages
+/// nothing, so it holds an EMPTY vec: zero bytes, exactly the pre-native-format
+/// footprint. Only an `S32Le` edge pays, and it pays once — here, at open,
+/// never on the audio path.
+fn widen_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i32> {
+    match format {
+        SampleFormat::S16Le => Vec::new(),
+        SampleFormat::S32Le => vec![0i32; (period_frames as usize) * (channels as usize)],
+    }
 }
 
 fn validate_chip_ref_geometry(pcm_name: &str, actual: PcmGeometry) -> Result<()> {
@@ -1029,6 +1174,103 @@ fn deinterleave_4ch_to_dual_stereo(
         out_a[dst + 1] = samples_4ch[src + 1];
         out_b[dst] = samples_4ch[src + 2];
         out_b[dst + 1] = samples_4ch[src + 3];
+    }
+    Ok(())
+}
+
+/// Widen one already-mixed i16 period into the `S32_LE` edge's sample width.
+///
+/// `i32::from(sample) << 16` is left-justified widening: the exact conversion
+/// ALSA's own S16->S32 plug performs, and the reason retiring that plug is
+/// bit-transparent. It preserves sign and full scale (`i16::MIN` -> `i32::MIN`,
+/// `i16::MAX` -> `0x7FFF_0000`), adds no gain, no dither, and no rounding.
+///
+/// `i32::from` FIRST is load-bearing: shifting the i16 and widening afterwards
+/// would shift every significant bit out of a 16-bit value.
+///
+/// The `zip` covers only the shorter side, so a length mismatch would silently
+/// emit a SHORT or STALE period — audible, and invisible to every counter. The
+/// only caller resizes to match immediately above the call; this rejects the
+/// mismatch outright so a future caller cannot quietly drop that contract.
+///
+/// A `Result` rather than a `debug_assert!`, for two reasons. It matches the
+/// sibling scratch-buffer check in this file — `deinterleave_4ch_to_dual_stereo`
+/// bails on "scratch buffers are smaller than content period" — so the audio
+/// path keeps ONE failure idiom. And a debug assertion would not run where it
+/// matters: CI builds this crate with `cargo test --release`, where debug
+/// assertions are compiled out, so its regression test would silently never
+/// fire (verified — the `#[should_panic]` form fails there with "test did not
+/// panic as expected").
+fn widen_i16_to_i32(samples: &[i16], out: &mut [i32]) -> Result<()> {
+    if out.len() != samples.len() {
+        anyhow::bail!(
+            "outputd widening staging is {} samples but the period is {}; \
+             writing that would emit a short or stale period",
+            out.len(),
+            samples.len()
+        );
+    }
+    for (dst, &src) in out.iter_mut().zip(samples.iter()) {
+        *dst = i32::from(src) << 16;
+    }
+    Ok(())
+}
+
+/// The coherent single DAC's period write loop, over whatever sample type the
+/// negotiated edge takes.
+///
+/// One loop, not one per format: the xrun accounting, the bounded recovery
+/// budget, and the `event=outputd.xrun` line are the audio path's fail-closed
+/// behaviour and must not be able to drift between an S16 and an S32 edge.
+/// Monomorphised for `i16` this is instruction-for-instruction the pre-native-
+/// format writer.
+fn write_dac_frames<S: Copy>(
+    io: &IO<'_, S>,
+    pcm: &PCM,
+    pcm_name: &str,
+    samples: &[S],
+    channels: usize,
+    xrun_count: &mut u64,
+) -> Result<()> {
+    let frames_total = samples.len() / channels;
+    let mut frames_done = 0usize;
+    let mut recoveries = 0u32;
+
+    while frames_done < frames_total {
+        let offset = frames_done * channels;
+        match io.writei(&samples[offset..]) {
+            Ok(n) => {
+                frames_done += n;
+                if n == 0 {
+                    recoveries += 1;
+                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
+                        anyhow::bail!("outputd DAC writei returned 0 frames repeatedly");
+                    }
+                }
+            }
+            Err(e) => {
+                let errno = e.errno();
+                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    *xrun_count += 1;
+                    let pending = frames_total - frames_done;
+                    eprintln!(
+                        "event=outputd.xrun source=dac pcm={} count={} frames_pending={}",
+                        pcm_name, *xrun_count, pending
+                    );
+                    pcm.try_recover(e, true)
+                        .context("recovering outputd DAC xrun")?;
+                    recoveries += 1;
+                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
+                        anyhow::bail!(
+                            "outputd DAC xrun recovery exceeded {} attempts in one period",
+                            MAX_RECOVERIES_PER_PERIOD
+                        );
+                    }
+                } else {
+                    return Err(e).context(format!("writing outputd DAC PCM {}", pcm_name));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1324,6 +1566,144 @@ mod tests {
 
         let err = validate_negotiated("dac", "outputd_dac", negotiated, 48_000, 1024).unwrap_err();
         assert!(err.to_string().contains("buffer_frames=1024"));
+    }
+
+    #[test]
+    fn alsa_format_maps_s16_to_the_constant_the_default_path_always_used() {
+        // The retired module-level `const FORMAT: Format = Format::S16LE` is
+        // now one arm of this mapping. If it ever stops being S16LE, every
+        // S16 box silently changes its electrical edge — so pin the literal.
+        assert_eq!(alsa_format(SampleFormat::S16Le), Format::S16LE);
+        assert_eq!(alsa_format(SampleFormat::S32Le), Format::S32LE);
+    }
+
+    #[test]
+    fn widening_preserves_sign_full_scale_and_silence() {
+        // Left-justified widening: the same mapping ALSA's own S16->S32 plug
+        // performs, which is why retiring that plug is bit-transparent.
+        let samples = [i16::MAX, i16::MIN, 0, 1, -1, 256, -256];
+        let mut out = vec![0i32; samples.len()];
+
+        widen_i16_to_i32(&samples, &mut out).unwrap();
+
+        assert_eq!(
+            out,
+            vec![
+                0x7FFF_0000,
+                i32::MIN,
+                0,
+                0x0001_0000,
+                -0x0001_0000,
+                0x0100_0000,
+                -0x0100_0000,
+            ]
+        );
+    }
+
+    #[test]
+    fn widening_the_i16_min_edge_neither_wraps_nor_saturates() {
+        // `i16::MIN << 16` is the one input that could overflow if the shift
+        // happened before the widen. Widened first it is exactly `i32::MIN` —
+        // still full-scale negative, still monotonic against `i16::MIN + 1`.
+        let mut out = [0i32; 2];
+        widen_i16_to_i32(&[i16::MIN, i16::MIN + 1], &mut out).unwrap();
+
+        assert_eq!(out[0], i32::MIN);
+        assert_eq!(out[0], (i16::MIN as i32) * 65_536);
+        assert!(out[0] < out[1], "widening must stay monotonic at the floor");
+    }
+
+    #[test]
+    fn widening_is_exactly_a_scale_change_not_a_gain_change() {
+        // Every sample must land on `value * 65536` — no dither, no rounding,
+        // no headroom trim. A gain change here would be inaudible in a unit
+        // test and very audible in a room.
+        let samples: Vec<i16> = (-32_768..=32_767).step_by(97).map(|v| v as i16).collect();
+        let mut out = vec![0i32; samples.len()];
+
+        widen_i16_to_i32(&samples, &mut out).unwrap();
+
+        for (i, &sample) in samples.iter().enumerate() {
+            assert_eq!(out[i], i32::from(sample) * 65_536, "sample {sample}");
+        }
+    }
+
+    #[test]
+    fn widening_rejects_a_staging_length_that_does_not_match_the_period() {
+        // Without the check the `zip` would quietly widen 2 of 4 samples and
+        // leave the rest stale — a short/torn period at the speaker with
+        // nothing in any counter to show for it. Both directions are wrong:
+        // staging shorter than the period truncates it, staging longer writes
+        // a tail the period never produced.
+        let mut short = [0i32; 2];
+        let err = widen_i16_to_i32(&[1, 2, 3, 4], &mut short).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("staging is 2 samples"), "{text}");
+        assert!(text.contains("period is 4"), "{text}");
+
+        let mut long = [0i32; 8];
+        widen_i16_to_i32(&[1, 2], &mut long).unwrap_err();
+    }
+
+    #[test]
+    fn an_s16_edge_stages_nothing_at_all() {
+        // The default path writes the caller's slice straight to `io_i16()`,
+        // so it must not carry a widening buffer — an S16 box pays zero bytes
+        // for the native-format write.
+        let staging = widen_staging(SampleFormat::S16Le, 1024, 2);
+        assert!(staging.is_empty());
+        assert_eq!(staging.capacity(), 0);
+    }
+
+    #[test]
+    fn an_s32_edge_preallocates_one_whole_period() {
+        // Sized once at open so the audio path never allocates.
+        let staging = widen_staging(SampleFormat::S32Le, 1024, 2);
+        assert_eq!(staging.len(), 2048);
+        assert!(staging.iter().all(|&s| s == 0));
+    }
+
+    #[test]
+    fn dac_format_readback_accepts_the_installed_format_it_requested() {
+        verify_dac_format("outputd_dac", SampleFormat::S16Le, Format::S16LE).unwrap();
+        verify_dac_format("outputd_dac", SampleFormat::S32Le, Format::S32LE).unwrap();
+    }
+
+    #[test]
+    fn dac_format_readback_rejects_an_honestly_reported_mismatch() {
+        // A device that installed something other than the request AND reported
+        // it honestly. This is NOT the plug shape: a plug installs the client's
+        // own request client-side, so a plug can never produce this
+        // disagreement (see `configure_pcm`'s dac readback comment). Both
+        // formats must be named — the operator needs to know which end moved.
+        let err = verify_dac_format("outputd_dac", SampleFormat::S32Le, Format::S16LE).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("outputd_dac"), "{text}");
+        assert!(text.contains("S16LE"), "{text}");
+        assert!(text.contains("S32_LE"), "{text}");
+    }
+
+    #[test]
+    fn dac_format_readback_rejects_an_edge_outside_the_vocabulary() {
+        let err = verify_dac_format("outputd_dac", SampleFormat::S16Le, Format::S24LE).unwrap_err();
+        assert!(err.to_string().contains("S24LE"), "{err}");
+    }
+
+    #[test]
+    fn dac_format_mismatch_parks_the_unit_instead_of_restart_looping() {
+        // configure_pcm's dac call is wrapped in `final_sink_startup`, so a
+        // readback mismatch must carry the configuration marker main() turns
+        // into EX_CONFIG 78. A restart cannot change what the device installs.
+        let error = final_sink_startup(verify_dac_format(
+            "outputd_dac",
+            SampleFormat::S32Le,
+            Format::S16LE,
+        ))
+        .unwrap_err();
+
+        assert!(error
+            .downcast_ref::<FinalSinkStartupConfigError>()
+            .is_some());
     }
 
     #[test]

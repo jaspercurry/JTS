@@ -92,8 +92,11 @@ class AlignmentIdentity:
     output_id: str
     output_hardware_key: str
     output_pcm: str
-    # The final-edge sample format outputd declares for the DAC's hw device
-    # (outputd STATUS ``dac.format``).  A commissioned ``K`` is only valid for
+    # The sample format outputd's own client edge negotiated, read back from
+    # the installed ``hw_params`` (outputd STATUS ``dac.format``).  That is the
+    # hardware edge on a raw ``hw:`` device; through an ALSA ``plug`` it is not,
+    # because a plug installs the client's own request client-side and converts
+    # on the slave side.  A commissioned ``K`` is only valid for
     # the electrical edge it was measured against, so moving the edge — a DAC
     # swap, or the registry re-declaring one — MUST invalidate the artifact
     # rather than degrade quietly.  Adding this field also invalidates every

@@ -27,6 +27,7 @@ use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
 use crate::json::json_string;
 use crate::tts::TtsMetrics;
+use crate::types::SampleFormat;
 use jasper_clock::DllSnapshot;
 use jasper_ring::RingMetrics;
 use std::sync::OnceLock;
@@ -60,11 +61,17 @@ pub struct OutputdState {
     sink_mode: String,
     content_pcm: String,
     dac_pcm: String,
-    /// The registry-DECLARED format of the final hardware edge (see
-    /// `config::DacEdgeFormat`) — what the reconciler says the DAC's `hw:`
-    /// device is at, not a readback. The native-write change upgrades this to
-    /// outputd's NEGOTIATED format once outputd opens the edge itself.
+    /// The registry-DECLARED format of the final hardware edge — what the
+    /// reconciler says the DAC's `hw:` device is at. It is what `dac.format`
+    /// reports only UNTIL outputd opens an edge of its own; the fake backend
+    /// never does, so there it is the whole answer.
     declared_dac_format: String,
+    /// The format outputd's ALSA sink actually NEGOTIATED, read back from the
+    /// installed `hw_params` (`SampleFormat::as_str`, hence `&'static str`).
+    /// Written exactly once, at open, and it is what `dac.format` reports from
+    /// then on — the chip-AEC alignment identity must certify against the edge
+    /// outputd is running, never against a declaration it could disagree with.
+    negotiated_dac_format: OnceLock<&'static str>,
     dual_dac_a_pcm: Option<String>,
     dual_dac_b_pcm: Option<String>,
     dual_linked: AtomicBool,
@@ -248,6 +255,7 @@ impl OutputdState {
             content_pcm: config.content_pcm.clone(),
             dac_pcm: config.dac_pcm.clone(),
             declared_dac_format: config.declared_dac_format.as_str().to_string(),
+            negotiated_dac_format: OnceLock::new(),
             dual_dac_a_pcm: config.dual_dac_a_pcm.clone(),
             dual_dac_b_pcm: config.dual_dac_b_pcm.clone(),
             dual_linked: AtomicBool::new(false),
@@ -416,6 +424,16 @@ impl OutputdState {
             .store(content.buffer_frames as u64, Ordering::Relaxed);
         self.dac_buffer_frames
             .store(dac.buffer_frames as u64, Ordering::Relaxed);
+    }
+
+    /// Record the sample format the final sink negotiated at open.
+    ///
+    /// Set-once by construction (the ALSA run loop calls it once, right after
+    /// the sink opens). A repeat call is ignored rather than fought over:
+    /// there is no second negotiation, and `dac.format` is an identity input —
+    /// a value that could change under a reader is worse than a stale one.
+    pub fn set_dac_format(&self, format: SampleFormat) {
+        let _ = self.negotiated_dac_format.set(format.as_str());
     }
 
     pub fn mark_period(&self, counters: IoCounters, reference_sequence: u64, clipped_samples: u32) {
@@ -1249,13 +1267,24 @@ impl OutputdState {
         buf.push_str(r#""dac":{"#);
         push_kv_str(&mut buf, "pcm", &self.dac_pcm);
         buf.push(',');
-        // DECLARED, not negotiated: the DAC registry's final_edge_format as the
-        // reconciler emitted it. Consumers that must know what the hardware
-        // edge is (chiefly the chip-AEC alignment identity, which force-
-        // invalidates a commissioned artifact when the edge moves) read it
-        // here. The native-write change upgrades this to outputd's own
-        // negotiated readback once outputd opens the edge at that format.
-        push_kv_str(&mut buf, "format", &self.declared_dac_format);
+        // NEGOTIATED once outputd has opened its edge: the format read back off
+        // the installed hw_params, not the declaration that asked for it.
+        // Consumers that must know what edge is running (chiefly the chip-AEC
+        // alignment identity, which force-invalidates a commissioned artifact
+        // when it moves) read it here.
+        //
+        // Falls back to the registry declaration whenever no edge is open yet —
+        // which is the fake backend for its whole life, AND the ALSA backend for
+        // its pre-open window: the state socket binds before the sink opens, so
+        // a STATUS read in that window is answered with the declaration.
+        push_kv_str(
+            &mut buf,
+            "format",
+            self.negotiated_dac_format
+                .get()
+                .copied()
+                .unwrap_or(self.declared_dac_format.as_str()),
+        );
         buf.push(',');
         push_kv_u64(&mut buf, "sample_rate", sample_rate);
         buf.push(',');
@@ -2081,7 +2110,7 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
 mod tests {
     use super::*;
     use crate::config::{
-        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, DacEdgeFormat, SinkMode,
+        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, SinkMode,
         DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM, DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
         DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
     };
@@ -2093,7 +2122,7 @@ mod tests {
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             dac_pcm: "outputd_dac".to_string(),
-            declared_dac_format: DacEdgeFormat::S16Le,
+            declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
             dual_require_link: false,
@@ -2376,12 +2405,14 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_echoes_the_declared_dac_edge_format() {
+    fn snapshot_json_echoes_the_declared_dac_edge_format_before_the_sink_opens() {
         // The chip-AEC alignment identity reads dac.format out of STATUS, so a
         // declared S32_LE edge (the InnoMaker HiFi AMP Pro) must reach the wire
-        // verbatim — NOT collapse to outputd's own S16 client format.
+        // verbatim — NOT collapse to outputd's own S16 internal program format.
+        // No sink has opened here (the fake backend never opens one), so the
+        // declaration is all outputd knows.
         let state = OutputdState::new(&Config {
-            declared_dac_format: DacEdgeFormat::S32Le,
+            declared_dac_format: SampleFormat::S32Le,
             ..test_config()
         });
 
@@ -2390,6 +2421,43 @@ mod tests {
         assert!(
             j.contains(r#""dac":{"pcm":"outputd_dac","format":"S32_LE""#),
             "declared S32_LE edge missing from {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_reports_the_negotiated_edge_format_once_the_sink_opens() {
+        // The identity must certify against the edge outputd IS running, not
+        // the one the registry declared. Where they disagree — the shape a
+        // silently-converting ALSA plug would produce, or a composite whose
+        // S16-pinned children ignore a wider declaration — the readback wins.
+        let state = OutputdState::new(&Config {
+            declared_dac_format: SampleFormat::S32Le,
+            ..test_config()
+        });
+
+        state.set_dac_format(SampleFormat::S16Le);
+
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#),
+            "negotiated S16_LE edge missing from {j}"
+        );
+    }
+
+    #[test]
+    fn negotiated_dac_format_is_recorded_once_and_never_moves_under_a_reader() {
+        // `dac.format` is an identity input. There is exactly one negotiation,
+        // so a later call is ignored rather than allowed to change the answer
+        // a commissioning run already read.
+        let state = OutputdState::new(&test_config());
+
+        state.set_dac_format(SampleFormat::S32Le);
+        state.set_dac_format(SampleFormat::S16Le);
+
+        assert!(
+            state.snapshot_json().contains(r#""format":"S32_LE""#),
+            "first negotiated value must stand"
         );
     }
 

@@ -106,8 +106,8 @@ commissioner/reset events.
 Success atomically publishes only
 `/var/lib/jasper/chip-aec-alignment.json`: schema-v2 identity (XVF factory
 iSerial, firmware/beam/fixed-profile identity, physical USB-output serial or
-I2S profile/card identity, the registry-declared final-edge sample format
-outputd reports as `dac.format`, and negotiated output geometry) plus `K`. The
+I2S profile/card identity, the final-edge sample format outputd NEGOTIATED and
+reports as `dac.format`, and negotiated output geometry) plus `K`. The
 lifecycle relationship is
 `K = commissioned SYS_DELAY + commissioned median reference queue`. On
 boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples
@@ -131,12 +131,26 @@ handled above, where the existing artifact was operationally *enriched* rather
 than recommissioned. The two cases are not alike. v1→v2 added fields
 describing hardware that had not moved and was not about to, so enrichment
 could not certify anything false. `output_format` exists to guard the
-electrical edge that the outputd native-format write is about to start moving,
-and enrichment machinery would be a fail-open mechanism at exactly the point
+electrical edge that the outputd native-format write moves — outputd now
+requests the registry-declared format on its DAC PCM and checks the installed
+`hw_params` back, so `dac.format` is what **outputd** is running rather than a
+declaration about it — and enrichment machinery would be a fail-open mechanism
+at exactly the point
 the guard has to be trustworthy — it would hand a box a "valid" artifact for an
 edge nobody re-measured. At the current fleet size (two lab boxes) one
 foreground recommission per box is cheaper and safer than shipping migration
 code that weakens the guard permanently.
+
+Read the scope of `output_format` precisely: it is outputd's own CLIENT edge,
+read back from the `hw_params` installed on the PCM outputd opened. On a raw
+`hw:` device — every commissioned box today — the client edge is the hardware
+edge. Through an ALSA `plug` it is not: a plug installs the client's request
+client-side and converts on the slave side, so the readback agrees by
+construction and cannot see the DAC. The InnoMaker's hardware edge is
+guaranteed by the `format S32_LE` slave pinned in
+`deploy/lib/jasper-asound-render.sh` while that plug exists, and by the absence
+of any conversion layer once it is deleted. The identity field is not a
+substitute for either.
 
 `jasper-aec-reconcile` owns this lifecycle. While uncommissioned it keeps the
 native reference writer active but parks the bridge and voice. Once silent

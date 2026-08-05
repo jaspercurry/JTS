@@ -596,10 +596,12 @@ runtime graph.
 The old DAC8x final-output alias route has been removed. `outputd_dac`
 renders directly to an ordinary recognized final-output card. The sole
 profile-scoped format exception is the passive-stereo InnoMaker HiFi AMP Pro:
-its final-edge `plug` keeps outputd's JTS S16 client contract; the kernel DAI
-(`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous 44.1-192 kHz rates
-(a driver-advertisement limit, not a documented silicon one), so the plug
-pins the slave at JTS's 48 kHz, two channels, and widens S16 to S32. That
+the kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous
+44.1-192 kHz rates (a driver-advertisement limit, not a documented silicon
+one), so its registry profile declares an `S32_LE` final edge. outputd requests
+that format directly and widens its i16 program to i32 at the final write; the
+`plug` alias still in front of the card pins the slave at JTS's 48 kHz and two
+channels and now converts nothing, and is retired separately. That
 profile does not declare an active-output lane, and its renderer rejects
 active-mode input so the plug cannot sit after an active crossover.
 Active-speaker channel
@@ -716,7 +718,8 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-04 (InnoMaker final-edge format conversion and
+Last verified: 2026-08-04 (InnoMaker final-edge format ownership — outputd
+requests the declared S32_LE itself and the plug converts nothing — and the
 passive-only active-lane exclusion rechecked; atomic turn-start volume context and outputd's
 missing/rejected-context silence rule checked against both Rust consumers and
 the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay

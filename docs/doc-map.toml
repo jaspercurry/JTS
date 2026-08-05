@@ -463,6 +463,12 @@ code = [
   "jasper/mics/**",
   "jasper/xvf/**",
   "jasper/chip_aec_experiment.py",
+  # The commissioned-alignment artifact and its identity. outputd's final-edge
+  # format is one of those identity fields, so the daemon that negotiates it
+  # routes here too — two PRs in the final-edge format program needed this
+  # route and the map did not have it.
+  "jasper/chip_aec_alignment.py",
+  "rust/jasper-outputd/**",
   "deploy/bin/jasper-aec-reconcile",
   "deploy/lib/jasper-env-file.sh",
   "deploy/systemd/jasper-aec-*.service",

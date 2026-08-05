@@ -15,7 +15,7 @@ use jasper_env::{env_f32, env_parse, env_str};
 use crate::dac_content::{
     ChannelPick, SUB_DEFAULT_CORNER_HZ, SUB_MAX_CORNER_HZ, SUB_MIN_CORNER_HZ,
 };
-use crate::types::SAMPLE_RATE;
+use crate::types::{SampleFormat, SAMPLE_RATE};
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
 pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
@@ -95,35 +95,6 @@ pub enum SinkMode {
     Composite,
 }
 
-/// The sample format at the FINAL HARDWARE EDGE — the format the DAC's `hw:`
-/// device is opened at.
-///
-/// IMPORTANT: this is NOT the format outputd's own ALSA client writes. On a
-/// plug-bridged DAC (the InnoMaker HiFi AMP Pro today) outputd still writes
-/// S16 into an ALSA plug that converts up to the S32 hardware edge, so this
-/// value and outputd's client format legitimately disagree. This type declares
-/// the HARDWARE edge only; `set_format` / `FORMAT` / `io_i16` are untouched by
-/// it. Making outputd write the declared format natively (and retiring the
-/// plug) is the separate native-write change.
-///
-/// Declared by the DAC registry (`DacProfile.final_edge_format`) and emitted by
-/// `jasper-audio-hardware-reconcile` as `JASPER_OUTPUTD_DAC_FORMAT`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DacEdgeFormat {
-    S16Le,
-    S32Le,
-}
-
-impl DacEdgeFormat {
-    /// The `/state` + log wire value, spelled exactly as ALSA spells it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::S16Le => "S16_LE",
-            Self::S32Le => "S32_LE",
-        }
-    }
-}
-
 impl SinkMode {
     /// The `/state` wire value. The composite shape KEEPS the stable
     /// `dual_apple` wire string through this type rename — the documented
@@ -164,12 +135,18 @@ pub struct Config {
     pub content_channels: u16,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind
-    /// `dac_pcm` — see [`DacEdgeFormat`] for why this is not necessarily the
-    /// format outputd itself writes. READ-ONLY today: outputd echoes it to
-    /// STATUS and the opened event (so the chip-AEC alignment identity can
-    /// record the edge it was commissioned against) and changes nothing about
-    /// what it asks ALSA for.
-    pub declared_dac_format: DacEdgeFormat,
+    /// `dac_pcm` — the format the coherent single-DAC ALSA backend REQUESTS
+    /// (`set_format`) and then proves it got, by reading the installed
+    /// `hw_params` back. outputd's internal program stays i16 whatever this
+    /// says (see [`crate::types::SampleFormat`]); an `S32Le` edge is served by
+    /// widening at the final write only.
+    ///
+    /// Declared by the DAC registry (`DacProfile.final_edge_format`) and
+    /// emitted by `jasper-audio-hardware-reconcile` as
+    /// `JASPER_OUTPUTD_DAC_FORMAT`. It is NOT what the composite sink writes:
+    /// composite children stay S16-pinned (no registered composite profile
+    /// declares anything else), and the fake backend opens no edge at all.
+    pub declared_dac_format: SampleFormat,
     pub dual_dac_a_pcm: Option<String>,
     pub dual_dac_b_pcm: Option<String>,
     pub dual_require_link: bool,
@@ -416,9 +393,9 @@ impl Config {
         };
         // The final HARDWARE edge's declared format, emitted by
         // jasper-audio-hardware-reconcile from the DAC registry's
-        // DacProfile.final_edge_format. See DacEdgeFormat: this declares the
-        // hw device's format, NOT the format outputd's client writes, and it
-        // changes nothing about what outputd asks ALSA for here.
+        // DacProfile.final_edge_format. The coherent single-DAC ALSA backend
+        // REQUESTS this format at the edge and verifies the installed
+        // hw_params match; it does not change outputd's internal i16 program.
         //
         // Unset or blank == the historical S16_LE default: the reconciler
         // writes an explicit EMPTY value for an unrecognized DAC (it has no
@@ -429,8 +406,8 @@ impl Config {
         // and the only writer emits the registry literal, so a case variant is
         // itself drift worth surfacing.
         let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {
-            "" | "S16_LE" => DacEdgeFormat::S16Le,
-            "S32_LE" => DacEdgeFormat::S32Le,
+            "" | "S16_LE" => SampleFormat::S16Le,
+            "S32_LE" => SampleFormat::S32Le,
             other => {
                 anyhow::bail!(
                     "JASPER_OUTPUTD_DAC_FORMAT must be one of S16_LE, S32_LE \
@@ -1395,7 +1372,7 @@ mod tests {
         for value in [None, Some(""), Some("   ")] {
             with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", value)], || {
                 let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.declared_dac_format, DacEdgeFormat::S16Le);
+                assert_eq!(cfg.declared_dac_format, SampleFormat::S16Le);
                 assert_eq!(cfg.declared_dac_format.as_str(), "S16_LE");
             });
         }
@@ -1404,8 +1381,8 @@ mod tests {
     #[test]
     fn declared_dac_format_parses_the_two_registry_values() {
         for (raw, want) in [
-            ("S16_LE", DacEdgeFormat::S16Le),
-            ("S32_LE", DacEdgeFormat::S32Le),
+            ("S16_LE", SampleFormat::S16Le),
+            ("S32_LE", SampleFormat::S32Le),
         ] {
             with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", Some(raw))], || {
                 let cfg = Config::from_env().unwrap();
