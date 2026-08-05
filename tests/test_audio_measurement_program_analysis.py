@@ -267,16 +267,12 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
 ):
     """One shared H makes neutral M*C/P and legacy H*C equivalent end to end.
 
-    The plants are NON-ZERO across the whole rfft grid, deliberately including
-    outside each role's swept band. The fixture's first shape zeroed them at
-    exactly the band edges, which made the composition's out-of-band behaviour
-    invisible — and out-of-band is precisely where a spectrum spliced at the
-    driven-band edge steps by tens of dB.
-
-    ``identity_protection`` is §4.2's required ``P == C_configured``
-    identity-ratio subcase, exercised on the tweeter (whose swept band then
-    starts inside the -12 dB conditioning floor of its own high-pass) while the
-    woofer keeps a different role-specific ``P`` — the JTS3 shape §4.2 names.
+    The plants are NON-ZERO across the whole rfft grid, including outside each
+    role's swept band: the fixture's first shape zeroed them at exactly the band
+    edges, which made every out-of-band composition choice invisible — and that
+    is where a spectrum spliced at the driven-band edge steps by tens of dB.
+    ``identity_protection`` is §4.2's required ``P == C_configured`` subcase on
+    the tweeter, with the woofer keeping a role-specific ``P`` (the JTS3 shape).
     """
     configured = {
         "woofer": (CrossoverSection(FC_HZ, 4, False),),
@@ -331,15 +327,13 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         priors=MeasurementPriors(crossover_fc_hz=FC_HZ, mic_tier="reference"),
     )
 
-    # §4.2 compares the two arms "on the same conditioning-valid bins", and the
-    # dataclass's dB arrays are float32. Once the plants are honestly non-zero
-    # out of band those arrays reach -168 dB, where ONE float32 ULP is already
-    # 1.53e-5 dB — 15x the plan's 1e-6 dB tolerance, which no test can assert at
-    # that storage precision. Nothing is excused: every float32 array is pinned
-    # across the WHOLE grid at 1e-6 RELATIVE (float32's own eps is 1.2e-7, so
-    # this is ~8 ULP, not a blank cheque) and then at the plan's 1e-6 ABSOLUTE
-    # over the band some role actually declared. Every other field, including
-    # every complex response on the full grid, already agrees to <= 1.02e-10.
+    # §4.2 compares the arms "on the same conditioning-valid bins", and the dB
+    # arrays are float32: once the plants are honestly non-zero out of band they
+    # reach -168 dB, where ONE float32 ULP is 1.53e-5 dB, 15x the plan's 1e-6 dB
+    # — unassertable at that precision. Nothing is excused: the whole grid is
+    # pinned at rtol+atol 1e-6 (float32 eps is 1.2e-7, ~8 ULP), then at the
+    # plan's 1e-6 ABSOLUTE over the band a role declared. Every other field,
+    # including every complex response, already agrees to <= 1.02e-10.
     claimed = np.fft.rfftfreq(n_fft, 1.0 / SR) <= max(
         role.band.upper_hz for role in roles
     )
@@ -363,10 +357,8 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         else:
             assert left == right
 
-    # The one field that MUST differ: it records how the crossover shoulders
-    # got into the responses, and that provenance is exactly what the two arms
-    # do not share (§4.2 — the neutral source and total-transfer composition
-    # differ; equality of provenance is not a compatibility criterion).
+    # Provenance MUST differ: §4.2 says the arms' sources do, and fingerprint
+    # equality is not a compatibility criterion.
     assert neutral.configured_path_composed is True
     assert legacy.configured_path_composed is False
     assert_same(
@@ -434,13 +426,49 @@ def test_configured_path_conditioning_refuses_without_clipping(case, message):
     assert exc_info.value.slug == ILL_CONDITIONED_PROTECTION_DEEMBEDDING
 
 
+def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
+    """§4.2 scopes the policy to candidate-REQUIRED bins, and only those.
+
+    The driven band is a superset; over-refusing a frozen contract shows up as
+    hard stops (LR4 |P| crosses -12 dB at 0.765*fc; #1654 pushes sweep floors
+    toward it — panel SF2). Both directions: no consumed bin may be weakened.
+    """
+    def priors(candidate_band):
+        # P = HP4@1200, C = HP4@2400: |P| crosses the -12 dB floor at ~918 Hz.
+        return dataclasses.replace(
+            _configured_path_priors(
+                _transfers({"woofer": (CrossoverSection(1200.0, 4, True),)}),
+                _transfers({"woofer": (CrossoverSection(2400.0, 4, True),)}),
+                tweeter_sign=1,
+            ),
+            candidate_required_band_hz_by_role={"woofer": candidate_band},
+        )
+
+    impulse = np.zeros(4096)
+    impulse[7] = 1.0
+    driven = (600.0, 20000.0)
+
+    # ADMITS: the sweep drove to 600 Hz, far under the floor — but no candidate
+    # fits or compares there, so those bins are not evidence.
+    composed = _compose_configured_path_ir(
+        "woofer", impulse, SR, driven, priors((1200.0, 20000.0)),
+    )
+    assert np.all(np.isfinite(composed))
+
+    # STILL REFUSES when a candidate DOES require them — nothing consumed is
+    # exempted.
+    with pytest.raises(ConfiguredPathConditioningError, match="P below -12 dB"):
+        _compose_configured_path_ir(
+            "woofer", impulse, SR, driven, priors((600.0, 20000.0)),
+        )
+
+
 def test_configured_path_refuses_a_segment_with_no_declared_band():
     """No declared sweep band is MISSING EVIDENCE, not ill-conditioning.
 
-    A segment with no sweep bounds has no candidate-required bins to hold the
-    §4.2 policy over, so the seam refuses through the kernel's own
-    undeclared-band vocabulary rather than claiming the protection transfer was
-    ill-conditioned — the two route to different household-facing outcomes.
+    No sweep bounds means no candidate-required bins to hold the §4.2 policy
+    over, so the seam refuses through the kernel's own undeclared-band
+    vocabulary — the two route to different household-facing outcomes.
     """
     priors = _configured_path_priors(
         _transfers({"woofer": (CrossoverSection(300.0, 4, True),)}),

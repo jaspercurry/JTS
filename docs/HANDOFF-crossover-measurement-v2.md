@@ -46,6 +46,46 @@ this doc is the current operational truth.
 > plan](crossover-linearization-80-20-plan.md) owns that contract. The deployed
 > pre-R15 flow remains described below.
 
+### Composing the configured-Fc path
+
+`program_analysis._compose_configured_path_ir` turns a protected-neutral
+capture into what the fitter needs: `S = M * C_configured / P` (design §4.2),
+applied as **one filter across the whole rfft support**.
+
+It is deliberately not a masked sub-band. Masking the composition to the driven
+band steps the spectrum by `|C/P|` at the edges — a pre-fix diagnostic
+evaluation over JTS3's declared role parameters put that step at **−41.7 dB**
+(woofer top) and **−52.2 dB** (tweeter bottom); no hardware was measured — and
+that step rings through the IR and folds back into the analysis band once the
+IR is re-gated, which is this campaign's known splice-artefact class. The
+pinned number is the golden fixture's: restoring the splice moves **all 8193**
+of its bins, by up to **86.999 dB**.
+
+**Where the conditioning policy binds.** §4.2 scopes its finiteness and ±12 dB
+rules to *candidate-required trusted fitting or comparison bins*. The mask is
+therefore the driven band intersected with what a candidate actually consumes —
+its branch radiating span unioned with the trim/alignment overlap band, both
+computed host-side in `CrossoverV2Conductor._measure_priors` because they are
+crossover policy the measurement kernel may not import. The driven band alone
+is a **superset**, and over-refusing a frozen contract is a deviation whose
+direction is household-visible hard stops: an LR4 `|P|` crosses −12 dB at
+`0.765·fc`, so a declared sweep floor roughly 0.39 octave under the protection
+corner would refuse MEASURE on a shape §4.2 admits.
+
+**Outside those bins** the same exact ratio still applies, magnitude-saturated
+at the policy's own +12 dB ceiling — provably inactive where the policy binds,
+since a ceiling breach there has already refused. Bins where `P` is exactly
+zero (an LR pass at DC or Nyquist) compose to zero, which is what `plant·C` is
+there too on the shipped shapes, where `C` and `P` share a filter kind; a `P`
+carrying a high-pass under a low-pass-only `C` would zero one genuine
+out-of-band bin.
+
+**Residual gap.** The golden fixture supplies both arms through the same
+`irfft(rfft(...) * factor)` grid, so the composition's circular wrap cancels
+identically between them. Production `full_ir` comes from a real deconvolution
+window, so wrap behaviour on a realistic IR is part of the outstanding hardware
+gap, not something the fixture can close.
+
 ### Confirming a program graph is live
 
 `crossover_v2_flow.confirm_graph_is_live` is the one policy function that

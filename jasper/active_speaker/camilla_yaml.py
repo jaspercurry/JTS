@@ -306,7 +306,9 @@ def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
     return polarity
 
 
-role_polarity = _role_polarity  # public spelling, for other modules
+# Public spelling; `_role_polarity` survives only for two importers outside
+# this PR's ratified file set (retiring it is a follow-up).
+role_polarity = _role_polarity
 
 
 def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
@@ -2675,6 +2677,13 @@ def emit_active_speaker_program_config(
         if hp_section.fc_hz < protective_hp_min_corner_hz or (
             hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
         ):
+            # SOLE slope-floor enforcement on this path: it reaches the
+            # journal exactly as its predecessor's refusal does.
+            log_event(
+                logger, "active_speaker.program_emit_gate", level=logging.ERROR,
+                result="blocked_tweeter_protection_below_floor",
+                preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
+                order=hp_section.order)
             raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
         tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 

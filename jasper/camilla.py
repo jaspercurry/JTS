@@ -742,10 +742,9 @@ class CamillaController:
     ) -> str | None:
         """Return ``config`` as CamillaDSP itself canonicalizes it.
 
-        ``ReadConfig`` parses, validates, and default-fills WITHOUT applying.
-        Confirming a live load compares THIS against
-        :meth:`get_active_config_raw`, never the caller's own text: a readback
-        is a default-filled, value-normalized superset of what was submitted.
+        ``ReadConfig`` parses, validates, and default-fills WITHOUT applying, so
+        a live load compares THIS against :meth:`get_active_config_raw` rather
+        than the caller's own text (the readback is a normalized superset).
         """
         import yaml
 

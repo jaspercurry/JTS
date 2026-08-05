@@ -14,7 +14,11 @@ reject even where ``output_highpass_protected`` alone would false-PASS.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
+
+from jasper.active_speaker.branch_chain import CrossoverSection
 import yaml as yaml_lib
 
 from jasper.active_speaker import (
@@ -243,6 +247,47 @@ def test_program_config_refuses_tweeter_hp_slope_below_floor():
             playback_device=ACTIVE_PCM,
             protective_hp_min_slope_db_per_octave=30.0,  # LR4 is 24 dB/oct
         )
+
+
+@pytest.mark.parametrize(
+    ("sections", "match"),
+    [
+        # 399 Hz: corner below the 400 Hz floor.
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": (CrossoverSection(399.0, 4, True),)}, "program floor"),
+        # Slope below the 24 dB/oct floor at a LEGAL corner — the motivating
+        # case: order 2 is the downstream hole (output_highpass_protected only
+        # checks freq >= 400, tweeter_guard_present accepts order >= 2).
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": (CrossoverSection(1800.0, 2, True),)}, "program floor"),
+        # No tweeter high-pass at all; then a role missing entirely.
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": ()}, "one tweeter protection high-pass"),
+        ({"tweeter": (CrossoverSection(1800.0, 4, True),)},
+         "cover every driver role"),
+    ],
+)
+def test_protected_neutral_emit_refuses_unsafe_tweeter_protection(
+    sections, match, caplog,
+):
+    """The neutral path's tweeter floor gate — its SOLE slope-floor rail.
+
+    REPLACES ``_assert_tweeter_crossover_hp_satisfies_floor`` (pinned above) as
+    the proof between a confirmed-profile value and a compression driver. §4.1
+    wants the same rails; the panel found this one had zero tests.
+    """
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ActiveSpeakerConfigError, match=match):
+            emit_active_speaker_program_config(
+                _preset("mono"), role_channels=ROLE_CHANNELS,
+                playback_device=ACTIVE_PCM, protection_sections_by_role=sections,
+            )
+    # …and the floor refusal reaches the journal, as its predecessor's does.
+    logged = any(
+        "result=blocked_tweeter_protection_below_floor" in r.getMessage()
+        for r in caplog.records
+    )
+    assert logged is (match == "program floor"), [r.getMessage() for r in caplog.records]
 
 
 def test_program_config_refuses_local_subwoofer_preset():

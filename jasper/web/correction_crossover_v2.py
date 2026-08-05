@@ -220,6 +220,7 @@ def classify_program_failure(
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
+        REASON_PROTECTION_SWEEP_TOO_LOW,
         CrossoverV2FlowError,
     )
     from jasper.active_speaker.program_admission import (
@@ -235,7 +236,10 @@ def classify_program_failure(
     )
 
     if isinstance(exc, ConfiguredPathConditioningError):
-        return REASON_PROTECTION_NOT_SEPARABLE, (exc.slug,)
+        return (
+            REASON_PROTECTION_SWEEP_TOO_LOW if exc.protection_floor
+            else REASON_PROTECTION_NOT_SEPARABLE
+        ), (exc.slug,)
     if not isinstance(
         exc, (ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError)
     ):
@@ -4501,7 +4505,12 @@ def build_v2_run_and_consume(
             # in _last_reason. Publish that exact named verdict before cleanup.
             code = conductor.last_failure_code or REASON_RELAY_TIMEOUT
             _persist_terminal_failure(conductor, code)
-            await _post_terminal_failure_host_event(code)
+            # Only where the relay published nothing itself: on the
+            # authorize_begin path it already posted `capture_refused` for the
+            # REFUSED index, and this slot is last-write-wins (panel SF1). On
+            # the consume path nothing precedes it and the phone waits forever.
+            if not conductor.relay_published_refusal:
+                await _post_terminal_failure_host_event(code)
             await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
@@ -4597,6 +4606,9 @@ def build_v2_run_and_consume(
                     code=code,
                     refusals=",".join(refusals),
                     error_type=type(exc).__name__,
+                    # confirm_graph_is_live's three failures share a type and
+                    # a code; this is what distinguishes them (panel nit).
+                    detail=str(exc),
                 )
             await _post_terminal_failure_host_event(code)
             _persist_terminal_failure(conductor, code, refusals=refusals)

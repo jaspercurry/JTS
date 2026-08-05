@@ -1284,44 +1284,44 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     assert legacy.configured_polarity_sign_by_role is None
 
 
-def test_the_fitter_refuses_a_protected_neutral_capture_that_was_not_composed():
-    """The fitter's branch-input invariant, enforced instead of assumed.
+def test_an_uncomposed_protected_neutral_capture_is_refused_at_the_seam():
+    """The fitter's branch-input invariant, pinned where it actually runs.
 
-    `fit_driver_linearization` fits each driver against a CROSSOVER-SHAPED
-    target, which is only sound because the inputs already carry the crossover
-    shoulders. The legacy program graph emits them. R15's protected-neutral
-    graph deliberately does not — it emits confirmed protection only — so on
-    that path the §4.2 composition is what supplies them. If the composition
-    silently did not run, the fitter would shape drivers that were never
-    crossed against a target that assumes they were, and nothing downstream
-    would notice. That is a host-side wiring fault, so it raises into the
-    catch-all's `internal_error` rather than inventing a household action.
+    Pinned at ``_build_measure_candidate``, NOT ``_fit_linearization``: the
+    2026-08-05 panel (correctness B1 / hearing-safety SF2) showed the guard
+    living inside the fit was swallowed three lines later by
+    ``_build_candidate``'s SF2 degrade handler, which catches ``ValueError``,
+    and the session committed a reviewable, Apply-able trims-only candidate. A
+    direct call to the private method cannot see that. It also has to refuse
+    the trims-only path: the emitter runs with region polarity OFF here and
+    §4.2 restores ``sign_c`` offline, so trim/delay/polarity would be solved in
+    a different convention from the applied graph.
     """
+    from jasper.audio_measurement.program import build_measure_program
     protection = {"woofer": [flow.CrossoverSection(6000.0, 4, False)],
                   "tweeter": [flow.CrossoverSection(300.0, 4, True)]}
-    fakes = FakeSeams()
-    c = _conductor(fakes, measurement_protection_sections_by_role=protection)
-    from jasper.audio_measurement.program import build_measure_program
     program = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0},
         [RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
          RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0))],
     )
+    c = _conductor(FakeSeams(), measurement_protection_sections_by_role=protection)
     c._measure_program = program
     analysis = _eligible_measure_analysis(program)
     assert analysis.configured_path_composed is False
+
+    # THE SEAM: no candidate is built, so none can be committed or applied.
     with pytest.raises(ValueError, match="reached the fitter uncomposed"):
-        c._fit_linearization(analysis, analysis.candidate)
+        c._build_measure_candidate(analysis, None)
+    assert c.candidate is None
 
-    # …and it does NOT fire once the composition really ran.
+    # …and it does NOT fire once the composition ran, nor on a legacy conductor
+    # (whose emitter puts the shoulders into the audio itself).
     composed = dataclasses.replace(analysis, configured_path_composed=True)
-    c._fit_linearization(composed, composed.candidate)
-
-    # A legacy (non-protected-neutral) conductor is untouched: its emitter puts
-    # the shoulders in the audio, so an un-composed analysis is correct there.
+    assert c._build_candidate(composed) is not None
     legacy = _conductor(FakeSeams())
     legacy._measure_program = program
-    legacy._fit_linearization(analysis, analysis.candidate)
+    assert legacy._build_candidate(analysis) is not None
 
 
 def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():

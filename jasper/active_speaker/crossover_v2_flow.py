@@ -1398,6 +1398,9 @@ REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # same crossover reproduce it exactly. The offending slug rides out in the
 # refusal detail.
 REASON_PROTECTION_NOT_SEPARABLE = "protection_not_separable"
+# Sibling for the OTHER conditioning branch (panel SF3): `abs(P) < floor` does
+# not involve `C`, so "change the crossover frequency" cannot clear it (#1820).
+REASON_PROTECTION_SWEEP_TOO_LOW = "protection_sweep_too_low"
 # Issue #1820 (2026-07-28): the ONE program refusal that is neither unexpected
 # nor about levels, split back out of ``program_unplayable``'s collapse. The
 # household changed a declared driver value (an enclosure kind, a sensitivity),
@@ -1931,6 +1934,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
+    ),
+    REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
+        REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",
+        "JTS played the measurement fine, but it swept this driver lower than "
+        "the driver's own protection lets through, so the bottom of the sweep "
+        "is too quiet to trust. Re-check this driver's protection settings in "
+        "speaker setup, then measure again.",
     ),
     REASON_PROTECTION_NOT_SEPARABLE: ReasonSpec(
         REASON_PROTECTION_NOT_SEPARABLE, TEMPLATE_HARD_STOP, 0, "",
@@ -5459,6 +5469,12 @@ class CrossoverV2Conductor:
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
+        # True once ``authorize_begin`` has refused: the relay posts its OWN
+        # capture_refused for those (what the phone's authorize loop consumes)
+        # into a last-write-wins slot, so the terminal rider must not overwrite
+        # it (panel SF1). consume_capture refusals leave it False — nothing
+        # precedes them there, which is what makes the rider load-bearing.
+        self.relay_published_refusal = False
         self._measurement_protection_sections_by_role = None
         if measurement_protection_sections_by_role is not None:
             self._measurement_protection_sections_by_role = {
@@ -6073,6 +6089,7 @@ class CrossoverV2Conductor:
 
     def _measure_priors(self) -> MeasurementPriors:
         protection = self._measurement_protection_sections_by_role
+        overlap = overlap_band_hz(self._fc_hz)
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
@@ -6096,6 +6113,16 @@ class CrossoverV2Conductor:
                  role_polarity(self._preset).items()}
                 if protection is not None else None
             ),
+            # §4.2's candidate-required bins: radiating span (what the fit
+            # masks to) union the trim/alignment overlap band, which together
+            # bound everything a candidate consumes. Overlap deliberately
+            # UNCLAMPED — the superset is the safe side for this mask.
+            candidate_required_band_hz_by_role=None if protection is None else {
+                role: (min(radiating_band_hz(sec)[0], overlap[0]),
+                       max(radiating_band_hz(sec)[1], overlap[1]))
+                for role, sec in sections_by_role(
+                    self._preset.crossover_regions).items()
+            },
         )
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -6645,6 +6672,7 @@ class CrossoverV2Conductor:
                 self._last_failure_pilot_heard = None
                 spec = REASON_REGISTRY.get(failure_code)
                 message = reason_message(failure_code, spec) if spec else failure_code
+                self.relay_published_refusal = True
                 raise CaptureBeginRefused(failure_code, message)
             raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         # ONE pooled meter per slot: the planned capture, then at most
@@ -6659,6 +6687,7 @@ class CrossoverV2Conductor:
                 # own copy already names the one action that helps, so it is
                 # published unchanged (and it never promised "measure again").
                 spec = REASON_REGISTRY[last]
+                self.relay_published_refusal = True
                 raise CaptureBeginRefused(
                     spec.code,
                     reason_message(
@@ -6678,6 +6707,7 @@ class CrossoverV2Conductor:
                         code, slot=slot,
                     ),
                 )
+                self.relay_published_refusal = True
                 raise CaptureBeginRefused(
                     # ATTRIBUTE: the code the household is told about, and the
                     # one ``_persist_terminal_failure`` records, is the
@@ -10172,6 +10202,13 @@ class CrossoverV2Conductor:
             MeasuredCrossoverCandidate,
         )
 
+        # ABOVE the SF2 degrade handler on purpose: raised inside it this was
+        # caught and degraded to a committable trims-only candidate (panel
+        # B1/SF2) in the wrong polarity convention. Bare => internal_error.
+        if (self._measurement_protection_sections_by_role is not None
+                and not analysis.configured_path_composed):
+            raise ValueError("protected-neutral capture reached the fitter uncomposed")
+
         cand = analysis.candidate
         if cand is None:
             # The residual. ``_measure_verdict`` hoisted this same check to the
@@ -10433,10 +10470,10 @@ class CrossoverV2Conductor:
         construction, replacing the overlap-band solve seed that under-returned
         the give-back on the 2026-07-24 JTS3 runs.
 
-        Refuses an uncomposed protected-neutral capture: branch inputs must
-        already carry the crossover shoulders, which the legacy graph emits and
-        the protected-neutral graph deliberately does not. A wiring fault, so
-        it raises into ``internal_error``, not a household action.
+        Its branch inputs must already carry the crossover shoulders; on the
+        protected-neutral path that is the §4.2 composition's job, and
+        :meth:`_build_candidate` refuses an uncomposed capture before reaching
+        here (it cannot be checked here — see that guard's comment).
 
         Only called after :meth:`_linearization_eligible` — this method
         assumes both driver responses exist and are adequately repeated;
@@ -10662,10 +10699,6 @@ class CrossoverV2Conductor:
             for role in core_levels_db
             if role in frame_trims_db
         }
-
-        if (self._measurement_protection_sections_by_role is not None
-                and not analysis.configured_path_composed):
-            raise ValueError("protected-neutral capture reached the fitter uncomposed")
 
         # Boost permission is EVIDENCE-gated, and this is the gate. TWO
         # conditions, both necessary:
@@ -11968,13 +12001,11 @@ async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
 
     Contract: prove the SUBMITTED graph is live, tolerate benign serializer
     normalization, reject a different graph. Submitted TEXT vs ``GetConfig``
-    does none of that — a readback is a default-filled, value-normalized
-    SUPERSET, so text equality refuses every load — so ``ReadConfig``
-    (:meth:`~jasper.camilla.CamillaController.normalize_config_raw`)
-    canonicalizes first and STRICT fingerprint equality still applies. Measured
-    evidence, and what was NOT measured: ``docs/HANDOFF-crossover-measurement
-    -v2.md`` "Confirming a program graph is live". The two refusals stay
-    distinct for hardware triage.
+    cannot — a readback is a default-filled, normalized SUPERSET — so
+    ``ReadConfig`` canonicalizes first and STRICT equality still applies.
+    Evidence, and what was NOT measured:
+    ``docs/HANDOFF-crossover-measurement-v2.md`` "Confirming a program graph
+    is live".
     """
     from jasper.camilla import CamillaConfigRejected
 

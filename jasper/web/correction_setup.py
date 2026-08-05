@@ -7746,10 +7746,9 @@ async def _restore_protected_neutral_program_graph() -> None:
     """Converge an abandoned inline R15 program graph to its boot anchor.
 
     ``protected_neutral_program_origin`` is a tri-state and BOTH positive
-    answers are ours: True is the exact emitted shape, False our own filter
-    namespace carrying a MUTATED one — still this path's mess, and the
-    persisted config is the SSOT either way. None (unrelated graph, or camilla
-    down) is left alone. Distinct events so a mutated graph reads as drift.
+    answers are ours (True = the emitted shape, False = our namespace MUTATED);
+    the persisted config is the SSOT either way. None is left alone. Distinct
+    events so a mutated graph reads as drift.
     """
 
     from jasper.active_speaker.camilla_yaml import protected_neutral_program_origin
@@ -7768,11 +7767,11 @@ async def _restore_protected_neutral_program_graph() -> None:
         if origin is None:
             return
         config_path = await cam.get_config_file_path(best_effort=False)
-        if not isinstance(config_path, str) or not config_path:
+        # "None" is the STRING that reader returns for a null path.
+        if not isinstance(config_path, str) or config_path in ("", "None"):
             raise RuntimeError("protected-neutral recovery anchor is unavailable")
         expected = Path(config_path).read_text(encoding="utf-8")
-        if not await cam.set_active_config_raw(expected, best_effort=False):
-            raise RuntimeError("protected-neutral recovery was not confirmed")
+        await cam.set_active_config_raw(expected, best_effort=False)
         await confirm_graph_is_live(cam, expected)
         log_event(
             logger,
@@ -7816,11 +7815,11 @@ def _claim_crossover_state_owners() -> None:
                 level=logging.ERROR,
                 reason=type(exc).__name__,
             )
-    # This claim is deliberately fail-closed once the active graph positively
-    # identifies R15's inline program shape: accepting requests while its
-    # persisted production anchor failed to reload could resume ordinary audio
-    # through role-routed measurement wiring. Camilla-down reads return no
-    # positive identity and retain the unchanged statefile boot recovery.
+    # Fail-closed once the active graph identifies R15's inline program shape.
+    # It does NOT stop audio (other sources reach CamillaDSP through fan-in) —
+    # it buys "do not open a NEW session on a bad graph". Second layer:
+    # set_active_config_raw never repoints the persisted path, so a restart
+    # reloads the anchor anyway (panel nits 1/2).
     # Raising leaves main() before the socket is served, which systemd bounds
     # at StartLimitBurst=20 / StartLimitIntervalSec=600 — bounded, not a loop.
     # Logged structurally first so the journal names the cause.

@@ -124,7 +124,10 @@ ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding
 class ConfiguredPathConditioningError(ValueError):
     slug = ILL_CONDITIONED_PROTECTION_DEEMBEDDING
 
-    def __init__(self, detail: str) -> None:
+    def __init__(self, detail: str, *, protection_floor: bool = False) -> None:
+        # Which lever the household has: `abs(P) < floor` does not involve `C`,
+        # so Fc cannot clear it. Routed to different copy (panel SF3).
+        self.protection_floor = protection_floor
         super().__init__(f"{self.slug}: {detail}")
 
 
@@ -750,6 +753,10 @@ class MeasurementPriors:
         str, Callable[[np.ndarray], np.ndarray]
     ] | None = None
     configured_polarity_sign_by_role: Mapping[str, int] | None = None
+    # §4.2's candidate-required bins per role; see _measure_priors (host-owned).
+    candidate_required_band_hz_by_role: Mapping[
+        str, tuple[float, float]
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -4429,20 +4436,17 @@ def _compose_configured_path_ir(
 ) -> np.ndarray:
     """Replace exact emitted protection ``P`` with configured crossover ``C``.
 
-    ``S = M*C/P`` (design §4.2) is ONE filter across the whole rfft support,
-    never spliced into a sub-band: masking it to the driven band steps the
-    spectrum by ``|C/P|`` at the edges (measured -41.7 dB woofer-top, -52.2 dB
-    tweeter-bottom on JTS3), and that step rings through the IR and back into
-    the analysis band once re-gated.
-
-    ``radiated_band_hz`` is the band the sweep actually DROVE: a conservative
-    stand-in for §4.2's candidate-required bins (a superset of the fitter's
-    own), so the policy refuses at least as often as §4.2 demands. It binds
-    there and only there; outside it the same exact ratio applies,
-    magnitude-saturated at the policy's own +12 dB ceiling — provably inactive
-    on required bins, where a ceiling breach already refused. Where ``P`` is
-    exactly zero (an LR pass at DC or Nyquist) ``C`` vanishes with it, so the
-    bin composes to zero, which is what ``plant*C`` is there too.
+    ``S = M*C/P`` (design §4.2) as ONE filter across the whole rfft support,
+    never spliced into a sub-band. The conditioning policy binds ONLY on §4.2's
+    candidate-required bins — the DRIVEN band (``radiated_band_hz``)
+    intersected with ``priors.candidate_required_band_hz_by_role`` — with no
+    clipping, interpolation or omission there; outside them the same exact
+    ratio still applies, saturated at the policy's own +12 dB ceiling. A
+    segment declaring no sweep bounds is missing evidence, not
+    ill-conditioning. Numbers, the splice this replaced, the DC/Nyquist
+    zero-ratio bins and this mask's over-scope fix:
+    ``docs/HANDOFF-crossover-measurement-v2.md`` "Composing the configured-Fc
+    path".
     """
     maps = (
         priors.measurement_protection_response_by_role,
@@ -4471,6 +4475,9 @@ def _compose_configured_path_ir(
     measured = np.fft.rfft(samples)
     freqs = np.fft.rfftfreq(samples.size, 1.0 / sample_rate)
     lo_hz, hi_hz = (float(value) for value in radiated_band_hz)
+    band = (priors.candidate_required_band_hz_by_role or {}).get(role)
+    if band is not None:
+        lo_hz, hi_hz = max(lo_hz, float(band[0])), min(hi_hz, float(band[1]))
     required = (freqs >= lo_hz) & (freqs <= hi_hz)
     if not np.any(required):
         raise ConfiguredPathConditioningError(f"no trusted bins for {role}")
@@ -4481,7 +4488,9 @@ def _compose_configured_path_ir(
             raise ConfiguredPathConditioningError(f"non-finite {label} for {role}")
     minimum = 10.0 ** (-12.0 / 20.0)
     if np.any(np.abs(protection[required]) < minimum):
-        raise ConfiguredPathConditioningError(f"P below -12 dB for {role}")
+        raise ConfiguredPathConditioningError(
+            f"P below -12 dB for {role}", protection_floor=True,
+        )
     ratio = np.divide(
         configured, protection,
         out=np.zeros_like(configured), where=protection != 0,
@@ -4493,8 +4502,9 @@ def _compose_configured_path_ir(
         raise ConfiguredPathConditioningError(f"C/P above +12 dB for {role}")
     saturated = ratio * (maximum / np.maximum(np.abs(ratio), maximum))
     spectrum = measured * polarity_sign * saturated
-    if not np.all(np.isfinite(spectrum)):
+    if not np.all(np.isfinite(spectrum[required])):
         raise ConfiguredPathConditioningError(f"non-finite S for {role}")
+    spectrum[~np.isfinite(spectrum)] = 0.0  # off-required, but rides the irfft
     return np.fft.irfft(spectrum, n=samples.size)
 
 
