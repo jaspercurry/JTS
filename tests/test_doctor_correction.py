@@ -587,6 +587,36 @@ def test_active_speaker_runtime_graph_accepts_staged_active_startup(
     assert "all_muted_active_startup" in r.detail
 
 
+def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
+    # #2135: a declared-but-uncommissioned roleful topology is seeded a parked
+    # (DAC-less, all-muted) graph so the deploy can finish. Nothing is broken and
+    # nothing is audible, so this is a WARN, not a fail — and it must name the two
+    # exits verbatim rather than restating graph internals.
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        build_parked_muted_graph,
+    )
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    config = tmp_path / "active_speaker_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "warn"
+    assert PARKED_MUTED_EXITS in r.detail
+
+
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
 

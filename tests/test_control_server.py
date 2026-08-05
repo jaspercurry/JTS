@@ -246,6 +246,49 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
     assert payload["reason"] is None
 
 
+def test_state_resilience_active_speaker_parked_snapshot(tmp_path) -> None:
+    # #2135: /state.resilience surfaces the parked state so a dashboard or an
+    # operator can see "deliberately silent, finish commissioning" without
+    # running the doctor. Two keys only — the config path is already in
+    # /state.audio, so it is not restated here.
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        build_parked_muted_graph,
+    )
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    text, graph = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    assert graph.allowed
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(text, encoding="utf-8")
+
+    snapshot = state_aggregate._active_speaker_parked_snapshot(str(parked))
+    assert snapshot == {"parked": True, "detail": PARKED_MUTED_EXITS}
+
+    other = tmp_path / "sound_current.yml"
+    other.write_text("devices:\n  volume_limit: 0.0\n", encoding="utf-8")
+    assert state_aggregate._active_speaker_parked_snapshot(str(other)) == {
+        "parked": False,
+        "detail": None,
+    }
+    # Fail-soft: an unreadable path reads as not-parked rather than raising.
+    assert state_aggregate._active_speaker_parked_snapshot(None) == {
+        "parked": False,
+        "detail": None,
+    }
+
+
+def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:
+    """Static pin of the /state wiring, matching the identity-snapshot guard."""
+    aggregate_src = (
+        REPO_ROOT / "jasper" / "control" / "state_aggregate.py"
+    ).read_text()
+    assert (
+        '"active_speaker_parked": _active_speaker_parked_snapshot('
+        in aggregate_src
+    )
+
+
 def test_level_match_provisional_none_when_no_applied_baseline() -> None:
     # C3b-3: the value is read from the readiness snapshot the caller already
     # computed, not from a second off-disk open. No applicable active baseline ->

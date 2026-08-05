@@ -434,6 +434,31 @@ def _research_state(
     return snapshot(runtime=runtime)
 
 
+def _active_speaker_parked_snapshot(
+    active_config_path: str | None,
+) -> dict[str, Any]:
+    """Whether the speaker is PARKED silent for unfinished commissioning (#2135).
+
+    A roleful/protected topology with no staged startup graph is seeded a
+    proven-silent parked graph so the deploy can complete; nothing is broken and
+    nothing is audible, but the household has to finish or undo commissioning.
+    Two keys only — the config path is already in ``/state.audio``, so it is not
+    restated here. Fail-soft like every other resilience section: an unreadable
+    graph reads as not-parked rather than taking /state down.
+    """
+    from ..active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        active_graph_is_parked,
+    )
+
+    try:
+        parked = active_graph_is_parked(active_config_path)
+    except Exception:  # noqa: BLE001
+        logger.debug("active speaker parked snapshot read failed", exc_info=True)
+        parked = False
+    return {"parked": parked, "detail": PARKED_MUTED_EXITS if parked else None}
+
+
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
@@ -1270,6 +1295,12 @@ async def _get_state(
             # non-POSIX host or statvfs error. jasper-doctor's
             # check_disk_space owns the warn(≥85%)/fail(≥95%) thresholds.
             "disk": _disk_snapshot(),
+            # Active-speaker PARKED state (#2135): a declared-but-uncommissioned
+            # roleful topology holds silence instead of blocking the deploy.
+            # {"parked": bool, "detail": <the two exits, or null>}.
+            "active_speaker_parked": _active_speaker_parked_snapshot(
+                camilla_st.get("active_config_path"),
+            ),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh

@@ -764,6 +764,120 @@ def test_runtime_safe_graph_cli_prefers_applied_baseline_state(
     assert f"config_path: {baseline}" in statefile.read_text(encoding="utf-8")
 
 
+def _parked_config_dir(monkeypatch, tmp_path: Path) -> Path:
+    """Point the parked graph's generated-config dir at tmp_path.
+
+    ``parked_muted_config_path`` resolves it through
+    ``staging.DEFAULT_CAMILLA_CONFIG_DIR`` (one spelling of the dir), so patching
+    that constant relocates the whole parked path without a test-only flag.
+    """
+    from jasper.active_speaker import staging as staging_mod
+
+    monkeypatch.setattr(staging_mod, "DEFAULT_CAMILLA_CONFIG_DIR", tmp_path)
+    return tmp_path / "active_speaker_parked.yml"
+
+
+def test_runtime_safe_graph_cli_parks_and_exits_success(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    # #2135: the install step invokes this CLI and fails the deploy on a nonzero
+    # exit. A parked box must exit 0 so the deploy completes and the manifest
+    # advances, and the transcript must print the two exits, not a blocker wall.
+    from jasper.active_speaker.runtime_contract import PARKED_MUTED_EXITS
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _flat_yaml,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text("{}\n", encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
+    parked = _parked_config_dir(monkeypatch, tmp_path)
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--staged-metadata",
+        str(metadata),
+        "--write-statefile",
+    ])
+
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "Runtime graph decision: parked_muted" in printed
+    assert f"next: {PARKED_MUTED_EXITS}" in printed
+    assert "[blocker]" not in printed
+    assert parked.exists()
+    assert f"config_path: {parked}" in statefile.read_text(encoding="utf-8")
+
+
+def test_runtime_safe_graph_cli_still_fails_on_an_unsafe_staged_graph(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    # The other half of the matrix: a staged graph that EXISTS but fails its
+    # safety proof keeps exiting nonzero with its blockers. Parking is only for
+    # "no staged graph at all".
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _active_yaml,
+        _flat_yaml,
+        _staged_metadata,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    staged = tmp_path / "active_speaker_staged_startup.yml"
+    staged.write_text(_active_yaml("mono", 2, {1}), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text(
+        json.dumps(_staged_metadata(topology, staged)),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
+    parked = _parked_config_dir(monkeypatch, tmp_path)
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--staged-metadata",
+        str(metadata),
+        "--write-statefile",
+    ])
+
+    printed = capsys.readouterr().out
+    assert code == 1
+    assert "Runtime graph decision: blocked" in printed
+    assert "[blocker]" in printed
+    assert not parked.exists()
+    assert f"config_path: {flat}" in statefile.read_text(encoding="utf-8")
+
+
 def test_runtime_safe_graph_cli_rejects_corrupt_topology_without_repair(
     tmp_path: Path,
     capsys,

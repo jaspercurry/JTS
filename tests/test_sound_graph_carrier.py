@@ -190,6 +190,25 @@ def test_active_graph_resolves_by_structure_not_name_or_header(tmp_path):
     assert err.value.reason_code == "eq_on_active_not_wired"
 
 
+def test_parked_graph_is_never_reemitted_as_a_stereo_sound_config(tmp_path):
+    # #2135: install.sh runs `jasper-sound reconcile-current-dsp --fail-open`
+    # immediately after the statefile seed. If the parked graph resolved to a
+    # stereo carrier, that step would re-emit a flat full-range graph over it —
+    # on a roleful topology, exactly the forbidden state parking exists to
+    # avoid. It must resolve to the refusing unknown carrier instead.
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "active_speaker_parked.yml"
+    path.write_text(emit_active_speaker_parked_config(output_count=2))
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind not in _STEREO_HOST_KINDS
+    with pytest.raises(CarrierCannotHostEq):
+        carrier.reemit(mock.sentinel.profile, profile_id="x")
+
+
 def test_non_baseline_active_graph_is_content_fenced(tmp_path):
     # Startup/commissioning graphs are also roleful and must be content-fenced,
     # not filename-fenced: a commissioning config misnamed like a sound config

@@ -1023,6 +1023,8 @@ def check_camilla_volume_limit() -> CheckResult:
 def check_active_speaker_runtime_graph() -> CheckResult:
     """Fail closed if a roleful/protected topology is running flat stereo."""
     from jasper.active_speaker.runtime_contract import (
+        GRAPH_PARKED_ALL_MUTED,
+        PARKED_MUTED_EXITS,
         classify_bass_extension_graph,
         classify_output_contract,
     )
@@ -1075,6 +1077,19 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
         staged_metadata_path=staged_metadata_path(),
     )
+    if graph.classification == GRAPH_PARKED_ALL_MUTED and graph.allowed:
+        # #2135: the box declared roleful outputs but never staged a startup
+        # graph, so the deploy parked it silent instead of failing. Nothing is
+        # broken and nothing is audible — but the household has to finish (or
+        # undo) commissioning, so this warns rather than passing green.
+        return CheckResult(
+            "active speaker runtime graph",
+            "warn",
+            (
+                f"parked silent for {contract.classification}: "
+                f"{PARKED_MUTED_EXITS}"
+            ),
+        )
     if graph.allowed:
         return CheckResult(
             "active speaker runtime graph",

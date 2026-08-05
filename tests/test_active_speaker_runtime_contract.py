@@ -16,6 +16,7 @@ from pathlib import Path
 import jasper.active_speaker.runtime_contract as runtime_contract_module
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
+    ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
@@ -35,8 +36,14 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_FLAT_FULL_RANGE,
     GRAPH_GUARDED_COMMISSIONING,
+    GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
+    OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
+    PARKED_MUTED_STATUS,
+    _statefile_config_path,
+    active_graph_is_parked,
+    build_parked_muted_graph,
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
     CONTRACT_ACTIVE_STEREO_2WAY,
@@ -2736,25 +2743,35 @@ def test_safe_graph_decision_prefers_applied_baseline_over_staged_current(
     assert decision.selected_config_path == str(baseline_path)
 
 
-def test_safe_graph_decision_blocks_active_topology_without_staged_graph(
+def test_safe_graph_decision_parks_active_topology_without_staged_graph(
     tmp_path: Path,
 ) -> None:
+    # #2135: a declared-but-uncommissioned roleful topology used to end BLOCKED,
+    # which failed the whole deploy for as long as the household left
+    # commissioning half-finished. It now PARKS: the deploy succeeds, the speaker
+    # holds silence, and the operator gets the two exits instead of a blocker wall.
     topology = _active_topology("mono", "active_2_way")
     flat_path = tmp_path / "outputd-cutover.yml"
     flat_path.write_text(_flat_yaml(), encoding="utf-8")
+    parked_path = tmp_path / "active_speaker_parked.yml"
 
     decision = safe_graph_for_current_topology(
         topology,
         current_config_path=flat_path,
         flat_config_path=flat_path,
+        parked_config_path=parked_path,
         **_write_authority(tmp_path),
     )
 
-    assert decision.status == "blocked"
-    assert decision.ok is False
-    assert "active_startup_graph_missing" in {
-        issue["code"] for issue in decision.issues
-    }
+    assert decision.status == PARKED_MUTED_STATUS
+    assert decision.ok is True
+    assert decision.selected_config_path == str(parked_path)
+    # The flat graph the box was running stays refused — parking is an added
+    # third option, never a relaxation of the roleful/flat refusal.
+    assert decision.current_graph is not None
+    assert decision.current_graph.allowed is False
+    # No blocker wall on the parked path; the CLI prints the two exits instead.
+    assert decision.issues == ()
 
 
 def test_statefile_repair_preserves_existing_volume_and_mute(tmp_path: Path) -> None:
@@ -3122,19 +3139,26 @@ def test_driver_domain_rejects_missing_channel_select() -> None:
 def test_driver_domain_not_persistable_as_solo_fallback(tmp_path: Path) -> None:
     # Slice 2 does NOT wire the driver-domain graph into safe_graph_for_current_topology
     # selection (that is Slice 3, gated by S0-sync). Even when a driver-domain graph is
-    # the current/preferred candidate for a roleful solo topology, the selector leaves
-    # it BLOCKED rather than persisting it as a deploy/restart fallback — keeps
-    # invariant 7 (no new solo selection path). staged_config={} keeps this hermetic.
+    # the current/preferred candidate for a roleful solo topology, the selector never
+    # persists it as a deploy/restart fallback — keeps invariant 7 (no new solo
+    # selection path). staged_config={} keeps this hermetic.
+    #
+    # Since #2135 the run then PARKS (the roleful no-staged-graph fallback) instead of
+    # ending BLOCKED. The invariant this test guards is unchanged and is now asserted
+    # directly: whatever the selector picks, it is not the driver-domain config.
     config = tmp_path / "follower.yml"
     config.write_text(_driver_domain_yaml("mono", 2), encoding="utf-8")
+    parked = tmp_path / "active_speaker_parked.yml"
     decision = safe_graph_for_current_topology(
         _active_topology("mono", "active_2_way"),
         current_config_path=str(config),
         preferred_config_path=str(config),
+        parked_config_path=parked,
         **_write_authority(tmp_path, applied_config=config),
     )
-    assert decision.status == "blocked"
-    assert decision.selected_config_path is None
+    assert decision.selected_config_path != str(config)
+    assert decision.status == PARKED_MUTED_STATUS
+    assert decision.selected_config_path == str(parked)
 
 
 # --- Stage B: camilla#1 program bake — File-sink verifier exemption -----------
@@ -3283,3 +3307,376 @@ def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
     )
     assert decision.selected_config_path != str(config)
     assert decision.status != "preserve_current"
+
+
+# --- #2135: the PARKED graph — the third statefile-seeding outcome ------------
+# A roleful/protected topology that declared drivers but never staged a startup
+# graph used to leave every deploy BLOCKED. It now parks: a DAC-less, all-muted
+# graph that lets the deploy finish while the speaker holds silence. These pin
+# the two independent silence proofs (File sink, per-output hard mute), the
+# decision matrix around it, and that recovery needs no operator action.
+
+
+def _innomaker_active_2way() -> OutputTopology:
+    """The jts5 shape from #2135: mono active 2-way on a DAC with NO active lane.
+
+    The InnoMaker HiFi AMP Pro declares ``supports_active_outputd_lane=False``,
+    so this topology can never resolve an active playback route — an ALSA-sink
+    parked graph would have nothing legal to open. Parking must still work here,
+    because this is the box the issue was filed from.
+    """
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "jts5",
+        "name": "JTS5",
+        "status": "draft",
+        "hardware": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+            "physical_output_count": 2,
+            "card_id": "sndrpihifiberry",
+        },
+        "speaker_groups": [{
+            "id": "mono",
+            "label": "Mono speaker",
+            "kind": "mono",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 1,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "software_guard_requested",
+                },
+            ],
+        }],
+        "routing": {"mono_group_id": "mono"},
+    })
+
+
+@pytest.mark.parametrize(
+    ("topology", "expected_outputs"),
+    [
+        (_active_topology("mono", "active_2_way"), 2),
+        (_active_topology("stereo", "active_3_way"), 6),
+        (_innomaker_active_2way(), 2),
+    ],
+)
+def test_parked_graph_mutes_every_output_and_never_touches_a_dac(
+    topology: OutputTopology,
+    expected_outputs: int,
+) -> None:
+    text, graph = build_parked_muted_graph(topology)
+
+    assert text is not None
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_PARKED_ALL_MUTED
+
+    payload = yaml.safe_load(text)
+    # Silence proof 1: no DAC is attached at all.
+    assert payload["devices"]["playback"]["type"] == "File"
+    assert payload["devices"]["playback"]["filename"] == "/dev/null"
+    assert payload["devices"]["playback"]["channels"] == expected_outputs
+    # Silence proof 2: every output is a boolean hard mute, and the mixer feeds
+    # it at the -120 dB floor so a defeated mute is still inaudible.
+    filters = payload["filters"]
+    assert len(filters) == expected_outputs
+    for index in range(expected_outputs):
+        params = filters[f"as_out{index}_commission_mute"]["parameters"]
+        assert params["mute"] is True
+        assert params["gain"] == STARTUP_MUTE_GAIN_DB
+    for dest in payload["mixers"]["parked_silence"]["mapping"]:
+        for source in dest["sources"]:
+            assert source["gain"] == STARTUP_MUTE_GAIN_DB
+    # Nothing is claimed beyond silence: no crossover, no protective HP.
+    assert not any("crossover" in name or "_hp" in name for name in filters)
+    # The project volume ceiling is untouched.
+    assert payload["devices"]["volume_limit"] == 0.0
+
+
+def _reserialise_parked(text: str, payload: dict) -> str:
+    """Re-serialise a mutated parked payload KEEPING the `# Source:` header.
+
+    ``yaml.safe_dump`` drops comments, and the classifier routes on the emitted
+    provenance marker — without the header the mutant would be rejected as an
+    unknown config instead of exercising the parked verifier, which would make
+    every mutation below pass for the wrong reason.
+    """
+    header = text.split("\ndevices:", 1)[0]
+    return header + "\n" + yaml.safe_dump(payload, sort_keys=False)
+
+
+def test_parked_verifier_refuses_an_unmuted_route() -> None:
+    """MUTATION: unmute one output and the verifier must refuse the graph."""
+    topology = _active_topology("mono", "active_2_way")
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed is True
+
+    payload = yaml.safe_load(text)
+    payload["filters"]["as_out1_commission_mute"]["parameters"]["mute"] = False
+    mutated = _classify_camilla_graph(
+        topology=topology,
+        text=_reserialise_parked(text, payload),
+    )
+
+    assert mutated.allowed is False
+    assert mutated.classification == GRAPH_UNSAFE
+    assert "parked_graph_output_not_muted" in {i["code"] for i in mutated.issues}
+
+
+def test_parked_verifier_refuses_a_dac_sink() -> None:
+    """MUTATION: repoint the sink at a DAC and the verifier must refuse."""
+    topology = _active_topology("mono", "active_2_way")
+    text, _graph = build_parked_muted_graph(topology)
+
+    payload = yaml.safe_load(text)
+    payload["devices"]["playback"] = {
+        "type": "Alsa",
+        "channels": 2,
+        "device": "outputd_active_content_playback",
+        "format": "S16_LE",
+    }
+    mutated = _classify_camilla_graph(
+        topology=topology,
+        text=_reserialise_parked(text, payload),
+    )
+
+    assert mutated.allowed is False
+    assert "parked_graph_sink_not_file" in {i["code"] for i in mutated.issues}
+
+
+def test_parked_verifier_refuses_a_second_mixer_after_the_mutes() -> None:
+    """MUTATION: a trailing Mixer could re-route around the mutes — refuse it."""
+    topology = _active_topology("mono", "active_2_way")
+    text, _graph = build_parked_muted_graph(topology)
+
+    payload = yaml.safe_load(text)
+    payload["pipeline"].append({"type": "Mixer", "name": "parked_silence"})
+    mutated = _classify_camilla_graph(
+        topology=topology,
+        text=_reserialise_parked(text, payload),
+    )
+
+    assert mutated.allowed is False
+    assert "parked_graph_pipeline_shape" in {i["code"] for i in mutated.issues}
+
+
+def test_parked_verifier_refuses_a_graph_narrower_than_the_topology() -> None:
+    """MUTATION: drop the tweeter's output and the declared driver is uncovered."""
+    topology = _active_topology("mono", "active_2_way")
+    text, _graph = build_parked_muted_graph(topology)
+
+    payload = yaml.safe_load(text)
+    payload["devices"]["playback"]["channels"] = 1
+    payload["pipeline"] = payload["pipeline"][:-1]
+    del payload["filters"]["as_out1_commission_mute"]
+    mutated = _classify_camilla_graph(
+        topology=topology,
+        text=_reserialise_parked(text, payload),
+    )
+
+    assert mutated.allowed is False
+    assert "parked_graph_width_too_narrow" in {i["code"] for i in mutated.issues}
+
+
+def test_parked_emitter_gate_refuses_before_the_graph_leaves_the_emitter() -> None:
+    """The emitter's own gate is the FIRST of the two independent proofs."""
+    from jasper.active_speaker.camilla_yaml import _assert_parked_outputs_muted
+
+    text, _graph = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    _assert_parked_outputs_muted(text, 2)  # the real graph passes
+
+    with pytest.raises(ActiveSpeakerConfigError, match="left outputs unmuted"):
+        _assert_parked_outputs_muted(text.replace("mute: true", "mute: false"), 2)
+
+
+def test_parked_statefile_write_reproves_and_survives_volume_and_restart(
+    tmp_path: Path,
+) -> None:
+    """Invariant: the mute is STRUCTURAL — in the config, not in the statefile.
+
+    A CamillaDSP volume/mute slot lives in the statefile and is rewritten by
+    every volume change and preserved across restarts; the parked graph's
+    silence does not depend on it. This writes an UNMUTED, full-volume statefile
+    and shows the parked graph the box reloads is still all-muted.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(
+        "config_path: /var/lib/camilladsp/configs/stale.yml\n"
+        "mute:\n- false\n- false\nvolume:\n- 0.0\n- 0.0\n",
+        encoding="utf-8",
+    )
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert decision.status == PARKED_MUTED_STATUS
+    assert apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    ) is True
+
+    persisted = yaml.safe_load(statefile.read_text(encoding="utf-8"))
+    assert persisted["config_path"] == str(parked_path)
+    # The statefile is fully UNMUTED at 0 dB — the loudest state it can express.
+    assert persisted["mute"] == [False, False]
+    assert persisted["volume"] == [0.0, 0.0]
+    # The graph CamillaDSP reloads from that statefile is still silent, because
+    # the mute is a pipeline filter parameter, not a runtime volume slot.
+    reloaded = _classify_camilla_graph(
+        topology=topology,
+        text=parked_path.read_text(encoding="utf-8"),
+        config_path=str(parked_path),
+    )
+    assert reloaded.allowed is True
+    assert reloaded.classification == GRAPH_PARKED_ALL_MUTED
+
+
+def test_parked_statefile_write_repairs_a_missing_parked_config(
+    tmp_path: Path,
+) -> None:
+    """A statefile already pointing at a deleted parked config is repaired."""
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked_path}\n", encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    # Statefile already correct, so nothing to rewrite there...
+    assert apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    ) is False
+    # ...but the config itself was materialised anyway.
+    assert parked_path.exists()
+
+
+def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
+    tmp_path: Path,
+) -> None:
+    """Recovery handoff: parked never shadows a staged graph.
+
+    Same call, same arguments, same already-parked statefile — the only change
+    is that commissioning staged a startup graph. The selector must move to it.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /nonexistent.yml\n", encoding="utf-8")
+
+    parked_decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert parked_decision.status == PARKED_MUTED_STATUS
+    apply_safe_graph_decision_to_statefile(
+        parked_decision, statefile_path=statefile, topology=topology
+    )
+    assert _statefile_config_path(statefile) == str(parked_path)
+
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    recovered = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
+    )
+
+    assert recovered.status == "select_active_startup"
+    assert recovered.selected_config_path == str(staged_path)
+    assert apply_safe_graph_decision_to_statefile(
+        recovered, statefile_path=statefile, topology=topology
+    ) is True
+    assert _statefile_config_path(statefile) == str(staged_path)
+
+
+def test_passive_topology_still_takes_the_flat_cutover_not_parked(
+    tmp_path: Path,
+) -> None:
+    """Decision matrix row 1 is unchanged: passive selects flat, never parked."""
+    flat_path = tmp_path / "outputd-cutover.yml"
+    flat_path.write_text(_flat_yaml(), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        _full_range_stereo(),
+        current_config_path=tmp_path / "missing.yml",
+        flat_config_path=flat_path,
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == "select_flat"
+    assert decision.selected_config_path == str(flat_path)
+
+
+def test_unsafe_staged_graph_still_blocks_and_is_never_parked_over(
+    tmp_path: Path,
+) -> None:
+    """Decision matrix row 4 is unchanged: an UNSAFE staged graph still blocks.
+
+    Parking is only for "no staged graph at all". A staged graph that exists but
+    fails its safety proof must keep failing the deploy with its blockers — a
+    graph that claims driver protection and gets it wrong is not the same
+    problem as a household that paused commissioning.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    # A guarded-commissioning graph (tweeter audible) is legal only for a live
+    # session, never as a persisted boot graph.
+    staged_path.write_text(_active_yaml("mono", 2, {1}), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=tmp_path / "outputd-statefile.yml",
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
+    )
+
+    assert decision.status == "blocked"
+    assert decision.ok is False
+    assert decision.issues
+    assert not (tmp_path / "active_speaker_parked.yml").exists()
+
+
+def test_parked_graph_is_not_an_outputd_endpoint() -> None:
+    """outputd must not open the DAC's active lane for a File-sink parked graph."""
+    assert GRAPH_PARKED_ALL_MUTED not in OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
+
+
+def test_active_graph_is_parked_reads_provenance_not_the_filename(
+    tmp_path: Path,
+) -> None:
+    """The /state reporting predicate keys on content, not on the name."""
+    text, _graph = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    renamed = tmp_path / "something_else.yml"
+    renamed.write_text(text, encoding="utf-8")
+    impostor = tmp_path / "active_speaker_parked.yml"
+    impostor.write_text(_flat_yaml(), encoding="utf-8")
+
+    assert active_graph_is_parked(renamed) is True
+    assert active_graph_is_parked(impostor) is False
+    assert active_graph_is_parked(tmp_path / "missing.yml") is False
+    assert active_graph_is_parked(None) is False
