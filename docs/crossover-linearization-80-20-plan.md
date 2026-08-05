@@ -169,9 +169,9 @@ driver only against that candidate's acoustic branch target and only where the
 driver contributes usefully.
 
 R15 uses the accepted in-session `ProgramAnalysis` and owns only the
-configured-Fc compatibility seam. For each role and shared-basis frequency
-bin, define the measured neutral evidence and desired candidate-shaped fitter
-input exactly as:
+configured-Fc compatibility seam. For each role, on every candidate-required
+shared-basis frequency bin, define the measured neutral evidence and desired
+candidate-shaped fitter input exactly as:
 
 ```text
 M(f)   = plant(f) * P(f)
@@ -195,10 +195,11 @@ spectrum, leaving no bin in a different polarity convention from its
 neighbours. The composition is applied the same way: **one filter across the
 whole rfft support, never spliced into a sub-band**. Every bin carries that
 same ratio, its magnitude saturated at the conditioning policy's own +12 dB
-ceiling and its phase preserved (bins where `P` is exactly zero carry no ratio).
-Saturation changes nothing on the candidate-required bins — the policy below has
-already refused anything above that ceiling there — so what it actually does is
-bound the off-required bins rather than leave a seam at the band edge.
+ceiling and its phase preserved; bins where `P` is exactly zero are zeroed, not
+passed through. Saturation changes nothing on the candidate-required bins — the
+policy below has already refused anything above that ceiling there — so what it
+actually does is bound the off-required bins rather than leave a seam at the
+band edge.
 `S_c(f)`, with magnitude rederived from its complex values, is the only input
 handed to the crossover-shaped fitter and branch-target path. The division is **offline
 evidence math only**: no inverse, de-embedding, or recovery filter is emitted
@@ -454,17 +455,22 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | **R16–R19 — provisional labels** | Fresh Gate 0 defines complete verticals pairing each producer with a current consumer; it may co-scope lateral capture + selector or name a real immediate consumer | unassigned | §9 ceilings only; no artifact-first dependency or implementation authority |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
 
-**R15 outcome — two recorded deviations, both by ruling.** The one-PR exit was
+**R15 outcome — three recorded deviations, all by ruling.** The one-PR exit was
 met by two PRs: the boost gate was split into #2138 under the deferral ruling
 recorded on
 [#2106](https://github.com/jaspercurry/JTS/issues/2106#issuecomment-5192592743),
 because that gate is shared with every v2 session and moving it inside #2126
 would have changed legacy cloud-path refusal semantics. Production landed at
-**674 gross adds across 7 files** — over the original 500 absolute stop — under
+**674 gross adds across 7 files** in #2126, **730 across the same 7 files**
+cumulatively with #2138's 56 — over the original 500 absolute stop — under
 ledger re-ratifications recorded on the same issue (500 → 610 → 670 → 675 held),
 each conditioned on every addition above 400 mapping to a named requirement.
-R16's Gate 0 reads that chain as the precedent for how an overage gets
-authorized, not as headroom it inherits.
+And #2138 ran a two-lens panel where §9 item 11 asks three for apply/DSP work,
+[ratified on that PR](https://github.com/jaspercurry/JTS/pull/2138#issuecomment-5195727007)
+— recorded late, which is itself the lesson: a lens-count decision belongs on
+the record when it is made, not when a reviewer asks for it. R16's Gate 0 reads
+this chain as the precedent for how a deviation gets authorized, not as
+headroom it inherits.
 
 The only dependency graph is:
 
