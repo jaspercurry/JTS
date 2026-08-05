@@ -210,6 +210,38 @@ def _transport_state(
     }
 
 
+def _parked_graph_transport() -> dict[str, Any] | None:
+    """Transport state for the PARKED graph (#2135), or None when not parked.
+
+    Feeds :func:`_parked_signal` through the same ``coherence_errors`` channel
+    the transport detector uses, so the parked wording keeps exactly one writer.
+    The capability gap is resolved the same way :func:`_transport_state` does, so
+    a no-active-lane DAC still gets its "and it can never work here" clause after
+    this reason rather than instead of it.
+    """
+    from ..active_speaker.environment import read_camilla_statefile_config_path
+    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        active_graph_is_parked,
+    )
+    from ..audio_runtime_plan import DEFAULT_CAMILLA_STATEFILE_PATH
+    from ..output_topology import load_output_topology
+
+    config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
+    if not active_graph_is_parked(config_path):
+        return None
+    gap = active_lane_capability_gap(load_output_topology())
+    return {
+        "coherence_errors": [
+            "CamillaDSP is holding the parked graph: the saved speaker layout "
+            "has no staged startup graph, so every output is muted "
+            f"({PARKED_MUTED_EXITS})"
+        ],
+        "capability_gap": gap.to_dict() if gap is not None else None,
+    }
+
+
 def _read_transport_state(plan: Any) -> dict[str, Any]:
     """Read the transport evidence the coherence detector needs, for ``plan``.
 
@@ -241,7 +273,12 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
     )
     if evidence.devices is None or not evidence.endpoint_recognized:
-        return _empty_transport()
+        # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph
+        # (#2135) writes to a File sink on purpose, because the saved roleful
+        # layout has no staged startup graph yet. That is precisely "audio
+        # cannot reach the drivers", so it must not read as ready just because
+        # the graph declines to name an outputd lane.
+        return _parked_graph_transport() or _empty_transport()
     # outputd.env is read here because the plan carries decisions, not the
     # generated env it was built from.
     outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
