@@ -2062,3 +2062,226 @@ def test_idempotent_second_run_makes_no_route_restart(tmp_path: Path):
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-fanin.service" not in commands
     assert "fanin_restarted=0" in second.stderr
+
+
+# --- Per-box shm-ring conf.d render (PR-6) ------------------------------------
+#
+# The rule: the reconciler renders the ring conf.d slot period ONLY from the
+# active DAC profile's DECLARED LatencyFloor. No declared floor — and any
+# unrecognized DAC — leaves the SHIPPED conf.d genuinely untouched (byte AND
+# mtime), so that box keeps its current coupling. Zero behaviour change on any
+# box until floor data is declared for its profile.
+
+SHIPPED_RING_CONF = ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+
+
+def _staged_ring_conf(tmp_path: Path) -> Path:
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
+    return conf
+
+
+def test_reconcile_apple_leaves_the_shipped_ring_conf_byte_identical(
+    tmp_path: Path,
+):
+    # GOLDEN no-change case: the Apple dongle's declared floor IS the shipped
+    # 128, so a full reconcile pass resolves the floor, finds it already
+    # rendered, and never writes.
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+    before_mtime = conf.stat().st_mtime_ns
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_RING_CONF_D": str(conf)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "event=audio_hardware_reconcile.ring_conf reason=test "
+        "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
+        "previous_period_frames=128"
+    ) in result.stderr
+    assert conf.read_bytes() == before_bytes
+    assert conf.stat().st_mtime_ns == before_mtime
+
+
+def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
+    tmp_path: Path,
+):
+    # A recognized DAC that declares NO latency floor keeps the shipped conf.d
+    # — no same-content rewrite, no mtime churn.
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+    before_mtime = conf.stat().st_mtime_ns
+
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_RING_CONF_D": str(conf)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
+        "output_dac_id=hifiberry_dac8x period_frames=none "
+        "previous_period_frames=none reason=no_declared_floor"
+    ) in result.stderr
+    assert conf.read_bytes() == before_bytes
+    assert conf.stat().st_mtime_ns == before_mtime
+
+
+def test_reconcile_leaves_ring_conf_untouched_when_no_dac_is_recognized(
+    tmp_path: Path,
+):
+    # No recognized DAC -> no profile -> no floor -> untouched, without even
+    # reaching the Python layer.
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+    before_mtime = conf.stat().st_mtime_ns
+
+    result = _run_reconcile(
+        tmp_path,
+        "",
+        "--reason",
+        "test",
+        extra_env={"JASPER_RING_CONF_D": str(conf)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "event=audio_hardware_reconcile.ring_conf reason=test "
+        "result=skipped reason=dac_unrecognized"
+    ) in result.stderr
+    assert conf.read_bytes() == before_bytes
+    assert conf.stat().st_mtime_ns == before_mtime
+
+
+def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "render-ring-conf-period" in text
+    # The INSTALLED conf.d path is NOT a fourth copy in bash: the only --conf-d
+    # the script passes is the (empty by default) test override, so the Python
+    # SSOT jasper.ring_assets.RING_CONF_D resolves the real path and reports
+    # back which file it touched.
+    assert "/etc/alsa/conf.d" not in text
+    assert 'RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"' in text
+    assert '--conf-d "$RING_CONF_D_OVERRIDE"' in text
+    # The render must not feed a restart flag: arming is the coupling
+    # reconciler's job, and ALSA re-reads the conf.d at the next PCM open.
+    assert "render_ring_conf_if_needed && " not in text
+
+
+# --- render-ring-conf-period: the floor is DATA -------------------------------
+
+
+def _render_ring_conf(conf: Path) -> tuple[int, str, str]:
+    from jasper.cli.audio_config import main as audio_config_main
+
+    return audio_config_main(
+        [
+            "render-ring-conf-period",
+            "--profile-id",
+            "hifiberry_dac8x",
+            "--conf-d",
+            str(conf),
+        ]
+    )
+
+
+def test_render_subcommand_follows_a_synthesized_non_apple_floor(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Only the Apple dongle declares a floor today, so synthesize one on a
+    # different profile: the slot period follows the DATA, with no code branch
+    # per DAC. This is the shape PR-5 lands for real for the InnoMaker.
+    from jasper.audio_hardware.dac import LatencyFloor
+
+    conf = _staged_ring_conf(tmp_path)
+    synthetic = LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=1024,
+        outputd_dac_buffer_frames=4096,
+    )
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+
+    assert _render_ring_conf(conf) == 0
+    out = capsys.readouterr().out
+    assert "result rendered" in out
+    assert "period_frames 1024" in out
+    assert "previous_period_frames 128" in out
+
+    from jasper import ring_assets
+
+    assert ring_assets.ring_conf_period_frames(str(conf)) == 1024
+    assert conf.read_text(encoding="utf-8").count("    period_frames 1024") == 2
+
+
+def test_render_subcommand_is_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Reconcile runs on every boot and udev event; a converged box must stop
+    # writing rather than churn the mtime on each pass.
+    from jasper.audio_hardware.dac import LatencyFloor
+
+    conf = _staged_ring_conf(tmp_path)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: LatencyFloor(
+            camilla_chunksize=256,
+            camilla_target_level=1536,
+            outputd_period_frames=1024,
+            outputd_dac_buffer_frames=4096,
+        ),
+    )
+
+    assert _render_ring_conf(conf) == 0
+    capsys.readouterr()
+    settled_bytes = conf.read_bytes()
+    settled_mtime = conf.stat().st_mtime_ns
+
+    assert _render_ring_conf(conf) == 0
+    assert "result unchanged" in capsys.readouterr().out
+    assert conf.read_bytes() == settled_bytes
+    assert conf.stat().st_mtime_ns == settled_mtime
+
+
+def test_render_subcommand_reports_a_torn_conf_instead_of_inventing_one(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from jasper.audio_hardware.dac import LatencyFloor
+
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text("pcm.jts_ring_capture { type jts_ring }\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: LatencyFloor(
+            camilla_chunksize=256,
+            camilla_target_level=1536,
+            outputd_period_frames=1024,
+            outputd_dac_buffer_frames=4096,
+        ),
+    )
+
+    assert _render_ring_conf(conf) == 1
+    captured = capsys.readouterr()
+    assert "no period_frames" in captured.err
+    assert conf.read_text(encoding="utf-8") == (
+        "pcm.jts_ring_capture { type jts_ring }\n"
+    )

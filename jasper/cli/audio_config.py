@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
-from jasper.audio_hardware.dac import active_outputd_lane_channels_for
+from jasper.audio_hardware.dac import (
+    active_outputd_lane_channels_for,
+    latency_floor_for,
+)
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     DEFAULT_BASE_ENV_PATH,
@@ -41,6 +45,7 @@ from jasper.audio_runtime_overrides import (
 )
 from jasper.env_load import read_env_file_state
 from jasper.fanin_coupling import COUPLING_ENV_VAR
+from jasper.ring_assets import RING_CONF_D, render_ring_conf_period
 
 DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
@@ -114,6 +119,46 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
             print(f"set {action.key} {action.value}")
         else:
             print(f"unset {action.key}")
+    return 0
+
+
+def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
+    """Render the shm-ring conf.d slot period from a DAC's DECLARED floor.
+
+    The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
+    declared ``LatencyFloor``. A profile that declares none (and an unrecognized
+    id) leaves the SHIPPED conf.d untouched and therefore keeps whatever
+    coupling that box has today — so this command is a no-op until floor data
+    exists for a profile.
+
+    The registry owns the floor and ``jasper.ring_assets`` owns the conf.d
+    format; this command only joins them, which is why it re-reads the floor
+    rather than taking a period on the command line.
+
+    Emits ``key value`` lines for the shell caller (the ``outputd-floor-actions``
+    idiom) and returns non-zero with a reason on stderr when the conf.d cannot
+    be rendered.
+    """
+    conf_d = args.conf_d or RING_CONF_D
+    floor = latency_floor_for(args.profile_id) if args.profile_id else None
+    if floor is None:
+        print("result skipped")
+        print("reason no_declared_floor")
+        print(f"conf {conf_d}")
+        return 0
+    try:
+        outcome = render_ring_conf_period(
+            floor.outputd_period_frames,
+            conf_d=conf_d,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"result {'rendered' if outcome.changed else 'unchanged'}")
+    print(f"period_frames {outcome.period_frames}")
+    if outcome.previous_period_frames is not None:
+        print(f"previous_period_frames {outcome.previous_period_frames}")
+    print(f"conf {outcome.conf_d}")
     return 0
 
 
@@ -256,6 +301,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=runtime_overrides_path(),
     )
     outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
+
+    render_ring_conf = sub.add_parser(
+        "render-ring-conf-period",
+        help=(
+            "render the shm-ring conf.d slot period from the DAC profile's "
+            "declared latency floor (no declared floor leaves it untouched)"
+        ),
+    )
+    render_ring_conf.add_argument("--profile-id", default="")
+    render_ring_conf.add_argument(
+        "--conf-d",
+        default="",
+        help="override the ring conf.d path (default: the ring_assets SSOT)",
+    )
+    render_ring_conf.set_defaults(func=_cmd_render_ring_conf_period)
 
     validate_outputd = sub.add_parser(
         "validate-outputd-env",

@@ -20,6 +20,10 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   realtime path (the ioplug would fail to resolve and CamillaDSP would crash-loop
   on its statefile). Presence-only here — an open-probe from the reconciler could
   disturb a live arm, and the doctor already owns the deep probe.
+- ``jasper.cli.audio_config render-ring-conf-period`` — the per-box conf.d
+  **renderer** the output-hardware reconciler shells into. It reuses this
+  module's ``period_frames`` regex to REWRITE the value it also parses, so the
+  reader and the writer of the conf.d format cannot drift.
 
 Import-cheap (stdlib only) so the reconciler and the socket-activated web
 surfaces can resolve asset presence without pulling in the doctor.
@@ -109,14 +113,23 @@ def ring_asset_presence(
 # DAC period — see rust/jasper-outputd/src/config.rs "the ring's period_frames is
 # always outputd's period_frames"). A geometry mismatch against an existing ring
 # is a hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
-# existing ring is an open() error"). The shipped ``60-jts-ring.conf`` pins a
-# PLACEHOLDER 128 (the file says so); on a box whose resolved outputd period is
-# not 128 (the packaged default is 1024, only the Apple-dongle latency floor is
-# 128), CamillaDSP's ring open would fail and the arm would roll back with a
-# confusing daemon-level error. So the coupling reconciler PREFLIGHTs this match
-# and fail-closes to loopback with a crisp reason (mirrors scripts/ring-proto/
-# arm.sh, which renders the conf period from outputd's resolved env per box).
-_RING_CONF_PERIOD_RE = re.compile(r"^\s*period_frames\s+(\d+)\s*$", re.MULTILINE)
+# existing ring is an open() error"). The shipped ``60-jts-ring.conf`` pins 128
+# (the Apple-dongle floor); on a box whose resolved outputd period is not 128
+# (the packaged default is 1024), CamillaDSP's ring open would fail and the arm
+# would roll back with a confusing daemon-level error. So the coupling
+# reconciler PREFLIGHTs this match and fail-closes to loopback with a crisp
+# reason, and :func:`render_ring_conf_period` renders the per-box value from the
+# active DAC's DECLARED latency floor (mirrors scripts/ring-proto/arm.sh, which
+# renders the conf period from outputd's resolved env per box).
+#
+# One regex, two directions: the ``indent``/``frames`` groups let the renderer
+# rewrite exactly the lines this parser reads, so a conf.d the parser accepts is
+# a conf.d the renderer can update (and vice versa). Horizontal-whitespace
+# classes (not ``\s``) keep both directions line-scoped under ``re.MULTILINE``.
+_RING_CONF_PERIOD_RE = re.compile(
+    r"^(?P<indent>[^\S\n]*)period_frames[^\S\n]+(?P<frames>\d+)[^\S\n]*$",
+    re.MULTILINE,
+)
 
 
 def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
@@ -136,11 +149,99 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
             text = fh.read()
     except OSError:
         return None
-    values = {int(m.group(1)) for m in _RING_CONF_PERIOD_RE.finditer(text)}
+    values = {int(m.group("frames")) for m in _RING_CONF_PERIOD_RE.finditer(text)}
     if len(values) != 1:
         # No period line, or the two PCMs disagree — not a usable single geometry.
         return None
     return next(iter(values))
+
+
+@dataclass(frozen=True)
+class RingConfPeriodRender:
+    """The outcome of rendering the ring conf.d slot period for one box.
+
+    ``changed`` is False for the two no-write outcomes — the conf already
+    declares the target period, which is the golden case on an Apple box where
+    the declared floor equals the shipped 128.
+    """
+
+    changed: bool
+    period_frames: int
+    previous_period_frames: int | None
+    conf_d: str
+
+
+def render_ring_conf_period(
+    period_frames: int,
+    *,
+    conf_d: str | None = None,
+) -> RingConfPeriodRender:
+    """Rewrite the ring conf.d ``period_frames`` lines to ``period_frames``.
+
+    The ring slot IS one outputd DAC period, so a box whose DAC declares a
+    latency floor needs the conf.d to pin that floor's period rather than the
+    shipped 128. This is the per-box render the conf.d's own header calls for;
+    the CALLER decides whether a render is warranted (the rule is "only from a
+    DECLARED :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this
+    function never consults the DAC registry itself.
+
+    **Write-on-change only.** When the conf already declares exactly
+    ``period_frames`` the file is left GENUINELY untouched — no rewrite, no
+    mtime churn — so a box that renders to the shipped value is byte-identical
+    to one that never rendered. Otherwise the whole file is published through
+    :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
+    reader never observes a half-written conf.d and the installed file's
+    uid/gid/mode survive the replace.
+
+    Only the ``period_frames`` VALUES move: indentation, ``n_slots``, the
+    ``path`` values, and every comment survive verbatim, because the rewrite is
+    a substitution over the same regex :func:`ring_conf_period_frames` reads.
+
+    Raises ``ValueError`` for a non-positive target or a conf.d that declares no
+    ``period_frames`` line at all (a torn / foreign file — never invent one),
+    and ``OSError`` when the file cannot be read or replaced.
+    """
+    if period_frames <= 0:
+        raise ValueError(f"period_frames must be > 0, got {period_frames}")
+    path = RING_CONF_D if conf_d is None else conf_d
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    previous = [int(m.group("frames")) for m in _RING_CONF_PERIOD_RE.finditer(text)]
+    if not previous:
+        raise ValueError(
+            f"ring conf.d ({path}) declares no period_frames line; refusing to "
+            "invent one — redeploy to reinstall it"
+        )
+    # A torn conf.d (the two PCMs disagreeing) has no single previous value to
+    # report, but it is still rendered: converging both lines onto the target is
+    # exactly the repair. Mirrors ring_conf_period_frames returning None there.
+    distinct = set(previous)
+    if distinct == {period_frames}:
+        return RingConfPeriodRender(
+            changed=False,
+            period_frames=period_frames,
+            previous_period_frames=period_frames,
+            conf_d=path,
+        )
+    rendered = _RING_CONF_PERIOD_RE.sub(
+        lambda m: f"{m.group('indent')}period_frames {period_frames}",
+        text,
+    )
+    # Function-local so the module keeps its stdlib-only import cost for the
+    # presence/parse callers (the coupling reconciler and the socket-activated
+    # web surfaces); only the renderer pays for atomic_io. preserve_target_stat
+    # carries the installed file's uid/gid/mode across the replace, so the 0644
+    # renderer-user resolvability the conf.d header depends on survives, and a
+    # root-run reconcile does not re-own a file it did not create.
+    from jasper.atomic_io import atomic_write_text
+
+    atomic_write_text(path, rendered, preserve_target_stat=True)
+    return RingConfPeriodRender(
+        changed=True,
+        period_frames=period_frames,
+        previous_period_frames=previous[0] if len(distinct) == 1 else None,
+        conf_d=path,
+    )
 
 
 @dataclass(frozen=True)

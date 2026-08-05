@@ -151,7 +151,7 @@ box converges to it on the next deploy. This section is the single reference for
 | Knob | Value | Home |
 |---|---|---|
 | Ring A slots (`JASPER_FANIN_RING_SLOTS`) | `2` | `config.rs` `env_u32(…, 2)`; `jasper/fanin_coupling.py` `DEFAULT_FANIN_RING_SLOTS`; `deploy/alsa/conf.d/60-jts-ring.conf` `n_slots`; all lockstep |
-| Ring A period | `128` frames | conf.d `period_frames`; ioplug fixed |
+| Ring A period | `128` frames | conf.d `period_frames`, rendered per box by `jasper-audio-hardware-reconcile` from the active DAC profile's declared `LatencyFloor` (`128` is both the shipped default and the Apple-dongle floor; a DAC declaring no floor keeps the shipped value) |
 | Ring B slots (`JASPER_OUTPUTD_SHM_RING_SLOTS`) | `2` | outputd config default |
 | Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_ring_config` |
 | Camilla ring-emit target_level | `128` | `RING_CAMILLA_TARGET_LEVEL` |

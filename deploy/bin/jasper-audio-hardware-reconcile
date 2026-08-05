@@ -861,6 +861,60 @@ render_asound_if_needed() {
     return 1
 }
 
+# Render the shm-ring conf.d slot period from the ACTIVE DAC's DECLARED latency
+# floor (the follow-up deploy/alsa/conf.d/60-jts-ring.conf's own header asks
+# for). The ring slot IS one outputd DAC period, so a box whose DAC declares a
+# floor needs its conf.d to pin that floor's period instead of the shipped 128.
+#
+# The rule is narrow on purpose: a DAC with NO declared floor — and any
+# unrecognized DAC — leaves the shipped conf.d untouched and therefore keeps
+# whatever coupling that box has today. So this is a no-op on every box until
+# floor data is declared for its profile.
+#
+# Deliberately triggers NO restart and feeds no restart flag. The conf.d is read
+# by ALSA at the next PCM open, and arming is owned by the coupling reconciler,
+# which independently PREFLIGHTs conf-period vs outputd-period and fail-closes
+# to loopback. A render here changes what that preflight will find; it never
+# moves a live graph.
+#
+# The path is NOT duplicated here: with no --conf-d the Python side resolves
+# jasper.ring_assets.RING_CONF_D (the SSOT) and reports back which file it
+# touched. JASPER_RING_CONF_D exists for tests.
+RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"
+render_ring_conf_if_needed() {
+    local actions key value result="" period="" previous="" reason="" conf=""
+    if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
+        log_event "ring_conf" "result=skipped reason=dac_unrecognized"
+        return 0
+    fi
+    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        log_event "ring_conf" "result=skipped reason=python_unavailable"
+        return 0
+    fi
+    if ! actions="$(
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
+            render-ring-conf-period \
+            --profile-id "$OUTPUT_DAC_ID" \
+            --conf-d "$RING_CONF_D_OVERRIDE" 2>&1
+    )"; then
+        log_event "ring_conf" \
+            "result=failed output_dac_id=${OUTPUT_DAC_ID} detail=$(jasper_asound_log_token "$actions")"
+        return 0
+    fi
+    while read -r key value; do
+        [[ -n "${key:-}" ]] || continue
+        case "$key" in
+            result) result="$value" ;;
+            period_frames) period="$value" ;;
+            previous_period_frames) previous="$value" ;;
+            reason) reason="$value" ;;
+            conf) conf="$value" ;;
+        esac
+    done <<<"$actions"
+    log_event "ring_conf" \
+        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
+}
+
 gate_role_services() {
     if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
@@ -1157,6 +1211,7 @@ repair_generated_env_permissions
 
 render_changed=0
 render_asound_if_needed && render_changed=1
+render_ring_conf_if_needed
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     # A DAC-identity or asound (render) change can move the mic/input profile,
