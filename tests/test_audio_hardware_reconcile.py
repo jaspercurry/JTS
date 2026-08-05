@@ -428,7 +428,7 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     malformed_python.write_text(
         "#!/bin/sh\ncase \"$*\" in\n"
         f"*jasper.output_hardware*) \"{sys.executable}\" \"$@\" | sed 's/}}$//'; exit 0;;\n"
-        f'esac\nexec "{sys.executable}" "$@"\n',
+        f'esac\nPYTHONOPTIMIZE=1 exec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
     malformed_python.chmod(0o755)
