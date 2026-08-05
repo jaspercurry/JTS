@@ -485,9 +485,20 @@ def check_output_hardware_state() -> CheckResult:
         for item in state.issues
         if item.get("severity") == "blocker"
     ]
+    # The reconciler-emitted final-edge format (JASPER_OUTPUTD_DAC_FORMAT in
+    # /var/lib/jasper/outputd.env, which env_load sources). Read it, never
+    # re-derive it from the registry: the emitted value is what outputd and the
+    # chip-AEC alignment identity actually see, so this surfaces the one value
+    # an operator can compare against the registry by hand. It does NOT detect
+    # drift on its own — it prints a single value; registry-vs-emission drift
+    # is caught by the reconcile contract tests in
+    # tests/test_audio_hardware_reconcile.py. Unset/blank is the historical
+    # S16_LE edge (an unrecognized DAC, or a box predating the emit).
+    final_edge = os.environ.get("JASPER_OUTPUTD_DAC_FORMAT", "").strip() or "S16_LE"
     detail = (
         f"profile={state.profile_id} status={state.status} "
-        f"outputs={state.physical_output_count} apple_dacs={state.apple_dac_count}"
+        f"outputs={state.physical_output_count} apple_dacs={state.apple_dac_count} "
+        f"final_edge={final_edge} (declared)"
     )
     if blocker_codes or state.status not in {"ready"}:
         return CheckResult(

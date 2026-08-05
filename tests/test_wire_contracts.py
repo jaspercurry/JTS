@@ -355,12 +355,10 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # (_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV) so a migrating box converges clean.
     "JASPER_FANIN_CAMILLA_PIPE": "removed transport_pipe coupling; named only in the removal docstring, not Rust-read",
     "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "removed transport_pipe coupling; reconciler migration-sweep unset target, not Rust-read",
-    # Registry-declared final-edge ALSA sample format (PR-1 of the final-edge
-    # format program, jasper/audio_hardware/dac.py). jasper-audio-hardware-
-    # reconcile emits it into outputd.env, but no Rust daemon reads it yet —
-    # dormant by design until outputd's STATUS echo consumes it. The
-    # bidirectional check below forces this entry's removal once that lands.
-    "JASPER_OUTPUTD_DAC_FORMAT": "registry-declared final-edge format, reconciler-emitted, dormant until outputd's STATUS echo consumes it (PR-2 of the final-edge format program)",
+    # (JASPER_OUTPUTD_DAC_FORMAT was excepted for one PR while the registry
+    # declared it and no consumer existed. PR-2 landed outputd's read, so the
+    # entry was removed in the direction this guard demands — the contract is
+    # live Rust-read config now.)
 }
 
 # Script-local variables that *name the env file path itself* (e.g.

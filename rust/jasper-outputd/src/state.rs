@@ -60,6 +60,11 @@ pub struct OutputdState {
     sink_mode: String,
     content_pcm: String,
     dac_pcm: String,
+    /// The registry-DECLARED format of the final hardware edge (see
+    /// `config::DacEdgeFormat`) — what the reconciler says the DAC's `hw:`
+    /// device is at, not a readback. The native-write change upgrades this to
+    /// outputd's NEGOTIATED format once outputd opens the edge itself.
+    declared_dac_format: String,
     dual_dac_a_pcm: Option<String>,
     dual_dac_b_pcm: Option<String>,
     dual_linked: AtomicBool,
@@ -242,6 +247,7 @@ impl OutputdState {
             sink_mode: config.sink_mode.as_str().to_string(),
             content_pcm: config.content_pcm.clone(),
             dac_pcm: config.dac_pcm.clone(),
+            declared_dac_format: config.declared_dac_format.as_str().to_string(),
             dual_dac_a_pcm: config.dual_dac_a_pcm.clone(),
             dual_dac_b_pcm: config.dual_dac_b_pcm.clone(),
             dual_linked: AtomicBool::new(false),
@@ -1243,6 +1249,14 @@ impl OutputdState {
         buf.push_str(r#""dac":{"#);
         push_kv_str(&mut buf, "pcm", &self.dac_pcm);
         buf.push(',');
+        // DECLARED, not negotiated: the DAC registry's final_edge_format as the
+        // reconciler emitted it. Consumers that must know what the hardware
+        // edge is (chiefly the chip-AEC alignment identity, which force-
+        // invalidates a commissioned artifact when the edge moves) read it
+        // here. The native-write change upgrades this to outputd's own
+        // negotiated readback once outputd opens the edge at that format.
+        push_kv_str(&mut buf, "format", &self.declared_dac_format);
+        buf.push(',');
         push_kv_u64(&mut buf, "sample_rate", sample_rate);
         buf.push(',');
         push_kv_u64(
@@ -2067,7 +2081,7 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
 mod tests {
     use super::*;
     use crate::config::{
-        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, SinkMode,
+        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, DacEdgeFormat, SinkMode,
         DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM, DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
         DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
     };
@@ -2079,6 +2093,7 @@ mod tests {
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             dac_pcm: "outputd_dac".to_string(),
+            declared_dac_format: DacEdgeFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
             dual_require_link: false,
@@ -2309,7 +2324,7 @@ mod tests {
             r#""backend":"alsa""#,
             r#""content":{"source":"alsa","pcm":"outputd_content_capture""#,
             r#""content_bridge":{"mode":"direct""#,
-            r#""dac":{"pcm":"outputd_dac""#,
+            r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
             r#""period_frames":1024"#,
             r#""frames_read":2048"#,
@@ -2357,6 +2372,24 @@ mod tests {
         assert!(
             !j.contains(r#""assistant_loudness":"#),
             "duplicate outputd loudness state present in {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_echoes_the_declared_dac_edge_format() {
+        // The chip-AEC alignment identity reads dac.format out of STATUS, so a
+        // declared S32_LE edge (the InnoMaker HiFi AMP Pro) must reach the wire
+        // verbatim — NOT collapse to outputd's own S16 client format.
+        let state = OutputdState::new(&Config {
+            declared_dac_format: DacEdgeFormat::S32Le,
+            ..test_config()
+        });
+
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S32_LE""#),
+            "declared S32_LE edge missing from {j}"
         );
     }
 

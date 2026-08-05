@@ -392,8 +392,14 @@ impl AlsaBackend {
             .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm)),
         )?;
 
+        // `format` is the DECLARED final HARDWARE edge (see
+        // config::DacEdgeFormat), NOT what this backend writes: outputd's own
+        // client stays S16 (the `FORMAT` const `configure_pcm` sets and the
+        // `io_i16` writers), and on a plug-bridged DAC the plug converts up to
+        // the declared edge. The native-write change makes the two agree and
+        // turns this into a readback.
         eprintln!(
-            "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
+            "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_pcm,
             if config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing {
                 "shm_ring"
@@ -406,7 +412,8 @@ impl AlsaBackend {
             content_negotiated.period_frames,
             content_negotiated.buffer_frames,
             dac_negotiated.period_frames,
-            dac_negotiated.buffer_frames
+            dac_negotiated.buffer_frames,
+            config.declared_dac_format.as_str()
         );
 
         Ok(Self {

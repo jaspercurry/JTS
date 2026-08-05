@@ -95,6 +95,35 @@ pub enum SinkMode {
     Composite,
 }
 
+/// The sample format at the FINAL HARDWARE EDGE — the format the DAC's `hw:`
+/// device is opened at.
+///
+/// IMPORTANT: this is NOT the format outputd's own ALSA client writes. On a
+/// plug-bridged DAC (the InnoMaker HiFi AMP Pro today) outputd still writes
+/// S16 into an ALSA plug that converts up to the S32 hardware edge, so this
+/// value and outputd's client format legitimately disagree. This type declares
+/// the HARDWARE edge only; `set_format` / `FORMAT` / `io_i16` are untouched by
+/// it. Making outputd write the declared format natively (and retiring the
+/// plug) is the separate native-write change.
+///
+/// Declared by the DAC registry (`DacProfile.final_edge_format`) and emitted by
+/// `jasper-audio-hardware-reconcile` as `JASPER_OUTPUTD_DAC_FORMAT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DacEdgeFormat {
+    S16Le,
+    S32Le,
+}
+
+impl DacEdgeFormat {
+    /// The `/state` + log wire value, spelled exactly as ALSA spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::S16Le => "S16_LE",
+            Self::S32Le => "S32_LE",
+        }
+    }
+}
+
 impl SinkMode {
     /// The `/state` wire value. The composite shape KEEPS the stable
     /// `dual_apple` wire string through this type rename — the documented
@@ -134,6 +163,13 @@ pub struct Config {
     pub content_pcm: String,
     pub content_channels: u16,
     pub dac_pcm: String,
+    /// The registry-DECLARED format of the final hardware edge behind
+    /// `dac_pcm` — see [`DacEdgeFormat`] for why this is not necessarily the
+    /// format outputd itself writes. READ-ONLY today: outputd echoes it to
+    /// STATUS and the opened event (so the chip-AEC alignment identity can
+    /// record the edge it was commissioned against) and changes nothing about
+    /// what it asks ALSA for.
+    pub declared_dac_format: DacEdgeFormat,
     pub dual_dac_a_pcm: Option<String>,
     pub dual_dac_b_pcm: Option<String>,
     pub dual_require_link: bool,
@@ -378,6 +414,31 @@ impl Config {
                 4
             }
         };
+        // The final HARDWARE edge's declared format, emitted by
+        // jasper-audio-hardware-reconcile from the DAC registry's
+        // DacProfile.final_edge_format. See DacEdgeFormat: this declares the
+        // hw device's format, NOT the format outputd's client writes, and it
+        // changes nothing about what outputd asks ALSA for here.
+        //
+        // Unset or blank == the historical S16_LE default: the reconciler
+        // writes an explicit EMPTY value for an unrecognized DAC (it has no
+        // profile to query), and a box that predates the emit has the name
+        // unset. Any OTHER value can only mean registry/reconciler drift, so
+        // bail into the EX_CONFIG park rather than guess an edge format. Match
+        // is exact (trim only, no case folding): ALSA spells these uppercase
+        // and the only writer emits the registry literal, so a case variant is
+        // itself drift worth surfacing.
+        let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {
+            "" | "S16_LE" => DacEdgeFormat::S16Le,
+            "S32_LE" => DacEdgeFormat::S32Le,
+            other => {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_DAC_FORMAT must be one of S16_LE, S32_LE \
+                     (or empty for the S16_LE default); got {:?}",
+                    other
+                )
+            }
+        };
         let dual_dac_a_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_A_PCM");
         let dual_dac_b_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_B_PCM");
         if sink_mode == SinkMode::Composite
@@ -593,6 +654,7 @@ impl Config {
             content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", default_content_pcm),
             content_channels,
             dac_pcm: env_str("JASPER_OUTPUTD_DAC_PCM", default_dac_pcm),
+            declared_dac_format,
             dual_dac_a_pcm,
             dual_dac_b_pcm,
             dual_require_link: env_bool("JASPER_OUTPUTD_DUAL_REQUIRE_LINK", false),
@@ -1323,6 +1385,49 @@ mod tests {
                 assert_eq!(cfg.content_channels, 4);
             },
         );
+    }
+
+    #[test]
+    fn declared_dac_format_defaults_to_s16_when_unset_or_blank() {
+        // Unset == a box that predates the reconciler emit; explicit-empty ==
+        // the reconciler's own value for an UNRECOGNIZED DAC (no profile to
+        // query). Both resolve to the historical S16_LE edge.
+        for value in [None, Some(""), Some("   ")] {
+            with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", value)], || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.declared_dac_format, DacEdgeFormat::S16Le);
+                assert_eq!(cfg.declared_dac_format.as_str(), "S16_LE");
+            });
+        }
+    }
+
+    #[test]
+    fn declared_dac_format_parses_the_two_registry_values() {
+        for (raw, want) in [
+            ("S16_LE", DacEdgeFormat::S16Le),
+            ("S32_LE", DacEdgeFormat::S32Le),
+        ] {
+            with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", Some(raw))], || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.declared_dac_format, want);
+                assert_eq!(cfg.declared_dac_format.as_str(), raw);
+            });
+        }
+    }
+
+    #[test]
+    fn declared_dac_format_rejects_anything_else_loudly() {
+        // A value outside the registry vocabulary can only be registry /
+        // reconciler drift; guessing an edge format would silently mis-declare
+        // what the alignment identity is commissioned against. Case variants
+        // are drift too — the only writer emits the uppercase registry literal.
+        for bad in ["S24_LE", "s32_le", "S32_BE", "float32"] {
+            with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", Some(bad))], || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_DAC_FORMAT"), "{err}");
+                assert!(err.contains(bad), "{err}");
+            });
+        }
     }
 
     #[test]

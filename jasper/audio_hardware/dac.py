@@ -167,9 +167,14 @@ class DacProfile:
     # hardcodes its own "format S32_LE" literal for the InnoMaker plug
     # independently, and that literal is what actually reaches ALSA today.
     # jasper-audio-hardware-reconcile shells into final_edge_format_for() to
-    # emit this as JASPER_OUTPUTD_DAC_FORMAT (dormant — no consumer yet).
-    # The asound render script's literal stops being an independent copy
-    # once the outputd native-format write consumes this field instead.
+    # emit this as JASPER_OUTPUTD_DAC_FORMAT, which jasper-outputd READS: it
+    # accepts exactly {S16_LE, S32_LE} and parks at exit 78 otherwise, echoes
+    # the value into STATUS dac.format, and the chip-AEC alignment identity
+    # records it — so changing a profile's declared format invalidates every
+    # commissioned artifact on that hardware and forces a foreground
+    # `sudo jasper-aec-commission`. The asound render script's literal stops
+    # being an independent copy once the outputd native-format write consumes
+    # this field instead.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
