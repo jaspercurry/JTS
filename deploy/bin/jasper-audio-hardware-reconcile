@@ -118,7 +118,7 @@ usage() {
 Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
 
 Detect the current final-output DAC role and reconcile owned JTS state:
-  - DAC8x/DAC8x Studio present -> outputd_dac targets it; Apple mixer helpers disabled
+  - registered single DAC present -> outputd_dac targets it; Apple mixer helpers disabled
   - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
   - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
 

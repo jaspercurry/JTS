@@ -78,6 +78,7 @@ def test_outputd_unit_has_audio_realtime_shape():
 def test_outputd_unit_runtime_and_exec_paths():
     unit = _read_unit()
     assert _values_for(unit, "RuntimeDirectory") == ("jasper-outputd",)
+    assert _value_for(unit, "RuntimeDirectoryPreserve") == "restart"
     assert _assignments_for(unit, "ExecStart") == (
         "/opt/jasper/bin/jasper-outputd",
     )

@@ -426,9 +426,10 @@ What exists:
   `apple_usb_c_dongle`, `hifiberry_dac8x`,
   `hifiberry_dac8x_studio`, `innomaker_hifi_amp_pro`, and
   `dual_apple_usb_c_dac_4ch`. The normal playback runtime is still a
-  single-device contract: a recognized DAC8x/DAC8x Studio or Apple output
-  device can be described as one coherent output clock. The dual-Apple profile
-  is the constrained composite exception: the hardware shape is valid only for
+  single-device contract: a recognized DAC8x/DAC8x Studio, InnoMaker, or Apple
+  output device can be described as one coherent output clock. The
+  dual-Apple profile is the constrained composite exception: the hardware shape
+  is valid only for
   exactly two Apple USB-C DAC children, each owning one speaker-local stereo
   pair, with four physical outputs total and current reconciler observation
   confirming the expected same USB controller/bus shape. Stored 900 s

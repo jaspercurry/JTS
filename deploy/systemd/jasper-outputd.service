@@ -63,6 +63,7 @@ ReadWritePaths=/var/lib/jasper /run/jasper-outputd
 Group=jasper
 UMask=0007
 RuntimeDirectory=jasper-outputd
+RuntimeDirectoryPreserve=restart
 RuntimeDirectoryMode=0750
 
 EnvironmentFile=/etc/jasper/jasper.env
