@@ -20,6 +20,7 @@ from typing import Literal
 APPLE_USB_C_DONGLE_ID = "apple_usb_c_dongle"
 HIFIBERRY_DAC8X_ID = "hifiberry_dac8x"
 HIFIBERRY_DAC8X_STUDIO_ID = "hifiberry_dac8x_studio"
+INNOMAKER_HIFI_AMP_PRO_ID = "innomaker_hifi_amp_pro"
 DUAL_APPLE_USB_C_DAC_4CH_ID = "dual_apple_usb_c_dac_4ch"
 
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
@@ -408,6 +409,32 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     dtoverlay="hifiberry-dac8x",
 )
 
+INNOMAKER_HIFI_AMP_PRO = DacProfile(
+    id=INNOMAKER_HIFI_AMP_PRO_ID,
+    label="InnoMaker HiFi AMP Pro",
+    kind="single",
+    physical_output_count=2,
+    coherent_clock_domain=True,
+    clock_domain_label="Single InnoMaker HiFi AMP Pro device clock",
+    clock_domain_contract="single_device",
+    outputd_sink="alsa",
+    connection="i2s",
+    supported_card_matches=(
+        r"\bsnd_rpi_merus_amp\b",
+        r"\bmerus audio amp ma120x0p-amp-0\b",
+    ),
+    # This board is a passive stereo endpoint only. In particular it does not
+    # declare the active-output lane: the hardware needs an ALSA plug for its
+    # fixed S32_LE slave format, and conversion is forbidden after a crossover.
+    supports_active_outputd_lane=False,
+    chip_aec_detail=(
+        "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
+    ),
+    # Metadata only. The runtime reconciler deliberately does not mutate boot
+    # configuration; the manual canary starts from an already-enabled overlay.
+    dtoverlay="merus-amp",
+)
+
 DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     id=DUAL_APPLE_USB_C_DAC_4CH_ID,
     label="Dual Apple USB-C DAC 4-channel pair",
@@ -435,6 +462,7 @@ REGISTRY: tuple[DacProfile, ...] = (
     APPLE_USB_C_DONGLE,
     HIFIBERRY_DAC8X,
     HIFIBERRY_DAC8X_STUDIO,
+    INNOMAKER_HIFI_AMP_PRO,
     DUAL_APPLE_USB_C_DAC_4CH,
 )
 
@@ -610,6 +638,8 @@ __all__ = [
     "HIFIBERRY_DAC8X_ID",
     "HIFIBERRY_DAC8X_STUDIO",
     "HIFIBERRY_DAC8X_STUDIO_ID",
+    "INNOMAKER_HIFI_AMP_PRO",
+    "INNOMAKER_HIFI_AMP_PRO_ID",
     "LatencyFloor",
     "MixerControl",
     "REGISTRY",

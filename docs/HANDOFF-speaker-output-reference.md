@@ -358,11 +358,16 @@ What exists:
 - DAC output: `outputd_dac`, normally a direct hardware alias for the
   selected final-output card. Public/default installs use the Apple
   USB-C dongle; DAC8x-family lab installs use the enumerated
-  `snd_rpi_hifiberry_dac8x` card. `jasper-audio-hardware-reconcile`
+  `snd_rpi_hifiberry_dac8x` card. An already-overlay-enabled InnoMaker HiFi
+  AMP Pro uses the enumerated `sndrpimerusamp` card. Its profile-scoped final
+  alias is a passive-only `plug`: outputd remains a 48 kHz stereo S16 client,
+  while the hardware slave is fixed to 48 kHz, stereo, S32_LE. The renderer
+  rejects active-output mode for this profile. `jasper-audio-hardware-reconcile`
   runs at install/boot and from udev `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
-  `hifiberry_dac8x`, `hifiberry_dac8x_studio`, or the raw fallback card
-  token when no known role is detected) plus `JASPER_AUDIO_DAC_CARD` into
+  `hifiberry_dac8x`, `hifiberry_dac8x_studio`,
+  `innomaker_hifi_amp_pro`, or the raw fallback card token when no known role
+  is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
   `outputd_dac` PCM name. It also writes
@@ -381,9 +386,13 @@ What exists:
   `jasper-doctor` uses the observed hardware profile to make
   Apple-specific USB/headphone-gain checks active for one Apple dongle or
   the dual-Apple pair, checks every Apple child card in the pair, and
-  skips those checks for DAC8x-family or other output roles. For
-  recognized DAC8x/DAC8x Studio hardware, `outputd_dac` renders directly to
-  the detected final-output card. The old DAC8x route env (`mono:N` /
+  skips those checks for DAC8x-family or other output roles. Ordinary
+  registered single-DAC identity/card selection comes from the generic
+  registry-backed output-hardware classification, rather than per-DAC shell
+  matches; the separate Apple card match exists only for its mixer helpers.
+  Recognized DAC8x/DAC8x Studio hardware renders `outputd_dac` directly to the
+  detected card; InnoMaker uses the constrained final-edge plug above. The old
+  DAC8x route env (`mono:N` /
   `stereo:L,R`) has been removed; active crossover channel ownership lives in
   the active-speaker `channel_map`, not in an ALSA alias. The product
   speaker-output topology substrate is separate again:
@@ -415,11 +424,12 @@ What exists:
   The same topology payload includes a clock-domain report for the detected
   final-output hardware. Supported topology hardware IDs include
   `apple_usb_c_dongle`, `hifiberry_dac8x`,
-  `hifiberry_dac8x_studio`, and
+  `hifiberry_dac8x_studio`, `innomaker_hifi_amp_pro`, and
   `dual_apple_usb_c_dac_4ch`. The normal playback runtime is still a
-  single-device contract: a recognized DAC8x/DAC8x Studio or Apple output
-  device can be described as one coherent output clock. The dual-Apple profile
-  is the constrained composite exception: the hardware shape is valid only for
+  single-device contract: a recognized DAC8x/DAC8x Studio, InnoMaker, or Apple
+  output device can be described as one coherent output clock. The
+  dual-Apple profile is the constrained composite exception: the hardware shape
+  is valid only for
   exactly two Apple USB-C DAC children, each owning one speaker-local stereo
   pair, with four physical outputs total and current reconciler observation
   confirming the expected same USB controller/bus shape. Stored 900 s
@@ -450,8 +460,12 @@ What exists:
   The configured output role takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
-  output identity in `dac_identity`. A recognized role renders the ALSA template first,
-  then publishes the active DAC env values. If the env/template changed, the
+  output identity in `dac_identity`. A recognized role stages and validates
+  the outputd candidate before re-rendering the ALSA alias. If validation
+  rejects that candidate, the prior outputd env is preserved and reconcile
+  parks/exits 78 before alias rendering or any audio restart, so stale active
+  multichannel state cannot reach a passive stereo plug. If the validated
+  env/template changed, the
   reconciler restarts `jasper-outputd`; if the replug is value-neutral, it
   still `reset-failed` + `start`s `jasper-outputd` so a unit parked by the
   missing-card `ExecCondition` recovers when the DAC returns. An
@@ -953,6 +967,9 @@ rejected — see the "Stage 2a landed" callout above.)
   `StartLimitAction`).
 - **Width mismatch (CamillaDSP N vs outputd M):** `EXIT_CONFIG`/78, parked, no
   crash-loop. Belt-and-suspenders since both derive from one `OutputTransportPlan`.
+- **Initial final-sink open/negotiation failure:** configuration-class exit 78,
+  parked instead of consuming the restart/reboot budget. Content-capture
+  startup and later runtime faults keep their existing retryable semantics.
 - **DAC hotplug:** reconciler re-derives on udev (pattern-3 self-heal); replug
   re-arms **muted** via the masked startup config.
 - **Config-shear during DAC re-enumeration:** the reconciler stages and validates
@@ -1531,7 +1548,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-24 (post-DSP turn-start `VolumeContext` is atomic in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-08-04 (InnoMaker passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78 rechecked; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the

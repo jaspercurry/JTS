@@ -19,6 +19,8 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO,
     HIFIBERRY_DAC8X_STUDIO_ID,
+    INNOMAKER_HIFI_AMP_PRO,
+    INNOMAKER_HIFI_AMP_PRO_ID,
     DacProfile,
     LatencyFloor,
 )
@@ -35,12 +37,14 @@ def test_registry_contains_current_output_profiles_in_stable_order() -> None:
         APPLE_USB_C_DONGLE,
         HIFIBERRY_DAC8X,
         HIFIBERRY_DAC8X_STUDIO,
+        INNOMAKER_HIFI_AMP_PRO,
         DUAL_APPLE_USB_C_DAC_4CH,
     )
     assert dac.known_profile_ids() == (
         APPLE_USB_C_DONGLE_ID,
         HIFIBERRY_DAC8X_ID,
         HIFIBERRY_DAC8X_STUDIO_ID,
+        INNOMAKER_HIFI_AMP_PRO_ID,
         DUAL_APPLE_USB_C_DAC_4CH_ID,
     )
 
@@ -55,6 +59,7 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.active_outputd_lane_channels_for(APPLE_USB_C_DONGLE_ID) == 2
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_ID) == 8
     assert dac.active_outputd_lane_channels_for(HIFIBERRY_DAC8X_STUDIO_ID) == 8
+    assert dac.active_outputd_lane_channels_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
     assert dac.active_outputd_lane_channels_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.active_outputd_lane_channels_for("unknown_usb_dac") is None
     assert dac.clock_domain_contract_for(APPLE_USB_C_DONGLE_ID) == "single_device"
@@ -157,6 +162,24 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
     assert dac.profile_for_card_label(studio_label) is HIFIBERRY_DAC8X_STUDIO
     assert dac.profile_for_card_label(studio_kernel_label) is HIFIBERRY_DAC8X_STUDIO
     assert dac.profile_for_card_label("Mystery USB DAC") is None
+
+
+def test_innomaker_hifi_amp_pro_profile_matches_observed_passive_i2s_shape() -> None:
+    profile = INNOMAKER_HIFI_AMP_PRO
+
+    assert profile.kind == "single"
+    assert profile.physical_output_count == 2
+    assert profile.connection == "i2s"
+    assert profile.dtoverlay == "merus-amp"
+    assert profile.supports_active_outputd_lane is False
+    assert profile.active_outputd_lane_channels is None
+    assert profile.usb_ids == ()
+    assert (
+        dac.profile_for_card_label(
+            "snd_rpi_merus_amp, Merus Audio Amp ma120x0p-amp-0"
+        )
+        is profile
+    )
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:

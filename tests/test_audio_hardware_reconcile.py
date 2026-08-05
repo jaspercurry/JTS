@@ -378,6 +378,12 @@ hw:CARD=DAC8XStudio,DEV=0
 """
 
 
+INNOMAKER_LISTING = """
+hw:CARD=sndrpimerusamp,DEV=0
+    snd_rpi_merus_amp, Merus Audio Amp ma120x0p-amp-0
+"""
+
+
 def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     result = _run_reconcile(
         tmp_path,
@@ -408,6 +414,33 @@ def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
     assert "OUTPUT_DAC_CARD=DAC8XStudio" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x_studio" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
+
+
+def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
+    tmp_path: Path,
+):
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+    )
+
+    assert result.returncode == 0, result.stderr
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=innomaker_hifi_amp_pro" in env_text
+    assert "JASPER_AUDIO_DAC_CARD=sndrpimerusamp" in env_text
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "type plug" in template
+    assert "card sndrpimerusamp" in template
+    assert "rate 48000" in template
+    assert "channels 2" in template
+    assert "format S32_LE" in template
+    assert _render_log(tmp_path) == "render\n"
 
 
 def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
@@ -1669,12 +1702,15 @@ def test_reconcile_usb_low_latency_route_emits_content_buffer(tmp_path: Path):
     assert "outputd_content_buffer_frames=1536" in result.stderr
 
 
-def test_reconcile_refuses_invalid_outputd_candidate_and_preserves_prior(
+def test_reconcile_parks_before_innomaker_render_when_candidate_is_invalid(
     tmp_path: Path,
 ):
     prior_outputd = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
+        "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture\n"
+        "JASPER_OUTPUTD_ACTIVE_CHANNELS=8\n"
+        "JASPER_OUTPUTD_ACTIVE_LANE=1\n"
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
         "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
     )
@@ -1699,7 +1735,7 @@ def test_reconcile_refuses_invalid_outputd_candidate_and_preserves_prior(
 
     result = _run_reconcile(
         tmp_path,
-        APPLE_LISTING,
+        INNOMAKER_LISTING,
         "--reason",
         "test",
         initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
@@ -1707,13 +1743,23 @@ def test_reconcile_refuses_invalid_outputd_candidate_and_preserves_prior(
         extra_env={"JASPER_AUDIO_RUNTIME_OVERRIDES_PATH": str(overrides)},
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 78, result.stderr
     assert (tmp_path / "outputd.env").read_text(encoding="utf-8") == prior_outputd
     assert "event=audio_hardware_reconcile.outputd_env_invalid" in result.stderr
     assert "preserved=1" in result.stderr
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=1024" not in (
         tmp_path / "outputd.env"
     ).read_text(encoding="utf-8")
+    assert "event=audio_hardware_reconcile.outputd_candidate_rejected" in result.stderr
+    assert "action=park_before_asound_render" in result.stderr
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=8" in (
+        tmp_path / "outputd.env"
+    ).read_text(encoding="utf-8")
+    assert not (tmp_path / "asoundrc.jasper.template").exists()
+    assert _render_log(tmp_path) == ""
+    assert "stop jasper-voice.service jasper-outputd.service" in _systemctl_log(
+        tmp_path
+    )
 
 
 def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(
@@ -1758,7 +1804,7 @@ def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(
         extra_env={"JASPER_AUDIO_RUNTIME_OVERRIDES_PATH": str(overrides)},
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 78, result.stderr
     assert (tmp_path / "outputd.env").read_text(encoding="utf-8") == prior_outputd
     assert "event=audio_hardware_reconcile.outputd_env_invalid" in result.stderr
     assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES_256" in result.stderr

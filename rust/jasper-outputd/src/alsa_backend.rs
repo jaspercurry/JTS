@@ -305,6 +305,24 @@ pub struct PairedCompositeSink {
     period_b: Vec<i16>,
 }
 
+/// Marker for a final sink that could not be opened or negotiate the required
+/// outputd geometry during initial startup. This is configuration-class: a
+/// restart cannot change the PCM alias or its hardware capabilities.
+#[derive(Debug)]
+pub struct FinalSinkStartupConfigError;
+
+impl std::fmt::Display for FinalSinkStartupConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "final sink startup configuration fault")
+    }
+}
+
+impl std::error::Error for FinalSinkStartupConfigError {}
+
+fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
+    result.context(FinalSinkStartupConfigError)
+}
+
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
         // The content ALSA PCM is NOT opened when a non-ALSA content source
@@ -356,19 +374,23 @@ impl AlsaBackend {
             (Some(content), negotiated)
         };
 
-        let dac = PCM::new(&config.dac_pcm, Direction::Playback, false)
-            .with_context(|| format!("opening outputd DAC PCM {}", config.dac_pcm))?;
-        let dac_negotiated = configure_pcm(PcmConfig {
-            role: "dac",
-            pcm_name: &config.dac_pcm,
-            pcm: &dac,
-            sample_rate: config.sample_rate,
-            period_frames: config.period_frames,
-            channels: config.content_channels,
-            buffer_frames: config.dac_buffer_frames,
-            manual_start: true,
-        })
-        .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm))?;
+        let dac = final_sink_startup(
+            PCM::new(&config.dac_pcm, Direction::Playback, false)
+                .with_context(|| format!("opening outputd DAC PCM {}", config.dac_pcm)),
+        )?;
+        let dac_negotiated = final_sink_startup(
+            configure_pcm(PcmConfig {
+                role: "dac",
+                pcm_name: &config.dac_pcm,
+                pcm: &dac,
+                sample_rate: config.sample_rate,
+                period_frames: config.period_frames,
+                channels: config.content_channels,
+                buffer_frames: config.dac_buffer_frames,
+                manual_start: true,
+            })
+            .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm)),
+        )?;
 
         eprintln!(
             "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={}",
@@ -561,40 +583,48 @@ impl PairedCompositeSink {
             .start()
             .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
 
-        let dac_a = PCM::new(&dac_a_pcm, Direction::Playback, false)
-            .with_context(|| format!("opening outputd dual DAC A PCM {}", dac_a_pcm))?;
-        let dac_a_negotiated = configure_pcm(PcmConfig {
-            role: "dual_dac_a",
-            pcm_name: &dac_a_pcm,
-            pcm: &dac_a,
-            sample_rate: config.sample_rate,
-            period_frames: config.period_frames,
-            channels: CHANNELS,
-            buffer_frames: config.dac_buffer_frames,
-            manual_start: true,
-        })
-        .with_context(|| format!("configuring outputd dual DAC A PCM {}", dac_a_pcm))?;
+        let dac_a = final_sink_startup(
+            PCM::new(&dac_a_pcm, Direction::Playback, false)
+                .with_context(|| format!("opening outputd dual DAC A PCM {}", dac_a_pcm)),
+        )?;
+        let dac_a_negotiated = final_sink_startup(
+            configure_pcm(PcmConfig {
+                role: "dual_dac_a",
+                pcm_name: &dac_a_pcm,
+                pcm: &dac_a,
+                sample_rate: config.sample_rate,
+                period_frames: config.period_frames,
+                channels: CHANNELS,
+                buffer_frames: config.dac_buffer_frames,
+                manual_start: true,
+            })
+            .with_context(|| format!("configuring outputd dual DAC A PCM {}", dac_a_pcm)),
+        )?;
 
-        let dac_b = PCM::new(&dac_b_pcm, Direction::Playback, false)
-            .with_context(|| format!("opening outputd dual DAC B PCM {}", dac_b_pcm))?;
-        let dac_b_negotiated = configure_pcm(PcmConfig {
-            role: "dual_dac_b",
-            pcm_name: &dac_b_pcm,
-            pcm: &dac_b,
-            sample_rate: config.sample_rate,
-            period_frames: config.period_frames,
-            channels: CHANNELS,
-            buffer_frames: config.dac_buffer_frames,
-            manual_start: true,
-        })
-        .with_context(|| format!("configuring outputd dual DAC B PCM {}", dac_b_pcm))?;
+        let dac_b = final_sink_startup(
+            PCM::new(&dac_b_pcm, Direction::Playback, false)
+                .with_context(|| format!("opening outputd dual DAC B PCM {}", dac_b_pcm)),
+        )?;
+        let dac_b_negotiated = final_sink_startup(
+            configure_pcm(PcmConfig {
+                role: "dual_dac_b",
+                pcm_name: &dac_b_pcm,
+                pcm: &dac_b,
+                sample_rate: config.sample_rate,
+                period_frames: config.period_frames,
+                channels: CHANNELS,
+                buffer_frames: config.dac_buffer_frames,
+                manual_start: true,
+            })
+            .with_context(|| format!("configuring outputd dual DAC B PCM {}", dac_b_pcm)),
+        )?;
 
         if dac_a_negotiated != dac_b_negotiated {
-            anyhow::bail!(
+            return final_sink_startup(Err(anyhow::anyhow!(
                 "dual Apple DACs negotiated different shapes: A={:?} B={:?}",
                 dac_a_negotiated,
                 dac_b_negotiated
-            );
+            )));
         }
 
         let mut linked = false;
@@ -1033,6 +1063,18 @@ fn write_dac_fail_closed(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn final_sink_startup_attaches_configuration_marker() {
+        let error = final_sink_startup::<()>(Err(anyhow::anyhow!(
+            "synthetic final sink negotiation failure"
+        )))
+        .unwrap_err();
+
+        assert!(error
+            .downcast_ref::<FinalSinkStartupConfigError>()
+            .is_some());
+    }
 
     fn test_negotiated_pcm() -> NegotiatedPcm {
         NegotiatedPcm {

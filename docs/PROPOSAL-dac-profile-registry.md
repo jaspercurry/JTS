@@ -1,6 +1,6 @@
 # Proposal: DAC Profile Registry
 
-> **Status: proposal / implementation handoff, updated 2026-06-11.** The
+> **Status: proposal / implementation handoff, updated 2026-08-04.** The
 > initial IO-free registry scaffold exists in
 > [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
 > `jasper.output_hardware` derives static output metadata and card-label
@@ -24,6 +24,7 @@ hardware profiles:
 - `apple_usb_c_dongle`: one Apple USB-C adapter, two physical outputs.
 - `hifiberry_dac8x` / DAC8x-family: one coherent multichannel DAC, eight
   physical outputs.
+- `innomaker_hifi_amp_pro`: one passive-stereo I²S amp, two physical outputs.
 - `dual_apple_usb_c_dac_4ch`: two Apple USB-C adapters treated as one
   four-output composite profile for active crossover work.
 
@@ -121,6 +122,7 @@ Initial profiles should include at least:
 - `APPLE_USB_C_DONGLE`
 - `HIFIBERRY_DAC8X`
 - `HIFIBERRY_DAC8X_STUDIO` if the runtime treats Studio distinctly
+- `INNOMAKER_HIFI_AMP_PRO`
 - `DUAL_APPLE_USB_C_DAC_4CH`
 
 `connection` is consumed by the hardware USB-role resolver. An I²S profile
@@ -197,10 +199,11 @@ outputd process control inside the registry.
    profiles still require explicit observation/activation logic; adding
    `kind="composite"` to the registry alone must not route output.
 6. Keep `jasper-audio-hardware-reconcile` as the runtime owner, but have it
-   consume profile metadata rather than duplicating every device string. The
-   remaining bash-side matching is intentionally small, covered by drift-guard
-   tests, and should not grow new hardware vocabulary without a matching
-   registry update.
+   consume profile metadata rather than duplicating every device string.
+   **Single-device activation landed:** the reconciler consumes
+   `output_hardware`'s registry-backed ready profile and selected card for
+   ordinary single DACs. Its remaining direct card match is the Apple dongle's
+   separate mixer-helper role; composite activation remains explicit.
 7. Burn down remaining hardcoded Apple/DAC8x references only when each consumer
    moves to the profile boundary. Do not do a broad mechanical rewrite without
    tests.
@@ -253,8 +256,9 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-07-15 (DAC8x-only active-crossover commissioning launch
-capability rechecked; `connection`/`dtoverlay` role contract rechecked;
+Last verified: 2026-08-04 (InnoMaker passive-stereo profile and generic
+single-DAC reconciler consumption rechecked; DAC8x-only active-crossover
+commissioning capability and `connection`/`dtoverlay` role contract rechecked;
 prior 2026-06-11 registered single-device classification, registry
 consumers, and remaining bash drift guards rechecked against the dual-Apple
 active-output architecture).
