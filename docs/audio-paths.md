@@ -596,10 +596,13 @@ runtime graph.
 The old DAC8x final-output alias route has been removed. `outputd_dac`
 renders directly to an ordinary recognized final-output card. The sole
 profile-scoped format exception is the passive-stereo InnoMaker HiFi AMP Pro:
-its final-edge `plug` keeps outputd's JTS S16 client contract while fixing the
-hardware slave at 48 kHz, two channels, S32_LE. That profile does not declare
-an active-output lane, and its renderer rejects active-mode input so the plug
-cannot sit after an active crossover. Active-speaker channel
+its final-edge `plug` keeps outputd's JTS S16 client contract; the kernel DAI
+(`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous 44.1-192 kHz rates
+(a driver-advertisement limit, not a documented silicon one), so the plug
+pins the slave at JTS's 48 kHz, two channels, and widens S16 to S32. That
+profile does not declare an active-output lane, and its renderer rejects
+active-mode input so the plug cannot sit after an active crossover.
+Active-speaker channel
 ownership lives in `/var/lib/jasper/output_topology.json` and the generated
 active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
 physical DAC lanes, speaker groups, passive/active modes, subwoofers, and
