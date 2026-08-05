@@ -364,7 +364,8 @@ What exists:
   client, while the hardware slave is pinned to 48 kHz, stereo, S32_LE
   because the kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at
   continuous 44.1-192 kHz rates — a driver-advertisement limit, not a
-  silicon one. The renderer rejects active-output mode for this profile.
+  documented silicon one. The renderer rejects active-output mode for this
+  profile.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
   `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,

@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jasper.audio_hardware.dac import final_edge_format_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -548,7 +549,9 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     assert "card sndrpimerusamp" in template
     assert "rate 48000" in template
     assert "channels 2" in template
-    assert "format S32_LE" in template
+    # Couples the asound-render.sh literal to the registry declaration: if
+    # either changes alone, this fails instead of the two silently drifting.
+    assert f"format {final_edge_format_for('innomaker_hifi_amp_pro')}" in template
     assert _render_log(tmp_path) == "render\n"
 
 
@@ -976,6 +979,10 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
+    # Parked/unrecognized: no profile to query, so the declared format clears
+    # too — explicit empty, matching how ACTIVE_CHANNELS/ACTIVE_LANE clear
+    # elsewhere in this same branch.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" in outputd_env
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert "action=park_until_active_graph" in result.stderr

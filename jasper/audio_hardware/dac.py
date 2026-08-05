@@ -161,14 +161,15 @@ class DacProfile:
     chip_aec_detail: str = ""
     udev_rule: str | None = None
     dtoverlay: str | None = None
-    # The sample format the DAC's hw device is opened at, at the final ALSA
-    # edge. Single source of truth for that fact; jasper-audio-hardware-
-    # reconcile shells into final_edge_format_for() to emit it as
-    # JASPER_OUTPUTD_DAC_FORMAT. Today outputd opens every ALSA sink at S16
-    # and a profile declaring S32_LE (the InnoMaker) is bridged by an ALSA
-    # plug at that declared format; the native-format write in outputd is a
-    # planned follow-up, so this field stays accurate both before and after
-    # that lands.
+    # The DECLARED sample format the DAC's hw device should open at, at the
+    # final ALSA edge. This is the registry's declaration of that fact, not
+    # yet its sole source: deploy/lib/jasper-asound-render.sh still
+    # hardcodes its own "format S32_LE" literal for the InnoMaker plug
+    # independently, and that literal is what actually reaches ALSA today.
+    # jasper-audio-hardware-reconcile shells into final_edge_format_for() to
+    # emit this as JASPER_OUTPUTD_DAC_FORMAT (dormant — no consumer yet).
+    # The asound render script's literal stops being an independent copy
+    # once the outputd native-format write consumes this field instead.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
@@ -439,8 +440,9 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # This board is a passive stereo endpoint only. In particular it does not
     # declare the active-output lane. Verified causal chain: the kernel DAI
     # (ma120x0p.c) advertises only S24_LE|S32_LE at continuous 44.1-192 kHz
-    # rates — a driver-advertisement limit, not a silicon one (the driver's
-    # own hw_params has an unadvertised S16 branch) — JTS pins 48 kHz/2ch.
+    # rates — a driver-advertisement limit, not a documented silicon one
+    # (the driver's own hw_params has an unadvertised S16 branch) — JTS
+    # pins 48 kHz/2ch.
     # outputd currently opens every sink at S16 only, so the final edge is
     # bridged by an ALSA plug, which is banned on the active path. So: no
     # active lane YET — this flips once the outputd native-format write

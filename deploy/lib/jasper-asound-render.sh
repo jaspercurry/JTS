@@ -53,9 +53,9 @@ EOF
     if [[ "${OUTPUT_DAC_ID:-}" == "innomaker_hifi_amp_pro" ]]; then
         # The Merus amp's kernel DAI (ma120x0p.c) advertises only S24_LE|
         # S32_LE at continuous 44.1-192 kHz rates -- a driver-advertisement
-        # limit, not a silicon one. JTS pins 48 kHz/2ch; outputd keeps the
-        # JTS S16 client contract and ALSA widens S16->S32 at this final
-        # passive-output edge.
+        # limit, not a documented silicon one. JTS pins 48 kHz/2ch; outputd
+        # keeps the JTS S16 client contract and ALSA widens S16->S32 at this
+        # final passive-output edge.
         # Belt-and-braces: the live gate is the registry's
         # supports_active_outputd_lane=False; this just fails loudly if that
         # ever drifts.
