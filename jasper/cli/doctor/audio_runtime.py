@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ... import ring_assets
+from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...env_load import parse_env_file
+from ...fanin_coupling import RING_SLOT_FRAMES
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _active_audio_dac_id, _run
 from .correction import _active_camilla_config_path
 
 if TYPE_CHECKING:
@@ -1598,6 +1600,96 @@ def check_ring_geometry_coherence() -> CheckResult:
         label, "ok",
         f"Ring A geometry coherent across env + conf.d + on-disk header "
         f"(n_slots={header.n_slots}, period_frames={header.period_frames})",
+    )
+
+
+@doctor_check(order=51.95, group="audio")
+def check_ring_conf_floor_render() -> CheckResult:
+    """Verify the ring conf.d slot period matches the active DAC's declared floor.
+
+    The ring slot IS one outputd DAC period, so a box whose DAC declares a
+    :class:`~jasper.audio_hardware.dac.LatencyFloor` has its conf.d
+    ``period_frames`` RENDERED from that floor by
+    ``jasper-audio-hardware-reconcile``. This check is the standing surface that
+    catches a box where that render did not land (an install that re-laid the
+    shipped conf.d without a reconcile after it, a hand-edited conf.d, a DAC
+    swapped while the reconciler was down).
+
+    Both facts are read from their owners: the floor from the DAC registry
+    (``latency_floor_for``), the period from the conf.d file itself.
+
+    Statuses:
+      ok    — no declared floor (the shipped default stands, by rule); a
+              declared floor that is not ``RING_SLOT_FRAMES`` (a documented
+              product boundary, not drift — see below); or the conf.d already
+              declares the floor's period.
+      warn  — a renderable floor the conf.d has NOT been rendered to, or an
+              indeterminate conf.d period. Never fail: the conf.d is inert
+              unless shm_ring is armed, and the coupling reconciler
+              independently preflights this and fail-closes to loopback rather
+              than arming a mismatched geometry.
+
+    The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
+    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
+    override), so only a floor that EQUALS it is renderable. A DAC declaring
+    any other floor never gets a rendered conf.d — shm_ring is simply
+    unavailable on it, loopback continues, and the floor's outputd
+    period/buffer geometry still applies through ``outputd.env``. That is a
+    known limit with an owner (issue #2147), so it reports ok, not warn.
+
+    Scope: this compares the conf.d against the DECLARED floor, which is what
+    the renderer uses. An operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` override
+    moves outputd's EFFECTIVE period away from the floor; that divergence is
+    the coupling reconciler's preflight to catch (and ``ring geometry`` for the
+    on-disk axis), not this check's.
+    """
+    label = "ring conf floor"
+    dac_id = _active_audio_dac_id()
+    floor = latency_floor_for(dac_id)
+    if floor is None:
+        return CheckResult(
+            label,
+            "ok",
+            f"{dac_id} declares no latency floor — {_JTS_RING_CONF_D} keeps its "
+            "shipped default (no declared floor, nothing to render)",
+        )
+    if floor.outputd_period_frames != RING_SLOT_FRAMES:
+        return CheckResult(
+            label,
+            "ok",
+            f"{dac_id} declares outputd period "
+            f"{floor.outputd_period_frames} != the fixed ring transport slot "
+            f"{RING_SLOT_FRAMES}, so its conf.d is deliberately not rendered: "
+            "shm_ring is unavailable on this DAC until issue #2147 makes the "
+            "ring slot floor-derived. Loopback coupling continues and still "
+            "receives the floor's outputd period/buffer geometry.",
+        )
+    conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
+    if conf_period is None:
+        return CheckResult(
+            label,
+            "warn",
+            f"{dac_id} declares outputd_period_frames="
+            f"{floor.outputd_period_frames} but {_JTS_RING_CONF_D} has no single "
+            "period_frames (absent or torn); the ring slot geometry is "
+            "indeterminate — redeploy (bash scripts/deploy-to-pi.sh) to "
+            "reinstall it.",
+        )
+    if conf_period != floor.outputd_period_frames:
+        return CheckResult(
+            label,
+            "warn",
+            f"{_JTS_RING_CONF_D} pins period_frames={conf_period} but {dac_id} "
+            f"declares a latency floor of {floor.outputd_period_frames}; the ring "
+            "slot is one outputd DAC period, so shm_ring cannot arm against this "
+            "conf.d. Run: sudo systemctl start "
+            "jasper-audio-hardware-reconcile.service (it renders the conf.d from "
+            "the declared floor).",
+        )
+    return CheckResult(
+        label,
+        "ok",
+        f"period_frames={conf_period} matches {dac_id}'s declared latency floor",
     )
 
 

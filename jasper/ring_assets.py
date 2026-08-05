@@ -20,9 +20,14 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   realtime path (the ioplug would fail to resolve and CamillaDSP would crash-loop
   on its statefile). Presence-only here — an open-probe from the reconciler could
   disturb a live arm, and the doctor already owns the deep probe.
+- ``jasper.cli.audio_config render-ring-conf-period`` — the per-box conf.d
+  **renderer** the output-hardware reconciler shells into. It reuses this
+  module's ``period_frames`` regex to REWRITE the value it also parses, so the
+  reader and the writer of the conf.d format cannot drift.
 
-Import-cheap (stdlib only) so the reconciler and the socket-activated web
-surfaces can resolve asset presence without pulling in the doctor.
+Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
+so the reconciler and the socket-activated web surfaces can resolve asset
+presence without pulling in the doctor.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
 # Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
@@ -103,20 +110,40 @@ def ring_asset_presence(
     )
 
 
-# The ring's slot geometry is NOT a hardcoded 128: the `jts_ring_playback` ioplug
-# opens Ring B with the conf.d's ``period_frames``, and jasper-outputd's
-# ``ShmRingSource`` attaches with ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per
-# DAC period — see rust/jasper-outputd/src/config.rs "the ring's period_frames is
-# always outputd's period_frames"). A geometry mismatch against an existing ring
-# is a hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
-# existing ring is an open() error"). The shipped ``60-jts-ring.conf`` pins a
-# PLACEHOLDER 128 (the file says so); on a box whose resolved outputd period is
-# not 128 (the packaged default is 1024, only the Apple-dongle latency floor is
-# 128), CamillaDSP's ring open would fail and the arm would roll back with a
-# confusing daemon-level error. So the coupling reconciler PREFLIGHTs this match
-# and fail-closes to loopback with a crisp reason (mirrors scripts/ring-proto/
-# arm.sh, which renders the conf period from outputd's resolved env per box).
-_RING_CONF_PERIOD_RE = re.compile(r"^\s*period_frames\s+(\d+)\s*$", re.MULTILINE)
+# The ring's slot geometry IS fixed at ``RING_SLOT_FRAMES`` (128). jasper-fanin
+# creates Ring A with that COMPILE-TIME constant
+# (rust/jasper-fanin/src/config.rs, no env override) and both conf.d PCM blocks
+# share one period value, so the conf.d period is pinned to it too — this file
+# is not free to follow a DAC. Making the slot derivable is issue #2147.
+#
+# The mismatch this parser exists to catch is the OTHER side: the
+# ``jts_ring_playback`` ioplug opens Ring B with the conf.d's ``period_frames``,
+# and jasper-outputd's ``ShmRingSource`` attaches with
+# ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per DAC period — see
+# rust/jasper-outputd/src/config.rs "the ring's period_frames is always
+# outputd's period_frames"). A geometry mismatch against an existing ring is a
+# hard ``open()`` error (c/jts-ring-ioplug: "a geometry mismatch against an
+# existing ring is an open() error"). On a box whose resolved outputd period is
+# not 128 (the packaged default is 1024, and only a DAC declaring a 128-frame
+# latency floor lowers it), CamillaDSP's ring open would fail and the arm would
+# roll back with a confusing daemon-level error — so the coupling reconciler
+# PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
+# is always to bring the OUTPUTD period to the slot, never to raise this file.
+#
+# :func:`render_ring_conf_period` therefore has exactly one live job: converging
+# a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand edit, a half
+# install) back onto it. It refuses any other target. (scripts/ring-proto/arm.sh
+# renders the conf period from outputd's resolved env per box — that is the lab
+# prototype, which predates the fixed-slot product path and is not this rule.)
+#
+# One regex, two directions: the ``indent``/``frames`` groups let the renderer
+# rewrite exactly the lines this parser reads, so a conf.d the parser accepts is
+# a conf.d the renderer can update (and vice versa). Horizontal-whitespace
+# classes (not ``\s``) keep both directions line-scoped under ``re.MULTILINE``.
+_RING_CONF_PERIOD_RE = re.compile(
+    r"^(?P<indent>[^\S\n]*)period_frames[^\S\n]+(?P<frames>\d+)[^\S\n]*$",
+    re.MULTILINE,
+)
 
 
 def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
@@ -136,11 +163,117 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
             text = fh.read()
     except OSError:
         return None
-    values = {int(m.group(1)) for m in _RING_CONF_PERIOD_RE.finditer(text)}
+    values = {int(m.group("frames")) for m in _RING_CONF_PERIOD_RE.finditer(text)}
     if len(values) != 1:
         # No period line, or the two PCMs disagree — not a usable single geometry.
         return None
     return next(iter(values))
+
+
+@dataclass(frozen=True)
+class RingConfPeriodRender:
+    """The outcome of rendering the ring conf.d slot period for one box.
+
+    ``changed`` is False for the two no-write outcomes — the conf already
+    declares the target period, which is the golden case on an Apple box where
+    the declared floor equals the shipped 128.
+    """
+
+    changed: bool
+    period_frames: int
+    previous_period_frames: int | None
+    conf_d: str
+
+
+def render_ring_conf_period(
+    period_frames: int,
+    *,
+    conf_d: str | None = None,
+) -> RingConfPeriodRender:
+    """Rewrite the ring conf.d ``period_frames`` lines to ``period_frames``.
+
+    The ring slot IS one outputd DAC period, so a box whose DAC declares a
+    latency floor needs the conf.d to pin that floor's period. This is the
+    per-box render the conf.d's own header calls for; the CALLER decides
+    whether a render is warranted (the rule is "only from a DECLARED
+    :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this function never
+    consults the DAC registry itself.
+
+    **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
+    Ring A's slot size is fan-in's COMPILE-TIME constant
+    (``rust/jasper-fanin/src/config.rs`` ``RING_SLOT_FRAMES``, with no env
+    override; ``mixer.rs`` creates the ring with it), so writing any other
+    period into ``pcm.jts_ring_capture`` would make CamillaDSP's ioplug attach
+    expect a geometry fan-in never builds — a hard ``RING_ATTACH_FATAL``
+    ("ring header does not match expected geometry") that CRASHES shm_ring at
+    arm rather than refusing it. Asking for a different period is therefore a
+    caller bug and raises; making the slot floor-derived across fan-in, the
+    ioplug, the CamillaDSP emitter, and the negotiation model is issue #2147.
+    This guard is defence in depth behind the caller's own floor gate.
+
+    **Write-on-change only.** When the conf already declares exactly
+    ``period_frames`` the file is left GENUINELY untouched — no rewrite, no
+    mtime churn — so a box that renders to the shipped value is byte-identical
+    to one that never rendered. Otherwise the whole file is published through
+    :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
+    reader never observes a half-written conf.d and the installed file's
+    uid/gid/mode survive the replace.
+
+    Only the ``period_frames`` VALUES move: indentation, ``n_slots``, the
+    ``path`` values, and every comment survive verbatim, because the rewrite is
+    a substitution over the same regex :func:`ring_conf_period_frames` reads.
+
+    Raises ``ValueError`` for a target that is not ``RING_SLOT_FRAMES`` or a
+    conf.d that declares no ``period_frames`` line at all (a torn / foreign
+    file — never invent one), and ``OSError`` when the file cannot be read or
+    replaced.
+    """
+    if period_frames != RING_SLOT_FRAMES:
+        raise ValueError(
+            f"period_frames must equal RING_SLOT_FRAMES ({RING_SLOT_FRAMES}), "
+            f"got {period_frames}: Ring A's slot size is fan-in's compile-time "
+            "constant, so any other conf.d period fails the ioplug attach. "
+            "Refuse the render instead (see issue #2147)"
+        )
+    path = RING_CONF_D if conf_d is None else conf_d
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    previous = [int(m.group("frames")) for m in _RING_CONF_PERIOD_RE.finditer(text)]
+    if not previous:
+        raise ValueError(
+            f"ring conf.d ({path}) declares no period_frames line; refusing to "
+            "invent one — redeploy to reinstall it"
+        )
+    # A torn conf.d (the two PCMs disagreeing) has no single previous value to
+    # report, but it is still rendered: converging both lines onto the target is
+    # exactly the repair. Mirrors ring_conf_period_frames returning None there.
+    distinct = set(previous)
+    if distinct == {period_frames}:
+        return RingConfPeriodRender(
+            changed=False,
+            period_frames=period_frames,
+            previous_period_frames=period_frames,
+            conf_d=path,
+        )
+    rendered = _RING_CONF_PERIOD_RE.sub(
+        lambda m: f"{m.group('indent')}period_frames {period_frames}",
+        text,
+    )
+    # Function-local so the module keeps its stdlib-only import cost for the
+    # presence/parse callers (the coupling reconciler and the socket-activated
+    # web surfaces); only the renderer pays for atomic_io. preserve_target_stat
+    # carries the installed file's uid/gid/mode across the replace, so the 0644
+    # renderer-user resolvability the conf.d header depends on survives, and a
+    # root-run reconcile does not re-own a file it did not create.
+    from jasper.atomic_io import atomic_write_text
+
+    atomic_write_text(path, rendered, preserve_target_stat=True)
+    return RingConfPeriodRender(
+        changed=True,
+        period_frames=period_frames,
+        previous_period_frames=previous[0] if len(distinct) == 1 else None,
+        conf_d=path,
+    )
 
 
 @dataclass(frozen=True)
@@ -188,9 +321,16 @@ def ring_geometry_matches_outputd(
                 f"ring conf.d period_frames={conf_period} != outputd resolved "
                 f"JASPER_OUTPUTD_PERIOD_FRAMES={outputd_period_frames}; the ring "
                 "slot is one outputd DAC period, so CamillaDSP's ring open would "
-                "fail against outputd's ring. Match them (set the conf.d period to "
-                f"{outputd_period_frames} or the outputd period to {conf_period}) "
-                "before arming"
+                f"fail against outputd's ring. The ring slot is FIXED at "
+                f"{RING_SLOT_FRAMES} by fan-in's compile-time RING_SLOT_FRAMES, so "
+                "do NOT raise the conf.d period to match outputd — that is a "
+                "geometry fan-in never builds and the attach fails hard. Align on "
+                f"{RING_SLOT_FRAMES}: if the conf.d has drifted off it, run sudo "
+                "systemctl start jasper-audio-hardware-reconcile.service (it "
+                "converges the conf.d back); if the OUTPUTD period is off it, this "
+                f"DAC declares no {RING_SLOT_FRAMES}-frame latency floor and "
+                "shm_ring is unavailable to it — stay on loopback until issue "
+                "#2147 makes the slot derivable"
             ),
         )
     return RingGeometryMatch(
