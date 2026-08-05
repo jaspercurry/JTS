@@ -44,6 +44,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
+    STAGE1_INCLUDES_CLOUD_MEASURE,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
     GEOMETRY_RETRY_OFFSET_CM,
@@ -3433,7 +3434,10 @@ def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
     source = inspect.getsource(v2host.prepare_v2_session)
     assert 'resolve_plan_shape(raw.get("tier")' in source
     assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
-    assert "include_cloud_measure = False" in source
+    # Stronger than the old literal: the preparer must READ the one owner of
+    # this fact, so the chooser and the session cannot drift (#2098).
+    assert "include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE" in source
+    assert STAGE1_INCLUDES_CLOUD_MEASURE is False
     assert source.count("include_cloud_measure=include_cloud_measure") == 2
     assert "confirmed_protection_sections(" in source
     assert "protection_sections_by_role=protection_sections" in source

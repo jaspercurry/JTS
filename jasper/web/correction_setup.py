@@ -7745,13 +7745,11 @@ def _idle_exit_restore_capture_entry() -> None:
 async def _restore_protected_neutral_program_graph() -> None:
     """Converge an abandoned inline R15 program graph to its boot anchor.
 
-    ``protected_neutral_program_origin`` is a tri-state and BOTH of its
-    positive answers are ours to clean up: True is the exact emitted shape,
-    False is our own filter namespace carrying a MUTATED shape — still this
-    path's mess, and the persisted production config is the source of truth for
-    what should be live either way. None (an unrelated graph, or camilla down)
-    is left alone. The two recoveries log under distinct events so a mutated
-    graph reads as drift rather than an ordinary restore.
+    ``protected_neutral_program_origin`` is a tri-state and BOTH positive
+    answers are ours: True is the exact emitted shape, False our own filter
+    namespace carrying a MUTATED one — still this path's mess, and the
+    persisted config is the SSOT either way. None (unrelated graph, or camilla
+    down) is left alone. Distinct events so a mutated graph reads as drift.
     """
 
     from jasper.active_speaker.camilla_yaml import protected_neutral_program_origin
@@ -7823,10 +7821,9 @@ def _claim_crossover_state_owners() -> None:
     # persisted production anchor failed to reload could resume ordinary audio
     # through role-routed measurement wiring. Camilla-down reads return no
     # positive identity and retain the unchanged statefile boot recovery.
-    # Raising here leaves main() before the socket is served, which systemd
-    # bounds at StartLimitBurst=20 / StartLimitIntervalSec=600 — a bounded
-    # refusal, not an unbounded loop. Logged structurally first, so the journal
-    # names the cause instead of only carrying a traceback.
+    # Raising leaves main() before the socket is served, which systemd bounds
+    # at StartLimitBurst=20 / StartLimitIntervalSec=600 — bounded, not a loop.
+    # Logged structurally first so the journal names the cause.
     from jasper.camilla import CamillaUnavailable
 
     try:

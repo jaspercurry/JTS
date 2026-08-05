@@ -1255,6 +1255,11 @@ class ProgramAnalysis:
     # docstring for the trust-tier vocabulary and "None means unknown, never
     # a guess" contract.
     mic_tier: str | None = None
+    # True when §4.2's `M*C/P` composition ran, so these responses carry the
+    # crossover shoulders the fitter's branch-input invariant assumes. Set only
+    # by _analyze_measure; the fitter refuses an uncomposed protected-neutral
+    # capture, which measured drivers that were never crossed.
+    configured_path_composed: bool = False
     pilots: tuple[PilotObservation, ...] = ()
     linearity_ok: bool | None = None
     channel_map_ok: bool | None = None
@@ -4426,17 +4431,16 @@ def _compose_configured_path_ir(
 
     ``S = M*C/P`` (design §4.2) is ONE filter across the whole rfft support,
     never spliced into a sub-band: masking it to the driven band steps the
-    spectrum by ``|C/P|`` at the edges — measured -41.7 dB (woofer top) and
-    -52.2 dB (tweeter bottom) for JTS3's roles — and that step rings through
-    the IR and back into the analysis band once it is re-gated.
+    spectrum by ``|C/P|`` at the edges (measured -41.7 dB woofer-top, -52.2 dB
+    tweeter-bottom on JTS3), and that step rings through the IR and back into
+    the analysis band once re-gated.
 
     ``radiated_band_hz`` is the band the sweep actually DROVE: a conservative
     stand-in for §4.2's candidate-required bins (a superset of the fitter's
-    own), so the conditioning policy refuses at least as often as §4.2 demands
-    and never less. It is enforced there and only there; outside it the same
-    exact ratio applies, magnitude-saturated at the policy's own +12 dB ceiling
-    so nothing is recovered further than §4.2 admits — provably inactive on
-    required bins, where a ceiling breach has already refused. Where ``P`` is
+    own), so the policy refuses at least as often as §4.2 demands. It binds
+    there and only there; outside it the same exact ratio applies,
+    magnitude-saturated at the policy's own +12 dB ceiling — provably inactive
+    on required bins, where a ceiling breach already refused. Where ``P`` is
     exactly zero (an LR pass at DC or Nyquist) ``C`` vanishes with it, so the
     bin composes to zero, which is what ``plant*C`` is there too.
     """
@@ -4660,6 +4664,11 @@ def _analyze_measure(
         alignment=alignment,
         candidate=candidate,
         mic_tier=priors.mic_tier,
+        # Exact: composition returns its input untouched iff every prior map
+        # is None, and raises if only some are.
+        configured_path_composed=(
+            priors.configured_crossover_response_by_role is not None
+        ),
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,

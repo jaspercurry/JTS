@@ -363,7 +363,16 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         else:
             assert left == right
 
-    assert_same(dataclasses.asdict(neutral), dataclasses.asdict(legacy))
+    # The one field that MUST differ: it records how the crossover shoulders
+    # got into the responses, and that provenance is exactly what the two arms
+    # do not share (§4.2 — the neutral source and total-transfer composition
+    # differ; equality of provenance is not a compatibility criterion).
+    assert neutral.configured_path_composed is True
+    assert legacy.configured_path_composed is False
+    assert_same(
+        dataclasses.asdict(dataclasses.replace(neutral, configured_path_composed=False)),
+        dataclasses.asdict(legacy),
+    )
     from tests.test_crossover_v2_conductor import FakeSeams, _conductor
     fitted = []
     for analysis in (neutral, legacy):

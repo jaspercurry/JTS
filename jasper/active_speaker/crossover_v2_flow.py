@@ -1247,6 +1247,18 @@ def cloud_plan_max_attempts(
     ).max_attempts
 
 
+# One owner for "does stage 1 capture a pre-apply cloud?". R15 (#2106) says NO.
+# `prepare_v2_session` runs the plan and `tier_display_info` quotes it, so the
+# chooser cannot advertise a walk the session does not take (#2098's pattern).
+STAGE1_INCLUDES_CLOUD_MEASURE = False
+
+
+def _stage1_capture_target(shape: Any) -> int:
+    """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
+    return len(build_v2_cloud_index_phase_map(
+        plan_shape=shape, include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE))
+
+
 def build_v2_cloud_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,
@@ -10421,6 +10433,11 @@ class CrossoverV2Conductor:
         construction, replacing the overlap-band solve seed that under-returned
         the give-back on the 2026-07-24 JTS3 runs.
 
+        Refuses an uncomposed protected-neutral capture: branch inputs must
+        already carry the crossover shoulders, which the legacy graph emits and
+        the protected-neutral graph deliberately does not. A wiring fault, so
+        it raises into ``internal_error``, not a household action.
+
         Only called after :meth:`_linearization_eligible` — this method
         assumes both driver responses exist and are adequately repeated;
         it does not re-check. May raise on a fit-engine bug; the caller
@@ -10645,6 +10662,10 @@ class CrossoverV2Conductor:
             for role in core_levels_db
             if role in frame_trims_db
         }
+
+        if (self._measurement_protection_sections_by_role is not None
+                and not analysis.configured_path_composed):
+            raise ValueError("protected-neutral capture reached the fitter uncomposed")
 
         # Boost permission is EVIDENCE-gated, and this is the gate. TWO
         # conditions, both necessary:
@@ -11805,13 +11826,14 @@ def tier_display_info() -> dict[str, dict[str, int]]:
         )
         return {
             tier: {
-                "capture_target": shape.capture_target,
+                "capture_target": (_stage1_capture_target(shape)
+                                   + shape.verify_capture_target),
                 "estimated_minutes": 0,
                 # Present even here: the chooser's copy reads both, and a
                 # KeyError on the degraded path would take the whole
                 # microphone_check screen down over a duration it already
                 # knows how to render as unknown.
-                "stage1_captures": shape.measure_capture_target,
+                "stage1_captures": _stage1_capture_target(shape),
                 "stage2_captures": shape.verify_capture_target,
             }
             for tier, shape in ((t, resolve_plan_shape(t)) for t in TIERS)
@@ -11834,10 +11856,13 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
         # now, M after you apply"); this is the arithmetic underneath it.
         stage1 = build_v2_capture_plan(
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
+            include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         )
         stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
         out[tier] = {
-            "capture_target": shape.capture_target,
+            # Summed from the plans: the shape's own `capture_target` counts a
+            # pre-apply cloud stage 1 no longer walks.
+            "capture_target": stage1.capture_target + shape.verify_capture_target,
             "estimated_minutes": (
                 stage1.estimated_minutes() + stage2.estimated_minutes()
             ),
@@ -11848,7 +11873,7 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
             # construction. Available without an audio program, which is what
             # lets the fallback path below answer with the same numbers rather
             # than omitting the keys the chooser copy reads.
-            "stage1_captures": shape.measure_capture_target,
+            "stage1_captures": stage1.capture_target,
             "stage2_captures": shape.verify_capture_target,
         }
     return out
@@ -11927,14 +11952,9 @@ def build_v2_session_spec(
 
 
 def _role_transfers(sections_by_role: Mapping[str, Any] | None) -> dict | None:
-    """Per-role ``freqs -> complex response``, evaluated on the HOST side.
-
-    ``jasper.audio_measurement`` may not import this package
-    (``tests/test_correction_boundary_ssot.py``), so the measurement kernel is
-    handed the transfer as a callable rather than the ``CrossoverSection``
-    objects that produce it. The kernel composes with the response; only this
-    module knows what a crossover section is.
-    """
+    """Per-role ``freqs -> complex response``, evaluated HOST-side: the kernel
+    may not import this package (``tests/test_correction_boundary_ssot.py``),
+    so it gets a callable, never the ``CrossoverSection`` behind it."""
     if sections_by_role is None:
         return None
     return {
@@ -11946,40 +11966,37 @@ def _role_transfers(sections_by_role: Mapping[str, Any] | None) -> dict | None:
 async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
     """Prove the graph CamillaDSP is running is the one just submitted.
 
-    The contract: prove the SUBMITTED graph is live, tolerate benign serializer
-    normalization, reject a different graph. Comparing the submitted TEXT
-    against ``GetConfig`` does none of that — a readback is a default-filled,
-    value-normalized SUPERSET of what was submitted, so text equality refuses
-    every load — so ``ReadConfig``
-    (:meth:`~jasper.camilla.CamillaController.normalize_config_raw`) canonicalizes
-    the submitted graph first and STRICT fingerprint equality still applies.
-    The measured hardware evidence, and what was deliberately NOT measured, is
-    ``docs/HANDOFF-crossover-measurement-v2.md`` "Confirming a program graph is
-    live". The refusals stay distinct so hardware triage can tell "the YAML we
-    submitted is invalid" from "something else is live".
+    Contract: prove the SUBMITTED graph is live, tolerate benign serializer
+    normalization, reject a different graph. Submitted TEXT vs ``GetConfig``
+    does none of that — a readback is a default-filled, value-normalized
+    SUPERSET, so text equality refuses every load — so ``ReadConfig``
+    (:meth:`~jasper.camilla.CamillaController.normalize_config_raw`)
+    canonicalizes first and STRICT fingerprint equality still applies. Measured
+    evidence, and what was NOT measured: ``docs/HANDOFF-crossover-measurement
+    -v2.md`` "Confirming a program graph is live". The two refusals stay
+    distinct for hardware triage.
     """
+    from jasper.camilla import CamillaConfigRejected
+
     from .commissioning_admission import (
         ActiveCommissioningAdmissionError,
         running_graph_fingerprint,
     )
     from .program_playback import ProgramPlaybackError
 
-    from jasper.camilla import CamillaConfigRejected
-
     try:
         normalized = await cam.normalize_config_raw(submitted_yaml, best_effort=False)
+        if not isinstance(normalized, str):
+            raise CamillaConfigRejected("normalization returned no config")
     except CamillaConfigRejected as exc:
         raise ProgramPlaybackError("program graph normalization failed") from exc
-    if not isinstance(normalized, str):
-        raise ProgramPlaybackError("program graph normalization failed")
     try:
-        live = running_graph_fingerprint(
+        matched = running_graph_fingerprint(
             await cam.get_active_config_raw(best_effort=False)
-        )
-        expected = running_graph_fingerprint(normalized)
+        ) == running_graph_fingerprint(normalized)
     except ActiveCommissioningAdmissionError as exc:
         raise ProgramPlaybackError("program graph readback is invalid") from exc
-    if live != expected:
+    if not matched:
         raise ProgramPlaybackError("program graph load was not confirmed")
 
 

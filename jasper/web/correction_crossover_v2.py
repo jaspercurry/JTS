@@ -5182,6 +5182,7 @@ def prepare_v2_session(
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
+        STAGE1_INCLUDES_CLOUD_MEASURE,
         CrossoverV2Conductor,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
@@ -5224,7 +5225,7 @@ def prepare_v2_session(
         raise CrossoverV2Refused(
             "The confirmed driver protection cannot be used for this measurement."
         ) from exc
-    include_cloud_measure = False
+    include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()

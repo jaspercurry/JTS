@@ -742,9 +742,8 @@ class CamillaController:
     ) -> str | None:
         """Return ``config`` as CamillaDSP itself canonicalizes it.
 
-        ``ReadConfig`` parses, validates, and default-fills a config WITHOUT
-        applying it, so this asks the running CamillaDSP what a YAML string
-        means to it. Confirming a live load compares THIS against
+        ``ReadConfig`` parses, validates, and default-fills WITHOUT applying.
+        Confirming a live load compares THIS against
         :meth:`get_active_config_raw`, never the caller's own text: a readback
         is a default-filled, value-normalized superset of what was submitted.
         """

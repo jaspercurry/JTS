@@ -306,8 +306,7 @@ def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
     return polarity
 
 
-# The public spelling of the reduction above, for callers outside this module.
-role_polarity = _role_polarity
+role_polarity = _role_polarity  # public spelling, for other modules
 
 
 def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:

@@ -1284,6 +1284,85 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     assert legacy.configured_polarity_sign_by_role is None
 
 
+def test_the_fitter_refuses_a_protected_neutral_capture_that_was_not_composed():
+    """The fitter's branch-input invariant, enforced instead of assumed.
+
+    `fit_driver_linearization` fits each driver against a CROSSOVER-SHAPED
+    target, which is only sound because the inputs already carry the crossover
+    shoulders. The legacy program graph emits them. R15's protected-neutral
+    graph deliberately does not — it emits confirmed protection only — so on
+    that path the §4.2 composition is what supplies them. If the composition
+    silently did not run, the fitter would shape drivers that were never
+    crossed against a target that assumes they were, and nothing downstream
+    would notice. That is a host-side wiring fault, so it raises into the
+    catch-all's `internal_error` rather than inventing a household action.
+    """
+    protection = {"woofer": [flow.CrossoverSection(6000.0, 4, False)],
+                  "tweeter": [flow.CrossoverSection(300.0, 4, True)]}
+    fakes = FakeSeams()
+    c = _conductor(fakes, measurement_protection_sections_by_role=protection)
+    from jasper.audio_measurement.program import build_measure_program
+    program = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0},
+        [RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+         RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0))],
+    )
+    c._measure_program = program
+    analysis = _eligible_measure_analysis(program)
+    assert analysis.configured_path_composed is False
+    with pytest.raises(ValueError, match="reached the fitter uncomposed"):
+        c._fit_linearization(analysis, analysis.candidate)
+
+    # …and it does NOT fire once the composition really ran.
+    composed = dataclasses.replace(analysis, configured_path_composed=True)
+    c._fit_linearization(composed, composed.candidate)
+
+    # A legacy (non-protected-neutral) conductor is untouched: its emitter puts
+    # the shoulders in the audio, so an un-composed analysis is correct there.
+    legacy = _conductor(FakeSeams())
+    legacy._measure_program = program
+    legacy._fit_linearization(analysis, analysis.candidate)
+
+
+def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
+    """#2098's pattern: one producer owns the capture-count fact.
+
+    `prepare_v2_session` runs stage 1 with `STAGE1_INCLUDES_CLOUD_MEASURE`, and
+    before this the chooser still read `shape.measure_capture_target` — the
+    cloud-inclusive 10 (Full) / 5 (Express) — plus cloud-inclusive minutes. The
+    household was told it was starting a ten-capture walk that the session then
+    did not take. Both surfaces now derive from the same flag.
+    """
+    info = flow.tier_display_info()
+    assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
+    # Stage 1 is CHECK + MEASURE, and the tiers genuinely no longer differ
+    # there — so the numbers must not imply that they do.
+    assert info["full"]["stage1_captures"] == 2
+    assert info["express"]["stage1_captures"] == 2
+    # Stage 2 is where they still differ, and the chooser copy says so.
+    assert info["full"]["stage2_captures"] == 6
+    assert info["express"]["stage2_captures"] == 1
+    for tier, detail in info.items():
+        assert detail["capture_target"] == (
+            detail["stage1_captures"] + detail["stage2_captures"]
+        ), tier
+        # Honest minutes: a real duration, and small enough to be a two-capture
+        # stage 1 plus its verify walk rather than a ten-position cloud.
+        assert 0 < detail["estimated_minutes"] <= 10, tier
+
+    # The degraded fallback answers with the SAME numbers, so a failure in the
+    # memoized build cannot quietly restore the cloud-inclusive figures.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow, "_tier_display_info_cached",
+            lambda: (_ for _ in ()).throw(ValueError("forced")),
+        )
+        degraded = flow.tier_display_info()
+    for tier, detail in degraded.items():
+        assert detail["stage1_captures"] == info[tier]["stage1_captures"], tier
+        assert detail["capture_target"] == info[tier]["capture_target"], tier
+
+
 def test_measure_program_gains_back_off_from_caps():
     """W2 gate: the solver backs off ≥0.01 dB from exact per-driver caps."""
     fakes = FakeSeams()
@@ -5458,7 +5537,10 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
         for tier in (TIER_FULL, TIER_EXPRESS):
             shape = resolve_plan_shape(tier)
             # BOTH stages, because the chooser quotes the whole journey (D2).
-            stage1 = build_v2_capture_plan(roles, fc_hz, plan_shape=shape)
+            stage1 = build_v2_capture_plan(
+                roles, fc_hz, plan_shape=shape,
+                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+            )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
             minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
             assert minutes == info[tier]["estimated_minutes"], (
