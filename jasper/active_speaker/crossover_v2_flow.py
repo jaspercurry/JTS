@@ -10204,7 +10204,11 @@ class CrossoverV2Conductor:
 
         # ABOVE the SF2 degrade handler on purpose: raised inside it this was
         # caught and degraded to a committable trims-only candidate (panel
-        # B1/SF2) in the wrong polarity convention. Bare => internal_error.
+        # B1/SF2) in the wrong polarity convention. Severity, per the
+        # hearing lens: NOT a boost hazard — the degrade left
+        # linearization={} and MeasuredCrossoverCandidate bounds trims
+        # cut-only to [-60, 0] dB — but it was still offered for Apply.
+        # Bare ValueError => internal_error.
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")

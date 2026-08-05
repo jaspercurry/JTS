@@ -883,6 +883,14 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
     for the refused index, which is what the phone's authorize loop consumes.
     The rider overwrote it with a ``capture_result`` that loop ignores, so the
     phone showed "session expired" instead of the named refusal.
+
+    Driven through the REAL relay: the slot for index 2 is settled with a
+    non-retriable code before the walk, so the phone's begin hits the genuine
+    ``authorize_begin`` backstop (owner ruling #2086) and ``run_capture_plan``
+    posts the refusal itself. The assertion is on the LAST host event, which is
+    the only shape that discriminates — the delta re-review showed an
+    ``index``/``code`` conjunction cannot, because the ungated rider addresses
+    the last ARMED capture (index 1) and falls back to ``relay_timeout``.
     """
     from jasper.active_speaker import crossover_v2_flow as _flow
     _skip_purge_grace(monkeypatch)
@@ -896,31 +904,18 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
         backend, session, phone, published=[],
         index_phase_map=build_v2_cloud_index_phase_map(include_cloud_measure=False),
     )
-    # The REAL authorize_begin sets the flag, via its documented settled-slot
-    # backstop (owner ruling #2086).
+    assert conductor.relay_published_refusal is False
     slot = conductor._slot_of_index(2)
     conductor._slot_attempts[slot] = _flow.SlotAttempts(admitted=1)
     conductor._last_reason[slot] = REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    with pytest.raises(CaptureBeginRefused):
-        conductor.authorize_begin(2, 2)
-    assert conductor.relay_published_refusal is True
 
-    real_consume = conductor.consume_capture
-
-    def refuse_measure(index, attempt, result, entry=None):
-        if index == 2:
-            raise conductor._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
-        return real_consume(index, attempt, result, entry)
-
-    monkeypatch.setattr(conductor, "consume_capture", refuse_measure)
     with pytest.raises(CaptureBeginRefused):
         _run(_build_runner(conductor, VolumeRecorder()), client, session)
 
-    # The rider stayed out; its sibling proves it posts when the flag is clear.
-    assert not any(
-        e.get("phase") == "capture_result" and e.get("index") == 2
-        and e.get("code") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-        for e in backend.host_events[session.session_id]
+    assert conductor.relay_published_refusal is True
+    last = backend.host_events[session.session_id][-1]
+    assert (last["phase"], last["index"], last["code"]) == (
+        "capture_refused", 2, REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     ), backend.host_events[session.session_id]
 
 

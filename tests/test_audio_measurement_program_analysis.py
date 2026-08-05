@@ -131,6 +131,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_complex,
+    radiating_band_hz,
 )
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
@@ -424,6 +425,9 @@ def test_configured_path_conditioning_refuses_without_clipping(case, message):
     ) as exc_info:
         _compose_configured_path_ir("woofer", impulse, SR, (0.0, SR / 2), priors)
     assert exc_info.value.slug == ILL_CONDITIONED_PROTECTION_DEEMBEDDING
+    # Pins the WIRING, not just the flag: only the |P| < floor branch may set
+    # it, and it is what routes the two branches to different household copy.
+    assert exc_info.value.protection_floor is (case == "p_underfloor")
 
 
 def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
@@ -461,6 +465,98 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
         _compose_configured_path_ir(
             "woofer", impulse, SR, driven, priors((600.0, 20000.0)),
         )
+
+
+# The live fixed-Fc checkpoint's declared values, read from jts3 on 2026-08-05
+# and hardcoded on purpose: a future change to the required-bin mask, the
+# sweep-floor derivation, or the +-12 dB constants must fail HERE, in seconds,
+# rather than at the hardware bench with a household waiting. Fc 2000 LR4;
+# tweeter hard [1600,20000], measurement [2000,18000], protection high-pass
+# 2000 Hz order 4; woofer hard [45,4000], measurement [60,4000], NO required
+# protection filters, driven (150,4000).
+_CHECKPOINT_FC_HZ = 2000.0
+_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (2000.0, 18000.0)}
+_CHECKPOINT_PROTECTION = {
+    "woofer": (), "tweeter": (CrossoverSection(2000.0, 4, True),),
+}
+
+
+def _checkpoint_priors(fc_hz, protection):
+    configured = {"woofer": (CrossoverSection(fc_hz, 4, False),),
+                  "tweeter": (CrossoverSection(fc_hz, 4, True),)}
+    lo, hi = overlap_band_hz(fc_hz)
+    return dataclasses.replace(
+        _configured_path_priors(
+            _transfers(protection), _transfers(configured), tweeter_sign=1,
+        ),
+        crossover_fc_hz=fc_hz,
+        # Mirrors CrossoverV2Conductor._measure_priors, whose own derivation is
+        # pinned by test_measure_priors_compose_configured_path_from_ssots...
+        candidate_required_band_hz_by_role={
+            role: (min(radiating_band_hz(sec)[0], lo),
+                   max(radiating_band_hz(sec)[1], hi))
+            for role, sec in configured.items()
+        },
+    )
+
+
+def test_the_live_checkpoint_declarations_compose():
+    """(a) + (b): both roles ADMIT, with the margins the ruling records."""
+    impulse = np.zeros(16_384)
+    impulse[9] = 1.0
+    priors = _checkpoint_priors(_CHECKPOINT_FC_HZ, _CHECKPOINT_PROTECTION)
+    for role, driven in _CHECKPOINT_DRIVEN_HZ.items():
+        composed = _compose_configured_path_ir(role, impulse, SR, driven, priors)
+        assert np.all(np.isfinite(composed)), role
+
+    # |P| at each role's required-mask lower edge. The tweeter's edge is its
+    # driven floor, 2000 Hz — exactly its protection corner, where an LR4
+    # high-pass is 0.5 by identity (-6.0206 dB), leaving 5.98 dB over the floor.
+    floor_db = -12.0
+    at_corner = np.abs(crossover_response_complex(
+        np.array([2000.0]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
+    assert at_corner == pytest.approx(0.5, abs=1e-9)
+    assert 20 * np.log10(at_corner) - floor_db == pytest.approx(5.979, abs=0.01)
+    # On the analysis grid the edge lands on the first bin at or above 2000 Hz,
+    # which is where the ruling's -6.01 dB / +5.99 dB margin comes from: the
+    # figure is grid-dependent, not a pure LR4 constant.
+    freqs = np.fft.rfftfreq(impulse.size, 1.0 / SR)
+    edge = freqs[freqs >= _CHECKPOINT_DRIVEN_HZ["tweeter"][0]][0]
+    on_grid = np.abs(crossover_response_complex(
+        np.array([edge]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
+    assert on_grid == pytest.approx(0.500494, abs=1e-6)
+    assert 20 * np.log10(on_grid) - floor_db == pytest.approx(5.99, abs=0.01)
+    # The woofer declares no protection at all, so |P| is unity across its whole
+    # driven band — the full 12 dB of margin.
+    woofer_p = np.abs(crossover_response_complex(
+        freqs, _CHECKPOINT_PROTECTION["woofer"]))
+    assert woofer_p.min() == pytest.approx(1.0, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("corner_hz", "admits"),
+    # (c): the reconciliation's closed form is corner <= 1.3085 * max(driven_lo,
+    # Fc/2) = 2617 Hz here. Solved exactly against the shipped response,
+    # |P(2000)| hits the -12 dB floor at corner = 2617.198 Hz.
+    [(2000.0, True), (2617.0, True), (2700.0, False), (3000.0, False)],
+)
+def test_a_higher_declared_protection_corner_is_the_refusing_direction(
+    corner_hz, admits,
+):
+    """(c): the direction a declared corner has to move to break composition."""
+    impulse = np.zeros(16_384)
+    impulse[9] = 1.0
+    protection = {"woofer": (), "tweeter": (CrossoverSection(corner_hz, 4, True),)}
+    priors = _checkpoint_priors(_CHECKPOINT_FC_HZ, protection)
+    call = functools.partial(
+        _compose_configured_path_ir, "tweeter", impulse, SR,
+        _CHECKPOINT_DRIVEN_HZ["tweeter"], priors,
+    )
+    if admits:
+        assert np.all(np.isfinite(call()))
+    else:
+        with pytest.raises(ConfiguredPathConditioningError, match="P below -12 dB"):
+            call()
 
 
 def test_configured_path_refuses_a_segment_with_no_declared_band():

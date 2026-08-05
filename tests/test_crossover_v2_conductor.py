@@ -1278,10 +1278,19 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
             flow.crossover_response_complex(freqs, sections),
         )
     assert priors.configured_polarity_sign_by_role == {"woofer": 1, "tweeter": -1}
+    # Pins the WIRING of §4.2's candidate-required mask: every role's band must
+    # be derived, and must cover the overlap band it is unioned with (a None
+    # derivation silently returns the policy to the whole driven band).
+    overlap = flow.overlap_band_hz(priors.crossover_fc_hz)
+    required = priors.candidate_required_band_hz_by_role
+    assert required is not None and required.keys() == {"woofer", "tweeter"}
+    for role, (lo, hi) in required.items():
+        assert lo <= overlap[0] and hi >= overlap[1], role
     legacy = _conductor(FakeSeams())._measure_priors()
     assert legacy.measurement_protection_response_by_role is None
     assert legacy.configured_crossover_response_by_role is None
     assert legacy.configured_polarity_sign_by_role is None
+    assert legacy.candidate_required_band_hz_by_role is None
 
 
 def test_an_uncomposed_protected_neutral_capture_is_refused_at_the_seam():
