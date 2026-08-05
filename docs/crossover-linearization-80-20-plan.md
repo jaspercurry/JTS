@@ -253,6 +253,23 @@ stopband-gain guard, headroom accounting, post-apply `VERIFY`, and retained
 Undo. Prerequisite: the composition must be splice-free (in-band evidence
 unpolluted by the out-of-band seam) before this path is trusted on hardware.
 
+*Implemented scope (conductor decision, follow-up to #2126).* `allow_boost` is
+`post_apply_verifies AND (a cloud verdict reached the envelope OR the session's
+capture plan contains no pre-apply cloud phase)`. The second disjunct is the
+R15 driver-only path this ruling is about, where the cloud is absent BY DESIGN.
+The first keeps the clause the retired condition existed for: a session that
+PLANNED a cloud and LOST it (positions could not be combined; the honesty
+pipeline was unavailable) stays cut-only, because there the missing exclusions
+are a failure rather than a plan. Since R15 no shipped stage-1 session plans a
+pre-apply cloud, the ruling's "no longer additionally require a pre-apply
+cloud" holds for every path the product walks; the retained disjunct guards the
+non-R15 shape. `boost_excluded_bands_hz` is `()` on the driver-only path —
+there is no spatial evidence to compose, which is the accepted risk named
+above. Second, intended consequence: boost enlarges the achievable set, so a
+candidate the improvement gate previously refused as
+`correction_not_an_improvement` can now clear it on the same evidence — the
+same post-apply `VERIFY`, household listening, and Undo adjudicate it.
+
 ### 4.4 Side evidence owns robustness, not the target
 
 If fresh Gate 0 authorizes lateral evidence, the smallest direction reuses the

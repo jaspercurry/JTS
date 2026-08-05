@@ -2089,6 +2089,20 @@ def test_the_bound_is_monotone_on_the_shapes_that_break_a_request_mask(
     base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
     bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
 
+    # THE PRECONDITION EACH SHAPE IS NAMED FOR, asserted rather than assumed —
+    # and the only place the envelope's REALIZATION gate is discriminated
+    # (#2138 review). ``unlock`` exists because its base fit is refused
+    # WHOLESALE by ``exceeds_envelope``; ``greedy_relocation`` exists because
+    # both fits emit. Without this line the two shapes' remaining assertions
+    # are vacuously true when a fit is suppressed, so disarming the gate left
+    # the whole module green while the unbounded fit went on to emit
+    # [12.0, 12.0, 8.5, 7.7, 5.0] dB of boost undetected. A shape that stops
+    # exercising the mechanism it is named for is a fixture that has quietly
+    # stopped testing anything.
+    assert base.lift_suppressed_reason == (
+        "exceeds_envelope" if label == "unlock" else ""
+    ), label
+
     assert float(np.max(bounded_db - base_db)) <= 1e-9, label
     assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
     # DROP-ONLY: the surviving boosts are a SUB-MULTISET of the unbounded
