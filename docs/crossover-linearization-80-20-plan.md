@@ -5,8 +5,9 @@
 > approximately 4,334-production-line expansion violated this campaign's 80/20
 > constraint. It is prototype evidence only, not landed behavior, and no commit
 > from it may be cherry-picked into the fresh implementation. No R15 product
-> code was merged, deployed, or measured. Three independent Gate-0 audits narrowed
-> R15 to one atomic driver-only fixed-Fc vertical; everything else is later and separately gated. Live round status lives only in the
+> code was merged, deployed, or measured. Independent Gate-0 audits narrowed
+> R15 to one atomic driver-only fixed-Fc vertical. Everything else is later and
+> separately gated. Live round status lives only in the
 > [program CURRENT POSITION](HANDOFF-correction-revision-plan.md#current-position).
 > This document owns the next implementation
 > slice for active two-way speaker
@@ -37,18 +38,10 @@ The commissioning result belongs to the speaker. Room correction and taste EQ
 remain later, separate layers. A new run never measures through an older
 speaker correction merely because that correction is currently playing.
 
-The eventual 80/20 campaign remains deliberately narrow. R15 itself stops
-after protected-neutral driver evidence reproduces the configured-Fc path:
-
-- preserve the existing Express journey's **seven capture actions** and four
-  lateral moves;
-- reuse the shipped conductor, safety rails, prompt table, retry budget,
-  evidence bundles, fitter, transactional apply, Undo, and Full spatial verify;
-- select **Fc only** from a small safe grid; keep LR4 and the current two-way
-  topology fixed;
-- make an honest local/spatial-robustness decision, not a polar, beamwidth,
-  CTA-2034, or whole-room claim;
-- abstain when the evidence cannot distinguish candidates.
+R15 is narrower: protected-neutral `CHECK` and `MEASURE` feed the current
+configured-Fc path, followed by the existing review, Apply, Undo, and
+post-apply `VERIFY`. It skips pre-apply cloud, lateral capture, and dynamic Fc.
+Later work requires the fixed-Fc checkpoint and a fresh Gate 0.
 
 ## 2. One owner per fact
 
@@ -231,9 +224,6 @@ and current consumer ship together; no round freezes them for later work.
 
 ### 4.4 Side evidence owns robustness, not the target
 
-This section is deferred direction, not an R15 requirement. It may launch only
-after the configured-Fc hardware checkpoint and fresh Gate-0 review.
-
 R16 retains the existing four moves: ±12 cm and ±40 cm left/right. At each
 pose, one compact protected program captures both drivers on a common timing
 ledger; a W–HF–W ordering may bracket drift without another user action.
@@ -272,32 +262,13 @@ The existing read-only seam in
 is the intended boundary. The crossover cloud's small design-axis neighborhood
 is not relabeled as a room dataset.
 
-## 5. Fixed-Fc proof precedes the lateral journey
-
-R15 runs protected-neutral `CHECK` and `MEASURE`, skips pre-apply `CLOUD_MEASURE`,
-feeds `M * C_configured / P` into the current configured-Fc path, and preserves
-review, Apply, Undo, and post-apply `VERIFY`. After review, the owner runs that
-fixed-2-kHz path on hardware; failure opens only a newly bounded repair.
-
-The lateral walk, durable evidence, dynamic selector, and crossed-branch work
-cannot launch before the checkpoint passes and fresh Gate 0 approves each
-complete vertical.
-
 ## 6. Later bounded Fc selector — deferred direction
 
-The smallest later selector evaluates at most five legal two-way LR4 Fc values,
-reuses the fitter for complete prescriptions, and chooses, abstains, or retains
-the configured Fc; declared limits remain hard fences.
-
-Defer 243/27/81 enumeration, tournaments/cycles, four sensitivity reruns, large
-traces/reason/schema frameworks, topology/order search, asymmetric slopes,
-FIR/all-pass, and 3-way selection.
+Any later selector evaluates at most five legal two-way LR4 Fc values and
+reuses the fitter. Defer 243/27/81 enumeration, tournaments, four sensitivity
+reruns, large trace/schema frameworks, topology/order search, FIR, and 3-way.
 
 ## 7. Apply, verify, and iterate
-
-R15 sends the configured-Fc candidate through the existing review/Apply seam
-and preserves its post-apply `VERIFY`. A later R18 may bind one dynamic winner
-to that seam; it does not invent a second wizard framework.
 
 Apply is one transaction with the prior production profile retained for Undo.
 The mark-position verification then proves three distinct claims:
@@ -359,10 +330,15 @@ These are acceptance constraints, not preferences:
    multi-candidate path proves equivalence and then improvement.
 9. Every PR is capped at 400 **gross** production additions, five production files,
    and one new production module; deletions never offset, and splits must be independently complete.
-10. Report production/test/docs gross additions and reviewer-rederived cumulative ledgers. Every API/field/artifact needs a current producer and consumer; forecast crossing any limit is a STOP for owner re-ratification.
-11. Run the exact adversarial prompt to 0/0; graph/DSP/capture/apply changes use three lenses. Budgets gate rather than grant scope; later rounds return to Gate 0.
+10. Report production/test/docs gross additions and reviewer-rederived
+    cumulative ledgers. Every API/field/artifact needs a current producer and
+    consumer; forecast crossing any limit is a STOP for owner re-ratification.
+11. Run the exact adversarial prompt to 0/0; graph/DSP/capture/apply changes
+    use three lenses. Budgets gate rather than grant scope.
 
-Production ceilings: R15 400 (one PR; tests 500, docs 120, zero new modules absent re-ratification), R16 350, R17 400, R18 180, R19 580 across at most two independent PRs, R20 zero.
+Production ceilings: R15 400 (one PR; tests 500, docs 120, zero new modules
+absent re-ratification), R16 350, R17 400, R18 180, R19 580 across at most two
+independent PRs, and R20 zero.
 
 ## 10. Existing-ticket sweep
 
@@ -395,51 +371,42 @@ the canonical disposition for this revision, not a copy of every issue body.
 
 R14 created exactly the two uncovered scopes after ratification:
 
-1. **[#2106](https://github.com/jaspercurry/JTS/issues/2106) — atomic
-   driver-only fixed-Fc proof.** Protected-neutral CHECK/MEASURE, no pre-apply
-   cloud, exact in-session configured-Fc composition, and fail-closed restore;
-   no durable evidence contract.
-2. **[#2107](https://github.com/jaspercurry/JTS/issues/2107) — deferred lateral
-   evidence.** Re-scope only after the fixed-Fc hardware checkpoint and a
-   fresh Gate 0; durable fields require a current producer and consumer.
+1. **[#2106](https://github.com/jaspercurry/JTS/issues/2106) — atomic fixed-Fc
+   proof.** Protected-neutral CHECK/MEASURE, exact composition, and restore;
+   no pre-apply cloud or durable evidence contract.
+2. **[#2107](https://github.com/jaspercurry/JTS/issues/2107) — deferred.** Fresh
+   Gate 0 must pair any lateral producer with a current consumer.
 
 Do not create a phone-positioning ticket, a new Room umbrella, a topology
 search ticket, or a second Fc issue. Existing issues already own those facts.
 
-## 11. Seven-round campaign
+## 11. Campaign and provisional later labels
 
 | Round | Mission | One primary territory | Exit |
 |---|---|---|---|
 | **R14 — Ratify** | Review this contract, reconcile issue comments, create only the two missing tickets | docs/issues; no product code | owner approval + independent docs gate at 0 blockers / 0 should-fixes |
 | **R15 — Atomic fixed-Fc proof** | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement |
 | **Checkpoint — Prove** | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair |
-| **R16 — Lateral evidence** | Define one complete reopened-evidence vertical only when producer and consumer are current | deferred capture program | fresh Gate 0 after checkpoint; no future-only schema |
-| **R17 — Minimal selector** | Evaluate at most five legal LR4 candidates using existing fitter seams | deferred offline math | choose, abstain, or retain configured Fc; no large framework |
-| **R18 — Apply** | Bind one later winner to the existing proposal/Apply seam | deferred apply surface | transactional choice and Undo remain authoritative |
-| **R19 — Verify** | Add only the independently complete crossed-branch/result-scope verticals that re-pass Gate 0 | deferred verification | honest branch/sum and mark/spatial claims |
+| **R16–R19 — provisional labels** | Fresh Gate 0 defines complete verticals pairing each producer with a current consumer; it may co-scope lateral capture + selector or name a real immediate consumer | unassigned | §9 ceilings only; no artifact-first dependency or implementation authority |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
 
 The only dependency graph is:
 
 ```text
-R14 -> R15 -> fixed-2-kHz hardware checkpoint
-                                      -> R16 -> R17 -> R18 -> R19 -> R20
+R14 -> R15 -> fixed-2-kHz hardware checkpoint -> fresh Gate 0
 ```
 
-The dynamic branch cannot start until the checkpoint passes. Every later round
-must re-pass Gate 0 as a complete vertical; contradiction or cap forecast stops
-for conductor re-scope and explicit owner re-ratification.
+R16–R19 are provisional labels, not a dependency order. Fresh Gate 0 must pair
+each later producer with its current consumer; contradiction or a cap forecast
+stops for owner re-ratification.
 
 ## 12. Agent topology and landing protocol
 
-The campaign uses **nine supporting Codex sessions plus the root conductor**,
-with at most four active at once:
+R15 uses one bounded implementer and three independent reviewers, with at most
+four active at once. Later agent count and ownership wait for fresh Gate 0.
 
-- five separate bounded implementers, one each for R15–R19; R15, R16, and R17
-  run sequentially so no round guesses a later round's artifact;
 - three recurring independent reviewers: correctness/evidence, hearing-safety/
   DSP, and resilience/observability;
-- one read-only R20 evidence analyst.
 
 The correctness/evidence reviewer first runs R14's docs-only gate, then recurs
 on the product rounds; it is not a tenth supporting session. None of the three
@@ -464,8 +431,7 @@ Landing loop for every product round:
 6. merge only with green CI and the doc-impact contract satisfied;
 7. when the round has runtime behavior, deploy in the safe compatibility order
    (capture page first whenever its contract changes), run doctor/runtime
-   probes, and close the round's mechanical fixed-mic slice. Pure R17 ends at
-   synthetic and banked-corpus tests: it has no deploy or hardware step;
+   probes, and close the round's mechanical fixed-mic slice;
 8. update this plan's outcome, the program CURRENT POSITION, and the owning
    issues before opening the next round.
 
@@ -498,9 +464,9 @@ unwritten design decision, stop and report the exact dependency. Do not build
 around confusion. Do not open/close issues, merge, push, deploy, or modify
 unrelated code.
 
-Dependency rule: R15 is one atomic fixed-Fc vertical and skips pre-apply cloud. Later rounds wait for its reviewed hardware checkpoint and fresh Gate 0; do not pre-build later contracts.
-
-Per PR: at most 400 gross production additions, five production files, and one new production module; deletions do not offset. Report production/tests/docs and cumulative ledgers. Every API/field/artifact needs a current producer and consumer. Forecast crossing a cap is a STOP for owner re-ratification, never permission to split an incomplete vertical.
+Dependency rule: R15 is one atomic fixed-Fc vertical and skips pre-apply cloud.
+R16–R19 remain provisional labels after its hardware checkpoint. Fresh Gate 0
+must pair each later producer with its current consumer.
 
 The owner's bar is separation of concerns, one source of truth, elegant and
 modular boundaries, bounded resource use, resilience, observability,
@@ -533,64 +499,10 @@ exception. Do not deploy or measure. DONE is the complete configured-Fc path,
 restoration and deterministic equivalence pinned by focused tests.
 ```
 
-### R16 mission — four lateral poses
+### Post-checkpoint launch contracts — not yet authorized
 
-```text
-Deferred until the fixed-Fc checkpoint passes. Re-enter Gate 0 and launch only
-a complete vertical whose durable evidence has a current producer and consumer.
-```
-
-### R17 mission — pure Fc selector
-
-```text
-Deferred until the checkpoint and R16. Re-enter Gate 0 for the §6 selector:
-at most five LR4 candidates, reuse the fitter, then choose, abstain, or retain.
-```
-
-### R18 mission — propose and apply
-
-```text
-On main after R17 lands, thread exactly one selector result through
-#1806's planned proposal/review boundary and the existing transactional apply
-machinery. Reject a result whose evidence, grid, candidate, prescription, or
-outcome identity does not match its current producer-owned evidence. Apply
-only the chosen complete prescription; retain and surface the prior production
-profile for Undo. Reuse current report/UI components and minimal copy. Do not
-redesign VERIFY, add a chart framework, or touch Room. DONE when measurement
-stops on one evidence-linked proposal, the household explicitly applies or
-declines it, and apply/decline/restart/failure paths preserve one authoritative
-candidate and rollback state.
-```
-
-### R19 mission — crossed-branch + summed verification
-
-```text
-On R18 main, extend the single mark-position VERIFY action to prove crossed
-woofer realization, crossed HF realization, measured-vs-model sum tracking,
-and an absolute crossover-region result; retain Full's post-apply spatial
-cloud. Give one producer ownership of mark-verified versus spatially-graded
-scope across wizard, /state, and doctor. Use existing report components and
-minimal copy; no new chart or wizard framework. Preserve Undo and explicit
-failure actions. DONE when Express and Full complete honestly end-to-end and
-#1868/#2098's failure modes are pinned.
-```
-
-### R20 mission — read-only evidence audit
-
-```text
-You are the independent read-only evidence analyst for the owner-run JTS3
-proof. Do not edit code, DSP, issues, or docs. Re-derive graph/candidate/capture
-fingerprints; confirm every pre-apply artifact used the neutral commissioning
-graph; compare the fixed-2 kHz golden run with the bounded-selector run; compare
-predicted versus achieved woofer, HF, and sum; inspect side robustness,
-headroom, rollback, logs, state, and doctor. Separate measurement failure,
-application failure, and failure to meet target. Return one evidence ledger,
-one go/conditional/no-go result for the flow, and the smallest next action. A
-contradiction opens a new bounded round; it never licenses an improvised fix.
-This general commissioning audit may contribute evidence to #1848, but it is
-not that issue's controlled reference-level versus SNR-solved MEASURE-level
-A/B and must not replace or close it.
-```
+Fresh Gate 0 must define complete producer-plus-current-consumer verticals.
+It may co-scope lateral capture and selector; R16–R19 are labels/ceilings only.
 
 **Original R14 planning/contract verification scope.** On 2026-08-04, before
 the R15 scope reset, this plan was checked against then-current `main`
@@ -607,9 +519,8 @@ verified #2105 merged as
 to #1654/#1894. That closeout changed no product code, deployment, DSP state,
 or measurement evidence.
 
-**2026-08-04 anti-sprawl Gate-0 scope.** This reset checked the live contract
-against `origin/main` at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac` and three
-independent Gate-0 audits. It changed docs only: no product code, issue writes,
-deployment, DSP state, or measurement is claimed; R14 history remains intact.
+**2026-08-04 anti-sprawl Gate-0 scope.** Checked the live contract against
+`origin/main` at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac` and independent
+audits. This changed docs only; R14 history remains intact.
 
 Last verified: 2026-08-04

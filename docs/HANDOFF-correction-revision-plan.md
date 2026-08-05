@@ -876,7 +876,9 @@ full re-walk.
 
 **Live status:** see [CURRENT POSITION](#current-position). R14 remains
 complete. The first R15 prototype at `05822244` was rejected as a merge
-candidate for violating the 80/20 scope; no R15 product code was merged, deployed, or measured. The atomic fixed-Fc R15 is next only after this docs reset and issue reconciliation land.
+candidate for violating the 80/20 scope; no R15 product code was merged,
+deployed, or measured. The atomic fixed-Fc R15 is next only after this docs
+reset and issue reconciliation land.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
@@ -962,12 +964,14 @@ them; that schedules the work, it does not adopt them into the program.
 
 ## CURRENT POSITION
 
-Update **this block** at the end of every round, together with re-scoping the
-remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond).
-Do not restate strategy in a handoff; move the marker here and point at it.
+Update **this block** at the end of every round together with the
+[canonical campaign plan](crossover-linearization-80-20-plan.md). Do not
+restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-04 (three Gate-0 audits narrowed unstarted R15 to one atomic fixed-Fc vertical; rejected prototype remains unmerged/unmeasured)
+date:           2026-08-04 (independent Gate-0 audits narrowed unstarted R15
+                to one atomic fixed-Fc vertical; rejected prototype remains
+                unmerged and unmeasured)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -977,7 +981,7 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   none — R14 is complete; the docs-only Gate-0 reset is being landed before R15 starts
+active_round:   none — R14 complete; docs-only Gate-0 reset lands before R15
 last_round:     R13 (owner validation day; last fully completed product
                 round). R14 is the completed documentation/administrative
                 campaign round
@@ -992,10 +996,13 @@ rollback:       Undo remains banked through the retained pre_apply_profile;
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
-                #2106 owns atomic R15 and #2107 is deferred beyond the fixed-Fc checkpoint. The campaign's complete
+                #2106 owns atomic R15; #2107 is deferred beyond the fixed-Fc
+                checkpoint. The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   after docs/issues land, start #2106 fresh from remote main with no prototype cherry-pick; run the reviewed fixed-Fc hardware checkpoint before later rounds
-blocked_on:     this reset's merge and #2106/#2107/#1894 reconciliation; product work has not restarted
+next_mission:   after docs/issues land, start #2106 fresh from remote main
+                with no prototype cherry-pick; run the reviewed fixed-Fc
+                hardware checkpoint before later rounds
+blocked_on:     docs reset merge and #2106/#2107/#1894 reconciliation; R15 not started
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1703,7 +1710,11 @@ POSITION, and the canonical plan's two-ticket disposition. It changed no
 product code, deployment, DSP state, or measurement evidence; older campaign
 narrative and the historical appendix were not re-verified.
 
-**Verification scope.** A distinct **2026-08-04 anti-sprawl Gate-0 reset** checked only this status/pointer against the canonical plan and `origin/main` at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac`. It claims no product/issue write, review passage, deployment, DSP change, or measurement; the historical appendix was not re-verified.
+**Verification scope.** A distinct **2026-08-04 anti-sprawl Gate-0 reset**
+checked only this status/pointer against the canonical plan and `origin/main`
+at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac`. It claims no product/issue
+write, review passage, deployment, DSP change, or measurement. The historical
+appendix was not re-verified.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
