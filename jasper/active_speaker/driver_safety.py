@@ -631,12 +631,15 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "gain_offset_db_provenance",
     "notes",
     "sources",
-    # #1665 component entry: driver_class/radiating_diameter_mm/
-    # horn_coverage_deg are researchable (build_driver_research_prompt asks
-    # for them). pad is not prompted (operator-only fact) but is accepted
-    # here too for structural parity with the shared _normalise_driver_common
-    # schema -- a v2 result never legitimately carries it, but rejecting it
-    # here would just be a second, redundant place that gate could drift.
+    # #1665 component entry: build_driver_research_prompt asks for
+    # driver_class and radiating_diameter_mm. horn_coverage_deg is still
+    # accepted here but is no longer requested -- Bessel beamwidth matching
+    # (#1675) is deferred, so nothing computes from it today; a reply that
+    # still carries it normalises exactly as before. pad is not prompted
+    # (operator-only fact) but is accepted here too for structural parity
+    # with the shared _normalise_driver_common schema -- a v2 result never
+    # legitimately carries it, but rejecting it here would just be a second,
+    # redundant place that gate could drift.
     "driver_class",
     "radiating_diameter_mm",
     "horn_coverage_deg",

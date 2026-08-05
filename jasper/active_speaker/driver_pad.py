@@ -8,8 +8,10 @@ Pure computation only, mirroring level_trim.py's shape: no I/O, no product
 policy, no cross-module imports. A "pad" is an operator-declared resistor
 network (or a purchased fixed attenuator) sitting between the amplifier and
 one driver -- a physical fact the operator knows because they wired it, never
-something AI-researched (see driver_safety.build_driver_research_prompt's
-docstring: the prompt deliberately omits pad).
+something AI-researched (the research prompt deliberately omits pad: see the
+comment above driver_safety._V2_RESEARCH_DRIVER_FIELDS, pinned by
+tests/test_active_speaker_driver_safety.py
+::test_prompt_asks_for_driver_class_and_geometry_but_never_pad).
 
 Formula (verified against JTS3's tweeter pad, 2026-07-23): for a two-resistor
 L-pad, the shunt resistor sits in parallel with the driver's own nominal
