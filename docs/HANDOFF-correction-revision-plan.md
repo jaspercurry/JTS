@@ -877,8 +877,8 @@ full re-walk.
 **Live status:** see [CURRENT POSITION](#current-position). R14 remains
 complete. The first R15 prototype at `05822244` was rejected as a merge
 candidate for violating the 80/20 scope; no R15 product code was merged,
-deployed, or measured. The atomic fixed-Fc R15 is next only after this docs
-reset and issue reconciliation land.
+deployed, or measured. Both preconditions — the docs reset (#2123) and issue
+reconciliation (#2105/#2108) — have landed; atomic fixed-Fc R15 is in flight.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
@@ -1718,6 +1718,14 @@ checked only this status/pointer against the canonical plan and `origin/main`
 at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac`. It claims no product/issue
 write, review passage, deployment, DSP change, or measurement. The historical
 appendix was not re-verified.
+
+**Verification scope.** A **2026-08-05 conductor-rulings status pass** updated
+only CURRENT POSITION and this section's live-status sentence, against the
+rulings recorded on #2106 and the open draft PR #2126. It re-verified nothing
+else — charter, rungs, campaign narrative, research index, issue index, and
+historical appendix carry prior verification forward, so the footer below is
+deliberately unchanged, as in the three preceding status-only passes. It claims
+no product/issue write, review passage, deployment, DSP change, or measurement.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly

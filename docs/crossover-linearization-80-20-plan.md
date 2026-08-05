@@ -76,14 +76,12 @@ the revision already shipped.
 The current program emitter carries the configured LR4 sections for both
 branch shaping and HF protection, and the current fitter explicitly assumes
 its inputs already contain those crossover shoulders. That assumption is today
-documented, not enforced: nothing refuses an input whose shoulders are missing,
-so a neutral response reaching the fitter would be silently mis-prescribed
-rather than rejected. R15's composition seam must land **with** an enforcement
-— a violated invariant refuses by name; it never silently prescribes.
-
-Therefore R15 may not simply remove the configured crossover and call the old
-path compatible. It must land the protected-neutral graph **and use it
-atomically**: capture the accepted in-session driver responses, replace their
+documented, not enforced: nothing refuses an input whose shoulders are missing.
+R15's composition seam must land **with** an enforcement — a violated invariant
+refuses by name; it never silently prescribes. Therefore R15 may not simply
+remove the configured crossover and call the old path compatible. It must land
+the protected-neutral graph **and use it atomically**: capture the accepted
+in-session driver responses, replace their
 measured protection transfer with the configured LR4 total transfer through
 §4.2's exact offline composition — which owns that formula — and feed the
 result into every existing configured-Fc consumer. R15 removes `CLOUD_MEASURE`
@@ -92,9 +90,8 @@ the live production graph or inventing a replacement cloud.
 
 ## 4. Measurement contracts
 
-*Sections 4.3, 5, and 6 were removed in the 2026-08-04 Gate-0 reset. The
-remaining numbering is preserved so existing issue citations — notably §9 and
-§13 — stay stable.*
+*Sections 4.3, 5, and 6 were removed in the 2026-08-04 Gate-0 reset; numbering
+is preserved so existing issue citations — notably §9 and §13 — stay stable.*
 
 ### 4.1 Session-owned protected baseline
 
@@ -140,11 +137,10 @@ tweeter crossover corner, in `protective_tweeter_highpass_frequency_hz`
 ([`jasper/active_speaker/test_signal_plan.py`](../jasper/active_speaker/test_signal_plan.py))
 — so it encodes the selector candidate this section forbids. R15 derives the
 measurement-protection transfer fresh from the declared hard excitation bands
-instead. Where that protection corner lands interacts with §4.2's ±12 dB
-conditioning bound near the overlap band's lower edge, because a corner close
-to that edge raises `abs(C_c/P)` exactly where candidates need trusted bins.
-Corner placement is therefore a deliberate, reviewed choice, not an emergent
-one.
+instead. Where that corner lands interacts with §4.2's ±12 dB conditioning bound
+near the overlap band's lower edge, where a low `abs(P)` inflates `abs(C_c/P)`
+exactly where candidates need trusted bins. Placement is therefore a deliberate,
+reviewed choice, not an emergent one.
 
 The previously applied production profile is preserved as playback state and
 Undo evidence. `Start over` discards journey evidence and mints a new
@@ -191,14 +187,14 @@ produced from the same crossover-section primitives as the emitter. It is a
 total replacement for `P` in the candidate model and eventual applied graph,
 not another filter cascaded after `P`. `sign_c` is the role's configured
 per-region polarity as `+1` or `-1`, carried as its own declared prior rather
-than folded into `C_c`'s sections. It belongs to this composition because the
-protected-neutral emitter deliberately omits region polarity — it routes its
-mixer with region polarity off precisely while protection sections are emitted
-— so `M` is polarity-free and the sign is reinjected once, offline, in the same
-step. It multiplies the whole role spectrum — the composed trusted bins and the
-out-of-band bins that are carried forward but never claimed — so no bin is left
-in a different polarity convention from its neighbours. `S_c(f)`, with
-magnitude rederived from its complex values, is the only input handed to the
+than folded into `C_c`'s sections. It is in this composition because the
+protected-neutral emitter deliberately omits region polarity — its mixer runs
+with region polarity off exactly while protection sections are emitted — so `M`
+is polarity-free and the sign is reinjected once, offline, over the whole role
+spectrum: the composed trusted bins and the out-of-band bins carried forward but
+never claimed alike, so no bin is left in a different polarity convention from
+its neighbours. `S_c(f)`, with magnitude
+rederived from its complex values, is the only input handed to the
 crossover-shaped fitter and branch-target path. The division is **offline
 evidence math only**: no inverse, de-embedding, or recovery filter is emitted
 to hardware, and the applied graph emits `C_c` once rather than `P * C_c`.
@@ -247,16 +243,15 @@ named, evidence-backed R15 re-scope before the tolerance changes; "materially
 equivalent" without a number is not an exit.
 
 **Boost ruling (owner, 2026-08-05).** The R15 driver-only path permits boost
-when post-apply `VERIFY` runs; `allow_boost` no longer additionally requires a
-pre-apply cloud. What that cloud supplied is absent until a later gated round:
-the cloud-derived boost-excluded bands, and the envelope's spatial-exclusion
-and position-stability terms. The accepted risk is stated plainly — a boost can
-land on a position-specific artifact that an at-mark verification cannot
-detect. The standing rails all remain: envelope depth limits, the
-realized-cascade stopband-gain guard, headroom accounting, post-apply `VERIFY`,
-and retained Undo. Prerequisite: the composition must be splice-free — in-band
-evidence unpolluted by the out-of-band seam — before the boost-enabled path is
-trusted on hardware.
+when post-apply `VERIFY` runs; `allow_boost` must no longer additionally require
+a pre-apply cloud. What that cloud supplied is absent until a later gated round:
+the cloud-derived boost-excluded bands, and the envelope's spatial-exclusion and
+position-stability terms. The accepted risk: a boost can land on a
+position-specific artifact that an at-mark verification cannot detect. The
+standing rails all remain — envelope depth limits, the realized-cascade
+stopband-gain guard, headroom accounting, post-apply `VERIFY`, and retained
+Undo. Prerequisite: the composition must be splice-free (in-band evidence
+unpolluted by the out-of-band seam) before this path is trusted on hardware.
 
 ### 4.4 Side evidence owns robustness, not the target
 
@@ -362,21 +357,28 @@ These are acceptance constraints, not preferences:
    and one new production module; deletions never offset, and splits must be independently complete.
 10. Report production/test/docs gross additions and reviewer-rederived
     cumulative ledgers. Every API/field/artifact needs a current producer and
-    consumer; forecast crossing any limit is a STOP for owner re-ratification.
-    Every ratification — a cap overage, an extra production file, a new module
-    — is recorded on the owning issue or PR before the work continues; an
-    unrecorded ratification did not happen.
+    consumer; forecast crossing any limit is a STOP for owner (or
+    owner-delegated conductor) re-ratification — the owner remains the ultimate
+    authority, and the delegation itself is recorded on #2106. Every
+    ratification (cap overage, extra production file, new module) is recorded
+    on the owning issue or PR before work continues; an unrecorded ratification
+    did not happen.
 11. Run the exact adversarial prompt to 0/0; graph/DSP/capture/apply changes
     use three lenses. Budgets gate rather than grant scope.
 
 Production ceilings are per-round and govern where they differ from item 9.
 R15 is one PR on a ladder: **300** gross production additions is a mandatory
 conductor-inspection checkpoint, **400** is the soft target, and **500** is the
-absolute stop. Five production files is soft; a sixth requires a named-file
-conductor/owner ratification. Zero new production modules absent
-re-ratification. Tests are 500 gross, over which the conductor may ratify an
-overage for honesty fixtures, recorded on the owning issue. Docs 120. R16 350,
-R17 400, R18 180, R19 580 across at most two independent PRs, and R20 zero.
+absolute stop. The 400–500 band is a justification requirement, not headroom:
+any line above 400 must map directly to an unmet acceptance requirement. Five
+production files is soft, a sixth requires a named-file conductor/owner
+ratification, and new production modules are zero absent re-ratification. Tests
+are 500 gross, over which the conductor may ratify an honesty-fixture overage
+recorded on the owning issue. Docs 120. R16 350, R17 400, R18 180, R19 580
+across at most two independent PRs, and R20 zero. They are per-PR for a round's
+**implementation** PRs; a conductor-authored campaign-governance docs PR that
+amends this plan rather than implementing a round carries its own ≤120
+documentation budget and does not charge the round's implementation ledger.
 
 ## 10. Existing-ticket sweep
 
@@ -532,12 +534,12 @@ durable JSON, self-readback, lateral/dynamic schema, or future-only
 API/field/artifact.
 
 Hard R15 caps are §9's ladder: 300 gross production additions is a mandatory
-conductor inspection, 400 the soft target, 500 the absolute stop; five
-production files is soft and a sixth needs a named-file ratification; zero new
-production modules absent explicit re-ratification; tests 500 and docs 120
-gross, with any ratified overage recorded on the owning issue. If preflight
-cannot prove the complete vertical fits, STOP without exception. Do not deploy
-or measure. DONE is the complete configured-Fc path, restoration and
+conductor inspection, 400 the soft target (every line above it mapped to an
+unmet acceptance requirement), 500 the absolute stop; five production files is
+soft, a sixth needs a named-file ratification; zero new production modules;
+tests 500, docs 120; every ratified overage recorded on the owning issue. If
+preflight cannot prove the complete vertical fits, STOP without exception. Do
+not deploy or measure. DONE is the complete configured-Fc path, restoration and
 deterministic equivalence pinned by focused tests.
 ```
 
@@ -568,9 +570,9 @@ audits. This changed docs only; R14 history remains intact.
 **2026-08-05 conductor architecture review scope.** Independent research lanes
 verified this round's premises against code: the program emitter does carry the
 configured LR sections including tweeter protection (TRUE); the fitter's
-crossover-shaped-input assumption is documented but unenforced; and removing
-the pre-apply cloud is not prescription-neutral, because that cloud also gated
-boost. The resulting cap-ladder, boost, and governance rulings are recorded on
+crossover-shaped-input assumption is documented but unenforced; and removing the
+pre-apply cloud is not prescription-neutral, because that cloud also gated boost.
+The resulting cap-ladder, boost, and governance rulings are recorded on
 [#2106](https://github.com/jaspercurry/JTS/issues/2106), which this amendment
 reconciles into the plan. This changed docs only; no product code, deployment,
 DSP state, or measurement evidence moved.
