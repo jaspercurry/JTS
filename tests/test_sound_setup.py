@@ -1551,16 +1551,51 @@ INNOMAKER_DEVICE_ID = "innomaker_hifi_amp_pro"
 INNOMAKER_DEVICE_LABEL = "InnoMaker HiFi AMP Pro"
 
 
-def _innomaker_topology_payload(*, active: bool) -> dict:
+def _innomaker_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
     """A save posted against a DAC that declares no active outputd lane.
 
     ``active=True`` is the impossible shape: a roleful active 2-way layout on
     ``supports_active_outputd_lane=False`` hardware. Saving it is what left a
     box structurally mute — CamillaDSP runs the roleful graph into an aloop
     lane nothing drains while outputd captures the passive one.
+
+    ``subwoofer=True`` is the second roleful shape a household reaches through
+    the wizard: passive mono mains plus a local sub. It is roleful through the
+    subwoofer branch rather than an active crossover, so it is refused for the
+    same reason and the copy has to cover it.
     """
 
-    if active:
+    if subwoofer:
+        groups = [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [
+                    {
+                        "role": "subwoofer",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    }
+                ],
+            },
+        ]
+        routing = {"mono_group_id": "mono", "subwoofer_group_ids": ["sub"]}
+    elif active:
         groups = [
             {
                 "id": "main",
@@ -1647,8 +1682,36 @@ def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
             _innomaker_topology_payload(active=True)
         )
 
-    assert INNOMAKER_DEVICE_LABEL in str(excinfo.value)
+    message = str(excinfo.value)
+    assert INNOMAKER_DEVICE_LABEL in message
+    # Passive is not a free remedy: it sends full-range into every assigned
+    # output, which on an actively-wired cabinet reaches a bare tweeter. The
+    # household is being steered there, so the consequence travels with it.
+    assert "full-range audio to every output" in message
+    assert "built-in passive crossover" in message
+    assert "attach an active-capable DAC" in message
     # Refused means refused: nothing was written.
+    assert not topo_path.exists()
+
+
+def test_passive_mains_plus_local_sub_are_refused_on_the_same_dac(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The subwoofer branch is roleful too, and the wizard offers it as a
+    one-tap add-on — so the refusal copy must name subwoofer layouts, not only
+    active crossovers."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+
+    with pytest.raises(ValueError) as excinfo:
+        sound_setup._save_output_topology_payload(
+            _innomaker_topology_payload(active=False, subwoofer=True)
+        )
+
+    message = str(excinfo.value)
+    assert "subwoofer layouts" in message
+    assert INNOMAKER_DEVICE_LABEL in message
     assert not topo_path.exists()
 
 

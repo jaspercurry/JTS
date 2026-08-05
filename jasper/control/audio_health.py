@@ -57,7 +57,6 @@ OUTPUTD_STALE_MS = 3000
 # reaches the drivers however healthy each daemon looks. Doctor phrases its own
 # operator remedy; this is the only writer of the /state wording.
 PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
-_EMPTY_TRANSPORT: dict[str, Any] = {"coherence_errors": [], "capability_gap": None}
 
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
@@ -166,6 +165,17 @@ def _read_mux_status(
         return None
 
 
+def _empty_transport() -> dict[str, Any]:
+    """Return a fresh "no contradictions" transport state.
+
+    Built per call, never copied from a module constant: ``dict(constant)`` is
+    shallow, so every caller would share one ``coherence_errors`` list and a
+    single append anywhere would report the box as parked on every later
+    degraded read for the lifetime of the process.
+    """
+    return {"coherence_errors": [], "capability_gap": None}
+
+
 def _transport_state(
     *,
     coupling: str | None,
@@ -231,7 +241,7 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
     )
     if evidence.devices is None or not evidence.endpoint_recognized:
-        return dict(_EMPTY_TRANSPORT)
+        return _empty_transport()
     # outputd.env is read here because the plan carries decisions, not the
     # generated env it was built from.
     outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
@@ -272,7 +282,7 @@ def read_route_claim() -> dict[str, Any]:
             transport = _read_transport_state(plan)
         except _MONITOR_ERRORS:
             logger.debug("audio transport coherence read failed", exc_info=True)
-            transport = dict(_EMPTY_TRANSPORT)
+            transport = _empty_transport()
         return {
             "status": "available",
             "route_id": profile.route_id,
@@ -297,7 +307,7 @@ def read_route_claim() -> dict[str, Any]:
             "p95_budget_ms": None,
             "p99_budget_ms": None,
             "artifact": {"status": "fail", "reason": str(exc)},
-            "transport": dict(_EMPTY_TRANSPORT),
+            "transport": _empty_transport(),
         }
 
 
@@ -412,7 +422,9 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     if label.strip():
         detail = (
             f"{detail}. {label.strip()} cannot drive an active speaker layout; "
-            "choose a passive speaker layout at /sound/setup/."
+            "choose a passive speaker layout at /sound/setup/ (passive sends "
+            "full-range to every output; requires a built-in passive crossover) "
+            "or attach an active-capable DAC."
         )
     return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
 

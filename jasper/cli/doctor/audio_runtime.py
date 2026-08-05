@@ -1927,7 +1927,9 @@ def _transport_route_remedy() -> str:
         return (
             f". {gap.device_label} does not support the active speaker lane, so "
             "this cannot be reconciled: choose a passive speaker layout on this "
-            "speaker's /sound/setup/ page, or attach an active-capable DAC."
+            "speaker's /sound/setup/ page (passive sends full-range audio to "
+            "every output — only safe when the speaker has its own built-in "
+            "passive crossover), or attach an active-capable DAC."
         )
     return (
         ". Run jasper-audio-hardware-reconcile to restore the paired "

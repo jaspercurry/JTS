@@ -454,11 +454,14 @@ lanes up to the highest assigned output.
 Saving a speaker-layout draft is a complete topology JSON
 replacement and only runs backend validation; it does not play sound or apply a
 DSP graph. It does start `jasper-audio-hardware-reconcile` (fire-and-forget,
-best-effort, never failing the save) so the runtime env is re-derived from the
-new intent instead of drifting until the next boot. That reconciler is
-fail-closed — active mode still requires a legal active graph to already be the
-live CamillaDSP config — so an in-progress draft re-derives the same passive env
-it already had. The same payload carries a clock-domain report that records
+best-effort, never failing the save) so the runtime converges toward the newly
+declared intent instead of drifting until the next boot. That convergence is
+real: on a live box running a commissioned active graph, an edit that
+invalidates that graph flips the reconciler's gate from active to passive and
+bounces outputd, so output parks — loudly, behind the parked banner — until the
+layout is re-commissioned or reverted. A brief parked flash during the post-save
+reconcile window is possible and self-clears.
+The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
 is explicitly not enabled for product active-crossover playback yet. The
 confirm-outputs card shows a top-down speaker stack visual plus flat **DAC

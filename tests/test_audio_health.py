@@ -354,6 +354,12 @@ def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> Non
     assert "post-DSP route disconnected" in detail
     assert "InnoMaker HiFi AMP Pro" in detail
     assert "/sound/setup/" in detail
+    # Passive is not a free remedy: it sends full-range into every assigned
+    # output, which on an actively-wired cabinet reaches a bare tweeter. The
+    # consequence has to travel with the advice.
+    assert "full-range to every output" in detail
+    assert "requires a built-in passive crossover" in detail
+    assert "attach an active-capable DAC" in detail
 
 
 def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
@@ -395,6 +401,30 @@ def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
         "device_id": "innomaker_hifi_amp_pro",
         "device_label": "InnoMaker HiFi AMP Pro",
     }
+
+
+def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> None:
+    """The no-contradictions transport state must be fresh per read.
+
+    A shallow copy of a module-level constant shares one ``coherence_errors``
+    list, so a single append by any consumer would make every later degraded
+    read report the box as parked for the lifetime of jasper-control.
+    """
+    from types import SimpleNamespace
+
+    from jasper import audio_runtime_plan
+
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
+    )
+    plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
+
+    first = audio_health._read_transport_state(plan)
+    first["coherence_errors"].append("poisoned")
+    second = audio_health._read_transport_state(plan)
+
+    assert second["coherence_errors"] == []
 
 
 def test_transport_state_is_clean_when_the_paired_lanes_agree() -> None:

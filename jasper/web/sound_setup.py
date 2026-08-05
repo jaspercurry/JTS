@@ -477,8 +477,10 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     )
     raise OutputTopologyCapabilityBlocked(
         f"{gap.device_label} does not support the active speaker lane. Active "
-        "crossover layouts need an active-capable DAC; choose a passive "
-        "speaker layout for this hardware."
+        "crossover and subwoofer layouts need an active-capable DAC; choose a "
+        "passive speaker layout for this hardware (passive sends full-range "
+        "audio to every output — only safe when the speaker has its own "
+        "built-in passive crossover), or attach an active-capable DAC."
     )
 
 
@@ -491,10 +493,12 @@ def _trigger_topology_reconcile() -> dict[str, Any]:
     the next reconcile or boot, so it must not turn a successful save into a
     failed one. The outcome is reported to the page instead.
 
-    This converges intent, it does not apply a layout. The reconciler is
-    fail-closed — it enters active mode only when a legal active graph is
-    already the live CamillaDSP config — so an in-progress wizard draft
-    re-derives the same passive env it already had.
+    This converges intent, it does not apply a layout: the reconciler enters
+    active mode only when a legal active graph is already the live CamillaDSP
+    config. Convergence is real, not inert — on a box running a commissioned
+    active graph, an edit that invalidates it flips the gate back to passive
+    and bounces outputd, so output parks (loudly, behind the parked banner)
+    until the layout is re-commissioned or reverted.
 
     Unlike the reset command this does NOT wait for the oneshot: the reset is a
     one-shot operator action, while ``/sound/setup/`` saves a draft at every

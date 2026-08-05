@@ -1512,6 +1512,12 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     assert "InnoMaker HiFi AMP Pro" in r.detail
     assert "/sound/setup/" in r.detail
     assert "audio-hardware-reconcile" not in r.detail
+    # Passive is not a free remedy: it sends full-range into every assigned
+    # output, which on an actively-wired cabinet reaches a bare tweeter. An
+    # operator following doctor's advice must be told that.
+    assert "full-range audio to every output" in r.detail
+    assert "built-in passive crossover" in r.detail
+    assert "attach an active-capable DAC" in r.detail
 
 
 def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
