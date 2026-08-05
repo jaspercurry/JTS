@@ -50,6 +50,31 @@ EOF
         return
     fi
     jasper_asound_require_output_dac_card || return $?
+    if [[ "${OUTPUT_DAC_ID:-}" == "innomaker_hifi_amp_pro" ]]; then
+        # The Merus amp accepts a fixed 48 kHz, stereo, S32_LE hardware stream.
+        # outputd keeps the JTS S16 client contract and ALSA performs the one
+        # profile-scoped conversion at this final passive-output edge.
+        if [[ "${OUTPUTD_ACTIVE_MODE:-0}" != "0" || -n "${OUTPUTD_ACTIVE_CHANNELS:-}" ]]; then
+            echo "jasper-asound-render: InnoMaker HiFi AMP Pro is passive stereo only" >&2
+            return 64
+        fi
+        cat <<EOF
+pcm.outputd_dac {
+    type plug
+    slave {
+        pcm {
+            type hw
+            card ${OUTPUT_DAC_CARD}
+            device 0
+        }
+        rate 48000
+        channels 2
+        format S32_LE
+    }
+}
+EOF
+        return
+    fi
     cat <<EOF
 pcm.outputd_dac {
     type hw

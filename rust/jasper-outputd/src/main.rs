@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{
-    open_playback_pcm, AlsaBackend, ContentRead, IoCounters, NegotiatedPcm, PairedCompositeSink,
+    open_playback_pcm, AlsaBackend, ContentRead, FinalSinkStartupConfigError, IoCounters,
+    NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
@@ -130,16 +131,29 @@ fn main() -> Result<()> {
     };
 
     notify_systemd("STOPPING=1")?;
-    // A config-class fault surfacing after startup (the PROTOTYPE SHM-ring
-    // header/geometry mismatch is the only one today) exits EX_CONFIG so the
-    // unit parks (RestartPreventExitStatus=78) rather than reboot-looping.
+    // A config-class fault surfacing after startup exits EX_CONFIG so the unit
+    // parks (RestartPreventExitStatus=78) rather than reboot-looping. This
+    // includes both late SHM geometry validation and initial final-sink
+    // open/negotiation; neither can be repaired by restarting the daemon.
     if let Err(e) = &result {
-        if e.downcast_ref::<ConfigClassError>().is_some() {
+        if let Some(exit_code) = runtime_error_exit_code(e) {
             eprintln!("event=outputd.config_invalid_runtime detail={e:#}");
-            std::process::exit(EXIT_CONFIG);
+            std::process::exit(exit_code);
         }
     }
     result
+}
+
+fn runtime_error_exit_code(error: &anyhow::Error) -> Option<i32> {
+    if error.downcast_ref::<ConfigClassError>().is_some()
+        || error
+            .downcast_ref::<FinalSinkStartupConfigError>()
+            .is_some()
+    {
+        Some(EXIT_CONFIG)
+    } else {
+        None
+    }
 }
 
 fn run_fake(
@@ -1526,6 +1540,18 @@ mod tests {
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn final_sink_startup_fault_uses_configuration_exit() {
+        let error =
+            anyhow::anyhow!("synthetic sink open failure").context(FinalSinkStartupConfigError);
+
+        assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
+        assert_eq!(
+            runtime_error_exit_code(&anyhow::anyhow!("transient runtime fault")),
+            None
+        );
+    }
 
     #[test]
     fn chip_ref_downsampler_downmixes_and_decimates_exact_ratio() {

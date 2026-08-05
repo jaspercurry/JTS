@@ -594,7 +594,12 @@ four-output shape without implying that outputd has switched to a dual-sink
 runtime graph.
 
 The old DAC8x final-output alias route has been removed. `outputd_dac`
-renders directly to the recognized final-output card; active-speaker channel
+renders directly to an ordinary recognized final-output card. The sole
+profile-scoped format exception is the passive-stereo InnoMaker HiFi AMP Pro:
+its final-edge `plug` keeps outputd's JTS S16 client contract while fixing the
+hardware slave at 48 kHz, two channels, S32_LE. That profile does not declare
+an active-output lane, and its renderer rejects active-mode input so the plug
+cannot sit after an active crossover. Active-speaker channel
 ownership lives in `/var/lib/jasper/output_topology.json` and the generated
 active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
 physical DAC lanes, speaker groups, passive/active modes, subwoofers, and
@@ -653,7 +658,8 @@ never touches downstream amp gain. The amp gain is a physical knob set at
 install time.
 The same topology surface reports the detected output clock domain. Supported
 topology hardware IDs include one Apple dongle, HiFiBerry DAC8x/DAC8x Studio,
-and the special `dual_apple_usb_c_dac_4ch` pair. The dual-Apple option is valid
+the passive-stereo InnoMaker HiFi AMP Pro, and the special
+`dual_apple_usb_c_dac_4ch` pair. The dual-Apple option is valid
 only for exactly two Apple child DACs on the expected same USB controller/bus,
 one speaker-local stereo pair per DAC, and exactly four physical outputs.
 Stored 900 s common-clock drift evidence is surfaced as validation evidence;
@@ -707,7 +713,8 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-24 (atomic turn-start volume context and outputd's
+Last verified: 2026-08-04 (InnoMaker final-edge format conversion and
+passive-only active-lane exclusion rechecked; atomic turn-start volume context and outputd's
 missing/rejected-context silence rule checked against both Rust consumers and
 the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay
 receiver-session cleanup ordering, compatibility fallback, and failure

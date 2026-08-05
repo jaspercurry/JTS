@@ -5,8 +5,10 @@
 """Static checks for the outputd topology."""
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 from jasper.audio_hardware import dac
@@ -118,21 +120,46 @@ def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
         assert "format" not in block
 
 
-def test_active_path_pcms_never_use_plug_or_plughw():
+def test_active_path_pcms_never_use_plughw_and_innomaker_plug_rejects_active():
     """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
     path. `plug` is the auto-converting channel/rate/format plugin; on a live-
     driver path it could remix 8->4 onto a tweeter (the single most dangerous
     fail-open in active mode). Covers the asoundrc active content lanes and
-    every outputd_dac block the render lib emits (direct hw / composite null /
-    DAC8x direct — all conversion-free)."""
+    every active outputd_dac block. The InnoMaker passive-stereo profile is the
+    sole final-edge plug exception and must reject active-mode inputs."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
         block = _pcm_block(rc, name)
         assert "type plug" not in block, name
         assert "plughw" not in block, name
     render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
-    assert "type plug" not in render_lib
     assert "plughw" not in render_lib
+
+    env = os.environ.copy()
+    env.update({
+        "OUTPUT_DAC_ID": dac.INNOMAKER_HIFI_AMP_PRO_ID,
+        "OUTPUT_DAC_CARD": "sndrpimerusamp",
+        "OUTPUT_DAC_RECOGNIZED": "1",
+        "OUTPUTD_ACTIVE_MODE": "1",
+        "OUTPUTD_ACTIVE_CHANNELS": "2",
+    })
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; jasper_asound_outputd_dac_pcm_block',
+            "bash",
+            str(REPO / "deploy" / "lib" / "jasper-asound-render.sh"),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode == 64
+    assert result.stdout == ""
+    assert "passive stereo only" in result.stderr
 
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
@@ -145,7 +172,7 @@ def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
     assert "OUTPUT_DAC_RECOGNIZED:-1" in render_lib
 
 
-def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
+def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
     install_without_env_migrations = "\n".join(
         path.read_text(encoding="utf-8")
@@ -155,13 +182,10 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
-    assert "DAC8X_OUTPUT_CARD=" in reconcile
-    assert "DAC8X_STUDIO_OUTPUT_CARD=" in reconcile
-    assert 'OUTPUT_DAC_ID="hifiberry_dac8x"' in reconcile
-    assert 'OUTPUT_DAC_ID="hifiberry_dac8x_studio"' in reconcile
-    assert 'OUTPUT_DAC_ID="apple_usb_c_dongle"' in reconcile
-    assert "snd_rpi_hifiberry_dac8x" in reconcile
-    assert "hifiberry_dac8x" in reconcile
+    assert "apply_observed_single_policy()" in reconcile
+    assert "OBSERVED_OUTPUT_SELECTED_CARD_ID" in reconcile
+    assert "DAC8X_OUTPUT_CARD=" not in reconcile
+    assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert 'echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"' in install_sh
     assert 'echo "  Output DAC id: ${OUTPUT_DAC_ID}"' in install_sh
     assert "jasper_asound_render_template" in install_sh
@@ -176,25 +200,17 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
 
 
-def test_bash_output_detection_literals_track_registered_dac_profiles():
+def test_bash_output_detection_consumes_registry_backed_classification():
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     install_sh = installer_text()
 
-    for profile_id in (
-        dac.APPLE_USB_C_DONGLE_ID,
-        dac.HIFIBERRY_DAC8X_ID,
-        dac.HIFIBERRY_DAC8X_STUDIO_ID,
-        dac.DUAL_APPLE_USB_C_DAC_4CH_ID,
-    ):
-        assert profile_id in reconcile
-
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
     assert "find_card 'usb-c to 3.5mm'" in reconcile
-    assert "find_card 'hifiberry.*dac8x.*studio|dac8x.*studio'" in reconcile
-    assert "find_card 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x'" in reconcile
-    assert reconcile.index(
-        "DAC8X_STUDIO_OUTPUT_CARD=\"$(find_card"
-    ) < reconcile.index("DAC8X_OUTPUT_CARD=\"$(find_card")
+    assert "apply_observed_single_policy" in reconcile
+    assert 'OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"' in reconcile
+    assert 'OUTPUT_DAC_CARD="$OBSERVED_OUTPUT_SELECTED_CARD_ID"' in reconcile
+    assert "find_card 'hifiberry" not in reconcile
+    assert "find_card 'snd_rpi" not in reconcile
 
 
 def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():

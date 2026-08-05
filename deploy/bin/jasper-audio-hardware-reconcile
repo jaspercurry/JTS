@@ -15,6 +15,7 @@ set -euo pipefail
 ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
+OUTPUTD_ENV_STAGE_REJECTED=0
 OUTPUTD_ENV_STAGE_FILE=""
 FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
 ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
@@ -175,11 +176,10 @@ find_card() {
 
 observe_output_hardware_state() {
     local should_write="${1:-0}"
-    local payload profile_id profile_status usb_topology usb_desired usb_active usb_available usb_management usb_reason
-    local action="observed"
-    local args=()
+    local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason
+    local action="observed" write_arg=""
     if [[ "$should_write" == "1" ]]; then
-        args+=(--write)
+        write_arg="--write"
         action="written"
     fi
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
@@ -189,7 +189,7 @@ observe_output_hardware_state() {
     if ! payload="$(
         JASPER_APLAY="$APLAY" \
         JASPER_OUTPUT_HARDWARE_STATE_PATH="$OUTPUT_HARDWARE_STATE_PATH" \
-        "$OUTPUT_HARDWARE_PYTHON" -m jasper.output_hardware "${args[@]}" 2>/dev/null
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.output_hardware ${write_arg:+"$write_arg"} 2>/dev/null
     )"; then
         log_event "state_${action}_failed" "path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
@@ -197,8 +197,10 @@ observe_output_hardware_state() {
     OBSERVED_OUTPUT_PAYLOAD="$payload"
     profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
+    selected_card_id="$(printf '%s' "$payload" | sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p')"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
+    OBSERVED_OUTPUT_SELECTED_CARD_ID="$selected_card_id"
     usb_topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
     usb_desired="$(printf '%s' "$payload" | sed -n 's/.*"desired_role": *"\([^"]*\)".*/\1/p')"
     usb_active="$(printf '%s' "$payload" | sed -n 's/.*"active_role": *"\([^"]*\)".*/\1/p')"
@@ -365,6 +367,7 @@ commit_outputd_env_stage() {
         return 1
     fi
     if ! validate_outputd_env_stage; then
+        OUTPUTD_ENV_STAGE_REJECTED=1
         cleanup_outputd_env_stage
         OUTPUTD_ENV_STAGE_FILE=""
         OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
@@ -400,8 +403,6 @@ repair_generated_env_permissions() {
 APPLE_DONGLE_CARD=""
 APPLE_DONGLE_PRESENT=0
 APPLE_DONGLE_SERVICE_CARD="auto"
-DAC8X_OUTPUT_CARD=""
-DAC8X_STUDIO_OUTPUT_CARD=""
 DONGLE_CARD="A"
 OUTPUT_DAC_CARD="A"
 OUTPUT_DAC_ID="A"
@@ -410,6 +411,7 @@ OUTPUTD_ACTIVE_MODE=0
 OUTPUTD_ACTIVE_CHANNELS=""
 OBSERVED_OUTPUT_PROFILE_ID=""
 OBSERVED_OUTPUT_PROFILE_STATUS=""
+OBSERVED_OUTPUT_SELECTED_CARD_ID=""
 OBSERVED_OUTPUT_PAYLOAD=""
 DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
@@ -423,21 +425,18 @@ detect_roles() {
         APPLE_DONGLE_SERVICE_CARD="$APPLE_DONGLE_CARD"
     fi
 
-    DAC8X_STUDIO_OUTPUT_CARD="$(find_card 'hifiberry.*dac8x.*studio|dac8x.*studio')"
-    DAC8X_OUTPUT_CARD="$(find_card 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x')"
-    if [[ -n "$DAC8X_STUDIO_OUTPUT_CARD" ]]; then
-        OUTPUT_DAC_CARD="$DAC8X_STUDIO_OUTPUT_CARD"
-        OUTPUT_DAC_ID="hifiberry_dac8x_studio"
-        OUTPUT_DAC_RECOGNIZED=1
-    elif [[ -n "$DAC8X_OUTPUT_CARD" ]]; then
-        OUTPUT_DAC_CARD="$DAC8X_OUTPUT_CARD"
-        OUTPUT_DAC_ID="hifiberry_dac8x"
-        OUTPUT_DAC_RECOGNIZED=1
-    elif [[ "$APPLE_DONGLE_PRESENT" == "1" ]]; then
-        OUTPUT_DAC_CARD="$APPLE_DONGLE_CARD"
-        OUTPUT_DAC_ID="apple_usb_c_dongle"
-        OUTPUT_DAC_RECOGNIZED=1
+}
+
+apply_observed_single_policy() {
+    # output_hardware classifies ordinary single devices from the DacProfile
+    # registry. Consume that result directly so a new registered single DAC
+    # does not require a second hardware regex in this shell owner.
+    if [[ "$OBSERVED_OUTPUT_PROFILE_STATUS" != "ready" || -z "$OBSERVED_OUTPUT_SELECTED_CARD_ID" ]]; then
+        return
     fi
+    OUTPUT_DAC_CARD="$OBSERVED_OUTPUT_SELECTED_CARD_ID"
+    OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"
+    OUTPUT_DAC_RECOGNIZED=1
 }
 
 apply_observed_composite_policy() {
@@ -794,12 +793,12 @@ gate_role_services() {
 
 park_output_audio() {
     if [[ "$NO_RESTART" == "1" ]]; then
-        log_event "output_park_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0 no_restart=1"
+        log_event "output_park_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=${OUTPUT_DAC_RECOGNIZED} no_restart=1"
         return
     fi
     "$SYSTEMCTL" --no-block stop jasper-voice.service jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" reset-failed jasper-voice.service jasper-outputd.service 2>/dev/null || true
-    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=0"
+    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED}"
 }
 
 restart_audio_if_needed() {
@@ -958,11 +957,13 @@ apply_audio_runtime_env() {
 detect_roles
 if [[ "$PRINT_ENV" == "1" ]]; then
     observe_output_hardware_state 0
+    apply_observed_single_policy
     apply_observed_composite_policy
     print_env
     exit 0
 fi
 observe_output_hardware_state 1
+apply_observed_single_policy
 apply_observed_composite_policy
 
 if ! DEFAULT_OUTPUTD_CAPTURE_DEVICE="$(
@@ -1020,6 +1021,12 @@ else
     OUTPUTD_ENV_STAGE_FILE=""
     OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
     trap - EXIT
+fi
+if [[ "$OUTPUTD_ENV_STAGE_REJECTED" == "1" ]]; then
+    log_event "outputd_candidate_rejected" \
+        "action=park_before_asound_render output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+    park_output_audio
+    exit 78
 fi
 repair_generated_env_permissions
 
