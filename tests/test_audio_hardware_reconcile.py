@@ -55,6 +55,8 @@ def _run_reconcile(
     initial_fanin_env: str | None = None,
     initial_template: str | None = None,
     initial_boot_config: str | None = None,
+    board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
+    active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
@@ -86,14 +88,16 @@ def _run_reconcile(
         )
     model = tmp_path / "model"
     boot_config = tmp_path / "config.txt"
-    udc = tmp_path / "udc"
-    model.write_text("Raspberry Pi 5 Model B Rev 1.0", encoding="utf-8")
+    udc = tmp_path / f"udc-{active_usb_role}"
+    model.write_text(board_model, encoding="utf-8")
     boot_config.write_text(
         initial_boot_config
         or "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
     )
-    (udc / "3f980000.usb").mkdir(parents=True, exist_ok=True)
+    udc.mkdir(parents=True, exist_ok=True)
+    if active_usb_role == "peripheral":
+        (udc / "3f980000.usb").mkdir(exist_ok=True)
 
     env = os.environ.copy()
     env.update(
@@ -392,6 +396,8 @@ hw:CARD=sndrpimerusamp,DEV=0
 def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     tmp_path: Path,
 ):
+    model = "Raspberry Pi Zero 2 W Rev 1.0"
+    (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
     intent = tmp_path / "i2s_hat.env"
     marker = tmp_path / "i2s-reboot"
     intent.write_text(
@@ -399,15 +405,16 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
         encoding="utf-8",
     )
 
-    first = _run_reconcile(tmp_path, "", "--reason", "hat-enable")
+    first = _run_reconcile(tmp_path, "", "--reason", "hat-enable", initial_boot_config="[all]\ndtoverlay=dwc2,dr_mode=host\n", board_model=model, active_usb_role="host")
     applied_boot = (tmp_path / "config.txt").read_text(encoding="utf-8")
     assert first.returncode == 0, first.stderr
     assert marker.is_file()
+    assert "dtoverlay=dwc2,dr_mode=peripheral" in applied_boot and "output_parked" in first.stderr
 
     def rerun(listing: str = "", *, reason: str = "udev", **kwargs):
         return _run_reconcile(
             tmp_path, listing, "--reason", reason, initial_boot_config=applied_boot,
-            **kwargs,
+            board_model=model, active_usb_role="peripheral", **kwargs,
         )
 
     marker.unlink()  # a reboot naturally clears /run
@@ -420,9 +427,13 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     assert third.returncode == 0, third.stderr
     assert marker.is_file()  # unrelated reconciles leave a pending marker alone
 
+    (tmp_path / "systemctl.log").unlink(missing_ok=True)
     matched = rerun(INNOMAKER_LISTING)
     assert matched.returncode == 0, matched.stderr
     assert not marker.exists()  # desired and runtime now agree
+    commands = _systemctl_log(tmp_path)
+    assert "--no-block restart jasper-outputd.service" in commands
+    assert "stop jasper-voice.service" not in commands and "restart jasper-aec-reconcile.service" not in commands
 
     malformed_python = tmp_path / "malformed-python"
     malformed_python.write_text(
@@ -446,6 +457,12 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
             assert observed.returncode == 0, observed.stderr
             assert marker.exists() is (marker_present if expected is None else expected)
             assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
+            assert "dtoverlay=dwc2,dr_mode=host" in (tmp_path / "config.txt").read_text()
+
+    disabled_boot = (tmp_path / "config.txt").read_text(encoding="utf-8")
+    marker.unlink()
+    parked = _run_reconcile(tmp_path, "", initial_boot_config=disabled_boot, board_model=model, active_usb_role="host")
+    assert parked.returncode == 0 and not marker.exists() and "output_parked" in parked.stderr, parked.stderr
 
 
 def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
@@ -471,22 +488,6 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
     assert result.returncode == 74
     assert (tmp_path / "i2s-reboot").is_file()
     assert "error=boot_config_published_not_durable" in result.stderr
-
-
-def test_streambox_applies_i2s_boot_intent(tmp_path: Path):
-    original = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
-    (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
-    (tmp_path / "i2s_hat.env").write_text(
-        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n",
-        encoding="utf-8",
-    )
-
-    result = _run_reconcile(tmp_path, "", initial_boot_config=original)
-
-    assert result.returncode == 0, result.stderr
-    rendered = (tmp_path / "config.txt").read_text(encoding="utf-8")
-    assert "dtoverlay=merus-amp" in rendered
-    assert "dtoverlay=dwc2,dr_mode=peripheral" in rendered
 
 
 def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):

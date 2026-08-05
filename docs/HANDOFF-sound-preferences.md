@@ -63,11 +63,12 @@ supported InnoMaker HiFi AMP Pro. The label and boot overlay come from its
 `DacProfile`; browser logic does not own driver metadata. The persisted intent
 is `/var/lib/jasper/i2s_hat.env`; absence means **Auto / Off**. The control is
 available on full and Streambox installs when the output-hardware state reports
-a recognized Raspberry Pi topology; it remains unavailable on unrecognized or
-non-Pi hardware. On a Zero-class Streambox, enabling the HAT makes the existing
-USB-role resolver reserve its shared OTG port for peripheral/gadget mode after
-reboot, so that port no longer carries a host-side USB output DAC. The canonical
-role matrix lives in [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#usb-data-role-policy).
+a recognized Raspberry Pi topology; it remains unavailable on unrecognized/non-Pi
+hardware. On a Zero-class Streambox, restart moves output from the shared USB host
+port to the HAT and reserves that port for peripheral/gadget mode. A powered
+micro-USB host cable supplies 5 V and can back-power a HAT-powered Pi; use a
+VBUS-isolated data connection/adapter or leave it disconnected. See the canonical
+[USB role matrix](HANDOFF-usb-gadget.md#usb-data-role-policy).
 
 `POST /sound/i2s-hat` is a bounded, CSRF/Host-guarded JSON write. It saves the
 single desired fact, then synchronously starts the already-allowlisted
@@ -83,8 +84,8 @@ when that reconcile actually changed the managed HAT setting and runtime still
 disagrees. Agreement removes it; unrelated reconciles neither create nor clear
 a pending mismatch, and reboot clears it naturally. The message links to the
 existing System Restart control and confirmation flow. The card also warns to
-remove all power before fitting/removing the HAT, never power through HAT and
-USB-C simultaneously, never hot-plug, and begin playback at very low level.
+remove all power before fitting/removing the HAT, never power the Pi through the
+HAT and another power input simultaneously, never hot-plug, and start very low.
 
 While a speaker is an active bonded follower, `/eq/` is a delegated
 surface: the page shows a leader-owned notice and does not load the
@@ -1069,9 +1070,7 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Verification scope (2026-08-05): Streambox I²S-HAT visibility and reconcile
-ownership were rechecked against the recognized-Pi topology gate, shared USB-role
-resolver, canonical `/sound/setup/` deploy probe, and focused tests. Prior
+Verification scope (2026-08-05): Streambox I²S-HAT visibility/reconcile, USB-role safety, and `/sound/setup/` deploy ingress were rechecked. Prior
 2026-08-04: PR-1 route/current-surface scope: `/eq/` and
 `/sound/setup/` page-mode ownership, bonded-follower delegation versus local
 commissioning, the fresh-read recognized-field `SoundSettings` merge and one

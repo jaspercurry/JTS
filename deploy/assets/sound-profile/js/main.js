@@ -581,8 +581,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (hat.restart_required ? '<div class="info-card info-card--accent" role="status">' +
           '<p><strong>Restart required.</strong> The saved boot setting changed.</p>' +
           '<a class="btn btn--primary" href="/system/">Open Restart control</a></div>' : '') +
+        (hat.shared_usb_data_port ? '<p class="setting-row__hint"><strong>Shared USB data port:</strong> After restart, this port stops being a host USB output and output moves to the HAT. While the HAT powers the Pi, do not connect an ordinary powered micro-USB host cable: it supplies 5 V and can back-power the Pi. Use a VBUS-isolated data connection/adapter or leave the port disconnected.</p>' : '') +
         '<p class="setting-row__hint"><strong>Hardware safety:</strong> Shut down and remove all power ' +
-          'before installing or removing the HAT. Never power through the HAT and USB-C at the same time. ' +
+          'before installing or removing the HAT. Never power the Pi through the HAT and another power input at the same time. ' +
           'Never hot-plug. Start the first playback at a very low level.</p>' +
       '</div></section>';
   }

@@ -35,6 +35,7 @@ ACTIVE_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 I2S_HAT_INTENT_FILE="${JASPER_I2S_HAT_INTENT_FILE:-/var/lib/jasper/i2s_hat.env}"
 I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper-output-hardware/i2s-hat-reboot-required}"
+INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
@@ -860,15 +861,21 @@ park_output_audio() {
 }
 
 restart_audio_if_needed() {
-    local restart_needed="$1"
+    local restart_needed="$1" install_profile="full"
     if [[ "$restart_needed" != "1" || "$NO_RESTART" == "1" ]]; then
         return
     fi
-    "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
+    # Only a genuinely absent marker gets the historical full brain default.
+    if [[ -e "$INSTALL_PROFILE_FILE" || -L "$INSTALL_PROFILE_FILE" ]]; then
+        install_profile="unknown"
+        [[ ! -f "$INSTALL_PROFILE_FILE" || ! -r "$INSTALL_PROFILE_FILE" ]] || install_profile="$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$INSTALL_PROFILE_FILE")"
+        [[ -n "$install_profile" ]] || install_profile="unknown"
+    fi
+    if [[ "$install_profile" == "full" ]]; then "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true; fi
     "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
-    "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true
-    log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+    if [[ "$install_profile" == "full" ]]; then "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true; fi
+    log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} brain_restarted=$([[ "$install_profile" == "full" ]] && printf 1 || printf 0) install_profile=$(jasper_asound_log_token "${install_profile:0:32}")"
 }
 
 # Bounce ONLY jasper-outputd for any committed outputd.env-only change — a

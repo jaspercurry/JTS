@@ -853,6 +853,8 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     assert payload["restart_required"] is True
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
+    assert payload["shared_usb_data_port"] is True
+    assert all(text in _SOUND_MODULE.read_text() for text in ("After restart, this port stops being a host USB output and output moves to the HAT.", "ordinary powered micro-USB host cable: it supplies 5 V", "Use a VBUS-isolated data connection/adapter or leave the port disconnected."))
 
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
@@ -901,9 +903,11 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
     nginx = (repo / "deploy/nginx-jasper.conf").read_text()
     proxy = nginx.split("location /sound/setup/", 1)[1].split("}", 1)[0]
+    streambox_proxy = (repo / "deploy/nginx-jasper-streambox.conf").read_text().split("location /sound/setup/", 1)[1].split("}", 1)[0]
     assert "TimeoutStartSec=50s" in unit
     assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
     assert "proxy_read_timeout 65s;" in proxy
+    assert "proxy_read_timeout 65s;" in streambox_proxy
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():

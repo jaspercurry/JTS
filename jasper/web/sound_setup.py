@@ -382,6 +382,7 @@ def _i2s_hat_payload(
     return {
         "visibility": "visible",
         "available": available,
+        "shared_usb_data_port": topology == "shared_otg_port",
         "reason": reason,
         "intent_error": intent_error,
         "profile_label": profile.label,

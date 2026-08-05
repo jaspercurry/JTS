@@ -387,8 +387,8 @@ What exists:
   `/var/lib/jasper/i2s_hat.env` intent and atomically composes the InnoMaker
   profile's `dtoverlay=merus-amp` with the managed USB-role block in
   `config.txt`. Absence disables the managed overlay. Unsupported boards do not
-  mutate the Pi boot file; recognized Pi hardware may reconcile this setting on
-  either full or Streambox installs. A boot-setting change creates the
+  mutate it; recognized Pi hardware reconciles it on both install profiles, while
+  only exact `full` (or a genuinely absent historical marker) permits voice/AEC restart. A boot-setting change creates the
   ephemeral I²S restart marker only while desired and observed runtime differ;
   reboot clears it, and a missing/unusable HAT cannot recreate it afterward.
   `jasper-doctor` uses the observed hardware profile to make
