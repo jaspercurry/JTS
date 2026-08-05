@@ -375,7 +375,7 @@ production files is soft, a sixth requires a named-file conductor/owner
 ratification, and new production modules are zero absent re-ratification. Tests
 are 500 gross, over which the conductor may ratify an honesty-fixture overage
 recorded on the owning issue. Docs 120. R16 350, R17 400, R18 180, R19 580
-across at most two independent PRs, and R20 zero. They are per-PR for a round's
+across at most two independent PRs, and R20 zero. These budget a round's
 **implementation** PRs; a conductor-authored campaign-governance docs PR that
 amends this plan rather than implementing a round carries its own ≤120
 documentation budget and does not charge the round's implementation ledger.

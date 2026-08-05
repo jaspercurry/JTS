@@ -878,7 +878,7 @@ full re-walk.
 complete. The first R15 prototype at `05822244` was rejected as a merge
 candidate for violating the 80/20 scope; no R15 product code was merged,
 deployed, or measured. Both preconditions — the docs reset (#2123) and issue
-reconciliation (#2105/#2108) — have landed; atomic fixed-Fc R15 is in flight.
+reconciliation (#2105/#2108) — have landed.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
@@ -1723,8 +1723,8 @@ appendix was not re-verified.
 only CURRENT POSITION and this section's live-status sentence, against the
 rulings recorded on #2106 and the open draft PR #2126. It re-verified nothing
 else — charter, rungs, campaign narrative, research index, issue index, and
-historical appendix carry prior verification forward, so the footer below is
-deliberately unchanged, as in the three preceding status-only passes. It claims
+historical appendix carry prior verification forward. The footer below moves
+only when a pass re-verifies load-bearing claims; this one did not. It claims
 no product/issue write, review passage, deployment, DSP change, or measurement.
 
 A **second 2026-08-02 pass (the post-campaign
