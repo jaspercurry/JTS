@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import functools
 import math
 from fractions import Fraction
 
@@ -127,7 +128,10 @@ from jasper.audio_measurement.program_analysis import (
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection,
+    crossover_response_complex,
+)
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
     CDHORN_ROOT,
@@ -184,11 +188,25 @@ def _synthesize(
     return cap
 
 
+def _transfers(sections_by_role):
+    """What the HOST hands the kernel: per-role ``freqs -> complex response``.
+
+    The kernel may not import ``jasper.active_speaker``
+    (``tests/test_correction_boundary_ssot.py``), so priors carry the evaluated
+    transfer rather than the sections behind it. This mirrors
+    ``crossover_v2_flow._role_transfers``.
+    """
+    return {
+        role: functools.partial(crossover_response_complex, sections=sections)
+        for role, sections in sections_by_role.items()
+    }
+
+
 def _configured_path_priors(protection, configured, *, tweeter_sign=-1):
     return MeasurementPriors(
         crossover_fc_hz=FC_HZ,
-        measurement_protection_sections_by_role=protection,
-        configured_crossover_sections_by_role=configured,
+        measurement_protection_response_by_role=protection,
+        configured_crossover_response_by_role=configured,
         configured_polarity_sign_by_role={"woofer": 1, "tweeter": tweeter_sign},
     )
 
@@ -243,46 +261,68 @@ def test_measure_round_trip_recovers_drift_delay_polarity_trims(polarity_amp, ex
     assert trims["tweeter"] == pytest.approx(0.0, abs=0.3)
 
 
-def test_configured_path_matches_legacy_through_analyzer_and_fitter(monkeypatch):
-    """One shared H makes neutral M*C/P and legacy H*C equivalent end to end."""
-    protection = {
-        "woofer": (CrossoverSection(6000.0, 4, False),),
-        "tweeter": (CrossoverSection(300.0, 4, True),),
-    }
+@pytest.mark.parametrize("identity_protection", [False, True])
+def test_configured_path_matches_legacy_through_analyzer_and_fitter(
+    monkeypatch, identity_protection,
+):
+    """One shared H makes neutral M*C/P and legacy H*C equivalent end to end.
+
+    The plants are NON-ZERO across the whole rfft grid, deliberately including
+    outside each role's swept band. The fixture's first shape zeroed them at
+    exactly the band edges, which made the composition's out-of-band behaviour
+    invisible — and out-of-band is precisely where a spectrum spliced at the
+    driven-band edge steps by tens of dB.
+
+    ``identity_protection`` is §4.2's required ``P == C_configured``
+    identity-ratio subcase, exercised on the tweeter (whose swept band then
+    starts inside the -12 dB conditioning floor of its own high-pass) while the
+    woofer keeps a different role-specific ``P`` — the JTS3 shape §4.2 names.
+    """
     configured = {
         "woofer": (CrossoverSection(FC_HZ, 4, False),),
         "tweeter": (CrossoverSection(FC_HZ, 4, True),),
     }
+    protection = {
+        "woofer": (CrossoverSection(6000.0, 4, False),),
+        "tweeter": (
+            configured["tweeter"] if identity_protection
+            else (CrossoverSection(300.0, 4, True),)
+        ),
+    }
+    tweeter_lo_hz = 1300.0 if identity_protection else 300.0
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(tweeter_lo_hz, 20000.0)),
+    ]
     n_fft = 16_384
     freqs = np.fft.rfftfreq(n_fft, 1.0 / SR)
     plants = {
         "woofer": (0.8 + 0.1 * np.cos(freqs / 911.0)) * np.exp(-2j * np.pi * freqs * 180 / SR),
         "tweeter": (0.6 + 0.1 * np.sin(freqs / 733.0)) * np.exp(-2j * np.pi * freqs * 205 / SR),
     }
-    plants["woofer"][(freqs < 150) | (freqs > 6000)] = 0.0
-    plants["tweeter"][(freqs < 300) | (freqs > 20000)] = 0.0
     mode = {"neutral": True}
 
     def exact_deconvolution(_capture, segment, *_args, **_kwargs):
         role = segment.role
         sections = protection[role] if mode["neutral"] else configured[role]
         sign = -1 if role == "tweeter" and not mode["neutral"] else 1
-        response = program_analysis.crossover_response_complex(freqs, sections)
+        response = crossover_response_complex(freqs, sections)
         return np.fft.irfft(plants[role] * response * sign, n=n_fft), 192
 
     monkeypatch.setattr(program_analysis, "_deconvolve_window", exact_deconvolution)
     program = build_measure_program(
-        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        {"woofer": -11.0, "tweeter": -13.0}, roles,
         sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
     capture = _synthesize(
         program, woofer_ir=_band_impulse(180, 150, 6000, 0.8),
-        tweeter_ir=_band_impulse(205, 300, 20000, -0.6), noise=0.0,
+        tweeter_ir=_band_impulse(205, tweeter_lo_hz, 20000, -0.6), noise=0.0,
     )
     neutral = analyze_program_capture(
         program, capture, SR,
         priors=dataclasses.replace(
-            _configured_path_priors(protection, configured), mic_tier="reference",
+            _configured_path_priors(_transfers(protection), _transfers(configured)),
+            mic_tier="reference",
         ),
     )
     mode["neutral"] = False
@@ -291,8 +331,24 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(monkeypatch)
         priors=MeasurementPriors(crossover_fc_hz=FC_HZ, mic_tier="reference"),
     )
 
+    # §4.2 compares the two arms "on the same conditioning-valid bins", and the
+    # dataclass's dB arrays are float32. Once the plants are honestly non-zero
+    # out of band those arrays reach -168 dB, where ONE float32 ULP is already
+    # 1.53e-5 dB — 15x the plan's 1e-6 dB tolerance, which no test can assert at
+    # that storage precision. Nothing is excused: every float32 array is pinned
+    # across the WHOLE grid at 1e-6 RELATIVE (float32's own eps is 1.2e-7, so
+    # this is ~8 ULP, not a blank cheque) and then at the plan's 1e-6 ABSOLUTE
+    # over the band some role actually declared. Every other field, including
+    # every complex response on the full grid, already agrees to <= 1.02e-10.
+    claimed = np.fft.rfftfreq(n_fft, 1.0 / SR) <= max(
+        role.band.upper_hz for role in roles
+    )
+
     def assert_same(left, right):
         if isinstance(left, np.ndarray):
+            if left.dtype == np.float32 and left.shape == claimed.shape:
+                np.testing.assert_allclose(left, right, rtol=1e-6, atol=1e-6)
+                left, right = left[claimed], right[claimed]
             np.testing.assert_allclose(left, right, rtol=0, atol=1e-6)
         elif isinstance(left, dict):
             assert left.keys() == right.keys()
@@ -318,21 +374,16 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(monkeypatch)
     assert_same(fitted[0], fitted[1])
 
 
-def test_configured_path_conditioning_accepts_both_inclusive_boundaries(monkeypatch):
-    protection = (CrossoverSection(1.0, 2, False),)
-    configured = (CrossoverSection(2.0, 2, False),)
+def test_configured_path_conditioning_accepts_both_inclusive_boundaries():
     floor = 10.0 ** (-12.0 / 20.0)
     limit = 10.0 ** (12.0 / 20.0)
 
-    def _response(freqs, sections):
-        value = floor if sections == protection else floor * limit
-        return np.full(freqs.shape, value, dtype=np.complex128)
-
-    monkeypatch.setattr(program_analysis, "crossover_response_complex", _response)
     impulse = np.zeros(64)
     impulse[3] = 1.0
     priors = _configured_path_priors(
-        {"woofer": protection}, {"woofer": configured}, tweeter_sign=1
+        {"woofer": lambda f: np.full(f.shape, floor, dtype=np.complex128)},
+        {"woofer": lambda f: np.full(f.shape, floor * limit, dtype=np.complex128)},
+        tweeter_sign=1,
     )
     composed = _compose_configured_path_ir(
         "woofer", impulse, SR, (0.0, SR / 2), priors
@@ -350,11 +401,7 @@ def test_configured_path_conditioning_accepts_both_inclusive_boundaries(monkeypa
         ("s_nonfinite", "non-finite S"),
     ],
 )
-def test_configured_path_conditioning_refuses_without_clipping(
-    monkeypatch, case, message,
-):
-    protection = (CrossoverSection(1.0, 2, False),)
-    configured = (CrossoverSection(2.0, 2, False),)
+def test_configured_path_conditioning_refuses_without_clipping(case, message):
     floor = 10.0 ** (-12.0 / 20.0)
     limit = 10.0 ** (12.0 / 20.0)
     p_value, c_value = 1.0, 1.0
@@ -363,15 +410,12 @@ def test_configured_path_conditioning_refuses_without_clipping(
     if case == "p_underfloor": p_value = floor * (1.0 - 1e-6)
     if case == "ratio_over": c_value = limit * (1.0 + 1e-6)
 
-    def _response(freqs, sections):
-        value = p_value if sections == protection else c_value
-        return np.full(freqs.shape, value, dtype=np.complex128)
-
-    monkeypatch.setattr(program_analysis, "crossover_response_complex", _response)
     impulse = np.zeros(64)
     impulse[3] = np.nan if case == "s_nonfinite" else 1.0
     priors = _configured_path_priors(
-        {"woofer": protection}, {"woofer": configured}, tweeter_sign=1
+        {"woofer": lambda f: np.full(f.shape, p_value, dtype=np.complex128)},
+        {"woofer": lambda f: np.full(f.shape, c_value, dtype=np.complex128)},
+        tweeter_sign=1,
     )
     with pytest.raises(
         ConfiguredPathConditioningError,
@@ -379,6 +423,23 @@ def test_configured_path_conditioning_refuses_without_clipping(
     ) as exc_info:
         _compose_configured_path_ir("woofer", impulse, SR, (0.0, SR / 2), priors)
     assert exc_info.value.slug == ILL_CONDITIONED_PROTECTION_DEEMBEDDING
+
+
+def test_configured_path_refuses_a_segment_with_no_declared_band():
+    """No declared sweep band is MISSING EVIDENCE, not ill-conditioning.
+
+    A segment with no sweep bounds has no candidate-required bins to hold the
+    §4.2 policy over, so the seam refuses through the kernel's own
+    undeclared-band vocabulary rather than claiming the protection transfer was
+    ill-conditioned — the two route to different household-facing outcomes.
+    """
+    priors = _configured_path_priors(
+        _transfers({"woofer": (CrossoverSection(300.0, 4, True),)}),
+        _transfers({"woofer": (CrossoverSection(FC_HZ, 4, True),)}), tweeter_sign=1,
+    )
+    with pytest.raises(ValueError, match="woofer sweep segment has no declared band") as exc:
+        _compose_configured_path_ir("woofer", np.zeros(64), SR, None, priors)
+    assert not isinstance(exc.value, ConfiguredPathConditioningError)
 
 
 def test_measure_negative_drift_round_trip():

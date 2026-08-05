@@ -914,44 +914,102 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     assert claims == ["repeat", "level", "commissioning", "capture_entry", "program"]
 
 
-def test_program_graph_startup_recovery_is_exact_and_fail_closed(monkeypatch, tmp_path):
+def test_program_graph_startup_recovery_is_exact_and_fail_closed(
+    monkeypatch, tmp_path, caplog,
+):
+    """A fresh process converges a REAL abandoned program graph to its anchor.
+
+    No monkeypatched classifier: the graph fed in is what
+    ``emit_active_speaker_program_config`` actually emits, so the test proves
+    the shipped classifier recognises the shipped emitter rather than proving a
+    lambda returns True. Three shapes, all three consumed:
+
+    * the exact emitted graph (origin True) restores and logs `_recovered`;
+    * the same graph with one filter MUTATED (origin False — our namespace,
+      wrong shape) also restores, because a mutated commissioning graph is
+      still this path's mess and the persisted config is the SSOT, and logs
+      the DISTINCT `_mutated_recovered` event so the drift stays visible;
+    * an unrelated graph (origin None) is left alone.
+
+    Fail-closed is pinned last: a load that does not take raises rather than
+    letting the service accept requests over measurement wiring.
+    """
     import asyncio
     from contextlib import asynccontextmanager
-    from jasper.active_speaker import camilla_yaml
+    from jasper.active_speaker.camilla_yaml import (
+        emit_active_speaker_program_config, protected_neutral_program_origin,
+    )
     from jasper import dsp_apply
+    from tests.test_active_speaker_program_config import (
+        ACTIVE_PCM, ROLE_CHANNELS, _confirmed_protection, _preset,
+    )
+
+    program_yaml = emit_active_speaker_program_config(
+        _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    )
+    mutated = program_yaml.replace("gain: 0.0", "gain: -3.0", 1)
+    # The fixture is only honest if the real classifier really sees the two
+    # states this function is being asked to tell apart.
+    assert protected_neutral_program_origin(program_yaml) is True
+    assert protected_neutral_program_origin(mutated) is False
+    assert protected_neutral_program_origin("devices: {}\n") is None
 
     anchor = tmp_path / "production.yml"
     anchor.write_text("devices: {}\n", encoding="utf-8")
 
     class Cam:
-        active, loaded, calls = "neutral", True, []
+        loaded = True
+
+        def __init__(self, active):
+            self.active, self.calls = active, []
 
         async def get_active_config_raw(self, *, best_effort):
             self.calls.append("raw")
             return self.active
+
         async def get_config_file_path(self, *, best_effort):
             self.calls.append("path")
             return str(anchor)
+
         async def set_active_config_raw(self, text, *, best_effort):
             self.calls.append("set")
             if self.loaded:
                 self.active = text
             return self.loaded
 
+        async def normalize_config_raw(self, text, *, best_effort):
+            return text
+
     @asynccontextmanager
     async def lock(*_args, **_kwargs):
         yield
 
-    cam = Cam()
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
-    monkeypatch.setattr(camilla_yaml, "protected_neutral_program_origin", lambda raw: raw == "neutral")
+
+    for active, event in (
+        (program_yaml, "correction.crossover_v2_program_recovered"),
+        (mutated, "correction.crossover_v2_program_mutated_recovered"),
+    ):
+        cam = Cam(active)
+        monkeypatch.setattr(correction_setup, "_camilla", lambda cam=cam: cam)
+        with caplog.at_level(logging.INFO):
+            caplog.clear()
+            asyncio.run(correction_setup._restore_protected_neutral_program_graph())
+        # The speaker is left running the persisted anchor's EXACT content.
+        assert cam.active == anchor.read_text(encoding="utf-8")
+        assert any(f"event={event}" in r.getMessage() for r in caplog.records), (
+            [r.getMessage() for r in caplog.records]
+        )
+
+    unrelated = Cam("devices: {}\n")
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: unrelated)
     asyncio.run(correction_setup._restore_protected_neutral_program_graph())
-    assert cam.calls == ["raw", "path", "set", "raw"]
-    cam.active, cam.calls = "other", []
-    asyncio.run(correction_setup._restore_protected_neutral_program_graph())
-    assert cam.calls == ["raw"]
-    cam.active, cam.loaded = "neutral", False
+    assert unrelated.calls == ["raw"]
+
+    stuck = Cam(program_yaml)
+    stuck.loaded = False
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: stuck)
     with pytest.raises(RuntimeError, match="was not confirmed"):
         asyncio.run(correction_setup._restore_protected_neutral_program_graph())
 

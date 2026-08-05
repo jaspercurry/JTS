@@ -2024,7 +2024,11 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
                              crossover; a bonded speaker fails safe to solo on its
                              next re-prove — see "Scoped crossover reset" below
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
-                             open STAGE 1's relay session — CHECK→MEASURE→the
+                             open STAGE 1's relay session. NOTE: R15 (#2106)
+                             makes stage 1 CHECK→MEASURE only — it removes the
+                             pre-apply cloud; see crossover-linearization-80-20
+                             -plan.md. Everything below describes the pre-R15
+                             shipped flow: CHECK→MEASURE→the
                              pre-apply cloud, and nothing after (10-entry
                              capture plan at the Full tier's shipped defaults,
                              6 on Express — an allowlisted `tier` body field,

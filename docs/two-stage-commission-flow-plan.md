@@ -143,6 +143,12 @@ Two more facts that shape the ladder:
 
 ## Adopted decisions
 
+> **D1 is superseded for stage 1 by R15** ([#2106](https://github.com/jaspercurry/JTS/issues/2106)),
+> which removes the pre-apply cloud — so the group-close confirm D1 adopts has
+> no cloud captures to close on that path, and the machinery below is retained
+> for future Room work rather than run. The rest of this section is unaffected.
+> See [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
+
 **D1 — Stage 1 ends at the group-close confirm; nothing is applied.
 ADOPT.** The shipped group-close confirm gate is the seam: the
 conductor already sets `payload["awaiting_confirm"] = True` for

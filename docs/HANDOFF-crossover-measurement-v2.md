@@ -25,20 +25,55 @@ alternatives, the wave plan) is
 this doc is the current operational truth.
 
 > **R15 candidate status (2026-08-05):** [#2106](https://github.com/jaspercurry/JTS/issues/2106)
-> owns the re-ratified atomic contract. Implementation and the conductor
-> checkpoint and docs alignment are complete; review, PR, and merge remain, with
-> no deployment or measurement claimed. Once merged, stage 1 is exactly CHECK
-> then MEASURE through confirmed role protection, limiter, 0 dB commissioning
-> headroom, and physical routing. Configured crossover/delay/polarity,
-> linearization, bass, Room, and preference filters are absent; analysis
-> reconstructs `M*C_configured/P` for the existing fitter/review/Apply/Undo path.
-> Fresh semantic graph readback gates playback; the existing restore transaction
-> and crash anchor remain sole recovery. Pre-apply cloud is skipped, while the
-> reusable cloud machinery remains available for future Room work. R15 adds no
-> durable anchor/schema/module. Required order is R15 → R16 → R17 → R18 →
-> R19 → studio checkpoint → read-only R20; lean contracts live in the
-> [canonical plan](crossover-linearization-80-20-plan.md). The deployed pre-R15
-> flow remains described below.
+> owns the re-ratified atomic contract. The branch is under independent
+> three-lens adversarial review; nothing here is deployed and no hardware
+> measurement is claimed. When it lands, stage 1 is exactly CHECK then MEASURE
+> through confirmed role protection, limiter, 0 dB commissioning headroom, and
+> physical routing. Configured crossover/delay/polarity, linearization, bass,
+> Room, and preference filters are absent; analysis reconstructs
+> `M*C_configured/P` across the whole analysis support — as one filter, never
+> spliced into a sub-band — for the existing fitter/review/Apply/Undo path.
+> Playback is gated on a fresh semantic graph readback normalized through
+> CamillaDSP's own `ReadConfig` (see **Confirming a program graph is live**
+> below). Recovery is TWO layers, not one: the existing in-process restore
+> transaction plus the persisted crash anchor handle an ordinary abort or
+> reboot, and a correction-web startup claim converges an abandoned program
+> graph that no in-process `finally` could reach because the process died.
+> Pre-apply cloud is skipped, while the reusable cloud machinery remains
+> available for future Room work. R15 adds no durable anchor/schema/module.
+> After R15 comes a hardware checkpoint and then a fresh Gate 0; later round
+> labels are provisional, and the [canonical
+> plan](crossover-linearization-80-20-plan.md) owns that contract. The deployed
+> pre-R15 flow remains described below.
+
+### Confirming a program graph is live
+
+`crossover_v2_flow.confirm_graph_is_live` is the one policy function that
+proves the graph CamillaDSP is running is the graph just submitted. It must
+prove the submitted graph is live, tolerate benign serializer normalization,
+and reject a different graph.
+
+Comparing the submitted YAML text against `GetConfig` cannot do that. A
+2026-08-05 read-only hardware probe on `jts.local` (CamillaDSP 4.1.3, zero
+mutation) measured the readback as a strict **superset** of what was
+submitted — every optional schema field default-filled, mostly null across
+`devices`, `filters`, `mixers`, and `pipeline` steps — and value-normalizing,
+with a submitted `gain: 0` coming back as `0.0`. Text equality there refuses
+every load, on every box.
+
+So CamillaDSP canonicalizes for us. `ReadConfig` (wrapped as
+`CamillaController.normalize_config_raw`) parses, validates, and default-fills
+**without applying anything**, and the same probe measured its output exactly
+equal to `GetConfig`'s readback for identical content. Normalizing the
+submitted graph through it keeps **strict** fingerprint equality — stronger
+than a subset or projection comparison — rather than loosening the check.
+
+Not measured: the `SetConfig` → `GetConfig` round trip itself, because the
+probe box was playing USB audio and the probe stayed read-only. It no longer
+matters: both sides of the comparison now come back through CamillaDSP's single
+deserialization path, so the check does not depend on what `SetConfig` does to
+the text. The two refusals stay distinct — normalization failure means the YAML
+we submitted is invalid, mismatch means something else is live.
 
 ## How to run it
 

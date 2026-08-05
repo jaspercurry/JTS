@@ -44,6 +44,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_PROGRAM_UNPLAYABLE,
+    REASON_PROTECTION_NOT_SEPARABLE,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
     CrossoverV2FlowError,
@@ -231,9 +232,14 @@ def test_classifier_preserves_typed_conditioning_slug():
     )
 
     exc = ConfiguredPathConditioningError("P below -12 dB for tweeter")
+    # NOT program_unplayable: that code's copy claims JTS "could not play the
+    # measurement signal within the speaker's safe limits", and the program
+    # played fine — the offline evidence math refused. The slug still rides out
+    # in the detail so the journal and state stay correlatable.
     assert v2host.classify_program_failure(exc) == (
-        REASON_PROGRAM_UNPLAYABLE, (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,),
+        REASON_PROTECTION_NOT_SEPARABLE, (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,),
     )
+    assert REASON_PROTECTION_NOT_SEPARABLE != REASON_PROGRAM_UNPLAYABLE
 
 
 def test_the_flow_reason_code_is_the_admission_slug():

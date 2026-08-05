@@ -51,8 +51,12 @@ MEASURE / VERIFY their own short pre-pilot room-listening window.
 
 Reuses the measurement kernel (:mod:`~jasper.audio_measurement.sweep` /
 ``deconv`` / ``gating`` / ``snr_policy`` / ``analysis``) and mirrors
-``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O; the
-optional configured-path seam uses the active-speaker branch transfer SSOT.
+``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O, no product
+policy, and no ``jasper.correction`` / ``jasper.active_speaker`` import at all —
+the boundary ``tests/test_correction_boundary_ssot.py`` pins. The optional
+configured-path seam needs product crossover transfers, so the HOST evaluates
+them: priors carry per-role ``freqs -> complex response`` callables, and this
+module never learns what builds them.
 """
 from __future__ import annotations
 
@@ -60,14 +64,10 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
-    crossover_response_complex,
-)
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
@@ -741,11 +741,13 @@ class MeasurementPriors:
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     mic_tier: str | None = None
-    measurement_protection_sections_by_role: Mapping[
-        str, Sequence[CrossoverSection]
+    # Host-evaluated transfers, NOT product objects: the kernel may not import
+    # jasper.active_speaker, so it is handed `freqs -> complex response`.
+    measurement_protection_response_by_role: Mapping[
+        str, Callable[[np.ndarray], np.ndarray]
     ] | None = None
-    configured_crossover_sections_by_role: Mapping[
-        str, Sequence[CrossoverSection]
+    configured_crossover_response_by_role: Mapping[
+        str, Callable[[np.ndarray], np.ndarray]
     ] | None = None
     configured_polarity_sign_by_role: Mapping[str, int] | None = None
 
@@ -4417,27 +4419,45 @@ def _compose_configured_path_ir(
     role: str,
     full_ir: np.ndarray,
     sample_rate: int,
-    trusted_band_hz: tuple[float, float],
+    radiated_band_hz: tuple[float, float] | None,
     priors: MeasurementPriors,
 ) -> np.ndarray:
     """Replace exact emitted protection ``P`` with configured crossover ``C``.
 
-    Every inclusive trusted bin becomes ``S=M*C/P`` or the capture is refused.
-    Outside the emitted sweep band ``M`` is retained but never claimed.
+    ``S = M*C/P`` (design §4.2) is ONE filter across the whole rfft support,
+    never spliced into a sub-band: masking it to the driven band steps the
+    spectrum by ``|C/P|`` at the edges — measured -41.7 dB (woofer top) and
+    -52.2 dB (tweeter bottom) for JTS3's roles — and that step rings through
+    the IR and back into the analysis band once it is re-gated.
+
+    ``radiated_band_hz`` is the band the sweep actually DROVE: a conservative
+    stand-in for §4.2's candidate-required bins (a superset of the fitter's
+    own), so the conditioning policy refuses at least as often as §4.2 demands
+    and never less. It is enforced there and only there; outside it the same
+    exact ratio applies, magnitude-saturated at the policy's own +12 dB ceiling
+    so nothing is recovered further than §4.2 admits — provably inactive on
+    required bins, where a ceiling breach has already refused. Where ``P`` is
+    exactly zero (an LR pass at DC or Nyquist) ``C`` vanishes with it, so the
+    bin composes to zero, which is what ``plant*C`` is there too.
     """
     maps = (
-        priors.measurement_protection_sections_by_role,
-        priors.configured_crossover_sections_by_role,
+        priors.measurement_protection_response_by_role,
+        priors.configured_crossover_response_by_role,
         priors.configured_polarity_sign_by_role,
     )
     if all(value is None for value in maps):
         return full_ir
     if any(value is None for value in maps):
         raise ConfiguredPathConditioningError("incomplete priors")
+    if radiated_band_hz is None:
+        # Missing evidence, not ill-conditioning: this segment declared no
+        # sweep bounds, so there is no band to require. Same refusal shape the
+        # kernel's other undeclared-band call sites raise.
+        raise ValueError(f"{role} sweep segment has no declared band")
     protection_by_role, configured_by_role, polarity_by_role = maps
     try:
-        protection_sections = protection_by_role[role]  # type: ignore[index]
-        configured_sections = configured_by_role[role]  # type: ignore[index]
+        protection_response = protection_by_role[role]  # type: ignore[index]
+        configured_response = configured_by_role[role]  # type: ignore[index]
         polarity_sign = polarity_by_role[role]  # type: ignore[index]
     except KeyError as exc:
         raise ConfiguredPathConditioningError(f"missing role {role}") from exc
@@ -4446,27 +4466,31 @@ def _compose_configured_path_ir(
     samples = np.asarray(full_ir, dtype=np.float64)
     measured = np.fft.rfft(samples)
     freqs = np.fft.rfftfreq(samples.size, 1.0 / sample_rate)
-    lo_hz, hi_hz = (float(value) for value in trusted_band_hz)
-    trusted = (freqs >= lo_hz) & (freqs <= hi_hz)
-    if not np.any(trusted):
+    lo_hz, hi_hz = (float(value) for value in radiated_band_hz)
+    required = (freqs >= lo_hz) & (freqs <= hi_hz)
+    if not np.any(required):
         raise ConfiguredPathConditioningError(f"no trusted bins for {role}")
-    protection = crossover_response_complex(freqs, protection_sections)
-    configured = crossover_response_complex(freqs, configured_sections)
+    protection = np.asarray(protection_response(freqs), dtype=np.complex128)
+    configured = np.asarray(configured_response(freqs), dtype=np.complex128)
     for label, response in (("P", protection), ("C", configured)):
-        if not np.all(np.isfinite(response[trusted])):
+        if not np.all(np.isfinite(response[required])):
             raise ConfiguredPathConditioningError(f"non-finite {label} for {role}")
     minimum = 10.0 ** (-12.0 / 20.0)
-    if np.any(np.abs(protection[trusted]) < minimum):
+    if np.any(np.abs(protection[required]) < minimum):
         raise ConfiguredPathConditioningError(f"P below -12 dB for {role}")
-    ratio = configured[trusted] / protection[trusted]
+    ratio = np.divide(
+        configured, protection,
+        out=np.zeros_like(configured), where=protection != 0,
+    )
     maximum = 10.0 ** (12.0 / 20.0)
-    if not np.all(np.isfinite(ratio)) or np.any(np.abs(ratio) > maximum):
+    if not np.all(np.isfinite(ratio[required])) or np.any(
+        np.abs(ratio[required]) > maximum
+    ):
         raise ConfiguredPathConditioningError(f"C/P above +12 dB for {role}")
-    composed = measured[trusted] * ratio * polarity_sign
-    if not np.all(np.isfinite(composed)):
+    saturated = ratio * (maximum / np.maximum(np.abs(ratio), maximum))
+    spectrum = measured * polarity_sign * saturated
+    if not np.all(np.isfinite(spectrum)):
         raise ConfiguredPathConditioningError(f"non-finite S for {role}")
-    spectrum = measured * polarity_sign
-    spectrum[trusted] = composed
     return np.fft.irfft(spectrum, n=samples.size)
 
 

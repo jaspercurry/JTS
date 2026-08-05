@@ -78,6 +78,7 @@ renders the template. A woofer-repeat level disagreement REUSES
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import math
@@ -119,11 +120,12 @@ from jasper.active_speaker.branch_chain import (
     HEADROOM_MARGIN_DB,
     CrossoverSection,
     branch_chain_peak_db,
+    crossover_response_complex,
     headroom_charge_db,
     radiating_band_hz,
     sections_by_role,
 )
-from jasper.active_speaker.camilla_yaml import _role_polarity
+from jasper.active_speaker.camilla_yaml import role_polarity
 from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
@@ -1373,6 +1375,17 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
 # infeasible profile), so it is terminal: hard-stop, budget 0.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# R15 (#2106): the program PLAYED — the offline evidence math refused. Design
+# §4.2 divides the emitted measurement protection back out of the capture, and
+# on a candidate-required bin that division is inadmissible when the protection
+# attenuates more than 12 dB or the recovery would exceed 12 dB. Its own code
+# exists for the #1820 reason: ``program_unplayable``'s copy claims JTS "could
+# not play the measurement signal within the speaker's safe limits", which is
+# simply not what happened, and its action (re-check driver details) does not
+# reach the lever. Deterministic, so terminal — the same protection and the
+# same crossover reproduce it exactly. The offending slug rides out in the
+# refusal detail.
+REASON_PROTECTION_NOT_SEPARABLE = "protection_not_separable"
 # Issue #1820 (2026-07-28): the ONE program refusal that is neither unexpected
 # nor about levels, split back out of ``program_unplayable``'s collapse. The
 # household changed a declared driver value (an enclosure kind, a sensitivity),
@@ -1906,6 +1919,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
+    ),
+    REASON_PROTECTION_NOT_SEPARABLE: ReasonSpec(
+        REASON_PROTECTION_NOT_SEPARABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS played the measurement fine, but the safety limits it had to keep "
+        "in place overlap the crossover you have set, so it cannot tell the two "
+        "apart well enough to trust the result. Change the crossover frequency "
+        "in speaker setup, then measure again.",
     ),
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED: ReasonSpec(
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED, TEMPLATE_HARD_STOP, 0, "",
@@ -6054,14 +6074,14 @@ class CrossoverV2Conductor:
             # in which case the verdict stays honestly absent rather than
             # guessed.
             ambient_report=self._check_ambient_report,
-            measurement_protection_sections_by_role=protection,
-            configured_crossover_sections_by_role=(
+            measurement_protection_response_by_role=_role_transfers(protection),
+            configured_crossover_response_by_role=_role_transfers(
                 sections_by_role(self._preset.crossover_regions)
                 if protection is not None else None
             ),
             configured_polarity_sign_by_role=(
                 {role: -1 if inverted else 1 for role, inverted in
-                 _role_polarity(self._preset).items()}
+                 role_polarity(self._preset).items()}
                 if protection is not None else None
             ),
         )
@@ -11906,6 +11926,63 @@ def build_v2_session_spec(
 # --------------------------------------------------------------------------- #
 
 
+def _role_transfers(sections_by_role: Mapping[str, Any] | None) -> dict | None:
+    """Per-role ``freqs -> complex response``, evaluated on the HOST side.
+
+    ``jasper.audio_measurement`` may not import this package
+    (``tests/test_correction_boundary_ssot.py``), so the measurement kernel is
+    handed the transfer as a callable rather than the ``CrossoverSection``
+    objects that produce it. The kernel composes with the response; only this
+    module knows what a crossover section is.
+    """
+    if sections_by_role is None:
+        return None
+    return {
+        role: functools.partial(crossover_response_complex, sections=tuple(sections))
+        for role, sections in sections_by_role.items()
+    }
+
+
+async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
+    """Prove the graph CamillaDSP is running is the one just submitted.
+
+    The contract: prove the SUBMITTED graph is live, tolerate benign serializer
+    normalization, reject a different graph. Comparing the submitted TEXT
+    against ``GetConfig`` does none of that — a readback is a default-filled,
+    value-normalized SUPERSET of what was submitted, so text equality refuses
+    every load — so ``ReadConfig``
+    (:meth:`~jasper.camilla.CamillaController.normalize_config_raw`) canonicalizes
+    the submitted graph first and STRICT fingerprint equality still applies.
+    The measured hardware evidence, and what was deliberately NOT measured, is
+    ``docs/HANDOFF-crossover-measurement-v2.md`` "Confirming a program graph is
+    live". The refusals stay distinct so hardware triage can tell "the YAML we
+    submitted is invalid" from "something else is live".
+    """
+    from .commissioning_admission import (
+        ActiveCommissioningAdmissionError,
+        running_graph_fingerprint,
+    )
+    from .program_playback import ProgramPlaybackError
+
+    from jasper.camilla import CamillaConfigRejected
+
+    try:
+        normalized = await cam.normalize_config_raw(submitted_yaml, best_effort=False)
+    except CamillaConfigRejected as exc:
+        raise ProgramPlaybackError("program graph normalization failed") from exc
+    if not isinstance(normalized, str):
+        raise ProgramPlaybackError("program graph normalization failed")
+    try:
+        live = running_graph_fingerprint(
+            await cam.get_active_config_raw(best_effort=False)
+        )
+        expected = running_graph_fingerprint(normalized)
+    except ActiveCommissioningAdmissionError as exc:
+        raise ProgramPlaybackError("program graph readback is invalid") from exc
+    if live != expected:
+        raise ProgramPlaybackError("program graph load was not confirmed")
+
+
 def bind_program_playback_seams(
     cam: Any,
     *,
@@ -11955,10 +12032,6 @@ def bind_program_playback_seams(
 
     from jasper.dsp_apply import dsp_writer_lock
 
-    from .commissioning_admission import (
-        ActiveCommissioningAdmissionError,
-        running_graph_fingerprint,
-    )
     from .program_admission import readmit_program_from_wav
     from .program_playback import ProgramPlaybackError, verified_program_aplay
 
@@ -11966,15 +12039,9 @@ def bind_program_playback_seams(
         return await cam.get_config_file_path(best_effort=False)
 
     async def _load_program_graph(program_graph_yaml: str) -> bool:
-        loaded = await cam.set_active_config_raw(program_graph_yaml, best_effort=False)
-        try:
-            matched = loaded and running_graph_fingerprint(
-                await cam.get_active_config_raw(best_effort=False)
-            ) == running_graph_fingerprint(program_graph_yaml)
-        except ActiveCommissioningAdmissionError as exc:
-            raise ProgramPlaybackError("program graph readback is invalid") from exc
-        if not matched:
+        if not await cam.set_active_config_raw(program_graph_yaml, best_effort=False):
             raise ProgramPlaybackError("program graph load was not confirmed")
+        await confirm_graph_is_live(cam, program_graph_yaml)
         return True
 
     async def _restore_graph(entry_config_path: str) -> bool:

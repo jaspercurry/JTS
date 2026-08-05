@@ -35,6 +35,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.attempts_loop import (
@@ -1258,16 +1259,28 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     supplied["woofer"].clear()
     supplied["tweeter"] = [woofer]
     priors = c._measure_priors()
-    assert priors.measurement_protection_sections_by_role == {
-        "woofer": (woofer,), "tweeter": (tweeter,),
+    # The measurement kernel may not import this package, so priors carry an
+    # evaluated `freqs -> complex response` rather than CrossoverSections. The
+    # transfer must still come from the sections the conductor copied at
+    # construction, NOT from the caller's list mutated above.
+    freqs = np.array([100.0, 1000.0, 8000.0])
+    assert priors.measurement_protection_response_by_role.keys() == {
+        "woofer", "tweeter",
     }
-    assert priors.configured_crossover_sections_by_role == flow.sections_by_role(
-        preset.crossover_regions
-    )
+    for role, section in (("woofer", woofer), ("tweeter", tweeter)):
+        np.testing.assert_allclose(
+            priors.measurement_protection_response_by_role[role](freqs),
+            flow.crossover_response_complex(freqs, (section,)),
+        )
+    for role, sections in flow.sections_by_role(preset.crossover_regions).items():
+        np.testing.assert_allclose(
+            priors.configured_crossover_response_by_role[role](freqs),
+            flow.crossover_response_complex(freqs, sections),
+        )
     assert priors.configured_polarity_sign_by_role == {"woofer": 1, "tweeter": -1}
     legacy = _conductor(FakeSeams())._measure_priors()
-    assert legacy.measurement_protection_sections_by_role is None
-    assert legacy.configured_crossover_sections_by_role is None
+    assert legacy.measurement_protection_response_by_role is None
+    assert legacy.configured_crossover_response_by_role is None
     assert legacy.configured_polarity_sign_by_role is None
 
 
@@ -5885,11 +5898,29 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     restore both ride ``set_active_config_raw`` (SetConfig), never
     ``set_config_file_path`` — the crash-recovery-MUTED invariant."""
     from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
+    from jasper.camilla import CamillaConfigRejected
 
     calls: list = []
 
     class _FakeCam:
-        readback = "# normalized readback\nprogram: graph\n"
+        """Models the 2026-08-05 hardware probe of CamillaDSP 4.1.3.
+
+        ``GetConfig`` returns a default-filled, value-normalized SUPERSET of
+        what was submitted (extra null keys; a submitted ``0`` back as ``0.0``),
+        and ``ReadConfig`` — ``normalize_config_raw`` — applies exactly the same
+        transform without applying anything. Comparing submitted TEXT against
+        the readback would refuse every load on this fake, which is the point.
+        """
+
+        live = "prior: graph\n"
+
+        @staticmethod
+        def _camilla_serde(text):
+            parsed = yaml.safe_load(text) or {}
+            filled = {"description": None, "bypassed": None, **parsed}
+            return yaml.safe_dump(
+                {k: (0.0 if v == 0 else v) for k, v in filled.items()}
+            )
 
         async def get_config_file_path(self, *, best_effort):
             calls.append(("get_path", best_effort))
@@ -5897,11 +5928,20 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
 
         async def set_active_config_raw(self, text, *, best_effort):
             calls.append(("set_raw", text, best_effort))
+            self.live = text
             return True
 
         async def get_active_config_raw(self, *, best_effort):
             calls.append(("get_raw", best_effort))
-            return self.readback
+            return self._camilla_serde(self.live)
+
+        async def normalize_config_raw(self, text, *, best_effort):
+            # What a live, healthy CamillaDSP raises for a config it parsed and
+            # refused — CamillaController._call already maps pycamilladsp's
+            # ConfigValidationError onto this class.
+            if "!!not-yaml" in text:
+                raise CamillaConfigRejected("camilla rejected the config")
+            return self._camilla_serde(text)
 
         async def set_config_file_path(self, *args, **kwargs):  # pragma: no cover
             raise AssertionError("must never repoint the persisted statefile")
@@ -5926,6 +5966,8 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
         "play_wav", "readmit", "writer_lock",
     }
     assert asyncio.run(seams["read_current_config_path"]()) == str(entry)
+    # Default-fill tolerance: the submitted text carries none of the keys the
+    # readback will have, and the load is still CONFIRMED.
     assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
     assert asyncio.run(seams["restore_graph"](str(entry))) is True
     assert calls == [
@@ -5936,9 +5978,20 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     ]
     from jasper.active_speaker.program_playback import ProgramPlaybackError
 
-    cam.readback = "different: graph\n"
+    # A genuinely different graph is still rejected — the check is strict
+    # equality of normalized fingerprints, not a subset comparison.
+    cam.live = "different: graph\n"
     with pytest.raises(ProgramPlaybackError, match="load was not confirmed"):
-        asyncio.run(seams["load_program_graph"]("program: graph\n"))
+        asyncio.run(
+            flow.confirm_graph_is_live(cam, "program: graph\n")
+        )
+    # Comment-only differences are benign: camilla's serde drops them.
+    cam.live = "program: graph\n"
+    asyncio.run(flow.confirm_graph_is_live(cam, "# a note\nprogram: graph\n"))
+    # A submitted config camilla itself refuses is a NAMED refusal, distinct
+    # from a mismatch, so hardware triage can tell the two apart.
+    with pytest.raises(ProgramPlaybackError, match="normalization failed"):
+        asyncio.run(seams["load_program_graph"]("!!not-yaml\n"))
 
 
 def _dummy_program():

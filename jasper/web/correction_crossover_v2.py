@@ -219,6 +219,7 @@ def classify_program_failure(
     from jasper.active_speaker.crossover_v2_flow import (
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
+        REASON_PROTECTION_NOT_SEPARABLE,
         CrossoverV2FlowError,
     )
     from jasper.active_speaker.program_admission import (
@@ -234,7 +235,7 @@ def classify_program_failure(
     )
 
     if isinstance(exc, ConfiguredPathConditioningError):
-        return REASON_PROGRAM_UNPLAYABLE, (exc.slug,)
+        return REASON_PROTECTION_NOT_SEPARABLE, (exc.slug,)
     if not isinstance(
         exc, (ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError)
     ):

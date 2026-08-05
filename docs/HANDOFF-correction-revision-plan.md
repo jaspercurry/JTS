@@ -874,19 +874,18 @@ full re-walk.
 
 ## The next campaign — 80/20 crossover + linearization revision
 
-**Live status (2026-08-05):** see [CURRENT POSITION](#current-position). R14
-remains complete; #2106 owns the re-ratified atomic R15 contract. The bounded
-implementation, conductor checkpoint, and docs alignment are complete, while
-independent review, PR, and merge remain. Nothing was deployed or measured, so R13 remains
-the last fully completed product round. R16–R19 now precede the owner studio
-checkpoint; no hardware validation is claimed before that run.
+**Live status:** see [CURRENT POSITION](#current-position). R14 remains
+complete. The first R15 prototype at `05822244` was rejected as a merge
+candidate for violating the 80/20 scope; no R15 product code was merged,
+deployed, or measured. Both preconditions — the docs reset (#2123) and issue
+reconciliation (#2105/#2108) — have landed.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
 [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
 This spine owns only status and order IDs:
-`R14 (complete) -> R15 -> R16 -> R17 -> R18 -> R19 -> studio checkpoint -> R20`.
+`R14 (complete) -> R15 -> fixed-2-kHz hardware checkpoint -> later re-gated rounds`.
 
 ---
 
@@ -970,9 +969,9 @@ Update **this block** at the end of every round together with the
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-05 (atomic R15 implementation, conductor checkpoint,
-                and docs alignment complete; review/PR/merge pending; no deployment or
-                measurement)
+date:           2026-08-05 (conductor architecture review of R15 and PR #2126;
+                cap-ladder, boost, and governance rulings recorded on #2106;
+                rejected prototype remains unmerged and unmeasured)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -982,8 +981,10 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   R15 — implementation/docs checkpoint complete; independent
-                three-lens review remains before PR/merge
+active_round:   R15 — in flight. PR #2126 is a draft under a conductor-directed
+                fix round; its rulings are recorded on #2106. The fixed-2-kHz
+                hardware checkpoint follows merge; nothing is deployed or
+                measured in this round
 last_round:     R13 (owner validation day; last fully completed product
                 round). R14 is the completed documentation/administrative
                 campaign round
@@ -993,19 +994,18 @@ validation:     applied=true, tier=full, session phases verify/cloud_verify.
                 cloud=null and the group ended on locate_failed. This is not
                 an "unverified" tune and not an "applied and graded" Full
                 result
-                R15 validation is hardware-free only; it claims no new JTS3 run
 rollback:       Undo remains banked through the retained pre_apply_profile;
                 restoration was not exercised during this run
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure;
-                #2106 owns atomic R15; #2107 owns R16 laterals. The campaign's complete
+                #2106 owns atomic R15; #2107 is deferred beyond the fixed-Fc
+                checkpoint. The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   run the independent review panel, open/merge #2106;
-                then execute and merge R16, R17, R18, and R19 sequentially
-                before the owner studio checkpoint; R20 remains read-only
-blocked_on:     review/PR/merge; no deployment, measurement, or hardware
-                validation before the post-R19 owner studio checkpoint
+next_mission:   land #2126's fix round at three-lens 0/0, then run the
+                reviewed fixed-Fc hardware checkpoint before later rounds
+blocked_on:     #2126's fix round reaching 0/0 and merging; the hardware
+                checkpoint follows it
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1719,11 +1719,13 @@ at `220ca14889d6b4a29ff8a9d801e5fee1bcee5cac`. It claims no product/issue
 write, review passage, deployment, DSP change, or measurement. The historical
 appendix was not re-verified.
 
-**Verification scope.** A **2026-08-05 R15 alignment pass** re-checked only the
-next-campaign live status/order and CURRENT POSITION against the current
-uncommitted R15 diff and canonical plan. It claims no independent review, PR,
-merge, deployment, DSP change, or measurement; the historical appendix was
-not re-verified.
+**Verification scope.** A **2026-08-05 conductor-rulings status pass** updated
+only CURRENT POSITION and this section's live-status sentence, against the
+rulings recorded on #2106 and the open draft PR #2126. It re-verified nothing
+else — charter, rungs, campaign narrative, research index, issue index, and
+historical appendix carry prior verification forward. The footer below moves
+only when a pass re-verifies load-bearing claims; this one did not. It claims
+no product/issue write, review passage, deployment, DSP change, or measurement.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
@@ -1764,4 +1766,4 @@ below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** �
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
 
-Last verified: 2026-08-05
+Last verified: 2026-08-04

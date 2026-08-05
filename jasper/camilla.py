@@ -737,6 +737,30 @@ class CamillaController:
             raise
         return str(raw) if raw is not None else None
 
+    async def normalize_config_raw(
+        self, config: str, *, best_effort: bool = False,
+    ) -> str | None:
+        """Return ``config`` as CamillaDSP itself canonicalizes it.
+
+        ``ReadConfig`` parses, validates, and default-fills a config WITHOUT
+        applying it, so this asks the running CamillaDSP what a YAML string
+        means to it. Confirming a live load compares THIS against
+        :meth:`get_active_config_raw`, never the caller's own text: a readback
+        is a default-filled, value-normalized superset of what was submitted.
+        """
+        import yaml
+
+        if not isinstance(config, str) or not config.strip():
+            raise ValueError("config must be a non-empty YAML string")
+        try:
+            parsed = await self._call(lambda c: c.config.parse_yaml(config))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug("camilla unavailable; normalize_config_raw: %s", e)
+                return None
+            raise
+        return parsed if isinstance(parsed, str) else yaml.safe_dump(parsed)
+
     async def patch_config(
         self, patch: dict[str, Any], *, best_effort: bool = False,
     ) -> bool:

@@ -114,8 +114,30 @@ def _stub_non_topology_inputs(monkeypatch):
     """
     preset = load_active_speaker_preset()  # bundled 2-way default, real object
     monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
+    # Same rule as every stub here: this module tests the topology/playback-
+    # device seam, not the driver-safety contract. The profile does have to
+    # carry the confirmed per-role protection, because R15's session open
+    # resolves it (``confirmed_protection_sections``) before any capture — a
+    # bare ``{}`` refuses the session for a reason unrelated to this test. The
+    # resolver itself is covered in tests/test_active_speaker_branch_chain.py.
     monkeypatch.setattr(
-        design_draft, "load_design_draft", lambda **kw: {"driver_safety_profile": {}}
+        design_draft, "load_design_draft",
+        lambda **kw: {"driver_safety_profile": {
+            "targets": [
+                {
+                    "role": role,
+                    "target_fingerprint": f"fp-{role}",
+                    "required_protection_filters": [{
+                        "kind": kind,
+                        "cutoff_hz": cutoff,
+                        "minimum_slope_db_per_octave": 24.0,
+                    }],
+                }
+                for role, kind, cutoff in (
+                    ("woofer", "lowpass", 6000.0), ("tweeter", "highpass", 300.0),
+                )
+            ],
+        }},
     )
     # W6.11 landed a real crossover-preview ensure step at the top of
     # resolve_conductor_context (before resolve_capture_preset runs). It reads
