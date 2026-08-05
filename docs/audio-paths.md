@@ -718,7 +718,8 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-04 (InnoMaker final-edge format conversion and
+Last verified: 2026-08-04 (InnoMaker final-edge format ownership — outputd
+requests the declared S32_LE itself and the plug converts nothing — and the
 passive-only active-lane exclusion rechecked; atomic turn-start volume context and outputd's
 missing/rejected-context silence rule checked against both Rust consumers and
 the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay

@@ -162,19 +162,23 @@ class DacProfile:
     udev_rule: str | None = None
     dtoverlay: str | None = None
     # The DECLARED sample format the DAC's hw device should open at, at the
-    # final ALSA edge. This is the registry's declaration of that fact, not
-    # yet its sole source: deploy/lib/jasper-asound-render.sh still
-    # hardcodes its own "format S32_LE" literal for the InnoMaker plug
-    # independently, and that literal is what actually reaches ALSA today.
+    # final ALSA edge, and it is now what outputd ASKS ALSA for.
     # jasper-audio-hardware-reconcile shells into final_edge_format_for() to
     # emit this as JASPER_OUTPUTD_DAC_FORMAT, which jasper-outputd READS: it
-    # accepts exactly {S16_LE, S32_LE} and parks at exit 78 otherwise, echoes
-    # the value into STATUS dac.format, and the chip-AEC alignment identity
-    # records it — so changing a profile's declared format invalidates every
-    # commissioned artifact on that hardware and forces a foreground
-    # `sudo jasper-aec-commission`. The asound render script's literal stops
-    # being an independent copy once the outputd native-format write consumes
-    # this field instead.
+    # accepts exactly {S16_LE, S32_LE} and parks at exit 78 otherwise, requests
+    # that format on its DAC PCM, and reports what its client edge negotiated
+    # as STATUS dac.format, where the chip-AEC alignment identity records it —
+    # so changing a profile's declared format invalidates every commissioned
+    # artifact on that hardware and forces a foreground
+    # `sudo jasper-aec-commission`. A declaration the hardware cannot install
+    # now parks the speaker instead of being silently converted, so this field
+    # is load-bearing.
+    # Still an independent copy for one more step:
+    # deploy/lib/jasper-asound-render.sh hardcodes its own "format S32_LE"
+    # slave pin for the InnoMaker plug, and while that plug exists the pin —
+    # not outputd's readback — is what guarantees the HARDWARE edge (a plug
+    # converts on the slave side, invisibly to a client-side readback). The
+    # copy goes away with the render cutover that deletes the plug.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
@@ -448,10 +452,18 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # rates — a driver-advertisement limit, not a documented silicon one
     # (the driver's own hw_params has an unadvertised S16 branch) — JTS
     # pins 48 kHz/2ch.
-    # outputd currently opens every sink at S16 only, so the final edge is
-    # bridged by an ALSA plug, which is banned on the active path. So: no
-    # active lane YET — this flips once the outputd native-format write
-    # (final_edge_format-driven) ships.
+    # The outputd native-format write HAS shipped: outputd opens this sink at
+    # the declared S32_LE itself, so "outputd can only do S16" is no longer
+    # what holds the active lane back. Two gates remain, and BOTH must clear
+    # before this flag moves:
+    #   1. The render cutover — deploy/lib/jasper-asound-render.sh still puts
+    #      an ALSA plug in front of this card. A plug is banned on the active
+    #      path, and it is still what guarantees the hardware edge today
+    #      (its pinned S32_LE slave), so deleting it moves that guarantee onto
+    #      the raw-hw open.
+    #   2. The active-lane design pass itself — clock-domain contract,
+    #      activation gates, fail-closed partial states, /state + doctor
+    #      observability (AGENTS.md "Config ownership").
     supports_active_outputd_lane=False,
     final_edge_format="S32_LE",
     chip_aec_detail=(

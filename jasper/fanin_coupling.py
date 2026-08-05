@@ -118,7 +118,9 @@ DEFAULT_OUTPUTD_RING_SLOTS = 2
 # Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
 # ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
 # CAPTURE direction is ``jts_ring_capture``). S16_LE — the SHM ring's pinned wire
-# format, no widening (fan-in and outputd are both S16 native at the DAC write).
+# format, no widening on THIS hop: fan-in and outputd are both S16 native across
+# the ring. Any widening a wider DAC edge needs happens later, inside outputd's
+# final ALSA write, and never touches the ring.
 RING_PLAYBACK_DEVICE = "jts_ring_playback"
 
 
@@ -330,7 +332,9 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
       kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in
       writes it) AND the playback device ``jts_ring_playback`` (Ring B, outputd
       reads it), both S16_LE (the SHM ring's pinned wire format; fan-in and
-      outputd are S16 native, no widening). The two rings are ONE coupling: an
+      outputd are S16 native across the ring, so no widening on these hops — a
+      wider DAC edge is served inside outputd's final ALSA write instead). The
+      two rings are ONE coupling: an
       armed box's ``/sound/`` save must emit a config whose capture is the ring
       AND whose playback is the ring — a half-ring config (ring capture + ALSA
       loopback playback, or vice versa) would strand one end. These kwargs flow

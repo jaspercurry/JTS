@@ -291,10 +291,13 @@ pub struct AlsaBackend {
     /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
     /// width stays `CHANNELS=2` (the published reference is always stereo).
     channels: u16,
-    /// The format ALSA installed at the final edge — requested from the
-    /// registry declaration and PROVEN by `configure_pcm`'s dac readback, so
-    /// this is a negotiated fact, not an intention. It selects the write path
-    /// in `write_dac_period` and is what `/state` reports as `dac.format`.
+    /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
+    /// registry declaration and checked against the installed `hw_params` by
+    /// `configure_pcm`'s dac readback, so this is what outputd is running, not
+    /// an intention. On a raw `hw:` device it is also the hardware edge;
+    /// through a `plug` it is not (see that readback's comment). It selects the
+    /// write path in `write_dac_period` and is what `/state` reports as
+    /// `dac.format`.
     dac_format: SampleFormat,
     /// Reused widening staging for an `S32Le` edge — allocated once, at open,
     /// and never on the audio path. Empty (zero bytes) on an `S16Le` edge,
@@ -411,8 +414,8 @@ impl AlsaBackend {
                 period_frames: config.period_frames,
                 channels: config.content_channels,
                 // The one role that asks for the DECLARED edge rather than a
-                // constant. `configure_pcm`'s dac readback proves ALSA
-                // installed it before this returns.
+                // constant. `configure_pcm`'s dac readback checks the installed
+                // client-side format against it before this returns.
                 format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
@@ -420,11 +423,12 @@ impl AlsaBackend {
             .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm)),
         )?;
 
-        // `format` is the NEGOTIATED final edge: what `configure_pcm` asked
-        // ALSA for (the registry declaration) and then read back from the
-        // installed hw_params to prove. outputd's internal program is i16
-        // whatever it says — a wider edge is served by widening at the final
-        // write.
+        // `format` is what outputd's OWN CLIENT EDGE negotiated: what
+        // `configure_pcm` asked ALSA for (the registry declaration), checked
+        // against the installed hw_params. That equals the hardware edge on a
+        // raw `hw:` device, not through a `plug` — see the dac readback's
+        // comment. outputd's internal program is i16 whatever it says; a wider
+        // edge is served by widening at the final write.
         eprintln!(
             "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_pcm,
@@ -453,9 +457,9 @@ impl AlsaBackend {
             counters: IoCounters::default(),
             fill_log: FillLogGate::default(),
             channels: config.content_channels,
-            // `configure_pcm`'s dac readback proved the installed format equals
-            // this requested one, so storing the request stores the negotiated
-            // fact — the daemon never reached here otherwise.
+            // `configure_pcm`'s dac readback checked the installed client-side
+            // format against this requested one, so storing the request stores
+            // what outputd is running — it never reached here otherwise.
             dac_format: config.declared_dac_format,
             dac_widen_buf: widen_staging(
                 config.declared_dac_format,
@@ -470,7 +474,9 @@ impl AlsaBackend {
         self.channels
     }
 
-    /// The format ALSA installed at the final edge (readback-verified at open).
+    /// The format outputd's own client edge negotiated (readback-checked at
+    /// open; equals the hardware edge on a raw `hw:` device, not through a
+    /// `plug`).
     pub fn dac_format(&self) -> SampleFormat {
         self.dac_format
     }
@@ -568,7 +574,7 @@ impl AlsaBackend {
                     // short or stale period.
                     self.dac_widen_buf.resize(samples.len(), 0);
                 }
-                widen_i16_to_i32(samples, &mut self.dac_widen_buf);
+                widen_i16_to_i32(samples, &mut self.dac_widen_buf)?;
                 let io = self
                     .dac
                     .io_i32()
@@ -982,13 +988,28 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
     if role == "dac" {
-        // The final edge is the one PCM whose format is not a constant, so it
-        // is the one PCM where "asked for" and "got" can differ. `set_format`
-        // fails loudly on a `hw:` device that cannot do the format — but a
-        // `plug` in front of one accepts anything and silently converts, so
-        // REQUESTING a format is not evidence of running at it. Read the
-        // installed params back and prove it, or park: an unverified edge is
-        // exactly what the chip-AEC alignment identity would certify against.
+        // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
+        // it is not what was requested. Read the scope of that claim honestly,
+        // because it is narrower than it looks:
+        //
+        // `hw_params_current` returns the CLIENT-side params of the PCM outputd
+        // opened. On a raw `hw:` device the client edge IS the hardware edge,
+        // so there this is a hardware-edge proof. Through a `plug` it is NOT: a
+        // plug installs the client's own request client-side and converts on
+        // the slave side, so the readback agrees BY CONSTRUCTION and can never
+        // see what the DAC is really doing. Evidence, not theory — `main` today
+        // opens the InnoMaker plug at S16 and alsa-rs's per-period `io_i16`
+        // check (the same `hw_params_current` read) passes.
+        //
+        // What this therefore catches is a device that installs something OTHER
+        // than requested and reports it honestly. The InnoMaker's HARDWARE edge
+        // is guaranteed elsewhere: today by the `format S32_LE` slave pinned in
+        // deploy/lib/jasper-asound-render.sh, and once that plug is deleted by
+        // the absence of any conversion layer at all.
+        //
+        // WHOEVER DELETES THAT PLUG OWNS THE PROOF MOVING — from the render's
+        // slave pin to the raw-`hw:` open. This readback is not that proof and
+        // will not start being it.
         let current = pcm
             .hw_params_current()
             .context("reading installed outputd DAC HwParams")?;
@@ -1038,13 +1059,18 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     Ok(negotiated)
 }
 
-/// Fail closed unless the format ALSA INSTALLED at the final edge is exactly
-/// the one outputd requested.
+/// Fail closed unless the format ALSA installed on OUTPUTD'S OWN CLIENT EDGE
+/// is exactly the one requested.
+///
+/// Scope: the client edge equals the hardware edge only on a raw `hw:` device.
+/// See `configure_pcm`'s dac readback comment for why a `plug` is structurally
+/// invisible to this check, and where the InnoMaker's hardware-edge guarantee
+/// actually lives.
 ///
 /// Separate from `validate_negotiated` because the failure is a different kind:
 /// a rate or period mismatch means the device could not serve outputd's
-/// geometry, while this means the device served a DIFFERENT electrical edge
-/// than the one the alignment identity would be certified against. Called only
+/// geometry, while this means it served a DIFFERENT sample format than the one
+/// the alignment identity would be certified against. Called only
 /// from `configure_pcm`'s `dac` role, whose caller wraps it in
 /// `final_sink_startup` — so a mismatch parks the unit at EX_CONFIG 78 rather
 /// than restart-looping against hardware that cannot change.
@@ -1161,10 +1187,33 @@ fn deinterleave_4ch_to_dual_stereo(
 ///
 /// `i32::from` FIRST is load-bearing: shifting the i16 and widening afterwards
 /// would shift every significant bit out of a 16-bit value.
-fn widen_i16_to_i32(samples: &[i16], out: &mut [i32]) {
+///
+/// The `zip` covers only the shorter side, so a length mismatch would silently
+/// emit a SHORT or STALE period — audible, and invisible to every counter. The
+/// only caller resizes to match immediately above the call; this rejects the
+/// mismatch outright so a future caller cannot quietly drop that contract.
+///
+/// A `Result` rather than a `debug_assert!`, for two reasons. It matches the
+/// sibling scratch-buffer check in this file — `deinterleave_4ch_to_dual_stereo`
+/// bails on "scratch buffers are smaller than content period" — so the audio
+/// path keeps ONE failure idiom. And a debug assertion would not run where it
+/// matters: CI builds this crate with `cargo test --release`, where debug
+/// assertions are compiled out, so its regression test would silently never
+/// fire (verified — the `#[should_panic]` form fails there with "test did not
+/// panic as expected").
+fn widen_i16_to_i32(samples: &[i16], out: &mut [i32]) -> Result<()> {
+    if out.len() != samples.len() {
+        anyhow::bail!(
+            "outputd widening staging is {} samples but the period is {}; \
+             writing that would emit a short or stale period",
+            out.len(),
+            samples.len()
+        );
+    }
     for (dst, &src) in out.iter_mut().zip(samples.iter()) {
         *dst = i32::from(src) << 16;
     }
+    Ok(())
 }
 
 /// The coherent single DAC's period write loop, over whatever sample type the
@@ -1535,7 +1584,7 @@ mod tests {
         let samples = [i16::MAX, i16::MIN, 0, 1, -1, 256, -256];
         let mut out = vec![0i32; samples.len()];
 
-        widen_i16_to_i32(&samples, &mut out);
+        widen_i16_to_i32(&samples, &mut out).unwrap();
 
         assert_eq!(
             out,
@@ -1557,7 +1606,7 @@ mod tests {
         // happened before the widen. Widened first it is exactly `i32::MIN` —
         // still full-scale negative, still monotonic against `i16::MIN + 1`.
         let mut out = [0i32; 2];
-        widen_i16_to_i32(&[i16::MIN, i16::MIN + 1], &mut out);
+        widen_i16_to_i32(&[i16::MIN, i16::MIN + 1], &mut out).unwrap();
 
         assert_eq!(out[0], i32::MIN);
         assert_eq!(out[0], (i16::MIN as i32) * 65_536);
@@ -1572,11 +1621,28 @@ mod tests {
         let samples: Vec<i16> = (-32_768..=32_767).step_by(97).map(|v| v as i16).collect();
         let mut out = vec![0i32; samples.len()];
 
-        widen_i16_to_i32(&samples, &mut out);
+        widen_i16_to_i32(&samples, &mut out).unwrap();
 
         for (i, &sample) in samples.iter().enumerate() {
             assert_eq!(out[i], i32::from(sample) * 65_536, "sample {sample}");
         }
+    }
+
+    #[test]
+    fn widening_rejects_a_staging_length_that_does_not_match_the_period() {
+        // Without the check the `zip` would quietly widen 2 of 4 samples and
+        // leave the rest stale — a short/torn period at the speaker with
+        // nothing in any counter to show for it. Both directions are wrong:
+        // staging shorter than the period truncates it, staging longer writes
+        // a tail the period never produced.
+        let mut short = [0i32; 2];
+        let err = widen_i16_to_i32(&[1, 2, 3, 4], &mut short).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("staging is 2 samples"), "{text}");
+        assert!(text.contains("period is 4"), "{text}");
+
+        let mut long = [0i32; 8];
+        widen_i16_to_i32(&[1, 2], &mut long).unwrap_err();
     }
 
     #[test]
@@ -1604,10 +1670,12 @@ mod tests {
     }
 
     #[test]
-    fn dac_format_readback_rejects_a_silently_converted_edge() {
-        // The shape a `plug` produces: outputd asked for S32_LE, ALSA installed
-        // a client-side S16_LE and put a converter in between. Both formats
-        // must be named — the operator needs to know which end moved.
+    fn dac_format_readback_rejects_an_honestly_reported_mismatch() {
+        // A device that installed something other than the request AND reported
+        // it honestly. This is NOT the plug shape: a plug installs the client's
+        // own request client-side, so a plug can never produce this
+        // disagreement (see `configure_pcm`'s dac readback comment). Both
+        // formats must be named — the operator needs to know which end moved.
         let err = verify_dac_format("outputd_dac", SampleFormat::S32Le, Format::S16LE).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("outputd_dac"), "{text}");

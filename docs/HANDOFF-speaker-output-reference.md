@@ -363,11 +363,16 @@ What exists:
   non-S16 final edge (`DacProfile.final_edge_format = S32_LE`), because the
   kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous
   44.1-192 kHz rates — a driver-advertisement limit, not a documented silicon
-  one. outputd REQUESTS that declared format at the edge and proves it by
-  reading the installed `hw_params` back, widening its i16 program to i32 at
-  the final write only; the profile-scoped `plug` alias still in front of the
-  card is therefore now an identity conversion, retired separately. The
-  renderer rejects active-output mode for this profile.
+  one. outputd REQUESTS that declared format on the PCM and fails closed unless
+  the installed `hw_params` report it, widening its i16 program to i32 at the
+  final write only. The profile-scoped `plug` alias still in front of the card
+  therefore converts nothing — but that follows from the alias pinning its
+  slave at `format S32_LE`, NOT from outputd's readback: a readback sees only
+  the client side of the PCM outputd opened, and a plug installs the client's
+  own request there. While the plug exists the render's slave pin is what
+  guarantees the hardware edge; deleting the plug (a separate change) moves
+  that guarantee onto the raw-`hw:` open. The renderer rejects active-output
+  mode for this profile.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
   `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,

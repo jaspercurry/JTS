@@ -542,9 +542,11 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
     # Registry-declared final-edge format. LIVE since the outputd read:
-    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty}
-    # and echoes this into STATUS dac.format, where the chip-AEC alignment
-    # identity records it.
+    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty},
+    # REQUESTS this format on its DAC PCM, and parks if the device installs a
+    # different one. STATUS dac.format then reports what outputd's client edge
+    # negotiated (not an echo of this value), and the chip-AEC alignment
+    # identity records that.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "type plug" in template
@@ -596,9 +598,11 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # Registry-declared final-edge format. LIVE since the outputd read:
-    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty}
-    # and echoes this into STATUS dac.format, where the chip-AEC alignment
-    # identity records it.
+    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty},
+    # REQUESTS this format on its DAC PCM, and parks if the device installs a
+    # different one. STATUS dac.format then reports what outputd's client edge
+    # negotiated (not an echo of this value), and the chip-AEC alignment
+    # identity records that.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
