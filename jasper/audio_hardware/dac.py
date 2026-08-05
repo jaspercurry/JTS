@@ -173,12 +173,6 @@ class DacProfile:
     # `sudo jasper-aec-commission`. A declaration the hardware cannot install
     # now parks the speaker instead of being silently converted, so this field
     # is load-bearing.
-    # Still an independent copy for one more step:
-    # deploy/lib/jasper-asound-render.sh hardcodes its own "format S32_LE"
-    # slave pin for the InnoMaker plug, and while that plug exists the pin —
-    # not outputd's readback — is what guarantees the HARDWARE edge (a plug
-    # converts on the slave side, invisibly to a client-side readback). The
-    # copy goes away with the render cutover that deletes the plug.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
@@ -454,16 +448,16 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # pins 48 kHz/2ch.
     # The outputd native-format write HAS shipped: outputd opens this sink at
     # the declared S32_LE itself, so "outputd can only do S16" is no longer
-    # what holds the active lane back. Two gates remain, and BOTH must clear
-    # before this flag moves:
-    #   1. The render cutover — deploy/lib/jasper-asound-render.sh still puts
-    #      an ALSA plug in front of this card. A plug is banned on the active
-    #      path, and it is still what guarantees the hardware edge today
-    #      (its pinned S32_LE slave), so deleting it moves that guarantee onto
-    #      the raw-hw open.
-    #   2. The active-lane design pass itself — clock-domain contract,
-    #      activation gates, fail-closed partial states, /state + doctor
-    #      observability (AGENTS.md "Config ownership").
+    # what holds the active lane back. The render cutover has ALSO shipped
+    # (PR-4, format-foundation): deploy/lib/jasper-asound-render.sh no longer
+    # puts an ALSA plug in front of this card — it opens the raw `hw:` device
+    # directly, like every other recognized single DAC, so the S32_LE
+    # hardware-edge guarantee now lives at that open (outputd's own
+    # client-edge readback IS the hardware edge on a raw `hw:` device) instead
+    # of a pinned plug slave. One gate remains before this flag moves:
+    #   The active-lane design pass itself — clock-domain contract,
+    #   activation gates, fail-closed partial states, /state + doctor
+    #   observability (AGENTS.md "Config ownership").
     supports_active_outputd_lane=False,
     final_edge_format="S32_LE",
     chip_aec_detail=(

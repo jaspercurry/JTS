@@ -355,24 +355,33 @@ What exists:
   [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2; this doc owns only
   the outputd knobs. Mutually exclusive with `rate_match` and the
   dual-Apple sink (both fail loud at startup).
-- DAC output: `outputd_dac`, normally a direct hardware alias for the
-  selected final-output card. Public/default installs use the Apple
-  USB-C dongle; DAC8x-family lab installs use the enumerated
-  `snd_rpi_hifiberry_dac8x` card. An enabled InnoMaker HiFi AMP Pro uses the
-  enumerated `sndrpimerusamp` card. It is the one profile that declares a
-  non-S16 final edge (`DacProfile.final_edge_format = S32_LE`), because the
-  kernel DAI (`ma120x0p.c`) advertises only S24_LE/S32_LE at continuous
-  44.1-192 kHz rates — a driver-advertisement limit, not a documented silicon
-  one. outputd REQUESTS that declared format on the PCM and fails closed unless
-  the installed `hw_params` report it, widening its i16 program to i32 at the
-  final write only. The profile-scoped `plug` alias still in front of the card
-  therefore converts nothing — but that follows from the alias pinning its
-  slave at `format S32_LE`, NOT from outputd's readback: a readback sees only
-  the client side of the PCM outputd opened, and a plug installs the client's
-  own request there. While the plug exists the render's slave pin is what
-  guarantees the hardware edge; deleting the plug (a separate change) moves
-  that guarantee onto the raw-`hw:` open. The renderer rejects active-output
-  mode for this profile.
+- DAC output: `outputd_dac`, a direct hardware alias for the selected
+  final-output card. Every recognized single DAC profile renders as a raw
+  `type hw` alias with no converting `plug` in front of it — PR-4
+  (format-foundation) deleted the last profile-scoped exception. Public/
+  default installs use the Apple USB-C dongle; DAC8x-family lab installs
+  use the enumerated `snd_rpi_hifiberry_dac8x` card. An enabled InnoMaker
+  HiFi AMP Pro uses the enumerated `sndrpimerusamp` card. It is the one
+  profile that declares a non-S16 final edge (`DacProfile.final_edge_format
+  = S32_LE`), because the kernel DAI (`ma120x0p.c`) advertises only
+  S24_LE/S32_LE at continuous 44.1-192 kHz rates — a driver-advertisement
+  limit, not a documented silicon one. outputd REQUESTS that declared format
+  on the raw `hw:` PCM and fails closed unless the installed `hw_params`
+  report it, widening its i16 program to i32 at the final write only.
+  Because there is no conversion layer between outputd and the card, its
+  own client-edge readback IS the hardware-edge proof here — the plug that
+  used to pin a `format S32_LE` slave (and own that guarantee instead) is
+  gone. Active-output mode is unreachable for this profile by construction,
+  not by a render-time check: `active_outputd_lane_channels_for` returns
+  `None` for `supports_active_outputd_lane=False`, so
+  `jasper-audio-hardware-reconcile`'s active-graph gate is never consulted
+  and `OUTPUTD_ACTIVE_MODE` stays `0` upstream of the render. The render
+  script's former per-profile rejection is gone along with the plug it
+  protected — a remix hazard needs a converting `plug`, and none remain in
+  front of any single DAC. If active mode ever reached this profile anyway,
+  the raw `hw:` open fails closed instead: `configure_pcm`'s `set_channels`
+  rejects a channel count InnoMaker's 2-channel hardware cannot serve, and
+  outputd parks at exit 78.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
   `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
@@ -409,9 +418,9 @@ What exists:
   registered single-DAC identity/card selection comes from the generic
   registry-backed output-hardware classification, rather than per-DAC shell
   matches; the separate Apple card match exists only for its mixer helpers.
-  Recognized DAC8x/DAC8x Studio hardware renders `outputd_dac` directly to the
-  detected card; InnoMaker uses the constrained final-edge plug above. The old
-  DAC8x route env (`mono:N` /
+  Recognized DAC8x/DAC8x Studio/InnoMaker hardware all render `outputd_dac`
+  directly to the detected card, at the profile's declared final-edge format
+  (see above). The old DAC8x route env (`mono:N` /
   `stereo:L,R`) has been removed; active crossover channel ownership lives in
   the active-speaker `channel_map`, not in an ALSA alias. The product
   speaker-output topology substrate is separate again:
@@ -1573,7 +1582,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-05 (InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-08-05 (InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the

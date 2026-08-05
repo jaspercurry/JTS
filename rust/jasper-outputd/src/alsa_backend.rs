@@ -990,26 +990,26 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     if role == "dac" {
         // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
         // it is not what was requested. Read the scope of that claim honestly,
-        // because it is narrower than it looks:
+        // because it depends on what sits between outputd and the card:
         //
         // `hw_params_current` returns the CLIENT-side params of the PCM outputd
-        // opened. On a raw `hw:` device the client edge IS the hardware edge,
-        // so there this is a hardware-edge proof. Through a `plug` it is NOT: a
-        // plug installs the client's own request client-side and converts on
-        // the slave side, so the readback agrees BY CONSTRUCTION and can never
-        // see what the DAC is really doing. Evidence, not theory — `main` today
-        // opens the InnoMaker plug at S16 and alsa-rs's per-period `io_i16`
-        // check (the same `hw_params_current` read) passes.
+        // opened. On a raw `hw:` device the client edge IS the hardware edge, so
+        // this readback IS a hardware-edge proof. Through a `plug` it would NOT
+        // be: a plug installs the client's own request client-side and converts
+        // on the slave side, so the readback would agree BY CONSTRUCTION and
+        // could never see what the DAC is really doing.
         //
-        // What this therefore catches is a device that installs something OTHER
-        // than requested and reports it honestly. The InnoMaker's HARDWARE edge
-        // is guaranteed elsewhere: today by the `format S32_LE` slave pinned in
-        // deploy/lib/jasper-asound-render.sh, and once that plug is deleted by
-        // the absence of any conversion layer at all.
-        //
-        // WHOEVER DELETES THAT PLUG OWNS THE PROOF MOVING — from the render's
-        // slave pin to the raw-`hw:` open. This readback is not that proof and
-        // will not start being it.
+        // Post-plug truth: every registered single DAC profile opens its
+        // `outputd_dac` PCM as a raw `hw:` device now, InnoMaker included —
+        // deploy/lib/jasper-asound-render.sh's per-profile plug was deleted in
+        // PR-4 (format-foundation), so there is no conversion layer left
+        // anywhere in front of this role's PCM. This readback therefore fully
+        // participates in the hardware-edge proof for every DAC, where before
+        // it was narrower than it looked. What keeps a plug from returning is a
+        // Python-side structural test, not this Rust check:
+        // tests/test_outputd_wiring.py::test_every_single_dac_profile_renders_raw_hw_with_no_plug
+        // drives the render script for every registered single DAC profile and
+        // asserts a raw `type hw` block with no `plug` in the output.
         let current = pcm
             .hw_params_current()
             .context("reading installed outputd DAC HwParams")?;
@@ -1062,10 +1062,11 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
 /// Fail closed unless the format ALSA installed on OUTPUTD'S OWN CLIENT EDGE
 /// is exactly the one requested.
 ///
-/// Scope: the client edge equals the hardware edge only on a raw `hw:` device.
-/// See `configure_pcm`'s dac readback comment for why a `plug` is structurally
-/// invisible to this check, and where the InnoMaker's hardware-edge guarantee
-/// actually lives.
+/// Scope: the client edge equals the hardware edge only on a raw `hw:` device
+/// — true for every registered single DAC today, InnoMaker included, since
+/// PR-4 (format-foundation) deleted the last per-profile `plug`. See
+/// `configure_pcm`'s dac readback comment for why a `plug` would defeat this
+/// check, and for the regression test that keeps one from coming back.
 ///
 /// Separate from `validate_negotiated` because the failure is a different kind:
 /// a rate or period mismatch means the device could not serve outputd's

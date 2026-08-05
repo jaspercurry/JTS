@@ -120,13 +120,14 @@ def test_asoundrc_active_content_lane_is_raw_hw_no_plug():
         assert "format" not in block
 
 
-def test_active_path_pcms_never_use_plughw_and_innomaker_plug_rejects_active():
+def test_active_path_pcms_never_use_plug_or_plughw():
     """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
     path. `plug` is the auto-converting channel/rate/format plugin; on a live-
     driver path it could remix 8->4 onto a tweeter (the single most dangerous
     fail-open in active mode). Covers the asoundrc active content lanes and
-    every active outputd_dac block. The InnoMaker passive-stereo profile is the
-    sole final-edge plug exception and must reject active-mode inputs."""
+    the render script text. No DAC profile gets a plug exception anymore —
+    see test_every_single_dac_profile_renders_raw_hw_with_no_plug for the
+    per-profile guard that replaced the old InnoMaker-specific check."""
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     for name in ("outputd_active_content_playback", "outputd_active_content_capture"):
         block = _pcm_block(rc, name)
@@ -134,32 +135,43 @@ def test_active_path_pcms_never_use_plughw_and_innomaker_plug_rejects_active():
         assert "plughw" not in block, name
     render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     assert "plughw" not in render_lib
+    assert "type plug" not in render_lib
 
-    env = os.environ.copy()
-    env.update({
-        "OUTPUT_DAC_ID": dac.INNOMAKER_HIFI_AMP_PRO_ID,
-        "OUTPUT_DAC_CARD": "sndrpimerusamp",
-        "OUTPUT_DAC_RECOGNIZED": "1",
-        "OUTPUTD_ACTIVE_MODE": "1",
-        "OUTPUTD_ACTIVE_CHANNELS": "2",
-    })
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'source "$1"; jasper_asound_outputd_dac_pcm_block',
-            "bash",
-            str(REPO / "deploy" / "lib" / "jasper-asound-render.sh"),
-        ],
-        check=False,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
 
-    assert result.returncode == 64
-    assert result.stdout == ""
-    assert "passive stereo only" in result.stderr
+def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
+    """Class-level guard established by PR-4 (format-foundation): every
+    registered single DAC profile renders `outputd_dac` as a raw `type hw`
+    block, never `type plug`. Before PR-4 this was InnoMaker-specific (a
+    per-profile plug pinned its final-edge format); the plug is gone and the
+    invariant now holds structurally for the whole registry instead of by
+    name, so this loop covers any future single DAC profile automatically."""
+    render_lib = REPO / "deploy" / "lib" / "jasper-asound-render.sh"
+    for profile in dac.all_profiles():
+        if profile.kind != "single":
+            continue
+        env = os.environ.copy()
+        env.update({
+            "OUTPUT_DAC_ID": profile.id,
+            "OUTPUT_DAC_CARD": "testcard",
+            "OUTPUT_DAC_RECOGNIZED": "1",
+        })
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; jasper_asound_outputd_dac_pcm_block',
+                "bash",
+                str(render_lib),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            env=env,
+        )
+        assert result.returncode == 0, (profile.id, result.stderr)
+        assert "type hw" in result.stdout, profile.id
+        assert "card testcard" in result.stdout, profile.id
+        assert "plug" not in result.stdout, profile.id
 
 
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
