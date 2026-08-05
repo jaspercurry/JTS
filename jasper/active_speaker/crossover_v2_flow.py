@@ -1094,10 +1094,10 @@ class V2PlanShape:
     def max_attempts(self) -> int:
         """The whole journey's admission budget — the CONSERVATIVE bound.
 
-        Kept as the sum rather than ``max(measure, verify)`` because its one
-        consumer is the relay-capacity guard
-        (:func:`assert_cloud_plan_fits_relay_capacity` and ``jasper-doctor``),
-        which asks "can the relay carry what this flow needs"; the sum is
+        Kept as the sum rather than ``max(measure, verify)`` because both its
+        consumers — :func:`assert_cloud_plan_fits_relay_capacity`, and
+        ``jasper-doctor``'s OWN check via :func:`cloud_plan_max_attempts` —
+        ask "can the relay carry what this flow needs"; the sum is
         strictly larger than either stage's own budget, so a guard that passes
         on it passes on both. It is deliberately NOT what either session emits
         — those read :attr:`measure_max_attempts` / :attr:`verify_max_attempts`.
@@ -1351,17 +1351,13 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # tweeter measurement floor (2000 Hz, equal to the configured Fc) every candidate
 # below 2 kHz has its own handoff clamped out of ``overlap_band_hz``, so the
 # selector cannot honestly score the direction the evidence points. #1654 (sweep
-# the HF driver to its declared 1600 Hz floor) is the unblocker, and R17 is the
-# flipper — turning this on before then would ask a household for six extra
-# captures nothing reads. Everything behind it, including the fit-timing move in
-# ``_measure_verdict``, is complete and dormant: the invariant "the fit runs at
-# the last capture before the apply" holds the moment this flips.
-#
-# Like ``STAGE1_INCLUDES_CLOUD_MEASURE`` it is applied at the PRODUCTION seams
-# (``_stage1_capture_target`` and ``prepare_v2_session``), not as a builder
-# default: ``build_v2_capture_plan`` / ``build_v2_cloud_index_phase_map`` keep
-# whatever a caller asks for, so a caller constructing a cloud session to
-# exercise the cloud still gets exactly that.
+# the HF driver to its declared 1600 Hz floor) is the unblocker, R17 the flipper.
+# Everything behind it — including ``_measure_verdict``'s fit-timing move — is
+# complete and dormant, so "the fit runs at the last capture before the apply"
+# holds the moment this flips.
+# Applied at the PRODUCTION seams (``_stage1_capture_target``,
+# ``prepare_v2_session``), not as a builder default — the two builders keep
+# whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
 STAGE1_INCLUDES_LATERAL = False
 
 

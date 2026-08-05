@@ -1,9 +1,7 @@
 """R16 — the lateral-evidence producer (crossover-linearization plan §4.4).
 
-Everything here is hardware-free. The harness (``FakeSeams``, ``_conductor``,
-``_run_phase``) is the conductor suite's own, imported rather than re-built for
-the reason the program-analysis equivalence fixture already imports it: two
-copies of a conductor factory is two definitions of what a session is.
+Hardware-free. The harness is the conductor suite's own, imported rather than
+re-built: two copies of a conductor factory is two definitions of a session.
 """
 
 from __future__ import annotations
@@ -110,24 +108,17 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
             assert flow.format_position_distance(pose.offset_cm) in pose.headline
         else:
             assert "cm)" not in pose.headline
-
-
-def test_the_walk_derivation_refuses_a_cloud_table_that_lost_a_lateral_row():
-    """Mutation of the import-time guard: drop one 40 cm row from the cloud
-    table and the derived walk is lopsided, so the guard must fire."""
+    # Mutation of the import-time guard: drop one 40 cm row from the cloud
+    # table and the derived walk is lopsided, so the guard's count must fire.
     survivors = tuple(
         p for p in flow.CLOUD_POSITION_PROMPTS
         if not (p.offset_cm == 40.0 and "LEFT" in p.headline)
     )
-    derived = (
-        (flow.LATERAL_MARK_PROMPT,)
-        + tuple(
-            p for p in survivors
-            if p.role != POSITION_ROLE_XOVR
-            and float(p.offset_cm) in flow._LATERAL_POSE_OFFSETS_CM
-        )
-        + (flow.LATERAL_MARK_RETURN_PROMPT,)
-    )
+    derived = (flow.LATERAL_MARK_PROMPT,) + tuple(
+        p for p in survivors
+        if p.role != POSITION_ROLE_XOVR
+        and float(p.offset_cm) in flow._LATERAL_POSE_OFFSETS_CM
+    ) + (flow.LATERAL_MARK_RETURN_PROMPT,)
     assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
 
 
@@ -201,14 +192,10 @@ def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
 
 
 def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
-    """The third guard of the completeness claim, and the one that fails if a
-    surface was missed rather than a rule broken.
-
-    ``_PHASE_STEP``'s fallback for an unmapped phase is ``microphone_check``,
-    so an unregistered ``PHASE_LATERAL`` would silently park the wizard stepper
-    on step 1 for the whole six-pose walk — flag-on, mid-walk, with nothing
-    raising. Driven end to end: a real conductor's recorded ``session_phases``,
-    through ``_phase_from_state``, into the envelope.
+    """The third guard of the completeness claim — it fails if a SURFACE was
+    missed rather than a rule broken. Driven end to end: a real conductor's
+    recorded ``session_phases``, through ``_phase_from_state``, into the
+    envelope, flag-on and mid-walk.
     """
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
@@ -248,23 +235,18 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     assert steps["microphone_check"] == "done"
     assert steps["measure"] == "active"
 
-    # …and the REJECTION screens, which is where a missing ``_PHASE_STEP``
-    # entry actually bites: they read the precomputed ``active_step`` rather
-    # than the phase branch's own, and the silent-auto-retry template uses it
-    # as the SCREEN. Unregistered, a pose that glitched mid-walk would send the
-    # household to ``microphone_check`` — told to redo step 1 of the journey
-    # over one bad sweep. Every code below is one ``_consume_lateral_pose``
-    # can actually return.
+    # …and the REJECTION screens, where a missing ``_PHASE_STEP`` entry ACTUALLY
+    # bites: they read the precomputed ``active_step``, not the phase branch's
+    # own, and silent-auto-retry uses it as the SCREEN — so a glitched pose
+    # would send the household back to step 1 over one bad sweep. Every code is
+    # one ``_consume_lateral_pose`` can return.
     for code in (
         REASON_DRIFT_BASELINES_DISAGREE,   # silent auto-retry: screen == step
-        REASON_LOCATE_FAILED,
-        REASON_PILOT_LEVEL_COLLAPSE,
-        REASON_CLIPPED,
-        REASON_AGC_BEHAVIORAL_FAIL,
+        REASON_LOCATE_FAILED, REASON_PILOT_LEVEL_COLLAPSE,
+        REASON_CLIPPED, REASON_AGC_BEHAVIORAL_FAIL,
     ):
         failed = build_crossover_envelope_v2({
-            "active": True,
-            "setup": {"active": True, "status": "ready"},
+            "active": True, "setup": {"active": True, "status": "ready"},
             "crossover_v2": {
                 "phase": phase, "failure": {"code": code, "at": time.time()},
             },
@@ -396,19 +378,14 @@ def test_a_lateral_only_stage_1_still_consents_to_a_walk():
         i for c in quiet.screen if c["type"] == "steps" for i in c["items"]
     ]
     assert not any("Full measurement" in step for step in quiet_steps)
-
-
-def test_the_walk_shape_quotes_the_furthest_group_it_runs():
-    lateral_only = flow.walk_shape_for(cloud_positions=0, lateral=True)
-    assert flow.format_position_distance(50.0) in lateral_only
-    # Unchanged for a cloud-only session, and the combined sentence is the
-    # cloud's (its table reaches further).
-    assert flow.walk_shape_for(cloud_positions=9, lateral=False) == (
-        flow.cloud_walk_shape(9)
-    )
-    assert flow.walk_shape_for(cloud_positions=9, lateral=True) == (
-        flow.cloud_walk_shape(9)
-    )
+    # The reach the sentence quotes is the FURTHEST group the session runs: the
+    # walk's own 50 cm alone, the cloud's unchanged when it runs, and nothing
+    # at all when neither does.
+    assert flow.format_position_distance(50.0) in flow.walk_shape_for(
+        cloud_positions=0, lateral=True)
+    for lateral in (False, True):
+        assert flow.walk_shape_for(cloud_positions=9, lateral=lateral) == (
+            flow.cloud_walk_shape(9))
     assert flow.walk_shape_for(cloud_positions=0, lateral=False) == ""
 
 
@@ -498,6 +475,10 @@ def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity()
     assert not {"trim_db", "delay_us", "polarity"} & set(
         LateralPose.__dataclass_fields__
     )
+    # Idempotent per index: a retake REPLACES its earlier take.
+    _run_phase(c, FIRST_LATERAL_INDEX, 2)
+    retaken = [p for p in c.lateral_poses if p.index == FIRST_LATERAL_INDEX]
+    assert len(retaken) == 1 and retaken[0].attempt == 2
 
 
 def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
@@ -569,16 +550,6 @@ def test_the_anchor_solution_is_held_fixed_across_the_walk():
     assert walked.role_attenuations_db == expected.role_attenuations_db
     assert walked.fingerprint == expected.fingerprint
     assert walked.alignment.polarity != "inverted"
-
-
-def test_a_retaken_pose_replaces_its_earlier_take():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX)
-    _run_phase(c, FIRST_LATERAL_INDEX, 2)
-    poses = [p for p in c.lateral_poses if p.index == FIRST_LATERAL_INDEX]
-    assert len(poses) == 1
-    assert poses[0].attempt == 2
 
 
 # --- honesty screens ----------------------------------------------------------

@@ -158,11 +158,9 @@ _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
-    # R16's lateral walk is still measuring, so it shares the MEASURE step for
-    # the same reason the cloud does. Registered even though
-    # ``STAGE1_INCLUDES_LATERAL`` is off: the fallback for an unmapped phase is
-    # ``microphone_check``, so a missing entry would silently park the stepper
-    # on step 1 for the whole six-pose walk the moment the flag flips.
+    # Still measuring. Registered even while R16's flag is off: an unmapped
+    # phase falls back to ``microphone_check``, and the REJECTION screens use
+    # this as their step (silent-auto-retry, as their SCREEN).
     PHASE_LATERAL: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
@@ -2742,14 +2740,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_LATERAL:
-        # R16's lateral walk (plan §4.4). Same wizard screen and step as the
-        # two above, and bespoke copy for the cloud's reason plus one of its
-        # own: the household is MOVING the microphone, so MEASURE's keep-still
-        # verdict is wrong here — but so is the cloud's, which explains the
-        # moves as telling the speaker apart from the room. These poses are
-        # sampling how the crossover's handoff behaves off the design axis, and
-        # they end back on the mark, which the copy has to lead with or the
-        # last prompt reads as a mistake.
+        # R16's walk (§4.4). Same screen/step as the two above; bespoke copy
+        # because MEASURE's keep-still verdict is wrong while the household
+        # MOVES the microphone, the cloud's answers a different question
+        # (speaker versus room), and it must state the return to the mark or
+        # the last prompt reads as a mistake.
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
