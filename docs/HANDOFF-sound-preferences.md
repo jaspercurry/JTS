@@ -34,7 +34,7 @@ ownership:
 | Route | Surface and owner |
 |---|---|
 | `/eq/` | Profiles, Simple EQ / PEQ, and Match Loudness. Rendered by the existing non-root `jasper.web.sound_setup` server. |
-| `/sound/setup/` | Extra headroom, volume-floor calibration, output topology, and the existing active-speaker commissioning controls. Rendered by the same Sound server. |
+| `/sound/setup/` | I²S HAT boot enablement, extra headroom, volume-floor calibration, output topology, and active-speaker commissioning. Rendered by the same Sound server. |
 | `/sound/crossover/` | **Active speaker** measurement and tuning. Backed by the existing correction service. |
 | `/sound/room/` | Room measurement and correction. Backed by the existing correction service. |
 | `/sound/bass/` | Bass measurement/status. Backed by the existing correction service. |
@@ -55,6 +55,31 @@ session across this navigation change.
 The existing `jasper.web.active_speaker_flow` cooperative, TTL-backed
 commissioning/measurement exclusion remains the coordination boundary; the
 page split adds no cross-process lease, journal, or recovery state machine.
+
+### I²S audio HAT boot control
+
+Sound Setup has one power-style **Enable I²S audio HAT** control for the
+supported InnoMaker HiFi AMP Pro. The label and boot overlay come from its
+`DacProfile`; browser logic does not own driver metadata. The persisted intent
+is `/var/lib/jasper/i2s_hat.env`; absence means **Auto / Off**. The control is
+hidden on Streambox and unavailable on unrecognized/non-Pi hardware.
+
+`POST /sound/i2s-hat` is a bounded, CSRF/Host-guarded JSON write. It saves the
+single desired fact, then synchronously starts the already-allowlisted
+`jasper-audio-hardware-reconcile.service` through the existing action broker.
+That root oneshot is the only boot-file writer. It composes the exact
+`dtoverlay=merus-amp` setting with its existing USB-role block and atomically
+replaces `config.txt`, preserving unrelated content or leaving the prior file
+untouched on validation/write failure. There is no pre-overlay HAT probe.
+
+The page separately shows saved intent and the existing output-hardware runtime
+observation. `/run/jasper-output-hardware/i2s-hat-reboot-required` exists only
+when that reconcile actually changed the managed HAT setting and runtime still
+disagrees. Agreement removes it; unrelated reconciles neither create nor clear
+a pending mismatch, and reboot clears it naturally. The message links to the
+existing System Restart control and confirmation flow. The card also warns to
+remove all power before fitting/removing the HAT, never power through HAT and
+USB-C simultaneously, never hot-plug, and begin playback at very low level.
 
 While a speaker is an active bonded follower, `/eq/` is a delegated
 surface: the page shows a leader-owned notice and does not load the

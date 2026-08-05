@@ -6,14 +6,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.audio_hardware.usb_port_role import (
+    I2S_HAT_BLOCK_BEGIN,
     MANAGED_BLOCK_BEGIN,
     UsbPortRoleState,
     configured_i2s_overlays,
     main,
+    read_i2s_hat_intent,
     reconcile_boot_config,
     render_boot_config,
+    render_i2s_hat_boot_config,
     resolve_usb_port_role,
+    write_i2s_hat_intent,
 )
 
 
@@ -136,6 +142,106 @@ dtoverlay=hifiberry-dac8x
     assert configured_i2s_overlays(content) == ("hifiberry-dac8x",)
 
 
+def test_i2s_hat_intent_round_trip_and_rejects_other_profiles(tmp_path: Path) -> None:
+    intent = tmp_path / "i2s_hat.env"
+
+    assert read_i2s_hat_intent(intent) is None
+    write_i2s_hat_intent(True, intent)
+    assert intent.read_text(encoding="utf-8") == (
+        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n"
+    )
+    assert read_i2s_hat_intent(intent) == "innomaker_hifi_amp_pro"
+
+    intent.write_text("JASPER_I2S_HAT_PROFILE=other_hat\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported profile"):
+        read_i2s_hat_intent(intent)
+
+    write_i2s_hat_intent(False, intent)
+    assert not intent.exists()
+
+
+def test_i2s_hat_renderer_manages_only_global_overlay() -> None:
+    original = (
+        "arm_64bit=1\n"
+        "[cm5]\n"
+        "dtoverlay=merus-amp\n"
+        "[all]\n"
+        "dtparam=audio=on\n"
+    )
+
+    enabled = render_i2s_hat_boot_config(original, "innomaker_hifi_amp_pro")
+    disabled = render_i2s_hat_boot_config(enabled, None)
+
+    assert enabled.count(I2S_HAT_BLOCK_BEGIN) == 1
+    assert enabled.count("dtoverlay=merus-amp") == 2
+    assert "arm_64bit=1" in enabled and "dtparam=audio=on" in enabled
+    assert "[cm5]\ndtoverlay=merus-amp" in disabled
+    assert disabled.count("dtoverlay=merus-amp") == 1
+    assert I2S_HAT_BLOCK_BEGIN not in disabled
+
+
+def test_hat_changed_tracks_setting_not_managed_block_format(tmp_path: Path) -> None:
+    model = tmp_path / "model"
+    config = tmp_path / "config.txt"
+    intent = tmp_path / "i2s_hat.env"
+    udc = tmp_path / "udc"
+    model.write_text(PI5, encoding="utf-8")
+    config.write_text(
+        "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
+        encoding="utf-8",
+    )
+    write_i2s_hat_intent(True, intent)
+    (udc / "3f980000.usb").mkdir(parents=True)
+
+    _, changed, hat_changed, desired = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+
+    assert changed is True  # adopts the exact manual line into JTS's block
+    assert hat_changed is False
+    assert desired == "innomaker_hifi_amp_pro"
+    assert config.read_text(encoding="utf-8").count("dtoverlay=merus-amp") == 1
+
+    invalid = config.read_text(encoding="utf-8").replace(
+        "dtoverlay=merus-amp", "dtoverlay=merus-amp,unexpected=1"
+    )
+    config.write_text(invalid, encoding="utf-8")
+    with pytest.raises(ValueError, match="unexpected directive"):
+        reconcile_boot_config(
+            model_path=model,
+            boot_config_path=config,
+            udc_class_dir=udc,
+            i2s_hat_intent_path=intent,
+        )
+    assert config.read_text(encoding="utf-8") == invalid
+
+
+def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> None:
+    model = tmp_path / "model"
+    config = tmp_path / "config.txt"
+    intent = tmp_path / "i2s_hat.env"
+    udc = tmp_path / "udc"
+    original = "[all]\ndtparam=audio=on\n"
+    model.write_text("Acme SBC", encoding="utf-8")
+    config.write_text(original, encoding="utf-8")
+    write_i2s_hat_intent(True, intent)
+    udc.mkdir()
+
+    state, changed, hat_changed, _ = reconcile_boot_config(
+        model_path=model,
+        boot_config_path=config,
+        udc_class_dir=udc,
+        i2s_hat_intent_path=intent,
+    )
+
+    assert state.board_topology == "unsupported"
+    assert changed is False and hat_changed is False
+    assert config.read_text(encoding="utf-8") == original
+
+
 def test_serialized_role_rejects_board_topology_mismatch() -> None:
     raw = _serialized_role(board_model=ZERO)
 
@@ -217,13 +323,13 @@ def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     )
     udc.mkdir()
 
-    state, changed = reconcile_boot_config(
+    state, changed, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,
     )
     first = config.read_text(encoding="utf-8")
-    _, changed_again = reconcile_boot_config(
+    _, changed_again, _, _ = reconcile_boot_config(
         model_path=model,
         boot_config_path=config,
         udc_class_dir=udc,

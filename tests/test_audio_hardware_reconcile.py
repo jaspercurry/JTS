@@ -54,6 +54,7 @@ def _run_reconcile(
     initial_outputd_env: str | None = None,
     initial_fanin_env: str | None = None,
     initial_template: str | None = None,
+    initial_boot_config: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
@@ -88,7 +89,8 @@ def _run_reconcile(
     udc = tmp_path / "udc"
     model.write_text("Raspberry Pi 5 Model B Rev 1.0", encoding="utf-8")
     boot_config.write_text(
-        "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
+        initial_boot_config
+        or "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
     )
     (udc / "3f980000.usb").mkdir(parents=True, exist_ok=True)
@@ -112,6 +114,9 @@ def _run_reconcile(
             "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(
                 tmp_path / "output_hardware.json"
             ),
+            "JASPER_I2S_HAT_INTENT_FILE": str(tmp_path / "i2s_hat.env"),
+            "JASPER_I2S_HAT_REBOOT_REQUIRED_PATH": str(tmp_path / "i2s-reboot"),
+            "JASPER_INSTALL_PROFILE_FILE": str(tmp_path / "install_profile"),
             "JASPER_OUTPUT_HARDWARE_PYTHON": sys.executable,
             "JASPER_PI_MODEL_FILE": str(model),
             "JTS_BOOT_CONFIG_FILE": str(boot_config),
@@ -382,6 +387,61 @@ INNOMAKER_LISTING = """
 hw:CARD=sndrpimerusamp,DEV=0
     snd_rpi_merus_amp, Merus Audio Amp ma120x0p-amp-0
 """
+
+
+def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
+    tmp_path: Path,
+):
+    intent = tmp_path / "i2s_hat.env"
+    marker = tmp_path / "i2s-reboot"
+    intent.write_text(
+        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n",
+        encoding="utf-8",
+    )
+
+    first = _run_reconcile(tmp_path, "", "--reason", "hat-enable")
+    applied_boot = (tmp_path / "config.txt").read_text(encoding="utf-8")
+    assert first.returncode == 0, first.stderr
+    assert marker.is_file()
+
+    marker.unlink()  # a reboot naturally clears /run
+    second = _run_reconcile(
+        tmp_path, "", "--reason", "boot", initial_boot_config=applied_boot
+    )
+    assert second.returncode == 0, second.stderr
+    assert not marker.exists()  # missing hardware does not recreate it
+
+    marker.touch()
+    third = _run_reconcile(
+        tmp_path, "", "--reason", "udev", initial_boot_config=applied_boot
+    )
+    assert third.returncode == 0, third.stderr
+    assert marker.is_file()  # unrelated reconciles leave a pending marker alone
+
+    matched = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "udev",
+        initial_boot_config=applied_boot,
+    )
+    assert matched.returncode == 0, matched.stderr
+    assert not marker.exists()  # desired and runtime now agree
+
+
+def test_streambox_skips_i2s_boot_mutation(tmp_path: Path):
+    original = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
+    (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
+    (tmp_path / "i2s_hat.env").write_text(
+        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n",
+        encoding="utf-8",
+    )
+
+    result = _run_reconcile(tmp_path, "", initial_boot_config=original)
+
+    assert result.returncode == 0, result.stderr
+    assert "result=unavailable install_profile=streambox" in result.stderr
+    assert (tmp_path / "config.txt").read_text(encoding="utf-8") == original
 
 
 def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):

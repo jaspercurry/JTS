@@ -430,8 +430,7 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),
-    # Metadata only. The runtime reconciler deliberately does not mutate boot
-    # configuration; the manual canary starts from an already-enabled overlay.
+    # Boot overlay SSOT consumed by the root audio-hardware reconciler.
     dtoverlay="merus-amp",
 )
 

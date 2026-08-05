@@ -33,12 +33,6 @@ from jasper.web import (
 WEB_SETUP_FILES = tuple(Path("jasper/web").glob("*_setup.py"))
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
-# DA-0217 migration allowlist. Each staged response-helper chunk shrinks this;
-# the final stage deletes it and requires zero local JSON header assemblers.
-_LEGACY_JSON_RESPONSE_ASSEMBLERS = {
-    "sound_setup.py",
-}
-
 _SHARED_JSON_OBJECT_READERS = {
     "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
     "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
@@ -101,7 +95,7 @@ def test_local_json_responses_use_the_shared_response_helper():
                 for arg in call.args
             ):
                 offenders.add(path.name)
-    assert offenders == _LEGACY_JSON_RESPONSE_ASSEMBLERS
+    assert not offenders
 
 
 def test_migrated_local_object_responses_use_object_helper_not_byte_helper():

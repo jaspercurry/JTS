@@ -459,8 +459,8 @@ def test_sound_post_does_not_secondary_send_after_response_write_failure(
 @pytest.mark.parametrize(
     ("content_length", "expected_error"),
     [
-        (-1, "invalid Content-Length"),
-        (sound_setup.MAX_JSON_BYTES + 1, "request body too large"),
+        (-1, "Content-Length must not be negative"),
+        (sound_setup.MAX_JSON_BYTES + 1, "JSON body exceeds 65536 bytes"),
     ],
 )
 def test_sound_post_rejects_invalid_body_length_before_read(
@@ -550,7 +550,7 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
-        path="/active-speaker/commission-ramp-abort",
+        path="/i2s-hat",
         content_length=-1,
     )
 
@@ -787,6 +787,11 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
     assert "./output-topology/reset" in js
+    assert "./i2s-hat" in js
+    assert "Enable I²S audio HAT" in js
+    assert "hat.profile_label" in js
+    assert 'href="/system/"' in js
+    assert "Never power through the HAT and USB-C at the same time" in js
     assert "Reset speaker setup" in js
     assert "Test combined drivers" in js
     assert "Validate and apply" in js
@@ -823,6 +828,105 @@ def test_sound_module_preserves_editor_behaviour():
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
     assert "window.prompt" not in js
+
+
+def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_path):
+    intent = tmp_path / "i2s_hat.env"
+    marker = tmp_path / "i2s-reboot"
+    intent.write_text(
+        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n", encoding="utf-8"
+    )
+    marker.touch()
+    monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(
+        sound_setup,
+        "_output_hardware_dict",
+        lambda: {
+            "profile_id": "unknown",
+            "usb_data_role": {"board_topology": "shared_otg_port"},
+        },
+    )
+
+    payload = sound_setup._i2s_hat_payload(intent_path=intent)
+
+    assert payload["visibility"] == "visible"
+    assert payload["available"] is True
+    assert payload["desired_enabled"] is True
+    assert payload["runtime_active"] is False
+    assert payload["restart_required"] is True
+
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "streambox")
+    assert sound_setup._i2s_hat_payload(intent_path=intent)["visibility"] == "hidden"
+
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(
+        sound_setup,
+        "_output_hardware_dict",
+        lambda: {"usb_data_role": {"board_topology": "unsupported"}},
+    )
+    unsupported = sound_setup._i2s_hat_payload(intent_path=intent)
+    assert unsupported["visibility"] == "visible"
+    assert unsupported["available"] is False
+
+
+def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
+    from jasper.control import restart_broker
+
+    calls = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_i2s_hat_payload",
+        lambda: {"available": True, "reason": "", "restart_required": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "write_i2s_hat_intent",
+        lambda enabled: calls.append(("write", enabled)),
+    )
+
+    def manage(unit, **kwargs):
+        calls.append((unit, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", manage)
+
+    payload, result = sound_setup._save_i2s_hat_payload(True)
+
+    assert result == {"ok": True}
+    assert payload["restart_required"] is True
+    assert calls == [
+        ("write", True),
+        (
+            "jasper-audio-hardware-reconcile.service",
+            {
+                "verb": "start",
+                "reason": "sound i2s hat setting",
+                "no_block": False,
+                "timeout": 60.0,
+            },
+        ),
+    ]
+
+
+def test_i2s_hat_post_route_accepts_bounded_csrf_guarded_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "_save_i2s_hat_payload",
+        lambda enabled: ({"desired_enabled": enabled}, {"ok": True}),
+    )
+
+    body = b'{"enabled":true}'
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path, path="/i2s-hat", content_length=len(body), body=body
+    )
+
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
+        "desired_enabled": True
+    }
+    assert read_calls == [len(body)]
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():

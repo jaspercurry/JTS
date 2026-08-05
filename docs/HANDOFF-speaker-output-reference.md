@@ -358,8 +358,8 @@ What exists:
 - DAC output: `outputd_dac`, normally a direct hardware alias for the
   selected final-output card. Public/default installs use the Apple
   USB-C dongle; DAC8x-family lab installs use the enumerated
-  `snd_rpi_hifiberry_dac8x` card. An already-overlay-enabled InnoMaker HiFi
-  AMP Pro uses the enumerated `sndrpimerusamp` card. Its profile-scoped final
+  `snd_rpi_hifiberry_dac8x` card. An enabled InnoMaker HiFi AMP Pro uses the
+  enumerated `sndrpimerusamp` card. Its profile-scoped final
   alias is a passive-only `plug`: outputd remains a 48 kHz stereo S16 client,
   while the hardware slave is fixed to 48 kHz, stereo, S32_LE. The renderer
   rejects active-output mode for this profile. `jasper-audio-hardware-reconcile`
@@ -383,6 +383,13 @@ What exists:
   `jasper-doctor` has a first-line "Output hardware state" check for
   missing, partial, blocked, or ready hardware. Runtime selection remains
   owned by `/etc/jasper/jasper.env` plus `/var/lib/jasper/outputd.env`.
+  Before observing hardware, the same root reconciler reads the optional
+  `/var/lib/jasper/i2s_hat.env` intent and atomically composes the InnoMaker
+  profile's `dtoverlay=merus-amp` with the managed USB-role block in
+  `config.txt`. Absence disables the managed overlay. Unsupported boards and
+  Streambox do not mutate the Pi boot file. A boot-setting change creates the
+  ephemeral I²S restart marker only while desired and observed runtime differ;
+  reboot clears it, and a missing/unusable HAT cannot recreate it afterward.
   `jasper-doctor` uses the observed hardware profile to make
   Apple-specific USB/headphone-gain checks active for one Apple dongle or
   the dual-Apple pair, checks every Apple child card in the pair, and
