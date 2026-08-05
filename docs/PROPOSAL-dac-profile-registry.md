@@ -24,7 +24,8 @@ hardware profiles:
 - `apple_usb_c_dongle`: one Apple USB-C adapter, two physical outputs.
 - `hifiberry_dac8x` / DAC8x-family: one coherent multichannel DAC, eight
   physical outputs.
-- `innomaker_hifi_amp_pro`: one passive-stereo I²S amp, two physical outputs.
+- `innomaker_hifi_amp_pro`: one stereo I²S amp, two physical outputs, width-2
+  active lane.
 - `dual_apple_usb_c_dac_4ch`: two Apple USB-C adapters treated as one
   four-output composite profile for active crossover work.
 
@@ -256,7 +257,8 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-08-04 (InnoMaker passive-stereo profile and generic
+Last verified: 2026-08-04 (InnoMaker profile — passive-stereo at the time,
+since flipped to a width-2 active lane — and generic
 single-DAC reconciler consumption rechecked; DAC8x-only active-crossover
 commissioning capability and `connection`/`dtoverlay` role contract rechecked;
 prior 2026-06-11 registered single-device classification, registry

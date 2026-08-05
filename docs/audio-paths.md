@@ -597,7 +597,7 @@ The old DAC8x final-output alias route has been removed. `outputd_dac`
 renders directly to an ordinary recognized final-output card for every
 registered single DAC profile — no profile gets a converting `plug` in
 front of it (PR-4, format-foundation, deleted the last one). The
-passive-stereo InnoMaker HiFi AMP Pro is still the sole profile-scoped
+InnoMaker HiFi AMP Pro is still the sole profile-scoped
 *format* exception: the kernel DAI (`ma120x0p.c`) advertises only
 S24_LE/S32_LE at continuous 44.1-192 kHz rates (a driver-advertisement
 limit, not a documented silicon one), so its registry profile declares an
@@ -605,10 +605,12 @@ limit, not a documented silicon one), so its registry profile declares an
 `hw:` open and widens its i16 program to i32 at the final write; because
 there is no conversion layer in front of the card, outputd's own
 client-edge readback is now the hardware-edge proof — the pinned-slave
-`plug` that used to own that guarantee is gone. That profile does not
-declare an active-output lane, so `jasper-audio-hardware-reconcile`'s
-active-graph gate is never consulted for it and `OUTPUTD_ACTIVE_MODE` never
-reaches the render as `1`. The render script no longer needs its own
+`plug` that used to own that guarantee is gone. That profile now declares a
+width-2 active-output lane, so `jasper-audio-hardware-reconcile`'s
+active-graph gate is consulted for it like any other coherent single DAC;
+`OUTPUTD_ACTIVE_MODE` still only reaches the render as `1` once a legal
+active graph is the live CamillaDSP config, so an uncommissioned box stays
+byte-identically passive. The render script no longer needs its own
 per-profile rejection for this — that guarded against a converting plug
 remixing channels, and no plug remains; a wrongly-requested channel count
 now fails closed at ALSA's `set_channels` on the raw `hw:` open instead.
@@ -651,7 +653,8 @@ apply support, applies, and reports one result. The lower
 primitive, but the product UI does not ask the browser to stitch save and apply
 together. Apply is enabled only for an outputd-owned active playback lane. Today
 that product handoff is
-profile-declared for a single Apple USB-C dongle at width 2, DAC8x/DAC8x Studio
+profile-declared for a single Apple USB-C dongle at width 2, the InnoMaker
+HiFi AMP Pro at width 2, DAC8x/DAC8x Studio
 at width 8, and the dual-Apple USB-C composite at width 4. Protected startup
 staging follows the durable-outputd boundary: supported DACs resolve to the
 active outputd lane instead of opening `hw:<card>,0` directly, so normal
@@ -671,7 +674,7 @@ never touches downstream amp gain. The amp gain is a physical knob set at
 install time.
 The same topology surface reports the detected output clock domain. Supported
 topology hardware IDs include one Apple dongle, HiFiBerry DAC8x/DAC8x Studio,
-the passive-stereo InnoMaker HiFi AMP Pro, and the special
+the InnoMaker HiFi AMP Pro, and the special
 `dual_apple_usb_c_dac_4ch` pair. The dual-Apple option is valid
 only for exactly two Apple child DACs on the expected same USB controller/bus,
 one speaker-local stereo pair per DAC, and exactly four physical outputs.
@@ -733,7 +736,8 @@ single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
 pinned slave to outputd's own client-edge readback). Prior 2026-08-04:
 InnoMaker final-edge format ownership — outputd
 requests the declared S32_LE itself and the plug converts nothing — and the
-passive-only active-lane exclusion rechecked; atomic turn-start volume context and outputd's
+then-current passive-only active-lane exclusion rechecked (since retired — the
+InnoMaker declares a width-2 active lane); atomic turn-start volume context and outputd's
 missing/rejected-context silence rule checked against both Rust consumers and
 the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay
 receiver-session cleanup ordering, compatibility fallback, and failure

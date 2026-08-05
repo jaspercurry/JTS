@@ -16,6 +16,12 @@ from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
 )
 
+from .active_speaker_fixtures import (
+    PASSIVE_ONLY_DAC_ID,
+    PASSIVE_ONLY_DAC_LABEL,
+    register_passive_only_dac,
+)
+
 
 # ---- shairport-sync.conf output_device check ---------------------------
 
@@ -1424,8 +1430,14 @@ def _patch_disconnected_post_dsp_route(monkeypatch) -> None:
     )
 
 
-def _write_innomaker_active_topology(path: Path) -> None:
-    """Save a roleful layout on a DAC that declares no active outputd lane."""
+def _write_no_lane_active_topology(path: Path) -> None:
+    """Save a roleful layout on a DAC that declares no active outputd lane.
+
+    Uses the synthetic passive-only profile: every DAC in the shipped registry
+    now declares an active lane, so this remedy is pinned against the stand-in
+    for the next lane-less board. Callers must register it first with
+    ``register_passive_only_dac(monkeypatch)``.
+    """
     from jasper.output_topology import (
         OUTPUT_TOPOLOGY_KIND,
         OutputTopology,
@@ -1440,8 +1452,8 @@ def _write_innomaker_active_topology(path: Path) -> None:
             "name": "Mono active 2-way",
             "status": "verified",
             "hardware": {
-                "device_id": "innomaker_hifi_amp_pro",
-                "device_label": "InnoMaker HiFi AMP Pro",
+                "device_id": PASSIVE_ONLY_DAC_ID,
+                "device_label": PASSIVE_ONLY_DAC_LABEL,
                 "physical_output_count": 2,
             },
             "speaker_groups": [
@@ -1500,16 +1512,17 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     reconciler cannot help — it is already resolving passive correctly. The
     remedy must say what actually clears it instead of sending the operator
     into a loop."""
+    register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    _write_innomaker_active_topology(topo_path)
+    _write_no_lane_active_topology(topo_path)
     _patch_disconnected_post_dsp_route(monkeypatch)
 
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
     assert "post-DSP route disconnected" in r.detail
-    assert "InnoMaker HiFi AMP Pro" in r.detail
+    assert PASSIVE_ONLY_DAC_LABEL in r.detail
     assert "/sound/setup/" in r.detail
     assert "audio-hardware-reconcile" not in r.detail
     # Passive is not a free remedy: it sends full-range into every assigned

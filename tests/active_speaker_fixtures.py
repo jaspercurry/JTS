@@ -14,6 +14,8 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
     record_summed_validation,
 )
+from jasper.audio_hardware import dac as dac_registry
+from jasper.audio_hardware.dac import DacProfile
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
@@ -159,6 +161,51 @@ def dual_apple_output_topology() -> OutputTopology:
         physical_output_count=4,
         card_id="",
     )
+
+
+PASSIVE_ONLY_DAC_ID = "bench_passive_only_dac"
+PASSIVE_ONLY_DAC_LABEL = "Bench passive-only DAC"
+
+
+def register_passive_only_dac(monkeypatch) -> DacProfile:
+    """Register a synthetic DAC that declares NO active outputd lane.
+
+    The active-lane capability guard needs a subject, and as of the InnoMaker
+    flip every profile in the shipped registry declares a lane — so pinning the
+    guard against whichever real profile happens to lack one is what made these
+    tests break each time a profile gained the lane. This synthetic stands in
+    for the NEXT passive-only DAC the registry meets, which is the population
+    the guard actually protects.
+
+    Patches ``_BY_ID`` ONLY — the dict read at call time by both
+    :func:`jasper.audio_hardware.dac.by_id` and
+    :func:`~jasper.audio_hardware.dac.is_known_profile_id`, so every caller
+    that resolves or tests a profile BY ID sees the synthetic one. Registry
+    ENUMERATION is deliberately left alone: ``all_profiles()`` and
+    ``known_profile_ids()`` read ``REGISTRY``, so they will NOT list it. That
+    fits the guard surfaces under test, which all resolve
+    ``topology.hardware.device_id`` through ``by_id``; a test that needs the
+    synthetic profile enumerated has to patch ``REGISTRY`` as well.
+    """
+
+    profile = DacProfile(
+        id=PASSIVE_ONLY_DAC_ID,
+        label=PASSIVE_ONLY_DAC_LABEL,
+        kind="single",
+        physical_output_count=2,
+        coherent_clock_domain=True,
+        clock_domain_label="Single bench passive-only device clock",
+        clock_domain_contract="single_device",
+        outputd_sink="alsa",
+        supported_card_matches=("bench passive only",),
+        supports_active_outputd_lane=False,
+    )
+    monkeypatch.setattr(
+        dac_registry,
+        "_BY_ID",
+        {**dac_registry._BY_ID, profile.id: profile},
+    )
+    return profile
 
 
 def safe_measurement_session(

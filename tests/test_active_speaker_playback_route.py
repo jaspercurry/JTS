@@ -19,12 +19,14 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X,
     INNOMAKER_HIFI_AMP_PRO,
 )
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.output_topology import (
     EXPLICIT_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     resolve_output_layout,
 )
+from tests.active_speaker_fixtures import register_passive_only_dac
 
 
 def _topology(
@@ -136,6 +138,45 @@ def test_apple_dongle_capability_reads_width_two_outputd_active_lane() -> None:
     assert cap.issues == ()
 
 
+def test_innomaker_capability_reads_width_two_outputd_active_lane() -> None:
+    """The InnoMaker resolves the SAME width-2 active lane as the Apple dongle.
+
+    Mirrors ``test_apple_dongle_capability_reads_width_two_outputd_active_lane``
+    deliberately: the InnoMaker flip lands on that precedent's exact shape — one
+    coherent single ALSA device carrying a mono active 2-way — so the route half
+    must come out identical apart from the card identity.
+    """
+    topo = _topology(
+        INNOMAKER_HIFI_AMP_PRO.id,
+        2,
+        card_id="sndrpimerusamp",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+    cap = active_playback_route_capability(topo)
+
+    assert cap.playback_device == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert cap.playback_device_source == OUTPUTD_ACTIVE_LANE_SOURCE
+    assert cap.transport_channel_count == 2
+    assert cap.required_active_output_count == 2
+    assert cap.fits_required_outputs is True
+    assert cap.subwoofer_supported is True
+    # No blockers: this is the whole point of the flip.
+    assert cap.issues == ()
+    assert cap.ready is True
+
+    # The transport plan is what actually carries the lane to the DAC.
+    layout = resolve_output_layout(topo)
+    assert layout.transport_plan is not None
+    assert layout.transport_plan.transport_channels == 2
+    # dac_channel_map is None on the profile => identity permutation.
+    assert [
+        (entry.camilla_out_index, entry.physical_dac_channel)
+        for entry in layout.transport_plan.channel_map
+    ] == [(0, 0), (1, 1)]
+    assert layout.transport_plan.clock_domain_contract == "single_device"
+
+
 def test_dual_apple_capability_reads_outputd_lane_width() -> None:
     children = [
         {
@@ -186,9 +227,10 @@ def test_explicit_lab_pcm_is_the_only_non_outputd_route() -> None:
 # /sound/setup/ save guard.
 
 
-def test_roleful_layout_on_a_dac_without_an_active_lane_is_a_gap() -> None:
+def test_roleful_layout_on_a_dac_without_an_active_lane_is_a_gap(monkeypatch) -> None:
+    profile = register_passive_only_dac(monkeypatch)
     topo = _topology(
-        INNOMAKER_HIFI_AMP_PRO.id,
+        profile.id,
         2,
         groups=_TWO_WAY_GROUP,
         routing={"mono_group_id": "mono"},
@@ -197,13 +239,31 @@ def test_roleful_layout_on_a_dac_without_an_active_lane_is_a_gap() -> None:
     gap = active_lane_capability_gap(topo)
 
     assert gap is not None
-    assert gap.device_id == INNOMAKER_HIFI_AMP_PRO.id
+    assert gap.device_id == profile.id
     # The registry owns the name, not the topology's saved "Test device" label.
-    assert gap.device_label == INNOMAKER_HIFI_AMP_PRO.label
+    assert gap.device_label == profile.label
 
 
-def test_passive_layout_on_the_same_dac_is_not_a_gap() -> None:
-    topo = _topology(INNOMAKER_HIFI_AMP_PRO.id, 2, groups=[{
+def test_innomaker_roleful_layout_is_no_longer_a_gap() -> None:
+    """The InnoMaker declares the width-2 active lane, so the one predicate
+    that would refuse this layout at save time stops firing for it.
+
+    This is the user-visible half of the flip: /sound/setup/ refused a mono
+    active 2-way on this board, and the refusal resolved here.
+    """
+    topo = _topology(
+        INNOMAKER_HIFI_AMP_PRO.id,
+        2,
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+
+    assert active_lane_capability_gap(topo) is None
+
+
+def test_passive_layout_on_a_no_lane_dac_is_not_a_gap(monkeypatch) -> None:
+    profile = register_passive_only_dac(monkeypatch)
+    topo = _topology(profile.id, 2, groups=[{
         "id": "left",
         "label": "Left",
         "kind": "left",

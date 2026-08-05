@@ -371,15 +371,21 @@ What exists:
   Because there is no conversion layer between outputd and the card, its
   own client-edge readback IS the hardware-edge proof here — the plug that
   used to pin a `format S32_LE` slave (and own that guarantee instead) is
-  gone. Active-output mode is unreachable for this profile by construction,
-  not by a render-time check: `active_outputd_lane_channels_for` returns
-  `None` for `supports_active_outputd_lane=False`, so
-  `jasper-audio-hardware-reconcile`'s active-graph gate is never consulted
-  and `OUTPUTD_ACTIVE_MODE` stays `0` upstream of the render. The render
+  gone. Active-output mode is reachable for this profile:
+  `active_outputd_lane_channels_for` returns `2`
+  (`supports_active_outputd_lane=True`), so
+  `jasper-audio-hardware-reconcile`'s active-graph gate is consulted like it
+  is for any other coherent single DAC. Declaring the lane is not arming it —
+  `OUTPUTD_ACTIVE_MODE` stays `0` until a legal active graph is already the
+  live CamillaDSP config, which only commissioning produces, so an
+  uncommissioned box is byte-identically passive. The render
   script's former per-profile rejection is gone along with the plug it
   protected — a remix hazard needs a converting `plug`, and none remain in
-  front of any single DAC. If active mode ever reached this profile anyway,
-  the raw `hw:` open fails closed instead: `configure_pcm`'s `set_channels`
+  front of any single DAC. Width is fenced twice: a config wider than the
+  declared cap is refused before the render
+  (`active_graph_width_out_of_range got=W cap=2`), and a wrong width that
+  reached the raw `hw:` open anyway fails closed there —
+  `configure_pcm`'s `set_channels`
   rejects a channel count InnoMaker's 2-channel hardware cannot serve, and
   outputd parks at exit 78.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
@@ -912,7 +918,8 @@ place to get it right and the most expensive to get wrong later.
 > the width is set by the openers and locked by snd-aloop, with
 > `type plug`/`plughw:` banned. The DAC8x/DAC8x-Studio `DacProfile`s declare the
 > active lane (item 6, `supports_active_outputd_lane=True`; the Apple USB-C
-> dongle declares `active_outputd_lane_channels=2`, DAC8x/DAC8x-Studio declare
+> dongle and the InnoMaker HiFi AMP Pro each declare
+> `active_outputd_lane_channels=2`, DAC8x/DAC8x-Studio declare
 > `8`, and the Stage 1 transport carries any width ≤ cap). Because the gate
 > accepts the config's actual width, the existing
 > per-speaker emitters (which emit the driver count) engage active mode directly

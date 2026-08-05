@@ -629,12 +629,26 @@ PY
 }
 
 # Resolve a recognized single DAC's active-lane channel CAP via the Python
-# DacProfile registry (active_outputd_lane_channels_for). Prints the cap
-# (e.g. 8 for a HiFiBerry DAC8x — the most active outputs outputd will drive on
-# this DAC) or nothing for a DAC with no active lane (Apple single dongle) or
-# when Python is unavailable — both of which keep the DAC on the ordinary
-# stereo single path. The cap is the upper bound; the ACTUAL driven width is the
-# loaded config's playback width, validated against this cap by the gate.
+# DacProfile registry (active_outputd_lane_channels_for). THREE-VALUED on
+# purpose, because "no lane" and "no answer" need different remedies:
+#
+#   <n>     the cap (e.g. 8 for a HiFiBerry DAC8x, 2 for an InnoMaker) — the
+#           most active outputs outputd will drive on this DAC.
+#   none    the registry ANSWERED: this profile declares no active lane.
+#   (empty) NO answer — the probe itself failed, or Python is unavailable.
+#
+# Without the `none` sentinel both of the last two collapsed to empty, and the
+# caller reported the actionable "this DAC has no active lane" for what may
+# have been a transient spawn failure. That matters because this query
+# swallows its own failure (`2>/dev/null || true`) so a probe death cannot
+# abort the reconcile: an OOM-kill or fork-EAGAIN hitting THIS spawn while the
+# recognition probe upstream still succeeds lands here with a recognized DAC
+# and an empty cap. Every profile in the registry currently declares a lane, so
+# that transient is in fact the likelier way to see an empty result today; a
+# genuinely lane-less profile is the future case the `none` value keeps honest.
+#
+# The cap is the upper bound; the ACTUAL driven width is the loaded config's
+# playback width, validated against this cap by the gate.
 active_lane_channels_for_dac() {
     local dac_id="$1"
     if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
@@ -643,11 +657,22 @@ active_lane_channels_for_dac() {
     JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
 import os
 
-from jasper.audio_hardware.dac import active_outputd_lane_channels_for
+from jasper.audio_hardware.dac import (
+    active_outputd_lane_channels_for,
+    is_known_profile_id,
+)
 
-width = active_outputd_lane_channels_for(os.environ["JASPER_DAC_ID_QUERY"])
+dac_id = os.environ["JASPER_DAC_ID_QUERY"]
+width = active_outputd_lane_channels_for(dac_id)
 if width:
     print(width)
+elif is_known_profile_id(dac_id):
+    # The registry answered "no lane" for a profile it knows. Distinct from
+    # printing nothing, which the caller reads as "the probe gave no answer".
+    # An UNKNOWN id deliberately falls through to empty: the registry has no
+    # answer about it either. (The caller only asks about recognized DACs, so
+    # that case does not arise in practice.)
+    print("none")
 PY
 }
 
@@ -1054,7 +1079,18 @@ apply_audio_runtime_env() {
         # (byte-identical to the pre-active path), so a recognized DAC8x is a
         # normal stereo speaker until commissioning loads its active baseline.
         active_lane_cap="$(active_lane_channels_for_dac "$OUTPUT_DAC_ID")"
-        if [[ -n "$active_lane_cap" ]]; then
+        # Three outcomes, three remedies. All resolve passive (fail-closed);
+        # they differ only in what an operator reading the journal should do.
+        if [[ "$active_lane_cap" == "none" ]]; then
+            # The registry answered: this DAC declares no active outputd lane,
+            # so the width gate never ran. Fixed only by choosing a different
+            # layout at /sound/setup/ — re-running anything here cannot change
+            # it. Same literal, same meaning, as the /sound/setup/ save-guard's
+            # refusal reason.
+            graph_status="dac_no_active_lane"
+            active_lane_cap=""
+        elif [[ -n "$active_lane_cap" ]]; then
+            # The gate ran; graph_status carries its own decline reason.
             if active_channels="$(active_graph_status "$active_lane_cap")"; then
                 active_mode=1
             else
@@ -1062,12 +1098,11 @@ apply_audio_runtime_env() {
                 active_channels=""
             fi
         else
-            # Distinguish "the width gate ran and declined" from "this DAC
-            # declares no active outputd lane, so the gate never ran". Both
-            # resolve passive, but only the second is fixed by choosing a
-            # different layout at /sound/setup/ — re-running anything here
-            # cannot change it.
-            graph_status="dac_no_active_lane"
+            # No answer at all on a RECOGNIZED DAC: the lane-cap probe itself
+            # failed (it swallows its own failure so it cannot abort the
+            # reconcile). Transient — the next pass converges — so this must
+            # NOT be reported as the permanent dac_no_active_lane.
+            graph_status="lane_probe_failed"
         fi
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
