@@ -277,6 +277,46 @@ def test_install_sh_writes_output_hardware_before_flat_statefile_seed():
     assert streambox_install < state < render < seed
 
 
+def test_install_sh_installs_camilladsp_before_the_statefile_seed():
+    """#2135: the parked graph's `camilladsp --check` preflight silently no-ops
+    if the binary is not on disk yet.
+
+    `_materialise_parked_muted_config` refuses to write a graph CamillaDSP
+    rejects — but `validate_camilla_config` treats a MISSING binary as
+    `ok_to_apply` (dev hosts and CI have none). So the preflight only protects a
+    real box while `install_camilladsp` (which fetches /opt/camilladsp/camilladsp)
+    runs BEFORE the two statefile seeds. Reorder them and the guard turns into a
+    no-op with no failing test — hence this pin, alongside the output-hardware
+    ordering pin above.
+
+    Compares EVERY call-site occurrence, not the first after an anchor: a stray
+    earlier seed call is exactly the reorder this guards against.
+    """
+    body = INSTALL_SH.read_text()
+
+    def call_sites(name: str) -> list[int]:
+        return [
+            index
+            for index, line in enumerate(body.splitlines())
+            if line.strip().split("#")[0].strip() == name
+        ]
+
+    camilla = call_sites("install_camilladsp")
+    outputd_seed = call_sites("ensure_outputd_camilla_statefile")
+    crossover_seed = call_sites("ensure_crossover_camilla_statefile")
+
+    # One call per install arm (normal + streambox).
+    assert len(camilla) == 2, camilla
+    assert len(outputd_seed) == 2, outputd_seed
+    assert len(crossover_seed) == 2, crossover_seed
+    # Per ARM (the two arms interleave in file order), the binary install comes
+    # first, then outputd's seed, then camilla#2's.
+    for install, seed, cross in zip(
+        camilla, outputd_seed, crossover_seed, strict=True
+    ):
+        assert install < seed < cross, (install, seed, cross)
+
+
 def test_unit_documents_no_config_recovery_path():
     """The recovery path for "bad correction wedges the speaker" is
     to add --no_config to the ExecStart args. Pin the inline doc so

@@ -428,18 +428,28 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
 
+    # Real premise, not a devices=None stub: point BOTH statefile constants at
+    # real parked statefiles and let output_endpoint_evidence_from_statefiles
+    # actually read them. Its verdict on a parked graph is
+    # devices=<populated>, endpoint_recognized=False — a different shape from
+    # the degraded devices=None read, and the one this branch must handle.
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
-        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH",
-        str(statefile),
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
     )
-    monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology",
-        lambda *a, **k: topology,
+    evidence = audio_runtime_plan.output_endpoint_evidence_from_statefiles(
+        str(statefile), str(statefile)
     )
+    assert evidence.devices is not None  # populated...
+    assert evidence.endpoint_recognized is False  # ...but names no outputd lane
+
+    topology_path = tmp_path / "output_topology.json"
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
 
     state = audio_health._read_transport_state(plan)

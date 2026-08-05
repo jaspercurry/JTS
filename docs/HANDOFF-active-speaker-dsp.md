@@ -155,13 +155,26 @@ above; this is only the entry points:
   deploy. What did *not* change: the flat-graph-on-roleful-topology
   refusal, and a staged graph that exists but fails its safety proof
   (that still blocks, with its blockers — a commissioning bug is not a
-  paused household). Recovery is automatic and needs no operator action:
+  paused household), and neither does a topology-level safety blocker such
+  as a channel saved `protection_status="required_missing"`, which makes
+  `classify_output_contract` itself refuse. Parking covers exactly one
+  state: the sole missing piece is the staged startup graph.
+  Recovery is automatic and needs no operator action:
   the parked branch is last in the selector, so the moment commissioning
   stages a startup graph the `select_active_startup` branch wins on the
-  next reconcile/deploy. Surfaces: `jasper-doctor`'s `active speaker
+  next reconcile/deploy. Both exits out of parked work: the parked graph is
+  an accepted `path_safety.restore_classifications` rollback target so
+  `/sound/setup/` can start commissioning on a parked box, and
+  `jasper-output-topology-reset` (and the `/sound/setup/` reset endpoint)
+  converges CamillaDSP in-process over the websocket so a box reset to
+  passive becomes audible immediately instead of at the next deploy.
+  Surfaces: `jasper-doctor`'s `active speaker
   runtime graph` WARNs with the two exits ("finish crossover preview to
-  stage a startup graph, or reset output topology to passive"), and
-  `/state.resilience.active_speaker_parked` carries the same pair.
+  stage a startup graph, or reset output topology to passive" — and on a
+  DAC that declares no active outputd lane, only the reset exit, since
+  commissioning can never complete there),
+  `/state.resilience.active_speaker_parked` carries the same pair, and
+  `/state.audio_health` keeps reporting "Speaker is parked".
 - **The applied baseline candidate is always a content-addressed
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`

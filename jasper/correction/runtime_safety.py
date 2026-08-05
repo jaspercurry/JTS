@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from jasper.active_speaker.runtime_contract import (
     CONTRACT_NORMAL_MONO_FULL_RANGE,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    PARKED_MUTED_STATUS,
     classify_camilla_graph,
     classify_output_contract,
     flat_program_graph_blocked_reason,
@@ -101,6 +102,19 @@ def reset_config_path(
         statefile_path=statefile_path,
         flat_config_path=base,
     )
+    if decision.status == PARKED_MUTED_STATUS:
+        # #2135's parked outcome is NOT a correction reset target. Two reasons,
+        # either sufficient: (1) the path it names is materialised by the
+        # statefile WRITER, so on a box that has not deployed since parking it
+        # may not exist on disk yet, and this function's contract is to return a
+        # path a caller may load; (2) a parked box has no commissioned graph at
+        # all, so "reset room correction" has nothing meaningful to reset TO —
+        # the household's next step is commissioning, not correction. Keep the
+        # pre-#2135 fail-closed raise for this state.
+        raise CorrectionRuntimeSafetyError(
+            "room-correction reset is unavailable while the speaker is parked: "
+            f"{decision.reason}"
+        )
     if decision.ok and decision.selected_config_path:
         return Path(decision.selected_config_path)
     raise CorrectionRuntimeSafetyError(

@@ -172,6 +172,35 @@ PARKED_MUTED_EXITS = (
     "finish crossover preview to stage a startup graph, "
     "or reset output topology to passive"
 )
+# ...except on a DAC that declares no active outputd lane, where the first exit
+# is IMPOSSIBLE: commissioning can never produce a graph that reaches hardware
+# there (jasper.active_speaker.playback_route.active_lane_capability_gap owns
+# that predicate). Naming an impossible action first sends a household down a
+# road with no end, so the capability-aware surfaces use this instead.
+PARKED_MUTED_EXITS_NO_ACTIVE_LANE = (
+    "reset output topology to passive at /sound/setup/ (passive sends "
+    "full-range to every output; requires a built-in passive crossover), "
+    "or attach an active-capable DAC"
+)
+
+
+def parked_muted_exits(topology: OutputTopology | None = None) -> str:
+    """The exits out of parked that are actually reachable on this hardware.
+
+    Fail-soft: any unreadable topology falls back to the general pair rather
+    than raising inside a reporting surface.
+    """
+
+    from jasper.active_speaker.playback_route import active_lane_capability_gap
+
+    try:
+        resolved = topology or load_output_topology_strict()
+        gap = active_lane_capability_gap(resolved)
+    except (OutputTopologyError, OSError, ValueError, TypeError, KeyError):
+        return PARKED_MUTED_EXITS
+    if gap is None:
+        return PARKED_MUTED_EXITS
+    return f"{gap.device_label} cannot drive an active speaker layout — {PARKED_MUTED_EXITS_NO_ACTIVE_LANE}"
 
 # Explicit evidence for frozen in-memory tests/composition inputs that prove an
 # ordinary no-profile baseline. Production persisted hosts obtain the same shape
@@ -329,6 +358,17 @@ class GraphSafety:
 
 @dataclass(frozen=True)
 class SafeGraphDecision:
+    """The graph the runtime contract selects for the saved topology.
+
+    ``selected_config_path`` normally names a config that ALREADY EXISTS on
+    disk. The one exception is ``status == PARKED_MUTED_STATUS`` (#2135): the
+    parked graph is *generated*, so the path names where
+    ``apply_safe_graph_decision_to_statefile`` will materialise it. A read-only
+    caller (one that does not write the statefile) must not assume the file is
+    there yet — ``jasper.correction.runtime_safety.reset_config_path`` refuses
+    the parked status outright for exactly this reason.
+    """
+
     status: str
     selected_config_path: str | None
     reason: str
@@ -2846,6 +2886,35 @@ def _required_output_width(contract: OutputContract) -> int:
     return max(indexes) + 1 if indexes else 0
 
 
+def _parked_pipeline_is_exhaustive(payload: dict[str, Any], width: int) -> bool:
+    """True iff the pipeline is EXACTLY the parked shape and nothing more.
+
+    Whitelist, not blacklist: one leading ``Mixer``, then ``width`` ``Filter``
+    steps, step *i* naming exactly channel *i* and exactly that channel's mute
+    filter. Any surplus step, surplus name, missing step, reorder, or unexpected
+    step type fails. Reading the raw pipeline (not ``GraphView``) is deliberate —
+    ``GraphView`` keeps only ``Filter`` steps, so a ``Mixer``/``Dither``/
+    ``Processor`` appended after the mutes would be invisible to it.
+    """
+
+    if width < 1:
+        return False
+    raw_steps = payload.get("pipeline")
+    if not isinstance(raw_steps, list) or len(raw_steps) != width + 1:
+        return False
+    head, *tail = raw_steps
+    if not isinstance(head, dict) or head.get("type") != "Mixer":
+        return False
+    for index, step in enumerate(tail):
+        if not isinstance(step, dict) or step.get("type") != "Filter":
+            return False
+        if step.get("channels") != [index]:
+            return False
+        if step.get("names") != [_commission_mute_name(index)]:
+            return False
+    return True
+
+
 def _parked_graph_allowed(
     text: str,
     contract: OutputContract,
@@ -2862,18 +2931,29 @@ def _parked_graph_allowed(
     1. ``devices.playback.type`` is ``File``. No DAC is attached, so no driver
        can be over-driven whatever the topology says — the same load-bearing key
        ``_playback_is_program_bake_pipe`` uses for the program-bake exemption.
-    2. The pipeline is exactly one ``Mixer`` step followed by ``Filter`` steps
-       only. A single mixer, first, is what makes fact 3 sufficient: no later
-       stage can re-route an unmuted channel into an already-muted one.
-    3. Every playback channel carries a wired hard mute — a ``Gain`` at
-       ``STARTUP_MUTE_GAIN_DB`` with ``mute: true`` — the same
-       ``output_hard_muted_and_wired`` primitive that proves the staged startup
-       graph's crash-recovery invariant.
+    2. The pipeline is **exhaustively** the parked shape: one leading ``Mixer``
+       step, then exactly ``width`` ``Filter`` steps, step *i* targeting channel
+       *i* alone with ``names`` equal to exactly that channel's mute filter.
+       Nothing else may appear — no extra step, no extra name inside a step, no
+       reordering.
+    3. Every playback channel's mute is a real hard mute — a ``Gain`` at
+       ``STARTUP_MUTE_GAIN_DB`` with ``mute: true`` — proved by the same
+       ``output_hard_muted_and_wired`` primitive the staged startup graph's
+       crash-recovery invariant uses.
     4. The playback width covers every physical output the saved topology
        assigns, so no declared driver sits outside the muted set.
 
-    Facts 1 and 3 are independent: either alone would make the graph silent, and
-    a mutation that defeats one still has to defeat the other.
+    **Why fact 2 must be exhaustive, stated exactly.** Fact 1 alone bounds the
+    damage (a File sink reaches no driver), but it is NOT a substitute for fact
+    3: a graph could be repointed at a DAC by a later edit while the pipeline
+    stayed generous. Earlier revisions of this checker only required that a hard
+    mute be *present somewhere* in each channel's chain, which the review panel
+    falsified three ways — a ``+240 dB`` ``Gain`` appended as a fourth pipeline
+    step, the same gain injected into an existing mute step's ``names`` list
+    (CamillaDSP applies a step's filters in order, so a gain after the mute
+    re-amplifies), and a ``Dither`` step appended (which *generates* signal into
+    a muted channel). All three now fail: anything that is not byte-for-byte the
+    parked shape is refused, so "muted" cannot be undone by addition.
 
     Fails closed on every unmet fact and on an unparseable graph.
     """
@@ -2909,33 +2989,23 @@ def _parked_graph_allowed(
             "parked graph must write to a File sink, never to a DAC",
         ))
 
-    raw_steps = payload.get("pipeline")
-    steps = [step for step in raw_steps if isinstance(step, dict)] if (
-        isinstance(raw_steps, list)
-    ) else []
-    step_types = [str(step.get("type") or "") for step in steps]
-    if (
-        not isinstance(raw_steps, list)
-        or len(steps) != len(raw_steps)
-        or not step_types
-        or step_types[0] != "Mixer"
-        or any(step_type != "Filter" for step_type in step_types[1:])
-    ):
-        issues.append(_issue(
-            "blocker",
-            "parked_graph_pipeline_shape",
-            (
-                "parked graph pipeline must be exactly one leading Mixer "
-                "followed by Filter steps"
-            ),
-        ))
-
     raw_width = summary.get("playback_channels")
     width = (
         int(raw_width)
         if isinstance(raw_width, int) and not isinstance(raw_width, bool)
         else 0
     )
+
+    if not _parked_pipeline_is_exhaustive(payload, width):
+        issues.append(_issue(
+            "blocker",
+            "parked_graph_pipeline_shape",
+            (
+                "parked graph pipeline must be exactly one leading Mixer "
+                "followed by one mute-only Filter step per output"
+            ),
+        ))
+
     required = _required_output_width(contract)
     if width < 1:
         issues.append(_issue(
@@ -3980,6 +4050,14 @@ def safe_graph_for_current_topology(
         # slice; this selector must never pick the pipe bake as a speaker's own
         # output graph.
         and current_graph.classification != GRAPH_PROGRAM_BAKE_PIPE
+        # The PARKED graph (#2135) is the same shape of trap and is excluded for
+        # the same reason: it is legal for ANY topology (File sink, every output
+        # muted), so without this it would be "preserved" forever on a topology
+        # that has just been reset to passive — the box would stay on /dev/null
+        # across deploy after deploy instead of taking the flat cutover. Parking
+        # is a holding state; the only way OUT of it on a passive topology is to
+        # decline to preserve it and fall through to `select_flat` below.
+        and current_graph.classification != GRAPH_PARKED_ALL_MUTED
     ):
         return SafeGraphDecision(
             status="preserve_current",
@@ -4160,16 +4238,12 @@ def safe_graph_for_current_topology(
             topology, config_path=parked_config_path
         )
         if parked_text is not None and parked_graph.allowed:
+            # No `event=` line here: this function is a pure decision and is
+            # also reached by read-only callers. The stable
+            # `event=active_speaker.runtime_graph decision=parked_muted` line is
+            # emitted by `apply_safe_graph_decision_to_statefile`, at the moment
+            # the box is actually parked.
             selected = str(parked_muted_config_path(parked_config_path))
-            log_event(
-                logger,
-                "active_speaker.runtime_graph",
-                decision=PARKED_MUTED_STATUS,
-                reason=PARKED_MUTED_REASON,
-                topology_mode=contract.classification,
-                statefile=str(statefile),
-                config_path=selected,
-            )
             return SafeGraphDecision(
                 status=PARKED_MUTED_STATUS,
                 selected_config_path=selected,
@@ -4187,7 +4261,16 @@ def safe_graph_for_current_topology(
                 "all-muted active startup graph is available"
             ),
         ))
-        issues.extend(parked_graph.issues)
+        # Deduped: the parked verifier re-runs `classify_camilla_graph`, which
+        # prepends the SAME `contract.issues` the current/preferred/staged
+        # classifications already contributed above. Appending them verbatim
+        # printed each topology-level blocker twice in the install transcript.
+        seen = {(issue["code"], issue["message"]) for issue in issues}
+        issues.extend(
+            issue
+            for issue in parked_graph.issues
+            if (issue["code"], issue["message"]) not in seen
+        )
     return SafeGraphDecision(
         status="blocked",
         selected_config_path=None,
@@ -4253,6 +4336,20 @@ def apply_safe_graph_decision_to_statefile(
             decision.selected_config_path,
             topology=topology,
         )
+        # Logged HERE, not at decision time: the decision function is also
+        # reached by read-only callers (`runtime-safe-graph` without
+        # --write-statefile, the correction reset probe, the multiroom follower's
+        # restore candidates), and a `decision=parked_muted` line from those
+        # would read as "the box was just parked" when nothing was written.
+        log_event(
+            logger,
+            "active_speaker.runtime_graph",
+            decision=PARKED_MUTED_STATUS,
+            reason=PARKED_MUTED_REASON,
+            topology_mode=decision.topology_contract.classification,
+            statefile=str(statefile_path),
+            config_path=decision.selected_config_path,
+        )
     current = _statefile_config_path(statefile_path)
     if _path_matches(current, decision.selected_config_path):
         return False
@@ -4267,11 +4364,16 @@ def _materialise_parked_muted_config(
 ) -> None:
     """Write the parked graph to disk, refusing anything not proved all-muted.
 
-    Unconditional (not "only when the statefile changes"): the statefile may
+    Runs on every apply, not only when the statefile changes: the statefile may
     already point here while the config itself is missing — a deleted or
     never-written generated-config dir — and a statefile pointing at a missing
-    config is how CamillaDSP fails to start.
+    config is how CamillaDSP fails to start. It is a NO-OP when the on-disk bytes
+    already match, so the steady state costs one read instead of a new inode plus
+    a ``camilladsp --check`` subprocess on every deploy (twice: outputd's
+    statefile and camilla#2's).
     """
+
+    import tempfile
 
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.dsp_apply import validate_camilla_config
@@ -4285,15 +4387,27 @@ def _materialise_parked_muted_config(
             + "; ".join(issue["code"] for issue in graph.issues)
         )
     target = Path(config_path)
+    try:
+        if target.read_text(encoding="utf-8") == text:
+            return
+    except (OSError, UnicodeError):
+        pass  # absent, unreadable, or not text — fall through and rewrite
     target.parent.mkdir(parents=True, exist_ok=True)
     # CamillaDSP preflight before these bytes become the box's boot graph. An
     # unloadable parked config would crash-loop jasper-camilla, which is a worse
     # outcome than the blocked deploy this whole path replaces — so a rejected
-    # graph degrades back to blocked rather than shipping. Checked on a sibling
-    # temp path so a rejected graph never lands on the real name; a missing
-    # camilladsp binary (dev host, CI) passes through, the same `ok_to_apply`
-    # contract protected staging uses.
-    probe = target.with_name(f".{target.name}.check")
+    # graph degrades back to blocked rather than shipping. Checked on a temp
+    # sibling so a rejected graph never lands on the real name. The name is
+    # per-invocation unique (mkstemp) rather than a fixed dotfile: two writers in
+    # this shared dir — install's outputd and camilla#2 passes, or a concurrent
+    # web flow — would otherwise unlink each other's probe mid-validation. A
+    # missing camilladsp binary (dev host, CI) passes through, the same
+    # `ok_to_apply` contract protected staging uses.
+    handle, probe_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.check-", suffix=".yml"
+    )
+    os.close(handle)
+    probe = Path(probe_name)
     try:
         atomic_write_text(probe, text, mode=0o640)
         validation = validate_camilla_config(probe)

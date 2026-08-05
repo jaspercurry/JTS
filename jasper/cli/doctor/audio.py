@@ -1024,9 +1024,9 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     """Fail closed if a roleful/protected topology is running flat stereo."""
     from jasper.active_speaker.runtime_contract import (
         GRAPH_PARKED_ALL_MUTED,
-        PARKED_MUTED_EXITS,
         classify_bass_extension_graph,
         classify_output_contract,
+        parked_muted_exits,
     )
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
@@ -1081,13 +1081,15 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         # #2135: the box declared roleful outputs but never staged a startup
         # graph, so the deploy parked it silent instead of failing. Nothing is
         # broken and nothing is audible — but the household has to finish (or
-        # undo) commissioning, so this warns rather than passing green.
+        # undo) commissioning, so this warns rather than passing green. The
+        # exits are capability-aware: on a DAC with no active outputd lane
+        # "finish crossover preview" can never succeed, so it is not offered.
         return CheckResult(
             "active speaker runtime graph",
             "warn",
             (
                 f"parked silent for {contract.classification}: "
-                f"{PARKED_MUTED_EXITS}"
+                f"{parked_muted_exits(topology)}"
             ),
         )
     if graph.allowed:

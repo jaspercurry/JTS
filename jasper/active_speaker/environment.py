@@ -53,11 +53,14 @@ ALSA_PROBE_TIMEOUT_SEC = 3.0
 CAMILLA_CLASS_PROGRAM_BAKE = "jts_active_leader_program_bake"
 
 # The PARKED graph (issue #2135): a roleful/protected topology with no staged
-# all-muted startup graph yet, held silent on the active outputd lane with every
-# physical output hard-muted. Its own classification keeps it OFF the
-# commissioning rollback/restore paths (it is not in path_safety's
-# restore_classifications) and off the sound/correction re-emit carriers, while
-# letting classify_camilla_graph route it to the dedicated all-muted verifier.
+# all-muted startup graph yet, held silent behind a File sink with every
+# physical output hard-muted. It targets NO outputd lane at all — that is why it
+# is deliberately absent from runtime_contract's
+# OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS. Its own classification keeps it off the
+# sound/correction re-emit carriers and gives classify_camilla_graph a dedicated
+# all-muted verifier to route to. It IS an accepted rollback/restore target
+# (path_safety.restore_classifications): rolling back to proven silence is the
+# safest restore there is.
 CAMILLA_CLASS_ACTIVE_PARKED = "jts_active_speaker_parked"
 
 _CARD_RE = re.compile(

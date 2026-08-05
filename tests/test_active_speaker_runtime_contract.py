@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 from dataclasses import replace
 import json
 
@@ -3724,3 +3725,246 @@ def test_active_graph_is_parked_reads_provenance_not_the_filename(
     assert active_graph_is_parked(impostor) is False
     assert active_graph_is_parked(tmp_path / "missing.yml") is False
     assert active_graph_is_parked(None) is False
+
+
+# --- #2135 panel round: exit B, and the pipeline exactness the panel escaped --
+
+
+def test_passive_topology_never_preserves_a_parked_graph(tmp_path: Path) -> None:
+    """Blocker F2(a): "reset output topology to passive" must actually exit.
+
+    `preserve_current` keeps ANY allowed current graph on a non-roleful topology,
+    and a parked graph is allowed for every topology — so without an explicit
+    exclusion the box would keep /dev/null across deploy after deploy after
+    being reset to passive. The hearing-safety lens reproduced exactly that for
+    three consecutive decisions.
+    """
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    text, graph = build_parked_muted_graph(
+        _active_topology("mono", "active_2_way"), config_path=parked_path
+    )
+    assert graph.allowed
+    parked_path.write_text(text, encoding="utf-8")
+    flat_path = tmp_path / "outputd-cutover.yml"
+    flat_path.write_text(_flat_yaml(), encoding="utf-8")
+
+    # Same box, one minute later: topology reset to passive, statefile still
+    # pointing at the parked graph.
+    for _attempt in range(3):
+        decision = safe_graph_for_current_topology(
+            _full_range_stereo(),
+            current_config_path=parked_path,
+            flat_config_path=flat_path,
+            parked_config_path=parked_path,
+            **_write_authority(tmp_path),
+        )
+        assert decision.status == "select_flat"
+        assert decision.selected_config_path == str(flat_path)
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate", "code"),
+    [
+        (
+            # Panel M4: a +240 dB Gain appended as an extra pipeline step.
+            "gain_appended_as_extra_step",
+            lambda p: (
+                p["filters"].__setitem__(
+                    "boom", {"type": "Gain", "parameters": {"gain": 240.0, "mute": False}}
+                ),
+                p["pipeline"].append(
+                    {"type": "Filter", "channels": [1], "names": ["boom"]}
+                ),
+            ),
+            "parked_graph_pipeline_shape",
+        ),
+        (
+            # Panel M13: the same gain injected INTO the mute step's names list.
+            # CamillaDSP applies a step's filters in order, so a gain listed
+            # after the mute re-amplifies the muted channel.
+            "gain_injected_after_the_mute_in_one_step",
+            lambda p: (
+                p["filters"].__setitem__(
+                    "boom", {"type": "Gain", "parameters": {"gain": 240.0, "mute": False}}
+                ),
+                p["pipeline"][2].__setitem__(
+                    "names", ["as_out1_commission_mute", "boom"]
+                ),
+            ),
+            "parked_graph_pipeline_shape",
+        ),
+        (
+            # Panel M15: a Dither step GENERATES signal into a muted channel.
+            "dither_appended_generates_signal",
+            lambda p: (
+                p["filters"].__setitem__(
+                    "dith", {"type": "Dither", "parameters": {"type": "Simple", "bits": 16}}
+                ),
+                p["pipeline"].append(
+                    {"type": "Filter", "channels": [1], "names": ["dith"]}
+                ),
+            ),
+            "parked_graph_pipeline_shape",
+        ),
+        (
+            "mute_steps_reordered",
+            lambda p: p["pipeline"].__setitem__(
+                slice(1, 3), [p["pipeline"][2], p["pipeline"][1]]
+            ),
+            "parked_graph_pipeline_shape",
+        ),
+        (
+            "one_mute_step_dropped",
+            lambda p: p["pipeline"].pop(),
+            "parked_graph_pipeline_shape",
+        ),
+    ],
+)
+def test_parked_verifier_admits_nothing_after_the_mutes(
+    label: str,
+    mutate,
+    code: str,
+) -> None:
+    """F3: the pipeline must be EXHAUSTIVELY the parked shape.
+
+    An earlier revision only required a hard mute to be present somewhere in
+    each channel's chain, which the review panel escaped three ways — all of
+    them adding signal AFTER the mute. A whitelist closes the class: anything
+    that is not byte-for-byte the parked shape is refused.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    text, base = build_parked_muted_graph(topology)
+    assert base.allowed is True
+
+    payload = yaml.safe_load(text)
+    mutate(payload)
+    mutated = _classify_camilla_graph(
+        topology=topology, text=_reserialise_parked(text, payload)
+    )
+
+    assert mutated.allowed is False, label
+    assert code in {issue["code"] for issue in mutated.issues}, label
+
+
+def test_parked_decision_emits_no_event_until_something_is_written(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """n1: read-only callers must not log `decision=parked_muted`.
+
+    `safe_graph_for_current_topology` is also reached by the correction reset
+    probe, the multiroom follower's restore candidates, and `runtime-safe-graph`
+    without --write-statefile. A line from those would read as "the box was just
+    parked" when nothing changed.
+    """
+    import logging
+
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /nonexistent.yml\n", encoding="utf-8")
+
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.runtime_contract"):
+        decision = safe_graph_for_current_topology(
+            topology,
+            statefile_path=statefile,
+            parked_config_path=parked_path,
+            **_write_authority(tmp_path),
+        )
+    assert decision.status == PARKED_MUTED_STATUS
+    assert "decision=parked_muted" not in caplog.text
+
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.runtime_contract"):
+        apply_safe_graph_decision_to_statefile(
+            decision, statefile_path=statefile, topology=topology
+        )
+    assert "active_speaker.runtime_graph" in caplog.text
+    assert "decision=parked_muted" in caplog.text
+
+
+def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """n2: no new inode and no `camilladsp --check` subprocess in steady state.
+
+    install runs this twice per deploy (outputd's statefile and camilla#2's), so
+    an unconditional rewrite meant two validation subprocesses and two inode
+    churns on every deploy of an already-parked box.
+    """
+    import jasper.dsp_apply as dsp_apply_mod
+
+    topology = _active_topology("mono", "active_2_way")
+    parked_path = tmp_path / "active_speaker_parked.yml"
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text("config_path: /nonexistent.yml\n", encoding="utf-8")
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+
+    validations: list[str] = []
+    real_validate = dsp_apply_mod.validate_camilla_config
+    monkeypatch.setattr(
+        dsp_apply_mod,
+        "validate_camilla_config",
+        lambda path: (validations.append(str(path)), real_validate(path))[1],
+    )
+
+    apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    )
+    assert len(validations) == 1
+    first_inode = parked_path.stat().st_ino
+
+    apply_safe_graph_decision_to_statefile(
+        decision, statefile_path=statefile, topology=topology
+    )
+    assert len(validations) == 1, "second apply revalidated identical bytes"
+    assert parked_path.stat().st_ino == first_inode
+    assert not list(tmp_path.glob(".*check*"))
+
+
+def test_parked_blocked_path_does_not_repeat_topology_issues(
+    tmp_path: Path,
+) -> None:
+    """n5: the parked verifier re-runs the classifier, which re-prepends
+    contract.issues that the current/preferred/staged classifications already
+    contributed. Appending them verbatim printed each blocker twice."""
+    topology = _active_topology("mono", "active_2_way")
+    # A topology-level blocker makes classify refuse, so parking cannot happen
+    # and the blocked branch collects issues from every classification.
+    broken = replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, protection_status="required_missing")
+                    if channel.role == "tweeter"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+    decision = safe_graph_for_current_topology(
+        broken,
+        statefile_path=tmp_path / "outputd-statefile.yml",
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == "blocked"
+    codes = collections.Counter(issue["code"] for issue in decision.issues)
+    # The topology-level blocker is reported ONCE. Without the dedupe the parked
+    # verifier's own `classify_camilla_graph` call re-prepends the identical
+    # `contract.issues` and the operator sees it twice in the install transcript.
+    assert codes["tweeter_protection_unverified"] == 1
+    assert codes["active_startup_graph_missing"] == 1
+    # NOT asserted: total uniqueness. `bass_extension_snapshot_unstable` is
+    # reported once per classification (current / preferred / staged) and that
+    # pre-dates #2135 — it is issue #2135 item 3, deliberately untouched here.

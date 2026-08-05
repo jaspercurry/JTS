@@ -512,11 +512,15 @@ What exists:
   by a wider flat stereo graph, and any topology with a tweeter, protected
   output, or subwoofer roleful assignment must preserve/select a matching
   all-muted active startup graph. Guarded commissioning graphs are active test
-  surfaces, not persisted boot/deploy fallbacks. If no guarded graph has been
-  staged at all, install and recovery helpers seed the generated DAC-less
-  all-muted **parked** graph (issue #2135) instead of repointing Camilla at
-  flat stereo; a staged graph that exists but fails its safety proof still
-  fails closed. `jasper-doctor` uses the same runtime classifier and
+  surfaces, not persisted boot/deploy fallbacks. When the SOLE missing piece is
+  the staged startup graph, install and recovery helpers seed the generated
+  DAC-less all-muted **parked** graph (issue #2135) instead of repointing
+  Camilla at flat stereo. Parking is deliberately narrow: a staged graph that
+  exists but fails its safety proof still fails closed, and so does a
+  topology-level safety blocker (for example a channel saved
+  `protection_status="required_missing"`, which makes the contract itself
+  refuse) — those are unsafe states, not a paused household, and they must stay
+  visible. `jasper-doctor` uses the same runtime classifier and
   reports a failure when a saved tweeter/protected topology is running
   `outputd-cutover.yml`, `v1.yml`, or another flat full-range graph.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send

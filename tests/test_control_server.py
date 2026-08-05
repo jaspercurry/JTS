@@ -246,36 +246,89 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
     assert payload["reason"] is None
 
 
-def test_state_resilience_active_speaker_parked_snapshot(tmp_path) -> None:
-    # #2135: /state.resilience surfaces the parked state so a dashboard or an
-    # operator can see "deliberately silent, finish commissioning" without
-    # running the doctor. Two keys only — the config path is already in
-    # /state.audio, so it is not restated here.
+def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """#2135: /state.resilience reports the parked state from the STATEFILE.
+
+    Its two sibling surfaces (jasper-doctor's `active speaker runtime graph`,
+    audio_health's parked transport reason) both key on the statefile. Keying
+    this one on the LIVE CamillaDSP config path instead would make /state report
+    parked:false on a parked box whenever CamillaDSP is down — the exact moment
+    an operator is most likely to be reading /state.
+    """
     from jasper.active_speaker.runtime_contract import (
-        PARKED_MUTED_EXITS,
         build_parked_muted_graph,
+        parked_muted_exits,
     )
     from tests.test_active_speaker_runtime_contract import _active_topology
 
-    text, graph = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    topology = _active_topology("mono", "active_2_way")
+    text, graph = build_parked_muted_graph(topology)
     assert graph.allowed
     parked = tmp_path / "active_speaker_parked.yml"
     parked.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
 
-    snapshot = state_aggregate._active_speaker_parked_snapshot(str(parked))
-    assert snapshot == {"parked": True, "detail": PARKED_MUTED_EXITS}
+    assert state_aggregate._active_speaker_parked_snapshot() == {
+        "parked": True,
+        "detail": parked_muted_exits(topology),
+    }
 
+    # Not-parked: the same statefile pointing at an ordinary generated config.
     other = tmp_path / "sound_current.yml"
     other.write_text("devices:\n  volume_limit: 0.0\n", encoding="utf-8")
-    assert state_aggregate._active_speaker_parked_snapshot(str(other)) == {
+    statefile.write_text(f"config_path: {other}\n", encoding="utf-8")
+    assert state_aggregate._active_speaker_parked_snapshot() == {
         "parked": False,
         "detail": None,
     }
-    # Fail-soft: an unreadable path reads as not-parked rather than raising.
-    assert state_aggregate._active_speaker_parked_snapshot(None) == {
+
+    # Fail-soft: an unreadable statefile reads as not-parked, never raises.
+    statefile.unlink()
+    assert state_aggregate._active_speaker_parked_snapshot() == {
         "parked": False,
         "detail": None,
     }
+
+
+def test_state_resilience_parked_detail_drops_an_impossible_exit(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """On a DAC with no active outputd lane, "finish crossover preview" is a
+    road with no end — the detail must not lead with it."""
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_audio_health import _innomaker_active_two_way
+
+    topology = _innomaker_active_two_way()
+    text, _graph = build_parked_muted_graph(topology)
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+    # Real premise, no stub of the module under test: persist the topology and
+    # point the loader's env at it, the way the doctor suites do.
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    snapshot = state_aggregate._active_speaker_parked_snapshot()
+
+    assert snapshot["parked"] is True
+    assert "finish crossover preview" not in snapshot["detail"]
+    assert "InnoMaker HiFi AMP Pro" in snapshot["detail"]
+    assert "reset output topology to passive" in snapshot["detail"]
 
 
 def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:
@@ -284,9 +337,17 @@ def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:
         REPO_ROOT / "jasper" / "control" / "state_aggregate.py"
     ).read_text()
     assert (
-        '"active_speaker_parked": _active_speaker_parked_snapshot('
+        '"active_speaker_parked": _active_speaker_parked_snapshot()'
         in aggregate_src
     )
+    # The source is the contract: keyed on the statefile, never on the live
+    # CamillaDSP path that /state.audio reports.
+    snapshot_src = aggregate_src.split(
+        "def _active_speaker_parked_snapshot("
+    )[1].split("\ndef ")[0]
+    assert "read_camilla_statefile_config_path" in snapshot_src
+    assert "DEFAULT_CAMILLA_STATEFILE_PATH" in snapshot_src
+    assert "active_config_path" not in snapshot_src
 
 
 def test_level_match_provisional_none_when_no_applied_baseline() -> None:

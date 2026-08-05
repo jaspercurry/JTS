@@ -120,5 +120,15 @@ if [ "$playback_filename" = "$SNAPFIFO" ]; then
         "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
 fi
 
+# A File sink that is not the snapserver FIFO. Since #2135 the common case is
+# the PARKED graph (/dev/null, every output hard muted) on a roleful topology
+# that has not staged a startup graph yet — not an unrecognised bonded pipe. Both
+# are "nothing for this guard to repair", but they need distinguishable labels or
+# a parked box reads as a mystery pipe in the journal.
+if [ "$playback_filename" = "/dev/null" ]; then
+    log ok reason=parked_null_sink
+    exit 0
+fi
+
 log ok reason=non_snapcast_playback_pipe
 exit 0
