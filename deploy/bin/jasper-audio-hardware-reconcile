@@ -33,12 +33,18 @@ ACTIVE_OUTPUTD_PLAYBACK_DEVICE="outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE=""
 ACTIVE_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
+I2S_HAT_INTENT_FILE="${JASPER_I2S_HAT_INTENT_FILE:-/var/lib/jasper/i2s_hat.env}"
+I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper-output-hardware/i2s-hat-reboot-required}"
+INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
+I2S_HAT_DESIRED_PROFILE=""
+I2S_HAT_BOOT_CHANGED=""
+I2S_HAT_APPLY_ERROR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
@@ -178,6 +184,7 @@ observe_output_hardware_state() {
     local should_write="${1:-0}"
     local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason
     local action="observed" write_arg=""
+    OBSERVED_OUTPUT_VALID=0
     if [[ "$should_write" == "1" ]]; then
         write_arg="--write"
         action="written"
@@ -194,10 +201,17 @@ observe_output_hardware_state() {
         log_event "state_${action}_failed" "path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
-    OBSERVED_OUTPUT_PAYLOAD="$payload"
     profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
     selected_card_id="$(printf '%s' "$payload" | sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p')"
+    if ! "$OUTPUT_HARDWARE_PYTHON" -c \
+        'import json, sys; data=json.load(sys.stdin); sys.exit(0 if isinstance(data, dict) else 1)' <<<"$payload" >/dev/null 2>&1 ||
+       [[ -z "$profile_id" || -z "$profile_status" ]]; then
+        log_event "state_${action}_failed" "reason=invalid_payload path=${OUTPUT_HARDWARE_STATE_PATH}"
+        return 0
+    fi
+    OBSERVED_OUTPUT_VALID=1
+    OBSERVED_OUTPUT_PAYLOAD="$payload"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
     OBSERVED_OUTPUT_SELECTED_CARD_ID="$selected_card_id"
@@ -215,6 +229,63 @@ observe_output_hardware_state() {
         "${usb_topology:-unknown}" "${usb_desired:-unknown}" \
         "${usb_active:-unknown}" "${usb_available:-false}" \
         "${usb_management:-false}" "${usb_reason:-state_missing}" >&2
+}
+
+reconcile_i2s_hat_boot() {
+    local install_profile="full" payload topology changed
+    if [[ -r "$INSTALL_PROFILE_FILE" ]]; then
+        install_profile="$(sed -n '1{s/[[:space:]]//g;p;}' "$INSTALL_PROFILE_FILE")"
+    fi
+    if [[ "$install_profile" == "streambox" ||
+          "$install_profile" == "endpoint" ||
+          "$install_profile" == "satellite" ]]; then
+        log_event "i2s_hat_apply" "result=unavailable install_profile=${install_profile}"
+        return 0
+    elif [[ -n "$install_profile" && "$install_profile" != "full" ]]; then
+        log_event "i2s_hat_apply" "result=error error=invalid_install_profile"
+        exit 66
+    fi
+    if payload="$(
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.usb_port_role \
+            --reconcile-boot \
+            --i2s-hat-intent-file "$I2S_HAT_INTENT_FILE"
+    )"; then
+        :
+    elif [[ "$payload" == *'"boot_config_published_not_durable": true'* ]]; then
+        I2S_HAT_APPLY_ERROR=1
+    else
+        log_event "i2s_hat_apply" "result=error action=preserve_boot_config"
+        exit 66
+    fi
+    topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
+    I2S_HAT_DESIRED_PROFILE="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_profile": *"\([^"]*\)".*/\1/p')"
+    changed="$(printf '%s' "$payload" | sed -n 's/.*"i2s_hat_boot_config_changed": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
+    case "$changed" in true|false) ;; *) exit 66 ;; esac
+    if [[ "$topology" == "unsupported" ]]; then
+        log_event "i2s_hat_apply" "result=unavailable board_topology=unsupported"
+        return 0
+    fi
+    I2S_HAT_BOOT_CHANGED="$changed"
+    if [[ "$I2S_HAT_APPLY_ERROR" == "1" ]]; then
+        log_event "i2s_hat_apply" "result=error error=boot_config_published_not_durable"
+        return 0
+    fi
+    log_event "i2s_hat_apply" "result=${changed:-unknown} profile=${I2S_HAT_DESIRED_PROFILE:-auto}"
+}
+
+sync_i2s_hat_reboot_marker() {
+    local runtime_enabled=0 desired_enabled=0
+    [[ -n "$I2S_HAT_BOOT_CHANGED" && "$OBSERVED_OUTPUT_VALID" == "1" ]] || return 0
+    [[ "$OBSERVED_OUTPUT_PROFILE_ID" == "innomaker_hifi_amp_pro" ||
+       "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*'"device_id": "innomaker_hifi_amp_pro"'*']'* ]] && runtime_enabled=1
+    [[ "$I2S_HAT_DESIRED_PROFILE" == "innomaker_hifi_amp_pro" ]] && desired_enabled=1
+    if [[ "$runtime_enabled" == "$desired_enabled" ]]; then
+        rm -f -- "$I2S_HAT_REBOOT_REQUIRED_PATH"
+        return 0
+    fi
+    [[ "$I2S_HAT_BOOT_CHANGED" == "true" ]] || return 0
+    install -d -m 0755 "$(dirname "$I2S_HAT_REBOOT_REQUIRED_PATH")"
+    install -m 0644 /dev/null "$I2S_HAT_REBOOT_REQUIRED_PATH"
 }
 
 env_file_value() {
@@ -962,7 +1033,10 @@ if [[ "$PRINT_ENV" == "1" ]]; then
     print_env
     exit 0
 fi
+reconcile_i2s_hat_boot
 observe_output_hardware_state 1
+sync_i2s_hat_reboot_marker
+[[ "$I2S_HAT_APPLY_ERROR" != "1" ]] || exit 74
 apply_observed_single_policy
 apply_observed_composite_policy
 

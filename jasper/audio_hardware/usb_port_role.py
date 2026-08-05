@@ -21,17 +21,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
+from jasper.env_file import parse_env_lines
 
-from .dac import DacProfile, all_profiles, by_id
+from .dac import INNOMAKER_HIFI_AMP_PRO_ID, DacProfile, all_profiles, by_id
 
 
 DEFAULT_MODEL_PATH = "/proc/device-tree/model"
 DEFAULT_BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
 DEFAULT_UDC_CLASS_DIR = "/sys/class/udc"
+DEFAULT_I2S_HAT_INTENT_PATH = "/var/lib/jasper/i2s_hat.env"
+I2S_HAT_INTENT_KEY = "JASPER_I2S_HAT_PROFILE"
 
 MANAGED_BLOCK_BEGIN = "# BEGIN JTS USB DATA ROLE"
 MANAGED_BLOCK_END = "# END JTS USB DATA ROLE"
+I2S_HAT_BLOCK_BEGIN = "# BEGIN JTS I2S AUDIO HAT"
+I2S_HAT_BLOCK_END = "# END JTS I2S AUDIO HAT"
 
 BoardUsbTopology = Literal[
     "shared_otg_port",
@@ -291,6 +296,43 @@ def configured_i2s_overlays(
     return tuple(sorted(overlays & registered))
 
 
+def read_i2s_hat_intent(
+    path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
+) -> str | None:
+    try:
+        text = read_regular_bytes_nofollow(path, max_bytes=1024).decode("utf-8")
+    except FileNotFoundError:
+        return None
+    values = {
+        key: (value or "").strip().strip("'\"")
+        for key, value in parse_env_lines(text)
+    }
+    if set(values) - {I2S_HAT_INTENT_KEY}:
+        raise ValueError("I2S HAT intent contains an unsupported key")
+    choice = values.get(I2S_HAT_INTENT_KEY)
+    if not choice:
+        return None
+    if choice != INNOMAKER_HIFI_AMP_PRO_ID:
+        raise ValueError("I2S HAT intent names an unsupported profile")
+    return INNOMAKER_HIFI_AMP_PRO_ID
+
+
+def write_i2s_hat_intent(
+    enabled: bool,
+    path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
+) -> None:
+    target = Path(path)
+    if not enabled:
+        target.unlink(missing_ok=True)
+        return
+    atomic_write_text(
+        target,
+        f"{I2S_HAT_INTENT_KEY}={INNOMAKER_HIFI_AMP_PRO_ID}\n",
+        mode=0o660,
+        group_from_parent=True,
+    )
+
+
 def resolve_usb_port_role(
     *,
     board_model: str,
@@ -497,6 +539,73 @@ def _without_managed_role_lines(content: str) -> str:
     return "".join(output)
 
 
+def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
+    output: list[str] = []
+    section = "global"
+    in_managed_block = False
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped == I2S_HAT_BLOCK_BEGIN:
+            if in_managed_block:
+                raise ValueError("nested JTS I2S audio-HAT block")
+            in_managed_block = True
+            continue
+        if stripped == I2S_HAT_BLOCK_END:
+            if not in_managed_block:
+                raise ValueError("JTS I2S audio-HAT block ends without a beginning")
+            in_managed_block = False
+            continue
+        if in_managed_block:
+            if stripped and not stripped.startswith("#"):
+                match = _OVERLAY_LINE_RE.match(line)
+                if (
+                    match is None
+                    or match.group(1).lower() != overlay.lower()
+                    or "," in line.split("#", 1)[0]
+                ):
+                    raise ValueError("unexpected directive in JTS I2S HAT block")
+            continue
+        match = _SECTION_RE.match(line)
+        if match:
+            section = match.group(1).strip().lower()
+            output.append(line)
+            continue
+        overlay_match = _OVERLAY_LINE_RE.match(line)
+        if (
+            section in {"global", "all"}
+            and overlay_match is not None
+            and overlay_match.group(1).lower() == overlay.lower()
+        ):
+            if "," in line.split("#", 1)[0]:
+                raise ValueError(f"ambiguous {overlay} overlay parameters")
+            continue
+        output.append(line)
+    if in_managed_block:
+        raise ValueError("JTS I2S audio-HAT block is missing its end marker")
+    return "".join(output)
+
+
+def render_i2s_hat_boot_config(content: str, profile_id: str | None) -> str:
+    if profile_id not in {None, INNOMAKER_HIFI_AMP_PRO_ID}:
+        raise ValueError("unsupported I2S audio-HAT profile")
+    profile = by_id(INNOMAKER_HIFI_AMP_PRO_ID)
+    if profile is None or profile.connection != "i2s" or not profile.dtoverlay:
+        raise ValueError("InnoMaker HAT profile is missing its I2S overlay metadata")
+    cleaned = _without_managed_i2s_hat(content, overlay=profile.dtoverlay).rstrip()
+    if profile_id is None:
+        return cleaned + ("\n" if cleaned else "")
+    last_line = cleaned.splitlines()[-1].strip().lower() if cleaned else ""
+    section_prefix = "" if last_line == "[all]" else "[all]\n"
+    separator = "\n" if last_line == "[all]" else "\n\n"
+    block = section_prefix + (
+        f"{I2S_HAT_BLOCK_BEGIN}\n"
+        f"# JTS hardware reconciliation: enable {profile.label}.\n"
+        f"dtoverlay={profile.dtoverlay}\n"
+        f"{I2S_HAT_BLOCK_END}\n"
+    )
+    return f"{cleaned}{separator}{block}" if cleaned else block
+
+
 def render_boot_config(content: str, desired_role: UsbDataRole) -> str:
     if desired_role == "unknown":
         return content
@@ -525,7 +634,11 @@ def reconcile_boot_config(
     model_path: str | Path,
     boot_config_path: str | Path,
     udc_class_dir: str | Path,
-) -> tuple[UsbPortRoleState, bool]:
+    i2s_hat_intent_path: str | Path | None = None,
+) -> tuple[UsbPortRoleState, bool, bool, str | None, bool]:
+    desired_profile = None
+    if i2s_hat_intent_path is not None:
+        desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
     config_path = Path(boot_config_path)
     if not config_path.is_file():
         state = resolve_system_usb_port_role(
@@ -533,33 +646,59 @@ def reconcile_boot_config(
             boot_config_path=boot_config_path,
             udc_class_dir=udc_class_dir,
         )
-        return state, False
+        if i2s_hat_intent_path is not None and state.board_topology != "unsupported":
+            raise FileNotFoundError(f"boot config does not exist: {config_path}")
+        return state, False, False, desired_profile, False
     original = config_path.read_text(encoding="utf-8")
     initial = resolve_usb_port_role(
         board_model=_read_text(model_path),
         boot_config=original,
         active_role=observed_active_role(udc_class_dir),
     )
-    rendered = render_boot_config(original, initial.desired_role)
+    if initial.board_topology == "unsupported":
+        return initial, False, False, desired_profile, False
+    hat_changed = False
+    with_hat = original
+    if i2s_hat_intent_path is not None:
+        profile = by_id(INNOMAKER_HIFI_AMP_PRO_ID)
+        if profile is None or not profile.dtoverlay:
+            raise ValueError("InnoMaker HAT profile has no boot overlay")
+        hat_changed = (
+            profile.dtoverlay in configured_i2s_overlays(original)
+        ) != (desired_profile is not None)
+        with_hat = render_i2s_hat_boot_config(original, desired_profile)
+    desired_role = resolve_usb_port_role(
+        board_model=initial.board_model,
+        boot_config=with_hat,
+        active_role=initial.active_role,
+    ).desired_role
+    rendered = render_boot_config(with_hat, desired_role)
     changed = rendered != original
+    durability_failed = False
     if changed:
-        atomic_write_text(
-            config_path,
-            rendered,
-            mode=stat.S_IMODE(config_path.stat().st_mode),
-            durable=True,
-        )
+        try:
+            atomic_write_text(
+                config_path,
+                rendered,
+                mode=stat.S_IMODE(config_path.stat().st_mode),
+                durable=True,
+            )
+        except OSError:
+            if config_path.read_text(encoding="utf-8") != rendered:
+                raise
+            durability_failed = True
     state = resolve_usb_port_role(
         board_model=initial.board_model,
         boot_config=rendered,
         active_role=initial.active_role,
     )
-    return state, changed
+    return state, changed, hat_changed, desired_profile, durability_failed
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reconcile-boot", action="store_true")
+    parser.add_argument("--i2s-hat-intent-file")
     parser.add_argument("--require-management-transport", action="store_true")
     parser.add_argument(
         "--model-file",
@@ -574,12 +713,17 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
     )
     args = parser.parse_args(argv)
+    hat_changed = False
+    desired_hat_profile: str | None = None
+    durability_failed = False
     if args.reconcile_boot:
-        state, changed = reconcile_boot_config(
+        result = reconcile_boot_config(
             model_path=args.model_file,
             boot_config_path=args.boot_config,
             udc_class_dir=args.udc_class_dir,
+            i2s_hat_intent_path=args.i2s_hat_intent_file,
         )
+        state, changed, hat_changed, desired_hat_profile, durability_failed = result
     else:
         state = resolve_system_usb_port_role(
             model_path=args.model_file,
@@ -597,6 +741,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if state.management_transport_available else 1
     fields = state.to_dict()
     fields["boot_config_changed"] = changed
+    if args.i2s_hat_intent_file:
+        fields["i2s_hat_profile"] = desired_hat_profile or ""
+        fields["i2s_hat_boot_config_changed"] = hat_changed
+        fields["boot_config_published_not_durable"] = durability_failed
     print(json.dumps(fields, sort_keys=True))
     print(
         "event=hardware.usb_role_resolved "
@@ -612,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
             "event=hardware.boot_config_changed "
             f"reboot_required={int(state.reboot_required)}"
         )
-    return 0
+    return os.EX_IOERR if durability_failed else 0
 
 
 if __name__ == "__main__":

@@ -89,6 +89,13 @@ from typing import Any, Awaitable, Callable, Mapping
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_SUBSTREAM as VOLUME_FLOOR_TONE_ALSA_DEVICE,
 )
+from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID, by_id as dac_by_id
+from jasper.audio_hardware.usb_port_role import (
+    DEFAULT_I2S_HAT_INTENT_PATH,
+    read_i2s_hat_intent,
+    write_i2s_hat_intent,
+)
+from jasper.install_profile import FULL_INSTALL_PROFILE, read_install_profile
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -179,6 +186,7 @@ from jasper.sound.settings import (
 from jasper.volume_curve import percent_to_db
 
 from ._common import (
+    JsonBodyError,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
@@ -186,8 +194,10 @@ from ._common import (
     guard_mutating_request,
     guard_read_request,
     json_island,
+    read_json_object,
     reject_csrf,
     send_html_response,
+    send_json_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -205,6 +215,8 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
 })
 
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
+I2S_HAT_REBOOT_REQUIRED_PATH = "/run/jasper-output-hardware/i2s-hat-reboot-required"
+I2S_HAT_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 MAX_JSON_BYTES = 64 * 1024
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
 VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
@@ -343,6 +355,71 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     return hardware.to_dict() if hardware is not None else None
 
 
+def _i2s_hat_payload(
+    *,
+    intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
+) -> dict[str, Any]:
+    profile = dac_by_id(INNOMAKER_HIFI_AMP_PRO_ID)
+    if profile is None:
+        raise RuntimeError("supported I2S HAT profile is missing")
+    hardware = _output_hardware_dict() or {}
+    hidden = read_install_profile() != FULL_INSTALL_PROFILE
+    topology = str(
+        (hardware.get("usb_data_role") or {}).get("board_topology") or "unknown"
+    )
+    available = not hidden and topology in {"shared_otg_port", "separate_host_ports"}
+    reason = ""
+    if hidden:
+        reason = "I²S HAT setup is unavailable on Streambox installs."
+    elif not available:
+        reason = "I²S HAT setup requires a recognized Raspberry Pi."
+    intent_error = ""
+    try:
+        desired_profile = read_i2s_hat_intent(intent_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        desired_profile = None
+        intent_error = str(exc)
+    runtime_active = hardware.get("profile_id") == profile.id or any(
+        child.get("device_id") == profile.id
+        for child in hardware.get("child_devices", ())
+    )
+    return {
+        "visibility": "hidden" if hidden else "visible",
+        "available": available,
+        "reason": reason,
+        "intent_error": intent_error,
+        "profile_label": profile.label,
+        "desired_enabled": desired_profile == profile.id,
+        "runtime_active": runtime_active,
+        "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
+    }
+
+
+def _save_i2s_hat_payload(enabled: bool) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    from jasper.control.restart_broker import manage_units
+
+    with _sound_state_write_lock:
+        status = _i2s_hat_payload()
+        if not status["available"]:
+            raise ValueError(status["reason"] or "I²S HAT setup is unavailable")
+        write_i2s_hat_intent(enabled)
+        try:
+            result = manage_units(
+                I2S_HAT_RECONCILE_UNIT,
+                verb="start",
+                reason="sound i2s hat setting",
+                no_block=False,
+                timeout=55.0,
+            )
+        except (OSError, RuntimeError) as exc:
+            result = {"ok": False, "error": str(exc)}
+        payload = _i2s_hat_payload()
+    outcome = "applied" if result.get("ok") else "error"
+    desired = "enabled" if enabled else "auto"
+    log_event(logger, "sound.i2s_hat", result=outcome, desired=desired)
+    return payload, result
+
+
 def _output_topology_revision() -> str:
     """Content revision for optimistic concurrency on /sound topology writes."""
 
@@ -361,6 +438,7 @@ def _output_topology_payload() -> dict[str, Any]:
         "output_topology": topology.to_dict(include_evaluation=True),
         "topology_revision": _output_topology_revision(),
         "output_hardware": _output_hardware_dict(),
+        "i2s_hat": _i2s_hat_payload(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
         "active_playback_route": _active_speaker_playback_route_payload(topology),
@@ -4721,24 +4799,11 @@ def _make_handler(
             send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
             self._json_response_started = True
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_json_response(self, payload, status=status)
 
         def _read_json(self, *, max_bytes: int = MAX_JSON_BYTES) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or "0")
-            if length < 0:
-                raise ValueError("invalid Content-Length")
-            if length > max_bytes:
-                raise ValueError("request body too large")
-            if not length:
-                return {}
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            return read_json_object(self, max_bytes=max_bytes)
 
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
@@ -5018,6 +5083,7 @@ def _make_handler(
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
+                "/i2s-hat",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -5042,6 +5108,23 @@ def _make_handler(
                 return
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
+                if path == "/i2s-hat":
+                    enabled = raw.get("enabled")
+                    if not isinstance(enabled, bool):
+                        self._send_json(
+                            {"error": "enabled must be a boolean"}, status=400
+                        )
+                        return
+                    try:
+                        payload, result = _save_i2s_hat_payload(enabled)
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_json({"error": str(e)}, status=502)
+                        return
+                    if not result.get("ok"):
+                        error = result.get("error") or result.get("stderr")
+                        payload["error"] = str(error or "hardware apply failed")
+                    self._send_json(payload, status=200 if result.get("ok") else 502)
+                    return
                 if path == "/active-speaker/stop":
                     self._send_json(_active_speaker_stop_payload())
                     return
@@ -5491,7 +5574,7 @@ def _make_handler(
                 else:
                     raw_profile = raw
                 profile = SoundProfile.from_mapping(raw_profile)
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
+            except (JsonBodyError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
                 self._send_json({"error": str(e)}, status=400)
                 return
             except (OSError, RuntimeError) as e:

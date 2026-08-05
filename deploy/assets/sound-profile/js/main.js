@@ -81,6 +81,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     match_loudness: false,
     volume_floor_db: volumeFloorDefault()
   };  // global output settings
+  var i2sHat = null;
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
   var curvesById = {};
@@ -548,13 +549,42 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderFollower() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
-      renderOutputTopologySetup() +
+      renderI2sHatSetting() + renderOutputTopologySetup() +
       '</section></div>';
   }
 
   function renderSetup() {
     el('view-body').innerHTML = '<div class="saved-stack">' +
-      renderSetupSoundSettings() + renderActiveSpeakerSetup() + '</div>';
+      renderI2sHatSetting() + renderSetupSoundSettings() +
+      renderActiveSpeakerSetup() + '</div>';
+  }
+
+  function renderI2sHatSetting() {
+    var hat = i2sHat;
+    if (!hat || hat.visibility === 'hidden') return '';
+    var desired = hat.desired_enabled ? 'Enabled' : 'Auto / Off';
+    var runtime = hat.runtime_active ? 'Active now' : 'Not active now';
+    var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
+    return '<section class="sound-settings">' +
+      '<div class="setting-row setting-row--stack">' +
+        '<div class="setting-row">' +
+          '<div class="setting-row__text">' +
+            '<p class="setting-row__title">Enable I²S audio HAT</p>' +
+            '<p class="setting-row__hint">Use the supported ' + escapeHtml(hat.profile_label) +
+              ' boot setting. Saved: ' + desired + '. Detected: ' + runtime + '.</p>' +
+          '</div>' +
+          '<label class="toggle"><input type="checkbox" id="set-i2s-hat"' +
+            (hat.desired_enabled ? ' checked' : '') + (!hat.available ? ' disabled' : '') +
+            ' aria-label="Enable I²S audio HAT"><span class="track"></span></label>' +
+        '</div>' +
+        (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
+        (hat.restart_required ? '<div class="info-card info-card--accent" role="status">' +
+          '<p><strong>Restart required.</strong> The saved boot setting changed.</p>' +
+          '<a class="btn btn--primary" href="/system/">Open Restart control</a></div>' : '') +
+        '<p class="setting-row__hint"><strong>Hardware safety:</strong> Shut down and remove all power ' +
+          'before installing or removing the HAT. Never power through the HAT and USB-C at the same time. ' +
+          'Never hot-plug. Start the first playback at a very low level.</p>' +
+      '</div></section>';
   }
 
   function renderOff() {
@@ -4357,6 +4387,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
 
+  async function saveI2sHat(input) {
+    input.disabled = true;
+    try {
+      var resp = await fetch('./i2s-hat', {
+        method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify({enabled: input.checked})
+      });
+      var payload = await resp.json();
+      if (typeof payload.desired_enabled === 'boolean') i2sHat = payload;
+      if (!resp.ok && typeof payload.desired_enabled === 'boolean')
+        return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
+      if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
+      status(payload.restart_required ?
+        'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');
+    } catch (e) {
+      status('Could not save I²S HAT setting: ' + e.message, true);
+    } finally {
+      render();
+    }
+  }
+
   function setVolumeFloorToneButton() {
     var button = el('volume-floor-tone-button');
     if (!button) return;
@@ -4831,6 +4882,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
+    else if (ev.target.id === 'set-i2s-hat') saveI2sHat(ev.target);
     else if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
       setVolumeFloorDraft(floor);
@@ -4984,6 +5036,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
+    i2sHat = payload && payload.i2s_hat || i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;

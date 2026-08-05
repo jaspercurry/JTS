@@ -84,6 +84,10 @@ reported as `role_change_pending_reboot`; the installer never reboots on its
 own. The installer owns a sentinel-delimited `[all]` role block and migrates
 the legacy unconditional peripheral block.
 
+The same root reconciler composes Sound Setup's InnoMaker HAT choice with this
+USB-role block in one atomic boot render. The output-side ownership and safety
+contract live in [Speaker output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
+
 The artifact deliberately exposes two related facts. `gadget_available` is
 strict and authorizes USB Audio Input only when desired, configured, and active
 roles are all peripheral. `management_transport_available` follows the

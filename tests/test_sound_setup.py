@@ -459,8 +459,8 @@ def test_sound_post_does_not_secondary_send_after_response_write_failure(
 @pytest.mark.parametrize(
     ("content_length", "expected_error"),
     [
-        (-1, "invalid Content-Length"),
-        (sound_setup.MAX_JSON_BYTES + 1, "request body too large"),
+        (-1, "Content-Length must not be negative"),
+        (sound_setup.MAX_JSON_BYTES + 1, "JSON body exceeds 65536 bytes"),
     ],
 )
 def test_sound_post_rejects_invalid_body_length_before_read(
@@ -550,13 +550,21 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
-        path="/active-speaker/commission-ramp-abort",
+        path="/i2s-hat",
         content_length=-1,
     )
 
     assert b" 403 " in response.split(b"\r\n", 1)[0]
     assert guard_calls == ["guard"]
     assert read_calls == []
+
+    monkeypatch.setattr(sound_setup, "guard_mutating_request", lambda _handler: True)
+    body = b'{"enabled":1}'
+    response, read_calls = _drive_raw_sound_post(
+        tmp_path, path="/i2s-hat", content_length=len(body), body=body
+    )
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    assert read_calls == [len(body)]
 
 
 def test_index_html_renders_eq_page_mode():
@@ -823,6 +831,82 @@ def test_sound_module_preserves_editor_behaviour():
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
     assert "window.prompt" not in js
+
+
+def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_path):
+    intent = tmp_path / "i2s_hat.env"
+    marker = tmp_path / "i2s-reboot"
+    marker.touch()
+    hardware = {
+        "profile_id": "unknown",
+        "status": "partial",
+        "child_devices": [{"device_id": "innomaker_hifi_amp_pro"}],
+        "usb_data_role": {"board_topology": "shared_otg_port"},
+    }
+    monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(sound_setup, "_output_hardware_dict", lambda: hardware)
+
+    payload = sound_setup._i2s_hat_payload(intent_path=intent)
+
+    assert payload["desired_enabled"] is False
+    assert payload["runtime_active"] is True
+    assert payload["restart_required"] is True
+
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "streambox")
+    assert sound_setup._i2s_hat_payload(intent_path=intent)["visibility"] == "hidden"
+
+    monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
+    hardware.clear()
+    hardware["usb_data_role"] = {"board_topology": "unsupported"}
+    assert sound_setup._i2s_hat_payload(intent_path=intent)["available"] is False
+
+
+def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
+    from jasper.control import restart_broker
+
+    calls = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_i2s_hat_payload",
+        lambda: {"available": True, "reason": "", "restart_required": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "write_i2s_hat_intent",
+        lambda enabled: calls.append(("write", enabled)),
+    )
+
+    def manage(unit, **kwargs):
+        calls.append((unit, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", manage)
+
+    payload, result = sound_setup._save_i2s_hat_payload(True)
+
+    assert calls[0] == ("write", True)
+    unit, options = calls[1]
+    assert unit == "jasper-audio-hardware-reconcile.service"
+    assert options["verb"] == "start"
+    assert options["no_block"] is False
+    assert options["timeout"] == 55.0
+
+    def fail_apply(*_args, **_kwargs):
+        raise OSError("broker unavailable")
+
+    monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
+    refreshed, failed = sound_setup._save_i2s_hat_payload(False)
+    assert refreshed["restart_required"] is True
+    assert failed == {"ok": False, "error": "broker unavailable"}
+
+    repo = Path(__file__).resolve().parents[1]
+    unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
+    nginx = (repo / "deploy/nginx-jasper.conf").read_text()
+    proxy = nginx.split("location /sound/setup/", 1)[1].split("}", 1)[0]
+    assert "TimeoutStartSec=50s" in unit
+    assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
+    assert "proxy_read_timeout 65s;" in proxy
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():
