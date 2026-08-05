@@ -969,9 +969,9 @@ Update **this block** at the end of every round together with the
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-04 (independent Gate-0 audits narrowed unstarted R15
-                to one atomic fixed-Fc vertical; rejected prototype remains
-                unmerged and unmeasured)
+date:           2026-08-05 (conductor architecture review of R15 and PR #2126;
+                cap-ladder, boost, and governance rulings recorded on #2106;
+                rejected prototype remains unmerged and unmeasured)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -981,7 +981,10 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   none — R14 complete; docs-only Gate-0 reset lands before R15
+active_round:   R15 — in flight. PR #2126 is a draft under a conductor-directed
+                fix round; its rulings are recorded on #2106. The fixed-2-kHz
+                hardware checkpoint follows merge; nothing is deployed or
+                measured in this round
 last_round:     R13 (owner validation day; last fully completed product
                 round). R14 is the completed documentation/administrative
                 campaign round
@@ -999,10 +1002,10 @@ follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2106 owns atomic R15; #2107 is deferred beyond the fixed-Fc
                 checkpoint. The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   after docs/issues land, start #2106 fresh from remote main
-                with no prototype cherry-pick; run the reviewed fixed-Fc
-                hardware checkpoint before later rounds
-blocked_on:     docs reset merge and #2106/#2107/#1894 reconciliation; R15 not started
+next_mission:   land #2126's fix round at three-lens 0/0, then run the
+                reviewed fixed-Fc hardware checkpoint before later rounds
+blocked_on:     #2126's fix round reaching 0/0 and merging; the hardware
+                checkpoint follows it
 ```
 
 ## How this document relates to session handoffs and issues
