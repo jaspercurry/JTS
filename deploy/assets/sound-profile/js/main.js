@@ -4397,7 +4397,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (typeof payload.desired_enabled === 'boolean') i2sHat = payload;
       if (!resp.ok && typeof payload.desired_enabled === 'boolean')
-        return status('Setting saved, but the boot change could not be applied.', true);
+        return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
       status(payload.restart_required ?
         'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');

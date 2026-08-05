@@ -1014,7 +1014,7 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   await loadAndSetActiveState(setup);
   hatHtml = setup.elements.get("view-body").innerHTML;
   const message = setup.elements.get("status").textContent;
-  if (message !== "Setting saved, but the boot change could not be applied." ||
+  if (message !== "Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics." ||
       !hatHtml.includes("Saved: Auto / Off") || hatHtml.includes("Restart required.")) {
     fail("partial HAT apply must adopt state and distinguish persistence", { message, hatHtml });
   }

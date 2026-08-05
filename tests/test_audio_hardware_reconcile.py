@@ -429,19 +429,26 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     assert not marker.exists()  # desired and runtime now agree
 
     intent.unlink()
-    for marker_present in (False, True):
-        marker.unlink(missing_ok=True)
-        if marker_present:
-            marker.touch()
-        unknown = _run_reconcile(
-            tmp_path,
-            INNOMAKER_LISTING,
-            initial_boot_config=applied_boot,
-            extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)},
-        )
-        assert unknown.returncode == 0, unknown.stderr
-        assert marker.exists() is marker_present
-        assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
+    for observation_failed, listing in (
+        (True, INNOMAKER_LISTING),
+        (False, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING),
+    ):
+        for marker_present in (False, True):
+            marker.unlink(missing_ok=True)
+            if marker_present:
+                marker.touch()
+            observed = _run_reconcile(
+                tmp_path,
+                listing,
+                initial_boot_config=applied_boot,
+                extra_env=(
+                    {"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}
+                    if observation_failed else None
+                ),
+            )
+            assert observed.returncode == 0, observed.stderr
+            assert marker.exists() is (marker_present or not observation_failed)
+            assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
 
 
 def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):

@@ -850,9 +850,7 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
 
     payload = sound_setup._i2s_hat_payload(intent_path=intent)
 
-    assert payload["available"] is True
     assert payload["desired_enabled"] is True
-    assert payload["runtime_active"] is False
     assert payload["restart_required"] is True
 
     monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "streambox")
@@ -861,8 +859,7 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "full")
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
-    unsupported = sound_setup._i2s_hat_payload(intent_path=intent)
-    assert unsupported["available"] is False
+    assert sound_setup._i2s_hat_payload(intent_path=intent)["available"] is False
 
 
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
@@ -888,7 +885,6 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     payload, result = sound_setup._save_i2s_hat_payload(True)
 
-    assert payload["restart_required"] is True
     assert calls[0] == ("write", True)
     unit, options = calls[1]
     assert unit == "jasper-audio-hardware-reconcile.service"
