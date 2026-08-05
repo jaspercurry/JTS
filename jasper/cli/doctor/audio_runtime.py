@@ -1909,6 +1909,34 @@ def _outputd_buffer_health(
 
 
 
+def _transport_route_remedy() -> str:
+    """Return the remedy that actually clears a post-DSP route disconnect.
+
+    Honest branch: when the saved layout needs a roleful graph and the resolved
+    DAC declares no active outputd lane, no reconcile can pair the lanes — the
+    reconciler is *correctly* resolving passive for hardware that has no active
+    lane, so recommending it sends an operator into a loop. Naming the
+    reconciler stays right for the reconcilable case: an active-capable DAC
+    whose generated env has drifted.
+    """
+    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.output_topology import load_output_topology
+
+    gap = active_lane_capability_gap(load_output_topology())
+    if gap is not None:
+        return (
+            f". {gap.device_label} does not support the active speaker lane, so "
+            "this cannot be reconciled: choose a passive speaker layout on this "
+            "speaker's /sound/setup/ page, or attach an active-capable DAC."
+        )
+    return (
+        ". Run jasper-audio-hardware-reconcile to restore the paired "
+        "CamillaDSP playback/outputd capture lane, then re-run "
+        "jasper-fanin-coupling-reconcile only if the coupling check also "
+        "reports Ring A/Ring B drift."
+    )
+
+
 def _outputd_transport_health(
     data: dict[str, object],
     content: dict[str, object],
@@ -1974,11 +2002,7 @@ def _outputd_transport_health(
             return CheckResult(
                 "jasper-outputd",
                 "fail",
-                "; ".join(transport_errors)
-                + ". Run jasper-audio-hardware-reconcile to restore the paired "
-                "CamillaDSP playback/outputd capture lane, then re-run "
-                "jasper-fanin-coupling-reconcile only if the coupling check also "
-                "reports Ring A/Ring B drift.",
+                "; ".join(transport_errors) + _transport_route_remedy(),
             )
     local_pipe_detail = f"content_source={actual_content_source}"
     if content.get("pcm") != expected_content_pcm:

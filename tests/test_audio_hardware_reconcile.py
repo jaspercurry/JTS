@@ -555,6 +555,35 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     assert _render_log(tmp_path) == "render\n"
 
 
+def test_reconcile_innomaker_logs_why_the_active_graph_was_not_consulted(
+    tmp_path: Path,
+):
+    """A roleful saved topology on a DAC with no active lane still resolves
+    passive — and says WHY in one unambiguous token.
+
+    ``active_graph=none`` conflated two different states: "the width gate ran
+    and declined" and "the gate never ran because this DAC declares no active
+    outputd lane". Only the second is actionable at /sound/setup/, so an
+    operator reading the journal must be able to tell them apart.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env=_active_graph_env(tmp_path, channels=2),
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
+    assert "active_graph=dac_no_active_lane" in result.stderr
+    assert "active_graph=none" not in result.stderr
+
+
 def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 

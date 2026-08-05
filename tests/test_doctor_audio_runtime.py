@@ -1409,7 +1409,8 @@ def test_outputd_service_fails_when_active_env_has_legacy_content_pcm(
     assert "active_channels=2" in r.detail
 
 
-def test_outputd_service_fails_when_active_graph_feeds_passive_reader(monkeypatch):
+def _patch_disconnected_post_dsp_route(monkeypatch) -> None:
+    """Camilla on the active playback lane, outputd reading the passive one."""
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
@@ -1422,12 +1423,95 @@ def test_outputd_service_fails_when_active_graph_feeds_passive_reader(monkeypatc
         ),
     )
 
+
+def _write_innomaker_active_topology(path: Path) -> None:
+    """Save a roleful layout on a DAC that declares no active outputd lane."""
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+
+    save_output_topology(
+        OutputTopology.from_mapping({
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "default",
+            "name": "Mono active 2-way",
+            "status": "verified",
+            "hardware": {
+                "device_id": "innomaker_hifi_amp_pro",
+                "device_label": "InnoMaker HiFi AMP Pro",
+                "physical_output_count": 2,
+            },
+            "speaker_groups": [
+                {
+                    "id": "main",
+                    "label": "Main active speaker",
+                    "kind": "mono",
+                    "mode": "active_2_way",
+                    "channels": [
+                        {
+                            "role": "woofer",
+                            "physical_output_index": 0,
+                            "identity_verified": True,
+                        },
+                        {
+                            "role": "tweeter",
+                            "physical_output_index": 1,
+                            "identity_verified": True,
+                            "startup_muted": True,
+                            "protection_required": True,
+                            "protection_status": "present",
+                        },
+                    ],
+                }
+            ],
+            "routing": {"mono_group_id": "main"},
+        }),
+        path,
+    )
+
+
+def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
+    monkeypatch,
+    tmp_path,
+):
+    # Pin the saved topology: an unconfigured one is the reconcilable case, so
+    # the remedy names the reconciler.
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
+    )
+    _patch_disconnected_post_dsp_route(monkeypatch)
+
     r = doctor.check_outputd_service()
 
     assert r.status == "fail"
     assert "post-DSP route disconnected" in r.detail
     assert "outputd_active_content_capture" in r.detail
     assert "audio-hardware-reconcile" in r.detail
+
+
+def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
+    monkeypatch,
+    tmp_path,
+):
+    """When the saved layout needs a lane the DAC does not have, running the
+    reconciler cannot help — it is already resolving passive correctly. The
+    remedy must say what actually clears it instead of sending the operator
+    into a loop."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+    _write_innomaker_active_topology(topo_path)
+    _patch_disconnected_post_dsp_route(monkeypatch)
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "fail"
+    assert "post-DSP route disconnected" in r.detail
+    assert "InnoMaker HiFi AMP Pro" in r.detail
+    assert "/sound/setup/" in r.detail
+    assert "audio-hardware-reconcile" not in r.detail
 
 
 def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatch):
