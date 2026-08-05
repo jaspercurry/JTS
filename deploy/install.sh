@@ -1238,6 +1238,18 @@ ensure_crossover_camilla_statefile() {
     # jasper/active_speaker/runtime_contract.py). So an active box gets a
     # tweeter-safe driver-domain seed.
     #
+    # PARKED DEFAULT (issue #2135): a roleful box that has staged no startup
+    # graph yet seeds the PARKED graph here instead — a File sink to /dev/null
+    # with every output hard muted. Before #2135 this call BLOCKED on such a
+    # box (exit 1), which failed the whole install. Same benign-seam reasoning
+    # as the flat case below, and strictly safer than it: camilla#2 is INERT
+    # until the grouping reconciler arms it, and `seed_crossover_statefile`
+    # (jasper/multiroom/active_leader_config.py, called from the reconciler's
+    # active-leader bake arm) repoints this statefile at the re-proven
+    # driver-domain config immediately before enabling the unit. If camilla#2
+    # ever DID start on the parked pointer it would emit silence, where the
+    # flat pointer would send full range to a tweeter.
+    #
     # SEAM FLAGGED FOR THE RECONCILER PR: on an ORDINARY (non-active) box
     # the contract returns flat, so this would seed flat into a file named
     # crossover-statefile.yml. That is BENIGN today because camilla#2 is

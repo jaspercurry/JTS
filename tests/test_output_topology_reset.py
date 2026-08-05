@@ -214,6 +214,83 @@ def test_reset_triggers_reconcile_by_default(
     assert result["reconcile"] is sentinel
 
 
+# --- #2135 blocker F2(b): the reset must converge the RUNNING graph ---------
+# The reconcile kick re-derives outputd's env; it never touches CamillaDSP. A box
+# parked silent by a roleful topology therefore stayed on /dev/null after being
+# reset to passive, until the next deploy re-seeded the statefile — "reset output
+# topology to passive", the second of parking's two exits, did not exit.
+
+
+@pytest.fixture
+def flat_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real flat cutover config where the runtime contract looks for it."""
+    from jasper.active_speaker import runtime_contract
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    path = tmp_path / "outputd-cutover.yml"
+    emit_flat_outputd_cutover_config(out_path=path)
+    monkeypatch.setattr(runtime_contract, "DEFAULT_FLAT_OUTPUTD_CONFIG", path)
+    return path
+
+
+def test_reset_loads_the_passive_graph_into_camilla(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loaded.append(path)
+            return True
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    # The graph the fresh PASSIVE topology may run — the flat cutover, never a
+    # parked or roleful graph.
+    assert result["camilla"]["ok"] is True
+    assert result["camilla"]["status"] == "select_flat"
+    assert loaded == [result["camilla"]["config_path"]]
+    assert loaded == [str(flat_config)]
+
+
+def test_reset_camilla_convergence_is_best_effort_and_reported(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A down CamillaDSP must not fail the reset: the topology is already
+    passive and safe, and the graph self-heals on the next deploy."""
+
+    def _boom():
+        raise RuntimeError("camilla socket refused")
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr("jasper.camilla.primary_controller", _boom)
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["camilla"]["ok"] is False
+    assert "camilla socket refused" in result["camilla"]["error"]
+    # The reset itself still succeeded.
+    assert result["after"]["speaker_groups"] == []
+
+
+def test_reset_skips_camilla_convergence_when_reconcile_disabled(
+    topo_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _never():
+        raise AssertionError("camilla must not be contacted with reconcile=False")
+
+    monkeypatch.setattr("jasper.camilla.primary_controller", _never)
+
+    result = reset_cli.reset_to_detected_passive(reconcile=False)
+
+    assert result["camilla"] == {"ok": None, "skipped": True}
+
+
 # --- CLI entry point -------------------------------------------------------
 
 

@@ -14,11 +14,30 @@ the install-time "outputd Camilla statefile vs active-speaker runtime contract"
 check on a box that is physically a plain passive speaker.
 
 This returns the box to a standard passive single-speaker topology derived from
-its CURRENTLY-DETECTED hardware, then kicks ``jasper-audio-hardware-reconcile``
-so the running CamillaDSP / outputd graph converges to the flat / passive path.
+its CURRENTLY-DETECTED hardware, then converges the running graph in two steps:
+
+1. Ask the active-speaker runtime contract which graph the NEW (passive)
+   topology may run — the flat cutover — and tell CamillaDSP to load it
+   (``set_config_file_path``, which also persists the statefile, the same seam
+   the room-correction wizard uses). This is the step that actually makes the
+   speaker audible again. Before #2135 the reset only kicked
+   ``jasper-audio-hardware-reconcile``, which never touches CamillaDSP: a box
+   parked silent by a roleful topology stayed silent after being reset to
+   passive, until the next deploy re-seeded the statefile.
+2. Kick ``jasper-audio-hardware-reconcile`` so the outputd side (active-lane
+   gating, channel width) converges too.
+
 The end state is consistent — passive topology + flat graph — which the L0 gate
 accepts (``requires_roleful_graph`` is false, so it does not even inspect the
 graph).
+
+Both convergence steps are BEST-EFFORT and reported, never fatal. The CamillaDSP
+step goes over the websocket rather than writing
+``/var/lib/camilladsp/outputd-statefile.yml`` directly, because that directory is
+root-owned ``0755`` (only ``configs/`` is group-jasper writable) and the
+``/sound/setup/`` reset endpoint runs as the non-root ``jasper-web`` user — the
+websocket is the one seam that works from both the root CLI and the wizard, and
+CamillaDSP owns its own statefile.
 
 It uses only the supported topology generator / persistence functions
 (:func:`jasper.output_topology.new_topology_draft` /
@@ -26,10 +45,11 @@ It uses only the supported topology generator / persistence functions
 and the same broker-mediated reconcile trigger the active-speaker startup path
 uses.
 
-Safe-by-construction: it makes the topology *passive*, so even if the reconcile
-kick fails the worst residual state is passive-topology + a still-roleful graph,
-which is safe (the active graph's crossover keeps protecting drivers) and
-self-heals on the next reconcile / boot. It never produces the dangerous
+Safe-by-construction: it makes the topology *passive*, so even if both
+convergence steps fail the worst residual state is passive-topology + a
+still-roleful (or parked) graph, which is safe — the active graph's crossover
+keeps protecting drivers, a parked graph emits nothing — and self-heals on the
+next deploy / reconcile / boot. It never produces the dangerous
 roleful-topology + flat-graph combination.
 """
 
@@ -55,6 +75,21 @@ from jasper.output_topology import (
 logger = logging.getLogger("jasper.output_topology_reset")
 
 RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
+
+# Graph convergence is a RECOVERY step inside a recovery primitive: the topology
+# is already passive and safe by the time it runs, so a failure here must be
+# reported, never raised. Named rather than a bare `except Exception` so the
+# suppression stays auditable (tests/test_lint_contracts.py pins that debt).
+_CONVERGENCE_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    ImportError,
+    OutputTopologyError,
+)
 
 
 def _topology_summary(topology: OutputTopology) -> dict[str, Any]:
@@ -120,24 +155,101 @@ def _trigger_reconcile() -> dict[str, Any]:
     return result
 
 
+def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
+    """Load the graph the NEW passive topology may run, so the box is audible.
+
+    The reconcile kick alone never converges CamillaDSP: it re-derives outputd's
+    env, not the persisted graph. A box parked silent by a roleful topology
+    (#2135) therefore stayed on ``/dev/null`` after being reset to passive until
+    the next deploy re-seeded the statefile — the "reset output topology to
+    passive" exit did not actually exit.
+
+    Asks the runtime contract for the legal graph, then hands it to CamillaDSP
+    over the websocket, which reloads AND persists the statefile itself (the
+    seam the room-correction wizard already uses). Best-effort and never raises:
+    a down CamillaDSP or an unselectable graph leaves the previous, still-safe
+    graph and self-heals on the next deploy.
+    """
+
+    import asyncio
+
+    from jasper.active_speaker import runtime_contract
+
+    try:
+        decision = runtime_contract.safe_graph_for_current_topology(
+            topology,
+            # Read from the module global at CALL time (the reconcile idiom —
+            # see multiroom.active_leader_config.seed_crossover_statefile) rather
+            # than letting the callee's def-time default bind it, so a test
+            # redirect is honoured.
+            flat_config_path=runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG,
+        )
+    except _CONVERGENCE_ERRORS as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    if not decision.ok or not decision.selected_config_path:
+        return {
+            "ok": False,
+            "status": decision.status,
+            "error": decision.reason,
+        }
+    selected = decision.selected_config_path
+    loaded = False
+    error: str | None = None
+    try:
+        from jasper.camilla import primary_controller
+
+        loaded = bool(
+            asyncio.run(
+                primary_controller().set_config_file_path(selected, best_effort=True)
+            )
+        )
+    except _CONVERGENCE_ERRORS as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    else:
+        if not loaded:
+            error = "CamillaDSP did not accept the graph"
+    log_event(
+        logger,
+        "output_topology.reset_camilla",
+        status=decision.status,
+        config_path=selected,
+        ok=bool(loaded),
+        error=error,
+        level=logging.INFO if loaded else logging.WARNING,
+    )
+    return {
+        "ok": bool(loaded),
+        "status": decision.status,
+        "config_path": selected,
+        "error": error,
+    }
+
+
 def reset_to_detected_passive(
     *,
     path: str | Path | None = None,
     reconcile: bool = True,
 ) -> dict[str, Any]:
-    """Persist a fresh passive topology from detected hardware; kick reconcile.
+    """Persist a fresh passive topology, converge CamillaDSP, kick reconcile.
 
     Returns a structured before / after report. Pure except for the single
-    topology write and the optional reconcile side-effect. ``reconcile=False``
-    skips the systemd kick (used by tests and dry runs).
+    topology write and the two best-effort convergence side-effects.
+    ``reconcile=False`` skips BOTH (used by tests and dry runs).
     """
 
     target = topology_path(path)
     before = _read_before(path)
     after = new_topology_draft()
     save_output_topology(after, path)
+    skipped: dict[str, Any] = {"ok": None, "skipped": True}
+    # Graph first, then outputd: the graph load is what makes the speaker
+    # audible again, and the reconcile that follows re-derives outputd's env
+    # against the graph that is now actually loaded.
+    camilla_result: dict[str, Any] = (
+        _converge_camilla_graph(after) if reconcile else dict(skipped)
+    )
     reconcile_result: dict[str, Any] = (
-        _trigger_reconcile() if reconcile else {"ok": None, "skipped": True}
+        _trigger_reconcile() if reconcile else dict(skipped)
     )
     log_event(
         logger,
@@ -148,12 +260,14 @@ def reset_to_detected_passive(
         after_status=after.status,
         after_groups=len(after.speaker_groups),
         device_label=after.hardware.device_label,
+        camilla_ok=camilla_result.get("ok"),
         reconcile_ok=reconcile_result.get("ok"),
     )
     return {
         "topology_path": str(target),
         "before": before,
         "after": _topology_summary(after),
+        "camilla": camilla_result,
         "reconcile": reconcile_result,
     }
 
@@ -188,6 +302,16 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
     if dry_run:
         print("  (dry run — nothing written, reconcile not kicked)")
         return
+    camilla = result.get("camilla") or {}
+    if camilla.get("skipped"):
+        print("  camilla graph: skipped (--no-reconcile)")
+    elif camilla.get("ok"):
+        print(f"  camilla graph: loaded {camilla.get('config_path')}")
+    else:
+        print(
+            f"  camilla graph: NOT converged ({camilla.get('error') or 'unknown'}); "
+            "the box stays on its previous safe graph until the next deploy"
+        )
     reconcile = result["reconcile"]
     if reconcile.get("skipped"):
         print(f"  reconcile: skipped (--no-reconcile); start "

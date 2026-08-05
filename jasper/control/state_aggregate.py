@@ -434,6 +434,43 @@ def _research_state(
     return snapshot(runtime=runtime)
 
 
+def _active_speaker_parked_snapshot() -> dict[str, Any]:
+    """Whether the speaker is PARKED silent for unfinished commissioning (#2135).
+
+    A roleful/protected topology with no staged startup graph is seeded a
+    proven-silent parked graph so the deploy can complete; nothing is broken and
+    nothing is audible, but the household has to finish or undo commissioning.
+    Two keys only — the config path is already in ``/state.audio``, so it is not
+    restated here.
+
+    Keyed on the persisted STATEFILE, not on the live CamillaDSP config path,
+    deliberately: the two other surfaces that report this state
+    (``jasper-doctor``'s ``active speaker runtime graph`` and
+    ``audio_health._parked_graph_transport``) both read the statefile, and with
+    CamillaDSP down the live path is empty — so keying on it would have made
+    ``/state`` report ``parked: false`` on a parked box while the doctor said
+    otherwise. The statefile is the box's durable intent; the live path is a
+    liveness fact and belongs to ``/state.audio``.
+
+    ``detail`` names only the exits that are reachable on this DAC.
+
+    Fail-soft like every other resilience section, and the fail-soft lives in the
+    readers: ``read_camilla_statefile_config_path`` returns None on any read
+    problem and ``active_graph_is_parked`` is total, so this needs no guard of
+    its own.
+    """
+    from ..active_speaker.environment import read_camilla_statefile_config_path
+    from ..active_speaker.runtime_contract import (
+        active_graph_is_parked,
+        parked_muted_exits,
+    )
+    from ..audio_runtime_plan import DEFAULT_CAMILLA_STATEFILE_PATH
+
+    config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
+    parked = active_graph_is_parked(config_path)
+    return {"parked": parked, "detail": parked_muted_exits() if parked else None}
+
+
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
@@ -1270,6 +1307,12 @@ async def _get_state(
             # non-POSIX host or statvfs error. jasper-doctor's
             # check_disk_space owns the warn(≥85%)/fail(≥95%) thresholds.
             "disk": _disk_snapshot(),
+            # Active-speaker PARKED state (#2135): a declared-but-uncommissioned
+            # roleful topology holds silence instead of blocking the deploy.
+            # {"parked": bool, "detail": <the reachable exits, or null>}. Read
+            # from the STATEFILE, like the doctor and audio_health surfaces, so
+            # a down CamillaDSP cannot make a parked box read as not-parked.
+            "active_speaker_parked": _active_speaker_parked_snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh

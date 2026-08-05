@@ -30,6 +30,7 @@ from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_con
 
 from ._common import issue as _issue
 from .camilla_yaml import (
+    ACTIVE_PARKED_SOURCE,
     ACTIVE_PROGRAM_BAKE_SOURCE,
     FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
 )
@@ -50,6 +51,17 @@ ALSA_PROBE_TIMEOUT_SEC = 3.0
 # program lane in classify_camilla_graph, where the File-sink exemption allows it
 # regardless of topology (safe by construction: no DAC, no driver to over-drive).
 CAMILLA_CLASS_PROGRAM_BAKE = "jts_active_leader_program_bake"
+
+# The PARKED graph (issue #2135): a roleful/protected topology with no staged
+# all-muted startup graph yet, held silent behind a File sink with every
+# physical output hard-muted. It targets NO outputd lane at all — that is why it
+# is deliberately absent from runtime_contract's
+# OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS. Its own classification keeps it off the
+# sound/correction re-emit carriers and gives classify_camilla_graph a dedicated
+# all-muted verifier to route to. It IS an accepted rollback/restore target
+# (path_safety.restore_classifications): rolling back to proven silence is the
+# safest restore there is.
+CAMILLA_CLASS_ACTIVE_PARKED = "jts_active_speaker_parked"
 
 _CARD_RE = re.compile(
     r"^card\s+(?P<card_index>\d+):\s+"
@@ -307,6 +319,9 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     if active_startup_marker or split["present"]:
         classification = "active_startup_candidate"
         label = "JTS active-speaker startup candidate"
+    elif source == ACTIVE_PARKED_SOURCE:
+        classification = CAMILLA_CLASS_ACTIVE_PARKED
+        label = "JTS active-speaker parked (all outputs muted)"
     elif source == ACTIVE_PROGRAM_BAKE_SOURCE:
         # Active-leader camilla#1 program bake: flat program domain to a pipe,
         # never a DAC. Distinct from jts_generated_stereo so it stays off the

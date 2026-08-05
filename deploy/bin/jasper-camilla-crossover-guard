@@ -6,12 +6,12 @@
 
 # jasper-camilla-crossover-guard — keep camilla#2 (the endpoint-crossover
 # instance, :1235) from looping on a dead bonded pipe, and when it repairs
-# that, repair ONLY to a TWEETER-SAFE driver-domain graph — never flat. (A
-# non-pipe / solo statefile is left untouched: like the camilla#1 pipe-guard
-# this acts ONLY on a dead bonded pipe. It does not convert a flat statefile,
-# so the never-flat guarantee for an ARMED camilla#2 is owned by the
-# reconciler's arm-time seed, not by this guard — see install.sh
-# ensure_crossover_camilla_statefile.)
+# that, repair ONLY to a TWEETER-SAFE graph — never flat. (A non-pipe / solo
+# statefile is left untouched: like the camilla#1 pipe-guard this acts ONLY on
+# a dead bonded pipe. It does not convert a flat or PARKED statefile, so the
+# never-flat guarantee for an ARMED camilla#2 is owned by the reconciler's
+# arm-time seed, not by this guard — see install.sh
+# ensure_crossover_camilla_statefile and the parked-pointer note below.)
 #
 # Runs as ExecStartPre= on jasper-camilla-crossover.service. Mirrors
 # jasper-camilla-pipe-guard (the camilla#1 guard) in shape: pure bash,
@@ -34,15 +34,38 @@
 # How "never flat" is GUARANTEED, not just intended: the repair delegates
 # to `jasper-active-speaker runtime-safe-graph`, whose contract is that a
 # roleful/protected topology (every active speaker) can NEVER select the
-# flat fallback — it returns the driver-domain active baseline / all-muted
-# active startup graph, or a BLOCKED decision that leaves the statefile
-# untouched (jasper/active_speaker/runtime_contract.py
+# flat fallback (jasper/active_speaker/runtime_contract.py
 # safe_graph_for_current_topology: the `select_flat` branch is gated on
 # `not requires_roleful_graph`). We still pass --flat-config because the
 # CLI requires the arg, but on camilla#2's roleful topology it is
-# structurally unreachable. A blocked decision intentionally leaves the
-# statefile alone: there is NO safe flat recovery once a tweeter/protected
-# role is saved, and silence beats full-range-to-a-tweeter.
+# structurally unreachable.
+#
+# The three outcomes that repair can produce on a roleful topology, all
+# never-flat (issue #2135 added the third):
+#   1. the driver-domain active baseline / all-muted active startup graph;
+#   2. the PARKED graph — a File sink to /dev/null with every output hard
+#      muted, selected when the topology has staged no startup graph yet.
+#      Silent, and it reaches no DAC at all;
+#   3. a BLOCKED decision, which leaves the statefile untouched.
+# A blocked decision intentionally leaves the statefile alone: there is NO
+# safe flat recovery once a tweeter/protected role is saved, and silence
+# beats full-range-to-a-tweeter.
+#
+# PARKED POINTERS TAKE THE `solo_config` EARLY EXIT, and that is correct.
+# install.sh's ensure_crossover_camilla_statefile seeds this statefile
+# through the same CLI, so on an uncommissioned roleful box it now seeds the
+# parked config. Its playback filename is /dev/null, not $SNAPFIFO, so the
+# pipe grep below exits `ok reason=solo_config` — the guard acts ONLY on a
+# dead bonded pipe and a parked config is not one. This is the SAME benign
+# seam the flat seed already had on a non-active box, and strictly safer:
+# a flat pointer would send full range to a tweeter if camilla#2 ever
+# started on it, a parked pointer emits nothing. The never-flat (and
+# never-parked) guarantee for an ARMED camilla#2 continues to rest on the
+# arm-time re-seed, not on this guard — see
+# jasper/multiroom/active_leader_config.py `seed_crossover_statefile`,
+# called from jasper/multiroom/reconcile.py's active-leader bake arm, which
+# repoints the statefile at the re-proven driver-domain config immediately
+# before `systemctl enable --now`-ing the unit.
 #
 # The unit is not boot-enabled globally. The grouping reconciler enables it
 # only while a box is a bonded active leader, and disables it again on unbond;

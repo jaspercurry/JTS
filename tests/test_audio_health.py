@@ -403,6 +403,71 @@ def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
     }
 
 
+def test_parked_graph_keeps_the_speaker_reported_as_parked(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """#2135's parked graph must not read as ready through #2130's surface.
+
+    The parked graph writes to a File sink on purpose, so it names no outputd
+    endpoint and the transport detector sees no contradiction to report. Without
+    this, seeding it would silence the parked headline on a box that is
+    deliberately, permanently silent — trading one false "Audio is ready" for
+    another.
+    """
+    from types import SimpleNamespace
+
+    from jasper import audio_runtime_plan
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+
+    topology = _innomaker_active_two_way()
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    config = tmp_path / "active_speaker_parked.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+
+    # Real premise, not a devices=None stub: point BOTH statefile constants at
+    # real parked statefiles and let output_endpoint_evidence_from_statefiles
+    # actually read them. Its verdict on a parked graph is
+    # devices=<populated>, endpoint_recognized=False — a different shape from
+    # the degraded devices=None read, and the one this branch must handle.
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+    )
+    evidence = audio_runtime_plan.output_endpoint_evidence_from_statefiles(
+        str(statefile), str(statefile)
+    )
+    assert evidence.devices is not None  # populated...
+    assert evidence.endpoint_recognized is False  # ...but names no outputd lane
+
+    topology_path = tmp_path / "output_topology.json"
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
+
+    state = audio_health._read_transport_state(plan)
+
+    assert state["coherence_errors"]
+    assert "parked graph" in state["coherence_errors"][0]
+    assert "no staged startup graph" in state["coherence_errors"][0]
+    # The DAC-capability clause still rides along after this reason.
+    assert state["capability_gap"] == {
+        "device_id": "innomaker_hifi_amp_pro",
+        "device_label": "InnoMaker HiFi AMP Pro",
+    }
+
+    health = _compose(transport=state)
+    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert health["overall"]["headline"] != "Audio is ready"
+
+
 def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> None:
     """The no-contradictions transport state must be fresh per read.
 

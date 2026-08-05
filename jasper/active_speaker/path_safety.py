@@ -587,7 +587,10 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
         ))
         return summary
 
-    from .environment import classify_camilla_config_text
+    from .environment import (
+        CAMILLA_CLASS_ACTIVE_PARKED,
+        classify_camilla_config_text,
+    )
 
     classification = classify_camilla_config_text(text)
     summary.update({
@@ -614,6 +617,23 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
         "jts_generated_stereo",
         "jts_outputd_stereo",
         "jts_legacy_stereo",
+        # The PARKED graph (#2135) is a legitimate rollback target: rolling back
+        # to a File-sink graph with every output hard-muted is the SAFEST
+        # possible restore — strictly safer than any of the four above, all of
+        # which reach a DAC. Excluding it was the bug that made a parked box
+        # unable to START commissioning at all: no rollback target means
+        # `rollback_configs` fails, `evaluate_path_safety_evidence` blocks, and
+        # `/sound/setup/`'s commission-startup anchor returns
+        # `commission_startup_anchor_path_safety_blocked` — so "finish crossover
+        # preview", the first of the two exits parking tells the household to
+        # take, was itself refused.
+        #
+        # Admitting it here cannot let a parked graph SHADOW a real staged
+        # graph: that ordering is owned by `safe_graph_for_current_topology`,
+        # where the parked branch runs last, after every real graph has been
+        # considered. This set answers "may we roll BACK to it", a different
+        # question from "may we select it".
+        CAMILLA_CLASS_ACTIVE_PARKED,
     }
     summary["restore_available"] = (
         bool(summary["readable"])

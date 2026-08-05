@@ -57,6 +57,7 @@ from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     bass_extension_block_valid,
     filter_param_matches,
+    output_hard_muted_and_wired,
     output_highpass_protected,
     pipeline_reference_closure_errors,
     tweeter_guard_present,
@@ -86,6 +87,26 @@ if TYPE_CHECKING:
     from .branch_chain import CrossoverSection
 
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
+# The PARKED graph's on-disk name + internal vocabulary (issue #2135). Kept next
+# to the startup config's name because the two are the same class of artifact:
+# a generated, topology-derived, all-muted boot graph. See
+# emit_active_speaker_parked_config for what parked means and why it exists.
+PARKED_CONFIG_NAME = "active_speaker_parked.yml"
+PARKED_SILENCE_MIXER = "parked_silence"
+# The parked graph's sink. A ``File`` playback, never a DAC — the same
+# safe-by-construction argument the camilla#1 program bake rests on ("no DAC, no
+# driver to over-drive", see ACTIVE_PROGRAM_BAKE_SOURCE and
+# runtime_contract._playback_is_program_bake_pipe). It is also what makes the
+# parked graph DAC-agnostic: a board with no active outputd lane at all (the
+# InnoMaker HiFi AMP Pro) can still park, where an ALSA-sink parked graph would
+# have nothing legal to open.
+PARKED_SINK_PATH = "/dev/null"
+# The `# Source:` marker the classifier keys on to recognise a parked graph.
+# Named here (the emitter owns its own spelling) and re-declared independently
+# by the runtime verifier, exactly as ACTIVE_BASELINE_SOURCE is.
+ACTIVE_PARKED_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_parked_config"
+)
 STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
 STARTUP_MUTE_GAIN_DB = -120.0
@@ -1929,6 +1950,190 @@ def output_commission_mute_name(index: int) -> str:
     emitter owns it and the guard reads it rather than re-deriving the spelling.
     """
     return f"as_out{index}_commission_mute"
+
+
+def emit_active_speaker_parked_config(
+    *,
+    output_count: int,
+    topology_id: str | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int | None = None,
+    target_level: int | None = None,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    out_path: str | Path | None = None,
+) -> str:
+    """Build the PARKED (all-muted, DAC-less) active-speaker graph.
+
+    The third statefile-seeding outcome (issue #2135). A box whose saved output
+    topology declares roleful/protected outputs but has NOT yet staged an
+    all-muted active startup graph — commissioning paused between "topology
+    declared" and "crossover preview staged" — has no legal graph to run: a flat
+    full-range graph would put program into a declared tweeter, and there is no
+    staged graph to select. Refusing was the only option before, and it failed
+    the whole deploy.
+
+    This graph is the safe third option, and it is silent twice over:
+
+    * **The sink is a ``File``, not a DAC** (:data:`PARKED_SINK_PATH`). That is
+      the same safe-by-construction argument the camilla#1 program bake rests
+      on — no DAC attached, so no driver can be over-driven regardless of the
+      saved topology. It also makes parking DAC-agnostic: a board that declares
+      no active outputd lane at all can still park.
+    * **Every physical output is hard muted** by the repo's one mute idiom — a
+      ``Gain`` filter at :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true``, the
+      same primitive the staged all-muted startup graph's crash-recovery
+      invariant rests on — and the mixer feeds every destination at that same
+      -120 dB floor, so even a defeated boolean mute is inaudible.
+
+    It deliberately claims NOTHING else: no crossover, no driver roles, no
+    per-driver protection, no limiter policy. It is silence with a legal shape,
+    not a tuning. The runtime contract re-proves both properties independently
+    before this graph may be selected
+    (``jasper.active_speaker.runtime_contract._parked_graph_allowed``); this
+    emitter's own gate below is the first of those proofs.
+    """
+
+    capture_device = _yaml_string(capture_device, "capture_device")
+    capture_format = _yaml_string(capture_format, "capture_format")
+    playback_format = _yaml_string(playback_format, "playback_format")
+    sample_rate = _positive_int(sample_rate, "sample_rate")
+    output_count = _positive_int(output_count, "output_count")
+    # Same env-at-call-time resolution as the startup emitter, so a parked box
+    # carries the active DAC profile's CamillaDSP latency floor.
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
+    chunksize = _positive_int(chunksize, "chunksize")
+    target_level = _positive_int(target_level, "target_level")
+    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
+    if volume_limit_db > 0:
+        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+
+    filter_lines: list[str] = []
+    pipeline_lines = [
+        "  - type: Mixer",
+        f"    name: {PARKED_SILENCE_MIXER}",
+    ]
+    for index in range(output_count):
+        mute_name = output_commission_mute_name(index)
+        filter_lines.extend(
+            emit_gain_filter(mute_name, STARTUP_MUTE_GAIN_DB, mute=True)
+        )
+        pipeline_lines.extend([
+            "  - type: Filter",
+            f"    channels: [{index}]",
+            f"    names: [{mute_name}]",
+        ])
+    filter_yaml = "\n".join(filter_lines)
+    pipeline_yaml = "\n".join(pipeline_lines)
+    mixer_yaml = emit_mixer(
+        PARKED_SILENCE_MIXER,
+        channels_in=2,
+        channels_out=output_count,
+        mapping=[
+            # Capture channel 0 only, at the mute floor. The mapping exists to
+            # change the channel count, not to carry program: nothing audible
+            # may ever reach a declared driver from a parked graph.
+            (index, [(0, STARTUP_MUTE_GAIN_DB, False)])
+            for index in range(output_count)
+        ],
+        description="parked: every output muted, no crossover claimed",
+    )
+    metadata_comments = []
+    if topology_id:
+        metadata_comments.append(
+            f"# topology_id={_yaml_string(topology_id, 'topology_id')}"
+        )
+    metadata_yaml = "\n".join(metadata_comments)
+
+    yaml = f"""---
+# Auto-generated active-speaker PARKED config.
+# Source: {ACTIVE_PARKED_SOURCE}
+{metadata_yaml}
+# DO NOT HAND-EDIT. The saved output topology declares roleful/protected
+# outputs but no all-muted active startup graph has been staged yet, so this
+# graph parks every physical output hard-muted behind a File sink. It claims no
+# crossover and no driver protection; it exists so the speaker holds SILENCE
+# instead of running an illegal full-range graph. Finish crossover preview to
+# stage a startup graph, or reset the output topology to passive.
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  volume_limit: {volume_limit_db!r}
+  enable_rate_adjust: false
+  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: File
+    channels: {output_count}
+    filename: "{PARKED_SINK_PATH}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+{mixer_yaml}
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    # Fail-closed emit gate, mirroring _assert_tweeter_outputs_protected: re-prove
+    # against the EMITTED TEXT (not the emitter's own construction) that every
+    # physical output is hard-muted and that mute is wired to its channel. A
+    # refactor that dropped one output's mute fails loudly here instead of
+    # shipping a graph that could drive a declared tweeter.
+    _assert_parked_outputs_muted(yaml, output_count)
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+    return yaml
+
+
+def _assert_parked_outputs_muted(yaml_text: str, output_count: int) -> None:
+    """Refuse to emit a parked graph unless EVERY output is a wired hard mute."""
+
+    view = view_from_emitted_text(yaml_text)
+    unmuted = [
+        index
+        for index in range(output_count)
+        if not output_hard_muted_and_wired(
+            view,
+            index,
+            mute_name=output_commission_mute_name(index),
+            mute_gain_db=STARTUP_MUTE_GAIN_DB,
+        )
+    ]
+    if not unmuted:
+        return
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        gate="parked_outputs_muted",
+        outputs=output_count,
+        unmuted=",".join(str(index) for index in unmuted),
+        level=logging.ERROR,
+    )
+    raise ActiveSpeakerConfigError(
+        "parked active-speaker graph left outputs unmuted: "
+        + ", ".join(str(index) for index in unmuted)
+    )
 
 
 def audible_outputs_for_role(preset: ActiveSpeakerPreset, role: str) -> frozenset[int]:

@@ -139,6 +139,42 @@ above; this is only the entry points:
   during commissioning are transient; only the final validated freeze
   step persists a loadable config, and every staged boot candidate is
   asserted fully muted (`staged_candidate_fully_muted`).
+- **Statefile seeding has three outcomes, not two** (issue #2135).
+  `safe_graph_for_current_topology` selects the flat cutover graph for a
+  passive topology, the staged all-muted startup graph for a
+  roleful/protected one — and, when a roleful topology has staged **no**
+  startup graph at all, returns `parked_muted`: a generated,
+  topology-derived graph that is silent twice over (a `File` sink at
+  `/dev/null`, so no DAC is attached, plus a wired hard mute on every
+  physical output). `apply_safe_graph_decision_to_statefile` materialises
+  it at
+  `/var/lib/camilladsp/configs/active_speaker_parked.yml` and re-proves
+  both properties before the bytes reach disk. The deploy then **succeeds**
+  rather than failing closed, so a household that pauses between
+  "topology declared" and "crossover preview staged" does not wedge every
+  deploy. What did *not* change: the flat-graph-on-roleful-topology
+  refusal, and a staged graph that exists but fails its safety proof
+  (that still blocks, with its blockers — a commissioning bug is not a
+  paused household), and neither does a topology-level safety blocker such
+  as a channel saved `protection_status="required_missing"`, which makes
+  `classify_output_contract` itself refuse. Parking covers exactly one
+  state: the sole missing piece is the staged startup graph.
+  Recovery is automatic and needs no operator action:
+  the parked branch is last in the selector, so the moment commissioning
+  stages a startup graph the `select_active_startup` branch wins on the
+  next reconcile/deploy. Both exits out of parked work: the parked graph is
+  an accepted `path_safety.restore_classifications` rollback target so
+  `/sound/setup/` can start commissioning on a parked box, and
+  `jasper-output-topology-reset` (and the `/sound/setup/` reset endpoint)
+  converges CamillaDSP in-process over the websocket so a box reset to
+  passive becomes audible immediately instead of at the next deploy.
+  Surfaces: `jasper-doctor`'s `active speaker
+  runtime graph` WARNs with the two exits ("finish crossover preview to
+  stage a startup graph, or reset output topology to passive" — and on a
+  DAC that declares no active outputd lane, only the reset exit, since
+  commissioning can never complete there),
+  `/state.resilience.active_speaker_parked` carries the same pair, and
+  `/state.audio_health` keeps reporting "Speaker is parked".
 - **The applied baseline candidate is always a content-addressed
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`

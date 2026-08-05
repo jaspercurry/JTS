@@ -329,3 +329,73 @@ def test_startup_muted_prefers_fully_muted_gate_over_text_scan(tmp_path: Path) -
         if g["id"] == "staged_candidate_fully_muted":
             g["passed"] = False
     assert _startup_muted_by_candidate(payload) is False
+
+
+# --- #2135 blocker F1: a PARKED graph is a legitimate rollback target ---------
+# Excluding the parked classification from `restore_classifications` made
+# `rollback_target_available` false, which fails the `rollback_configs`
+# requirement, which blocks `evaluate_path_safety_evidence`, which makes
+# `/sound/setup/`'s commission-startup anchor return
+# `commission_startup_anchor_path_safety_blocked`. Net effect: a parked box
+# could not START commissioning — the first of the two exits parking tells the
+# household to take was itself refused.
+
+
+def _parked_config(tmp_path: Path) -> Path:
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+
+    path = tmp_path / "active_speaker_parked.yml"
+    path.write_text(emit_active_speaker_parked_config(output_count=2), encoding="utf-8")
+    return path
+
+
+def test_parked_graph_is_an_accepted_rollback_target(tmp_path: Path) -> None:
+    staged = _staged(tmp_path)
+    parked = _parked_config(tmp_path)
+
+    evidence = build_startup_load_path_safety_evidence(
+        _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=parked,
+    )
+    report = evaluate_path_safety_evidence(evidence)
+
+    rollback = evidence["paths"]["rollback_configs"]
+    assert rollback["rollback_target_available"] is True
+    # Rolling back to proven silence is a restore, not a protected graph: the
+    # parked graph carries no driver protection because it drives no driver.
+    assert rollback["rollback_target_protected"] is False
+    assert report["ok_to_load_active_config"] is True
+    assert report["load_gate"] == "ready"
+
+
+def test_parked_rollback_target_reaches_the_commission_startup_anchor(
+    tmp_path: Path,
+) -> None:
+    """The whole chain, end to end: parked current config -> anchor not blocked.
+
+    `/sound/setup/`'s `_active_speaker_ensure_commission_startup_anchor` returns
+    `commission_startup_anchor_path_safety_blocked` whenever
+    `evaluate_path_safety_evidence` raises. This walks the same two calls it
+    makes, so a regression anywhere between the restore set and the load gate
+    closes the "finish crossover preview" exit again and fails here.
+    """
+    staged = _staged(tmp_path)
+    parked = _parked_config(tmp_path)
+
+    evidence = build_startup_load_path_safety_evidence(
+        _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=parked,
+    )
+    report = evaluate_path_safety_evidence(evidence)  # must NOT raise
+
+    assert report["status"] == "pass"
+    assert report["load_gate"] == "ready"
+    assert not [
+        issue
+        for issue in evidence["observed_issues"]
+        if issue.get("severity") == "blocker"
+    ]

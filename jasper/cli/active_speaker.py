@@ -26,6 +26,8 @@ from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
     DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
+    PARKED_MUTED_EXITS,
+    PARKED_MUTED_STATUS,
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,
 )
@@ -283,6 +285,11 @@ def _print_runtime_safe_graph_summary(
     if payload.get("selected_config_path"):
         print(f"  selected: {payload['selected_config_path']}")
     print(f"  statefile written: {'yes' if wrote_statefile else 'no'}")
+    if payload["status"] == PARKED_MUTED_STATUS:
+        # The parked state is an ACTION for the household, not a stack of
+        # blockers for an operator to decode. Name the two exits and stop —
+        # the blocker wall stays for a genuinely unsafe graph.
+        print(f"  next: {PARKED_MUTED_EXITS}")
     for issue in payload.get("issues") or []:
         print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
 
@@ -298,8 +305,9 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         from jasper.fanin.coupling_reconcile import read_persisted_coupling
 
         coupling = read_persisted_coupling()
+    topology = load_output_topology_strict(args.topology)
     decision = safe_graph_for_current_topology(
-        load_output_topology_strict(args.topology),
+        topology,
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
@@ -313,10 +321,22 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     )
     wrote = False
     if args.write_statefile and decision.ok:
-        wrote = apply_safe_graph_decision_to_statefile(
-            decision,
-            statefile_path=args.statefile,
-        )
+        try:
+            wrote = apply_safe_graph_decision_to_statefile(
+                decision,
+                statefile_path=args.statefile,
+                # Same topology object the decision was made from, so the
+                # write-time all-muted re-proof cannot be answered by a
+                # second, differently-read topology.
+                topology=topology,
+            )
+        except ActiveSpeakerConfigError as exc:
+            # Only the parked branch generates bytes, and it refuses to write
+            # anything it cannot re-prove all-muted. Fail the run: a statefile
+            # pointing at a config we would not write is worse than a red deploy.
+            print(f"Runtime graph decision: {decision.status}")
+            print(f"  ERROR: {exc}")
+            return 1
     payload = decision.to_dict()
     payload["statefile_written"] = wrote
     payload["statefile_path"] = args.statefile
