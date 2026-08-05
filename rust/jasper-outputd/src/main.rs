@@ -1536,7 +1536,7 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jasper_outputd::config::ContentBridgeConfig;
+    use jasper_outputd::config::{ContentBridgeConfig, DacEdgeFormat};
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1688,6 +1688,7 @@ mod tests {
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             dac_pcm: "outputd_dac".to_string(),
+            declared_dac_format: DacEdgeFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
             dual_require_link: false,

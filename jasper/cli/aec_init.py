@@ -240,6 +240,16 @@ def build_identity(
     pcm = dac.get("pcm")
     if not isinstance(sink, str) or not isinstance(pcm, str):
         raise ChipInitError("outputd output identity is incomplete")
+    # Never substitute a default here.  An outputd too old to report the
+    # final-edge format has to be replaced, not guessed around: a guess would
+    # certify an artifact against an edge nobody verified, and re-running the
+    # commissioner would not fix it either.
+    output_format = dac.get("format")
+    if not isinstance(output_format, str) or not output_format.strip():
+        raise ChipInitError(
+            "outputd STATUS has no dac.format — deploy an outputd that reports "
+            "the final-edge format before commissioning chip AEC"
+        )
     try:
         return AlignmentIdentity(
             xvf_variant=source.get("JASPER_XVF_VARIANT", ""),
@@ -250,6 +260,7 @@ def build_identity(
             output_id=source.get("JASPER_AUDIO_DAC_ID", ""),
             output_hardware_key=output_hardware_key(source, output_state),
             output_pcm=f"{sink}:{pcm}",
+            output_format=output_format,
             output_rate=_integer(dac.get("sample_rate"), "dac.sample_rate", positive=True),
             # outputd treats an unset or blank active width as the ordinary
             # two-channel sink; preserve that identity contract here.

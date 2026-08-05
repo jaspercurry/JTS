@@ -445,6 +445,38 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
     assert "Basic output hardware is reported separately" in active.detail
 
 
+def test_output_hardware_state_surfaces_the_declared_final_edge(monkeypatch):
+    # The final edge is the electrical fact the chip-AEC alignment identity is
+    # commissioned against, so the operator-facing line must name it. Read from
+    # the reconciler-emitted env (env_load sources outputd.env), never
+    # re-derived from the registry — a drift between the two is the thing this
+    # line exists to expose.
+    state = OutputHardwareState(
+        profile_id="innomaker_hifi_amp_pro",
+        profile_label="InnoMaker HiFi AMP Pro",
+        status="ready",
+        physical_output_count=2,
+    )
+    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+
+    monkeypatch.setenv("JASPER_OUTPUTD_DAC_FORMAT", "S32_LE")
+    assert "final_edge=S32_LE (declared)" in (
+        doctor.check_output_hardware_state().detail
+    )
+
+    # Unset (a box predating the emit) and explicit-empty (the reconciler's own
+    # value for an unrecognized DAC) both mean the historical S16_LE edge —
+    # the same resolution outputd's own parse applies.
+    monkeypatch.setenv("JASPER_OUTPUTD_DAC_FORMAT", "")
+    assert "final_edge=S16_LE (declared)" in (
+        doctor.check_output_hardware_state().detail
+    )
+    monkeypatch.delenv("JASPER_OUTPUTD_DAC_FORMAT", raising=False)
+    assert "final_edge=S16_LE (declared)" in (
+        doctor.check_output_hardware_state().detail
+    )
+
+
 def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
     state = OutputHardwareState(
         profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,

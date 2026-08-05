@@ -36,6 +36,7 @@ def _identity() -> AlignmentIdentity:
         "apple_usb_c_dongle",
         "usb-serial:DWH53530FLL2FN3A3",
         "single:outputd_dac",
+        "S16_LE",
         48_000,
         2,
         128,

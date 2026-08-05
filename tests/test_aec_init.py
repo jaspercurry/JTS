@@ -9,6 +9,8 @@ import sys
 import types
 from dataclasses import replace
 
+import pytest
+
 from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.cli import aec_init
@@ -159,6 +161,7 @@ def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
         "apple_usb_c_dongle",
         "usb-serial:DWH53530FLL2FN3A3",
         "single:outputd_dac",
+        "S16_LE",
         48_000,
         2,
         128,
@@ -216,7 +219,7 @@ def test_production_chip_profile_parks_on_physical_output_change(monkeypatch) ->
         "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
         xvf3800.chip_aec_fixed_profile_fingerprint(plan),
         "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
-        "single:outputd_dac", 48_000, 2, 128, 384,
+        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
     )
     monkeypatch.setattr(
         aec_init, "load_artifact",
@@ -246,11 +249,49 @@ def test_production_chip_profile_parks_on_physical_xvf_change(monkeypatch) -> No
         "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
         xvf3800.chip_aec_fixed_profile_fingerprint(plan),
         "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
-        "single:outputd_dac", 48_000, 2, 128, 384,
+        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
     )
     monkeypatch.setattr(
         aec_init, "load_artifact",
         lambda: AlignmentArtifact(replace(identity, xvf_serial="replacement"), 245),
+    )
+    monkeypatch.setattr(
+        aec_init,
+        "collect_reference_queue",
+        lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
+    )
+    monkeypatch.setattr(
+        aec_init, "build_identity", lambda *_args, **_kwargs: identity
+    )
+
+    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
+    assert _write_map(dev) == {"SHF_BYPASS": [1]}
+
+
+def test_production_chip_profile_parks_when_final_edge_format_changes(
+    monkeypatch,
+) -> None:
+    # The commissioned K is only valid for the electrical edge it was measured
+    # against, so a moved final-edge format must invalidate the artifact the
+    # same way a swapped DAC or XVF does. Exercised through main() so this pins
+    # the real CommissionRequired path, not a re-implementation of equality.
+    dev = _FakeXvfDevice()
+    _install_fake_xvf(monkeypatch, dev)
+    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
+    identity = AlignmentIdentity(
+        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
+        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
+        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
+        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
+    )
+    commissioned = replace(identity, output_format="S32_LE")
+    # Format is the ONLY difference — everything else still matches live.
+    assert commissioned != identity
+    assert replace(commissioned, output_format="S16_LE") == identity
+    monkeypatch.setattr(
+        aec_init, "load_artifact", lambda: AlignmentArtifact(commissioned, 245)
     )
     monkeypatch.setattr(
         aec_init,
@@ -275,6 +316,7 @@ def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
             "sink_mode": "single_alsa",
             "dac": {
                 "pcm": "outputd_dac",
+                "format": "S32_LE",
                 "sample_rate": 48_000,
                 "period_frames": 128,
                 "buffer_frames": 256,
@@ -291,6 +333,35 @@ def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
     assert identity.output_channels == 2
     assert identity.xvf_serial == "XVF3800-001"
     assert identity.output_hardware_key == "usb-serial:DWH53530FLL2FN3A3"
+    assert identity.output_format == "S32_LE"
+
+
+def test_build_identity_refuses_status_without_a_final_edge_format() -> None:
+    # An outputd too old to report dac.format must block, not be guessed
+    # around: a default would certify an artifact against an unverified edge.
+    dev = _FakeXvfDevice()
+    dev.values["BLD_REPO_HASH"] = (ord("f"), ord("w"), 0)
+    with pytest.raises(aec_init.ChipInitError) as excinfo:
+        aec_init.build_identity(
+            dev,
+            xvf3800.SQUARE_FIXED_150_210_PLAN,
+            {
+                "sink_mode": "single_alsa",
+                "dac": {
+                    "pcm": "outputd_dac",
+                    "sample_rate": 48_000,
+                    "period_frames": 128,
+                    "buffer_frames": 256,
+                },
+            },
+            env={
+                "JASPER_XVF_VARIANT": "xvf3800_legacy_square_6ch",
+                "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            },
+            output_state=_output_state(),
+        )
+
+    assert "dac.format" in str(excinfo.value)
 
 
 def test_output_hardware_key_uses_deterministic_i2s_profile_and_card() -> None:

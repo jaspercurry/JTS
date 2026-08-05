@@ -106,7 +106,8 @@ commissioner/reset events.
 Success atomically publishes only
 `/var/lib/jasper/chip-aec-alignment.json`: schema-v2 identity (XVF factory
 iSerial, firmware/beam/fixed-profile identity, physical USB-output serial or
-I2S profile/card identity, and negotiated output geometry) plus `K`. The
+I2S profile/card identity, the registry-declared final-edge sample format
+outputd reports as `dac.format`, and negotiated output geometry) plus `K`. The
 lifecycle relationship is
 `K = commissioned SYS_DELAY + commissioned median reference queue`. On
 boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples
