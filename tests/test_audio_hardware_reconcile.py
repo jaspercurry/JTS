@@ -1370,6 +1370,29 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
     assert "restart jasper-aec-reconcile.service" not in commands
 
 
+def test_dac_change_brain_restart_gate_follows_profile_marker(tmp_path: Path):
+    for name, marker, brain in (
+        ("absent", None, True), ("full", "full\n", True),
+        ("streambox", "streambox\n", False), ("empty", "", False),
+        ("invalid", "invalid\n", False), ("unreadable", "<unreadable>", False),
+    ):
+        case = tmp_path / name
+        case.mkdir()
+        profile = case / "install_profile"
+        if marker == "<unreadable>":
+            profile.write_text("full\n", encoding="utf-8")
+            profile.chmod(0)
+            assert profile.is_file() and not os.access(profile, os.R_OK)
+        elif marker is not None:
+            profile.write_text(marker, encoding="utf-8")
+        result = _run_reconcile(case, INNOMAKER_LISTING, initial_env="JASPER_AUDIO_DAC_ID=A\nJASPER_AUDIO_DAC_CARD=A\n")
+        if marker == "<unreadable>": profile.chmod(0o600)
+        commands = _systemctl_log(case)
+        assert result.returncode == 0 and "--no-block restart jasper-outputd.service" in commands, result.stderr
+        assert (("stop jasper-voice.service" in commands), ("restart jasper-aec-reconcile.service" in commands)) == (brain, brain)
+        assert f"brain_restarted={int(brain)}" in result.stderr
+
+
 def test_reconcile_dac_change_with_floor_delta_takes_full_path(
     tmp_path: Path,
 ):

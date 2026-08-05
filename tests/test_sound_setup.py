@@ -854,7 +854,7 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
     assert payload["shared_usb_data_port"] is True
-    assert all(text in _SOUND_MODULE.read_text() for text in ("After restart, this port stops being a host USB output and output moves to the HAT.", "ordinary powered micro-USB host cable: it supplies 5 V", "Use a VBUS-isolated data connection/adapter or leave the port disconnected."))
+    assert all(text in _SOUND_MODULE.read_text() for text in ("Enabling this setting reserves this shared port for gadget/peripheral use after restart, so it can no longer host a USB output DAC and output moves to the HAT.", "ordinary powered micro-USB host cable: it supplies 5 V", "Use a VBUS-isolated data connection/adapter or leave the port disconnected."))
 
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
