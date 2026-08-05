@@ -9,11 +9,11 @@
 > R15 to one atomic driver-only fixed-Fc vertical. Everything else is later and
 > separately gated. Live round status lives only in the
 > [program CURRENT POSITION](HANDOFF-correction-revision-plan.md#current-position).
-> This document owns the next implementation
-> slice for active two-way speaker
-> commissioning: protected raw-driver measurement, bounded LR4 crossover
-> selection, candidate-specific driver linearization, and same-session
-> verification. It changes no current behavior by itself. Current shipped
+> This document owns R15's next slice: protected-neutral driver CHECK/MEASURE,
+> configured-Fc composition, and the existing review/Apply/VERIFY path.
+> Crossover selection, candidate linearization, and expanded verification below
+> are deferred direction pending the hardware checkpoint and fresh Gate 0.
+> This changes no current behavior by itself. Current shipped
 > behavior remains in
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
 > the layer architecture remains in
@@ -67,7 +67,7 @@ the revision already shipped.
 | Pre-apply cloud | none in the driver-only R15 path | skip `CLOUD_MEASURE`; do not retain contaminated evidence or build neutral summed-cloud machinery |
 | Later lateral walk | mark, ±12 cm left/right, ±40 cm left/right, return to mark | launch only after the fixed-Fc hardware checkpoint and a fresh Gate-0 review |
 | Cloud science | exclusions, position stability, null/echo evidence, power/median checks | preserve as post-apply spatial and Room prior art; no Room implementation in R15 |
-| Fitter | crossover-shaped branch-input invariant, crossover-shaped targets, contribution/stopband guards, envelope, headroom accounting | keep the invariant; R15 supplies configured-Fc shaped input through exact offline total-transfer composition and R17 applies the same composition per candidate |
+| Fitter | crossover-shaped branch-input invariant, crossover-shaped targets, contribution/stopband guards, envelope, headroom accounting | R15 supplies configured-Fc input through exact offline composition; any later candidate use requires fresh Gate 0 |
 | Apply | transactional profile and retained Undo | stop after proposal; finish/reuse #1806's two-stage review and apply only one complete winner |
 | `VERIFY` | measured-vs-model tracking and delta probe | also verify the crossed branches and absolute crossover-region result |
 | Full tier | post-apply spatial cloud and honest spatial grade | retain; it measures the applied winner, not the old graph |
@@ -216,17 +216,11 @@ unable to meet one of the deterministic numeric tolerances must produce a
 named, evidence-backed R15 re-scope before the tolerance changes; "materially
 equivalent" without a number is not an exit.
 
-### 4.3 Durable artifacts wait for a current producer and reopened consumer
-
-R15 creates no durable anchor/schema, ad hoc JSON, self-readback path, or future
-fields. Reopened evidence and selector contracts wait until their real producer
-and current consumer ship together; no round freezes them for later work.
-
 ### 4.4 Side evidence owns robustness, not the target
 
-R16 retains the existing four moves: ±12 cm and ±40 cm left/right. At each
-pose, one compact protected program captures both drivers on a common timing
-ledger; a W–HF–W ordering may bracket drift without another user action.
+If fresh Gate 0 authorizes lateral evidence, the smallest direction reuses the
+existing ±12 cm and ±40 cm left/right moves. Each pose would capture both
+drivers on one timing ledger; W–HF–W may bracket drift.
 
 The side captures may:
 
@@ -261,12 +255,6 @@ The existing read-only seam in
 [`jasper/correction/applied_speaker_evidence.py`](../jasper/correction/applied_speaker_evidence.py)
 is the intended boundary. The crossover cloud's small design-axis neighborhood
 is not relabeled as a room dataset.
-
-## 6. Later bounded Fc selector — deferred direction
-
-Any later selector evaluates at most five legal two-way LR4 Fc values and
-reuses the fitter. Defer 243/27/81 enumeration, tournaments, four sensitivity
-reruns, large trace/schema frameworks, topology/order search, FIR, and 3-way.
 
 ## 7. Apply, verify, and iterate
 
@@ -349,14 +337,14 @@ the canonical disposition for this revision, not a copy of every issue body.
 |---|---|---|
 | [#1665](https://github.com/jaspercurry/JTS/issues/1665) component facts/L-pad | Safety input | Consume the one confirmed declaration seam; do not absorb the remaining research-prefill UX work. R14/R15 gate. |
 | [#1654](https://github.com/jaspercurry/JTS/issues/1654) HF sweep to declared floor | Raw instrument | R15 measures through the declared safe envelope; any later lateral reuse waits for the fixed-Fc checkpoint. |
-| [#1675](https://github.com/jaspercurry/JTS/issues/1675) ka/directivity guidance | Selector prior | R17 consumes it as a coarse prior/window; measured lateral evidence outranks it. |
-| [#1894](https://github.com/jaspercurry/JTS/issues/1894) measurement-adjudicated Fc/topology | Primary selector tracker | R17 implements only its stated 80/20 Fc-within-confirmed-limits slice. Topology/order stay deferred on the same issue. |
-| [#1968](https://github.com/jaspercurry/JTS/issues/1968) crossover decision research | Research authority | Input to R17; not a second implementation tracker. Household lateral samples remain a coarse gate, not the report's full polar program. |
-| [#1806](https://github.com/jaspercurry/JTS/issues/1806) measure/review/apply/verify split | Apply chassis | R15 preserves its current review/Apply/VERIFY path; R18 may later bind a dynamic winner without a new wizard. |
-| [#1868](https://github.com/jaspercurry/JTS/issues/1868) model-reproduced null passes VERIFY | Verification truth | R19 adds absolute crossover-region and branch realization beside tracking. |
-| [#2098](https://github.com/jaspercurry/JTS/issues/2098) mark-only reported graded | Result scope SSOT | R19 gives one producer the mark-vs-spatial completeness fact. |
-| [#1784](https://github.com/jaspercurry/JTS/issues/1784) honest before/after | Report reuse | R19 may feed the existing report; no new chart framework is required for campaign exit. |
-| [#1941](https://github.com/jaspercurry/JTS/issues/1941) guided measurement UX | Prompt/diagram line | R16 reuses current poses and structured prompt work. Remaining visual polish does not block raw evidence. |
+| [#1675](https://github.com/jaspercurry/JTS/issues/1675) ka/directivity guidance | Selector prior | Owns deferred prior/window guidance; any consumer waits for fresh Gate 0. |
+| [#1894](https://github.com/jaspercurry/JTS/issues/1894) measurement-adjudicated Fc/topology | Primary selector tracker | Owns deferred Fc-within-limits work; fresh Gate 0 decides any implementation vertical. |
+| [#1968](https://github.com/jaspercurry/JTS/issues/1968) crossover decision research | Research authority | Authority for deferred selector research, not implementation; lateral samples remain a coarse gate. |
+| [#1806](https://github.com/jaspercurry/JTS/issues/1806) measure/review/apply/verify split | Apply chassis | R15 preserves the current path; the issue owns any deferred apply integration. |
+| [#1868](https://github.com/jaspercurry/JTS/issues/1868) model-reproduced null passes VERIFY | Verification truth | Owns the deferred absolute crossover-region and branch-realization gap. |
+| [#2098](https://github.com/jaspercurry/JTS/issues/2098) mark-only reported graded | Result scope SSOT | Owns deferred mark-versus-spatial completeness. |
+| [#1784](https://github.com/jaspercurry/JTS/issues/1784) honest before/after | Report reuse | Existing reuse seam for deferred reporting; no new chart framework is authorized. |
+| [#1941](https://github.com/jaspercurry/JTS/issues/1941) guided measurement UX | Prompt/diagram line | Owns deferred pose prompts and diagrams; any reuse waits for fresh Gate 0. |
 | [#1877](https://github.com/jaspercurry/JTS/issues/1877) position-aware clouds | Closed product decision | Keep acoustic timing first and phone sensor fusion parked. No revival for v1. |
 | [#2092](https://github.com/jaspercurry/JTS/issues/2092) spread-blind geometry lock | Known defect | Keep separate. It blocks only if the revised path still asks this estimator to decide side-evidence admissibility; do not bundle opportunistically. |
 | [#1848](https://github.com/jaspercurry/JTS/issues/1848) JTS3 acceptance | Separate controlled A/B | Keep its reference-level versus SNR-solved MEASURE-level A/B separate. R20 may contribute general commissioning evidence, but does not replace, close, or claim that controlled comparison. |
