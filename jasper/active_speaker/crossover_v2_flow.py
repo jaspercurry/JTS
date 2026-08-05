@@ -202,6 +202,13 @@ PHASE_VERIFY = "verify"
 # capture belongs to. Do not conflate the two vocabularies.
 PHASE_CLOUD_MEASURE = "cloud_measure"
 PHASE_CLOUD_VERIFY = "cloud_verify"
+# R16 lateral evidence (plan §4.4). A position group like the two clouds, but
+# its captures replay the ANCHOR's per-driver MEASURE program rather than the
+# summed sweep, because §4.4's uses ("compare the woofer/HF relative falloff",
+# "predict each candidate's sum at all sampled positions") are per-driver claims
+# a summed curve cannot answer. So it is NOT in ``SUMMED_SWEEP_PHASES``: same
+# protected-neutral commissioning graph, same stimulus, same gains as MEASURE.
+PHASE_LATERAL = "lateral"
 # The two-stage commission flow's untimed INTERLUDE (work order D3, issue
 # #1806): a measure-only session has closed, a candidate exists, and NOTHING
 # has been applied — the household is being shown what was measured, what is
@@ -279,6 +286,7 @@ CAPTURE_PLAN_MAX_ATTEMPTS = 8
 CAPTURE_PHASES = (
     PHASE_CHECK,
     PHASE_MEASURE,
+    PHASE_LATERAL,
     PHASE_CLOUD_MEASURE,
     PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
@@ -286,7 +294,7 @@ CAPTURE_PHASES = (
 
 # The phases whose accepted-capture bookkeeping is PER INDEX rather than per
 # phase, because one phase spans many prompted positions.
-GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
+GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
 
 # What a session ran before the position groups shipped. Durable state written
 # then carries no ``session_phases`` field, and it came from a session that ran
@@ -723,6 +731,60 @@ CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
     ),
 )
 
+# --- R16 lateral evidence (plan §4.4) --------------------------------------- #
+#
+# §4.4: "the smallest direction reuses the existing ±12 cm and ±40 cm left/right
+# moves". So the walk is DERIVED from the table above rather than restating its
+# copy — and by PREDICATE, not by slice index, so reordering that table for
+# readability cannot silently swap which poses the lateral walk asks for.
+_LATERAL_POSE_OFFSETS_CM = (12.0, 40.0)
+
+# The walk OPENS and CLOSES at the mark. Both rows bypass ``_pose``: its
+# ≥ MIN_CLOUD_OFFSET_CM floor guarantees a prompted move DECORRELATES HF nulls,
+# and these two exist to CORRELATE with each other.
+#
+# Why an at-mark pose at all, when the anchor MEASURE just ran there: the
+# anchor's evidence is COMPOSED to the configured crossover the moment it is
+# analyzed (§4.2), while a pose is kept neutral so the consumer can compose it
+# per candidate. The two are not comparable curves, so a drift bracket drawn
+# between them would be comparing a composition to its absence. One extra sweep
+# buys a design-axis sample in the SIDES' own fidelity class and makes the
+# closing bracket an exact same-instrument repeat of the opening one.
+LATERAL_MARK_PROMPT = CloudPositionPrompt(
+    headline="Leave the microphone on the mark — one more sweep from here.",
+    detail="Nothing to move yet.",
+    offset_cm=0.0,
+    role=POSITION_ROLE_ONAX,
+)
+LATERAL_MARK_RETURN_PROMPT = CloudPositionPrompt(
+    headline="Last one: put the microphone back on the mark.",
+    detail="Same spot, same height, pointed at the speaker.",
+    offset_cm=0.0,
+    role=POSITION_ROLE_ONAX,
+)
+
+LATERAL_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
+    (LATERAL_MARK_PROMPT,)
+    + tuple(
+        prompt for prompt in CLOUD_POSITION_PROMPTS
+        if prompt.role != POSITION_ROLE_XOVR
+        and float(prompt.offset_cm) in _LATERAL_POSE_OFFSETS_CM
+    )
+    + (LATERAL_MARK_RETURN_PROMPT,)
+)
+
+# Import-time guard, same register as ``_pose``'s: the derivation above must
+# yield exactly one LEFT and one RIGHT at each declared offset, bracketed by the
+# two at-mark poses. A cloud-table edit that drops or duplicates one of those
+# four fails the import rather than shipping a lopsided walk whose left/right
+# disagreement term is meaningless.
+if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
+    raise ValueError(
+        "the lateral walk must derive exactly one LEFT and one RIGHT pose at "
+        f"each of {_LATERAL_POSE_OFFSETS_CM} cm, bracketed by the two at-mark "
+        f"poses, got {len(LATERAL_POSE_PROMPTS)} poses"
+    )
+
 # What the household reads during the apply hold, and the same entry's fallback
 # screen body. It carries a REPOSITION instruction because the pre-apply cloud
 # ends at a wide offset while VERIFY's tracking comparator is only meaningful
@@ -823,11 +885,12 @@ def cloud_walk_reach_cm(positions: int) -> float:
     the wide rows' step-in chord. See that constant for why both halves matter.
     """
     walked = max(0, int(positions) - 1)
-    if not walked:
-        return 0.0
-    furthest = max(float(p.offset_cm) for p in CLOUD_POSITION_PROMPTS[:walked])
-    step = CLOUD_WALK_REACH_ROUNDING_CM
-    return math.floor(furthest / step) * step + step
+    if walked > len(CLOUD_POSITION_PROMPTS):
+        raise CrossoverV2FlowError(
+            f"cloud walk shape needs {walked} position prompts but "
+            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
+        )
+    return cloud_walk_reach_cm_of(CLOUD_POSITION_PROMPTS[:walked])
 
 
 def cloud_geometry_retry_reach_cm() -> float:
@@ -872,18 +935,40 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
     stage 2's tail; the prompted moves are the same table either way, because
     both groups walk it from the front.
     """
-    walked = max(0, int(positions) - 1)
-    if walked > len(CLOUD_POSITION_PROMPTS):
-        raise CrossoverV2FlowError(
-            f"cloud walk shape needs {walked} position prompts but "
-            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
-        )
-    if not walked:
+    return _walk_shape(cloud_walk_reach_cm(positions), post_apply=post_apply)
+
+
+def walk_shape_for(*, cloud_positions: int, lateral: bool) -> str:
+    """The orientation sentence for a stage-1 session's ACTUAL groups (R16).
+
+    One sentence for whichever groups run, quoting the FURTHEST reach of any of
+    them — a household needs to know how much room the whole session wants, and
+    two sentences quoting two ceilings would just make them pick one.
+    """
+    reach = max(
+        cloud_walk_reach_cm(cloud_positions) if cloud_positions else 0.0,
+        (
+            cloud_walk_reach_cm_of(LATERAL_POSE_PROMPTS) if lateral else 0.0
+        ),
+    )
+    return _walk_shape(reach)
+
+
+def cloud_walk_reach_cm_of(prompts: Sequence[CloudPositionPrompt]) -> float:
+    """:func:`cloud_walk_reach_cm`'s rounding rule over an explicit table."""
+    if not prompts:
+        return 0.0
+    step = CLOUD_WALK_REACH_ROUNDING_CM
+    furthest = max(float(p.offset_cm) for p in prompts)
+    return math.floor(furthest / step) * step + step
+
+
+def _walk_shape(reach: float, *, post_apply: bool = False) -> str:
+    if not reach:
         # A group with no prompted moves is not a walk and gets no shape line —
         # Express's stage 2 is one held-still sweep at the mark, whose consent
         # screen already leads with REVERIFY_NO_REWALK_HEADLINE.
         return ""
-    reach = cloud_walk_reach_cm(positions)
     tail = (
         CLOUD_WALK_SHAPE_TAIL_POST_APPLY if post_apply
         else CLOUD_WALK_SHAPE_TAIL
@@ -1143,10 +1228,14 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     """
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
+    # R16: the lateral walk is stage-1 entries too, so the worst case the relay
+    # must carry includes it. Counted unconditionally rather than behind
+    # ``STAGE1_INCLUDES_LATERAL`` — a capacity guard that only holds while a
+    # flag is off is not a guard.
     entries = cloud_capture_target(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
+    ) + len(LATERAL_POSE_PROMPTS)
     if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2FlowError(
             f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
@@ -1156,7 +1245,7 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     attempts = cloud_plan_max_attempts(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
+    ) + len(LATERAL_POSE_PROMPTS)
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2FlowError(
             f"worst-case cloud plan's attempt budget {attempts} exceeds the "
@@ -1252,11 +1341,26 @@ def cloud_plan_max_attempts(
 # chooser cannot advertise a walk the session does not take (#2098's pattern).
 STAGE1_INCLUDES_CLOUD_MEASURE = False
 
+# R16 (plan §4.4, Gate 0 2026-08-05): stage 1 walks the lateral poses after the
+# anchor. Its own flag rather than a reuse of the one above, because the two
+# groups answer different questions and are separately authorized — the
+# pre-apply cloud stays off.
+#
+# Like ``STAGE1_INCLUDES_CLOUD_MEASURE`` this is applied at the PRODUCTION seams
+# (``_stage1_capture_target`` and ``prepare_v2_session``), not as a builder
+# default: ``build_v2_capture_plan`` / ``build_v2_cloud_index_phase_map`` keep
+# whatever a caller asks for, so a caller constructing a cloud session to
+# exercise the cloud still gets exactly that.
+STAGE1_INCLUDES_LATERAL = True
+
 
 def _stage1_capture_target(shape: Any) -> int:
     """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
     return len(build_v2_cloud_index_phase_map(
-        plan_shape=shape, include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE))
+        plan_shape=shape,
+        include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=STAGE1_INCLUDES_LATERAL,
+    ))
 
 
 def build_v2_cloud_index_phase_map(
@@ -1266,6 +1370,7 @@ def build_v2_cloud_index_phase_map(
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
+    include_lateral: bool = False,
 ) -> dict[int, str]:
     """Capture-plan index → conductor phase for a STAGE-1 (measure) session.
 
@@ -1275,7 +1380,12 @@ def build_v2_cloud_index_phase_map(
 
         1                    CHECK
         2                    MEASURE            (design-axis anchor)
-        3 .. N+1             CLOUD_MEASURE      (N-1 prompted positions)
+        3 .. L+2             LATERAL            (L prompted poses, R16 §4.4)
+        L+3 .. L+N+1         CLOUD_MEASURE      (N-1 prompted positions)
+
+    The lateral walk runs BEFORE any pre-apply cloud because it is the anchor's
+    own robustness sample: it replays the anchor program, and the sooner it runs
+    after the anchor the less the household and the room have had to drift.
 
     **There is deliberately no VERIFY entry** (two-stage commission work order
     D1, issue #1806). Stage 1 measures and stops at the group-close confirm;
@@ -1298,10 +1408,15 @@ def build_v2_cloud_index_phase_map(
     )
     n = shape.cloud_measure_positions
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
+    nxt = 3
+    if include_lateral:
+        for offset in range(len(LATERAL_POSE_PROMPTS)):
+            mapping[nxt + offset] = PHASE_LATERAL
+        nxt += len(LATERAL_POSE_PROMPTS)
     if not include_cloud_measure:
         return mapping
     for offset in range(n - 1):
-        mapping[3 + offset] = PHASE_CLOUD_MEASURE
+        mapping[nxt + offset] = PHASE_CLOUD_MEASURE
     return mapping
 
 
@@ -3913,6 +4028,123 @@ class _CloudPosition:
     signal_band_hz: tuple[float, float] | None = None
 
 
+# --- R16 lateral evidence (plan §4.4) --------------------------------------- #
+#
+# One fixed log-spaced basis for every retained pose curve. Fixed rather than
+# per-role so both branches land on the SAME frequencies and a consumer can sum
+# them without resampling either; log-spaced because a crossover argument is a
+# per-octave one. 1/12 octave is ~118 Hz at 2 kHz, which resolves a handoff
+# region the plan itself calls a COARSE gate ("lateral samples remain a coarse
+# gate", #1968) — this is not a polar measurement and must not be read as one.
+LATERAL_EVIDENCE_BAND_HZ = (20.0, 20_000.0)
+LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
+
+
+@dataclass(frozen=True)
+class LateralPoseCurve:
+    """One driver's NEUTRAL response at one pose, on the shared log basis.
+
+    ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
+    configured-crossover composition applied (see
+    ``CrossoverV2Conductor._lateral_priors``). §4.2's
+    ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
+
+    Values are SAMPLED at the nearest native bin, never interpolated or
+    averaged: an interpolated complex value is a number no microphone produced,
+    and a phase interpolated across a wrap is simply wrong. The frequencies
+    actually sampled ride along for the same reason. ``band_hz`` is the role's
+    driven sweep band — outside it there was no stimulus, so the samples are
+    noise and a consumer must bound itself with this.
+    """
+
+    role: str
+    freqs_hz: np.ndarray
+    complex_tf: np.ndarray
+    band_hz: tuple[float, float]
+    validity_floor_hz: float | None
+
+
+@dataclass(frozen=True)
+class LateralPose:
+    """One accepted pose in the lateral walk.
+
+    Carries NO trim, delay, polarity or fit. That absence is the §4.4 contract
+    ("re-solve trim or delay independently at every pose" is forbidden), and it
+    is structural rather than a convention: there is no field here for a second
+    solution to be written to.
+    """
+
+    pose_id: str
+    index: int
+    attempt: int
+    prompt: str
+    role: str
+    offset_cm: float
+    at_mark: bool
+    captured_at: float
+    curves: tuple[LateralPoseCurve, ...]
+
+    def curve(self, role: str) -> LateralPoseCurve | None:
+        for curve in self.curves:
+            if curve.role == role:
+                return curve
+        return None
+
+
+def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
+    """Each role's PRIMARY sweep band, read off the program that played.
+
+    ``kind == KIND_SWEEP`` matters because a v2 MEASURE program OPENS with a
+    leading pilot pair, and a pilot carries a role and a band too — so a
+    role-only match would take the pilot's, not the sweep's. Today those two
+    bands are EQUAL (both derive from the same intersected ``RoleBand``), so
+    this is not a live bug; it names which segment the retained curve's band
+    describes, so the answer stays right if that coupling ever moves. Pinned by
+    ``test_the_retained_band_reads_the_sweep_segment_not_a_pilot``.
+    """
+    bands: dict[str, tuple[float, float]] = {}
+    for segment in program.segments:
+        if segment.kind != KIND_SWEEP or segment.role is None:
+            continue
+        if segment.f1_hz is None or segment.f2_hz is None:
+            continue
+        bands.setdefault(segment.role, (float(segment.f1_hz), float(segment.f2_hz)))
+    return bands
+
+
+def lateral_evidence_grid_hz() -> np.ndarray:
+    """The shared log basis every retained pose curve is sampled onto."""
+    lo, hi = LATERAL_EVIDENCE_BAND_HZ
+    octaves = math.log2(hi / lo)
+    return np.geomspace(
+        lo, hi, num=int(round(octaves * LATERAL_EVIDENCE_POINTS_PER_OCTAVE)) + 1,
+    )
+
+
+def lateral_pose_curve(
+    response: Any, band_hz: tuple[float, float],
+) -> LateralPoseCurve:
+    """Sample one analyzed driver response onto the shared basis."""
+    freqs = np.asarray(response.freqs_hz, dtype=np.float64)
+    tf = np.asarray(response.complex_tf, dtype=np.complex128)
+    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
+    # monotonically increasing rfft grid, without materialising an N x M
+    # distance matrix (the analysis grid is hundreds of thousands of bins).
+    grid = lateral_evidence_grid_hz()
+    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
+    left = right - 1
+    take = np.where(
+        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
+    )
+    return LateralPoseCurve(
+        role=str(response.role),
+        freqs_hz=freqs[take],
+        complex_tf=tf[take],
+        band_hz=(float(band_hz[0]), float(band_hz[1])),
+        validity_floor_hz=response.validity_floor_hz,
+    )
+
+
 def cloud_position_capture(position: _CloudPosition) -> Any:
     """One retained position → a :class:`spatial_combine.PositionCapture`.
 
@@ -5585,6 +5817,14 @@ class CrossoverV2Conductor:
         self._group_positions: dict[str, list[_CloudPosition]] = {
             phase: [] for phase in self._group_indexes
         }
+        # R16's lateral walk keeps its OWN retention rather than joining the
+        # dict above, because a pose is per-driver evidence and a cloud position
+        # is one summed curve — putting the two in one list would give the
+        # combiner an input it cannot combine. Idempotent per index exactly like
+        # ``_group_positions``: a retake replaces its pose. Bounded by
+        # ``LATERAL_POSE_PROMPTS``; each pose holds two curves on the fixed
+        # ~120-point basis, so the whole walk is a few thousand complex values.
+        self._lateral_poses: list[LateralPose] = []
         # WO-1: the per-position evidence metadata handed to the retention
         # seam, kept by position id so the group close can serialize the
         # members alongside the aggregate (attribution plan §6 / §11.1 A7).
@@ -6125,6 +6365,32 @@ class CrossoverV2Conductor:
             },
         )
 
+    def _lateral_priors(self) -> MeasurementPriors:
+        """Priors for one lateral pose — MEASURE-shaped, deliberately NEUTRAL.
+
+        Everything the anchor gets EXCEPT the configured-path composition maps.
+        That omission is the point of the round: §4.2's composition is
+        ``S_c = sign_c * M * C_c / P`` for ONE candidate, and baking the
+        configured ``C`` in here would make the retained evidence answer for
+        2 kHz alone. So a pose is analyzed as ``M`` and the composition stays
+        where §4.2 puts it — offline, per candidate, in the consumer.
+
+        ``_compose_configured_path_ir`` returns its input untouched iff ALL
+        THREE maps are ``None`` and raises if only some are, so leaving them out
+        is an exact, checked no-op, and the analysis stamps
+        ``configured_path_composed=False`` accordingly. The fitter's own
+        uncomposed-capture rail keeps that from reaching a prescription: a pose
+        is never fitted.
+
+        No ``predicted_sum`` and no alignment bounds, for the cloud's reason
+        plus §4.4's: the anchor solution is HELD FIXED at the sides, so nothing
+        here may be read as a per-pose trim/delay/polarity solve.
+        """
+        return MeasurementPriors(
+            crossover_fc_hz=self._fc_hz,
+            ambient_report=self._check_ambient_report,
+        )
+
     def _verify_priors(self) -> MeasurementPriors:
         # Carry MEASURE's actual per-driver sweep bounds forward (§5.6 fix) so
         # VERIFY's tracking comparison trusts the SAME true driver-sweep
@@ -6229,6 +6495,57 @@ class CrossoverV2Conductor:
             {"position_id": p.position_id, "index": p.index, "attempt": p.attempt}
             for p in self._group_positions.get(phase, ())
         )
+
+    @property
+    def lateral_poses(self) -> tuple[LateralPose, ...]:
+        """The accepted lateral walk, in capture order (plan §4.4).
+
+        Empty when the session ran no lateral group, or when every pose was
+        dropped. A consumer must treat those two the same way — fewer sampled
+        positions than planned — and DISCLOSE it rather than infer robustness
+        from evidence it does not have.
+        """
+        return tuple(self._lateral_poses)
+
+    def lateral_mark_return_drift_db(self) -> dict[str, float] | None:
+        """Per-role worst |Δ dB| between the walk's two AT-MARK poses.
+
+        The walk opens and closes at the same spot with the same program, so
+        this is one number for "did anything move while the household walked" —
+        a nudged stand, a shifted body, a room that changed. Both poses are
+        neutral and sampled onto the same basis, so the difference is exactly a
+        repeat-measurement difference and nothing else.
+
+        **Reported, never gated.** No evidence in this campaign fixes a
+        threshold for it, and inventing one would be a refusal the plan did not
+        authorize; the consumer widens its own uncertainty with this number
+        instead. ``None`` when either bracket pose is missing — never ``0.0``,
+        which would read as "nothing moved".
+        """
+        opening = next((p for p in self._lateral_poses if p.at_mark), None)
+        closing = next(
+            (p for p in reversed(self._lateral_poses) if p.at_mark), None
+        )
+        if opening is None or closing is None or opening.index == closing.index:
+            return None
+        drift: dict[str, float] = {}
+        for first in opening.curves:
+            last = closing.curve(first.role)
+            if last is None or first.freqs_hz.size != last.freqs_hz.size:
+                continue
+            lo, hi = first.band_hz
+            # Only where BOTH poses were actually driven; outside the sweep band
+            # the samples are noise and their difference is noise squared.
+            inside = (first.freqs_hz >= lo) & (first.freqs_hz <= hi)
+            if not np.any(inside):
+                continue
+            delta = 20.0 * np.log10(
+                np.abs(last.complex_tf[inside]) / np.abs(first.complex_tf[inside])
+            )
+            finite = delta[np.isfinite(delta)]
+            if finite.size:
+                drift[first.role] = float(np.max(np.abs(finite)))
+        return drift or None
 
     @property
     def tier(self) -> str:
@@ -6503,8 +6820,14 @@ class CrossoverV2Conductor:
             position = offsets.index(index)
         except ValueError:
             position = 0
-        if position < len(CLOUD_POSITION_PROMPTS):
-            return CLOUD_POSITION_PROMPTS[position]
+        # R16: the lateral walk has its own (derived) table and its own length.
+        # Same front-loading rule, same builder enumeration order.
+        table = (
+            LATERAL_POSE_PROMPTS if phase == PHASE_LATERAL
+            else CLOUD_POSITION_PROMPTS
+        )
+        if position < len(table):
+            return table[position]
         # A DISTINCT defensive spot, not a repeat of a table row: this fallback
         # only fires for a group longer than the table (which
         # ``_validated_cloud_counts`` refuses, so it is unreachable today), and
@@ -6778,9 +7101,7 @@ class CrossoverV2Conductor:
         if phase in self._group_indexes:
             if index in self._group_unresolved[phase]:
                 return "This position was left out and the group continued."
-            if any(
-                position.index == index for position in self._group_positions[phase]
-            ):
+            if index in self._retained_group_indexes(phase):
                 return (
                     "JTS kept the earlier measurement for this position and "
                     "the group continued."
@@ -6807,7 +7128,13 @@ class CrossoverV2Conductor:
     def _program_for_phase(self, phase: str) -> ExcitationProgram:
         if phase == PHASE_CHECK:
             return self._check_program
-        if phase == PHASE_MEASURE:
+        # R16: a lateral pose replays the ANCHOR's program object VERBATIM —
+        # same stimulus, same solved per-driver gains, same protected-neutral
+        # graph. That identity is not an optimisation: the return-to-mark
+        # bracket and every §4.4 falloff comparison are differences against the
+        # anchor, and a pose measured at a different level or with a different
+        # sweep would make those differences uninterpretable.
+        if phase in (PHASE_MEASURE, PHASE_LATERAL):
             if self._measure_program is None:
                 raise CrossoverV2FlowError(
                     "MEASURE armed before the CHECK gain solve produced a program"
@@ -6833,6 +7160,7 @@ class CrossoverV2Conductor:
         priors = (
             self._measure_priors() if phase == PHASE_MEASURE
             else self._verify_priors() if phase == PHASE_VERIFY
+            else self._lateral_priors() if phase == PHASE_LATERAL
             else self._cloud_priors() if phase in GROUP_PHASES
             else self._check_priors() if phase == PHASE_CHECK
             else MeasurementPriors()
@@ -6852,6 +7180,8 @@ class CrossoverV2Conductor:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:
             verdict = self._consume_measure(analysis)
+        elif phase == PHASE_LATERAL:
+            verdict = self._consume_lateral_pose(index, attempt, analysis)
         elif phase in GROUP_PHASES:
             verdict = self._consume_cloud_position(
                 phase, index, attempt, analysis, result
@@ -7015,8 +7345,8 @@ class CrossoverV2Conductor:
                 outcome=outcome,
             )
         with self._close_lock:
-            retained = self._group_positions[phase]
-            if any(position.index == index for position in retained):
+            retained = self._retained_group_indexes(phase)
+            if index in retained:
                 # (1) The earlier take survives — a rejection never replaces a
                 # retained curve — so this position is not unresolved at all.
                 self._log_slot_spent(
@@ -7036,7 +7366,7 @@ class CrossoverV2Conductor:
                 other for other in self._group_indexes[phase]
                 if other != index and other not in self._group_accepted[phase]
             ]
-            if len(retained) + len(unwalked) < MIN_RESOLVED_CLOUD_POSITIONS:
+            if len(retained) + len(unwalked) < self._group_position_floor(phase):
                 outcome = "below_position_floor"
                 self._log_slot_spent(
                     phase, index, observed, outcome,
@@ -7116,6 +7446,14 @@ class CrossoverV2Conductor:
         Caller holds ``_close_lock``.
         """
         if index == self._group_indexes[phase][-1]:
+            # R16: a dropped LAST pose must still close the walk, or a session
+            # whose final capture could not be measured would end with no
+            # candidate at all — the anchor's coefficients were never the poses'
+            # to withhold. Same "settled looks accepted on the wire" contract.
+            if phase == PHASE_LATERAL:
+                return PhaseVerdict(
+                    True, payload={**self._close_lateral_walk(), **payload}
+                )
             closing = self._close_cloud_group(phase, None)
             if not closing.accepted:
                 # This slot is already spent: a close-time product gate (for
@@ -7469,7 +7807,14 @@ class CrossoverV2Conductor:
         # will ever read is not free on a 1 GB Pi (see the field's own comment
         # in ``__init__`` for the measurement). Exactly one is ever held; a
         # MEASURE re-arm overwrites it, and the group close releases it.
-        if PHASE_CLOUD_MEASURE in self._phases:
+        # R16 adds a THIRD deferring shape to the two below. The rule in bold
+        # above is the invariant, not the cloud's name in it: once a lateral
+        # walk follows the anchor, MEASURE is no longer the last capture before
+        # the apply, and fitting here would put a proposal on the review screen
+        # that predates five minutes of evidence the household was just asked to
+        # produce — the exact defect the 2026-07-27 decision removed for the
+        # cloud. The lateral group's last accepted pose closes it instead.
+        if PHASE_CLOUD_MEASURE in self._phases or PHASE_LATERAL in self._phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         # The pre-cloud 3-entry shape, which NO production caller constructs
@@ -7488,6 +7833,142 @@ class CrossoverV2Conductor:
                 **self._publish_measure_candidate(analysis, None),
             },
         )
+
+    def _retained_group_indexes(self, phase: str) -> set[int]:
+        """Which indexes of one group already hold evidence — one accessor over
+        the two retentions (cloud curves, R16 poses), so the retry/settle
+        bookkeeping never branches on which list a phase happens to use."""
+        if phase == PHASE_LATERAL:
+            return {pose.index for pose in self._lateral_poses}
+        return {p.index for p in self._group_positions.get(phase, ())}
+
+    def _group_position_floor(self, phase: str) -> int:
+        """How few resolved positions still lets a group stand.
+
+        A cloud is an AVERAGE: below :data:`MIN_RESOLVED_CLOUD_POSITIONS` there
+        is nothing to combine, so the session ends honestly. The lateral walk is
+        not — §4.4: "side evidence owns robustness, not the target". The
+        coefficients are the anchor's and already in hand, so a pose nobody
+        could capture costs a robustness sample and nothing else. Floor ZERO:
+        drop it, record why, keep walking, and let the consumer disclose that it
+        decided on fewer positions than planned.
+        """
+        return 0 if phase == PHASE_LATERAL else MIN_RESOLVED_CLOUD_POSITIONS
+
+    def _consume_lateral_pose(
+        self, index: int, attempt: int, analysis: ProgramAnalysis,
+    ) -> PhaseVerdict:
+        """One pose of the R16 lateral walk (plan §4.4).
+
+        The screens are MEASURE's own capture-integrity gates, in MEASURE's
+        order, because a pose replays MEASURE's program: a pose that did not
+        record cleanly is not evidence, wherever the microphone was standing.
+
+        Three MEASURE gates are deliberately NOT applied — the delay-search
+        status, the GCC trust floor and the plausibility backstop — because all
+        three judge the ALIGNMENT SOLVE, which §4.4 forbids re-running here. The
+        search window is a geometry prior about the MARK, so a microphone 40 cm
+        to the side legitimately fails it; refusing on those would quietly keep
+        only the poses that happen to align like the anchor, which is precisely
+        the off-axis consequence these samples exist to expose.
+
+        Nor does a rejected pose re-arm MEASURE with a level backoff: the pose
+        must be measured at the ANCHOR'S level or its curve is not comparable to
+        the anchor's, and a quieter retake would answer a different question.
+        """
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.pilot_snr_ok is False:
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
+        if not _sweep_locate_confidence_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.glitch_detected:
+            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
+        if not _sweep_schedule_ok(
+            analysis, self._program_for_phase(PHASE_LATERAL).sample_rate_hz
+        ):
+            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
+        if _any_sweep_clipped(analysis):
+            return PhaseVerdict(False, REASON_CLIPPED)
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        bands = _primary_sweep_bands(self._program_for_phase(PHASE_LATERAL))
+        curves = [
+            lateral_pose_curve(response, bands[response.role])
+            for response in analysis.driver_responses
+            if response.repeat_index is None and response.role in bands
+        ]
+        if len(curves) < 2:
+            # A pose that yielded fewer than both branches cannot answer any of
+            # §4.4's questions — every one of them is a woofer-versus-HF
+            # comparison. Reuse ``locate_failed`` rather than mint a code: the
+            # household action ("measure this spot again") is identical.
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        prompt = self._prompt_shown_for(PHASE_LATERAL, index)
+        pose = LateralPose(
+            pose_id=f"{PHASE_LATERAL}_{index:02d}",
+            index=index,
+            attempt=attempt,
+            prompt=prompt.text,
+            role=prompt.role,
+            offset_cm=float(prompt.offset_cm),
+            at_mark=float(prompt.offset_cm) == 0.0,
+            captured_at=time.time(),
+            curves=tuple(curves),
+        )
+        log_event(
+            logger, "correction.crossover_v2_lateral_pose",
+            session_id=self.session_id, pose_id=pose.pose_id, index=index,
+            attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
+            at_mark=pose.at_mark, curves=len(pose.curves),
+        )
+        # ONE critical section for retain + close, exactly as the cloud's
+        # position verdict takes: the candidate build reads the whole walk, and
+        # a retain that landed half-way through it would fit a session that
+        # never existed.
+        with self._close_lock:
+            self._lateral_poses = sorted(
+                [p for p in self._lateral_poses if p.index != index] + [pose],
+                key=lambda p: p.index,
+            )
+            payload: dict[str, Any] = {"position_id": pose.pose_id}
+            if index == self._group_indexes[PHASE_LATERAL][-1]:
+                payload.update(self._close_lateral_walk())
+            return PhaseVerdict(True, payload=payload)
+
+    def _close_lateral_walk(self) -> dict[str, Any]:
+        """Build the candidate the household reviews, once the walk is done.
+
+        The lateral shape's counterpart to
+        :meth:`_close_measure_cloud_candidate`, and deliberately the smaller of
+        the two: no combine, no geometry retake, no confirm screen to wait for,
+        so the walk's last accepted pose is simply the last capture before the
+        apply and this folds the candidate into its verdict exactly as the
+        pre-cloud 3-entry shape folds it into MEASURE's.
+
+        ``cloud=None`` is the same honest ``None`` the cloud path passes when
+        its pipeline did not become available: this session ran no pre-apply
+        cloud, so the envelope's spatial terms have no evidence — §4.2's
+        recorded, accepted risk for the driver-only path, not something the
+        lateral walk quietly substitutes for. §4.4 is explicit that side
+        evidence may not become the fit target.
+
+        A walk where nothing was captured still closes: the anchor already owns
+        the coefficients (see :meth:`_group_position_floor`).
+        """
+        if self._measure_analysis is None:
+            raise CrossoverV2FlowError(
+                "lateral walk closed with no retained MEASURE analysis"
+            )
+        analysis, self._measure_analysis = self._measure_analysis, None
+        log_event(
+            logger, "correction.crossover_v2_lateral_walk_closed",
+            session_id=self.session_id,
+            planned=len(self._group_indexes[PHASE_LATERAL]),
+            captured=len(self._lateral_poses),
+            mark_return_drift_db=self.lateral_mark_return_drift_db(),
+        )
+        return self._publish_measure_candidate(analysis, None)
 
     def _consume_cloud_position(
         self,
@@ -11360,6 +11841,7 @@ def build_v2_capture_plan(
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
+    include_lateral: bool = False,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan (§5.7 + flat-linearization PR-3b).
 
@@ -11425,10 +11907,13 @@ def build_v2_capture_plan(
         cloud_verify_positions=cloud_verify_positions,
     )
     index_phase = build_v2_cloud_index_phase_map(
-        plan_shape=shape, include_cloud_measure=include_cloud_measure,
+        plan_shape=shape,
+        include_cloud_measure=include_cloud_measure,
+        include_lateral=include_lateral,
     )
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
+    measure_ms = _program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS
     entries: list[Any] = [
         CapturePlanEntry(
             index=0,
@@ -11472,7 +11957,7 @@ def build_v2_capture_plan(
         CapturePlanEntry(
             index=1,
             kind_label="measure",
-            duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
+            duration_ms=measure_ms,
             screen={
                 "progress": capture_progress_label(2, target),
                 "title": "Keep the microphone still — this spot is the mark.",
@@ -11504,6 +11989,27 @@ def build_v2_capture_plan(
             },
         ),
     ]
+    # R16's lateral walk (plan §4.4). Same 0-based index arithmetic as the cloud
+    # loop below; ``duration_ms`` is the MEASURE program's because each pose
+    # replays it verbatim (``_program_for_phase``), not the summed sweep's.
+    lateral_indexes = [
+        i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
+    ]
+    for offset, capture_index in enumerate(lateral_indexes):
+        prompt = LATERAL_POSE_PROMPTS[offset]
+        entries.append(
+            CapturePlanEntry(
+                index=capture_index - 1,
+                kind_label="lateral",
+                duration_ms=measure_ms,
+                screen=_cloud_entry_screen(
+                    progress=capture_progress_label(capture_index, target),
+                    title=prompt.headline,
+                    body=prompt.detail,
+                    auto_advance=AUTO_ADVANCE_TAP,
+                ),
+            )
+        )
     # The two prompted groups. ``index_phase`` is 1-based (the relay's own
     # index space); ``CapturePlanEntry.index`` is 0-based, hence the -1.
     cloud_measure_indexes = [
@@ -11526,9 +12032,16 @@ def build_v2_capture_plan(
         )
     return CapturePlan(
         capture_target=target,
+        # Derived from the entries this plan ACTUALLY emits rather than from the
+        # shape's cloud-only arithmetic, so a walk that grows (R16's poses) grows
+        # its retake budget with it. Byte-identical on both pre-R16 shapes:
+        # with the cloud on and no lateral, ``target == measure_capture_target``,
+        # so this reproduces ``shape.measure_max_attempts`` exactly; with the
+        # cloud off it reproduces the previous ``target + CLOUD_RETAKE_ALLOWANCE``.
         max_attempts=(
-            shape.measure_max_attempts
-            if include_cloud_measure else target + CLOUD_RETAKE_ALLOWANCE
+            target
+            + (GEOMETRY_RETRY_POSITIONS if include_cloud_measure else 0)
+            + CLOUD_RETAKE_ALLOWANCE
         ),
         schema_version=2,
         entries=tuple(entries),
@@ -11913,6 +12426,7 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
         stage1 = build_v2_capture_plan(
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
             include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
+            include_lateral=STAGE1_INCLUDES_LATERAL,
         )
         stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
         out[tier] = {
@@ -11945,6 +12459,7 @@ def build_v2_session_spec(
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
+    include_lateral: bool = False,
     **spec_kwargs: Any,
 ) -> Any:
     """One relay v3 stage-1 spec, optionally including the pre-apply cloud (§5.7).
@@ -11974,8 +12489,14 @@ def build_v2_session_spec(
     plan = build_v2_capture_plan(
         roles_bands, fc_hz, plan_shape=shape,
         include_cloud_measure=include_cloud_measure,
+        include_lateral=include_lateral,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
+    # R16: EITHER group makes this a walk. The consent copy below was gated on
+    # the cloud alone; leaving it there would promise a stationary microphone
+    # to a household about to be prompted through five moves — the exact
+    # dishonesty the guided wording exists to prevent.
+    walked = include_cloud_measure or include_lateral
     return build_crossover_sweep_spec(
         driver_label="crossover",
         driver_role="summed",
@@ -11985,18 +12506,22 @@ def build_v2_session_spec(
         # The consent surface must describe the walk, not a stationary mic —
         # the count is every capture the household is prompted through, which
         # is the plan's own target.
-        guided_captures=plan.capture_target if include_cloud_measure else 0,
+        guided_captures=plan.capture_target if walked else 0,
         # …and which INSTRUMENT that walk is, so the announcement screen can
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).
-        guided_tier=shape.tier if include_cloud_measure else "",
+        guided_tier=shape.tier if walked else "",
         # …and how far the walk reaches, in one line (work order D7's intent,
         # #1941 R1's presentation). Derived HERE, from the same table and the
         # same group size the per-entry screens above are built from, so the
-        # orientation and the prompts cannot describe different walks.
-        walk_shape=(
-            cloud_walk_shape(shape.cloud_measure_positions) if include_cloud_measure
-            else ""
+        # orientation and the prompts cannot describe different walks. The
+        # reach is the FURTHEST of whichever groups run, so a lateral-only
+        # session quotes 40 cm rather than a cloud's ceiling it never walks.
+        walk_shape=walk_shape_for(
+            cloud_positions=(
+                shape.cloud_measure_positions if include_cloud_measure else 0
+            ),
+            lateral=include_lateral,
         ),
         **spec_kwargs,
     )
@@ -12258,6 +12783,15 @@ __all__ = [
     "PHASE_APPLYING",
     "PHASE_VERIFY",
     "PHASE_DONE",
+    "PHASE_LATERAL",
+    "LATERAL_POSE_PROMPTS",
+    "LATERAL_EVIDENCE_BAND_HZ",
+    "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
+    "LateralPose",
+    "LateralPoseCurve",
+    "lateral_evidence_grid_hz",
+    "lateral_pose_curve",
+    "STAGE1_INCLUDES_LATERAL",
     "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",

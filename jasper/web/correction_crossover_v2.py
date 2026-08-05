@@ -5204,6 +5204,7 @@ def prepare_v2_session(
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_LATERAL,
         CrossoverV2Conductor,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
@@ -5247,6 +5248,9 @@ def prepare_v2_session(
             "The confirmed driver protection cannot be used for this measurement."
         ) from exc
     include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
+    # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
+    # spec and the conductor's index map below are built from ONE decision.
+    include_lateral = STAGE1_INCLUDES_LATERAL
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
@@ -5288,6 +5292,7 @@ def prepare_v2_session(
             acknowledgement_binding=acknowledgement_binding,
             plan_shape=plan_shape,
             include_cloud_measure=include_cloud_measure,
+            include_lateral=include_lateral,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -5367,7 +5372,9 @@ def prepare_v2_session(
             # at its own defaults — so the prompt an entry carries and the
             # phase the conductor runs for that index can never disagree.
             index_phase_map=build_v2_cloud_index_phase_map(
-                plan_shape=plan_shape, include_cloud_measure=include_cloud_measure,
+                plan_shape=plan_shape,
+                include_cloud_measure=include_cloud_measure,
+                include_lateral=include_lateral,
             ),
             # The boost-permission evidence gate (work order D2's consequence).
             # This session's own phases carry no VERIFY — the post-apply sweep
