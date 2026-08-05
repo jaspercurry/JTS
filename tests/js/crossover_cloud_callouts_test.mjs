@@ -35,6 +35,7 @@ class FakeElement {
     this.children = [];
     this.hidden = false;
     this.dataset = {};
+    this.attributes = {};
   }
   get textContent() { return this._textContent; }
   set textContent(value) {
@@ -44,6 +45,14 @@ class FakeElement {
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(...nodes) { this.children = nodes; }
   addEventListener() {}
+  // #2152: the section's aria-label is part of the honesty claim (it is what
+  // a screen reader announces in place of the heading), so the fake has to
+  // support the real DOM call that sets it.
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attributes, name)
+      ? this.attributes[name] : null;
+  }
 }
 
 function fixedElement(id) {
@@ -56,6 +65,9 @@ globalThis.document = {
 
 const els = {
   cloud: fixedElement("crossover-cloud"),
+  cloudEyebrow: fixedElement("crossover-cloud-eyebrow"),
+  cloudTitle: fixedElement("crossover-cloud-title"),
+  cloudBasis: fixedElement("crossover-cloud-basis"),
   cloudProvenance: fixedElement("crossover-cloud-provenance"),
   cloudChart: fixedElement("crossover-cloud-chart"),
   cloudGeometry: fixedElement("crossover-cloud-geometry"),
@@ -63,6 +75,7 @@ const els = {
   cloudPending: fixedElement("crossover-cloud-pending"),
   legendMeasure: fixedElement("crossover-chart-legend-measure"),
   legendVerify: fixedElement("crossover-chart-legend-verify"),
+  legendPredicted: fixedElement("crossover-chart-legend-predicted"),
   legendCorridor: fixedElement("crossover-chart-legend-corridor"),
   legendExcluded: fixedElement("crossover-chart-legend-excluded"),
 };
@@ -436,5 +449,119 @@ check(
   "full tier: no corridor/excluded legend from a pre-apply cloud that exists to be out of spec",
 );
 check(els.cloudCallouts.children.length === 0, "full tier: no callouts from CLOUD_MEASURE's carve-outs");
+
+// --- #2152: the section may not claim measurement it does not have --------
+//
+// THE DEFECT. R15 removed the pre-apply CLOUD_MEASURE by design (#2106), so on
+// the driver-only review screen the only curve is the prediction. The heading
+// still read "Before and after / What the microphone heard" — directly above a
+// legend reading "(not measured)" — while asking the household to approve a
+// change on the strength of it. This block pins that the frame follows the
+// canvas.
+
+// Words that assert the microphone did something. None may appear anywhere in
+// the framing of a screen whose only curve is a model.
+const HEARD_CLAIM = /\b(heard|hear|measured|measurement)\b/i;
+
+function renderPredictionOnly() {
+  renderCloud(els, {
+    cloud: { [CLOUD_MEASURE]: { reference_db: -27.3, carve_outs: [] } },
+    cloud_chart: null,
+    prediction: {
+      curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4] },
+      reference_db: -27.3,
+    },
+  });
+}
+
+renderPredictionOnly();
+check(els.cloud.hidden === false, "prediction-only: the section is shown");
+check(
+  els.legendPredicted.hidden === false
+    && els.legendMeasure.hidden === true
+    && els.legendVerify.hidden === true,
+  "prediction-only: the model is the ONLY series on the canvas",
+);
+check(
+  els.cloudTitle.textContent === "What JTS expects after correction",
+  "prediction-only: the heading names a model, not a measurement",
+);
+check(
+  !HEARD_CLAIM.test(els.cloudTitle.textContent)
+    && !HEARD_CLAIM.test(els.cloudEyebrow.textContent),
+  "prediction-only: neither heading nor eyebrow claims the microphone heard anything",
+);
+check(
+  els.cloud.getAttribute("aria-label") === "Predicted frequency response after correction",
+  "prediction-only: the aria-label is corrected too — not a sighted-only fix",
+);
+check(
+  els.cloudBasis.hidden === false
+    && els.cloudBasis.textContent.includes("a prediction, not a measurement")
+    && els.cloudBasis.textContent.includes("measurements JTS just took"),
+  "prediction-only: the basis line says where the curve came from and what it is not",
+);
+check(
+  !/\b(driver|drivers|tweeter|woofer|horn)\b/i.test(els.cloudBasis.textContent),
+  "prediction-only: the basis line stays hardware-blind — evidence, not device taxonomy",
+);
+check(
+  els.cloudBasis.textContent.includes("right after you apply"),
+  "prediction-only: …and when a real measurement arrives, so this reads as a step not a hedge",
+);
+
+// THE OTHER HALF, and the one that keeps this fix from over-correcting: the
+// POST-VERIFY chart plots measured curves and its fidelity is confirmed to
+// 0.02 dB (#2152 scope note). Its framing must stay exactly as it was.
+renderCloud(els, {
+  cloud: {
+    [CLOUD_MEASURE]: { reference_db: -27.3 },
+    [CLOUD_VERIFY]: { reference_db: -28.0, carve_outs: [] },
+  },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+    [CLOUD_VERIFY]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -28] } },
+  },
+});
+check(
+  els.cloudTitle.textContent === "What the microphone heard"
+    && els.cloudEyebrow.textContent === "Before and after",
+  "measured: the post-verify framing is untouched",
+);
+check(
+  els.cloud.getAttribute("aria-label") === "Before and after measurement",
+  "measured: the aria-label returns to the measured wording",
+);
+check(
+  els.cloudBasis.hidden === true && els.cloudBasis.textContent === "",
+  "measured: no basis line — there is nothing to disclaim about a measurement",
+);
+
+// A single measured curve is still a measurement: the honest framing is keyed
+// on whether ANY measured series is on the canvas, not on having both.
+renderCloud(els, {
+  cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+  },
+  prediction: {
+    curve: { freqs_hz: [300, 1000], magnitude_db: [-27, -27.4] },
+    reference_db: -27.3,
+  },
+});
+check(
+  els.cloudTitle.textContent === "What the microphone heard",
+  "measured + predicted together: the microphone DID hear something, so the heading stands",
+);
+
+// And it goes back. A household walking review -> apply -> verify sees the
+// section re-framed each time; a one-way switch would strand the measured
+// screen under the predicted heading for the rest of the session.
+renderPredictionOnly();
+check(
+  els.cloudTitle.textContent === "What JTS expects after correction"
+    && els.cloudBasis.hidden === false,
+  "the framing is re-derived on every render, not latched",
+);
 
 console.log(JSON.stringify({ ok: true, passed }));

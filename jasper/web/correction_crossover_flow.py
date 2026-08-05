@@ -56,9 +56,18 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-review-body"></div>
   </section>
 
+  <!-- ONE section, two truths (issue #2152). Post-VERIFY it shows measured
+       before/after curves and the heading below is exactly right. On the
+       PRE-APPLY review screen — since R15 removed the pre-apply cloud
+       (#2106) — the only curve is the PREDICTION, and "what the microphone
+       heard" then contradicts its own "(not measured)" legend. The heading,
+       eyebrow, aria-label, and the basis line are therefore set by
+       cloud.js's `updateSectionFraming` from what is actually on the canvas;
+       the markup below is the measured wording it falls back to. -->
   <section id="crossover-cloud" class="info-card" aria-label="Before and after measurement" hidden>
-    <p class="eyebrow">Before and after</p>
-    <h2 class="section__title">What the microphone heard</h2>
+    <p id="crossover-cloud-eyebrow" class="eyebrow">Before and after</p>
+    <h2 id="crossover-cloud-title" class="section__title">What the microphone heard</h2>
+    <p id="crossover-cloud-basis" class="form-hint" hidden></p>
     <p id="crossover-cloud-provenance" class="form-hint"></p>
     <div class="crossover-chart-wrap">
       <canvas id="crossover-cloud-chart" aria-label="Frequency response before and after correction"></canvas>
