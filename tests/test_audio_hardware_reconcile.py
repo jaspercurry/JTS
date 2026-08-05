@@ -541,8 +541,10 @@ def test_reconcile_innomaker_uses_registry_identity_and_fixed_slave_plug(
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
-    # Registry-declared final-edge format, transported dormant (#final-edge
-    # format program PR-1): nothing consumes this key yet.
+    # Registry-declared final-edge format. LIVE since the outputd read:
+    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty}
+    # and echoes this into STATUS dac.format, where the chip-AEC alignment
+    # identity records it.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "type plug" in template
@@ -593,8 +595,10 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # Registry-declared final-edge format, transported dormant (#final-edge
-    # format program PR-1): nothing consumes this key yet.
+    # Registry-declared final-edge format. LIVE since the outputd read:
+    # outputd parks at exit 78 on anything outside {S16_LE, S32_LE, empty}
+    # and echoes this into STATUS dac.format, where the chip-AEC alignment
+    # identity records it.
     assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
@@ -725,9 +729,9 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
-        # The registry-declared final-edge format (dormant; no consumer yet)
-        # is part of the steady state now — seed it so a second reconcile is
-        # a true no-op.
+        # The registry-declared final-edge format (LIVE: outputd reads it and
+        # parks at exit 78 on an unknown value) is part of the steady state —
+        # seed it so a second reconcile is a true no-op.
         "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         # The single stereo path now also manages the wide-lane width knob,
         # cleared so a stale active width can't mis-size the stereo lane.
@@ -1382,9 +1386,9 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
-        # The registry-declared final-edge format (dormant; no consumer yet)
-        # is part of the steady state now — seed it so the floor stays the
-        # sole delta.
+        # The registry-declared final-edge format (LIVE: outputd reads it and
+        # parks at exit 78 on an unknown value) is part of the steady state —
+        # seed it so the floor stays the sole delta.
         "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
@@ -1529,8 +1533,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
-        # The registry-declared final-edge format (dormant; no consumer yet)
-        # is part of the steady state now — seed it so nothing commits.
+        # The registry-declared final-edge format (LIVE: outputd reads it and
+        # parks at exit 78 on an unknown value) is part of the steady state —
+        # seed it so nothing commits.
         "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"

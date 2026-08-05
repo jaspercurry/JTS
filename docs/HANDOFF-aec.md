@@ -115,6 +115,29 @@ eight progressing queue positions and applies
 `runtime SYS_DELAY = K - median(live queue)`. An unstable queue, identity
 mismatch, or out-of-range result is rejected, never clamped.
 
+**Adding `dac.format` to the identity force-recommissions the fleet.** Every
+artifact commissioned before that field existed fails the identity check, so on
+first `jasper-aec-init` after the deploy the reconciler parks the whole
+managed-XVF stack: `jasper-voice` is stopped and gated off by
+`/var/lib/jasper/voice-input-absent`, which survives a reboot — wake detection
+and the voice assistant stay down until a human runs
+`sudo jasper-aec-commission` at the speaker (a foreground run, roughly two
+minutes of audible sweeps). The commissioner's own reconcile cleanup unparks
+voice, so one run per box is enough. `/aec`, `/state`, and `jasper-doctor` all
+name the parked state and the action.
+
+That is a deliberate departure from how the v1→v2 identity addition was
+handled above, where the existing artifact was operationally *enriched* rather
+than recommissioned. The two cases are not alike. v1→v2 added fields
+describing hardware that had not moved and was not about to, so enrichment
+could not certify anything false. `output_format` exists to guard the
+electrical edge that the outputd native-format write is about to start moving,
+and enrichment machinery would be a fail-open mechanism at exactly the point
+the guard has to be trustworthy — it would hand a box a "valid" artifact for an
+edge nobody re-measured. At the current fleet size (two lab boxes) one
+foreground recommission per box is cheaper and safer than shipping migration
+code that weakens the guard permanently.
+
 `jasper-aec-reconcile` owns this lifecycle. While uncommissioned it keeps the
 native reference writer active but parks the bridge and voice. Once silent
 reapply/readback succeeds it starts the bridge and voice. Ordinary lifecycle
