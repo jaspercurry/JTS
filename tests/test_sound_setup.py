@@ -836,12 +836,11 @@ def test_sound_module_preserves_editor_behaviour():
 def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_path):
     intent = tmp_path / "i2s_hat.env"
     marker = tmp_path / "i2s-reboot"
-    intent.write_text(
-        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n", encoding="utf-8"
-    )
     marker.touch()
     hardware = {
         "profile_id": "unknown",
+        "status": "partial",
+        "child_devices": [{"device_id": "innomaker_hifi_amp_pro"}],
         "usb_data_role": {"board_topology": "shared_otg_port"},
     }
     monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
@@ -850,7 +849,8 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
 
     payload = sound_setup._i2s_hat_payload(intent_path=intent)
 
-    assert payload["desired_enabled"] is True
+    assert payload["desired_enabled"] is False
+    assert payload["runtime_active"] is True
     assert payload["restart_required"] is True
 
     monkeypatch.setattr(sound_setup, "read_install_profile", lambda: "streambox")

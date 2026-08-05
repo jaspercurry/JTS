@@ -379,18 +379,19 @@ def _i2s_hat_payload(
     except (OSError, UnicodeError, ValueError) as exc:
         desired_profile = None
         intent_error = str(exc)
-    desired_enabled = desired_profile == profile.id
-    runtime_active = hardware.get("profile_id") == profile.id
-    marker_present = Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file()
+    runtime_active = hardware.get("profile_id") == profile.id or any(
+        child.get("device_id") == profile.id
+        for child in hardware.get("child_devices", ())
+    )
     return {
         "visibility": "hidden" if hidden else "visible",
         "available": available,
         "reason": reason,
         "intent_error": intent_error,
         "profile_label": profile.label,
-        "desired_enabled": desired_enabled,
+        "desired_enabled": desired_profile == profile.id,
         "runtime_active": runtime_active,
-        "restart_required": marker_present and desired_enabled != runtime_active,
+        "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
     }
 
 

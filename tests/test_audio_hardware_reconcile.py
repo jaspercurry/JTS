@@ -404,50 +404,47 @@ def test_i2s_reboot_marker_is_created_only_by_the_boot_setting_change(
     assert first.returncode == 0, first.stderr
     assert marker.is_file()
 
+    def rerun(listing: str = "", *, reason: str = "udev", **kwargs):
+        return _run_reconcile(
+            tmp_path, listing, "--reason", reason, initial_boot_config=applied_boot,
+            **kwargs,
+        )
+
     marker.unlink()  # a reboot naturally clears /run
-    second = _run_reconcile(
-        tmp_path, "", "--reason", "boot", initial_boot_config=applied_boot
-    )
+    second = rerun(reason="boot")
     assert second.returncode == 0, second.stderr
     assert not marker.exists()  # missing hardware does not recreate it
 
     marker.touch()
-    third = _run_reconcile(
-        tmp_path, "", "--reason", "udev", initial_boot_config=applied_boot
-    )
+    third = rerun()
     assert third.returncode == 0, third.stderr
     assert marker.is_file()  # unrelated reconciles leave a pending marker alone
 
-    matched = _run_reconcile(
-        tmp_path,
-        INNOMAKER_LISTING,
-        "--reason",
-        "udev",
-        initial_boot_config=applied_boot,
-    )
+    matched = rerun(INNOMAKER_LISTING)
     assert matched.returncode == 0, matched.stderr
     assert not marker.exists()  # desired and runtime now agree
 
+    malformed_python = tmp_path / "malformed-python"
+    malformed_python.write_text(
+        "#!/bin/sh\ncase \"$*\" in\n"
+        f"*jasper.output_hardware*) \"{sys.executable}\" \"$@\" | sed 's/}}$//'; exit 0;;\n"
+        f'esac\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    malformed_python.chmod(0o755)
     intent.unlink()
-    for observation_failed, listing in (
-        (True, INNOMAKER_LISTING),
-        (False, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING),
+    for expected, listing, extra_env in (
+        (None, INNOMAKER_LISTING, {"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}),
+        (None, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING, {"JASPER_OUTPUT_HARDWARE_PYTHON": str(malformed_python)}),
+        (True, INNOMAKER_LISTING + DAC8X_AND_APPLE_LISTING, None),
     ):
         for marker_present in (False, True):
             marker.unlink(missing_ok=True)
             if marker_present:
                 marker.touch()
-            observed = _run_reconcile(
-                tmp_path,
-                listing,
-                initial_boot_config=applied_boot,
-                extra_env=(
-                    {"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}
-                    if observation_failed else None
-                ),
-            )
+            observed = rerun(listing, extra_env=extra_env)
             assert observed.returncode == 0, observed.stderr
-            assert marker.exists() is (marker_present or not observation_failed)
+            assert marker.exists() is (marker_present if expected is None else expected)
             assert "dtoverlay=merus-amp" not in (tmp_path / "config.txt").read_text()
 
 
@@ -462,7 +459,7 @@ def test_published_not_durable_boot_change_still_sets_marker(tmp_path: Path):
         "\"boot_config_published_not_durable\": true}'; exit 74;;\n"
         "*jasper.output_hardware*) echo '{\"profile_id\": \"unknown\", "
         "\"status\": \"unavailable\"}'; exit 0;;\n"
-        "esac\nexit 1\n",
+        f'esac\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
     fake_python.chmod(0o755)

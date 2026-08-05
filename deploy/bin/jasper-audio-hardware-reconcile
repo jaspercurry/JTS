@@ -204,7 +204,9 @@ observe_output_hardware_state() {
     profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
     selected_card_id="$(printf '%s' "$payload" | sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p')"
-    if [[ -z "$profile_id" || -z "$profile_status" ]]; then
+    if ! "$OUTPUT_HARDWARE_PYTHON" -c \
+        'import json, sys; assert isinstance(json.load(sys.stdin), dict)' <<<"$payload" >/dev/null 2>&1 ||
+       [[ -z "$profile_id" || -z "$profile_status" ]]; then
         log_event "state_${action}_failed" "reason=invalid_payload path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
