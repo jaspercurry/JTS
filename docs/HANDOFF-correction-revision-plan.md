@@ -974,15 +974,15 @@ date:           2026-08-05 evening (the fixed-2-kHz hardware checkpoint RAN on
                 later slate in the same session)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
-jts3_sha:       superseded by the checkpoint deploy, and NOT re-recorded. Last
-                observation: 2026-08-04 at
-                d742b37bec8293b72f1897194d9bf8e10b85cb08, status=ok,
-                jasper-doctor 0 failed / 5 warnings — a build predating R15, so
-                jts3 advanced past it to run the checkpoint. Capture the running
-                SHA before a later round reads this field
-compatibility:  the 20260803.4 + d742b37be pair is that same 2026-08-04
-                observation, not jts3's post-checkpoint state — what was seen,
-                not deployment order or chronology
+jts3_sha:       79239e0c6 — the build jts3 ran the checkpoint on. Deployed
+                15:19 EDT 2026-08-05, status=ok, read-only verified via
+                /var/lib/jasper/build.txt before the 16:01 walk. It contains
+                R15 (ab548e1f3 is an ancestor), which is what let the checkpoint
+                exercise the protected-neutral flow at all
+compatibility:  20260803.4 + 79239e0c6 is the pair the checkpoint ran on; the
+                capture_page observation above is still the 2026-08-04 one.
+                These establish what was seen, not deployment order or
+                chronology
 active_round:   Gate 0 ratified (2026-08-05) — R18 in flight, then R16 + R17 as
                 one co-scoped vertical in two PRs. Missions, ceilings, and panel
                 scopes live only in crossover-linearization-80-20-plan.md §11;
@@ -1000,13 +1000,14 @@ validation:     the 2026-08-05 evening checkpoint on jts3 — now the current
                 grade closed with all 5 cloud positions accepted. R13's
                 validation day (4 of 5 positions, cloud=null, locate_failed) is
                 the superseded predecessor
-findings:       two measured facts, neither judged by the checkpoint: a -4.5 dB
-                crossover-region dip at ~1.6-1.8 kHz, predicted from measured
-                branch phases and faithfully realized, sitting BELOW VERIFY's
-                2000-4000 Hz band and therefore ungraded (what R18 exists to
-                judge; #1868/#1654 made concrete); and +2 to +4 dB across
-                200-1000 Hz at the mark, Room-layer territory per #2099's
-                Gate 0 boundary ruling, not a speaker-layer defect to fit
+findings:       two facts, neither judged by the checkpoint and both read off
+                the rendered chart rather than the journal (#2152 is open on
+                that gap): a -4.5 dB crossover-region dip at ~1.6-1.8 kHz,
+                predicted from measured branch phases and faithfully realized,
+                sitting BELOW VERIFY's 2000-4000 Hz band and therefore ungraded
+                (what R18 exists to judge; #1868/#1654 made concrete); and +2 to
+                +4 dB across 200-1000 Hz at the mark, Room-layer territory per
+                #2099's Gate 0 boundary ruling, not a speaker-layer defect
 rollback:       the tune was left applied with Undo banked through the retained
                 pre_apply_profile; restoration was not exercised
 owed_on_device: R18's verify slice and the R16/R17 lateral walk, both owner-run
@@ -1762,11 +1763,10 @@ change, or measurement.
 **Verification scope.** A **2026-08-05 checkpoint / Gate-0 record pass** updated
 only CURRENT POSITION. It re-read the Gate 0 comments on #1894, #1675, and
 #2099 from `gh` and confirmed #2151/#2152 exist as filed. It ran no hardware:
-every checkpoint number here is the owner's session evidence transcribed, and
-only the 0.919 dB acceptance and the 5/5 cloud positions are independently
-re-readable from the #1894 record. `jts3_sha` and `compatibility` are marked
-superseded rather than refreshed, because this pass could not observe the box.
-The footer is unchanged for the same reason as the two passes above.
+every checkpoint number here, the build SHA included, is transcribed from the
+durable evidence record on #1894, which the conductor posted after this pass
+flagged that they lived only in session context. The footer is unchanged for
+the same reason as the two passes above.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
