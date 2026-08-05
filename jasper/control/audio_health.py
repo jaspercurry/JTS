@@ -52,6 +52,12 @@ MAX_STATUS_BYTES = 256 * 1024
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
 
+# The one household-facing sentence for a box whose post-DSP transport is
+# broken: CamillaDSP and outputd are on different loopback lanes, so nothing
+# reaches the drivers however healthy each daemon looks. Doctor phrases its own
+# operator remedy; this is the only writer of the /state wording.
+PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
+
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
@@ -159,11 +165,109 @@ def _read_mux_status(
         return None
 
 
+def _empty_transport() -> dict[str, Any]:
+    """Return a fresh "no contradictions" transport state.
+
+    Built per call, never copied from a module constant: ``dict(constant)`` is
+    shallow, so every caller would share one ``coherence_errors`` list and a
+    single append anywhere would report the box as parked on every later
+    degraded read for the lifetime of the process.
+    """
+    return {"coherence_errors": [], "capability_gap": None}
+
+
+def _transport_state(
+    *,
+    coupling: str | None,
+    outputd_env: Mapping[str, str],
+    camilla_devices: Mapping[str, Any] | None,
+    topology: Any,
+) -> dict[str, Any]:
+    """Pair the post-DSP transport contradictions with their actionable cause.
+
+    ``transport_coherence_errors`` is the single detector — doctor reads the
+    same function — so this offers no second opinion about what "disconnected"
+    means.  The capability gap says *why* it cannot self-heal when the saved
+    layout needs hardware the DAC does not have.
+
+    ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
+    loosely because this module imports the topology layer lazily.
+    """
+    from ..active_speaker.playback_route import active_lane_capability_gap
+    from ..audio_runtime_plan import transport_coherence_errors
+
+    errors = list(
+        transport_coherence_errors(
+            coupling=coupling,
+            outputd_env=dict(outputd_env),
+            camilla_devices=camilla_devices,
+        )
+    )
+    gap = active_lane_capability_gap(topology)
+    return {
+        "coherence_errors": errors,
+        "capability_gap": gap.to_dict() if gap is not None else None,
+    }
+
+
+def _read_transport_state(plan: Any) -> dict[str, Any]:
+    """Read the transport evidence the coherence detector needs, for ``plan``.
+
+    Reads the evidence doctor reads, so the dashboard and ``jasper-doctor``
+    cannot disagree about whether the post-DSP route is connected: both halves
+    of the loopback pair (the loaded CamillaDSP graph, and outputd's LIVE
+    capture PCM with its env as the fallback), and both statefiles.
+
+    Deliberately silent when the loaded graph does not target a registered
+    output endpoint: that is "coherence unknown", and doctor skips the same
+    detector on the same evidence rather than reporting a contradiction it
+    cannot see both halves of.
+
+    ``plan.route_policy_errors`` is not read instead: that tuple deliberately
+    mixes these contradictions with USB low-latency route-policy errors, and a
+    policy error is not a reason to tell a household its speaker is parked.
+    """
+    from ..audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+        DEFAULT_OUTPUTD_ENV_PATH,
+        output_endpoint_evidence_from_statefiles,
+    )
+    from ..env_load import read_env_file_state
+    from ..output_topology import load_output_topology
+
+    evidence = output_endpoint_evidence_from_statefiles(
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+    )
+    if evidence.devices is None or not evidence.endpoint_recognized:
+        return _empty_transport()
+    # outputd.env is read here because the plan carries decisions, not the
+    # generated env it was built from.
+    outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
+    outputd_status = _mapping(_read_local_status())
+    live_pcm = str(_mapping(outputd_status.get("content")).get("pcm") or "")
+    if live_pcm:
+        # Prefer what outputd actually opened over what it was told to open, so
+        # a reconcile window (env already rewritten, daemon not yet restarted)
+        # cannot read as a disconnect.
+        outputd_env["JASPER_OUTPUTD_CONTENT_PCM"] = live_pcm
+    return _transport_state(
+        # The plan's transport topology name IS the resolved coupling, so this
+        # does not re-resolve coupling policy locally.
+        coupling=plan.transport_topology.name,
+        outputd_env=outputd_env,
+        camilla_devices=evidence.devices,
+        topology=load_output_topology(),
+    )
+
+
 def read_route_claim() -> dict[str, Any]:
     """Read the declared route plus its measured latency artifact.
 
-    This is file/config work rather than a live audio probe and therefore runs
-    on the slow cadence.  The artifact assessment is shared with ``/state`` via
+    This is config/statefile work plus one bounded outputd STATUS read rather
+    than a live audio probe, and therefore runs on the slow cadence.  The
+    artifact assessment is shared with ``/state`` via
     :func:`jasper.control.state_aggregate.route_latency_artifact_state`.
     """
     try:
@@ -172,6 +276,13 @@ def read_route_claim() -> dict[str, Any]:
 
         plan = build_audio_runtime_plan_from_system()
         profile = plan.route_profile
+        # Own try: a transport read that fails must not downgrade the whole
+        # route claim to "unavailable" and take the latency card with it.
+        try:
+            transport = _read_transport_state(plan)
+        except _MONITOR_ERRORS:
+            logger.debug("audio transport coherence read failed", exc_info=True)
+            transport = _empty_transport()
         return {
             "status": "available",
             "route_id": profile.route_id,
@@ -182,6 +293,7 @@ def read_route_claim() -> dict[str, Any]:
             "p95_budget_ms": profile.p95_budget_ms,
             "p99_budget_ms": profile.p99_budget_ms,
             "artifact": route_latency_artifact_state(plan),
+            "transport": transport,
         }
     except _MONITOR_ERRORS as exc:
         logger.debug("audio route claim read failed", exc_info=True)
@@ -195,6 +307,7 @@ def read_route_claim() -> dict[str, Any]:
             "p95_budget_ms": None,
             "p99_budget_ms": None,
             "artifact": {"status": "fail", "reason": str(exc)},
+            "transport": _empty_transport(),
         }
 
 
@@ -282,6 +395,38 @@ def _activity_unavailable_signal() -> dict[str, str]:
         "headline": "Playback activity unavailable",
         "detail": "JTS could not read the mux's canonical source state.",
     }
+
+
+def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the parked signal-path state, or None when the transport is sane.
+
+    The sole writer of the parked wording.  The detail leads with the concrete
+    contradiction and, when the cause is a DAC that cannot host the saved
+    layout at all, names the DAC and where the household fixes it — because no
+    reconcile or restart can clear that one.
+
+    Presentation only: :class:`AudioHealthSampler` deliberately feeds
+    :func:`_state_issues` the raw signal path, so a warn-level issue keeps its
+    own incident row instead of being swallowed by the standing reason.
+    """
+    transport = _mapping(route.get("transport"))
+    errors = [
+        error
+        for error in transport.get("coherence_errors") or []
+        if isinstance(error, str) and error
+    ]
+    if not errors:
+        return None
+    detail = errors[0]
+    label = str(_mapping(transport.get("capability_gap")).get("device_label") or "")
+    if label.strip():
+        detail = (
+            f"{detail}. {label.strip()} cannot drive an active speaker layout; "
+            "choose a passive speaker layout at /sound/setup/ (passive sends "
+            "full-range to every output; requires a built-in passive crossover) "
+            "or attach an active-capable DAC."
+        )
+    return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
 
 
 def _signal_path(
@@ -1293,6 +1438,14 @@ def compose_audio_health(
     signal_path = _signal_path(ap, outputd, active_source)
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
+    parked = _parked_signal(route_state)
+    if parked is not None and signal_path.get("status") != "issue":
+        # A verified structural fault outranks ok / warn / idle / unknown: the
+        # box cannot emit audio at all, and absence of evidence should not hide
+        # that.  It does NOT outrank a concrete live failure — parked is
+        # persistent and fixed by changing the layout, while a stalled daemon
+        # is happening now and has its own remedy.
+        signal_path = parked
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
     host_clock = _mapping(fanin.get("host_clock")) or None

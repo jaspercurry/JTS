@@ -137,6 +137,7 @@ def _route(
     *,
     artifact_status: str = "pass",
     artifact_issues: list[str] | None = None,
+    transport: dict | None = None,
 ) -> dict:
     return {
         "status": "available",
@@ -153,6 +154,7 @@ def _route(
             "p99_ms": 38.3,
             "issues": artifact_issues or [],
         },
+        "transport": transport or {"coherence_errors": [], "capability_gap": None},
     }
 
 
@@ -164,11 +166,13 @@ def _compose(
     service_states=None,
     source_intents=None,
     session=None,
+    transport=None,
+    outputd=None,
 ) -> dict:
     return compose_audio_health(
         airplay=_airplay(selected=selected, ladder=ladder),
-        outputd=_outputd(),
-        route=_route(artifact_status=artifact_status),
+        outputd=outputd if outputd is not None else _outputd(),
+        route=_route(artifact_status=artifact_status, transport=transport),
         issues=[],
         sampled_at=1000.0,
         service_states=service_states,
@@ -256,6 +260,185 @@ def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
     assert spotify["status"] == "issue"
     assert spotify["headline"] == "Spotify unavailable"
     assert health["overall"]["status"] == "idle"
+
+
+# --- parked transport (structurally-mute box) ------------------------------
+#
+# The jts5 shape: CamillaDSP plays an active graph into an snd-aloop lane that
+# nothing drains while outputd captures the passive lane, so the speaker emits
+# digital silence with every daemon "healthy". ``transport_coherence_errors``
+# already detected it for doctor; these pin that /state stops calling it ready.
+
+_PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
+_ROUTE_DISCONNECTED = (
+    "post-DSP route disconnected: Camilla playback="
+    "'outputd_active_content_playback' requires outputd capture="
+    "'outputd_active_content_capture', got 'outputd_content_capture'"
+)
+
+
+def _innomaker_active_two_way():
+    """Roleful active 2-way saved against a DAC with no active outputd lane."""
+
+    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "default",
+        "name": "Mono active 2-way",
+        "status": "verified",
+        "hardware": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+            "physical_output_count": 2,
+        },
+        "speaker_groups": [
+            {
+                "id": "main",
+                "label": "Main active speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
+def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
+    """A structurally-mute box must not report the idle "Audio is ready" line.
+
+    Doctor already FAILs on this state; before this guard ``/state`` still said
+    ``overall: idle, "Audio is ready"`` because the health model read only the
+    route profile out of the runtime plan and never its coherence errors.
+    """
+    health = _compose(transport={
+        "coherence_errors": [_ROUTE_DISCONNECTED],
+        "capability_gap": None,
+    })
+
+    assert health["signal_path"]["status"] == "issue"
+    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert "post-DSP route disconnected" in health["signal_path"]["detail"]
+    assert health["overall"]["status"] == "issue"
+    assert health["overall"]["headline"] == _PARKED_HEADLINE
+    assert health["overall"]["headline"] != "Audio is ready"
+
+
+def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> None:
+    """The capability cause is named in household language with the fix path."""
+    health = _compose(transport={
+        "coherence_errors": [_ROUTE_DISCONNECTED],
+        "capability_gap": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+        },
+    })
+
+    detail = health["signal_path"]["detail"]
+    assert "post-DSP route disconnected" in detail
+    assert "InnoMaker HiFi AMP Pro" in detail
+    assert "/sound/setup/" in detail
+    # Passive is not a free remedy: it sends full-range into every assigned
+    # output, which on an actively-wired cabinet reaches a bare tweeter. The
+    # consequence has to travel with the advice.
+    assert "full-range to every output" in detail
+    assert "requires a built-in passive crossover" in detail
+    assert "attach an active-capable DAC" in detail
+
+
+def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
+    """A concrete live failure outranks the standing structural reason.
+
+    Parked is persistent and its remedy is "change the layout"; a stalled
+    outputd is happening now and has a different remedy, so it must not be
+    overwritten.
+    """
+    health = _compose(
+        outputd=_outputd(progress_age_ms=30_000),
+        transport={
+            "coherence_errors": [_ROUTE_DISCONNECTED],
+            "capability_gap": None,
+        },
+    )
+
+    assert health["signal_path"]["headline"] == (
+        "Final audio output has stopped progressing"
+    )
+
+
+def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
+) -> None:
+    """One derivation feeds the health model: the same detector doctor uses,
+    plus the DAC-capability reason resolved from the saved topology."""
+    state = audio_health._transport_state(
+        coupling="loopback",
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": "outputd_content_capture"},
+        camilla_devices={"playback_device": "outputd_active_content_playback"},
+        topology=_innomaker_active_two_way(),
+    )
+
+    assert any(
+        "post-DSP route disconnected" in error
+        for error in state["coherence_errors"]
+    )
+    assert state["capability_gap"] == {
+        "device_id": "innomaker_hifi_amp_pro",
+        "device_label": "InnoMaker HiFi AMP Pro",
+    }
+
+
+def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> None:
+    """The no-contradictions transport state must be fresh per read.
+
+    A shallow copy of a module-level constant shares one ``coherence_errors``
+    list, so a single append by any consumer would make every later degraded
+    read report the box as parked for the lifetime of jasper-control.
+    """
+    from types import SimpleNamespace
+
+    from jasper import audio_runtime_plan
+
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
+    )
+    plan = SimpleNamespace(transport_topology=SimpleNamespace(name="loopback"))
+
+    first = audio_health._read_transport_state(plan)
+    first["coherence_errors"].append("poisoned")
+    second = audio_health._read_transport_state(plan)
+
+    assert second["coherence_errors"] == []
+
+
+def test_transport_state_is_clean_when_the_paired_lanes_agree() -> None:
+    state = audio_health._transport_state(
+        coupling="loopback",
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": "outputd_content_capture"},
+        camilla_devices={"playback_device": "outputd_content_playback"},
+        topology=_innomaker_active_two_way(),
+    )
+
+    assert state["coherence_errors"] == []
+    # The capability gap is reported independently of the route error so a
+    # surface can explain a fault it is also detecting through the transport.
+    assert state["capability_gap"] is not None
 
 
 def test_cached_service_state_distinguishes_ready_from_not_running() -> None:

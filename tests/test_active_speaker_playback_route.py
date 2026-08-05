@@ -9,6 +9,7 @@ from __future__ import annotations
 from jasper.active_speaker.playback_route import (
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
+    active_lane_capability_gap,
     active_playback_route_capability,
     resolve_active_playback_device,
 )
@@ -16,6 +17,7 @@ from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     DUAL_APPLE_USB_C_DAC_4CH,
     HIFIBERRY_DAC8X,
+    INNOMAKER_HIFI_AMP_PRO,
 )
 from jasper.output_topology import (
     EXPLICIT_SOURCE,
@@ -173,3 +175,73 @@ def test_explicit_lab_pcm_is_the_only_non_outputd_route() -> None:
         "hw:Lab",
         EXPLICIT_SOURCE,
     )
+
+
+# ---- active-lane capability gap -------------------------------------------
+#
+# The permanently-undrivable pairing: a roleful layout on a DAC that declares
+# no active outputd lane. CamillaDSP then plays the roleful graph into the
+# active loopback lane while outputd captures the passive one, and the speaker
+# emits digital silence. One predicate, read by /state, doctor, and the
+# /sound/setup/ save guard.
+
+
+def test_roleful_layout_on_a_dac_without_an_active_lane_is_a_gap() -> None:
+    topo = _topology(
+        INNOMAKER_HIFI_AMP_PRO.id,
+        2,
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+
+    gap = active_lane_capability_gap(topo)
+
+    assert gap is not None
+    assert gap.device_id == INNOMAKER_HIFI_AMP_PRO.id
+    # The registry owns the name, not the topology's saved "Test device" label.
+    assert gap.device_label == INNOMAKER_HIFI_AMP_PRO.label
+
+
+def test_passive_layout_on_the_same_dac_is_not_a_gap() -> None:
+    topo = _topology(INNOMAKER_HIFI_AMP_PRO.id, 2, groups=[{
+        "id": "left",
+        "label": "Left",
+        "kind": "left",
+        "mode": "full_range_passive",
+        "channels": [
+            {
+                "role": "full_range",
+                "physical_output_index": 0,
+                "identity_verified": True,
+            },
+        ],
+    }])
+
+    assert active_lane_capability_gap(topo) is None
+
+
+def test_active_capable_dac_is_not_a_gap() -> None:
+    topo = _topology(
+        HIFIBERRY_DAC8X.id,
+        8,
+        card_id="DAC8",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+
+    assert active_lane_capability_gap(topo) is None
+
+
+def test_unrecognized_dac_is_not_reported_as_a_gap() -> None:
+    """Strict on purpose: with no profile there is no capability to read, so
+    the predicate stays silent rather than blocking a save on hardware the
+    registry has simply not met."""
+    topo = _topology(
+        GENERIC_SINGLE_DAC,
+        8,
+        card_id="DAC8",
+        groups=_TWO_WAY_GROUP,
+        routing={"mono_group_id": "mono"},
+    )
+
+    assert active_lane_capability_gap(topo) is None

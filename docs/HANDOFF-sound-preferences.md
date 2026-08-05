@@ -424,6 +424,11 @@ no-audio backend contract:
 `/var/lib/jasper/output_topology.json`. That model evaluates identity and
 tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
+A save is refused outright when the submitted layout needs a roleful graph and
+the topology's own DAC profile declares no active outputd lane
+(`supports_active_outputd_lane=False`): that pairing can never reach the
+drivers, so the wizard returns a blocker naming the DAC instead of persisting
+a layout the box would go silent under.
 The same `/sound/setup/` page renders a lightweight **Active crossover setup**
 surface over that endpoint as collapsible task cards: **Choose speaker
 layout**, **Add your components**, **Confirm outputs**, **Test combined
@@ -447,8 +452,16 @@ assigned outputs. Subwoofer add-ons count as real assigned DAC outputs; a layout
 that uses the next free output needs one more lane, and a sparse assignment needs
 lanes up to the highest assigned output.
 Saving a speaker-layout draft is a complete topology JSON
-replacement and only runs backend validation; it does not play sound or change
-the live DSP graph. The same payload carries a clock-domain report that records
+replacement and only runs backend validation; it does not play sound or apply a
+DSP graph. It does start `jasper-audio-hardware-reconcile` (fire-and-forget,
+best-effort, never failing the save) so the runtime converges toward the newly
+declared intent instead of drifting until the next boot. That convergence is
+real: on a live box running a commissioned active graph, an edit that
+invalidates that graph flips the reconciler's gate from active to passive and
+bounces outputd, so output parks — loudly, behind the parked banner — until the
+layout is re-commissioned or reverted. A brief parked flash during the post-save
+reconcile window is possible and self-clears.
+The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
 is explicitly not enabled for product active-crossover playback yet. The
 confirm-outputs card shows a top-down speaker stack visual plus flat **DAC
