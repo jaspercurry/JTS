@@ -135,6 +135,7 @@ def test_active_path_pcms_never_use_plug_or_plughw():
         assert "plughw" not in block, name
     render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     assert "plughw" not in render_lib
+    assert "type plug" not in render_lib
 
 
 def test_every_single_dac_profile_renders_raw_hw_with_no_plug():

@@ -371,7 +371,17 @@ What exists:
   Because there is no conversion layer between outputd and the card, its
   own client-edge readback IS the hardware-edge proof here — the plug that
   used to pin a `format S32_LE` slave (and own that guarantee instead) is
-  gone. The renderer still rejects active-output mode for this profile.
+  gone. Active-output mode is unreachable for this profile by construction,
+  not by a render-time check: `active_outputd_lane_channels_for` returns
+  `None` for `supports_active_outputd_lane=False`, so
+  `jasper-audio-hardware-reconcile`'s active-graph gate is never consulted
+  and `OUTPUTD_ACTIVE_MODE` stays `0` upstream of the render. The render
+  script's former per-profile rejection is gone along with the plug it
+  protected — a remix hazard needs a converting `plug`, and none remain in
+  front of any single DAC. If active mode ever reached this profile anyway,
+  the raw `hw:` open fails closed instead: `configure_pcm`'s `set_channels`
+  rejects a channel count InnoMaker's 2-channel hardware cannot serve, and
+  outputd parks at exit 78.
   `jasper-audio-hardware-reconcile` runs at install/boot and from udev
   `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,

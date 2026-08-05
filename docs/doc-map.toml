@@ -257,6 +257,7 @@ code = [
   "jasper/output_hardware.py",
   "jasper/output_topology.py",
   "deploy/alsa/**",
+  "deploy/lib/jasper-asound-render.sh",
   "deploy/camilladsp/**",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/bin/jasper-dac-init",

@@ -606,8 +606,12 @@ limit, not a documented silicon one), so its registry profile declares an
 there is no conversion layer in front of the card, outputd's own
 client-edge readback is now the hardware-edge proof — the pinned-slave
 `plug` that used to own that guarantee is gone. That profile does not
-declare an active-output lane, and its renderer rejects active-mode input
-regardless.
+declare an active-output lane, so `jasper-audio-hardware-reconcile`'s
+active-graph gate is never consulted for it and `OUTPUTD_ACTIVE_MODE` never
+reaches the render as `1`. The render script no longer needs its own
+per-profile rejection for this — that guarded against a converting plug
+remixing channels, and no plug remains; a wrongly-requested channel count
+now fails closed at ALSA's `set_channels` on the raw `hw:` open instead.
 Active-speaker channel
 ownership lives in `/var/lib/jasper/output_topology.json` and the generated
 active CamillaDSP graph, not in an ALSA alias. `/sound/output-topology` records
