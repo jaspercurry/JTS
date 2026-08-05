@@ -1686,11 +1686,19 @@ driver-only path by
 the envelope to 2.0 dB and asserts both that a boost survives and that none
 exceeds the clamp — deleting the bound fails it. The REALIZATION gate
 (`exceeds_envelope`, for a greedy bell fit overshooting BETWEEN its centres) is
-**not** covered by that test: a single-bell clamped lift lands 0.0015 dB over
-the allowance, inside the gate's own tolerance, so it never fires there. Its
-coverage is the `unlock` case in `_NON_MONOTONE_SHAPES`,
-`tests/test_active_speaker_linearization_fit.py`, where a multi-dip response
-makes the overshoot reachable.
+**not** covered by that test. Instrumented at the gate's own expression, that
+fixture's single-bell clamped lift sits at `max(realized - allowance) ==
+-0.000000 dB` over `band_mask` — exactly on the allowance, the request bound
+binding — while the gate fires only `_MIN_FILTER_GAIN_DB` (**0.5 dB**) above
+that, so it is a full tolerance below the threshold and never fires there.
+
+The gate's discriminating coverage is the `unlock` case in
+`_NON_MONOTONE_SHAPES`, `tests/test_active_speaker_linearization_fit.py`, where
+a multi-dip response makes the overshoot reachable. That case asserts
+`base.lift_suppressed_reason == "exceeds_envelope"` **explicitly**: without
+that line the shape's remaining assertions are vacuously true whenever a fit is
+suppressed, so disarming the gate left the module green while the unbounded fit
+emitted [12.0, 12.0, 8.5, 7.7, 5.0] dB of boost undetected (#2138 review).
 
 Every branch of the permission decision has conductor tests
 (`test_boost_is_granted_only_to_a_journey_that_will_verify`,

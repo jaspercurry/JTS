@@ -10111,14 +10111,17 @@ def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
     lift wholesale, and the "a boost survived" assertion above fires.
 
     It does NOT cover the realization gate, and the docstring says so rather
-    than implying it: on this fixture the clamped lift is a single bell whose
-    realized peak lands 0.0015 dB over the allowance — inside the gate's own
-    ``_MIN_FILTER_GAIN_DB`` tolerance — so the gate never fires here and
+    than implying it. Instrumented at the gate's own expression, this fixture's
+    clamped lift is a single bell whose realized peak sits at
+    ``max(realized - allowance) == -0.000000 dB`` over ``band_mask`` — exactly
+    ON the allowance, which is the request bound binding — while the gate only
+    fires ``_MIN_FILTER_GAIN_DB`` (0.5 dB) ABOVE that. So the fixture sits a
+    full 0.5 dB below the firing threshold, the gate never fires here, and
     disarming it changes nothing this test could see. Reaching it needs a
-    multi-dip response where bells overshoot between centres; that is the
+    multi-dip response where bells overshoot BETWEEN centres; that is the
     ``unlock`` case in ``_NON_MONOTONE_SHAPES`` in
-    ``tests/test_active_speaker_linearization_fit.py``, which is where the
-    realization gate's coverage lives.
+    ``tests/test_active_speaker_linearization_fit.py``, where the gate's
+    discriminating assertion now lives.
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
