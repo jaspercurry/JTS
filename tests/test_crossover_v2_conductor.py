@@ -10091,17 +10091,37 @@ def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
     from the lift stage — the uncapped arm below is what makes the capped one
     mean something.
 
-    Asserted on what the FIT emitted rather than on the committed candidate,
-    because clamping the envelope shrinks the CUTS too: at 1.0 dB this fixture
-    no longer clears the prediction gate's 0.5 dB improvement floor and the
-    session is refused. That refusal is the envelope binding just as much as a
-    smaller boost is, but it would leave no candidate to read, and the claim
-    here is about the bound rather than about admission.
+    **The cap is 2.0 dB, and the value is load-bearing** (gate finding on
+    #2138). At 1.0 dB the capped arm places no positive gain at all — the lift
+    is suppressed outright — so a "every gain <= cap" assertion would inspect
+    only cuts and pass while saying nothing. At 2.0 dB the boost SURVIVES and
+    is CLAMPED (exactly 2.000 dB against 3.715 unclamped), which is the state
+    that discriminates. So both halves are asserted: a positive gain is placed,
+    and no gain exceeds the cap. Removing either half makes the test vacuous
+    again.
+
+    **Which of the envelope's two bounds this pins, measured rather than
+    assumed.** The stage bounds a lift twice: a REQUEST bound (``wanted =
+    min(deficit, allowed_depth)``) and a REALIZATION gate on the emitted
+    cascade (``exceeds_envelope``, for a greedy bell fit that overshoots
+    BETWEEN its centres). This test kills the request bound — deleting it makes
+    the fit ask for the full 3.715 dB, the realization gate then suppresses the
+    lift wholesale, and the "a boost survived" assertion above fires.
+
+    It does NOT cover the realization gate, and the docstring says so rather
+    than implying it: on this fixture the clamped lift is a single bell whose
+    realized peak lands 0.0015 dB over the allowance — inside the gate's own
+    ``_MIN_FILTER_GAIN_DB`` tolerance — so the gate never fires here and
+    disarming it changes nothing this test could see. Reaching it needs a
+    multi-dip response where bells overshoot between centres; that is the
+    ``unlock`` case in ``_NON_MONOTONE_SHAPES`` in
+    ``tests/test_active_speaker_linearization_fit.py``, which is where the
+    realization gate's coverage lives.
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
 
-    cap_db = 1.0
+    cap_db = 2.0
     real_compose = flow.compose_envelope
     real_fit = flow.fit_driver_linearization
 
@@ -10132,14 +10152,15 @@ def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
         mp.setattr(flow, "fit_driver_linearization", _record)
         capped = _conductor(fakes)
         _run_phase(capped, 1, 1)
-        try:
-            _run_phase(capped, 2, 2)
-        except CaptureBeginRefused as exc:
-            assert exc.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    # The envelope bound it. Either shape is the rail working — a smaller
-    # boost, or a lift the realization gate suppressed entirely — so the claim
-    # is the bound, not a particular filter count.
+        _run_phase(capped, 2, 2)
+
     assert fitted, "the fit must have run for this to assert anything"
+    capped_boosts = [
+        f.gain for fit in fitted for f in fit.filters if f.gain > 0.0
+    ]
+    # A boost SURVIVED the clamp — without this the loop below inspects cuts.
+    assert capped_boosts, "the clamped fit must still place a boost"
+    # …and the envelope BOUND it.
     for fit in fitted:
         for f in fit.filters:
             assert f.gain <= cap_db + 1e-9, f

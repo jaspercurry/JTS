@@ -1679,13 +1679,25 @@ the cloud never supplied), the realized-cascade stopband-gain guard, the
 headroom charge, post-apply `VERIFY`, and Undo. The gate grants a vocabulary,
 never a filter.
 
-Every branch of that permission decision has conductor tests
+`allowed_depth_db` binds a lift **twice**, and the two have different coverage.
+The REQUEST bound (`wanted = min(deficit, allowed_depth)`) is pinned on the
+driver-only path by
+`test_the_envelope_still_bounds_a_boost_on_the_driver_only_path`, which clamps
+the envelope to 2.0 dB and asserts both that a boost survives and that none
+exceeds the clamp — deleting the bound fails it. The REALIZATION gate
+(`exceeds_envelope`, for a greedy bell fit overshooting BETWEEN its centres) is
+**not** covered by that test: a single-bell clamped lift lands 0.0015 dB over
+the allowance, inside the gate's own tolerance, so it never fires there. Its
+coverage is the `unlock` case in `_NON_MONOTONE_SHAPES`,
+`tests/test_active_speaker_linearization_fit.py`, where a multi-dip response
+makes the overshoot reachable.
+
+Every branch of the permission decision has conductor tests
 (`test_boost_is_granted_only_to_a_journey_that_will_verify`,
 `test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud`,
 `test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope`), the
-rails have their own on the driver-only path
-(`test_the_envelope_still_bounds_a_boost_on_the_driver_only_path`,
-`test_the_headroom_charge_is_paid_for_a_driver_only_boost`,
+other rails have their own on the driver-only path
+(`test_the_headroom_charge_is_paid_for_a_driver_only_boost`,
 `test_no_boost_lands_in_a_drivers_own_crossover_stopband`), and
 a constructed comb cloud proves the honesty mask binds the envelope
 (`test_the_clouds_honesty_verdict_reaches_the_fit_envelope`, all in
