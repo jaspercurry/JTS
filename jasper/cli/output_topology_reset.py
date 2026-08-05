@@ -193,16 +193,21 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
             "error": decision.reason,
         }
     selected = decision.selected_config_path
+    loaded = False
+    error: str | None = None
     try:
         from jasper.camilla import primary_controller
 
-        loaded = asyncio.run(
-            primary_controller().set_config_file_path(selected, best_effort=True)
+        loaded = bool(
+            asyncio.run(
+                primary_controller().set_config_file_path(selected, best_effort=True)
+            )
         )
     except _CONVERGENCE_ERRORS as exc:
-        loaded, error = False, f"{type(exc).__name__}: {exc}"
+        error = f"{type(exc).__name__}: {exc}"
     else:
-        error = None if loaded else "CamillaDSP did not accept the graph"
+        if not loaded:
+            error = "CamillaDSP did not accept the graph"
     log_event(
         logger,
         "output_topology.reset_camilla",
