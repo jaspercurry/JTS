@@ -2930,6 +2930,15 @@ def _maybe_retain_capture(
             "setup_calibration_id": setup_calibration_id,
             "diagnostic": _pa.analysis_diagnostic_summary(analysis),
         }
+        # The phone's own account of the recording conditions (issue #2151):
+        # whether the capture page held the foreground, plus its render-graph
+        # block counters. Written ONLY when reported, so an older page leaves
+        # the key absent rather than claiming a clean take it never measured.
+        # This is what lets a ±128-sample splice be attributed to the capture
+        # side or the host side without re-analysing the WAV.
+        capture_integrity = getattr(result, "capture_integrity", None)
+        if isinstance(capture_integrity, dict) and capture_integrity:
+            sidecar["capture_integrity"] = capture_integrity
         if bundle_session_id:
             # The index this store never had. With it, a pulled ring sidecar
             # joins to its bundle by id instead of by directory mtime — which

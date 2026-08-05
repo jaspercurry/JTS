@@ -685,6 +685,21 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   solver only consumes it when a caller passes `ambient_bands=`), so it is
   presently inert — the emission is forward-compatible plumbing, not a wired
   feature.
+  After the recorder stops and **before** the blob, a capture-plan round posts
+  its armed payload ONCE MORE carrying `capture_integrity` (issue #2151,
+  `capture-page/js/capture-integrity.js`): whether the page held the foreground
+  during the recording window (`focus_lost`, `focus_losses`, a bounded
+  `focus_events` log) plus the render-graph block counters (`blocks`,
+  `block_gaps`, `block_gap_frames`, `silent_blocks`). It rides a REPEAT of the
+  whole armed event, not a partial one — the phone-event slot is
+  last-write-wins, and the runner's arm-once guard makes the repeat a no-op.
+  Posting it before the blob is the ordering guarantee: the Pi reads the event
+  and the blob-ready flag from the same status document, so a poll that finds
+  the blob has already carried the report. Nothing branches on it — it reaches
+  `CaptureResult.capture_integrity` and the operator capture-ring sidecar, so a
+  ±128-sample splice can be attributed to the capture side or the host side
+  without re-analysing the WAV. An older page reports nothing and the field
+  stays `None`, which is distinct from a report saying the take was sound.
 - `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
   upload_token) so it can wait for Pi progress, especially `sweep_complete`,
   without seeing pull-only blob/integrity fields.
