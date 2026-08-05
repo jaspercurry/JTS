@@ -266,6 +266,42 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
     return {role: tuple(sections) for role, sections in out.items()}
 
 
+def confirmed_protection_sections(
+    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
+) -> dict[str, tuple[CrossoverSection, ...]]:
+    """Resolve confirmed role protection; unrepresentable shapes fail closed."""
+    targets = safety_profile.get("targets")
+    if not isinstance(targets, list):
+        raise ValueError("confirmed safety profile has no target list")
+    out: dict[str, tuple[CrossoverSection, ...]] = {}
+    for role, fingerprint in sorted(role_targets.items()):
+        matches = [
+            target for target in targets
+            if isinstance(target, Mapping)
+            and target.get("role") == role
+            and target.get("target_fingerprint") == fingerprint
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"confirmed protection target is not unique for {role}")
+        raw_filters = matches[0].get("required_protection_filters")
+        if not isinstance(raw_filters, list):
+            raise ValueError(f"confirmed protection filters are missing for {role}")
+        sections: list[CrossoverSection] = []
+        for raw in raw_filters:
+            if not isinstance(raw, Mapping) or raw.get("kind") not in {
+                "highpass", "lowpass",
+            }:
+                raise ValueError(f"confirmed protection filter is invalid for {role}")
+            cutoff = float(raw.get("cutoff_hz", 0.0))
+            slope = float(raw.get("minimum_slope_db_per_octave", 0.0))
+            order = next((value for value in (2, 4, 8) if value * 6.0 >= slope), 0)
+            if not (math.isfinite(cutoff) and math.isfinite(slope)) or cutoff <= 0 or not order:
+                raise ValueError(f"confirmed protection filter is unsupported for {role}")
+            sections.append(CrossoverSection(cutoff, order, raw["kind"] == "highpass"))
+        out[role] = tuple(sections)
+    return out
+
+
 def crossover_response_db(
     freqs_hz: np.ndarray, sections: Sequence[CrossoverSection],
 ) -> np.ndarray:
@@ -297,6 +333,20 @@ def crossover_response_db(
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     total_db = np.zeros(freqs.shape, dtype=np.float64)
     for section in sections:
+        pass_magnitude = np.sqrt(
+            np.abs(crossover_response_complex(freqs, (section,)))
+        )
+        total_db += 40.0 * np.log10(np.maximum(pass_magnitude, 1e-12))
+    return total_db
+
+
+def crossover_response_complex(
+    freqs_hz: np.ndarray, sections: Sequence[CrossoverSection],
+) -> np.ndarray:
+    """Exact complex response of the digital Linkwitz-Riley ``sections``."""
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    total = np.ones(freqs.shape, dtype=np.complex128)
+    for section in sections:
         fc_hz = max(float(section.fc_hz), 1e-9)
         # Butterworth order per pass; the pass runs twice, hence the doubling.
         butterworth_order = max(int(section.order), 1) // 2 or 1
@@ -307,31 +357,29 @@ def crossover_response_db(
             }
             for q in _butterworth_qs(butterworth_order)
         ]
-        pass_db = 20.0 * np.log10(
-            np.maximum(np.abs(chain_response(biquads, freqs)), 1e-12)
-        )
+        pass_response = chain_response(biquads, freqs)
         if butterworth_order % 2:
-            pass_db = pass_db + _first_order_db(
+            pass_response = pass_response * _first_order_response(
                 freqs, fc_hz=fc_hz, highpass=section.highpass
             )
-        total_db = total_db + 2.0 * pass_db
-    return total_db
+        total = total * pass_response * pass_response
+    return total
 
 
 def _butterworth_qs(order: int) -> list[float]:
     """The pole Qs of a Butterworth filter of ``order``, one per biquad
     section. An odd order's leftover real pole is the first-order section
-    :func:`_first_order_db` adds, and is not in this list."""
+    :func:`_first_order_response` adds, and is not in this list."""
     return [
         1.0 / (2.0 * math.sin(math.pi * (2 * k + 1) / (2 * order)))
         for k in range(order // 2)
     ]
 
 
-def _first_order_db(
+def _first_order_response(
     freqs_hz: np.ndarray, *, fc_hz: float, highpass: bool,
 ) -> np.ndarray:
-    """One first-order digital section's magnitude, dB — the bilinear
+    """One first-order digital section's complex response — the bilinear
     transform at :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` with the
     same ``tan`` prewarp ``_biquad_coeffs`` uses, so a first-order pass and a
     biquad pass agree about where the corner is.
@@ -347,7 +395,7 @@ def _first_order_db(
         -1j * 2.0 * np.pi
         * np.asarray(freqs_hz, dtype=np.float64) / RESPONSE_SAMPLE_RATE_HZ
     )
-    return 20.0 * np.log10(np.maximum(np.abs((b0 + b1 * z) / (1.0 + a1 * z)), 1e-12))
+    return (b0 + b1 * z) / (1.0 + a1 * z)
 
 
 def radiating_band_hz(

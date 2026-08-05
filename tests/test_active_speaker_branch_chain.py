@@ -25,6 +25,8 @@ from jasper.active_speaker.branch_chain import (
     branch_chain_peak_db,
     branch_headroom_db,
     chain_response,
+    confirmed_protection_sections,
+    crossover_response_complex,
     crossover_response_db,
     headroom_charge_db,
     radiating_band_hz,
@@ -80,6 +82,57 @@ def test_linkwitz_riley_is_six_db_down_at_its_own_corner():
                 (CrossoverSection(2000.0, order, highpass=highpass),),
             )[0]
             assert at_fc == pytest.approx(-6.0206, abs=1e-3), (order, highpass)
+
+
+def test_complex_response_is_the_single_source_for_magnitude():
+    freqs = np.geomspace(200.0, 12_000.0, 300)
+    sections = (
+        CrossoverSection(500.0, 2, highpass=True),
+        CrossoverSection(4000.0, 4, highpass=False),
+    )
+    response = crossover_response_complex(freqs, sections)
+    assert np.any(np.abs(response.imag) > 1e-6)
+    assert crossover_response_db(freqs, sections) == pytest.approx(
+        20.0 * np.log10(np.maximum(np.abs(response), 1e-12)), abs=1e-12
+    )
+
+
+def test_confirmed_protection_sections_bind_exact_current_role_targets():
+    profile = {"targets": [
+        {
+            "role": "tweeter", "target_fingerprint": "t",
+            "required_protection_filters": [{
+                "kind": "highpass", "cutoff_hz": 1800.0,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        },
+        {
+            "role": "woofer", "target_fingerprint": "w",
+            "required_protection_filters": [{
+                "kind": "lowpass", "cutoff_hz": 3000.0,
+                "minimum_slope_db_per_octave": 18.0,
+            }],
+        },
+    ]}
+    sections = confirmed_protection_sections(
+        profile, {"woofer": "w", "tweeter": "t"}
+    )
+    assert sections == {
+        "tweeter": (CrossoverSection(1800.0, 4, True),),
+        "woofer": (CrossoverSection(3000.0, 4, False),),
+    }
+    with pytest.raises(ValueError, match="not unique"):
+        confirmed_protection_sections(profile, {"tweeter": "stale"})
+    profile["targets"][0]["required_protection_filters"][0][
+        "minimum_slope_db_per_octave"
+    ] = 60.0
+    with pytest.raises(ValueError, match="unsupported"):
+        confirmed_protection_sections(profile, {"tweeter": "t"})
+    with pytest.raises(ValueError, match="filters are missing"):
+        confirmed_protection_sections(
+            {"targets": [{"role": "tweeter", "target_fingerprint": "t"}]},
+            {"tweeter": "t"},
+        )
 
 
 def test_crossover_attenuation_reproduces_the_jts3_stopband_numbers():

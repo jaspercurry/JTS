@@ -44,6 +44,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_PROGRAM_UNPLAYABLE,
+    REASON_PROTECTION_NOT_SEPARABLE,
+    REASON_PROTECTION_SWEEP_TOO_LOW,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
     CrossoverV2FlowError,
@@ -222,6 +224,52 @@ def test_classifier_returns_none_outside_the_program_family():
 
     assert v2host.classify_program_failure(ValueError("device mismatch")) is None
     assert v2host.classify_program_failure(TimeoutError("read timed out")) is None
+
+
+def test_classifier_preserves_typed_conditioning_slug():
+    from jasper.audio_measurement.program_analysis import (
+        ConfiguredPathConditioningError,
+        ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
+    )
+
+    exc = ConfiguredPathConditioningError("P below -12 dB for tweeter")
+    # NOT program_unplayable: that code's copy claims JTS "could not play the
+    # measurement signal within the speaker's safe limits", and the program
+    # played fine — the offline evidence math refused. The slug still rides out
+    # in the detail so the journal and state stay correlatable.
+    assert v2host.classify_program_failure(exc) == (
+        REASON_PROTECTION_NOT_SEPARABLE, (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,),
+    )
+    assert REASON_PROTECTION_NOT_SEPARABLE != REASON_PROGRAM_UNPLAYABLE
+
+
+def test_the_two_conditioning_branches_name_two_different_levers():
+    """#1820 again: a refusal must not send the household to a dead control.
+
+    ``abs(P) < floor`` does not involve ``C``, so "change the crossover
+    frequency" cannot clear it; ``abs(C/P) > cap`` is the branch Fc moves.
+    Same slug either way, so the journal stays correlatable.
+    """
+    from jasper.audio_measurement.program_analysis import (
+        ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
+        ConfiguredPathConditioningError,
+    )
+
+    ratio = ConfiguredPathConditioningError("C/P above +12 dB for tweeter")
+    floor = ConfiguredPathConditioningError(
+        "P below -12 dB for tweeter", protection_floor=True,
+    )
+    ratio_code, ratio_slugs = v2host.classify_program_failure(ratio)
+    floor_code, floor_slugs = v2host.classify_program_failure(floor)
+    assert ratio_code == REASON_PROTECTION_NOT_SEPARABLE
+    assert floor_code == REASON_PROTECTION_SWEEP_TOO_LOW
+    assert ratio_slugs == floor_slugs == (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,)
+
+    ratio_copy = REASON_REGISTRY[ratio_code].message
+    floor_copy = REASON_REGISTRY[floor_code].message
+    # The dead lever must NOT appear on the branch it cannot move.
+    assert "crossover frequency" in ratio_copy and "protection" in floor_copy
+    assert "crossover frequency" not in floor_copy
 
 
 def test_the_flow_reason_code_is_the_admission_slug():

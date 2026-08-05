@@ -24,12 +24,96 @@ alternatives, the wave plan) is
 [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 this doc is the current operational truth.
 
-> **Planned revision, not current behavior (2026-08-04):**
-> [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
-> owns the next campaign to keep the Express walk while moving all pre-apply
-> captures onto protected raw per-driver evidence, evaluating bounded
-> Fc-specific prescriptions, and verifying crossed branches plus their sum.
-> Until that campaign lands, the operational behavior below remains exact.
+> **R15 candidate status (2026-08-05):** [#2106](https://github.com/jaspercurry/JTS/issues/2106)
+> owns the re-ratified atomic contract. The branch is under independent
+> three-lens adversarial review; nothing here is deployed and no hardware
+> measurement is claimed. When it lands, stage 1 is exactly CHECK then MEASURE
+> through confirmed role protection, limiter, 0 dB commissioning headroom, and
+> physical routing. Configured crossover/delay/polarity, linearization, bass,
+> Room, and preference filters are absent; analysis reconstructs
+> `M*C_configured/P` across the whole analysis support — as one filter, never
+> spliced into a sub-band — for the existing fitter/review/Apply/Undo path.
+> Playback is gated on a fresh semantic graph readback normalized through
+> CamillaDSP's own `ReadConfig` (see **Confirming a program graph is live**
+> below). Recovery is TWO layers, not one: the existing in-process restore
+> transaction plus the persisted crash anchor handle an ordinary abort or
+> reboot, and a correction-web startup claim converges an abandoned program
+> graph that no in-process `finally` could reach because the process died.
+> Pre-apply cloud is skipped, while the reusable cloud machinery remains
+> available for future Room work. R15 adds no durable anchor/schema/module.
+> After R15 comes a hardware checkpoint and then a fresh Gate 0; later round
+> labels are provisional, and the [canonical
+> plan](crossover-linearization-80-20-plan.md) owns that contract. The deployed
+> pre-R15 flow remains described below.
+
+### Composing the configured-Fc path
+
+`program_analysis._compose_configured_path_ir` turns a protected-neutral
+capture into what the fitter needs: `S = M * C_configured / P` (design §4.2),
+applied as **one filter across the whole rfft support**.
+
+It is deliberately not a masked sub-band. Masking the composition to the driven
+band steps the spectrum by `|C/P|` at the edges — a pre-fix diagnostic
+evaluation over JTS3's declared role parameters put that step at **−41.7 dB**
+(woofer top) and **−52.2 dB** (tweeter bottom); no hardware was measured — and
+that step rings through the IR and folds back into the analysis band once the
+IR is re-gated, which is this campaign's known splice-artefact class. The
+pinned number is the golden fixture's: restoring the splice moves **all 8193**
+of its bins, by up to **86.999 dB**.
+
+**Where the conditioning policy binds.** §4.2 scopes its finiteness and ±12 dB
+rules to *candidate-required trusted fitting or comparison bins*. The mask is
+therefore the driven band intersected with what a candidate actually consumes —
+its branch radiating span unioned with the trim/alignment overlap band, both
+computed host-side in `CrossoverV2Conductor._measure_priors` because they are
+crossover policy the measurement kernel may not import. The driven band alone
+is a **superset**, and over-refusing a frozen contract is a deviation whose
+direction is household-visible hard stops: an LR4 `|P|` crosses −12 dB at
+`0.765·fc`, so a declared sweep floor roughly 0.39 octave under the protection
+corner would refuse MEASURE on a shape §4.2 admits.
+
+**Outside those bins** the same exact ratio still applies, magnitude-saturated
+at the policy's own +12 dB ceiling — provably inactive where the policy binds,
+since a ceiling breach there has already refused. Bins where `P` is exactly
+zero (an LR pass at DC or Nyquist) compose to zero, which is what `plant·C` is
+there too on the shipped shapes, where `C` and `P` share a filter kind; a `P`
+carrying a high-pass under a low-pass-only `C` would zero one genuine
+out-of-band bin.
+
+**Residual gap.** The golden fixture supplies both arms through the same
+`irfft(rfft(...) * factor)` grid, so the composition's circular wrap cancels
+identically between them. Production `full_ir` comes from a real deconvolution
+window, so wrap behaviour on a realistic IR is part of the outstanding hardware
+gap, not something the fixture can close.
+
+### Confirming a program graph is live
+
+`crossover_v2_flow.confirm_graph_is_live` is the one policy function that
+proves the graph CamillaDSP is running is the graph just submitted. It must
+prove the submitted graph is live, tolerate benign serializer normalization,
+and reject a different graph.
+
+Comparing the submitted YAML text against `GetConfig` cannot do that. A
+2026-08-05 read-only hardware probe on `jts.local` (CamillaDSP 4.1.3, zero
+mutation) measured the readback as a strict **superset** of what was
+submitted — every optional schema field default-filled, mostly null across
+`devices`, `filters`, `mixers`, and `pipeline` steps — and value-normalizing,
+with a submitted `gain: 0` coming back as `0.0`. Text equality there refuses
+every load, on every box.
+
+So CamillaDSP canonicalizes for us. `ReadConfig` (wrapped as
+`CamillaController.normalize_config_raw`) parses, validates, and default-fills
+**without applying anything**, and the same probe measured its output exactly
+equal to `GetConfig`'s readback for identical content. Normalizing the
+submitted graph through it keeps **strict** fingerprint equality — stronger
+than a subset or projection comparison — rather than loosening the check.
+
+Not measured: the `SetConfig` → `GetConfig` round trip itself, because the
+probe box was playing USB audio and the probe stayed read-only. It no longer
+matters: both sides of the comparison now come back through CamillaDSP's single
+deserialization path, so the check does not depend on what `SetConfig` does to
+the text. The two refusals stay distinct — normalization failure means the YAML
+we submitted is invalid, mismatch means something else is live.
 
 ## How to run it
 
@@ -42,9 +126,9 @@ this doc is the current operational truth.
   commission has completed on this topology** — S4, adversarial review of
   PR #1780 — then Quick tune does, so an express-only household is never
   nudged away from the wider walk that mitigates §1.3's HF-null row), tap
-  Start, then follow the phone — apply is automatic (owner ruling,
-  2026-07-20; gotcha #18), no
-  browser-tab step in between. Since flat-linearization PR-3b the phone
+  Start, then follow the phone; after measurement, return to jts.local's review
+  screen and choose Apply explicitly. Nothing applies inside a capture session.
+  Since flat-linearization PR-3b the deployed phone
   also prompts a series of small mic moves inside the measure and verify
   steps (the spatial cloud); the wizard's five screens are unchanged,
   because the cloud changed how many captures a step takes, not what the
@@ -86,7 +170,7 @@ this doc is the current operational truth.
   (`event=capture_relay.plan_capacity_refused`). Full rule in
   [`relay/README.md`](../relay/README.md) "Release order".
 
-## Current status (2026-07-22)
+## Current status (2026-08-05)
 
 ### Live attempts loop (2026-08-03)
 
@@ -464,7 +548,12 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — measure (`POST /crossover/v2/session`), 10 captures at Full:**
+**R15 candidate Stage 1 (pending review/merge/deploy):** exactly two captures,
+index 1 `check` and index 2 `measure`. Production passes the same resolved
+protection mapping to the protected-neutral emitter and configured-path
+analysis, and emits no `cloud_measure` phase or prompt. Stage 2 is unchanged.
+
+**Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
@@ -3207,7 +3296,11 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-08-04 — added and verified the planning-vs-shipped
+**2026-08-05 verification scope:** opening/capture-flow only against the current
+R15 diff; no review, merge, deployment, or measurement claim. Remaining
+operational detail and history were not re-verified.
+
+Last verified: 2026-08-05 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the

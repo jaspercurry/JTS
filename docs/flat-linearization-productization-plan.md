@@ -1380,6 +1380,12 @@ The implementer refused to wire the arguments into a branch no production
 ordering could enter, and reported instead — the finding was independently
 re-traced and taken to the owner.*
 
+> **Ordering note (post-R15).** The capture ordering above is the pre-R15 one.
+> R15 ([#2106](https://github.com/jaspercurry/JTS/issues/2106)) removes the
+> pre-apply cloud, so stage 1 runs CHECK 1, MEASURE 2 and stops; see
+> [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
+> The narrative above is unchanged as the record of why the fit moved.
+
 ***Owner decision (2026-07-27): move the fit.*** *The fit, the candidate build,
 and the auto-apply trigger relocate from MEASURE's accept to the CLOUD_MEASURE
 group close — the work order's own pre-registered phase order. The root cause is

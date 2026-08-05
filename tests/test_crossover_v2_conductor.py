@@ -35,6 +35,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.attempts_loop import (
@@ -510,9 +511,10 @@ class FakeSeams:
 
 def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
     seams = kwargs.pop("seams", fakes.seams())
+    source_preset = kwargs.pop("source_preset", _preset())
     return CrossoverV2Conductor(
         session_id=SESSION,
-        source_preset=_preset(),
+        source_preset=source_preset,
         roles_bands=_roles(),
         fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS,
@@ -1241,6 +1243,133 @@ def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target(
     raw["crossover_regions"][0]["delay_target_driver"] = None
     fresh = ActiveSpeakerPreset.from_mapping(raw)
     assert alignment_delay_search_bounds_us(fresh) == expected
+
+
+def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["upper_polarity"] = "inverted"
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+    woofer = flow.CrossoverSection(6000.0, 4, False)
+    tweeter = flow.CrossoverSection(300.0, 4, True)
+    supplied = {"woofer": [woofer], "tweeter": [tweeter]}
+    c = _conductor(
+        FakeSeams(), source_preset=preset,
+        measurement_protection_sections_by_role=supplied,
+    )
+    supplied["woofer"].clear()
+    supplied["tweeter"] = [woofer]
+    priors = c._measure_priors()
+    # The measurement kernel may not import this package, so priors carry an
+    # evaluated `freqs -> complex response` rather than CrossoverSections. The
+    # transfer must still come from the sections the conductor copied at
+    # construction, NOT from the caller's list mutated above.
+    freqs = np.array([100.0, 1000.0, 8000.0])
+    assert priors.measurement_protection_response_by_role.keys() == {
+        "woofer", "tweeter",
+    }
+    for role, section in (("woofer", woofer), ("tweeter", tweeter)):
+        np.testing.assert_allclose(
+            priors.measurement_protection_response_by_role[role](freqs),
+            flow.crossover_response_complex(freqs, (section,)),
+        )
+    for role, sections in flow.sections_by_role(preset.crossover_regions).items():
+        np.testing.assert_allclose(
+            priors.configured_crossover_response_by_role[role](freqs),
+            flow.crossover_response_complex(freqs, sections),
+        )
+    assert priors.configured_polarity_sign_by_role == {"woofer": 1, "tweeter": -1}
+    # Pins the WIRING of §4.2's candidate-required mask: every role's band must
+    # be derived, and must cover the overlap band it is unioned with (a None
+    # derivation silently returns the policy to the whole driven band).
+    overlap = flow.overlap_band_hz(priors.crossover_fc_hz)
+    required = priors.candidate_required_band_hz_by_role
+    assert required is not None and required.keys() == {"woofer", "tweeter"}
+    for role, (lo, hi) in required.items():
+        assert lo <= overlap[0] and hi >= overlap[1], role
+    legacy = _conductor(FakeSeams())._measure_priors()
+    assert legacy.measurement_protection_response_by_role is None
+    assert legacy.configured_crossover_response_by_role is None
+    assert legacy.configured_polarity_sign_by_role is None
+    assert legacy.candidate_required_band_hz_by_role is None
+
+
+def test_an_uncomposed_protected_neutral_capture_is_refused_at_the_seam():
+    """The fitter's branch-input invariant, pinned where it actually runs.
+
+    Pinned at ``_build_measure_candidate``, NOT ``_fit_linearization``: the
+    2026-08-05 panel (correctness B1 / hearing-safety SF2) showed the guard
+    living inside the fit was swallowed three lines later by
+    ``_build_candidate``'s SF2 degrade handler, which catches ``ValueError``,
+    and the session committed a reviewable, Apply-able trims-only candidate. A
+    direct call to the private method cannot see that. It also has to refuse
+    the trims-only path: the emitter runs with region polarity OFF here and
+    §4.2 restores ``sign_c`` offline, so trim/delay/polarity would be solved in
+    a different convention from the applied graph.
+    """
+    from jasper.audio_measurement.program import build_measure_program
+    protection = {"woofer": [flow.CrossoverSection(6000.0, 4, False)],
+                  "tweeter": [flow.CrossoverSection(300.0, 4, True)]}
+    program = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0},
+        [RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+         RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0))],
+    )
+    c = _conductor(FakeSeams(), measurement_protection_sections_by_role=protection)
+    c._measure_program = program
+    analysis = _eligible_measure_analysis(program)
+    assert analysis.configured_path_composed is False
+
+    # THE SEAM: no candidate is built, so none can be committed or applied.
+    with pytest.raises(ValueError, match="reached the fitter uncomposed"):
+        c._build_measure_candidate(analysis, None)
+    assert c.candidate is None
+
+    # …and it does NOT fire once the composition ran, nor on a legacy conductor
+    # (whose emitter puts the shoulders into the audio itself).
+    composed = dataclasses.replace(analysis, configured_path_composed=True)
+    assert c._build_candidate(composed) is not None
+    legacy = _conductor(FakeSeams())
+    legacy._measure_program = program
+    assert legacy._build_candidate(analysis) is not None
+
+
+def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
+    """#2098's pattern: one producer owns the capture-count fact.
+
+    `prepare_v2_session` runs stage 1 with `STAGE1_INCLUDES_CLOUD_MEASURE`, and
+    before this the chooser still read `shape.measure_capture_target` — the
+    cloud-inclusive 10 (Full) / 5 (Express) — plus cloud-inclusive minutes. The
+    household was told it was starting a ten-capture walk that the session then
+    did not take. Both surfaces now derive from the same flag.
+    """
+    info = flow.tier_display_info()
+    assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
+    # Stage 1 is CHECK + MEASURE, and the tiers genuinely no longer differ
+    # there — so the numbers must not imply that they do.
+    assert info["full"]["stage1_captures"] == 2
+    assert info["express"]["stage1_captures"] == 2
+    # Stage 2 is where they still differ, and the chooser copy says so.
+    assert info["full"]["stage2_captures"] == 6
+    assert info["express"]["stage2_captures"] == 1
+    for tier, detail in info.items():
+        assert detail["capture_target"] == (
+            detail["stage1_captures"] + detail["stage2_captures"]
+        ), tier
+        # Honest minutes: a real duration, and small enough to be a two-capture
+        # stage 1 plus its verify walk rather than a ten-position cloud.
+        assert 0 < detail["estimated_minutes"] <= 10, tier
+
+    # The degraded fallback answers with the SAME numbers, so a failure in the
+    # memoized build cannot quietly restore the cloud-inclusive figures.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow, "_tier_display_info_cached",
+            lambda: (_ for _ in ()).throw(ValueError("forced")),
+        )
+        degraded = flow.tier_display_info()
+    for tier, detail in degraded.items():
+        assert detail["stage1_captures"] == info[tier]["stage1_captures"], tier
+        assert detail["capture_target"] == info[tier]["capture_target"], tier
 
 
 def test_measure_program_gains_back_off_from_caps():
@@ -5417,7 +5546,10 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
         for tier in (TIER_FULL, TIER_EXPRESS):
             shape = resolve_plan_shape(tier)
             # BOTH stages, because the chooser quotes the whole journey (D2).
-            stage1 = build_v2_capture_plan(roles, fc_hz, plan_shape=shape)
+            stage1 = build_v2_capture_plan(
+                roles, fc_hz, plan_shape=shape,
+                include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+            )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
             minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
             assert minutes == info[tier]["estimated_minutes"], (
@@ -5857,25 +5989,59 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     restore both ride ``set_active_config_raw`` (SetConfig), never
     ``set_config_file_path`` — the crash-recovery-MUTED invariant."""
     from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
+    from jasper.camilla import CamillaConfigRejected
 
     calls: list = []
 
     class _FakeCam:
+        """Models the 2026-08-05 hardware probe of CamillaDSP 4.1.3.
+
+        ``GetConfig`` returns a default-filled, value-normalized SUPERSET of
+        what was submitted (extra null keys; a submitted ``0`` back as ``0.0``),
+        and ``ReadConfig`` — ``normalize_config_raw`` — applies exactly the same
+        transform without applying anything. Comparing submitted TEXT against
+        the readback would refuse every load on this fake, which is the point.
+        """
+
+        live = "prior: graph\n"
+
+        @staticmethod
+        def _camilla_serde(text):
+            parsed = yaml.safe_load(text) or {}
+            filled = {"description": None, "bypassed": None, **parsed}
+            return yaml.safe_dump(
+                {k: (0.0 if v == 0 else v) for k, v in filled.items()}
+            )
+
         async def get_config_file_path(self, *, best_effort):
             calls.append(("get_path", best_effort))
             return str(tmp_path / "entry.yml")
 
         async def set_active_config_raw(self, text, *, best_effort):
             calls.append(("set_raw", text, best_effort))
+            self.live = text
             return True
+
+        async def get_active_config_raw(self, *, best_effort):
+            calls.append(("get_raw", best_effort))
+            return self._camilla_serde(self.live)
+
+        async def normalize_config_raw(self, text, *, best_effort):
+            # What a live, healthy CamillaDSP raises for a config it parsed and
+            # refused — CamillaController._call already maps pycamilladsp's
+            # ConfigValidationError onto this class.
+            if "!!not-yaml" in text:
+                raise CamillaConfigRejected("camilla rejected the config")
+            return self._camilla_serde(text)
 
         async def set_config_file_path(self, *args, **kwargs):  # pragma: no cover
             raise AssertionError("must never repoint the persisted statefile")
 
     entry = tmp_path / "entry.yml"
     entry.write_text("prior: graph\n", encoding="utf-8")
+    cam = _FakeCam()
     seams = bind_program_playback_seams(
-        _FakeCam(),
+        cam,
         bundle_dir=str(tmp_path),
         artifact=object(),
         config_dir=str(tmp_path),
@@ -5891,13 +6057,32 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
         "play_wav", "readmit", "writer_lock",
     }
     assert asyncio.run(seams["read_current_config_path"]()) == str(entry)
+    # Default-fill tolerance: the submitted text carries none of the keys the
+    # readback will have, and the load is still CONFIRMED.
     assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
     assert asyncio.run(seams["restore_graph"](str(entry))) is True
     assert calls == [
         ("get_path", False),
         ("set_raw", "program: graph\n", False),
+        ("get_raw", False),
         ("set_raw", "prior: graph\n", False),
     ]
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+
+    # A genuinely different graph is still rejected — the check is strict
+    # equality of normalized fingerprints, not a subset comparison.
+    cam.live = "different: graph\n"
+    with pytest.raises(ProgramPlaybackError, match="load was not confirmed"):
+        asyncio.run(
+            flow.confirm_graph_is_live(cam, "program: graph\n")
+        )
+    # Comment-only differences are benign: camilla's serde drops them.
+    cam.live = "program: graph\n"
+    asyncio.run(flow.confirm_graph_is_live(cam, "# a note\nprogram: graph\n"))
+    # A submitted config camilla itself refuses is a NAMED refusal, distinct
+    # from a mismatch, so hardware triage can tell the two apart.
+    with pytest.raises(ProgramPlaybackError, match="normalization failed"):
+        asyncio.run(seams["load_program_graph"]("!!not-yaml\n"))
 
 
 def _dummy_program():

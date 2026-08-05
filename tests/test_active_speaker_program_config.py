@@ -14,7 +14,11 @@ reject even where ``output_highpass_protected`` alone would false-PASS.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
+
+from jasper.active_speaker.branch_chain import CrossoverSection
 import yaml as yaml_lib
 
 from jasper.active_speaker import (
@@ -25,7 +29,9 @@ from jasper.active_speaker import (
 from jasper.active_speaker.camilla_yaml import (
     _assert_program_graph_proven,
     _driver_limiter_name,
+    emit_active_speaker_baseline_config, protected_neutral_program_origin,
 )
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.graph_safety import (
     output_highpass_protected,
     tweeter_guard_present,
@@ -43,6 +49,28 @@ ROLE_CHANNELS = {"woofer": 0, "tweeter": 1}
 
 def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset(layout))
+
+
+def _confirmed_protection():
+    profile = {"targets": [
+        {
+            "role": "woofer", "target_fingerprint": "w",
+            "required_protection_filters": [{
+                "kind": "lowpass", "cutoff_hz": 3000.0,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        },
+        {
+            "role": "tweeter", "target_fingerprint": "t",
+            "required_protection_filters": [{
+                "kind": "highpass", "cutoff_hz": 1800.0,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        },
+    ]}
+    return confirmed_protection_sections(
+        profile, {"woofer": "w", "tweeter": "t"}
+    )
 
 
 def _low_fc_preset() -> ActiveSpeakerPreset:
@@ -90,6 +118,72 @@ def test_program_config_carries_target_crossover_not_bringup_hp():
         0.0,
         -0.0,
     )
+
+
+def test_protected_neutral_program_config_contains_only_declared_safety_shaping():
+    builder = _two_way_preset("mono")
+    builder["crossover_regions"][0]["upper_polarity"] = "inverted"
+    preset = ActiveSpeakerPreset.from_mapping(builder)
+    protection = _confirmed_protection()
+    out = emit_active_speaker_program_config(
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=protection,
+    )
+    parsed = yaml_lib.safe_load(out)
+    filters = parsed["filters"]
+    assert set(filters) == {
+        "active_startup_headroom",
+        "as_woofer_program_protection_0", "as_tweeter_program_protection_0",
+        "as_woofer_startup_limiter", "as_tweeter_startup_limiter",
+        "as_out0_commission_mute", "as_out1_commission_mute",
+    }
+    assert filters["as_woofer_program_protection_0"]["parameters"] == {
+        "type": "LinkwitzRileyLowpass", "freq": 3000.0, "order": 4,
+    }
+    assert filters["as_tweeter_program_protection_0"]["parameters"] == {
+        "type": "LinkwitzRileyHighpass", "freq": 1800.0, "order": 4,
+    }
+    assert filters["active_startup_headroom"]["parameters"]["gain"] == pytest.approx(0.0)
+    for role in ("woofer", "tweeter"):
+        limiter = filters[f"as_{role}_startup_limiter"]
+        assert limiter["type"] == "Limiter"
+        assert limiter["parameters"] == {
+            "soft_clip": True, "clip_limit": -12.0,
+        }
+    assert parsed["pipeline"][2]["names"] == [
+        "as_woofer_program_protection_0", "as_woofer_startup_limiter",
+    ]
+    assert parsed["pipeline"][3]["names"] == [
+        "as_tweeter_program_protection_0", "as_tweeter_startup_limiter",
+    ]
+    assert parsed["mixers"]["split_active_2way"]["mapping"][1]["sources"][0][
+        "inverted"
+    ] is False
+    view = view_from_emitted_text(out)
+    assert tweeter_guard_present(
+        view, channels={1}, hp_name="as_tweeter_program_protection_0",
+        limiter_name="as_tweeter_startup_limiter", limiter_clip_ceiling_db=-12.0,
+    )
+    assert protected_neutral_program_origin(out) is True
+
+
+def test_protected_neutral_origin_excludes_other_and_mutated_graphs():
+    preset = _preset("mono")
+    neutral = yaml_lib.safe_load(emit_active_speaker_program_config(
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
+    ))
+    legacy = emit_active_speaker_program_config(
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+    )
+    applied = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    assert (protected_neutral_program_origin(legacy),
+            protected_neutral_program_origin(applied)) == (None, None)
+    partial = yaml_lib.safe_load(yaml_lib.safe_dump(neutral))
+    partial["filters"].pop("as_tweeter_program_protection_0")
+    assert protected_neutral_program_origin(partial) is False
+    neutral["filters"]["as_room_extra"] = {"type": "Gain", "parameters": {"gain": -1.0}}
+    assert protected_neutral_program_origin(neutral) is False
 
 
 def test_program_config_passes_all_graph_safety_proofs():
@@ -153,6 +247,47 @@ def test_program_config_refuses_tweeter_hp_slope_below_floor():
             playback_device=ACTIVE_PCM,
             protective_hp_min_slope_db_per_octave=30.0,  # LR4 is 24 dB/oct
         )
+
+
+@pytest.mark.parametrize(
+    ("sections", "match"),
+    [
+        # 399 Hz: corner below the 400 Hz floor.
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": (CrossoverSection(399.0, 4, True),)}, "program floor"),
+        # Slope below the 24 dB/oct floor at a LEGAL corner — the motivating
+        # case: order 2 is the downstream hole (output_highpass_protected only
+        # checks freq >= 400, tweeter_guard_present accepts order >= 2).
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": (CrossoverSection(1800.0, 2, True),)}, "program floor"),
+        # No tweeter high-pass at all; then a role missing entirely.
+        ({"woofer": (CrossoverSection(3000.0, 4, False),),
+          "tweeter": ()}, "one tweeter protection high-pass"),
+        ({"tweeter": (CrossoverSection(1800.0, 4, True),)},
+         "cover every driver role"),
+    ],
+)
+def test_protected_neutral_emit_refuses_unsafe_tweeter_protection(
+    sections, match, caplog,
+):
+    """The neutral path's tweeter floor gate — its SOLE slope-floor rail.
+
+    REPLACES ``_assert_tweeter_crossover_hp_satisfies_floor`` (pinned above) as
+    the proof between a confirmed-profile value and a compression driver. §4.1
+    wants the same rails; the panel found this one had zero tests.
+    """
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ActiveSpeakerConfigError, match=match):
+            emit_active_speaker_program_config(
+                _preset("mono"), role_channels=ROLE_CHANNELS,
+                playback_device=ACTIVE_PCM, protection_sections_by_role=sections,
+            )
+    # …and the floor refusal reaches the journal, as its predecessor's does.
+    logged = any(
+        "result=blocked_tweeter_protection_below_floor" in r.getMessage()
+        for r in caplog.records
+    )
+    assert logged is (match == "program floor"), [r.getMessage() for r in caplog.records]
 
 
 def test_program_config_refuses_local_subwoofer_preset():

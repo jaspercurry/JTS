@@ -132,6 +132,84 @@ DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 FOLLOWER_LOOPBACK_MIN_CHUNKSIZE = 1024
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+_PROGRAM_PROTECTION_RE = re.compile(r"^as_(woofer|tweeter)_program_protection_([0-9]+)$")
+
+
+def protected_neutral_program_origin(
+    raw: str | Mapping[str, Any],
+) -> bool | None:
+    """Classify this emitter's namespace: exact, partial, or unrelated."""
+    try:
+        config = yaml.safe_load(raw) if isinstance(raw, str) else raw
+    except yaml.YAMLError:
+        return False if "program_protection_" in str(raw) else None
+    if not isinstance(config, Mapping):
+        return None
+    filters, pipeline = config.get("filters"), config.get("pipeline")
+    mixers, devices = config.get("mixers"), config.get("devices")
+    owns_namespace = isinstance(filters, Mapping) and any(
+        _PROGRAM_PROTECTION_RE.fullmatch(str(name)) for name in filters
+    )
+    if not (
+        isinstance(filters, Mapping) and isinstance(pipeline, list)
+        and isinstance(mixers, Mapping) and isinstance(devices, Mapping)
+    ):
+        return False if owns_namespace else None
+    if not owns_namespace:
+        return None
+    capture, playback = devices.get("capture", {}), devices.get("playback", {})
+    if not isinstance(capture, Mapping) or not isinstance(playback, Mapping):
+        return False
+    output_count = playback.get("channels")
+    if not isinstance(output_count, int) or output_count < 2 or capture.get("channels") != 2:
+        return False
+    roles = ("woofer", "tweeter")
+    protections: dict[str, list[tuple[int, str]]] = {role: [] for role in roles}
+    for name in filters:
+        match = _PROGRAM_PROTECTION_RE.fullmatch(str(name))
+        if match:
+            protections[match.group(1)].append((int(match.group(2)), str(name)))
+    for items in protections.values():
+        if not items or sorted(index for index, _ in items) != list(range(len(items))):
+            return False
+    limiters = {role: f"as_{role}_startup_limiter" for role in roles}
+    mutes = [output_commission_mute_name(index) for index in range(output_count)]
+    protection_names = {name for items in protections.values() for _, name in items}
+    if set(filters) != {
+        "active_startup_headroom", *protection_names, *limiters.values(), *mutes,
+    }:
+        return False
+    gain = {"type": "Gain", "parameters": {"gain": 0.0, "inverted": False, "mute": False}}
+    limiter = {"type": "Limiter", "parameters": {"soft_clip": True, "clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB}}
+    if (filters["active_startup_headroom"] != gain
+            or any(filters[name] != gain for name in mutes)
+            or any(filters[name] != limiter for name in limiters.values())):
+        return False
+    if len(pipeline) != output_count + 4 or not all(
+        isinstance(step, Mapping) for step in pipeline
+    ):
+        return False
+    channel_lists = [pipeline[index].get("channels", ()) for index in (2, 3)]
+    role_steps = [
+        {"type": "Filter", "channels": channels,
+         "names": [*(name for _, name in sorted(protections[role])), limiters[role]]}
+        for role, channels in zip(roles, channel_lists, strict=True)
+    ]
+    expected = [
+        {"type": "Filter", "channels": [0, 1], "names": ["active_startup_headroom"]},
+        {"type": "Mixer", "name": "split_active_2way"}, *role_steps,
+        *({"type": "Filter", "channels": [index], "names": [name]}
+          for index, name in enumerate(mutes)),
+    ]
+    channel_sets = [set(channels) for channels in channel_lists]
+    mixer = mixers.get("split_active_2way")
+    return (
+        pipeline == expected and set(mixers) == {"split_active_2way"}
+        and isinstance(mixer, Mapping)
+        and mixer.get("channels") == {"in": 2, "out": output_count}
+        and all(channel_sets) and not channel_sets[0] & channel_sets[1]
+        and set.union(*channel_sets) == set(range(output_count))
+    )
 
 
 def _name_token(value: str) -> str:
@@ -226,6 +304,11 @@ def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
     for role in required_driver_roles(preset.way_count):
         polarity.setdefault(role, False)
     return polarity
+
+
+# Public spelling; `_role_polarity` survives only for two importers outside
+# this PR's ratified file set (retiring it is a follow-up).
+role_polarity = _role_polarity
 
 
 def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
@@ -556,6 +639,10 @@ def _room_peq_name(index: int) -> str:
 
 def _protective_tweeter_hp_name(role: str) -> str:
     return f"as_{_name_token(role)}_protective_hp"
+
+
+def _program_protection_name(role: str, index: int) -> str:
+    return f"as_{_name_token(role)}_program_protection_{index}"
 
 
 # --- local-subwoofer + bass-management filter names ---------------------------
@@ -1862,6 +1949,7 @@ def _commissioning_driver_filter_chain(
     role: str,
     *,
     filter_mode: str,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
@@ -1871,6 +1959,14 @@ def _commissioning_driver_filter_chain(
     the dedicated tweeter high-pass; automatic response measurement removes
     only that extra filter so it measures the applied crossover shoulder.
     """
+    if protection_sections_by_role is not None:
+        return [
+            *(
+                _program_protection_name(role, index)
+                for index, _section in enumerate(protection_sections_by_role[role])
+            ),
+            _driver_limiter_name(role),
+        ]
     excluded = {_driver_mute_name(role)}
     if filter_mode == APPLIED_RESPONSE_FILTER_MODE:
         excluded.add(_protective_tweeter_hp_name(role))
@@ -1885,10 +1981,11 @@ def _emit_commissioning_filter_definitions(
     audible_outputs: frozenset[int],
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
-    for region in _ordered_regions(preset):
+    for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
             highpass=False,
@@ -1904,8 +2001,16 @@ def _emit_commissioning_filter_definitions(
     # The bass-management HP is referenced by the lowest driver's commissioning
     # chain (it preserves the running graph's protection), so its definition must
     # be present here too.
-    lines.extend(_emit_bass_management_hp_definition(preset))
+    if protection_sections_by_role is None:
+        lines.extend(_emit_bass_management_hp_definition(preset))
     for role in required_driver_roles(preset.way_count):
+        for index, section in enumerate((protection_sections_by_role or {}).get(role, ())):
+            lines.extend(emit_linkwitz_riley(
+                _program_protection_name(role, index),
+                highpass=section.highpass,
+                freq_hz=section.fc_hz,
+                order=section.order,
+            ))
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if filter_mode == COMMISSIONING_FILTER_MODE and protective_freq is not None:
             lines.extend(emit_linkwitz_riley(
@@ -1914,7 +2019,8 @@ def _emit_commissioning_filter_definitions(
                 freq_hz=protective_freq,
                 order=4,
             ))
-        lines.extend(_emit_delay_filter(_driver_delay_name(role)))
+        if protection_sections_by_role is None:
+            lines.extend(_emit_delay_filter(_driver_delay_name(role)))
         lines.extend(_emit_limiter_filter(
             _driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
@@ -1952,6 +2058,7 @@ def _emit_commissioning_pipeline(
     preset: ActiveSpeakerPreset,
     *,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
 ) -> str:
     lines = [
         "  - type: Filter",
@@ -1967,6 +2074,7 @@ def _emit_commissioning_pipeline(
                 preset,
                 role,
                 filter_mode=filter_mode,
+                protection_sections_by_role=protection_sections_by_role,
             )
         )
         lines.extend([
@@ -2180,16 +2288,7 @@ pipeline:
 # (docs/crossover-measurement-productization-design.md §5.4): program capture
 # ch0 carries the woofer stimulus, ch1 the tweeter stimulus, sequenced in the
 # WAV so the CamillaDSP graph stays static (no reload mid-program). This graph
-# maps each program capture channel to its driver's PHYSICAL output path so the
-# per-driver crossover / limiter / protective chain — the positions
-# graph_safety's proofs inspect — stays exactly where the proven commissioning
-# graph puts it (on the output channels, POST-mixer). The filter definitions and
-# per-output pipeline are the APPLIED_RESPONSE commissioning graph's, reused
-# verbatim; only the routing MIXER differs (role-routed, not stereo-side-routed)
-# and every output is audible (a program never mutes a driver — the WAV silences
-# it by channel). Measuring the as-crossed branches makes the two driver
-# responses directly summable and keeps every tweeter output behind its final
-# crossover high-pass throughout.
+# maps each program capture channel to its driver's PHYSICAL output path.
 
 # LR4 is the shipped crossover slope; 24 dB/oct is the protective-HP floor slope
 # a tweeter crossover high-pass must meet by construction (design §5.4).
@@ -2209,9 +2308,6 @@ def _emit_role_routed_mixer(
     takes its single source from ``role_channels[r]`` — the program-WAV channel
     carrying that driver's stimulus (ch0 → woofer, ch1 → tweeter, per design
     §5.4). ``channels_in`` is the program channel count (max mapped channel + 1).
-    Region polarity is carried exactly as the commissioning mixer carries it, so
-    the routed graph differs from the commissioning graph ONLY in its source
-    selection, never in polarity or level.
 
     The emitted mixer is named ``split_active_{way_count}way`` — the SAME name
     :func:`_emit_split_mixer` uses — for two independent reasons that both land
@@ -2406,6 +2502,7 @@ def _assert_program_graph_proven(
     preset: ActiveSpeakerPreset,
     *,
     min_corner_hz: float,
+    tweeter_hp_name: str | None = None,
 ) -> None:
     """Build-and-prove the emitted program graph against graph_safety (fail-closed).
 
@@ -2440,11 +2537,13 @@ def _assert_program_graph_proven(
         )
         for channel in tweeter_channels
     )
-    crossover = crossover_highpass_for_role(preset, "tweeter")
-    guard_ok = crossover is not None and tweeter_guard_present(
+    if tweeter_hp_name is None:
+        crossover = crossover_highpass_for_role(preset, "tweeter")
+        tweeter_hp_name = crossover[0] if crossover is not None else None
+    guard_ok = tweeter_hp_name is not None and tweeter_guard_present(
         view,
         channels=tweeter_set,
-        hp_name=crossover[0],
+        hp_name=tweeter_hp_name,
         limiter_name=_driver_limiter_name("tweeter"),
         limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
     )
@@ -2471,6 +2570,7 @@ def emit_active_speaker_program_config(
     *,
     role_channels: dict[str, int],
     playback_device: str,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     protective_hp_min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     protective_hp_min_slope_db_per_octave: float = (
         PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE
@@ -2495,17 +2595,15 @@ def emit_active_speaker_program_config(
 
     * routes each program channel to its driver's PHYSICAL output path via a
       role-routed mixer (:func:`_emit_role_routed_mixer`);
-    * carries the TARGET crossover filter for each driver on its output channel
-      (the LR low-pass for the woofer, the LR high-pass for the tweeter) plus the
-      per-driver soft-clip limiter — the APPLIED_RESPONSE commissioning filter
-      set, reused verbatim so the measured branch is the applied crossover
-      shoulder and every tweeter output stays behind its high-pass;
+    * carries either the legacy target crossover or caller-supplied confirmed
+      role protection plus the per-driver limiter. The protected-neutral shape
+      omits configured crossover, delay, linearization, bass, Room, and
+      preference filters;
     * keeps the software volume ceiling non-positive and stays static (no reload
       mid-program).
 
     Two fail-closed gates run before the graph can leave this function: a
-    build-time proof that the tweeter crossover Fc/slope satisfies the declared
-    protective floor (:func:`_assert_tweeter_crossover_hp_satisfies_floor`), and
+    build-time proof that the selected tweeter HP satisfies the declared floor, and
     a build-and-prove of the emitted text against ``graph_safety``'s three L0
     tweeter proofs (:func:`_assert_program_graph_proven`). Like the sibling
     emitters it does not load or reload CamillaDSP and refuses the stereo outputd
@@ -2557,13 +2655,37 @@ def emit_active_speaker_program_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    # Build-time proof: the tweeter's crossover HP alone protects it, so its
-    # Fc/slope MUST satisfy the declared protective floor before we emit.
-    _assert_tweeter_crossover_hp_satisfies_floor(
-        preset,
-        min_corner_hz=protective_hp_min_corner_hz,
-        min_slope_db_per_octave=protective_hp_min_slope_db_per_octave,
-    )
+    tweeter_hp_name = None
+    if protection_sections_by_role is None:
+        _assert_tweeter_crossover_hp_satisfies_floor(
+            preset,
+            min_corner_hz=protective_hp_min_corner_hz,
+            min_slope_db_per_octave=protective_hp_min_slope_db_per_octave,
+        )
+    else:
+        required_roles = set(required_driver_roles(preset.way_count))
+        if set(protection_sections_by_role) != required_roles:
+            raise ActiveSpeakerConfigError("program protection must cover every driver role")
+        tweeter_hps = [
+            (index, section)
+            for index, section in enumerate(protection_sections_by_role["tweeter"])
+            if section.highpass
+        ]
+        if len(tweeter_hps) != 1:
+            raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
+        hp_index, hp_section = tweeter_hps[0]
+        if hp_section.fc_hz < protective_hp_min_corner_hz or (
+            hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
+        ):
+            # SOLE slope-floor enforcement on this path: it reaches the
+            # journal exactly as its predecessor's refusal does.
+            log_event(
+                logger, "active_speaker.program_emit_gate", level=logging.ERROR,
+                result="blocked_tweeter_protection_below_floor",
+                preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
+                order=hp_section.order)
+            raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
+        tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
     output_count = _output_count(preset)
     program_channels = 1 + max(role_channels.values())
@@ -2573,24 +2695,33 @@ def emit_active_speaker_program_config(
     # ledger the session-volume plan / admission share is main_volume + program
     # peak with no hidden graph attenuation.
     audible = frozenset(range(output_count))
+    filter_mode = (
+        APPLIED_RESPONSE_FILTER_MODE
+        if protection_sections_by_role is None else "protected_neutral"
+    )
     filter_yaml = _emit_commissioning_filter_definitions(
         preset,
         startup_headroom_db=COMMISSIONING_HEADROOM_DB,
         limiter_clip_limit_db=limiter_clip_limit_db,
         audible_outputs=audible,
         audible_gain_db=0.0,
-        filter_mode=APPLIED_RESPONSE_FILTER_MODE,
+        filter_mode=filter_mode,
+        protection_sections_by_role=protection_sections_by_role,
     )
-    mixer_yaml = _emit_role_routed_mixer(preset, role_channels)
+    mixer_yaml = _emit_role_routed_mixer(
+        preset, role_channels,
+        apply_region_polarity=protection_sections_by_role is None,
+    )
     pipeline_yaml = _emit_commissioning_pipeline(
         preset,
-        filter_mode=APPLIED_RESPONSE_FILTER_MODE,
+        filter_mode=filter_mode,
+        protection_sections_by_role=protection_sections_by_role,
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# role_channels={dict(sorted(role_channels.items()))}",
         f"# program_channels={program_channels}",
-        f"# filter_mode={APPLIED_RESPONSE_FILTER_MODE}",
+        f"# filter_mode={filter_mode}",
     ]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
@@ -2603,7 +2734,7 @@ def emit_active_speaker_program_config(
 {metadata_yaml}
 # DO NOT HAND-EDIT. Static channel-routed program graph: program capture channel
 # c is routed to every physical output of role role_channels^-1(c), each carrying
-# its TARGET crossover filter + soft-clip limiter. Played once (no reload
+# its declared protection filter + soft-clip limiter. Played once (no reload
 # mid-program) while a 2-channel program WAV sequences the driver stimuli by
 # channel. The software volume ceiling remains non-positive.
 
@@ -2639,7 +2770,8 @@ pipeline:
     _assert_tweeter_outputs_protected(yaml, preset)
     # Build-and-prove the program graph's return contract against graph_safety.
     _assert_program_graph_proven(
-        yaml, preset, min_corner_hz=protective_hp_min_corner_hz
+        yaml, preset, min_corner_hz=protective_hp_min_corner_hz,
+        tweeter_hp_name=tweeter_hp_name,
     )
 
     if out_path is not None:

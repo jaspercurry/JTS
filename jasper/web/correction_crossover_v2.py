@@ -219,6 +219,8 @@ def classify_program_failure(
     from jasper.active_speaker.crossover_v2_flow import (
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
+        REASON_PROTECTION_NOT_SEPARABLE,
+        REASON_PROTECTION_SWEEP_TOO_LOW,
         CrossoverV2FlowError,
     )
     from jasper.active_speaker.program_admission import (
@@ -229,7 +231,15 @@ def classify_program_failure(
         ProgramPlaybackError,
         ProgramPlaybackRefused,
     )
+    from jasper.audio_measurement.program_analysis import (
+        ConfiguredPathConditioningError,
+    )
 
+    if isinstance(exc, ConfiguredPathConditioningError):
+        return (
+            REASON_PROTECTION_SWEEP_TOO_LOW if exc.protection_floor
+            else REASON_PROTECTION_NOT_SEPARABLE
+        ), (exc.slug,)
     if not isinstance(
         exc, (ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError)
     ):
@@ -3748,6 +3758,7 @@ def bind_production_play(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
+    protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
     declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
     on_playback_started: Callable[[Any], None] | None = None,
@@ -3880,6 +3891,7 @@ def bind_production_play(
                 preset,
                 role_channels=dict(role_channels),
                 playback_device=playback_device,
+                protection_sections_by_role=protection_sections_by_role,
             )
             seams = bind_program_playback_seams(
                 camilla_factory(),
@@ -4490,10 +4502,17 @@ def build_v2_run_and_consume(
             raise
         except CaptureBeginRefused:
             # The conductor's own budget refusal — its failure code is already
-            # in _last_reason; persist the terminal state.
+            # in _last_reason. Publish that exact named verdict before cleanup.
             code = conductor.last_failure_code or REASON_RELAY_TIMEOUT
             _persist_terminal_failure(conductor, code)
+            # Only where the relay published nothing itself: on the
+            # authorize_begin path it already posted `capture_refused` for the
+            # REFUSED index, and this slot is last-write-wins (panel SF1). On
+            # the consume path nothing precedes it and the phone waits forever.
+            if not conductor.relay_published_refusal:
+                await _post_terminal_failure_host_event(code)
             await _abandon_best_effort()
+            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
             raise
         except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError) as exc:
@@ -4587,6 +4606,9 @@ def build_v2_run_and_consume(
                     code=code,
                     refusals=",".join(refusals),
                     error_type=type(exc).__name__,
+                    # confirm_graph_is_live's three failures share a type and
+                    # a code; this is what distinguishes them (panel nit).
+                    detail=str(exc),
                 )
             await _post_terminal_failure_host_event(code)
             _persist_terminal_failure(conductor, code, refusals=refusals)
@@ -5170,7 +5192,9 @@ def prepare_v2_session(
     surfaces that must agree about the walk and used to reach their defaults
     independently.
     """
+    from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
+        STAGE1_INCLUDES_CLOUD_MEASURE,
         CrossoverV2Conductor,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
@@ -5205,6 +5229,15 @@ def prepare_v2_session(
             "a new session"
         )
     context = resolve_conductor_context(status)
+    try:
+        protection_sections = confirmed_protection_sections(
+            context.safety_profile, context.role_targets
+        )
+    except ValueError as exc:
+        raise CrossoverV2Refused(
+            "The confirmed driver protection cannot be used for this measurement."
+        ) from exc
+    include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
@@ -5245,6 +5278,7 @@ def prepare_v2_session(
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
             plan_shape=plan_shape,
+            include_cloud_measure=include_cloud_measure,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -5281,6 +5315,7 @@ def prepare_v2_session(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
+            protection_sections_by_role=protection_sections,
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
         )
@@ -5322,7 +5357,9 @@ def prepare_v2_session(
             # plan shape the emitted spec used — not merely the same function
             # at its own defaults — so the prompt an entry carries and the
             # phase the conductor runs for that index can never disagree.
-            index_phase_map=build_v2_cloud_index_phase_map(plan_shape=plan_shape),
+            index_phase_map=build_v2_cloud_index_phase_map(
+                plan_shape=plan_shape, include_cloud_measure=include_cloud_measure,
+            ),
             # The boost-permission evidence gate (work order D2's consequence).
             # This session's own phases carry no VERIFY — the post-apply sweep
             # is stage 2 — so the measuring host declares from the SHAPE that
@@ -5331,6 +5368,7 @@ def prepare_v2_session(
             post_apply_verifies=plan_shape.verify_capture_target >= 1,
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
+            measurement_protection_sections_by_role=protection_sections,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
