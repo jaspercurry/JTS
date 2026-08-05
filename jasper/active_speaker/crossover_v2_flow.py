@@ -6606,8 +6606,9 @@ class CrossoverV2Conductor:
         # The candidate's own crossover, for the ABSOLUTE claim (R18, #1868).
         # Unguarded by ``measurement_protection``, unlike MEASURE — which needs
         # it only as the ``C_c`` half of a de-embedding that cannot run without
-        # ``P``. Here it IS the design target, and exists whenever the preset
-        # has crossover regions.
+        # ``P``. Here it IS the design target. Safe because that de-embedding
+        # (``_compose_configured_path_ir``, which RAISES on a partial prior
+        # set) is reachable only from ``_analyze_measure``; keep it that way.
         configured_response, configured_polarity = (
             self._configured_crossover_transfers()
         )
