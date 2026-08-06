@@ -436,6 +436,23 @@ confirmation. The profile always reports `authorizes_playback=false`: a later
 adapter must still compose and freshly prove the stricter excitation and live
 graph authorities.
 
+Where those numbers may come from is a separate question from what they are
+allowed to be, and the two are settled independently. Most of them —
+`hard_excitation_band_hz`, `level_duration_limits`, a protective cutoff and
+slope — appear in essentially no consumer datasheet, so an ask that forbade
+estimating deadlocked most real drivers and left nine hand-typed fields as the
+only route through. The research ask therefore ranks its own answers: the
+published value first, then a **conservative engineering estimate** derived from
+the driver's type and size, tagged `confidence: "low"` with its derivation in
+`basis`, and `null` only where there is no engineering basis at all. The ask
+also names, per target, the code-owned bounds the reply must clear, read from
+`driver_protection_profile` rather than restated — so an estimate can land on
+the first try. What did not move is the bound itself: `_target_issues` refuses
+an out-of-bounds value however impeccable its provenance, and refuses it **by
+name** rather than silently clamping it, so the operator sees the bound and
+decides. The confirm callout states how many of the limits arrived as estimates
+rather than published figures. Owner ruling, 2026-08-06 (issue #2186).
+
 ### Step 3A: manual crossover
 
 Manual mode exposes, per crossover region:

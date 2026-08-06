@@ -4094,6 +4094,151 @@ async function testLoadedResearchHidesStalePreparedPreview() {
   return { loadedResearchHidesStalePreparedPreview: true };
 }
 
+// #2186 field case (jts5, Dayton CX120-8): the old prompt called null "a
+// correct answer", so an honest researcher returned the tweeter's required
+// high-pass as kind-only with null cutoff and slope. applyDriverSafetyToSetting
+// wrote the halves it had, protectionFiltersFromSetting then dropped the whole
+// requirement out of the POST, and the operator got a cheerful success toast
+// with the protection silently gone. Before this guard the paste was ACCEPTED
+// ("Imported driver research." + an "import ready" pill), which is what makes
+// this a fail-first test: run the harness against the pre-change main.js and
+// the two assertions below both fail.
+async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
+  const honestNullPacket = {
+    artifact_schema_version: 2,
+    kind: "jts_active_crossover_driver_research",
+    request_fingerprint: "a".repeat(64),
+    drivers: [
+      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
+      {
+        target_id: "main:tweeter",
+        role: "tweeter",
+        model: "Dayton CX120-8",
+        usable_frequency_range_hz: [4500, 20000],
+        sensitivity_db_2v83_1m: 89.2,
+        // The exact shape the retired "null is a correct answer" rule invited.
+        required_protection_filters: [{
+          kind: "highpass",
+          cutoff_hz: null,
+          minimum_slope_db_per_octave: null,
+          family_or_equivalent: "equivalent_or_steeper",
+        }],
+        unknowns: ["required high-pass cutoff and slope are not published"],
+      },
+    ],
+    crossover_candidates: [],
+  };
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+  }));
+  await loadAndSetActiveState(harness);
+  const pasted = JSON.stringify(honestNullPacket, null, 2);
+  harness.dispatchInput({ "data-driver-import": "" }, pasted);
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  if (statusText.includes("Imported driver research.")) {
+    fail("a filter with null cutoff/slope must not import as if it were storable",
+      { statusText });
+  }
+  if (!statusText.includes("without both a cutoff and a minimum slope") ||
+      !statusText.includes("tweeter")) {
+    fail("the refusal must name the driver and the missing numbers", { statusText });
+  }
+  if (!statusText.includes("conservative estimate, not null")) {
+    fail("the refusal must say what the right answer looks like", { statusText });
+  }
+  // An explanation the operator cannot act on is only half a fix: the paste has
+  // to survive so they can re-ask or hand-type the two numbers.
+  const importBox = harness.elements.get("view-body").innerHTML;
+  if (!importBox.includes("Dayton CX120-8")) {
+    fail("a refused paste must stay in the box for the operator to act on", {
+      importBox: importBox.slice(0, 400),
+    });
+  }
+  if (importBox.includes("import ready")) {
+    fail("a refused paste must not render as a ready import", {
+      importBox: importBox.slice(0, 400),
+    });
+  }
+  return { driverResearchNullProtectionNumbersAreRefusedNotDropped: true };
+}
+
+// The other half of the #2186 contract: an ESTIMATED value is storable, and the
+// operator is told how many of the limits they are about to freeze arrived as
+// estimates rather than published figures.
+async function testConfirmCalloutCountsResearchEstimates() {
+  const draft = designDraftWithSafety({
+    status: "unconfirmed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_not_confirmed"],
+  });
+  draft.driver_research = {
+    artifact_schema_version: 2,
+    kind: "jts_active_crossover_driver_research",
+    request_fingerprint: "b".repeat(64),
+    drivers: [
+      {
+        target_id: "main:woofer",
+        role: "woofer",
+        model: "Manual Woofer",
+        field_provenance: {
+          hard_excitation_band_hz: {
+            confidence: "high", basis: "datasheet usable range", sources: [],
+          },
+        },
+      },
+      {
+        target_id: "main:tweeter",
+        role: "tweeter",
+        model: "Dayton CX120-8",
+        field_provenance: {
+          required_protection_filters: {
+            confidence: "low",
+            basis: "estimated: 25 mm soft dome, Fs unpublished",
+            sources: [],
+          },
+          level_duration_limits: {
+            confidence: "low",
+            basis: "estimated: protocol default, no published limit",
+            sources: [],
+          },
+        },
+      },
+    ],
+    crossover_candidates: [],
+  };
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  }));
+  await loadAndSetActiveState(harness);
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  if (calloutAt < 0) fail("expected the confirm callout to render", { html });
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  // Two low-confidence assertions across both drivers, one high-confidence one.
+  if (!callout.includes("2 of these limits came from the research reply as estimates")) {
+    fail("the confirm callout must count the estimated limits", { callout });
+  }
+  if (!callout.includes("Check them before confirming")) {
+    fail("the estimate note must name the action", { callout });
+  }
+
+  // No research packet at all means nothing was estimated — no sentence.
+  const bare = await harnessWithSafetyEvaluation({
+    status: "unconfirmed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_not_confirmed"],
+  });
+  const bareHtml = bare.elements.get("view-body").innerHTML;
+  if (bareHtml.includes("came from the research reply as estimate")) {
+    fail("hand-typed limits must not be reported as research estimates", { bareHtml });
+  }
+  return { confirmCalloutCountsResearchEstimates: true };
+}
+
 async function testDriverResearchPromptCopyUsesHttpFallback() {
   let copiedText = "";
   let asyncClipboardCalled = false;
@@ -6671,6 +6816,8 @@ results.push(await testDriverResearchImportToleratesFencesAndProse());
 results.push(await testDriverResearchImportPreservesOperatorInstalledConfiguration());
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
 results.push(await testLoadedResearchHidesStalePreparedPreview());
+results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
+results.push(await testConfirmCalloutCountsResearchEstimates());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());

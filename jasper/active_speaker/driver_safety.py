@@ -320,8 +320,18 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
             f"{prefix}.minimum_slope_db_per_octave",
         )
         if cutoff is None or slope is None:
+            # "This filter is required but its numbers are unpublished" has no
+            # encoding here, and deliberately still does not get one: under the
+            # estimate contract (see ``build_driver_research_prompt``) the
+            # honest answer to an unpublished protective cutoff is a
+            # conservative estimate an operator can see and correct, not a
+            # marker that leaves the driver unprotected-but-declared. The
+            # message says that out loud because the refusal is what the
+            # operator reads.
             raise DriverSafetyProfileError(
-                f"{prefix} requires cutoff_hz and minimum_slope_db_per_octave"
+                f"{prefix} requires cutoff_hz and minimum_slope_db_per_octave; "
+                "a required filter whose numbers are unpublished takes a "
+                "conservative estimate, not null"
             )
         if slope > 96:
             raise DriverSafetyProfileError(
@@ -1105,6 +1115,45 @@ def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
     return json.dumps(projection, indent=1, sort_keys=True)
 
 
+def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
+    """Return the per-target code-policy bounds ``_target_issues`` enforces.
+
+    Read from ``driver_protection_profile`` — the one owner of that policy —
+    rather than restated as prose constants, so the ask cannot drift from what
+    the gate actually refuses.  Naming the bounds in the ask is what lets an
+    *estimated* answer land instead of deadlocking: the gate still refuses an
+    out-of-bounds value on its own, so telling the researcher the bound can
+    only raise the chance of an acceptable first reply, never widen it.
+
+    They are bounds, not recommended values.  The prompt says so out loud
+    because a floor stated without that caveat reads as a target, and would
+    talk a researcher *down* from a stricter published requirement.
+
+    These lines are prompt text only.  ``request`` itself, and therefore
+    ``request_fingerprint``, is untouched.
+    """
+
+    lines: list[str] = []
+    for target in request.get("targets", []):
+        if not isinstance(target, Mapping):
+            continue
+        policy = driver_protection_profile(
+            str(target.get("role") or ""),
+            driver_style=target.get("driver_style"),
+        )
+        bounds: list[str] = []
+        if policy.min_highpass_hz is not None:
+            bounds.append(
+                "required high-pass cutoff_hz at or above "
+                f"{policy.min_highpass_hz:g}"
+            )
+        bounds.append(
+            f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
+        )
+        lines.append(f"- {target.get('target_id')}: " + "; ".join(bounds) + ".")
+    return lines
+
+
 def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     """Return the copyable v2 research prompt for one exact request.
 
@@ -1120,6 +1169,24 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     The ask is deliberately a strict *subset* of what the parser accepts
     (see ``_V2_RESEARCH_DRIVER_FIELDS``).  Asking for less cannot invalidate a
     previously-saved or more verbose result; acceptance is unchanged.
+
+    **The estimate contract (owner ruling, issue #2186).**  The ask used to
+    forbid estimating and to call null "a correct answer".  Fields like
+    ``hard_excitation_band_hz`` and ``level_duration_limits`` appear in
+    essentially no consumer datasheet, while ``_target_issues`` requires them —
+    so honest research plus a strict gate deadlocked most real drivers, and the
+    only way through was nine hand-typed numbers most people do not have.  The
+    ask now orders the answer: published value first, then a *conservative
+    engineering estimate* tagged ``confidence: "low"`` with its derivation in
+    ``basis``, and null only for the genuinely unknowable.
+
+    What did **not** move is the protection itself.  ``_target_issues`` still
+    refuses an estimate that lands outside code policy — the per-style
+    high-pass floor, the peak ceiling, band nesting — and refuses it by name
+    rather than silently clamping it, so an operator sees the bound and decides.
+    The quiet-start commissioning ramp and its acknowledgements are untouched.
+    Widening the *sourcing* of a proposed number is a different question from
+    widening the *bound* it must clear, and only the first one changed.
     """
 
     # Dropped from the ASK (still accepted, still normalised, still prefilled
@@ -1159,12 +1226,25 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             _driver_research_prompt_targets(request),
             "",
             "ACCURACY",
-            "Report only values you actually found. A field you cannot verify is null plus one entry in that driver's unknowns; null is a correct answer, not a failure.",
-            "Never estimate from a similar model or from typical values for the type. These numbers set hardware-protection limits.",
+            'When a datasheet or a reputable independent measurement gives the number, report that number, with provenance confidence "high" for a datasheet and "medium" for a measurement.',
+            'When the number is not published, give a conservative engineering estimate from the driver\'s type, size, and published facts. Tag it confidence "low", say in basis how you derived it (for example "estimated: 25 mm soft dome, Fs unpublished"), and round it — an estimate should look like one.',
+            "Conservative means the safer side of the guess: a higher high-pass cutoff, a steeper slope, a narrower band, a lower level, a shorter burst.",
+            "Use null only for a field with no engineering basis at all, and add one entry to that driver's unknowns saying which fact is missing.",
             "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
             "For a tweeter or compression driver, do_not_test_below_hz and required_protection_filters are the priority lookups.",
-            "A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
+            "",
+            "ESTIMATING THE PROTECTION FIELDS",
+            "required_protection_filters: cutoff_hz and minimum_slope_db_per_octave are both numbers, never null. Estimate the cutoff from the driver's type and size — a small dome or ribbon needs a higher cutoff than a large compression driver — at 24 dB/octave or steeper. A mid needs both a high-pass and a low-pass.",
+            "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends.",
+            "measurement_band_hz and crossover_search_band_hz are protocol choices, not driver facts. A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
+            "Nest the three bands: the crossover-search band sits inside the measurement band, the measurement band sits inside the hard excitation band, and every filter cutoff sits inside the hard excitation band. A reply that does not nest is refused.",
+            "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
+            "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver, and for a tweeter use the ceiling listed under LIMITS. Never send a value above that ceiling — a ceiling is not a recommendation.",
+            "",
+            "LIMITS",
+            "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
+            *_driver_research_prompt_limits(request),
             "",
             "RESULT SHAPE",
             "```json",
@@ -1179,19 +1259,19 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "model": "echo manufacturer_and_model from TARGETS",',
             '    "nominal_impedance_ohm": 8,',
             '    "sensitivity_db_2v83_1m": 90,',
-            '    "usable_frequency_range_hz": [80, 5000],',
-            '    "recommended_highpass_hz": 80,',
-            '    "do_not_test_below_hz": 1200,',
-            '    "hard_excitation_band_hz": [1200, 20000],',
-            '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":1800,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}],',
-            '    "measurement_band_hz": [1800, 18000],',
-            '    "crossover_search_band_hz": [2200, 4000],',
-            '    "level_duration_limits": {"max_effective_peak_dbfs":null,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":0},',
+            '    "usable_frequency_range_hz": [2000, 20000],',
+            '    "recommended_highpass_hz": 3000,',
+            '    "do_not_test_below_hz": 2500,',
+            '    "hard_excitation_band_hz": [2500, 20000],',
+            '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":3000,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}],',
+            '    "measurement_band_hz": [3000, 18000],',
+            '    "crossover_search_band_hz": [3500, 5000],',
+            '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"hard_excitation_band_hz":{"confidence":"low|medium|high|unknown","basis":"short basis","sources":["https://..."]}},',
+            '    "field_provenance": {"do_not_test_below_hz":{"confidence":"high","basis":"datasheet minimum crossover","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",
