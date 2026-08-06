@@ -209,7 +209,7 @@ def test_wiim_packet_stream_keeps_every_packet_and_batches_80ms_frame():
     assert stream.frames == 1
 
 
-def test_wiim_packet_stream_gap_resets_decoder_and_clears_partial_frame():
+def test_wiim_packet_stream_gap_clears_partial_frame_and_counts_reset():
     stream = WiimVoicePacketStream()
     emitted = []
     for idx in range(7):
@@ -323,6 +323,34 @@ def test_lost_packet_costs_only_that_packet():
     for packet in survivors:
         expected.extend(reference(packet))
     assert _pcm_samples(got) == expected
+
+
+def test_first_packet_after_a_gap_decodes_from_its_own_header():
+    """A gap needs no decoder reset — the next header supplies the state.
+
+    This is the invariant that lets ``WiimVoicePacketStream.reset`` leave the
+    decoder alone: whatever the previous burst left behind is overwritten
+    before anything is decoded from the next packet.
+    """
+    from jasper.accessories.wiim_remote_mic import ImaAdpcmDecoder
+
+    # The packet after the gap must NOT be the natural continuation of the
+    # burst before it — consecutive packets share state by construction, so
+    # they cannot tell "adopted the header" from "carried state across".
+    stream = WiimVoicePacketStream()
+    for idx in range(2):
+        stream.feed_notification(_HW_PACKETS[idx], now=idx * 0.016)
+
+    after_gap = 2 * 0.016 + WIIM_STREAM_GAP_SEC + 0.010
+    assert stream.feed_notification(_HW_PACKETS[4], now=after_gap) == []
+    assert stream.resets == 1
+
+    expected = ImaAdpcmDecoder()
+    expected.resync(
+        int.from_bytes(_HW_PACKETS[4][0:2], "big", signed=True),
+        _HW_PACKETS[4][2],
+    )
+    assert _pcm_samples([bytes(stream._pcm)]) == expected.decode(_HW_PACKETS[4][3:])
 
 
 def test_resync_clamps_a_corrupt_step_index():

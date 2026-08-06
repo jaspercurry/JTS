@@ -191,10 +191,6 @@ class ImaAdpcmDecoder:
         self.predictor = 0
         self.index = 0
 
-    def reset(self) -> None:
-        self.predictor = 0
-        self.index = 0
-
     def resync(self, predictor: int, index: int) -> None:
         """Adopt the encoder's own state, as reported in a packet header.
 
@@ -245,7 +241,10 @@ class WiimVoicePacketStream:
         self.resets = 0
 
     def reset(self) -> None:
-        self._decoder.reset()
+        # Only the partial frame is dropped, so a silence is not spliced onto
+        # the audio either side of it. The decoder needs no reset: the next
+        # packet's header supplies the encoder's state before anything is
+        # decoded from it.
         self._pcm.clear()
         self._last_packet_at = None
         self.resets += 1
