@@ -371,8 +371,8 @@ rather than exposing raw filesystem paths.
 As of 2026-08-04, `/sound/setup/` is the **Speaker setup** entry
 point for active crossover commissioning. Opening it shows one primary
 **Active crossover setup** walkthrough, not a separate environment card. The
-walkthrough keeps one task card open at a time: choose speaker layout, add
-driver and crossover values, confirm outputs and each driver, test the combined
+walkthrough keeps one task card open at a time: choose speaker layout, add your
+components, confirm outputs and each driver, test the combined
 crossover, then save/apply the active profile. Layout and
 crossover-settings steps do not play sound, load CamillaDSP, or touch live
 audio; detected hardware is supporting context and the hardware refresh control
@@ -441,6 +441,18 @@ not apply instead of offering a combined test with no target. The shape
 predicate is `output_topology.topology_is_subless_passive_mains`; its sibling —
 passive mains PLUS a sub — still compiles a (degenerate 1-way) active profile
 and keeps the full ladder.
+**Exactly one step is ever `active`** — the first unfinished step this speaker
+can still reach. Each step tells `build_commissioning_view` only whether it is
+finished and whether this shape will ever run it;
+`_derive_step_statuses` decides which one holds the baton, and every step
+message is chosen from that derived status so a `todo` step can never carry
+done-state copy. Steps after the live one are `todo`, and the combined-driver
+test's own action is disabled until both the values and the outputs are done —
+`jasper-web`'s staging refusal stays as the backstop behind it. Before
+2026-08-06 each step decided "am I active?" alone, so a redrawn active 2-way
+that still carried confirmed outputs lit up the values step AND the combined
+test three rungs below it; the household pressed the test and the graph
+fail-closed on a stale staged config with no way forward.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
 exists. The UI keeps one card open at a time, prevents opening future

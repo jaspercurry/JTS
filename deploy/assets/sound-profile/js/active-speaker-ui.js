@@ -88,8 +88,11 @@ export function sensitivityTrimsFromGap(sensitivities) {
   return trims;
 }
 
-export function activeSpeakerStepState(step, ctx) {
-  ctx = ctx || {};
+const ACTIVE_SPEAKER_STEP_IDS = ['layout', 'research', 'map', 'safety', 'profile'];
+
+// Each rung's own verdict, from the facts it owns. Whether it holds the baton
+// is NOT its call — see activeSpeakerStepState below.
+function stepStateInIsolation(step, ctx) {
   var hasLayout = !!ctx.hasLayout;
   var dirty = !!ctx.dirty;
   var hardwareMatchesSaved = ctx.hardwareMatchesSaved !== false;
@@ -114,6 +117,34 @@ export function activeSpeakerStepState(step, ctx) {
   return 'todo';
 }
 
+// One rung at a time. This is the client-side mirror of the backend ladder
+// (jasper/active_speaker/commissioning_coordinator._derive_step_statuses) and
+// main.js falls back to it whenever a draft is mid-edit, so it carried the same
+// bug: each rung answered "am I active?" from its own predicate, and a speaker
+// whose outputs were already confirmed lit up BOTH the values rung and the
+// combined-driver test three rungs below it. Only the first live rung keeps the
+// baton; a finished rung still reports 'done'.
+function activeSpeakerLadder(ctx) {
+  var states = {};
+  var batonTaken = false;
+  ACTIVE_SPEAKER_STEP_IDS.forEach(function(step) {
+    var state = stepStateInIsolation(step, ctx);
+    if (state === 'active') {
+      if (batonTaken) state = 'todo';
+      else batonTaken = true;
+    }
+    states[step] = state;
+  });
+  return states;
+}
+
+export function activeSpeakerStepState(step, ctx) {
+  ctx = ctx || {};
+  var states = activeSpeakerLadder(ctx);
+  return Object.prototype.hasOwnProperty.call(states, step) ?
+    states[step] : 'todo';
+}
+
 export function defaultActiveSpeakerStep(ctx) {
   ctx = ctx || {};
   var driverChecksComplete = !!(
@@ -129,10 +160,15 @@ export function defaultActiveSpeakerStep(ctx) {
   return 'profile';
 }
 
+// Name a card the way /sound/ titles it on screen. These MUST match the
+// renderOutputStepCard titles in main.js — "Finish the current card before
+// opening X" is useless if X is not a heading the household can find. Pinned
+// (together with the backend's remedy copy) by
+// tests/test_active_speaker_commissioning_coordinator.py.
 export function outputStepTitle(step) {
   return {
     layout: 'Choose speaker layout',
-    research: 'Add driver and crossover values',
+    research: 'Add your components',
     map: 'Confirm outputs',
     safety: 'Test combined drivers',
     profile: 'Validate and apply'

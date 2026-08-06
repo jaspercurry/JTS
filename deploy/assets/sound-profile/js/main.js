@@ -39,7 +39,8 @@ import {
   outputStepTitle,
   sensitivityTrimsFromGap,
   subwooferCrossoverFcHz,
-  summedGroupFailureHint
+  summedGroupFailureHint,
+  SUMMED_TEST_GENERIC_RETRY_HINT
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
@@ -3839,6 +3840,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var action = actions[actionId] || null;
     return action && typeof action === 'object' ? action : null;
   }
+  // The banner for a combined test that answered 200 and emitted nothing. The
+  // backend has already resolved WHY for this group (the caller refreshes the
+  // commissioning view first), so carry the remedy here instead of telling the
+  // household to "review the message in this card": the ladder can legitimately
+  // keep that card closed, and then the message pointed nowhere at all.
+  function summedTestFailureBanner(groupId) {
+    return summedGroupFailureHint(commissioningGroupView(groupId)) ||
+      SUMMED_TEST_GENERIC_RETRY_HINT;
+  }
   function combinedTestLevelConfig() {
     var viewLevel = activeSpeaker.commissioningView &&
       activeSpeaker.commissioningView.test_level || {};
@@ -3923,6 +3933,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<p class="setting-row__hint">Speaker setup is complete once every output is confirmed.</p>' +
     '</div>';
   }
+  // Is the combined test actually on offer? The BACKEND owns the whole
+  // prerequisite chain — the values must be saved AND previewed AND the outputs
+  // confirmed, because the test plays through the staged crossover graph — and
+  // publishes the verdict as each group's start action. Re-deriving readiness
+  // here from the driver proof alone let the card head invite "play the
+  // combined speaker" over a button the backend had disabled. Only fall back to
+  // the local guess when the backend view has not loaded.
+  function combinedTestOnOffer(groups) {
+    var backendAnswered = false;
+    var offered = false;
+    (groups || []).forEach(function(group) {
+      var action = commissioningGroupAction(
+        commissioningGroupView(group.id), 'start_combined_test');
+      if (!action) return;
+      backendAnswered = true;
+      if (action.enabled === true) offered = true;
+    });
+    return backendAnswered ? offered : driverTargetProofComplete();
+  }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
     // Reached today, not hypothetically: a passive-mains-WITH-sub layout keeps
@@ -3940,7 +3969,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div><span class="status-pill">unavailable</span></div>' +
       '</div>';
     }
-    var canRecord = driverTargetProofComplete();
+    var canRecord = combinedTestOnOffer(groups);
     var revalidation = baselineProfileRevalidation();
     var revalidating = revalidation.required === true;
     var revalidationNeedsCombined = revalidating &&
@@ -4050,9 +4079,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           (revalidationNeedsCombined ?
             'Play the combined speaker again, then save the check if it still sounds right.' :
             'Choose a careful level, play the combined speaker, then save the check if it sounds right.') :
-          'Confirm outputs first, then validate the combined crossover.') + '</p></div>' +
+          // Which earlier rung is missing varies (unsaved values, unconfirmed
+          // outputs), and each group row below names it from the backend. Do
+          // not blame the outputs here — that copy sent a household whose
+          // outputs WERE confirmed back to a card with nothing left to do.
+          'Finish the steps above, then validate the combined crossover.') + '</p></div>' +
         '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after outputs'))) + '</span></div>' +
+          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after setup'))) + '</span></div>' +
       '<div class="active-speaker-validation">' + rows + '</div>' +
     '</div>';
   }
@@ -6576,7 +6609,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         status(playback.status === 'stopped' ?
           'Combined speaker test stopped.' : (emitted ?
           'Combined speaker test played. Record what you heard.' :
-          'Combined speaker test did not play. Review the message in this card.'),
+          summedTestFailureBanner(groupId)),
           playback.status !== 'stopped' && !emitted);
       }
       if (summedTestRequest.current &&

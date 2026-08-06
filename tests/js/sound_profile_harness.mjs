@@ -1504,6 +1504,194 @@ async function testPassiveMainWithSubRendersAnExplainedCombinedStep() {
   return { passiveMainWithSubRendersAnExplainedCombinedStep: true };
 }
 
+// The commissioning view an active 2-way reports while its saved crossover
+// preview is stale for the freshly-drawn layout: outputs and drivers already
+// confirmed, values not. The backend gates the combined test; the page must not
+// advertise it as available over a button the backend disabled.
+function staleValuesCommissioningView(groupOverrides = {}) {
+  return commissioningViewPayload({
+    status: "needs_driver_values",
+    current_step: "research",
+    stepStatuses: {
+      layout: "done", research: "active", map: "todo",
+      safety: "todo", profile: "todo",
+    },
+    driver_values: {
+      status: "needs_preview",
+      complete: false,
+      design_ready: true,
+      preview_ready: false,
+      missing_driver_info_roles: [],
+      missing_crossover_candidate_pairs: [],
+      message: "Preview the crossover before confirming outputs.",
+    },
+    driver_target_proof: {
+      complete: true, source: "measurements", captured: 2, required: 2,
+    },
+    combined_groups: [{
+      group_id: "main",
+      label: "Main speaker",
+      status: "blocked",
+      status_label: "after setup",
+      message: "Add the driver and crossover values first, then test the " +
+        "combined speaker.",
+      failure_message: "",
+      has_audible_test: false,
+      validated: false,
+      test_level: levelPayload(-72).test_signal,
+      actions: {
+        start_combined_test: {
+          id: "start_combined_test",
+          label: "Play combined test",
+          enabled: false,
+          endpoint: "./active-speaker/summed-test",
+          body: {speaker_group_id: "main", audio: true, stimulus: "speech"},
+        },
+        record_combined_result: {
+          id: "record_combined_result",
+          label: "Record combined check",
+          enabled: false,
+          endpoint: "./active-speaker/summed-validation",
+          body: {speaker_group_id: "main"},
+        },
+      },
+      ...groupOverrides,
+    }],
+  });
+}
+
+// The combined-test card must agree with its own button. The backend owns the
+// whole prerequisite chain (values saved AND outputs confirmed); the card head
+// used to re-derive readiness from driver-proof alone, so it invited "play the
+// combined speaker" in the ready voice while rendering a disabled button —
+// the mixed signal that preceded the jts5 stuck state.
+async function testCombinedTestCardAgreesWithItsDisabledButton() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(
+      activeTwoWayTopologyPayload()
+    )),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      staleValuesCommissioningView()
+    )),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const body = outputStepBodyHtml(html, "safety");
+  if (body === null) fail("The combined-test step must render", { html });
+  if (!/data-act="prepare-summed-test"[^>]*disabled/.test(body) &&
+      !/disabled[^>]*data-act="prepare-summed-test"/.test(body)) {
+    fail("A gated combined test must render a disabled Play button", { body });
+  }
+  for (const invitation of [
+    "Choose a careful level, play the combined speaker",
+    "Confirm outputs first, then validate the combined crossover",
+  ]) {
+    if (body.includes(invitation)) {
+      fail("A gated combined-test card must not advertise the test as ready",
+        { invitation, body });
+    }
+  }
+  if (!body.includes("Add the driver and crossover values first")) {
+    fail("The card must carry the backend's reason for the gate", { body });
+  }
+  return { combinedTestCardAgreesWithItsDisabledButton: true };
+}
+
+// A combined test that returns 200 with blockers (the graph refused to stage)
+// must tell the household what to do next. The old banner said "Review the
+// message in this card" — and the card it pointed at is a step card the ladder
+// can legitimately keep closed, so the household had nowhere to look.
+async function testFailedCombinedTestBannerCarriesTheRemedy() {
+  const remedy = "The crossover preview is out of date for this layout. Go " +
+    "back to Add your components, run the preview, then retry the combined " +
+    "test.";
+  let posted = false;
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(
+      activeTwoWayTopologyPayload()
+    )),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      posted
+        ? staleValuesCommissioningView({
+            status: "test_failed",
+            status_label: "not tested",
+            message: remedy,
+            failure_message: remedy,
+          })
+        : commissioningViewPayload({
+            status: "needs_combined_check",
+            current_step: "safety",
+            stepStatuses: {
+              layout: "done", research: "done", map: "done",
+              safety: "active", profile: "todo",
+            },
+            driver_target_proof: {
+              complete: true, source: "measurements", captured: 2, required: 2,
+            },
+            combined_groups: [{
+              group_id: "main",
+              label: "Main speaker",
+              status: "ready_to_test",
+              status_label: "next",
+              message: "Run the combined speaker test.",
+              failure_message: "",
+              test_level: levelPayload(-72).test_signal,
+              actions: {
+                start_combined_test: {
+                  id: "start_combined_test",
+                  label: "Play combined test",
+                  enabled: true,
+                  endpoint: "./active-speaker/summed-test",
+                  body: {
+                    speaker_group_id: "main", audio: true, stimulus: "speech",
+                    duration_ms: 12000,
+                  },
+                },
+              },
+            }],
+          })
+    )),
+    "./active-speaker/summed-test": () => {
+      posted = true;
+      return Promise.resolve(response({
+        playback: {
+          status: "failed",
+          playback_id: "sum-fail-1",
+          audio_emitted: false,
+          confirmable: false,
+          issues: [{
+            severity: "blocker",
+            code: "commission_startup_anchor_not_staged",
+            message: "could not stage the silent active-speaker setup before " +
+              "driver testing",
+          }],
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "prepare-summed-test",
+    "data-group-id": "main",
+    "data-label": "Main speaker",
+  });
+  for (let i = 0; i < 8; i += 1) await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  if (statusText.includes("Review the message in this card")) {
+    fail("A failed combined test must not point at a card for the reason",
+      { statusText });
+  }
+  if (!statusText.includes("Add your components")) {
+    fail("The failure banner must carry the backend remedy", { statusText });
+  }
+  return { failedCombinedTestBannerCarriesTheRemedy: true };
+}
+
 async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
   const researchPosts = [];
   const fetchHandler = baseFetch({
@@ -6703,5 +6891,7 @@ results.push(await testUnconfirmedSafetyProfileHoistsTheConfirmControl());
 results.push(await testConfirmedSafetyProfileRendersNoCallout());
 results.push(await testIncompleteSafetyProfileExplainsWithoutADeadButton());
 results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
+results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
+results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));
