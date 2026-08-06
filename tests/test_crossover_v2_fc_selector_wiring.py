@@ -47,9 +47,11 @@ PROTECTION = {"woofer": (), "tweeter": ()}
 
 
 def _selector_conductor(fakes: FakeSeams, bands=WIDENED_BANDS, **kwargs):
+    kwargs.setdefault(
+        "measurement_protection_sections_by_role", dict(PROTECTION)
+    )
     return _lateral_conductor(
         fakes,
-        measurement_protection_sections_by_role=dict(PROTECTION),
         crossover_search_band_hz_by_role=dict(bands),
         radiating_diameter_mm_by_role={"woofer": 114.0},
         **kwargs,
@@ -260,6 +262,33 @@ def test_the_branch_operator_carries_polarity_trim_and_the_candidates_corner():
     assert not np.allclose(
         _operators(c, fc_hz=1650.0)["tweeter"], base["tweeter"]
     )
+
+
+def test_the_operator_divides_out_the_protection_filter_the_graph_emitted():
+    """§4.2's ``C_c / P``: a pose's ``M`` is ``plant * P``, so the emitted
+    protection filter has to be DIVIDED out before the candidate's own
+    crossover is applied — otherwise the model carries P twice.
+
+    Needs a protection section that is not the identity to be visible at all:
+    with the empty tuple most fixtures use, ``P == 1`` and dropping the divide
+    changes nothing (verified by mutation).
+    """
+    protection = {
+        "woofer": (),
+        "tweeter": (CrossoverSection(fc_hz=900.0, order=2, highpass=True),),
+    }
+    grid = flow.lateral_evidence_grid_hz()
+    guarded = _operators(_selector_conductor(
+        FakeSeams(), measurement_protection_sections_by_role=protection,
+    ))
+    bare = _operators(_selector_conductor(FakeSeams()))
+    p_response = flow.crossover_response_complex(grid, protection["tweeter"])
+
+    assert not np.allclose(guarded["tweeter"], bare["tweeter"]), (
+        "the emitted protection filter is not reaching the operator at all"
+    )
+    assert np.allclose(guarded["tweeter"] * p_response, bare["tweeter"])
+    assert np.allclose(guarded["woofer"], bare["woofer"]), "P is per-role"
 
 
 def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
