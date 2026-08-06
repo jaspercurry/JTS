@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import sys
@@ -901,3 +902,65 @@ async def test_cancelled_connect_queued_on_global_lock_never_runs_mutation(
     assert second_mutations == 0
     assert connection_count == 1
     assert websocket.default_timeout == 17.0
+
+
+def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
+    """The canonicalizer must stay lock-free, or the live-graph boundary hangs.
+
+    ``runtime_contract.classify_active_bass_extension_graph`` calls
+    ``normalize_config_raw`` from INSIDE the DSP writer lock — via
+    ``commissioning_runtime._run_locked`` and
+    ``commissioning_verification._capture_current_graph``. Its neighbours
+    ``set_active_config_raw`` and ``patch_config`` both take
+    ``camilla_graph_mutation``, so making this one "consistent" with them is a
+    plausible three-line edit that would hang a speaker mid-commissioning
+    instead of failing cleanly. The method's docstring states that invariant;
+    this is what makes the statement true.
+
+    Checks the body AND the decorators, and separately forbids a module-scope
+    import of the lock. ``camilla_graph_mutation`` is an
+    ``asynccontextmanager``, so its result inherits ``AsyncContextDecorator`` —
+    ``@camilla_graph_mutation(...)`` is valid Python that takes the lock
+    without the body ever mentioning it. Every sibling in this module imports
+    it locally, so a module-scope import is itself the smell.
+    """
+
+    source = (
+        Path(__file__).resolve().parent.parent / "jasper" / "camilla.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            assert not any(
+                alias.name == "camilla_graph_mutation" for alias in node.names
+            ), (
+                "jasper/camilla.py must not import camilla_graph_mutation at "
+                "module scope — an alias would hide it from the body check "
+                "below, and every method that legitimately takes the lock "
+                "imports it locally"
+            )
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "normalize_config_raw"
+        ):
+            # Docstring excluded: it names the lock in order to forbid it.
+            considered = list(node.decorator_list) + [
+                stmt
+                for stmt in node.body
+                if not (
+                    isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)
+                )
+            ]
+            code = "\n".join(ast.unparse(part) for part in considered)
+            assert "camilla_graph_mutation" not in code, (
+                "normalize_config_raw must not take the graph-mutation lock — "
+                "the live-graph boundary calls it from inside that lock"
+            )
+            break
+    else:  # pragma: no cover - the method exists
+        raise AssertionError("normalize_config_raw not found in jasper/camilla.py")

@@ -755,7 +755,7 @@ class CamillaController:
         ``commissioning_verification._capture_current_graph``. Taking the lock
         here deadlocks those paths: a live speaker hanging mid-commissioning
         rather than failing cleanly. Pinned by
-        ``tests/test_camilla_readback_double.py``.
+        ``tests/test_camilla_controller.py``.
         """
         import yaml
 
