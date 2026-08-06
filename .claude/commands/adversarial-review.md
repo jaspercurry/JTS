@@ -61,13 +61,19 @@ smallest durable shape that fits the existing system wins.
 
 ## Method — evidence before judgment
 
-- **Before your first file read, run two checks together:**
-  `git rev-parse --show-toplevel` equals `$PWD` (never a remembered path), and
-  `git diff HEAD` / `git diff --cached HEAD` are both empty (or exactly the
-  diff you're there to review) — `git status --porcelain` alone reads clean
-  over a staged mutation. Re-run the diff pair before any test run and again
-  after every mutation revert. Repeated wrong-checkout and worktree-
-  contamination incidents trace to skipping this.
+- **Before your first file read, confirm identity and integrity together.**
+  `git rev-parse --show-toplevel` must equal both `$PWD` and the worktree path
+  you were assigned (the env- or prompt-declared cwd, never a remembered one)
+  — toplevel equals `$PWD` at the root of every valid worktree, so that check
+  alone can't catch a valid-but-wrong one. Then run `git status --porcelain`,
+  `git diff HEAD`, and `git diff --cached HEAD` together: all three empty, or
+  exactly the diff you're there to review. Porcelain catches an untracked
+  foreign file — the classic sibling-contamination artifact — that the diff
+  pair can't see; `git diff --cached HEAD` catches an index-only mutation
+  whose worktree copy was restored, which `git diff HEAD` alone misses.
+  Re-run the tree checks before any test run and again after every mutation
+  revert. Repeated wrong-checkout and worktree-contamination incidents trace
+  to skipping one of these.
 - Inspect the **actual diff and repo context**. Review every changed file; for
   high-risk changes also inspect relevant callers, tests, systemd/deploy
   surfaces, canonical HANDOFF docs, and existing local patterns.
