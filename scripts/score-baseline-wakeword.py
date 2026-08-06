@@ -39,6 +39,8 @@ from pathlib import Path
 
 import numpy as np
 
+from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_DIR = REPO_ROOT / "reference-conditions"
 
@@ -165,7 +167,9 @@ def main() -> int:
     else:
         out_path = Path(args.out)
 
-    # Lazy import so the script can be syntax-checked without openwakeword
+    # Lazy import so the script can be syntax-checked without openwakeword.
+    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    ensure_openwakeword_import_safe()
     from openwakeword.model import Model
 
     print(f"loading model: {model_path}  (score key: '{score_key}')")

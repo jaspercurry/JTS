@@ -8,7 +8,8 @@ Each test runs in its own Python subprocess so module-cache state
 doesn't leak between cases (sys.modules is process-global). On a
 Pi 5, the savings these guards protect are:
 
-- openwakeword stub → sklearn doesn't load (~67 MB resident)
+- openWakeWord guard → sklearn doesn't load (~78 MiB resident; measured
+  2026-08-06 on jts3.local and jts.local, see jasper/openwakeword_guard.py)
 - gemini_session lazy → google.genai doesn't load unless provider=gemini (~49 MB)
 - openai_session lazy → openai SDK doesn't load unless provider=openai (~11 MB)
 
@@ -19,13 +20,38 @@ but the import-graph IS the cost on Python.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 _DECLARED_LEAF_DEPENDENCIES = {"httpx", "rapidfuzz", "sounddevice"}
+
+_GUARD_FUNCTION = "ensure_openwakeword_import_safe"
+
+# Where openWakeWord import sites must be guarded.
+#
+# `tests/` is excluded because test modules install *fake* openwakeword
+# packages in sys.modules and embed `import openwakeword` inside probe
+# source strings — neither is a real import of the real package.
+#
+# `experiments/` is excluded because experiments/aec3-v2-deep-tune-spike
+# documents its prereqs as a standalone laptop venv holding "pybind11,
+# numpy, openwakeword, onnxruntime" (see that directory's README) — it is
+# frozen bench archaeology that does not have `jasper` importable, so
+# adding the guard call there would be a new hard dependency for no
+# runtime benefit. Nothing in it runs on a speaker.
+_OPENWAKEWORD_SCAN_ROOTS = ("jasper", "scripts")
+
+_OPENWAKEWORD_SKIP_REASON = (
+    "openwakeword and scikit-learn are not installed in this environment; "
+    "the static guard in test_every_openwakeword_import_site_is_guarded "
+    "still runs. CI installs both (uv --group openwakeword-onnx)."
+)
 
 
 def _run_probe(probe: str) -> dict[str, bool]:
@@ -41,21 +67,283 @@ def _run_probe(probe: str) -> dict[str, bool]:
     return result
 
 
-def test_wake_does_not_load_sklearn() -> None:
-    """The openwakeword stub in jasper.wake should keep sklearn out
-    of sys.modules. sklearn is ~67 MB resident; we never train custom
-    verifier models, so it's pure dead weight."""
+def _module_installed(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+_needs_openwakeword = pytest.mark.skipif(
+    not (_module_installed("openwakeword") and _module_installed("sklearn")),
+    reason=_OPENWAKEWORD_SKIP_REASON,
+)
+
+_SKLEARN_PROBE_TAIL = (
+    "loaded = any(m == 'sklearn' or m.startswith('sklearn.') for m in sys.modules)\n"
+    "print(f'sklearn_loaded={str(loaded).lower()}')\n"
+)
+
+
+def _imports_openwakeword(node: ast.AST) -> bool:
+    """True when `node` imports the real openwakeword package."""
+    if isinstance(node, ast.Import):
+        return any(
+            alias.name == "openwakeword" or alias.name.startswith("openwakeword.")
+            for alias in node.names
+        )
+    if isinstance(node, ast.ImportFrom):
+        if node.level:  # a relative import can never reach openwakeword
+            return False
+        module = node.module or ""
+        return module == "openwakeword" or module.startswith("openwakeword.")
+    return False
+
+
+def _guard_call_lines(body: list[ast.stmt]) -> list[int]:
+    """Lines of bare `ensure_openwakeword_import_safe()` statements in `body`.
+
+    Only *direct* statements of the body count. A call nested inside an
+    `if`/`try`/`for` is not accepted: it is not unconditionally reached, so
+    it does not prove the guard ran.
+    """
+    lines: list[int] = []
+    for stmt in body:
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            continue
+        func = stmt.value.func
+        if isinstance(func, ast.Name):
+            name: str | None = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            name = None
+        if name == _GUARD_FUNCTION:
+            lines.append(stmt.lineno)
+    return lines
+
+
+def _collect_openwakeword_sites(
+    body: list[ast.stmt], out: list[tuple[int, bool]],
+) -> None:
+    """Attribute every openwakeword import in `body` to this guard scope.
+
+    A guard scope is a module body or a function body. Nested functions
+    start their own scope; a guard call in an enclosing scope does not
+    count for them. That is deliberately stricter than runtime necessity
+    (a module-level call really would run first) so the codebase keeps one
+    uniform, greppable convention: the guard call sits immediately before
+    the import it protects, in the same function.
+
+    Like the dependency-stub ratchet below, this is a syntactic check, not
+    execution analysis.
+    """
+    guard_lines = _guard_call_lines(body)
+    first_guard = min(guard_lines) if guard_lines else None
+
+    def walk(nodes: object) -> None:
+        for node in nodes:  # type: ignore[union-attr]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _collect_openwakeword_sites(node.body, out)
+                continue
+            if isinstance(node, ast.Lambda):
+                continue
+            if _imports_openwakeword(node):
+                guarded = first_guard is not None and first_guard < node.lineno
+                out.append((node.lineno, guarded))
+            walk(ast.iter_child_nodes(node))
+
+    walk(body)
+
+
+def _openwakeword_import_sites(root: Path) -> list[tuple[str, int, bool]]:
+    """Every openwakeword import under the scanned roots, with guard status."""
+    sites: list[tuple[str, int, bool]] = []
+    for scan_root in _OPENWAKEWORD_SCAN_ROOTS:
+        for path in sorted((root / scan_root).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            found: list[tuple[int, bool]] = []
+            _collect_openwakeword_sites(tree.body, found)
+            sites.extend(
+                (str(path.relative_to(root)), line, guarded)
+                for line, guarded in found
+            )
+    return sorted(sites)
+
+
+def test_openwakeword_scanner_flags_unguarded_sites(tmp_path: Path) -> None:
+    """The scanner must actually distinguish guarded from unguarded."""
+    pkg = tmp_path / "jasper"
+    pkg.mkdir()
+    (pkg / "guarded.py").write_text(
+        "from .openwakeword_guard import ensure_openwakeword_import_safe\n"
+        "\n"
+        "def build():\n"
+        "    ensure_openwakeword_import_safe()\n"
+        "    try:\n"
+        "        from openwakeword.model import Model\n"
+        "    except ImportError:\n"
+        "        return None\n"
+        "    return Model\n",
+        encoding="utf-8",
+    )
+    (pkg / "unguarded.py").write_text(
+        "def build():\n"
+        "    import openwakeword\n"
+        "    return openwakeword\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts").mkdir()
+
+    assert _openwakeword_import_sites(tmp_path) == [
+        ("jasper/guarded.py", 6, True),
+        ("jasper/unguarded.py", 2, False),
+    ]
+
+
+def test_openwakeword_scanner_rejects_wrong_scope_and_conditional_guards(
+    tmp_path: Path,
+) -> None:
+    """A guard that isn't unconditionally before the import doesn't count."""
+    pkg = tmp_path / "jasper"
+    pkg.mkdir()
+    (pkg / "cases.py").write_text(
+        "from .openwakeword_guard import ensure_openwakeword_import_safe\n"
+        "\n"
+        "ensure_openwakeword_import_safe()\n"
+        "\n"
+        "def outer_scope_only():\n"
+        "    import openwakeword\n"          # module-level guard, other scope
+        "    return openwakeword\n"
+        "\n"
+        "def conditional(flag):\n"
+        "    if flag:\n"
+        "        ensure_openwakeword_import_safe()\n"
+        "    import openwakeword\n"          # guard not unconditionally reached
+        "    return openwakeword\n"
+        "\n"
+        "def too_late():\n"
+        "    import openwakeword\n"          # guard runs after the import
+        "    ensure_openwakeword_import_safe()\n"
+        "    return openwakeword\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts").mkdir()
+
+    assert _openwakeword_import_sites(tmp_path) == [
+        ("jasper/cases.py", 6, False),
+        ("jasper/cases.py", 12, False),
+        ("jasper/cases.py", 16, False),
+    ]
+
+
+def test_every_openwakeword_import_site_is_guarded() -> None:
+    """No openWakeWord import may run without the sklearn guard first.
+
+    openWakeWord's __init__ imports custom_verifier_model, which imports
+    scikit-learn: measured +80,080 to +80,592 KiB RSS on two Pi 5 speakers
+    (2026-08-06). jasper-voice, jasper-doctor, and the offline training
+    tools are separate processes, so each openWakeWord entry point has to
+    install the guard itself — relying on "some other module imported
+    jasper.wake first" is how jasper-doctor and a standalone jasper.vad
+    import silently paid the full cost.
+
+    Fix a failure by calling `ensure_openwakeword_import_safe()` (from
+    jasper/openwakeword_guard.py) as the statement before the import.
+    """
+    sites = _openwakeword_import_sites(ROOT)
+
+    assert sites, (
+        "found no openwakeword imports at all under "
+        f"{_OPENWAKEWORD_SCAN_ROOTS} — the scanner stopped working, so this "
+        "guard would pass vacuously"
+    )
+
+    unguarded = [f"{path}:{line}" for path, line, guarded in sites if not guarded]
+    assert not unguarded, (
+        "openwakeword is imported without jasper.openwakeword_guard."
+        f"{_GUARD_FUNCTION}() running first at: {', '.join(unguarded)}. "
+        "That pulls scikit-learn into the process (~78 MiB resident on a "
+        "Pi 5). Call the guard as the statement immediately before the "
+        "import."
+    )
+
+
+def test_importing_wake_has_no_openwakeword_side_effect() -> None:
+    """jasper.wake must not touch sys.modules just by being imported.
+
+    The guard used to be a module-top `sys.modules` write in jasper/wake.py,
+    which meant jasper.vad was protected only because jasper-voice happened
+    to import jasper.wake first. The guard is now an explicit call at each
+    import site, so importing jasper.wake should install nothing.
+    """
     probe = (
         "import sys\n"
         "import jasper.wake  # noqa: F401\n"
-        "loaded = any(m == 'sklearn' or m.startswith('sklearn.') for m in sys.modules)\n"
-        "print(f'sklearn_loaded={str(loaded).lower()}')\n"
+        "touched = any(m.split('.')[0] == 'openwakeword' for m in sys.modules)\n"
+        "print(f'openwakeword_touched={str(touched).lower()}')\n"
+    )
+    result = _run_probe(probe)
+    assert result.get("openwakeword_touched") is False, (
+        "importing jasper.wake wrote an openwakeword entry into sys.modules. "
+        "The guard belongs at each import site, not at a module top — a "
+        "module-top side effect reads as dead code and silently protects "
+        "unrelated modules by import order."
+    )
+
+
+@_needs_openwakeword
+def test_vad_alone_does_not_load_sklearn() -> None:
+    """A process that imports ONLY jasper.vad must still dodge sklearn.
+
+    Before the shared guard, this probe loaded 169 sklearn modules
+    (+144,928 KiB RSS on jts3.local, 2026-08-06): jasper/vad.py imported
+    openwakeword with no guard of its own and free-rode on jasper-voice
+    importing jasper.wake first. scripts/probe-wake-gate.py constructs
+    SpeechVAD without that import order.
+    """
+    probe = (
+        "import sys\n"
+        "import jasper.vad\n"
+        "try:\n"
+        "    jasper.vad.SpeechVAD()\n"
+        "except BaseException:\n"
+        "    pass  # missing Silero assets are fine; the import already ran\n"
+        "assert 'openwakeword' in sys.modules, 'probe never reached openwakeword'\n"
+        + _SKLEARN_PROBE_TAIL
     )
     result = _run_probe(probe)
     assert result.get("sklearn_loaded") is False, (
-        "sklearn was loaded into sys.modules after importing jasper.wake. "
-        "The custom_verifier_model stub at the top of jasper/wake.py was "
-        "either removed or stopped working. ~67 MB regression."
+        "constructing jasper.vad.SpeechVAD pulled scikit-learn into the "
+        "process. jasper/vad.py must call ensure_openwakeword_import_safe() "
+        "before its openwakeword import."
+    )
+
+
+@_needs_openwakeword
+def test_doctor_wake_check_does_not_load_sklearn() -> None:
+    """jasper-doctor is its own process and never imports jasper.wake.
+
+    Measured before the shared guard: running check_openwakeword_model
+    loaded 169 sklearn modules (+138,352 KiB RSS on jts3.local,
+    2026-08-06). The doctor runs on every install.
+    """
+    probe = (
+        "import sys\n"
+        "from types import SimpleNamespace\n"
+        "from jasper.cli.doctor import check_openwakeword_model\n"
+        "try:\n"
+        "    check_openwakeword_model(SimpleNamespace(wake_model='hey_jarvis'))\n"
+        "except BaseException:\n"
+        "    pass  # unstaged assets are fine; the import already ran\n"
+        "assert 'openwakeword' in sys.modules, 'probe never reached openwakeword'\n"
+        + _SKLEARN_PROBE_TAIL
+    )
+    result = _run_probe(probe)
+    assert result.get("sklearn_loaded") is False, (
+        "jasper-doctor's openWakeWord check pulled scikit-learn into the "
+        "process. jasper/cli/doctor/wake.py must call "
+        "ensure_openwakeword_import_safe() before its openwakeword import."
     )
 
 

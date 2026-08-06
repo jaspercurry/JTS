@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .openwakeword_guard import ensure_openwakeword_import_safe
 from .wake_models import required_openwakeword_assets
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,11 @@ class SpeechVAD:
         # Lazy import — keeps daemon startup fast and avoids loading
         # openwakeword's resources at module-import time in tests.
         filename = _silero_asset_filename()
+        # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+        # This module is imported by jasper-voice *after* jasper.wake, but it is
+        # also constructible on its own (scripts/probe-wake-gate.py) — the guard
+        # belongs here, not in whatever happened to be imported first.
+        ensure_openwakeword_import_safe()
         try:
             import openwakeword
             from openwakeword import VAD

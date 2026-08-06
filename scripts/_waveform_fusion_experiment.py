@@ -48,9 +48,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from jasper.wake_training.feature_bank import (
-    install_openwakeword_custom_verifier_stub,
-)
+from jasper.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
     from scripts._wake_audio_metrics import rms_amplitude as _rms
@@ -59,8 +57,6 @@ except ModuleNotFoundError as exc:
         raise
     from _wake_audio_metrics import rms_amplitude as _rms
 
-
-install_openwakeword_custom_verifier_stub()
 
 SAMPLE_RATE_HZ = 16000
 SAMPLE_WIDTH_BYTES = 2
@@ -291,6 +287,8 @@ def _score_key_for_model(model_path: str) -> str:
 
 
 def _make_wake_model(model_path: str):
+    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    ensure_openwakeword_import_safe()
     from openwakeword.model import Model
 
     return Model(wakeword_models=[model_path], inference_framework="onnx")

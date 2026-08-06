@@ -18,12 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import sys
-import types
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+from ..openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
     import numpy as np
@@ -70,7 +70,8 @@ class OpenWakeWordFeatureExtractor:
         melspec_model_path: Path | None,
         embedding_model_path: Path | None,
     ) -> None:
-        install_openwakeword_custom_verifier_stub()
+        # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+        ensure_openwakeword_import_safe()
         try:
             from openwakeword.utils import AudioFeatures
         except Exception as e:  # noqa: BLE001
@@ -110,13 +111,6 @@ def require_numpy() -> None:
             "numpy is required to build wake feature banks. Run inside the "
             "JTS environment or install numpy in the selected Python."
         )
-
-
-def install_openwakeword_custom_verifier_stub() -> None:
-    """Keep openwakeword's sklearn-heavy verifier import out of this tool."""
-    stub = types.ModuleType("openwakeword.custom_verifier_model")
-    stub.train_custom_verifier = None
-    sys.modules.setdefault("openwakeword.custom_verifier_model", stub)
 
 
 def read_json(path: Path) -> dict[str, Any]:
