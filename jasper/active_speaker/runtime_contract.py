@@ -539,6 +539,29 @@ def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
 
 
+def topology_sink_is_composite(topology: OutputTopology) -> bool:
+    """True iff the saved topology's output sink spans MULTIPLE child DACs.
+
+    Keyed on ``len(hardware.child_devices) >= 2`` — a *plurality* of child DACs,
+    each its own USB clock domain (``dac.py``'s only ``kind="composite"``
+    profile is the dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A
+    *single* child (``len == 1``) is the opposite: one coherent stereo sink on
+    one clock. The shipped-default dongle and hifiberry paths both populate
+    ``child_devices=(card,)`` for stable serial identity, so that single entry
+    must NOT read as composite — pre-2026-07 this was written as a bare
+    ``if child_devices:`` truthiness check, which wrongly classified every
+    shipped-default box (DEFECT 2 in ``topology_supports_shm_ring``).
+
+    Two callers need this same distinction for different reasons, so it is named
+    once here rather than spelled twice: ``topology_supports_shm_ring`` (a
+    stereo ring cannot drive a 4-ch composite sink) and
+    ``flat_graph_output_mapping_is_indexed`` (outputd fans the stereo program
+    across child DACs, so Camilla channel *i* is not physical output *i*).
+    """
+
+    return len(topology.hardware.child_devices) >= 2
+
+
 def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     """True iff the saved topology can be driven by the ``shm_ring`` coupling.
 
@@ -577,10 +600,8 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
         return False
     # Composite (dual-Apple, kind="composite") is excluded even when nominally
     # stereo: a MULTI-child sink spans >1 USB clock domain and is not the single
-    # coherent L/R sink the ring drives. A single child (len == 1) IS that coherent
-    # sink — the shipped-default dongle/hifiberry path records one child for stable
-    # identity — so gate on a plurality of children, never bare truthiness.
-    if len(topology.hardware.child_devices) >= 2:
+    # coherent L/R sink the ring drives.
+    if topology_sink_is_composite(topology):
         return False
     # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
     # shapes; an explicit mono full-range cannot be driven by a stereo ring.
@@ -685,12 +706,224 @@ def _playback_is_program_bake_pipe(text: str) -> bool:
     return playback_is_pipe(text, SNAPFIFO)
 
 
+def flat_full_range_outputs(contract: OutputContract) -> frozenset[int]:
+    """The physical outputs a flat full-range graph is allowed to emit on.
+
+    The saved topology's ``full_range`` assignments and nothing else. This is
+    the ONE definition of "which outputs has the household declared for the
+    flat lane": :func:`_flat_graph_allowed` refuses a graph that emits outside
+    it, and :func:`flat_graph_muted_outputs` — which the flat renderer calls —
+    derives the complement it must hard-mute from the same set. Keeping both
+    sides on one function is what makes the renderer's mute and the checker's
+    demand incapable of disagreeing.
+    """
+
+    return frozenset(
+        item.physical_output_index
+        for item in contract.assignments
+        if item.role == "full_range" and item.physical_output_index is not None
+    )
+
+
+def flat_graph_output_mapping_is_indexed(
+    topology: OutputTopology,
+    contract: OutputContract,
+    *,
+    width: int,
+) -> bool:
+    """True iff Camilla playback channel *i* drives physical output *i*.
+
+    The flat lane writes ``width`` channels to one outputd sink; whether channel
+    index and physical-output index coincide depends on the sink. Two conditions
+    establish it, and neither is assumed:
+
+    * **not a composite sink** (:func:`topology_sink_is_composite`). A composite
+      (dual-Apple) sink has outputd fan the stereo program across child DACs, so
+      a working dual-Apple stereo box legitimately sits on outputs 0 and 2 —
+      there, channel 1 is not output 1.
+    * **every claimed output lies inside ``width``**. If the topology names
+      output 5 for a 2-wide graph, the graph plainly is not addressing outputs
+      by index, so no per-index conclusion is available.
+
+    Where this holds, the safety question can be asked exactly (does the graph
+    emit on an output the topology does not claim?). Where it does not, callers
+    fall back to counting live channels, which is mapping-agnostic. Returning
+    ``False`` is always the conservative answer: it costs precision, never
+    safety.
+    """
+
+    if topology_sink_is_composite(topology):
+        return False
+    claimed = flat_full_range_outputs(contract)
+    return bool(claimed) and claimed <= frozenset(range(width))
+
+
+def flat_graph_muted_outputs(
+    topology: OutputTopology | None = None,
+    *,
+    width: int,
+) -> frozenset[int]:
+    """Playback channels a ``width``-wide flat graph must hard-mute.
+
+    The flat emitter maps program channel *i* to physical output *i*, so every
+    channel the saved topology does not claim as ``full_range`` would otherwise
+    send full-range program to an output the household never declared — a
+    mis-wired or undeclared driver receiving full range. Muting them is how the
+    flat lane satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
+    :func:`_flat_graph_allowed` then re-proves it structurally off the emitted
+    YAML rather than trusting the emitter.
+
+    Muting is index-wise, so it is withheld unless
+    :func:`flat_graph_output_mapping_is_indexed` establishes that Camilla
+    channel *i* really drives physical output *i* — muting by index on a
+    composite sink would silence a working speaker.
+
+    Returns EMPTY — mute nothing — when that fails, and for three more cases
+    where the flat lane has no business silencing anything:
+
+    * **unconfigured** topology (no speaker groups): nothing is declared yet, so
+      nothing is undeclared; a fresh box keeps the byte-identical stereo graph.
+    * **roleful/protected** topology: the flat graph is illegal there whatever
+      is muted, and refusing it is :func:`_flat_graph_allowed`'s job (issue
+      #2145 owns making that refusal park instead of abort). Silencing channels
+      here would only disguise it.
+    * **every channel unclaimed**: muting all of them would ship a silently
+      silent speaker. Emitting the unmuted graph instead leaves the checker to
+      refuse it with an operator-readable reason — the fail-loud direction.
+
+    A corrupt/unreadable topology also returns empty: the renderer must not
+    guess, and the graph it emits is still checked — ``classify_camilla_graph``
+    and ``safe_graph_for_current_topology`` both fail closed on that topology,
+    so the deploy still stops, at the layer that can say why.
+    """
+
+    if width <= 0:
+        return frozenset()
+    try:
+        if topology is None:
+            topology = load_output_topology_strict()
+        contract = classify_output_contract(topology)
+    except OutputTopologyError:
+        return frozenset()
+    if not contract.topology_configured or contract.requires_roleful_graph:
+        return frozenset()
+    if not flat_graph_output_mapping_is_indexed(topology, contract, width=width):
+        return frozenset()
+    return frozenset(range(width)) - flat_full_range_outputs(contract)
+
+
+def _flat_output_terminally_muted(
+    payload: Mapping[str, Any],
+    view: GraphView,
+    index: int,
+) -> bool:
+    """True iff channel ``index`` ends the pipeline in a hard mute nothing undoes.
+
+    Three facts, all read off the parsed graph — never off a filename or a
+    source marker:
+
+    1. The channel carries the repo's one mute idiom — a ``Gain`` at
+       :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true``, wired to that channel —
+       proved by the same ``output_hard_muted_and_wired`` primitive the parked
+       and staged-startup graphs rest on.
+    2. That mute is TERMINAL for the channel: it is the last name in its own
+       ``Filter`` step, no later ``Filter`` step touches the channel, and no
+       step of any other type follows it at all.
+    3. **No pipeline step is ``bypassed``.** CamillaDSP skips a bypassed step
+       entirely, so ``bypassed: true`` on the mute's own step leaves the channel
+       fully live while fact 1 still reads as satisfied — ``GraphView`` models
+       filters and channels, not the per-step bypass flag, so the primitive in
+       fact 1 cannot see it. This is checked here, on the raw pipeline, where
+       the flag actually lives.
+
+    Fact 2 exists because of the lesson ``_parked_graph_allowed`` learned the
+    hard way: CamillaDSP applies a step's filters in order, so a ``Gain``
+    appended after the mute re-amplifies, and a later ``Mixer`` can re-inject
+    another channel's signal into a "muted" one. A mute that merely *appears
+    somewhere* in the chain is not a mute. A ``Filter`` step with no
+    ``channels`` key applies to every channel, so it counts as touching this
+    one.
+
+    Fact 3 is deliberately WHOLESALE — any bypassed step anywhere refuses the
+    proof for every channel, not just a bypassed mute. No JTS emitter ever
+    writes ``bypassed``, so its presence means the graph was hand-edited, and
+    reasoning about which bypassed step is harmless is exactly the "generous
+    shape" fact 2 was written to reject. Both bench derivation checkers
+    (``jasper.active_speaker.bench.derivation``,
+    ``jasper.bass_extension.bench.derivation``) refuse bypassed steps outright
+    for the same reason; this matches them. Fails closed on any shape it cannot
+    read.
+    """
+
+    mute_name = _commission_mute_name(index)
+    if not output_hard_muted_and_wired(
+        view, index, mute_name=mute_name, mute_gain_db=STARTUP_MUTE_GAIN_DB
+    ):
+        return False
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    muted = False
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if _truthy_bool(step.get("bypassed")):
+            return False
+        if step.get("type") != "Filter":
+            # Mixer / Processor / Dither / anything else after the mute can
+            # re-inject or generate signal on the channel.
+            if muted:
+                return False
+            continue
+        channels = step.get("channels")
+        if isinstance(channels, list) and index not in channels:
+            continue
+        names = step.get("names")
+        if not isinstance(names, list):
+            return False
+        if muted:
+            return False
+        if mute_name in names:
+            if names[-1] != mute_name:
+                return False
+            muted = True
+    return muted
+
+
+def _flat_hard_muted_outputs(text: str, playback_channels: Any) -> frozenset[int]:
+    """The flat graph's terminally-muted playback channels, parsed from ``text``.
+
+    Derived at ``classify_camilla_graph``'s scope, where the config text lives,
+    so :func:`_flat_graph_allowed` stays text-free — the same split the
+    ``program_bake_pipe`` fact already uses. Fails closed (empty set) on an
+    unparseable graph, which leaves every channel counted as emitting.
+    """
+
+    if not isinstance(playback_channels, int) or isinstance(playback_channels, bool):
+        return frozenset()
+    if playback_channels <= 0:
+        return frozenset()
+    try:
+        payload = yaml.safe_load(text)
+    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
+        return frozenset()
+    if not isinstance(payload, dict):
+        return frozenset()
+    view = view_from_yaml_dict(payload)
+    return frozenset(
+        index
+        for index in range(playback_channels)
+        if _flat_output_terminally_muted(payload, view, index)
+    )
+
+
 def _flat_graph_allowed(
     contract: OutputContract,
     *,
     config_path: str | None,
     summary: dict[str, Any],
     program_bake_pipe: bool = False,
+    hard_muted_outputs: frozenset[int] = frozenset(),
+    indexed_output_mapping: bool = False,
 ) -> GraphSafety:
     # Program-bake exemption (Stage B): a flat program graph whose playback is a
     # File/pipe sink (the active-leader's camilla#1 bake, NOT a DAC) is safe
@@ -717,27 +950,52 @@ def _flat_graph_allowed(
     issues: list[dict[str, str]] = []
     allowed = not contract.requires_roleful_graph
     playback_channels = summary.get("playback_channels")
-    full_range_outputs = {
-        item.physical_output_index
-        for item in contract.assignments
-        if item.role == "full_range" and item.physical_output_index is not None
-    }
-    if (
-        allowed
-        and contract.topology_configured
-        and isinstance(playback_channels, int)
-        and playback_channels > len(full_range_outputs)
-    ):
-        allowed = False
-        issues.append(_issue(
-            "blocker",
-            "flat_full_range_graph_wider_than_topology",
-            (
-                f"flat full-range graph exposes {playback_channels} output "
+    full_range_outputs = flat_full_range_outputs(contract)
+    # The invariant is "no emission on an output the topology does not claim".
+    # A channel proved to be hard muted emits nothing, so it cannot reach an
+    # undeclared output and must not be held against the topology. Everything
+    # else is LIVE. `hard_muted_outputs` is proved structurally off the graph by
+    # `_flat_hard_muted_outputs`, never taken from the renderer's intent — a
+    # wide graph whose surplus channel is UNMUTED is refused here exactly as it
+    # was before, under this same issue code and with the same message.
+    #
+    # How the live set is judged depends on what is known about the sink:
+    #
+    # * `indexed_output_mapping` — channel i drives output i, so ask the exact
+    #   question: is any LIVE channel an output the topology does not claim?
+    #   This is what makes muting the WRONG channel useless (a mono box that
+    #   silences its claimed output still has a live channel landing on an
+    #   undeclared one).
+    # * otherwise (composite sink, or claims outside the graph's width) the
+    #   mapping is outputd's to make and no per-index conclusion is available,
+    #   so fall back to counting: more live channels than assigned outputs means
+    #   at least one lands somewhere undeclared under ANY injective mapping.
+    #   This is the pre-existing rule, unchanged — it is why a working
+    #   dual-Apple stereo box on outputs 0 and 2 is not refused.
+    if isinstance(playback_channels, int) and not isinstance(playback_channels, bool):
+        live_outputs = frozenset(range(playback_channels)) - hard_muted_outputs
+    else:
+        live_outputs = None
+    if allowed and contract.topology_configured and live_outputs is not None:
+        if indexed_output_mapping:
+            undeclared = sorted(live_outputs - full_range_outputs)
+            detail = (
+                f"flat full-range graph emits on physical output(s) "
+                f"{', '.join(str(index) for index in undeclared)}, which the "
+                f"saved full-range topology does not assign"
+            ) if undeclared else ""
+        else:
+            over_wide = len(live_outputs) > len(full_range_outputs)
+            detail = (
+                f"flat full-range graph exposes {len(live_outputs)} output "
                 f"channels, but saved full-range topology assigns only "
                 f"{len(full_range_outputs)} physical output(s)"
-            ),
-        ))
+            ) if over_wide else ""
+        if detail:
+            allowed = False
+            issues.append(_issue(
+                "blocker", "flat_full_range_graph_wider_than_topology", detail
+            ))
     if not allowed:
         if contract.requires_roleful_graph:
             issues.append(_issue(
@@ -762,6 +1020,7 @@ def _flat_graph_allowed(
         details={
             "contract_requires_roleful_graph": contract.requires_roleful_graph,
             "volume_limit_ok": bool(summary.get("volume_limit_ok")),
+            "hard_muted_outputs": sorted(hard_muted_outputs),
         },
     )
 
@@ -3114,11 +3373,21 @@ def classify_camilla_graph(
         # on the File-pipe sink, so an ALSA-sink flat graph stays subject to the
         # roleful-topology block.
         program_bake_pipe = _playback_is_program_bake_pipe(text)
+        # Which playback channels this graph provably cannot emit on, read off
+        # the graph here (same text-free split as program_bake_pipe above) so
+        # _flat_graph_allowed can ask "does it emit anywhere undeclared?"
+        # instead of the width proxy it used to.
         graph = _flat_graph_allowed(
             contract,
             config_path=path_s,
             summary=summary,
             program_bake_pipe=program_bake_pipe,
+            hard_muted_outputs=_flat_hard_muted_outputs(
+                text, summary.get("playback_channels")
+            ),
+            indexed_output_mapping=flat_graph_output_mapping_is_indexed(
+                topology, contract, width=summary.get("playback_channels") or 0
+            ),
         )
     elif camilla_class == "active_startup_candidate":
         graph = _active_graph_allowed(

@@ -908,3 +908,61 @@ def test_runtime_safe_graph_cli_rejects_corrupt_topology_without_repair(
     assert exc.value.code == 2
     assert "not valid JSON" in capsys.readouterr().err
     assert statefile.read_text(encoding="utf-8") == before
+
+
+def test_runtime_safe_graph_summary_names_hard_muted_outputs(capsys) -> None:
+    """The operator line, pinned.
+
+    It resolved the "a deliberately-silenced physical output has no operator
+    trail" should-fix, and until this test existed it could be deleted with the
+    whole suite green. Install's transcript is the only place a household or
+    operator ever sees that a DAC output was intentionally muted; without the
+    line a silent output reads as a fault later.
+    """
+    from jasper.cli.active_speaker import _print_runtime_safe_graph_summary
+
+    payload = {
+        "status": "preserve_current",
+        "reason": "current CamillaDSP graph is legal for saved topology",
+        "topology_contract": {
+            "classification": "normal_mono_full_range",
+            "requires_roleful_graph": False,
+        },
+        "current_graph": {
+            "classification": "flat_full_range",
+            "allowed": True,
+            "config_path": "/etc/camilladsp/outputd-cutover.yml",
+            "details": {"hard_muted_outputs": [1]},
+        },
+        "issues": [],
+    }
+
+    _print_runtime_safe_graph_summary(payload, wrote_statefile=False)
+    printed = capsys.readouterr().out
+
+    assert "current hard-muted outputs: 1 (not assigned by the saved topology)" in printed
+
+
+def test_runtime_safe_graph_summary_is_silent_when_nothing_is_muted(capsys) -> None:
+    """The ordinary stereo box's transcript is unchanged."""
+    from jasper.cli.active_speaker import _print_runtime_safe_graph_summary
+
+    payload = {
+        "status": "select_flat",
+        "reason": "saved topology has no roleful/protected outputs",
+        "topology_contract": {
+            "classification": "normal_stereo_full_range",
+            "requires_roleful_graph": False,
+        },
+        "fallback_graph": {
+            "classification": "flat_full_range",
+            "allowed": True,
+            "config_path": "/etc/camilladsp/outputd-cutover.yml",
+            "details": {"hard_muted_outputs": []},
+        },
+        "issues": [],
+    }
+
+    _print_runtime_safe_graph_summary(payload, wrote_statefile=True)
+
+    assert "hard-muted" not in capsys.readouterr().out

@@ -284,6 +284,19 @@ def _print_runtime_safe_graph_summary(
         )
     if payload.get("selected_config_path"):
         print(f"  selected: {payload['selected_config_path']}")
+    # A deliberately-silenced PHYSICAL output deserves a trail. The graph the
+    # box is about to boot may hard-mute a DAC output the saved topology does
+    # not claim (a mono speaker on a stereo DAC); install's transcript is the
+    # only place an operator would ever see that, so name the channels rather
+    # than let a silent output look like a fault later.
+    for label, graph in (("current", current), ("fallback", fallback)):
+        muted = (graph.get("details") or {}).get("hard_muted_outputs")
+        if muted:
+            print(
+                f"  {label} hard-muted outputs: "
+                f"{', '.join(str(index) for index in muted)} "
+                "(not assigned by the saved topology)"
+            )
     print(f"  statefile written: {'yes' if wrote_statefile else 'no'}")
     if payload["status"] == PARKED_MUTED_STATUS:
         # The parked state is an ACTION for the household, not a stack of

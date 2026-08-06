@@ -2009,6 +2009,18 @@ class MeasurementSession:
                 # Compatibility for tests and older direct callers that provide
                 # only a setter. The web surface always passes camilla_get_config
                 # and therefore uses the topology-aware carrier above.
+                #
+                # SAFE BY UNREACHABILITY, NOT BY CHECK (issue #2185). This branch
+                # emits a plain 2-channel graph with no carrier, so it carries no
+                # width match: on a MONO topology its second channel would land
+                # on a physical output the household never declared. Nothing here
+                # stops that — `assert_flat_apply_safe` tests only the
+                # protected-tweeter predicate, which a mono topology passes. The
+                # only thing keeping it safe is that exactly one production
+                # caller exists (jasper/web/correction_setup.py) and it supplies
+                # camilla_get_config, so the guarded carrier path above is what
+                # actually runs. Do not add a caller here without width-gating
+                # (or deleting) this branch first.
                 from jasper.correction.runtime_safety import assert_flat_apply_safe
 
                 assert_flat_apply_safe()

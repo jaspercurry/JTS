@@ -135,8 +135,84 @@ def test_assert_flat_apply_safe_allows_full_range() -> None:
 
 
 def test_assert_correction_graph_safe_rejects_mono_width_mismatch() -> None:
-    with pytest.raises(CorrectionRuntimeSafetyError, match="exposes 2 output"):
+    # A hand-built 2-channel graph on a mono topology puts its second channel on
+    # an output the household never declared. Refused; the reason now NAMES the
+    # output, because a single (non-composite) sink maps Camilla channel i to
+    # physical output i.
+    #
+    # NOTE what this does and does NOT prove: it pins the CHECKER against bytes
+    # it is handed. It says nothing about what the correction lane emits — the
+    # lane is now width-matched via the carrier, so correction on a mono box
+    # PASSES (see the keystone test below, which drives the real carrier).
+    with pytest.raises(
+        CorrectionRuntimeSafetyError, match="emits on physical output\\(s\\) 1"
+    ):
         assert_correction_graph_safe(_flat_yaml(), topology=_full_range_mono())
+
+
+def test_correction_carrier_reemit_on_mono_is_width_matched_and_passes(
+    tmp_path, monkeypatch
+) -> None:
+    """The keystone: drive the REAL correction carrier, then judge its output.
+
+    `_SoundOrCorrectionCarrier` inherits the stereo-host width match, so room
+    correction on a mono box now emits the unclaimed channel hard muted and
+    clears its own safety gate. This is the intended end state for #2180 — and
+    it is the assertion that would fail if the inheritance were ever severed,
+    which the checker-only test above cannot detect.
+    """
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.profile import SimpleEq, SoundProfile
+
+    topology = _full_range_mono()
+    artifact = tmp_path / "output_topology.json"
+    artifact.write_text(json.dumps(topology.to_dict()), encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(artifact))
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    loaded = config_dir / "correction_abc_1.yml"
+    loaded.write_text(emit_sound_config(SoundProfile(enabled=False)), encoding="utf-8")
+
+    carrier = carrier_for_loaded_config(str(loaded), config_dir=config_dir)
+    assert carrier.kind == "sound_or_correction"
+    result = carrier.reemit(SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=3.0)))
+
+    assert "as_out1_commission_mute" in result.yaml
+    # The gate the correction apply path actually calls, on the real bytes.
+    assert_correction_graph_safe(result.yaml, topology=topology)
+
+
+def test_assert_correction_graph_safe_judges_bytes_not_the_lane() -> None:
+    """The asymmetry is at THIS checker, and only here.
+
+    Carrier-produced bytes carry the mute and pass; a bare `emit_sound_config`
+    graph does not and is refused. That is a property of
+    `assert_correction_graph_safe`, which reads the graph it is handed.
+
+    It is NOT a property of the correction lane as a whole. `CorrectionSession.
+    _prepare_config`'s compatibility branch (no `camilla_get_config`) calls
+    `assert_flat_apply_safe`, which checks only the protected-tweeter predicate —
+    a mono topology passes it, so that branch would emit unmuted with nothing
+    stopping it. It is safe by UNREACHABILITY in production, not by width
+    refusal; see the comment at that branch and issue #2185. Do not read this
+    test as covering it.
+    """
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    direct = emit_sound_config(SoundProfile(enabled=False))
+
+    with pytest.raises(
+        CorrectionRuntimeSafetyError, match="emits on physical output\\(s\\) 1"
+    ):
+        assert_correction_graph_safe(direct, topology=_full_range_mono())
+
+    # The other half of the asymmetry, stated so the contrast is explicit:
+    # assert_flat_apply_safe does NOT refuse a mono topology (no protected
+    # tweeter to protect), which is exactly why the compat branch is unguarded.
+    assert_flat_apply_safe(_full_range_mono())
 
 
 def test_assert_correction_graph_safe_preserves_active_baseline_omission() -> None:

@@ -38,6 +38,8 @@ I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper
 INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+CAMILLA_CONF_DIR="${JASPER_CAMILLA_CONF_DIR:-/etc/camilladsp}"
+JASPER_SOUND_CLI="${JASPER_SOUND_CLI:-/opt/jasper/.venv/bin/jasper-sound}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
@@ -909,6 +911,49 @@ render_asound_if_needed() {
 # jasper.ring_assets.RING_CONF_D (the SSOT) and reports back which file it
 # touched. JASPER_RING_CONF_D exists for tests.
 RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"
+# Render the flat cutover startup graph for the CURRENTLY saved output topology.
+#
+# The RUNTIME sibling of install's `render_outputd_cutover_config`, through the
+# same single entry (`jasper-sound render-flat-cutover` ->
+# jasper.sound.camilla_yaml.render_flat_cutover_configs) so there is one writer
+# and one file mode, never a second spelling.
+#
+# Why the reconciler and not the caller: the graph is width-matched to the saved
+# topology (a mono layout hard-mutes the output it does not claim), so it goes
+# STALE whenever the topology changes. The two paths that change it — the
+# /sound/ topology save and jasper-output-topology-reset — both run inside
+# jasper-web's sandbox, which has no /etc/camilladsp write path (WS1-deliberate;
+# do not widen it). Both already kick THIS reconciler, which runs as root, so
+# the render belongs here. Without it a box that was re-laid-out kept booting the
+# previous topology's graph: after a mono box was reset to passive it came back
+# audible on one output and silent on the other, with nothing to explain it.
+#
+# Write-on-change (the emitter compares before writing), matching this script's
+# set_env_var_if_changed discipline, so boot/udev passes on a converged box do
+# not churn the file. Best-effort: a failed render leaves the previous graph,
+# which the statefile contract still judges on its own terms.
+render_flat_cutover_if_needed() {
+    local output
+    if ! command -v "$JASPER_SOUND_CLI" >/dev/null 2>&1; then
+        log_event "flat_cutover" "result=skipped reason=cli_unavailable"
+        return 0
+    fi
+    if ! output="$(
+        JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
+        "$JASPER_SOUND_CLI" render-flat-cutover --config-dir "$CAMILLA_CONF_DIR" 2>&1
+    )"; then
+        log_event "flat_cutover" \
+            "result=failed detail=$(jasper_asound_log_token "$output")"
+        return 0
+    fi
+    local changed="no"
+    if [[ "$output" == *"changed=yes"* ]]; then
+        changed="yes"
+    fi
+    log_event "flat_cutover" \
+        "result=ok changed=${changed} config_dir=${CAMILLA_CONF_DIR} topology=${OUTPUT_TOPOLOGY_PATH}"
+}
+
 render_ring_conf_if_needed() {
     local actions key value result="" period="" previous="" reason="" conf=""
     if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
@@ -1250,6 +1295,16 @@ repair_generated_env_permissions
 render_changed=0
 render_asound_if_needed && render_changed=1
 render_ring_conf_if_needed
+# After the asound/outputd env is settled — the graph reads the active DAC's
+# latency floor from it.
+#
+# This script never restarts jasper-camilla (it bounces outputd only), and
+# CamillaDSP reads its config at LOAD time, so re-rendering here does NOT make
+# the new graph run. It lands on disk for whoever loads next: camilla's own
+# start, a deploy's statefile seed, or `jasper-output-topology-reset`, which
+# blocks on this unit and then re-loads if this render changed the file
+# (`_reload_if_render_changed` in jasper/cli/output_topology_reset.py).
+render_flat_cutover_if_needed
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     # A DAC-identity or asound (render) change can move the mic/input profile,

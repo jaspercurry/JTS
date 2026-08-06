@@ -15,7 +15,10 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jasper.atomic_io import atomic_write_text
 from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
@@ -31,7 +34,7 @@ from jasper.camilla_config_contract import (
     resolve_camilla_chunksize,
     resolve_camilla_target_level,
 )
-from jasper.camilla_emit import emit_master_gain_pipeline
+from jasper.camilla_emit import emit_gain_filter, emit_master_gain_pipeline
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 
 from .profile import (
@@ -39,9 +42,19 @@ from .profile import (
     build_sound_filters,
 )
 
+if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
+    # the runtime edge out of this hot emitter module all the same.
+    from jasper.output_topology import OutputTopology
+
 logger = logging.getLogger(__name__)
 
 BASE_CONFIG_PATH = Path("/etc/camilladsp/outputd-cutover.yml")
+# The program lane's fixed playback width. `emit_master_gain_pipeline` is a
+# deliberately 2-channel shape (the config contract is stereo-pinned; 2.1's
+# 3-channel stream generalises it WITH that contract, not alone), so the width
+# is stated once here rather than re-derived by each caller that needs to know
+# which physical outputs the emitted graph reaches.
+FLAT_GRAPH_WIDTH = 2
 SOUND_CONFIG_NAME = "sound_current.yml"
 SOUND_AUDITION_CONFIG_NAME = "sound_audition.yml"
 _JTS_GENERATED_RE = re.compile(
@@ -51,6 +64,42 @@ _JTS_GENERATED_RE = re.compile(
     r"|correction_measurement_[A-Za-z0-9]+_\d+"
     r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
 )
+
+def _normalize_muted_outputs(muted_outputs: Iterable[int] | None) -> frozenset[int]:
+    """Validate ``emit_sound_config(muted_outputs=...)`` at the API boundary.
+
+    Fail LOUD on the two ways a caller can be wrong, because both would
+    otherwise ship a graph nobody meant:
+
+    * an index outside the stereo-pinned width — the emitted pipeline has no
+      such channel, so the "mute" would be a filter defined and never wired,
+      i.e. an output left emitting while the caller believed it silenced;
+    * every channel muted — a wholly silent program graph. That is not this
+      lane's answer for "the topology claims none of my outputs"; refusing the
+      flat graph is (see
+      ``jasper.active_speaker.runtime_contract.flat_graph_muted_outputs``,
+      which returns empty rather than asking for silence).
+    """
+
+    if muted_outputs is None:
+        return frozenset()
+    channels = frozenset(int(index) for index in muted_outputs)
+    if not channels:
+        return frozenset()
+    out_of_range = sorted(index for index in channels if not 0 <= index < FLAT_GRAPH_WIDTH)
+    if out_of_range:
+        raise ValueError(
+            "muted_outputs indexes must be playback channels in "
+            f"0..{FLAT_GRAPH_WIDTH - 1}; got "
+            f"{', '.join(str(index) for index in out_of_range)}"
+        )
+    if len(channels) >= FLAT_GRAPH_WIDTH:
+        raise ValueError(
+            "muted_outputs would mute every playback channel, emitting a "
+            "wholly silent program graph; refuse the flat graph instead"
+        )
+    return channels
+
 
 def emit_sound_config(
     profile: SoundProfile,
@@ -73,6 +122,7 @@ def emit_sound_config(
     enable_rate_adjust: bool = True,
     channel_split: ChannelSplit | None = None,
     playback_pipe_path: str | None = None,
+    muted_outputs: Iterable[int] | None = None,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -120,7 +170,21 @@ def emit_sound_config(
     chain, §2 invariant 5), and it never combines with
     ``channel_split`` (the member weave selects a channel for a LOCAL
     DAC; the pipe carries the SHARED two-channel program — members drop
-    channels downstream, in outputd's ChannelPick)."""
+    channels downstream, in outputd's ChannelPick).
+
+    ``muted_outputs`` hard-mutes the named playback channels: each gets the
+    repo's one mute idiom (a ``Gain`` at ``-120 dB`` with ``mute: true``)
+    appended as the LAST filter in its chain, so it is terminal — nothing in
+    this pipeline runs after it. It exists so a graph rendered for a topology
+    that assigns fewer physical outputs than the stereo-pinned width cannot
+    send full-range program to an output the household never declared.
+    ``jasper.active_speaker.runtime_contract.flat_graph_muted_outputs`` owns
+    WHICH channels those are; this emitter owns only how the mute is spelled.
+    ``None`` / empty is **byte-identical** to before this parameter existed
+    (the solo-impact contract). Muting EVERY channel is refused: a wholly
+    silent program graph is never the right answer from here, and a caller
+    that asked for one is misrouted (see ``flat_graph_muted_outputs``, which
+    returns empty rather than requesting it)."""
 
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
@@ -191,6 +255,36 @@ def emit_sound_config(
                 "of the stream, never inside it; see "
                 "HANDOFF-multiroom.md §2"
             )
+    muted_channels = _normalize_muted_outputs(muted_outputs)
+    # Third mutually-exclusive pair, same shape and same fail-loud posture as
+    # the two above, and deliberately broad — it refuses EVERY channel value,
+    # for two different reasons:
+    #
+    # * `channel="sub"`: `weave_channel_split` APPENDS its crossover to each
+    #   per-channel Filter step's `names:` list, so the lowpass lands AFTER the
+    #   mute inside that step. CamillaDSP applies a step's filters in order, so
+    #   the mute is no longer terminal — exactly what
+    #   `jasper.active_speaker.runtime_contract._flat_output_terminally_muted`
+    #   refuses. (The channel_select Mixer itself is spliced right after
+    #   `master_gain`, i.e. BEFORE the per-channel steps, so it is not the
+    #   mechanism here — only the sub's appended crossover is.)
+    # * every channel: the weave duplicates ONE program channel onto both
+    #   outputs, so "output index i" no longer means what the saved topology's
+    #   per-output claim meant when the muted set was derived.
+    #
+    # The axes also come from different topology models: muting is a SOLO
+    # speaker declining its own unclaimed physical output, while channel_split
+    # is a bonded MEMBER selecting a channel out of a shared stereo program.
+    # Both present indicates a wiring bug, not a topology.
+    if muted_channels and channel_split is not None:
+        raise ValueError(
+            "muted_outputs (solo unclaimed-output silencing) and channel_split "
+            "(member channel-selection weave) are mutually exclusive — the sub "
+            "weave appends its crossover after the mute in the same pipeline "
+            "step, breaking the terminal-mute invariant the runtime contract "
+            "verifies, and the weave's channel duplication makes a per-output "
+            "muted set meaningless"
+        )
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);
@@ -205,7 +299,49 @@ def emit_sound_config(
     )
     # Structure is the shared primitive; this module owns only which
     # names go in each chain (room L/R segments + the shared tail).
-    pipeline_yaml = emit_master_gain_pipeline(chain_names, chain_names_right)
+    if muted_channels:
+        # The repo's ONE hard-mute idiom, imported from its owner rather than
+        # respelled here — the runtime contract re-proves the emitted graph with
+        # the same name and gain, so a drifted copy would silently stop proving.
+        # Lazy because jasper.active_speaker.camilla_yaml imports THIS module at
+        # module scope (emit_sound_config); a top-level edge back would be
+        # circular. Same lazy-import idiom runtime_contract uses for its own
+        # reverse edges.
+        from jasper.active_speaker.camilla_yaml import (
+            STARTUP_MUTE_GAIN_DB,
+            output_commission_mute_name,
+        )
+
+        # Append each mute LAST in its channel's chain. CamillaDSP applies a
+        # step's filters in order and these per-channel steps are the pipeline's
+        # last, so the mute is terminal — nothing downstream can re-amplify it.
+        # `chain_names_right is None` normally means "duplicate left onto
+        # channel 1"; muting only one channel needs the two chains spelled out,
+        # so materialise the duplicate here rather than teaching the shared
+        # pipeline primitive about mutes.
+        left_names = list(chain_names)
+        right_names = list(
+            chain_names if chain_names_right is None else chain_names_right
+        )
+        if 0 in muted_channels:
+            left_names.append(output_commission_mute_name(0))
+        if 1 in muted_channels:
+            right_names.append(output_commission_mute_name(1))
+        filter_yaml = "\n".join(
+            [filter_yaml]
+            + [
+                line
+                for index in sorted(muted_channels)
+                for line in emit_gain_filter(
+                    output_commission_mute_name(index),
+                    STARTUP_MUTE_GAIN_DB,
+                    mute=True,
+                )
+            ]
+        )
+        pipeline_yaml = emit_master_gain_pipeline(left_names, right_names)
+    else:
+        pipeline_yaml = emit_master_gain_pipeline(chain_names, chain_names_right)
     # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
     # rate-tracker); default True keeps the solo path unchanged.
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
@@ -297,15 +433,41 @@ pipeline:
     return yaml
 
 
-def emit_flat_outputd_cutover_config(*, out_path: str | Path | None = None) -> str:
+def emit_flat_outputd_cutover_config(
+    *,
+    out_path: str | Path | None = None,
+    topology: OutputTopology | None = None,
+) -> str:
     """Emit the flat outputd startup graph through the production generator.
 
     Fresh plain-flat installs boot through this graph. Keeping it on the same
     emitter as ordinary sound configs means the active DAC profile's latency
     floor reaches first boot without adding a second Camilla/outputd path.
+
+    WIDTH-MATCHED to the saved output topology. The emitted pipeline is always
+    the stereo-pinned two channels (outputd negotiates the DAC's own width —
+    the InnoMaker's two — so narrowing the ALSA device is not on the table),
+    but every channel the topology does not assign to a ``full_range`` output
+    is hard muted. A mono topology therefore boots a graph that CANNOT put
+    program audio on the output it never declared, instead of one that does so
+    and is refused at the statefile guard. That refusal is real and stays:
+    ``jasper.active_speaker.runtime_contract`` re-proves the mutes off this
+    YAML, so an unmuted surplus channel is still blocked.
+
+    ``topology`` (any ``OutputTopology``) is a test seam; production reads the
+    saved topology. The muted set — and the decision to mute nothing on an
+    unconfigured, roleful, or unservable topology — belongs to
+    ``flat_graph_muted_outputs``, imported lazily because the active-speaker
+    package imports this module at module scope.
     """
 
-    return emit_sound_config(SoundProfile(enabled=False), out_path=out_path)
+    from jasper.active_speaker.runtime_contract import flat_graph_muted_outputs
+
+    return emit_sound_config(
+        SoundProfile(enabled=False),
+        muted_outputs=flat_graph_muted_outputs(topology, width=FLAT_GRAPH_WIDTH),
+        out_path=out_path,
+    )
 
 
 # The ring flat startup graph — the ``shm_ring`` sibling of
@@ -354,6 +516,106 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
         enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
         out_path=out_path,
     )
+
+
+# The flat cutover configs are read by whoever loads them (CamillaDSP, the
+# runtime contract's classifier, the camillagui config browser), not only by a
+# group-jasper daemon, so they are world-readable — wider than the 0640 the
+# ordinary sound configs get from `_atomic_write_text`.
+FLAT_CUTOVER_MODE = 0o644
+
+
+@dataclass(frozen=True)
+class RenderedFlatConfig:
+    """One flat startup config as written (or found already correct)."""
+
+    path: Path
+    text: str
+    changed: bool
+
+
+@dataclass(frozen=True)
+class FlatCutoverRender:
+    """The result of one :func:`render_flat_cutover_configs` pass."""
+
+    config_dir: Path
+    rendered: tuple[RenderedFlatConfig, ...]
+
+    @property
+    def changed(self) -> bool:
+        return any(item.changed for item in self.rendered)
+
+
+def render_flat_cutover_configs(
+    *,
+    config_dir: str | Path | None = None,
+    topology: OutputTopology | None = None,
+) -> FlatCutoverRender:
+    """Write both flat startup configs, WRITE-ON-CHANGE. The single writer.
+
+    ``outputd-cutover.yml`` (the loopback flat startup graph, width-matched to
+    the saved topology) and ``outputd-cutover-ring.yml`` (its ``shm_ring``
+    sibling, INERT until a coupling arms the rings but required on disk so a
+    ring-armed box re-seeds a ring graph instead of reverting to loopback).
+
+    THREE callers must produce byte-identical files or the box's graph depends
+    on which one ran last: ``deploy/install.sh`` at deploy time,
+    ``jasper-audio-hardware-reconcile`` at boot / udev / topology-save, and
+    ``jasper-output-topology-reset``. They all reach this one function through
+    ``jasper-sound render-flat-cutover``, so there is no second writer and no
+    second spelling of the file mode.
+
+    Write-on-change because the reconciler runs on every boot and every sound-card
+    event: an unconditional write would churn mtimes and make "did the graph
+    change?" unanswerable from the filesystem. Same discipline as the reconciler's
+    own ``set_env_var_if_changed``. The mode is asserted on every pass even when
+    the bytes match, so a file left narrow by an older writer is repaired.
+
+    Never raises for an unreadable existing CONFIG file — that is simply
+    "different". Write failures DO raise: the caller decides whether a failed
+    render is fatal (install) or best-effort (the reset's convergence step).
+
+    **A corrupt saved TOPOLOGY raises ``OutputTopologyError`` and writes
+    nothing.** This function owns that distinction because it is the one that
+    loads the topology, so missing / corrupt / ok is answered in a single place:
+
+    * **missing** — nothing is declared, so nothing is undeclared. Renders the
+      golden unmuted graph, which is correct for a fresh box.
+    * **corrupt** — refuse. ``flat_graph_muted_outputs`` fails SOFT (mutes
+      nothing) because its other callers all have a guard behind them, but the
+      reconciler has none: it renders on boot / udev / topology-save, and
+      CamillaDSP loads the cutover from its statefile on its next start with no
+      ordering to this. A soft failure there would overwrite a healthy
+      width-matched graph with an unmuted one and log success — silently, in the
+      hazard direction. Keeping the previous file is the fail-closed answer.
+    """
+
+    if topology is None:
+        # Explicitly, so a corrupt artifact raises HERE rather than being
+        # swallowed downstream into "mute nothing". A missing file returns an
+        # empty draft (the golden case) and does not raise.
+        from jasper.output_topology import load_output_topology_strict
+
+        topology = load_output_topology_strict()
+    directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent
+    rendered: list[RenderedFlatConfig] = []
+    for name, text in (
+        (BASE_CONFIG_PATH.name, emit_flat_outputd_cutover_config(topology=topology)),
+        (RING_FLAT_CONFIG_NAME, emit_flat_ring_config()),
+    ):
+        path = directory / name
+        try:
+            unchanged = path.read_text(encoding="utf-8") == text
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            atomic_write_text(path, text, mode=FLAT_CUTOVER_MODE)
+        else:
+            path.chmod(FLAT_CUTOVER_MODE)
+        rendered.append(
+            RenderedFlatConfig(path=path, text=text, changed=not unchanged)
+        )
+    return FlatCutoverRender(config_dir=directory, rendered=tuple(rendered))
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

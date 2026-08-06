@@ -256,13 +256,45 @@ def test_install_sh_routes_outputd_statefile_through_runtime_contract():
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" not in body
 
 
+def test_flat_cutover_has_exactly_one_writer():
+    """install, the root reconciler, and the reset all go through one entry.
+
+    The flat cutover graph is width-matched to the saved output topology, so
+    three different components write it at three different times (deploy, boot /
+    udev / topology-save, reset). If any of them emits its own copy, the graph a
+    box boots depends on which ran last — and one of them would inevitably ship
+    a different file mode or skip the width match. `jasper-sound
+    render-flat-cutover` is the single entry; this fails if a second writer
+    (an inline heredoc, a direct emitter call) reappears in the shell layer.
+    """
+    reconcile = (
+        Path(__file__).resolve().parent.parent
+        / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
+    ).read_text()
+    install = INSTALL_SH.read_text()
+
+    for name, body in (("install.sh", install), ("reconciler", reconcile)):
+        assert "render-flat-cutover" in body, name
+        # The emitter is reached through the CLI, never spelled directly in bash.
+        assert "emit_flat_outputd_cutover_config" not in body, name
+        assert "emit_flat_ring_config" not in body, name
+
+    # The reconciler renders BEFORE it can restart the audio graph, so a restart
+    # loads this pass's graph rather than the previous topology's.
+    render = reconcile.index("render_flat_cutover_if_needed\n")
+    assert render < reconcile.index("restart_audio_if_needed 1")
+
+
 def test_install_sh_writes_output_hardware_before_flat_statefile_seed():
     """Fresh-flat startup needs output_hardware.json before rendering the base
     graph and before runtime-safe-graph writes outputd-statefile.yml."""
     body = INSTALL_SH.read_text()
     assert "ensure_output_hardware_state" in body
     assert "render_outputd_cutover_config" in body
-    assert "emit_flat_outputd_cutover_config" in body
+    # install renders through the product emitter, not a hand-written YAML.
+    # It reaches it via the shared CLI rather than an inline heredoc — see
+    # test_flat_cutover_has_exactly_one_writer below for why that matters.
+    assert "jasper-sound render-flat-cutover" in body
 
     normal_install = body.index("install_jasper\n")
     state = body.index("ensure_output_hardware_state", normal_install)

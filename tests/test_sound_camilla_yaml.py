@@ -597,3 +597,351 @@ def test_emit_flat_ring_config_keeps_loopback_flat_config_unchanged():
         ring_line = [ln for ln in ring.splitlines() if ln.strip().startswith(key)]
         loop_line = [ln for ln in loop.splitlines() if ln.strip().startswith(key)]
         assert ring_line == loop_line, f"{key} drifted between ring and loopback flat"
+
+
+# --- width-matched flat cutover (mono topologies) ----------------------------
+#
+# A mono full-range topology assigns ONE physical output, but the program lane
+# is stereo-pinned and outputd negotiates the DAC's own width. Without a mute,
+# the surplus channel puts full-range program on an output the household never
+# declared — and the runtime contract refuses to seed a statefile pointing at
+# such a graph, which is what blocked deploys on a mono box. These pin the
+# by-construction half: the emitter renders the surplus channel hard muted.
+
+
+def _mono_topology(output_index: int):
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+            "card_id": "sndrpimerusamp",
+            "physical_output_count": 2,
+        },
+        "speaker_groups": [{
+            "id": "main",
+            "label": "Main speaker",
+            "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{
+                "role": "full_range",
+                "physical_output_index": output_index,
+                "identity_verified": True,
+            }],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
+def _stereo_topology():
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "stereo",
+        "name": "Stereo passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+            "card_id": "sndrpimerusamp",
+            "physical_output_count": 2,
+        },
+        "speaker_groups": [
+            {
+                "id": "left", "label": "Left", "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right", "label": "Right", "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
+def _pipeline_names(yaml_text: str, channel: int) -> str:
+    """The ``names: [...]`` line of the Filter step targeting ``channel``."""
+    lines = yaml_text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == f"channels: [{channel}]":
+            return lines[index + 1].strip()
+    raise AssertionError(f"no Filter step for channel {channel} in:\n{yaml_text}")
+
+
+def test_mono_on_output_0_renders_channel_1_hard_muted():
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    yaml = emit_flat_outputd_cutover_config(topology=_mono_topology(0))
+
+    mute = output_commission_mute_name(1)
+    # The ALSA device stays at the hardware width — outputd negotiates 2ch on
+    # the InnoMaker; the silence lives in the graph, not the device.
+    assert "channels: 2" in yaml
+    assert f"  {mute}:\n    type: Gain" in yaml
+    assert f"gain: {STARTUP_MUTE_GAIN_DB:.4f}" in yaml
+    assert "mute: true" in yaml
+    # Terminal: the mute is the LAST name in its channel's chain, and the
+    # claimed channel keeps its ordinary chain untouched.
+    assert _pipeline_names(yaml, 1) == f"names: [flat, {mute}]"
+    assert _pipeline_names(yaml, 0) == "names: [flat]"
+    assert output_commission_mute_name(0) not in yaml
+
+
+def test_mono_on_output_1_renders_channel_0_hard_muted():
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    yaml = emit_flat_outputd_cutover_config(topology=_mono_topology(1))
+
+    mute = output_commission_mute_name(0)
+    assert _pipeline_names(yaml, 0) == f"names: [flat, {mute}]"
+    assert _pipeline_names(yaml, 1) == "names: [flat]"
+    assert output_commission_mute_name(1) not in yaml
+
+
+def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    # The golden: what every non-mono box has always booted. Both a saved
+    # stereo topology and a fresh empty draft must reproduce it byte-for-byte.
+    baseline = emit_flat_outputd_cutover_config(topology=new_topology_draft())
+
+    assert emit_flat_outputd_cutover_config(topology=_stereo_topology()) == baseline
+    assert "commission_mute" not in baseline
+    assert _pipeline_names(baseline, 0) == "names: [flat]"
+    assert _pipeline_names(baseline, 1) == "names: [flat]"
+
+
+def test_composite_sink_is_never_index_muted():
+    """A dual-Apple composite puts L on output 0 and R on output 2.
+
+    outputd fans the stereo program across the child DACs, so Camilla channel 1
+    is NOT physical output 1 there. Muting by index would silence a working
+    speaker, so the emitter must decline.
+    """
+    from jasper.output_topology import OutputTopology
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    composite = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "dual",
+        "name": "Dual Apple",
+        "status": "verified",
+        "hardware": {
+            "device_id": "dual_apple_usb_c_dac_4ch",
+            "device_label": "Dual Apple",
+            "physical_output_count": 4,
+            "child_devices": [
+                {"child_id": "a", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
+                {"child_id": "b", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
+            ],
+        },
+        "speaker_groups": [
+            {"id": "left", "label": "Left", "kind": "left",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 0}]},
+            {"id": "right", "label": "Right", "kind": "right",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 2}]},
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+    assert "commission_mute" not in emit_flat_outputd_cutover_config(topology=composite)
+
+
+def test_out_of_width_assignment_is_never_index_muted():
+    """A claim on output 5 proves the graph is not addressing outputs by index.
+
+    Muting every channel of a 2-wide graph would ship a silently silent
+    speaker. The emitter declines; the runtime contract then refuses the
+    unmuted graph out loud, which is the fail-loud direction.
+    """
+    from jasper.output_topology import OutputTopology
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    far = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "far",
+        "name": "Mono on a high output",
+        "status": "verified",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 5}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+    assert "commission_mute" not in emit_flat_outputd_cutover_config(topology=far)
+
+
+def test_emit_sound_config_rejects_muting_every_channel():
+    import pytest
+
+    from jasper.sound.camilla_yaml import FLAT_GRAPH_WIDTH
+
+    with pytest.raises(ValueError, match="wholly silent"):
+        emit_sound_config(
+            SoundProfile(enabled=False), muted_outputs=range(FLAT_GRAPH_WIDTH)
+        )
+
+
+def test_emit_sound_config_rejects_out_of_range_muted_output():
+    import pytest
+
+    with pytest.raises(ValueError, match="playback channels"):
+        emit_sound_config(SoundProfile(enabled=False), muted_outputs=[2])
+
+
+def test_muted_outputs_none_and_empty_are_byte_identical_to_default():
+    profile = SoundProfile(enabled=False)
+    baseline = emit_sound_config(profile)
+
+    assert emit_sound_config(profile, muted_outputs=None) == baseline
+    assert emit_sound_config(profile, muted_outputs=[]) == baseline
+
+
+def test_muted_outputs_leaves_the_CLAIMED_channel_byte_identical():
+    """Muting one channel must not perturb the other's chain.
+
+    The claimed output is the one the household actually hears; the only
+    permitted difference between the golden graph and a width-matched one is
+    the muted channel's own Filter step plus the mute's filter definition.
+    """
+    profile = SoundProfile(enabled=False)
+    baseline = emit_sound_config(profile)
+    width_matched = emit_sound_config(profile, muted_outputs=[1])
+
+    assert _pipeline_names(width_matched, 0) == _pipeline_names(baseline, 0)
+    # Everything above the `filters:` block (devices, samplerate, volume_limit,
+    # capture/playback) is untouched, and so is the mixer.
+    assert width_matched.split("filters:")[0] == baseline.split("filters:")[0]
+    assert width_matched.split("mixers:")[1].split("pipeline:")[0] == (
+        baseline.split("mixers:")[1].split("pipeline:")[0]
+    )
+
+
+def test_muted_outputs_and_channel_split_are_mutually_exclusive():
+    """Third exclusive pair in this emitter, same fail-loud posture as the two
+    already guarded. Not reachable today (`member_camilla_kwargs` always
+    resolves `channel_split=None`), so this is the guard that keeps it that way.
+
+    `sub` first, because it is the value that genuinely breaks terminality: the
+    weave APPENDS its crossover to each per-channel `names:` list, landing after
+    the mute inside the same step. `left`/`right` carry no `filter_chain_names`
+    at all, so they break the muted set for the other reason (the weave
+    duplicates one program channel onto both outputs) — the guard is correctly
+    broad, and testing only `left` would have exercised the weaker case.
+    """
+    import pytest
+
+    from jasper.multiroom.channel_split import build_channel_split
+
+    for channel in ("sub", "left", "right"):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            emit_sound_config(
+                SoundProfile(enabled=False),
+                muted_outputs=[1],
+                channel_split=build_channel_split(channel),
+            )
+
+    # The mechanism, pinned rather than asserted in prose: only `sub` appends
+    # filters that would land after the mute.
+    assert build_channel_split("sub").filter_chain_names
+    assert not build_channel_split("left").filter_chain_names
+
+
+# --- the production call shape ------------------------------------------------
+#
+# deploy/install.sh calls emit_flat_outputd_cutover_config with out_path ONLY,
+# so `topology=None` -> flat_graph_muted_outputs(None, ...) ->
+# load_output_topology_strict(). That is the branch a real box executes; every
+# other test here injects a topology and skips it.
+
+
+def _write_topology_artifact(tmp_path, monkeypatch, payload) -> None:
+    import json
+
+    artifact = tmp_path / "output_topology.json"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(artifact))
+
+
+def test_production_call_shape_reads_the_saved_topology_from_disk(
+    tmp_path, monkeypatch
+):
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    _write_topology_artifact(tmp_path, monkeypatch, _mono_topology(0).to_dict())
+
+    yaml = emit_flat_outputd_cutover_config()
+
+    assert _pipeline_names(yaml, 1) == (
+        f"names: [flat, {output_commission_mute_name(1)}]"
+    )
+
+
+def test_production_call_shape_missing_topology_renders_the_golden(
+    tmp_path, monkeypatch
+):
+    """A fresh box has no topology artifact — it must boot the golden graph."""
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "does-not-exist.json")
+    )
+
+    assert emit_flat_outputd_cutover_config() == emit_flat_outputd_cutover_config(
+        topology=new_topology_draft()
+    )
+
+
+def test_production_call_shape_corrupt_topology_renders_the_golden_without_raising(
+    tmp_path, monkeypatch
+):
+    """A corrupt topology must not take the RENDER down.
+
+    The renderer declines to guess and emits the unmuted graph; the statefile
+    guard is what fails closed on the same corrupt artifact, and it can say why.
+    A raise here would abort the deploy at the render step with a traceback
+    instead.
+    """
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    artifact = tmp_path / "output_topology.json"
+    artifact.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(artifact))
+
+    assert emit_flat_outputd_cutover_config() == emit_flat_outputd_cutover_config(
+        topology=new_topology_draft()
+    )

@@ -2504,3 +2504,202 @@ def test_render_subcommand_reports_a_torn_conf_instead_of_inventing_one(
     assert conf.read_text(encoding="utf-8") == (
         "pcm.jts_ring_capture { type jts_ring }\n"
     )
+
+
+# --- flat cutover render (issue #2179 / #2182) --------------------------------
+#
+# The startup graph is width-matched to the SAVED output topology, so it goes
+# stale whenever the layout changes. The two paths that change it — the /sound/
+# topology save and jasper-output-topology-reset — run inside jasper-web's
+# sandbox, which has no /etc/camilladsp write path (WS1-deliberate). Both kick
+# THIS reconciler, which runs as root, so the runtime render lives here.
+
+
+def _flat_cutover_event(stderr: str) -> dict[str, str]:
+    """The flat_cutover log line, parsed into its `key=value` fields.
+
+    `log_event` emits `event=<name> reason=$REASON <rest>`, so the run reason is
+    interleaved ahead of the function's own keys — asserting on an adjacent
+    `flat_cutover result=...` substring silently never matches. Parsing also
+    keeps the assertions off the tmp-path values that trail the line.
+    """
+    prefix = "event=audio_hardware_reconcile.flat_cutover "
+    lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
+    assert len(lines) == 1, f"expected exactly one flat_cutover event, got {lines}"
+    fields: dict[str, str] = {}
+    for token in lines[0][len(prefix) :].split():
+        key, _, value = token.partition("=")
+        fields.setdefault(key, value)  # first `reason=` is the run reason
+    return fields
+
+
+def _fake_jasper_sound_cli(tmp_path: Path) -> Path:
+    """A ``jasper-sound`` shim backed by the REAL CLI, so this is end-to-end."""
+    script = tmp_path / "jasper-sound"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec {sys.executable} -c "
+        "'from jasper.cli.sound import main; raise SystemExit(main())' \"$@\"\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _mono_topology_payload() -> dict:
+    return {
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": "innomaker_hifi_amp_pro",
+            "device_label": "InnoMaker HiFi AMP Pro",
+            "card_id": "sndrpimerusamp",
+            "physical_output_count": 2,
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    }
+
+
+def test_reconcile_renders_the_width_matched_cutover_and_is_idempotent(
+    tmp_path: Path,
+):
+    """Write-on-change, and width-matched to the saved topology.
+
+    The reconciler runs on every boot and every sound-card event, so an
+    unconditional write would churn the file's mtime and make "did the graph
+    change?" unanswerable from the filesystem — the same reason its env writes
+    go through ``set_env_var_if_changed``.
+    """
+    conf_dir = tmp_path / "camilladsp"
+    conf_dir.mkdir()
+    (tmp_path / "output_topology.json").write_text(
+        json.dumps(_mono_topology_payload()), encoding="utf-8"
+    )
+    extra = {
+        "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
+        "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
+        "PYTHONPATH": str(ROOT),
+    }
+
+    first = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+    assert first.returncode == 0, first.stderr
+    first_event = _flat_cutover_event(first.stderr)
+    assert first_event["result"] == "ok"
+    assert first_event["changed"] == "yes"
+
+    cutover = conf_dir / "outputd-cutover.yml"
+    ring = conf_dir / "outputd-cutover-ring.yml"
+    # Width-matched: the mono topology claims output 0, so channel 1 is muted.
+    assert "as_out1_commission_mute" in cutover.read_text(encoding="utf-8")
+    assert ring.exists()
+    assert cutover.stat().st_mode & 0o777 == 0o644
+    before = (cutover.stat().st_mtime_ns, cutover.read_bytes())
+
+    second = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+    assert second.returncode == 0, second.stderr
+    second_event = _flat_cutover_event(second.stderr)
+    assert second_event["result"] == "ok"
+    assert second_event["changed"] == "no"
+    assert (cutover.stat().st_mtime_ns, cutover.read_bytes()) == before
+
+
+def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
+    """A corrupt topology must FAIL the render, not succeed unmuted.
+
+    `flat_graph_muted_outputs` fails SOFT — mute nothing — which is right for
+    every caller that has a guard behind it (install's statefile check, the
+    reset's contract call, the carrier's `can_host_eq`). The reconciler has
+    NOTHING behind it: it renders on boot / udev / topology-save, and CamillaDSP
+    loads the cutover from its statefile on its next start with no ordering to
+    this. So a soft failure here would overwrite a healthy width-matched graph
+    with an unmuted one and log success — silently, in the hazard direction.
+    Keeping the previous file is the fail-closed answer.
+    """
+    conf_dir = tmp_path / "camilladsp"
+    conf_dir.mkdir()
+    topology = tmp_path / "output_topology.json"
+    extra = {
+        "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
+        "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
+        "PYTHONPATH": str(ROOT),
+    }
+
+    # A healthy mono box first: the good, width-matched graph on disk.
+    topology.write_text(json.dumps(_mono_topology_payload()), encoding="utf-8")
+    healthy = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+    assert healthy.returncode == 0, healthy.stderr
+    cutover = conf_dir / "outputd-cutover.yml"
+    good = cutover.read_bytes()
+    assert b"as_out1_commission_mute" in good
+
+    # Now the topology goes unparseable underneath it.
+    topology.write_text("{not json", encoding="utf-8")
+    corrupt = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+
+    # BYTES FIRST: the substantive harm is the good graph being overwritten
+    # with an unmuted one, so that is the assertion that must fail without the
+    # fix — not the log line.
+    assert cutover.read_bytes() == good
+    # The reconcile itself still completes (a render failure is best-effort),
+    # but it is reported FAILED rather than logged as a successful render.
+    assert corrupt.returncode == 0, corrupt.stderr
+    assert _flat_cutover_event(corrupt.stderr)["result"] == "failed"
+
+
+def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
+    """MISSING is not CORRUPT. A fresh box declares nothing, so nothing is
+    undeclared, and the golden unmuted graph is the correct render."""
+    conf_dir = tmp_path / "camilladsp"
+    conf_dir.mkdir()
+    # No output_topology.json written at all.
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
+            "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
+            "PYTHONPATH": str(ROOT),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _flat_cutover_event(result.stderr)["result"] == "ok"
+    rendered = (conf_dir / "outputd-cutover.yml").read_text(encoding="utf-8")
+    assert "commission_mute" not in rendered
+
+
+def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
+    tmp_path: Path,
+):
+    """Best-effort: a missing CLI must not abort a hardware reconcile."""
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_SOUND_CLI": str(tmp_path / "absent")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    event = _flat_cutover_event(result.stderr)
+    assert event["result"] == "skipped"
+    # The run reason wins the first `reason=`; the skip cause trails it.
+    assert "reason=cli_unavailable" in result.stderr

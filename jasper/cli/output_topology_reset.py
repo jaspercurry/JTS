@@ -56,6 +56,7 @@ roleful-topology + flat-graph combination.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -164,17 +165,54 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
     the next deploy re-seeded the statefile — the "reset output topology to
     passive" exit did not actually exit.
 
-    Asks the runtime contract for the legal graph, then hands it to CamillaDSP
-    over the websocket, which reloads AND persists the statefile itself (the
-    seam the room-correction wizard already uses). Best-effort and never raises:
-    a down CamillaDSP or an unselectable graph leaves the previous, still-safe
-    graph and self-heals on the next deploy.
-    """
+    RE-RENDERS the flat cutover for the NEW topology first, then asks the
+    runtime contract for the legal graph, then hands it to CamillaDSP over the
+    websocket, which reloads AND persists the statefile itself (the seam the
+    room-correction wizard already uses).
 
-    import asyncio
+    **The in-process render only works for the ROOT CLI path.** Called from the
+    /sound/ wizard, this runs inside jasper-web's sandbox, which has no
+    ``/etc/camilladsp`` write path (``ReadWritePaths`` in jasper-web.service —
+    a WS1-deliberate boundary that must NOT be widened for this). There the
+    render raises ``OSError``, is caught below, and the file is re-rendered
+    instead by ``jasper-audio-hardware-reconcile``, which runs as root and is
+    kicked by ``_trigger_reconcile`` immediately after. ``render_error`` is
+    reported either way, and the /sound/ page surfaces it — a render that
+    silently failed is how a half-muted graph got loaded in the first place.
+
+    The re-render is load-bearing, not tidiness. The on-disk cutover is
+    width-matched to whatever topology was saved when it was last rendered, so
+    after resetting a MONO box the file still hard-mutes the channel that
+    topology did not claim. An unconfigured topology claims nothing, so the
+    emission check has nothing to compare against and accepts the stale
+    half-muted graph — the box comes back audible on one output and silent on
+    the other, with no blocker to explain it, on the documented escape hatch.
+    Rendering first mirrors install's own render -> check -> load ordering, and
+    for an unconfigured draft it produces the golden unmuted graph.
+
+    Best-effort and never raises: a down CamillaDSP, a failed render, or an
+    unselectable graph leaves the previous, still-safe graph and self-heals on
+    the next deploy.
+    """
 
     from jasper.active_speaker import runtime_contract
 
+    render_error: str | None = None
+    try:
+        from jasper.sound.camilla_yaml import render_flat_cutover_configs
+
+        # The same single writer install and the reconciler use — it owns the
+        # write-on-change and the 0644 mode, so this recovery path cannot leave
+        # a file that differs from what a deploy would produce.
+        render_flat_cutover_configs(
+            config_dir=Path(runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG).parent,
+            topology=topology,
+        )
+    except _CONVERGENCE_ERRORS as exc:
+        # Fall through to the contract with whatever is on disk: that is the
+        # pre-existing behaviour, and the contract still refuses an over-wide
+        # graph out loud rather than loading it.
+        render_error = f"{type(exc).__name__}: {exc}"
     try:
         decision = runtime_contract.safe_graph_for_current_topology(
             topology,
@@ -193,8 +231,46 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
             "error": decision.reason,
         }
     selected = decision.selected_config_path
-    loaded = False
-    error: str | None = None
+    loaded, error = _load_graph(selected)
+    log_event(
+        logger,
+        "output_topology.reset_camilla",
+        status=decision.status,
+        config_path=selected,
+        ok=bool(loaded),
+        error=error,
+        render_error=render_error,
+        level=logging.INFO if loaded and not render_error else logging.WARNING,
+    )
+    return {
+        "ok": bool(loaded),
+        "status": decision.status,
+        "config_path": selected,
+        "error": error,
+        # Surfaced separately from `error`: the graph can load fine while the
+        # re-render failed, which means the loaded cutover is still the previous
+        # topology's width-matched one.
+        "render_error": render_error,
+        # What was actually loaded, so `_reload_if_render_changed` can tell
+        # whether the reconciler's render superseded it.
+        "config_digest": _config_digest(selected),
+    }
+
+
+def _config_digest(path: str | Path | None) -> str | None:
+    """A content digest of a config file, or ``None`` if it cannot be read."""
+    if not path:
+        return None
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _load_graph(selected: str) -> tuple[bool, str | None]:
+    """Hand one config path to CamillaDSP. Best-effort; never raises."""
+    import asyncio
+
     try:
         from jasper.camilla import primary_controller
 
@@ -204,25 +280,57 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
             )
         )
     except _CONVERGENCE_ERRORS as exc:
-        error = f"{type(exc).__name__}: {exc}"
-    else:
-        if not loaded:
-            error = "CamillaDSP did not accept the graph"
+        return False, f"{type(exc).__name__}: {exc}"
+    return loaded, None if loaded else "CamillaDSP did not accept the graph"
+
+
+def _reload_if_render_changed(camilla: dict[str, Any]) -> dict[str, Any]:
+    """Re-load the graph iff the reconciler's render changed it underneath us.
+
+    CamillaDSP reads its config at LOAD time only, and
+    ``jasper-audio-hardware-reconcile`` restarts outputd but never
+    jasper-camilla — so a file the reconciler re-rendered after
+    :func:`_converge_camilla_graph` loaded is on disk but NOT running. That is
+    the ordinary web path: the in-process render cannot write /etc/camilladsp
+    from jasper-web's sandbox, so the first load takes the STALE graph and the
+    reconciler fixes the file a moment later. Without this the household needs a
+    second reset (or a deploy, or a reboot) before the speaker is right, on the
+    documented recovery path.
+
+    Gated on the digest rather than unconditional: on the root CLI path the
+    first render already produced the final bytes, so re-loading would cost a
+    needless CamillaDSP reload every reset. Returns the camilla result, updated
+    in place when a reload happened.
+
+    NOT solved by reordering the reconcile ahead of the converge. The reconciler
+    reads the camilla statefile — ``outputd_active_lane_decision``
+    (jasper/active_speaker/runtime_contract.py) classifies the graph the
+    statefile points at and that answer becomes ``JASPER_OUTPUTD_ACTIVE_CHANNELS``,
+    the width outputd opens on the DAC. Running it first would classify the
+    PREVIOUS graph against the NEW topology. The existing "graph first, then
+    outputd" ordering is load-bearing for that reason; this reload preserves it.
+    """
+
+    selected = camilla.get("config_path")
+    if not selected or camilla.get("skipped"):
+        return camilla
+    current = _config_digest(selected)
+    if current is None or current == camilla.get("config_digest"):
+        return camilla
+    loaded, error = _load_graph(str(selected))
+    camilla["reloaded_after_render"] = True
+    camilla["ok"] = bool(loaded)
+    camilla["error"] = error
+    camilla["config_digest"] = current
     log_event(
         logger,
-        "output_topology.reset_camilla",
-        status=decision.status,
+        "output_topology.reset_camilla_reload",
         config_path=selected,
         ok=bool(loaded),
         error=error,
         level=logging.INFO if loaded else logging.WARNING,
     )
-    return {
-        "ok": bool(loaded),
-        "status": decision.status,
-        "config_path": selected,
-        "error": error,
-    }
+    return camilla
 
 
 def reset_to_detected_passive(
@@ -244,13 +352,22 @@ def reset_to_detected_passive(
     skipped: dict[str, Any] = {"ok": None, "skipped": True}
     # Graph first, then outputd: the graph load is what makes the speaker
     # audible again, and the reconcile that follows re-derives outputd's env
-    # against the graph that is now actually loaded.
+    # against the graph that is now actually loaded (its active-lane gate
+    # classifies whatever the camilla statefile points at — see
+    # `_reload_if_render_changed`, which is why this order is not simply
+    # swapped).
     camilla_result: dict[str, Any] = (
         _converge_camilla_graph(after) if reconcile else dict(skipped)
     )
     reconcile_result: dict[str, Any] = (
         _trigger_reconcile() if reconcile else dict(skipped)
     )
+    # `_trigger_reconcile` BLOCKS (no_block=False), so by here the reconciler's
+    # own render has finished. If it superseded the file we loaded, load again —
+    # nothing else will, and the operator was promised a converged RUNNING graph
+    # by the time this command returns.
+    if reconcile:
+        camilla_result = _reload_if_render_changed(camilla_result)
     log_event(
         logger,
         "output_topology.reset",

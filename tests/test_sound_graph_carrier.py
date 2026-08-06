@@ -1363,3 +1363,142 @@ def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
 
     assert result.yaml == "active-yaml"
     assert "coupling_capture_kwargs" not in recompose.call_args.kwargs
+
+
+# --- width match on the stereo-host re-emit (issue #2179) ---------------------
+#
+# The deploy sequence on a mono box is: render the width-matched cutover ->
+# statefile guard approves it -> reconcile_sound_dsp_state -> restart Camilla.
+# The reconcile re-emits through THIS carrier, so if it does not carry the mute,
+# the deploy silently replaces the graph the guard just approved with the very
+# graph the guard refuses, and the restart loads it.
+
+
+def _full_range_mono_topology():
+    from tests.test_active_speaker_runtime_contract import _full_range_mono
+
+    return _full_range_mono()
+
+
+def _classify_flat(text: str, topology):
+    return classify_camilla_graph(topology=topology, text=text)
+
+
+@pytest.mark.parametrize("kind", ["base_flat", "sound_or_correction"])
+def test_stereo_host_reemit_is_width_matched_on_a_mono_topology(
+    tmp_path, monkeypatch, kind
+):
+    """The field sequence, reproduced: mono topology + a non-default profile.
+
+    Both stereo-host carriers (`base_flat` from the cutover — the fresh mono box
+    — and `sound_or_correction` from a saved sound config) must re-emit WITH the
+    unclaimed channel muted, so the graph the reconcile writes still passes the
+    statefile guard that just approved the cutover.
+    """
+    from jasper.sound.profile import SimpleEq, SoundProfile
+
+    topology = _full_range_mono_topology()
+    _persist_topology(topology, tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    if kind == "base_flat":
+        loaded = str(BASE_CONFIG_PATH)
+    else:
+        path = config_dir / "sound_current.yml"
+        path.write_text(
+            emit_sound_config(SoundProfile(enabled=False)), encoding="utf-8"
+        )
+        loaded = str(path)
+
+    carrier = carrier_for_loaded_config(loaded, config_dir=config_dir)
+    assert carrier.kind == kind
+    # A NON-default profile — the condition that makes the reconcile actually
+    # rewrite the graph rather than leave it alone.
+    result = carrier.reemit(
+        SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
+    )
+
+    graph = _classify_flat(result.yaml, topology)
+    assert graph.allowed is True
+    assert graph.details["hard_muted_outputs"] == [1]
+
+
+def test_stereo_host_reemit_on_stereo_and_unconfigured_is_byte_unchanged(
+    tmp_path, monkeypatch
+):
+    """Every non-mono box re-emits exactly what it did before."""
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.profile import SimpleEq, SoundProfile
+
+    profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
+    golden = emit_sound_config(profile, room_peqs=[])
+
+    for index, topology in enumerate((_full_range_stereo(), new_topology_draft())):
+        _persist_topology(topology, tmp_path, monkeypatch)
+        config_dir = tmp_path / f"configs-{index}"
+        config_dir.mkdir()
+
+        carrier = carrier_for_loaded_config(
+            str(BASE_CONFIG_PATH), config_dir=config_dir
+        )
+        assert carrier.kind == "base_flat"
+        assert carrier.reemit(profile).yaml == golden
+
+
+def test_channel_split_reemit_is_never_width_matched(tmp_path, monkeypatch):
+    """The channel_split withhold branch, pinned on its own.
+
+    Deleting it fails nothing else: `emit_sound_config`'s loud raise is the
+    backstop, so the branch's only observable job is to reach that call WITHOUT
+    a muted set rather than crash a member re-emit. Reachable only through an
+    explicit `member_kwargs` (canonical members always resolve `None`), which is
+    exactly why it needs its own test.
+    """
+    from jasper.multiroom.channel_split import build_channel_split
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_full_range_mono_topology(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+
+    carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=config_dir)
+    result = carrier.reemit(
+        SoundProfile(enabled=False),
+        member_kwargs={
+            "enable_rate_adjust": True,
+            "channel_split": build_channel_split("sub"),
+            "playback_pipe_path": None,
+        },
+    )
+
+    # Withheld, so the emit succeeds instead of raising the exclusivity error.
+    assert "commission_mute" not in result.yaml
+
+
+def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
+    """A bonded leader writes the SHARED stereo program to Snapcast's FIFO.
+
+    There is no local DAC output to decline, and muting a channel would strip it
+    out of the group's stream for every follower. The mute must be withheld even
+    though the saved topology is mono.
+    """
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_full_range_mono_topology(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "grouping_leader.yml"
+    path.write_text(emit_sound_config(SoundProfile(enabled=False)), encoding="utf-8")
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    result = carrier.reemit(
+        SoundProfile(enabled=False),
+        member_kwargs={
+            "enable_rate_adjust": False,
+            "channel_split": None,
+            "playback_pipe_path": SNAPFIFO,
+        },
+    )
+
+    assert "commission_mute" not in result.yaml

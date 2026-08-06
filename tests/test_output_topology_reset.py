@@ -258,6 +258,252 @@ def test_reset_loads_the_passive_graph_into_camilla(
     assert loaded == [str(flat_config)]
 
 
+def test_reset_rerenders_the_cutover_so_a_mono_era_mute_cannot_survive(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reset must not load the PREVIOUS topology's width-matched graph.
+
+    On a mono box the on-disk cutover hard-mutes the channel that topology did
+    not claim. The reset writes an unconfigured draft, which claims nothing — so
+    the emission check has nothing to compare against and would happily accept
+    the stale half-muted graph. The box comes back audible on one output and
+    silent on the other, with no blocker to explain it, on the documented escape
+    hatch. Re-rendering first is what closes it.
+    """
+    from jasper.output_topology import OutputTopology
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    mono = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": DETECTED_LABEL,
+            "physical_output_count": DETECTED_OUTPUTS,
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+    # The mono-era render, exactly as the last deploy left it on disk.
+    emit_flat_outputd_cutover_config(out_path=flat_config, topology=mono)
+    assert "commission_mute" in flat_config.read_text(encoding="utf-8")
+
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loaded.append(path)
+            return True
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    # BEHAVIOUR FIRST (this is the assertion that must fail without the fix):
+    # the graph the box actually loaded has BOTH channels live again.
+    assert loaded == [str(flat_config)]
+    reloaded = flat_config.read_text(encoding="utf-8")
+    assert "commission_mute" not in reloaded
+    assert reloaded == emit_flat_outputd_cutover_config(topology=_after_draft())
+    # install's file mode is preserved, not narrowed to the emitter's 0640.
+    assert flat_config.stat().st_mode & 0o777 == 0o644
+    assert result["camilla"]["ok"] is True
+    assert result["camilla"]["render_error"] is None
+
+
+def _after_draft():
+    """The unconfigured passive draft the reset writes."""
+    from jasper.output_topology import new_topology_draft
+
+    return new_topology_draft()
+
+
+def test_reset_from_the_web_sandbox_reports_the_render_it_could_not_do(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Called from /sound/, the in-process render CANNOT write /etc/camilladsp.
+
+    jasper-web.service's ReadWritePaths does not include it — a WS1-deliberate
+    boundary that must not be widened for this. So the render raises OSError,
+    which `_CONVERGENCE_ERRORS` swallows; before this round the reset then
+    reported plain success and loaded the stale half-muted graph, with the
+    failure visible nowhere. Two things must hold now: the reset still succeeds
+    (the topology is already passive and safe), and the failure is REPORTED so
+    the page can say so.
+    """
+    from jasper.sound import camilla_yaml as sound_camilla_yaml
+
+    def _sandboxed(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(
+        sound_camilla_yaml, "render_flat_cutover_configs", _sandboxed
+    )
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["after"]["speaker_groups"] == []
+    assert result["camilla"]["ok"] is True
+    assert "Read-only file system" in (result["camilla"]["render_error"] or "")
+
+
+def test_reset_reloads_the_graph_the_reconciler_rendered_underneath_it(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One reset must converge the RUNNING graph, not just the file.
+
+    The web-path sequence: the in-process render cannot write /etc/camilladsp
+    from jasper-web's sandbox, so `_converge_camilla_graph` loads the STALE
+    mono-era graph; the reconciler then re-renders the file correctly — but it
+    restarts outputd only, never jasper-camilla, and CamillaDSP reads its config
+    at load time. Without the reload the household gets: reset #1 -> disk
+    correct, RUNNING graph still half-muted, one output silent until a second
+    reset / deploy / reboot.
+    """
+    from jasper.sound import camilla_yaml as sound_camilla_yaml
+    from jasper.sound.camilla_yaml import (
+        emit_flat_outputd_cutover_config,
+        render_flat_cutover_configs,
+    )
+
+    # The mono-era render the last deploy left on disk.
+    emit_flat_outputd_cutover_config(
+        out_path=flat_config, topology=_mono_topology_for_reset()
+    )
+    assert "commission_mute" in flat_config.read_text(encoding="utf-8")
+
+    # jasper-web's sandbox: the in-process render cannot write.
+    def _sandboxed(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(
+        sound_camilla_yaml, "render_flat_cutover_configs", _sandboxed
+    )
+
+    # The root reconciler, which CAN write, does the render when kicked.
+    def _reconcile_renders():
+        render_flat_cutover_configs(
+            config_dir=flat_config.parent, topology=_after_draft()
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", _reconcile_renders)
+
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            # Snapshot what CamillaDSP would actually be running.
+            loaded.append(Path(path).read_text(encoding="utf-8"))
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    # The RUNNING graph — the last thing CamillaDSP was handed — has both
+    # channels live. This is the assertion that fails without the reload.
+    assert loaded, "CamillaDSP was never handed a graph"
+    assert "commission_mute" not in loaded[-1]
+    assert result["camilla"]["reloaded_after_render"] is True
+    assert result["camilla"]["ok"] is True
+    # ...and the first load really did take the stale graph, so the reload is
+    # doing the work rather than the test proving nothing.
+    assert "commission_mute" in loaded[0]
+
+
+def test_reset_does_not_reload_when_the_render_changed_nothing(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root CLI path already rendered the final bytes, so a second
+    CamillaDSP load would be a needless reload on every reset."""
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+
+    loads: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loads.append(path)
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert len(loads) == 1
+    assert "reloaded_after_render" not in result["camilla"]
+
+
+def _mono_topology_for_reset():
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": DETECTED_LABEL,
+            "physical_output_count": DETECTED_OUTPUTS,
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
+def test_sound_page_surfaces_the_reset_render_error() -> None:
+    """The honesty belt: `render_error` must reach the household, not just logs.
+
+    `resetCleanupWarning` used to read only `active_speaker_reset.status`, so a
+    failed render was invisible on the page that triggered it.
+    """
+    main_js = (
+        Path(__file__).resolve().parent.parent
+        / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
+    ).read_text(encoding="utf-8")
+
+    warning = main_js[main_js.index("function resetCleanupWarning") :]
+    warning = warning[: warning.index("\n  async function")]
+    compact = "".join(warning.split())
+
+    # The exact payload path the reset returns, so a renamed field breaks here
+    # rather than going quiet on the page.
+    assert "payload.reset.camilla&&payload.reset.camilla.render_error" in compact
+    # ...and it must actually be surfaced, not merely read.
+    assert "warnings.push" in compact
+    # The pre-existing artifact warning is still emitted.
+    assert "active_speaker_reset" in compact
+
+
 def test_reset_camilla_convergence_is_best_effort_and_reported(
     topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

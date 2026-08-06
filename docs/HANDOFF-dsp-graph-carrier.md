@@ -177,6 +177,44 @@ refusal lives at the carrier (and, for the direct correction caller, at
 `emit_sound_config` leaf — the multiroom solo-restore emit must stay lenient
 (un-bonding must always succeed).
 
+**Stereo hosts are WIDTH-MATCHED to the saved topology (mono carve-out).** A
+stereo host emits `FLAT_GRAPH_WIDTH` channels, but a **mono** full-range
+topology claims only one physical output. `_StereoHostCarrier` therefore reads
+[`runtime_contract.flat_graph_muted_outputs()`](../jasper/active_speaker/runtime_contract.py)
+at construction — the *same* single owner the flat cutover render reads, so the
+carrier restates no topology rules of its own — and passes it to
+`emit_sound_config(muted_outputs=…)`, which appends the repo's hard-mute idiom
+as the terminal filter on each unclaimed channel. Without this the deploy
+un-mutes its own graph: install renders the width-matched cutover, the statefile
+guard approves it, then `reconcile_sound_dsp_state` re-emits through this
+carrier and the Camilla restart loads the unmuted result — the very graph the
+guard refuses. The mute is **withheld** whenever the resolved sink is not this
+speaker's own DAC: a `playback_pipe_path` (bonded-leader Snap FIFO) carries the
+SHARED stereo program, so muting a channel would strip it out of the group's
+stream rather than silence a local output; a `channel_split` weave duplicates one
+program channel onto both outputs (so a per-output muted set stops meaning what
+the topology's per-output claim meant) and, for `channel="sub"`, **appends** its
+crossover after the mute in the same Filter step, defeating terminality outright
+— `emit_sound_config` raises on the combination. (The weave's `channel_select`
+Mixer is spliced right after `master_gain`, *before* the per-channel steps, so it
+is not the mechanism.) Non-mono topologies (stereo, unconfigured, composite) mute
+nothing and re-emit byte-for-byte as before.
+
+`_SoundOrCorrectionCarrier` inherits this, so **room correction on a mono box is
+width-matched too** and `assert_correction_graph_safe` now passes for it — the
+intended end state for #2180, both halves.
+
+Be precise about where the asymmetry lives. `assert_correction_graph_safe` judges
+the bytes it is handed, so carrier output passes and any unmuted graph is
+refused. `assert_flat_apply_safe` is a different, weaker predicate — protected
+tweeter only — which a mono topology passes. `CorrectionSession._prepare_config`'s
+compatibility branch (a caller that supplies only a setter, no
+`camilla_get_config`) reaches that weaker check and no carrier, so it would emit
+unmuted on a mono topology with nothing stopping it. It is safe by
+**unreachability**: exactly one production caller exists
+(`jasper/web/correction_setup.py`) and it takes the carrier path. Width-gating or
+deleting that branch is #2185.
+
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 5-member
 set and only the active/program-bake carriers need special behavior; per AGENTS.md
 (avoid single-use abstractions) the dispatcher + recognizer is the
