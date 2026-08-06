@@ -11,7 +11,7 @@ import os
 import socket
 import time
 from collections import deque
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
@@ -280,6 +280,13 @@ class FanInDucker:
 # the dmix tail itself. 0.2 s is ~2.5x the 85 ms dmix buffer —
 # still a margin, but won't swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
+
+# Liveness-tick cadence for a push-to-talk-only speaker, which has no
+# primary mic stream to prove the async loop is iterating. Must stay well
+# under `Heartbeat`'s 5 s stale threshold (jasper/watchdog.py) or the
+# unit's WatchdogSec=30s would reap a healthy daemon; 2 s leaves 2.5x
+# margin while costing one wakeup per interval.
+PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 
 # Per-leg score-freshness window. When a leg fires, another leg's most-
 # recent score counts toward `fired_legs` (and the per-leg log line) only
@@ -756,6 +763,12 @@ _LEG_DEVICE_ATTR: dict[str, str] = {
 }
 
 
+# Sentinel for `WakeLoop.for_tests` constructor-time knobs, so a test can
+# pass an explicit None (no VAD / no legs) and have it mean "none" rather
+# than "use the default".
+_UNSET = object()
+
+
 def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
     """Decide which wake legs to build and each one's device string.
 
@@ -766,6 +779,17 @@ def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
     its device is present (or parking voice). Optional "off"/"dtln" legs
     are built only when their device var is non-empty, so voice never
     opens a UDP listener nobody feeds.
+
+    A speaker with no always-listening mic — every turn opened by an
+    accessory button — is a shape the WakeLoop below now tolerates (zero
+    legs, one or more manual mic sources). Nothing here produces that
+    shape yet, and deliberately so: deciding it from `cfg.mic_device`
+    being empty does not survive contact with a real streambox, whose
+    `jasper.env` sets no `JASPER_MIC_DEVICE` at all and therefore inherits
+    `Config`'s `"Array"` default — an unresolved mic presenting as a
+    phantom present one. Making the primary leg conditional on a
+    *resolved* device belongs with whoever owns mic-presence resolution,
+    not here.
     """
     legs: list[tuple[LegSpec, str]] = []
     for spec in wake_input_legs():
@@ -843,6 +867,18 @@ class WakeLoop:
             runtime.source_id: runtime for runtime in (manual_mics or [])
         }
         self._active_manual_source: str | None = None
+        # Push-to-talk-only is a DERIVED runtime state, not a declared or
+        # config-inferred one: this daemon resolved zero wake legs and
+        # holds at least one manual mic source, so every turn it can ever
+        # open is a button turn. Derived rather than inferred on purpose —
+        # `cfg.mic_device` defaults to the literal "Array", so an
+        # unresolved mic reads as a present one and "empty mic_device"
+        # never fires on a real box. Derived from the legs the daemon
+        # actually opened, it also composes with the mic-unplugged case
+        # without knowing anything about install tiers.
+        self._push_to_talk_only: bool = (
+            not self._legs and bool(self._manual_mics)
+        )
         # Fail loud at construction if a configured leg lacks a _LEG_DB
         # telemetry mapping — otherwise it would raise an uncaught
         # KeyError in the wake hot path (telemetry must be fail-soft,
@@ -860,10 +896,17 @@ class WakeLoop:
         # legs' capture rings), so the established read sites — run()'s
         # main loop, _finalize_event_audio, _shadow_vad_score_raw,
         # _begin_turn, begin_event — keep reading flat attributes.
-        _on = self._legs["on"]
-        self._mic = _on.mic
-        self._detector = _on.detector
-        self._capture_ring_on = _on.capture_ring
+        # `_on` is absent on a push-to-talk-only speaker (no always-listening
+        # mic, so no wake leg — see `_push_to_talk_only`). Every read site
+        # below that can run in that mode is None-tolerant; run() branches to
+        # a keepalive loop instead of iterating a primary mic that isn't there.
+        _on = self._legs.get("on")
+        self._mic = _on.mic if _on is not None else None
+        self._detector = _on.detector if _on is not None else None
+        self._capture_ring_on = (
+            _on.capture_ring if _on is not None
+            else deque(maxlen=CAPTURE_RING_FRAMES)
+        )
         self._capture_ring_off = (
             self._legs["off"].capture_ring if "off" in self._legs
             else deque(maxlen=CAPTURE_RING_FRAMES)
@@ -939,7 +982,27 @@ class WakeLoop:
         # model is producing TTS, mic frames are forwarded to Gemini
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
-        self._vad = vad if vad is not None else SpeechVAD()
+        #
+        # None on a push-to-talk-only speaker. There the only turns that
+        # can carry audio are button turns (the manual-mic loops are the
+        # sole frame source), so `_manual_endpoint_this_turn` is set on
+        # every turn that reaches `_handle_session_frame` and no code
+        # path asks Silero a question — constructing it would load
+        # onnxruntime to answer nothing. `_resolve_barge_in_for_turn`
+        # refuses whenever this is None, which is what keeps
+        # `_handle_playback_frame` off it too.
+        #
+        # Keep the construction eager rather than lazy on the boxes that
+        # DO use it: a missing openWakeWord asset must still fail at
+        # daemon start (SpeechVADSetupError), not silently wait to break
+        # the household's first question.
+        self._vad: SpeechVAD | None
+        if vad is not None:
+            self._vad = vad
+        elif self._push_to_talk_only:
+            self._vad = None
+        else:
+            self._vad = SpeechVAD()
         # Session-state shadow VAD for the chip-direct ("off") leg, when
         # configured. Created in run() and carried on that leg's
         # _LegRuntime; aliased here for _shadow_vad_score_raw / _begin_turn.
@@ -1058,6 +1121,16 @@ class WakeLoop:
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
         self._server_vad_this_turn: bool = False
+        # Per-turn endpointer selection, decided ONCE at the top of
+        # _begin_turn. True when this turn's session audio comes from a
+        # push-to-talk source, i.e. the button owns both boundaries:
+        # press -> manual_session_start, release -> manual_session_end
+        # (which sets _input_ended and calls end_input() — exactly what
+        # the Silero end-of-utterance detector does). Running local VAD
+        # on such a turn makes it a SECOND writer of the same fact, and
+        # the faster of the two wins: 0.8 s of detected silence mid-hold
+        # closed the user's input while they were still holding.
+        self._manual_endpoint_this_turn: bool = False
         self._max_silero_raw_in_turn: float = 0.0
         self._silero_raw_armed_at_ms: int | None = None
         self._silero_aec_armed_at_ms: int | None = None
@@ -1075,6 +1148,7 @@ class WakeLoop:
             cfg.mic_device,
         )
         self._barge_in_no_ref_warned: bool = False
+        self._barge_in_ptt_warned: bool = False
         self._barge_in_active: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
@@ -1145,12 +1219,21 @@ class WakeLoop:
         self._peering_current_epoch: str = ""
 
     @classmethod
-    def for_tests(cls, **overrides):
+    def for_tests(cls, *, cfg_overrides=None, legs=_UNSET, vad=_UNSET,
+                  manual_mics=None, **overrides):
         """Build a fully-shaped WakeLoop without opening hardware.
 
         This is the supported seam for unit tests that exercise individual
         methods. It keeps production code free of defensive probes for
         objects constructed via ``__new__`` and manual partial init.
+
+        ``**overrides`` are applied by ``setattr`` AFTER construction, so
+        they cannot reach a decision ``__init__`` makes from its
+        arguments. ``cfg_overrides`` / ``legs`` / ``vad`` / ``manual_mics``
+        are the constructor-time knobs, added so a test can build the
+        shape a push-to-talk-only speaker actually has — no wake legs, a
+        manual mic source, and the real VAD selection rather than an
+        injected stub that bypasses it.
         """
 
         class _TestMic:
@@ -1256,22 +1339,24 @@ class WakeLoop:
             def reset(self) -> None:
                 return None
 
-        cfg = SimpleNamespace(
-            duck_db=0.0,
-            idle_timeout_sec=10.0,
-            mic_device="udp:9876",
-            mic_mute_state_path="/tmp/jasper-voice-daemon-test-mute.env",
-            peering_enabled=False,
-            peering_uds_socket="/tmp/jasper-peering-test.sock",
-            response_stall_timeout_sec=120.0,
-            server_vad_enabled=False,
-            server_vad_prefix_ms=300,
-            server_vad_silence_ms=500,
-            server_vad_threshold=0.5,
-            vad_barge_in_threshold=0.5,
-            voice_provider="test",
-            wake_model="test_model",
-        )
+        cfg = SimpleNamespace(**{
+            "duck_db": 0.0,
+            "idle_timeout_sec": 10.0,
+            "mic_device": "udp:9876",
+            "manual_mic_sources": {},
+            "mic_mute_state_path": "/tmp/jasper-voice-daemon-test-mute.env",
+            "peering_enabled": False,
+            "peering_uds_socket": "/tmp/jasper-peering-test.sock",
+            "response_stall_timeout_sec": 120.0,
+            "server_vad_enabled": False,
+            "server_vad_prefix_ms": 300,
+            "server_vad_silence_ms": 500,
+            "server_vad_threshold": 0.5,
+            "vad_barge_in_threshold": 0.5,
+            "voice_provider": "test",
+            "wake_model": "test_model",
+            **(cfg_overrides or {}),
+        })
         mic = _TestMic()
         detector = _TestDetector()
         on_ring = deque(maxlen=CAPTURE_RING_FRAMES)
@@ -1292,8 +1377,9 @@ class WakeLoop:
                     detector,
                     on_ring,
                 ),
-            ],
-            vad=_TestVad(),
+            ] if legs is _UNSET else legs,
+            manual_mics=manual_mics,
+            vad=_TestVad() if vad is _UNSET else vad,
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
@@ -2176,14 +2262,35 @@ class WakeLoop:
                 "manual_mic.sources_enabled",
                 sources=",".join(sorted(self._manual_mics)),
             )
+        # A push-to-talk-only speaker has no primary mic to iterate, so the
+        # Tier-1 heartbeat loses its usual liveness proof (a mic frame is
+        # evidence both capture AND the async loop are alive). Substitute a
+        # keepalive tick: it still proves the loop is iterating, which is the
+        # only claim that remains true without an always-listening mic. Audio
+        # arrives on the manual-mic loops instead. Ticks yield None so the
+        # frame body below skips them.
+        if self._mic is not None:
+            _frames = self._mic.frames()
+        else:
+            _frames = self._push_to_talk_keepalive_ticks()
+            log_event(
+                logger,
+                "voice.push_to_talk_only",
+                sources=",".join(sorted(self._manual_mics)),
+                keepalive_sec=PTT_KEEPALIVE_INTERVAL_SEC,
+            )
         try:
-            async for frame in self._mic.frames():
+            async for frame in _frames:
                 if self._heartbeat is not None:
                     self._heartbeat.bump()
                 if self._stop_event.is_set():
                     if self._state is State.SESSION:
                         await self._end_turn()
                     return
+                if frame is None:
+                    # Keepalive tick, not audio. The bump above was its whole
+                    # purpose; there is no wake detection to run.
+                    continue
 
                 # Room-correction measurement window: drop the frame
                 # entirely (no wake-word feed, no session dispatch, no
@@ -2251,6 +2358,19 @@ class WakeLoop:
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             await self._cancel_fire_and_forget_tasks()
+
+    async def _push_to_talk_keepalive_ticks(self) -> "AsyncIterator[None]":
+        """Yield a liveness tick every PTT_KEEPALIVE_INTERVAL_SEC.
+
+        Stands in for the primary mic's frame stream on a speaker that has
+        no always-listening mic. `Heartbeat` only pats systemd when the
+        progress sentinel is younger than its 5 s stale threshold, so the
+        interval must stay comfortably under that or `WatchdogSec=30s`
+        would reap a perfectly healthy daemon.
+        """
+        while not self._stop_event.is_set():
+            yield None
+            await asyncio.sleep(PTT_KEEPALIVE_INTERVAL_SEC)
 
     async def _manual_mic_loop(self, source_id: str) -> None:
         """Session-audio consumer for one push-to-talk mic source."""
@@ -3469,11 +3589,40 @@ class WakeLoop:
         Self-interrupt-loop guard: when barge-in is requested but the
         primary mic leg has no AEC reference (the ``direct_mic`` profile),
         hard-disable it for the turn and WARN once per daemon, rather than
-        let un-cancelled TTS bleed self-trip the gate every turn."""
+        let un-cancelled TTS bleed self-trip the gate every turn.
+
+        Push-to-talk turns refuse it for a related reason, and refuse
+        LOUDLY rather than going quietly inert. The frames
+        ``_handle_playback_frame`` would score on such a turn come from
+        the accessory's mic, but ``_barge_in_reference_available`` was
+        computed from ``cfg.mic_device`` — a different stream, and on a
+        push-to-talk-only speaker an empty one. So the self-interrupt
+        guard has not actually cleared the audio that barge-in would run
+        on. That is also where ``self._vad`` is None, which this refusal
+        keeps ``_handle_playback_frame`` from ever dereferencing."""
         self._barge_in_run_started_at = 0.0
         self._barge_in_run_peak = 0.0
         self._barge_in_signalled_this_run = False
         want = read_barge_in_enabled(self._cfg.voice_provider)
+        if want and (self._manual_endpoint_this_turn or self._vad is None):
+            # Its own one-shot latch, NOT `_barge_in_no_ref_warned`: on a
+            # speaker with both a room mic and a remote, sharing one latch
+            # would let a push-to-talk turn swallow the (different)
+            # no-reference warning a later wake turn owes the operator.
+            if not self._barge_in_ptt_warned:
+                self._barge_in_ptt_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_push_to_talk",
+                    provider=self._cfg.voice_provider,
+                    source=self._active_manual_source or "primary",
+                    detail=(
+                        "barge-in scores the primary mic leg, which a "
+                        "push-to-talk turn does not use"
+                    ),
+                    level=logging.WARNING,
+                )
+            want = False
         if want and not self._barge_in_reference_available:
             if not self._barge_in_no_ref_warned:
                 self._barge_in_no_ref_warned = True
@@ -3553,6 +3702,91 @@ class WakeLoop:
         if callable(trigger):
             trigger()
 
+    async def _send_session_audio(self, frame) -> None:
+        """Forward one frame to the live turn; end the turn if it refuses.
+
+        One implementation for all three endpointer paths (server VAD,
+        local Silero, push-to-talk) — they had byte-identical copies of
+        this block, and a fourth copy is how the handling drifts.
+        """
+        try:
+            await self._turn.send_audio(frame.tobytes())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("send_audio failed (will end turn): %s", e)
+            await self._end_turn()
+
+    async def _end_session_input(self, where: str) -> None:
+        """Close the user's input side: mark it ended and tell the turn.
+
+        ``where`` names the caller in the failure log so a stuck
+        ``end_input`` is attributable to end-of-utterance, the hard cap,
+        or the push-to-talk cap without a stack trace.
+        """
+        self._input_ended = True
+        try:
+            await self._turn.end_input()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "end_input failed at %s (will end turn): %s", where, e,
+            )
+            await self._end_turn()
+
+    def _endpointer_label(self) -> str:
+        """Which mechanism closes the current turn's user input.
+
+        One vocabulary, two readers: ``/state.voice.endpointer`` (live)
+        and the wake-events ``endpointer`` column (at turn end). Kept in
+        one place so a new endpointer can't be named two things.
+        """
+        if self._manual_endpoint_this_turn:
+            return "push_to_talk"
+        if self._server_vad_this_turn:
+            return "server_vad"
+        return "silero_aec"
+
+    async def _handle_manual_session_frame(self, frame) -> None:
+        """Forward one push-to-talk frame. The button owns end-of-input.
+
+        Reached from ``_handle_session_frame`` when
+        ``_manual_endpoint_this_turn`` is set. Deliberately does NOT run
+        local Silero:
+
+        * ``END_OF_UTTERANCE_SILENCE_SEC`` would call ``end_input()``
+          after 0.8 s of detected silence — while the user is still
+          holding the button. Release already does exactly that, so
+          Silero here is a second writer of "input is over" and the
+          faster of the two wins.
+        * ``NO_SPEECH_ABORT_SEC`` would end the turn outright 5 s into a
+          held button. A user who presses and then gathers their thought
+          is not a false wake; there was no wake to be false.
+
+        What survives is ``HARD_RECORDING_CAP_SEC``, and it must: a stuck
+        or dropped button (BLE loss mid-hold, remote wedged under a
+        cushion) means the release that would close this turn never
+        arrives. Without the cap the turn holds the duck, the LLM
+        session, and the mic open indefinitely. Same semantics as the
+        Silero path — end input, let the model answer what it got — so a
+        stuck button degrades to one over-long answer, not a wedge.
+        """
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._turn_started_at_loop
+        if elapsed >= HARD_RECORDING_CAP_SEC:
+            # `_input_ended` gates re-entry: once set, subsequent
+            # held-button frames are dropped by `_handle_session_frame`'s
+            # input-closed branch and never reach here, so this fires at
+            # most once per turn.
+            log_event(
+                logger,
+                "manual_mic.hard_cap",
+                source=self._active_manual_source or "primary",
+                elapsed_sec=f"{HARD_RECORDING_CAP_SEC:.1f}",
+                level=logging.WARNING,
+            )
+            await self._end_session_input("push-to-talk cap")
+            return
+
+        await self._send_session_audio(frame)
+
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
         # this frame is silently consumed (no double-dispatch into detector).
@@ -3569,6 +3803,15 @@ class WakeLoop:
             # playback).
             if self._barge_in_active:
                 await self._handle_playback_frame(frame)
+            return
+
+        # ---- Push-to-talk branch ----
+        # The button already carries both turn boundaries, so nothing
+        # here may close the user's input early. Must come BEFORE the
+        # server-VAD and Silero branches — both of those end input on
+        # their own schedule, which is the bug.
+        if self._manual_endpoint_this_turn:
+            await self._handle_manual_session_frame(frame)
             return
 
         # ---- Server-side VAD branch ----
@@ -3622,11 +3865,7 @@ class WakeLoop:
             if eou_check is not None and callable(eou_check) and eou_check():
                 self._input_ended = True
 
-            try:
-                await self._turn.send_audio(frame.tobytes())
-            except Exception as e:  # noqa: BLE001
-                logger.warning("send_audio failed (will end turn): %s", e)
-                await self._end_turn()
+            await self._send_session_audio(frame)
             return
 
         # ---- Local Silero VAD path (manual VAD) ----
@@ -3672,14 +3911,7 @@ class WakeLoop:
                 "hard recording cap reached (%.1fs); ending input",
                 HARD_RECORDING_CAP_SEC,
             )
-            self._input_ended = True
-            try:
-                await self._turn.end_input()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "end_input failed at cap (will end turn): %s", e,
-                )
-                await self._end_turn()
+            await self._end_session_input("cap")
             return
 
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
@@ -3724,28 +3956,32 @@ class WakeLoop:
                         "end-of-utterance: %.0fms user silence; sending activity_end",
                         silence_ms,
                     )
-                    self._input_ended = True
-                    try:
-                        await self._turn.end_input()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "end_input failed (will end turn): %s", e,
-                        )
-                        await self._end_turn()
+                    await self._end_session_input("end-of-utterance")
                     return
 
-        try:
-            await self._turn.send_audio(frame.tobytes())
-        except Exception as e:  # noqa: BLE001
-            logger.warning("send_audio failed (will end turn): %s", e)
-            await self._end_turn()
+        await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
-        """Forward buffered wake/acquire frames into the newly opened turn."""
+        """Forward buffered wake/acquire frames into the newly opened turn.
+
+        The VAD pass exists for one purpose: pre-arm ``_user_speech_seen``
+        so the live end-of-utterance detector doesn't abort a fast-talker
+        turn whose whole question landed in the acquire window. A
+        push-to-talk turn runs neither the detector nor the abort, so
+        scoring those frames would buy nothing and cost a Silero pass per
+        frame on the exact class of box (Pi Zero 2 W) that can least
+        afford it. ``drain_acquire_buffer`` already contracts
+        ``vad_predict=None`` -> ``sustained_speech_detected=False``.
+        """
+        vad_predict = (
+            None
+            if (self._manual_endpoint_this_turn or self._vad is None)
+            else self._vad.predict
+        )
         return await drain_acquire_buffer(
             self._acquire_buffer,
             self._turn,  # type: ignore[arg-type]
-            vad_predict=self._vad.predict,
+            vad_predict=vad_predict,
             speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
             peak_min=SPEECH_RUN_PEAK_MIN,
         )
@@ -3887,6 +4123,11 @@ class WakeLoop:
             },
             "manual_mic_sources": sorted(self._manual_mics),
             "active_manual_mic_source": self._active_manual_source,
+            # Who closes the in-flight turn's input. The decision itself,
+            # not a re-derivation of it — "the remote cut me off" and "the
+            # remote never cut me off" are the two bug reports this
+            # answers, and they need the daemon's own answer.
+            "endpointer": self._endpointer_label(),
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
@@ -3966,9 +4207,19 @@ class WakeLoop:
         # that bypass _handle_wake_frame.
         t_wake = self._wake_event_at_monotonic or _time.monotonic()
         t_begin = _time.monotonic()
+        # ---- Endpointer selection: ONE decision, made once per turn ----
+        # Who closes the user's input on this turn? A turn whose audio
+        # comes from a push-to-talk source is closed by the button
+        # release (`manual_session_end`), so local Silero must not also
+        # try. `_active_manual_source` is set by `manual_session_start`
+        # before it calls us, and is the same flag `_manual_mic_loop`
+        # gates on, so "the button owns this turn" and "manual-source
+        # frames are the session audio" are one fact, not two.
+        self._manual_endpoint_this_turn = self._active_manual_source is not None
         # Reset Silero VAD's internal LSTM state at turn start so
         # state from a previous turn doesn't leak into this one.
-        self._vad.reset()
+        if self._vad is not None:
+            self._vad.reset()
         # Reset end-of-utterance tracking. _input_ended must be False
         # so we resume forwarding mic frames; _user_speech_seen,
         # _silence_started_at, and _speech_run_started_at must be
@@ -4212,8 +4463,13 @@ class WakeLoop:
         store = session_vad_store
         eid = session_vad_eid
         if store is not None and eid is not None:
-            endpointer_label = "server_vad" if self._server_vad_this_turn else "silero_aec"
-            if not self._user_speech_seen and not self._server_vad_this_turn:
+            endpointer_label = self._endpointer_label()
+            # "no speech" is only a meaningful verdict when something was
+            # listening for speech. Keyed on the resolved label rather
+            # than on `not _server_vad_this_turn` so a push-to-talk turn
+            # — where nothing scores the audio — can never be recorded as
+            # a no-speech abort it did not perform.
+            if endpointer_label == "silero_aec" and not self._user_speech_seen:
                 endpointer_label = "no_speech_abort"
             try:
                 await store.update_session_vad(
@@ -4262,7 +4518,14 @@ class WakeLoop:
             logger.warning("teardown end_segment failed: %s", e)
 
         if self._turn is not None:
-            if self._input_ended or self._user_speech_seen:
+            # `_manual_endpoint_this_turn` is the third term because on a
+            # push-to-talk turn `_user_speech_seen` never flips (nothing
+            # scores those frames any more). Without it, a turn torn down
+            # mid-hold — idle watchdog, stop event, the release that never
+            # came — would stop calling end_input(), which it did before
+            # local VAD was taken off this path.
+            if (self._input_ended or self._user_speech_seen
+                    or self._manual_endpoint_this_turn):
                 try:
                     await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
                 except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
