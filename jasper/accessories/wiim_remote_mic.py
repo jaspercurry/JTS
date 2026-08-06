@@ -63,6 +63,13 @@ MANUAL_MIC_FRAME_BYTES = MANUAL_MIC_FRAME_SAMPLES * 2
 WIIM_STREAM_GAP_SEC = 0.250
 DEFAULT_UDP_PORT = WIIM_REMOTE_2_MIC_UDP_PORT
 
+# Root helper that reserves BLE connection-event length on the live remote
+# link. BlueZ hardcodes that reservation to 0, which lets the controller carry
+# roughly one Link Layer PDU per connection event — a quarter of the six PDUs
+# each 16 ms voice notification needs. See jasper/cli/wiim_remote_ce.py.
+CE_HELPER_UNIT = "jasper-wiim-remote-ce.service"
+CE_REQUEST_TIMEOUT_SEC = 5.0
+
 _ADPCM_INDEX_TABLE = (
     -1, -1, -1, -1, 2, 4, 6, 8,
     -1, -1, -1, -1, 2, 4, 6, 8,
@@ -320,6 +327,74 @@ class UdpPcmSink:
         self._sock.close()
 
 
+def _start_ce_helper() -> dict[str, Any]:
+    """Blocking broker call. Runs on a worker thread — never the event loop.
+
+    Guarded lazy import (mirrors jasper/fanin/coupling_reconcile.py): a
+    missing or broken control package degrades to a reported failure instead
+    of an exception that would take the adapter down.
+    """
+    try:
+        from jasper.control import restart_broker
+    except ImportError as exc:
+        return {"ok": False, "error": f"restart_broker unavailable: {exc}"}
+    return restart_broker.manage_units(
+        CE_HELPER_UNIT,
+        verb="start",
+        reason="wiim-remote-mic-notify-started",
+        # The broker answers as soon as systemd has queued the job; the helper
+        # journals its own verified verdict under event=wiim_remote_ce.*. We
+        # only need to know the request was accepted, so don't wait for the
+        # oneshot to finish.
+        no_block=True,
+        timeout=CE_REQUEST_TIMEOUT_SEC,
+    )
+
+
+async def _request_ce_reservation() -> None:
+    """Ask the root helper to reserve connection-event time for this link.
+
+    Per-connection and transient: the reservation dies with the connection,
+    and this process outlives disconnects (``_run_subscription`` returns and
+    ``_run`` loops), so unit ordering cannot do this — it has to fire here, on
+    every reconnect.
+
+    Offloaded to a thread on purpose. ``manage_units`` is a blocking socket
+    call, and this coroutine shares its event loop with the D-Bus reader that
+    delivers the mic notifications; calling it inline would stall that loop
+    and drop exactly the packets this reservation exists to save. The wait is
+    bounded by the broker client's own socket timeout, so no outer deadline is
+    needed (and none is added — cancelling a ``to_thread`` would orphan the
+    thread rather than stop it).
+
+    Fail-soft in every direction: a broken broker means degraded audio, never
+    a dead adapter.
+    """
+    try:
+        result = await asyncio.to_thread(_start_ce_helper)
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
+            "wiim_remote_mic.ce_request",
+            unit=CE_HELPER_UNIT,
+            ok=0,
+            error=f"{type(exc).__name__}: {exc}",
+            level=logging.WARNING,
+        )
+        return
+    if result.get("ok"):
+        log_event(logger, "wiim_remote_mic.ce_request", unit=CE_HELPER_UNIT, ok=1)
+        return
+    log_event(
+        logger,
+        "wiim_remote_mic.ce_request",
+        unit=CE_HELPER_UNIT,
+        ok=0,
+        error=str(result.get("error") or f"rc={result.get('rc')}")[:200],
+        level=logging.WARNING,
+    )
+
+
 async def _read_descriptor_value(bus: Any, path: str) -> bytes:
     intro = await bus.introspect(BLUEZ_BUS, path)
     proxy = bus.get_proxy_object(BLUEZ_BUS, path, intro)
@@ -436,6 +511,7 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
             source=args.source_id,
             udp=f"{args.udp_host}:{args.udp_port}",
         )
+        await _request_ce_reservation()
         try:
             while not stop.is_set() and not done.is_set():
                 try:

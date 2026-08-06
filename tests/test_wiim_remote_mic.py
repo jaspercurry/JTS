@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 from dbus_next import Variant
 
+from jasper.accessories import wiim_remote_mic
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_UDP_PORT
 from jasper.accessories.wiim_remote_mic import (
     BLUEZ_DEVICE_IFACE,
@@ -25,6 +29,7 @@ from jasper.accessories.wiim_remote_mic import (
     _find_voice_characteristic,
     voice_characteristic_candidates,
 )
+from jasper.control import restart_broker
 
 
 class _FakeDescriptor:
@@ -511,3 +516,88 @@ async def test_find_voice_characteristic_scans_after_match_and_propagates_error(
             managed,
             name_regex="WiiM Remote 2",
         )
+
+
+# ---------------------------------------------------------------------------
+# BLE connection-event reservation request (see jasper/cli/wiim_remote_ce.py).
+#
+# The adapter asks a root helper to reserve connection-event length on the
+# live link every time notifications start. Without it BlueZ's hardcoded
+# min/max CE of 0 leaves the remote's mic at ~26 % of realtime on a Pi Zero
+# 2 W (measured on jts4: 196/190 packets vs 794/805 with the reservation).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ce_reservation_request_uses_the_start_only_helper(monkeypatch):
+    """Exact broker call arguments. `start` is the only verb the helper is in
+    the broker allowlist for, and the unit name has to match it verbatim."""
+    calls = []
+
+    def fake_manage_units(*units, **kwargs):
+        calls.append((units, kwargs))
+        return {"ok": True, "action": "start", "rc": 0}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+    await wiim_remote_mic._request_ce_reservation()
+
+    assert calls == [(
+        ("jasper-wiim-remote-ce.service",),
+        {
+            "verb": "start",
+            "reason": "wiim-remote-mic-notify-started",
+            "no_block": True,
+            "timeout": 5.0,
+        },
+    )]
+
+
+@pytest.mark.asyncio
+async def test_ce_reservation_request_does_not_block_the_event_loop(monkeypatch):
+    """The 3c trap. `manage_units` is a blocking socket call and this loop is
+    also delivering the mic notifications; running it inline stalls the loop
+    and drops exactly the packets the reservation exists to save. If someone
+    replaces the thread offload with a direct call, the ticker below never
+    runs and the fake broker's wait times out."""
+    released = threading.Event()
+    ticks = 0
+
+    def fake_manage_units(*_units, **_kwargs):
+        assert released.wait(timeout=5.0), (
+            "the event loop did not run while the broker call was blocking — "
+            "_request_ce_reservation must offload it to a thread"
+        )
+        return {"ok": True}
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(3):
+            await asyncio.sleep(0)
+            ticks += 1
+        released.set()
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+    task = asyncio.ensure_future(ticker())
+    await wiim_remote_mic._request_ce_reservation()
+    await task
+    assert ticks == 3
+
+
+@pytest.mark.asyncio
+async def test_ce_reservation_request_is_fail_soft_on_a_broker_error(monkeypatch):
+    """Degraded audio beats no adapter: a broker that answers `ok: false` is
+    logged and the subscription carries on."""
+    monkeypatch.setattr(
+        restart_broker, "manage_units",
+        lambda *a, **k: {"ok": False, "error": "unit(s) not in allowlist"},
+    )
+    await wiim_remote_mic._request_ce_reservation()
+
+
+@pytest.mark.asyncio
+async def test_ce_reservation_request_is_fail_soft_when_the_broker_raises(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("broker socket vanished")
+
+    monkeypatch.setattr(restart_broker, "manage_units", boom)
+    await wiim_remote_mic._request_ce_reservation()

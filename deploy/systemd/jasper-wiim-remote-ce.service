@@ -1,0 +1,56 @@
+[Unit]
+Description=Reserve BLE connection-event time for the WiiM Remote 2 microphone
+Documentation=file:/opt/jasper/AGENTS.md
+# Started on demand by jasper-wiim-remote-mic (through jasper-control's restart
+# broker) every time the remote's voice notifications start — the reservation
+# lives on the connection, so it is lost on every disconnect and cannot be
+# expressed as unit ordering. Never enabled: no [Install] section.
+After=bluetooth.service
+
+[Service]
+Type=oneshot
+# root (no User=): issuing HCI_LE_Connection_Update means writing a raw HCI
+# command, which the kernel gates on CAP_NET_RAW (the LE OGF is outside the
+# HCI socket security filter). CAP_NET_RAW is the ONLY capability this needs —
+# the connection list is an unprivileged ioctl and nothing else is written.
+CapabilityBoundingSet=CAP_NET_RAW
+# AF_BLUETOOTH for the raw HCI socket; AF_UNIX for the D-Bus system bus, which
+# is how the helper asks BlueZ whether a live LE link really is the WiiM.
+RestrictAddressFamilies=AF_BLUETOOTH AF_UNIX
+ExecStart=/opt/jasper/.venv/bin/jasper-wiim-remote-ce
+# Bounded work: one BlueZ read (5 s cap) plus one connection update whose
+# confirmation is waited for with a 5 s cap. TimeoutStartSec is the right knob
+# here — RuntimeMaxSec has no effect on Type=oneshot.
+TimeoutStartSec=20
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+IPAddressDeny=any
+UMask=0077
+# (No RemoveIPC=: systemd only implements it for non-root services, and this
+# one is root by necessity. Listing it would imply a protection it has not.)
+
+# One short-lived Python process: the interpreter, dbus-next, and a couple of
+# sockets. Measured sibling (jasper-wiim-remote-mic) sits near 15 MB resident;
+# this box has ~139 MB free, so cap well below that rather than trusting it.
+MemoryMax=64M

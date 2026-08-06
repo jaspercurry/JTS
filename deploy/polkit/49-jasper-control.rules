@@ -79,6 +79,7 @@ polkit.addRule(function(action, subject) {
         "jasper-fanin-coupling-auto.service",
         "jasper-source-intent-reconcile.service",
         "jasper-wifi-scan-repair.service",
+        "jasper-wiim-remote-ce.service",
         "jasper-xvf-firmware-update.service",
         "jasper-enhanced-aec-install.service"
     ];

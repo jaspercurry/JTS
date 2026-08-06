@@ -672,6 +672,12 @@ code = [
   "deploy/systemd/jasper-mux.service",
   "deploy/systemd/jasper-accessory-reconcile.service",
   "deploy/systemd/jasper-wiim-remote-mic.service",
+  # The BLE connection-event reservation the WiiM mic adapter kicks on every
+  # reconnect. Pinned here with its sibling unit (each jasper unit belongs to
+  # exactly one subsystem); its privileged-surface story lives in
+  # HANDOFF-privilege-separation.md, reached via the restart-broker route.
+  "deploy/systemd/jasper-wiim-remote-ce.service",
+  "jasper/cli/wiim_remote_ce.py",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/nqptp.service",
   "deploy/systemd/librespot.service",
