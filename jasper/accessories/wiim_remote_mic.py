@@ -49,11 +49,13 @@ WIIM_VOICE_REPORT_REFERENCE = bytes((0x03, 0x01))
 WIIM_VOICE_PACKET_BYTES = 131
 # The 3 bytes ahead of the ADPCM payload are an IMA block header carrying the
 # encoder's own state: a BIG-endian int16 predictor then the step index. Both
-# were confirmed exactly against hardware (jts3, 2620 packets, issue #2198):
-# int16be(payload[0:2]) equalled the last sample the previous packet decoded to
-# on 146/146 boundaries, and payload[2] equalled the decoder's step index on
-# 147/147. Little-endian — the WAV IMA convention — matched 1/146, so the byte
-# order here is load-bearing.
+# were confirmed against hardware (jts3, issue #2198). In a 147-packet
+# single-burst capture, int16be(payload[0:2]) equalled the last sample the
+# previous packet decoded to on 146/146 boundaries, and payload[2] equalled the
+# decoder's step index on 147/147. Little-endian — the WAV IMA convention —
+# matched 1/146, and that one was coincidence: a header of ff ff 01 reads as -1
+# little-endian, which the previous packet happened to end on. So the byte order
+# is load-bearing.
 WIIM_VOICE_FRAMING_BYTES = 3
 WIIM_VOICE_PACKET_SAMPLES = 256
 MANUAL_MIC_FRAME_SAMPLES = 1280
