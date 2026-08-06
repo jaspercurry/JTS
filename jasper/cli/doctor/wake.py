@@ -16,6 +16,7 @@ from ...audio_profile_state import (
     resolve_audio_input_intent,
 )
 from ...config import Config
+from ...openwakeword_guard import ensure_openwakeword_import_safe
 from ._registry import doctor_check
 from ._shared import CheckResult, _sha256_file
 from .aec import (
@@ -27,6 +28,10 @@ from .aec import (
 
 @doctor_check(order=8, group="wake", label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
+    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    # jasper-doctor is its own process and never imports jasper.wake, so
+    # without this the check paid the full scikit-learn cost on every run.
+    ensure_openwakeword_import_safe()
     try:
         import openwakeword
         from ...wake_models import (

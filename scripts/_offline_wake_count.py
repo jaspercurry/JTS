@@ -181,6 +181,16 @@ def main() -> int:
     audio_sb = signal.sosfilt(sos_sb, audio.astype(np.float32))
 
     # Run openWakeWord on the whole file.
+    #
+    # The guard import is function-local, not module-top: wake-rate-test.sh
+    # scp's this file plus _wake_audio_metrics.py to a Pi's /tmp and runs it
+    # there, and `--help` must work from a bare directory (pinned by
+    # tests/test_wake_audio_metrics.py). Scoring itself always runs under
+    # /opt/jasper/.venv, which has both jasper and openwakeword.
+    from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+
+    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    ensure_openwakeword_import_safe()
     from openwakeword.model import Model
     model = Model(wakeword_models=[args.model])
     model_key = Path(args.model).stem

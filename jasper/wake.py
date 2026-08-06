@@ -5,41 +5,10 @@
 from __future__ import annotations
 
 import logging
-import sys
-import types as _types
-
-# Stub openwakeword.custom_verifier_model BEFORE importing anything
-# from openwakeword. The package's __init__.py unconditionally imports
-# custom_verifier_model, which pulls in sklearn — ~67 MB resident on
-# a Pi 5 just for sklearn.linear_model + sklearn.svm. Pre-populating
-# sys.modules with a stub makes Python's import system treat the
-# module as already loaded, skipping the sklearn pull-in.
-#
-# What this DOES break: openwakeword's speaker-verification training
-# feature (`train_custom_verifier`), which fits a per-user verifier
-# on speaker samples to reduce false wakes for the wrong person.
-# We don't use this on the speaker.
-#
-# What this does NOT break: custom wake-word .onnx models. Those are
-# loaded via `Model(wakeword_models=[path_to_custom.onnx], ...)` and
-# go through openwakeword.model, not custom_verifier_model. If you
-# want to train your own "Hey Jasper" wake word and drop the .onnx
-# file into JASPER_OPENWAKEWORD_MODELS_DIR, this stub does not get
-# in your way.
-_cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")
-_cvm_stub.train_custom_verifier = None  # name preserved for openwakeword's __all__
-sys.modules.setdefault("openwakeword.custom_verifier_model", _cvm_stub)
-
-# `openwakeword.model` is lazy-imported inside WakeWordDetector.__init__ so this
-# module can be imported on a dev machine that doesn't have openwakeword in its
-# venv (parallel to the lazy-import of `sounddevice` in jasper.audio_io). Tests
-# that only exercise pure-Python helpers in this file — or that import
-# voice_daemon transitively — work without the Pi-side dep. The sys.modules
-# stub above MUST still happen at module-top: it has to be in place before
-# openwakeword's __init__.py runs (which happens on the first `Model` import),
-# otherwise sklearn gets pulled in (~67 MB resident on a Pi 5).
 
 import numpy as np
+
+from .openwakeword_guard import ensure_openwakeword_import_safe
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +21,16 @@ class WakeWordDetector:
     """
 
     def __init__(self, model_name: str, threshold: float = 0.5) -> None:
-        from openwakeword.model import Model  # lazy, see module top.
+        # `openwakeword.model` is imported here, not at module top, so this
+        # module stays importable on a dev machine without openwakeword in its
+        # venv (parallel to the lazy import of `sounddevice` in
+        # jasper.audio_io). Tests that exercise only the pure-Python helpers
+        # below — or that import voice_daemon transitively — work without the
+        # Pi-side dep.
+        #
+        # The guard must precede that import; see jasper/openwakeword_guard.py.
+        ensure_openwakeword_import_safe()
+        from openwakeword.model import Model
 
         # model_name can be a stock name like "hey_jarvis" (resolved by
         # openWakeWord's bundled models) or a path to a custom .onnx file.
