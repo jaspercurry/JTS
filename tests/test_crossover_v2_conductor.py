@@ -1344,10 +1344,19 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     """
     info = flow.tier_display_info()
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # Stage 1 is CHECK + MEASURE, and the tiers genuinely no longer differ
-    # there — so the numbers must not imply that they do.
-    assert info["full"]["stage1_captures"] == 2
-    assert info["express"]["stage1_captures"] == 2
+    # DERIVED from the two flags rather than hardcoded, so the chooser is
+    # pinned to whatever stage 1 actually runs. R16's walk is off until R17
+    # lands (see STAGE1_INCLUDES_LATERAL), so today this is 2; the day it
+    # flips, this test moves with it instead of going stale.
+    expected_stage1 = 2 + (
+        len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0
+    )
+    # The tiers genuinely no longer differ in stage 1 — so the numbers must not
+    # imply that they do. (The lateral walk would not change that: it is the
+    # ANCHOR's own robustness sample, not a spatial cloud, so it is the same
+    # poses at either tier.)
+    assert info["full"]["stage1_captures"] == expected_stage1
+    assert info["express"]["stage1_captures"] == expected_stage1
     # Stage 2 is where they still differ, and the chooser copy says so.
     assert info["full"]["stage2_captures"] == 6
     assert info["express"]["stage2_captures"] == 1
@@ -5549,6 +5558,7 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             stage1 = build_v2_capture_plan(
                 roles, fc_hz, plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
             )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
             minutes = stage1.estimated_minutes() + stage2.estimated_minutes()

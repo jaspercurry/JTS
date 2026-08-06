@@ -533,9 +533,13 @@ def check_capture_relay() -> CheckResult:
             f"{base} {detail} — new phone-mic measurements need the relay; "
             "existing applied corrections are unaffected",
         )
-    from jasper.active_speaker.crossover_v2_flow import cloud_plan_max_attempts
+    from jasper.active_speaker.crossover_v2_flow import relay_plan_attempts_required
 
-    needed = cloud_plan_max_attempts()
+    # The SHARED producer, not local arithmetic: it counts R16's lateral walk
+    # exactly when that walk is on, so this number and the runtime capacity
+    # guard's move together. See its docstring for what reading the cloud
+    # figure alone would have cost a Pi on an older Worker.
+    needed = relay_plan_attempts_required()
     ceiling, capacity_detail = health.probe_relay_plan_capacity(base)
     if ceiling is not None and ceiling >= needed:
         return CheckResult(label, "ok", f"{base} {detail}, {capacity_detail}")

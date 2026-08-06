@@ -67,6 +67,7 @@ from .crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
+    PHASE_LATERAL,
     PHASE_MEASURE,
     CLOUD_CLOSE_RUNNING,
     PHASE_CLOSING,
@@ -157,6 +158,10 @@ _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
+    # Still measuring. Registered even while R16's flag is off: an unmapped
+    # phase falls back to ``microphone_check``, and the REJECTION screens use
+    # this as their step (silent-auto-retry, as their SCREEN).
+    PHASE_LATERAL: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
     # It shares the step with PHASE_APPLYING deliberately — the stepper tracks
@@ -2730,6 +2735,23 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "JTS is measuring from a few different spots — follow the "
                 "prompts on the measurement page. Moving the microphone between "
                 "spots is what lets JTS tell the speaker apart from the room."
+            ),
+            next_action=None,
+            status=status,
+        )
+    elif phase == PHASE_LATERAL:
+        # R16's walk (§4.4). Same screen/step as the two above; bespoke copy
+        # because MEASURE's keep-still verdict is wrong while the household
+        # MOVES the microphone, the cloud's answers a different question
+        # (speaker versus room), and it must state the return to the mark or
+        # the last prompt reads as a mistake.
+        env = _envelope(
+            screen="measure", active_step="measure",
+            verdict=(
+                "JTS is measuring from a few spots either side of the mark, and "
+                "then back on it — follow the prompts on the measurement page. "
+                "Moving the microphone is what shows how the speaker's drivers "
+                "hand over to each other away from the middle."
             ),
             next_action=None,
             status=status,

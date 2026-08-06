@@ -172,6 +172,42 @@ def test_doctor_warns_when_the_deployed_relay_cannot_carry_the_cloud_plan(monkey
     assert "wrangler deploy" in result.detail
 
 
+def test_doctor_needed_count_follows_the_lateral_walk_flag(monkeypatch):
+    """The number the doctor reports must move with the walk that causes it.
+
+    Before R16 gave the two surfaces one producer, this check read the cloud
+    figure while the capacity guard added the poses, so a flipped build would
+    under-report by the walk's length — and a Pi whose Worker ceiling lands
+    BETWEEN the two reads green here, then refuses partway through the walk.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.cli.doctor.correction import check_capture_relay
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    monkeypatch.setattr(
+        health, "probe_relay_health", lambda *_a, **_k: (True, "reachable (ok)")
+    )
+    without = flow.relay_plan_attempts_required()
+    monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
+    with_walk = flow.relay_plan_attempts_required()
+    assert with_walk == without + len(flow.LATERAL_POSE_PROMPTS)
+    # A ceiling strictly between the two: enough for the cloud alone, not the
+    # walk. Derived, so it stays in-between if either number moves.
+    ceiling = without + 1
+    assert without <= ceiling < with_walk
+    monkeypatch.setattr(
+        health, "probe_relay_plan_capacity",
+        lambda *_a, **_k: (ceiling, f"capture-plan ceiling {ceiling}"),
+    )
+    result = check_capture_relay()
+    assert result.status == "warn"
+    assert f"needs {with_walk}" in result.detail
+
+    # …and with the walk off, the SAME ceiling is fine.
+    monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
+    assert check_capture_relay().status == "ok"
+
+
 def test_doctor_does_not_probe_capacity_when_the_relay_is_unreachable(monkeypatch):
     """One failure, one message: a dead relay must not spend a second
     round-trip to say the same thing twice."""
