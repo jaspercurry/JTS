@@ -1214,6 +1214,157 @@ def _shape_from_kwargs(
     )
 
 
+# --------------------------------------------------------------------------- #
+# R17 Fc candidate set (plan §4.2 / #1894 / #1675)
+# --------------------------------------------------------------------------- #
+
+# How many Fc values the selector may PROPOSE besides the configured one. The
+# ratified direction is "at most five safe candidates" (#1894); this is the
+# proposed half of that, so the evaluated set is at most six.
+MAX_PROPOSED_FC_CANDIDATES = 5
+
+# Why each Fc was refused. Named codes, never a bare number, because every one
+# of these is a household- or operator-actionable declaration rather than an
+# internal detail.
+FC_REJECT_AT_OR_BELOW_FLOOR = "at_or_below_declared_floor"
+FC_REJECT_ABOVE_LOWER_DRIVER_BAND = "above_lower_driver_band"
+FC_REJECT_BEAMING = "beaming_above_ka_ceiling"
+FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
+
+
+@dataclass(frozen=True)
+class FcCandidateSet:
+    """The Fc values the selector may evaluate, and why the others are out.
+
+    ``configured_hz`` is ALWAYS in ``candidates`` (plan §9.8: the configured
+    path stays the golden mode until a multi-candidate path proves equivalence
+    and then improvement), even when it would fail a bound below. That is not
+    an exemption from safety — the declared floor and the lower driver's band
+    are hard, and a configured Fc outside THOSE is a broken declaration the
+    session refuses long before here. It is an exemption from the BEAMING
+    prior, which #1675 defines as guidance to warn on, not a fence.
+
+    ``limits`` carries the derived bounds for disclosure, so a household or an
+    operator can see what the search was allowed to consider rather than being
+    handed a verdict with no visible reasoning.
+    """
+
+    configured_hz: float
+    candidates: tuple[float, ...]
+    rejected: tuple[tuple[float, str], ...]
+    limits: dict[str, float]
+
+    @property
+    def alternatives(self) -> tuple[float, ...]:
+        """Everything the selector could move TO — the set minus configured."""
+        return tuple(fc for fc in self.candidates if fc != self.configured_hz)
+
+
+def fc_candidate_set(
+    *,
+    configured_hz: float,
+    hf_hard_floor_hz: float,
+    lower_driver_hard_ceiling_hz: float,
+    search_band_hz: tuple[float, float] | None = None,
+    lower_driver_diameter_mm: float | None = None,
+    count: int = MAX_PROPOSED_FC_CANDIDATES,
+) -> FcCandidateSet:
+    """Derive the bounded LR4 Fc candidate set from DECLARATIONS only.
+
+    Four bounds, each traceable to something a person confirmed:
+
+    * **strictly above** ``hf_hard_floor_hz`` — the operator-confirmed minimum
+      for the HF driver. Strict because #1654 measured the edge case: at an Fc
+      equal to the floor the candidate's own handoff lands exactly on the
+      evidence band's edge, so it cannot be scored honestly even though the
+      sweep now reaches it;
+    * at or below the lower driver's declared hard ceiling;
+    * inside the declared search band when one is declared;
+    * at or below the **beaming ceiling** from the lower driver's declared
+      diameter (:func:`~jasper.active_speaker.branch_chain.beaming_onset_hz`)
+      — a PROPOSAL bound only, per the paragraph in :class:`FcCandidateSet`.
+
+    Proposals are spaced geometrically, because a crossover argument is a
+    per-octave one and an arithmetic grid would crowd the top of the range.
+
+    Returns an empty ``candidates`` only when the configured value itself is
+    inadmissible; the caller turns that into the ordinary
+    ``no_admissible_candidate`` refusal rather than guessing a crossover.
+    """
+    from jasper.active_speaker.branch_chain import beaming_onset_hz
+
+    lo = float(hf_hard_floor_hz)
+    hi = float(lower_driver_hard_ceiling_hz)
+    limits: dict[str, float] = {
+        "declared_floor_hz": lo,
+        "lower_driver_ceiling_hz": hi,
+    }
+    if search_band_hz is not None:
+        limits["search_lo_hz"], limits["search_hi_hz"] = (
+            float(search_band_hz[0]), float(search_band_hz[1]),
+        )
+        hi = min(hi, float(search_band_hz[1]))
+        lo = max(lo, float(search_band_hz[0]) - _FC_GRID_EPS_HZ)
+    if lower_driver_diameter_mm is not None:
+        ceiling = beaming_onset_hz(float(lower_driver_diameter_mm))
+        limits["beaming_ceiling_hz"] = ceiling
+        hi = min(hi, ceiling)
+
+    rejected: list[tuple[float, str]] = []
+    proposed: list[float] = []
+    if hi > lo and count > 0:
+        # Geometric interior points, excluding both ends: the floor is refused
+        # by the strictness rule above and the ceiling is a bound rather than a
+        # recommendation, so neither is a value to propose.
+        step = (hi / lo) ** (1.0 / (int(count) + 1))
+        proposed = [round(lo * step ** (i + 1), 1) for i in range(int(count))]
+
+    candidates = [float(configured_hz)]
+    for fc in proposed:
+        reason = _fc_rejection(
+            fc, hf_hard_floor_hz, lower_driver_hard_ceiling_hz,
+            search_band_hz, limits.get("beaming_ceiling_hz"),
+        )
+        if reason is None:
+            candidates.append(fc)
+        else:
+            rejected.append((fc, reason))
+    return FcCandidateSet(
+        configured_hz=float(configured_hz),
+        candidates=tuple(sorted(set(candidates))),
+        rejected=tuple(rejected),
+        limits=limits,
+    )
+
+
+# Half a display digit: the grid rounds proposals to 0.1 Hz, so a search-band
+# edge comparison must not refuse a value it just rounded onto that edge.
+_FC_GRID_EPS_HZ = 0.05
+
+
+def _fc_rejection(
+    fc_hz: float,
+    hf_hard_floor_hz: float,
+    lower_driver_hard_ceiling_hz: float,
+    search_band_hz: tuple[float, float] | None,
+    beaming_ceiling_hz: float | None,
+) -> str | None:
+    """The FIRST bound ``fc_hz`` violates, hardest first, or ``None``."""
+    if fc_hz <= float(hf_hard_floor_hz):
+        return FC_REJECT_AT_OR_BELOW_FLOOR
+    if fc_hz > float(lower_driver_hard_ceiling_hz):
+        return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
+    if search_band_hz is not None and not (
+        float(search_band_hz[0]) - _FC_GRID_EPS_HZ
+        <= fc_hz
+        <= float(search_band_hz[1]) + _FC_GRID_EPS_HZ
+    ):
+        return FC_REJECT_OUTSIDE_SEARCH_BAND
+    if beaming_ceiling_hz is not None and fc_hz > float(beaming_ceiling_hz):
+        return FC_REJECT_BEAMING
+    return None
+
+
 def relay_plan_attempts_required(
     *,
     cloud_measure_positions: int | None = None,
@@ -5839,6 +5990,7 @@ class CrossoverV2Conductor:
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
+        radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ] | None = None,
@@ -5913,6 +6065,15 @@ class CrossoverV2Conductor:
         # linearization_envelope.compose_envelope's own "unknown".
         self._driver_class_by_role = (
             dict(driver_class_by_role) if driver_class_by_role else {}
+        )
+        # #1675 owner ruling: the declared effective radiating diameter per
+        # role, the ka/beaming prior the Fc selector reads. Collected since
+        # #1665 and consumed by nothing in Python until R17 — it reaches here
+        # by the SAME draft path ``driver_class_by_role`` takes. Empty means
+        # undeclared, which a consumer must DISCLOSE rather than fill in: there
+        # is no conservative default diameter.
+        self._radiating_diameter_mm_by_role = (
+            dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
         )
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
