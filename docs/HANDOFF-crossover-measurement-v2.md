@@ -68,21 +68,31 @@ its branch radiating span unioned with the trim/alignment overlap band, both
 computed host-side in `CrossoverV2Conductor._measure_priors` because they are
 crossover policy the measurement kernel may not import. The driven band alone
 is a **superset**, and over-refusing a frozen contract is a deviation whose
-direction is household-visible hard stops: an LR4 `|P|` crosses −12 dB at
-`0.765·fc`, so a declared sweep floor roughly 0.39 octave under the protection
-corner would refuse MEASURE on a shape §4.2 admits.
+direction is household-visible hard stops: an analog LR4 `|P|` crosses −12 dB
+at `0.7610·fc`, so a declared sweep floor roughly 0.39 octave under the
+protection corner would refuse MEASURE on a shape §4.2 admits.
 
 **Since #1654 that is a live margin, not a hypothetical.** The HF sweep floor
 now follows the declared HARD band, so JTS3 sweeps its tweeter from 1600 Hz
 against a 2000 Hz protection corner: `|P(1600)| = −10.79 dB`, **1.21 dB above
 the −12 dB refusal**. Re-derived with this repo's own
-`crossover_response_complex` (the digital realization crosses at `0.7629·fc`,
-slightly under the analog `0.765` above), the admissible corner is
-`≤ 1.3108 · max(sweep floor, Fc/2)` — 2097 Hz here. The margin is
-deterministic (filter math over declared numbers, not a measurement) but it is
-thin, and the DECLARATION spends it: a household declaring a hard floor more
-than ~0.39 octave under its protection corner gets a hard MEASURE stop. The
-corner is not free to follow the floor down — it is a code-owned class default
+`crossover_response_complex`, whose bilinear prewarp makes that ratio
+frequency-dependent rather than scale-invariant — `0.7631·fc` at this 1600 Hz
+floor, just *above* the analog `0.7610` — the admissible corner is
+`≤ 1.31053 · max(sweep floor, Fc/2)` (a *continuous* solve at exactly 1600 Hz;
+on the 16384-point analysis grid the edge bin is 1602.54 Hz and `K` is
+`1.31052`), solving to 2096.84 Hz here. Solve `K` directly rather than
+inverting a ratio: the earlier `1.3108` here was simply the reciprocal of the
+ratio this sentence used to carry (`0.7629`), which answers the
+**corner-first** question — where `|P|` falls to −12 dB below a *fixed* 2000 Hz
+corner, at 1525.74 Hz — not the **floor-first** one `K` asks, the largest
+corner admissible above a *fixed* 1600 Hz floor. Inverting across that swap is
+the whole 0.0003; the 4-dp rounding is incidental, and in fact moved the figure
+0.00005 *toward* the true value. The margin is deterministic (filter math over
+declared numbers, not a measurement) but it is thin, and the DECLARATION
+spends it: a household declaring a hard floor more than ~0.39 octave under its
+protection corner gets a hard MEASURE stop. The corner is not free to follow
+the floor down — it is a code-owned class default
 (`driver_protection._STYLE_HIGH_PASS_HZ`, 2000 Hz for a compression driver)
 enforced as a minimum by `driver_safety._target_issues`, and `code_owned_policy`
 is fingerprint-checked, so lowering it un-confirms every stored profile of that
@@ -3495,6 +3505,13 @@ one-sided-band context — re-verified against the shipped
 this repo's `crossover_response_complex`. **No hardware ran**: the widened
 sweep is offline-proven only (unit tests + closed-form filter math), and the
 owner's CHECK/MEASURE slice is still owed. Nothing else was re-verified.
+A later same-day pass corrected three constants in the conditioning-policy
+margin. The analog crossing ratio was a wrong value rather than a rounding:
+`0.765` puts an analog LR4 `|P|` at −11.87 dB, and −12 dB falls at `0.761`.
+The digital ratio was solved corner-first, and `K` was taken as its reciprocal;
+the floor-first solve those numbers are actually used for gives `1.31053`, not
+`1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
+hardware.
 
 Last verified: 2026-08-06 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
