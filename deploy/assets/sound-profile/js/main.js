@@ -1934,6 +1934,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         );
       }
     });
+    // A protection filter with a null cutoff or slope is the one research
+    // answer this flow cannot store: applyDriverSafetyToSetting would write
+    // the halves it has, and protectionFiltersFromSetting then drops the whole
+    // requirement out of the POST with nothing on screen to say so (#2186).
+    // Refuse it here instead -- parseDriverResearchImport surfaces this message
+    // and leaves the paste box intact, so the operator can act on it.
+    // Mirrors the server twin (_positive_float + the both-present check in
+    // driver_safety._normalise_protection_filters) rather than merely testing
+    // for null: '' and 0 are refused there too. Deliberately NOT tighter than
+    // the server -- a numeric STRING is accepted by float() server-side, so it
+    // is accepted here, keeping this guard a subset of what the server refuses.
+    function storableFilterNumber(value) {
+      if (value === null || value === undefined || value === '') return false;
+      var parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0;
+    }
+    drivers.forEach(function(driver, index) {
+      if (!driver || !Array.isArray(driver.required_protection_filters)) return;
+      var role = driver.role || 'driver ' + (index + 1);
+      driver.required_protection_filters.forEach(function(filter) {
+        if (!filter || typeof filter !== 'object') return;
+        if (storableFilterNumber(filter.cutoff_hz) &&
+            storableFilterNumber(filter.minimum_slope_db_per_octave)) return;
+        throw new Error(
+          'Driver research declares a ' + (filter.kind || 'protection') +
+          ' filter for ' + role + ' without both a cutoff and a minimum slope. ' +
+          'A required filter whose numbers are unpublished takes a conservative ' +
+          'estimate, not null — ask the assistant again, or type the two numbers ' +
+          'under Advanced.'
+        );
+      });
+    });
     if (schemaVersion === 2 && !/^[0-9a-f]{64}$/.test(String(payload.request_fingerprint || ''))) {
       throw new Error('Version 2 driver research must echo the request fingerprint.');
     }
@@ -3135,15 +3167,59 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'limits. Changing a driver detail clears the confirmation, so confirm ' +
       'again after any edit.';
   }
+  // The keys this callout is allowed to describe as "limits". field_provenance
+  // legitimately carries entries for sensitivity (a gain trim) and for cabinet
+  // geometry, and counting those inflated the number at the confirmation gate
+  // -- the operator is being asked to freeze LIMITS, so only limit-bearing keys
+  // belong in the count. Mirrors the safety fields _profile_core freezes.
+  var DRIVER_SAFETY_LIMIT_PROVENANCE_KEYS = [
+    'hard_excitation_band_hz',
+    'required_protection_filters',
+    'measurement_band_hz',
+    'crossover_search_band_hz',
+    'level_duration_limits',
+    'do_not_test_below_hz'
+  ];
+  // How many limit-setting values the research reply marked as estimates
+  // rather than published figures. Under the estimate contract (#2186) an
+  // unpublished number comes back as a conservative estimate tagged
+  // confidence:"low", so this is the count the operator should eyeball before
+  // freezing the profile. Deliberately a property of the REPLY, not of the
+  // final values -- that stays true however the operator edits them after.
+  function driverSafetyEstimateCount() {
+    var payload = driverResearch.importedPayload;
+    if (!payload || Number(payload.artifact_schema_version) !== 2) return 0;
+    return (Array.isArray(payload.drivers) ? payload.drivers : [])
+      .reduce(function(count, driver) {
+        var provenance = (driver && driver.field_provenance) || {};
+        return count + DRIVER_SAFETY_LIMIT_PROVENANCE_KEYS.filter(function(key) {
+          return (provenance[key] || {}).confidence === 'low';
+        }).length;
+      }, 0);
+  }
+  function driverSafetyEstimateNote() {
+    var estimates = driverSafetyEstimateCount();
+    if (!estimates) return '';
+    if (estimates === 1) {
+      return 'One of these limits came from the research reply as an estimate, ' +
+        'not a published figure. Check it before confirming.';
+    }
+    return estimates + ' of these limits came from the research reply as ' +
+      'estimates, not published figures. Check them before confirming.';
+  }
   function renderDriverSafetyConfirmCallout(topology) {
     var state = driverSafetyConfirmState(topology);
     if (!state.needsConfirmation) return '';
     var saveDisabled = driverResearch.saving || outputTopology.dirty || !topology;
+    var estimateNote = driverSafetyEstimateNote();
     return '<div class="driver-research__section driver-research__confirm" id="' +
         CONFIRM_SAFETY_ANCHOR_ID + '">' +
       '<div><h3 class="setting-row__title">Confirm the safety limits</h3>' +
         '<p class="setting-row__hint">' +
-          escapeHtml(driverSafetyConfirmHint(state)) + '</p></div>' +
+          escapeHtml(driverSafetyConfirmHint(state)) + '</p>' +
+        (estimateNote ?
+          '<p class="setting-row__hint">' + escapeHtml(estimateNote) + '</p>' : '') +
+        '</div>' +
       (state.canConfirm ?
         '<div class="driver-research__actions">' +
           '<button type="button" class="btn btn--primary" data-act="confirm-driver-safety"' +
@@ -6051,7 +6127,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           researchPayload = null;
           importWarning = 'Target-bound research was invalidated by a visible edit.';
         }
-        driverResearch.error = '';
+        // Both drop paths behave the same way: whatever caused the packet to
+        // be dropped reaches the PANEL, not just the status line, which the
+        // operator's next ordinary click overwrites (#2186).
+        driverResearch.error = importWarning;
       } catch (e) {
         driverResearch.parsed = null;
         driverResearch.importedPayload = null;
@@ -6068,7 +6147,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
     }
     driverResearch.saving = true;
-    driverResearch.error = '';
+    // An import rejection recorded just above is the operator's only account of
+    // why the pasted packet was dropped. Clearing it unconditionally erased
+    // that reason before the first render, which is what made the drop read as
+    // silent (#2186). Keep it whenever something actually was rejected.
+    if (!importWarning) driverResearch.error = '';
     render();
     try {
       var resp = await fetch('./active-speaker/design-draft', {
@@ -6096,7 +6179,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return false;
       }
       if (!resp.ok) throw new Error(payload.error || 'speaker design draft save failed');
+      // The saved draft carries no driver_research when this save dropped the
+      // packet, so ingestDesignDraft would blank both the paste box and the
+      // rejection reason -- leaving an explanation with nothing to act on.
+      // Hand the operator back what they pasted and why it was refused (#2186).
+      var rejectedImport = importWarning
+        ? {text: driverResearch.importText, error: driverResearch.error}
+        : null;
       ingestDesignDraft(payload, {force: true});
+      if (rejectedImport) {
+        driverResearch.importText = rejectedImport.text;
+        driverResearch.error = rejectedImport.error;
+      }
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
@@ -6105,8 +6199,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           tweeterStyleConfirmNote() + ' This still does not authorize sound.');
       } else if (!options.forPreview) {
         status(importWarning
-          ? 'Working setup updated from visible fields. Imported JSON was not saved.'
-          : 'Working setup updated. No filters are active and no sound was played.');
+          ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
+            importWarning
+          : 'Working setup updated. No filters are active and no sound was played.',
+          !!importWarning);
       }
       render();
       return true;

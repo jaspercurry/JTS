@@ -32,6 +32,9 @@ from jasper.active_speaker.driver_safety import (
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
+from jasper.active_speaker.excitation_safety_plan import (
+    resolve_driver_excitation_ceilings,
+)
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
@@ -1464,3 +1467,771 @@ def test_component_entry_fields_present_in_all_four_allowlist_gates():
     researchable = new_fields - {"pad"}
     assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
     assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)
+
+
+# --- #2186: the estimate-friendly research contract -------------------------
+#
+# Owner ruling 2026-08-06: "anyone can do this ... give us your best guess and
+# start from there. There's some risk, but this is an experimental tinker box,
+# not a Bose product."  What moved is where a proposed number may COME FROM;
+# what did not move is the bound it must clear.  These tests pin both halves.
+
+
+def _prompt_json_example(prompt: str) -> dict:
+    """Return the RESULT SHAPE template parsed as JSON."""
+
+    return json.loads(_prompt_result_shape(prompt))
+
+
+def _mono_prompt(tweeter_style: str = "dome_tweeter") -> str:
+    topology = _topology_with_tweeter_style(tweeter_style)
+    return build_driver_research_prompt(
+        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    )
+
+
+# A hand-maintained mirror of driver_protection._STYLE_HIGH_PASS_HZ, plus the
+# undeclared-style case that falls back to _UNKNOWN_HF_STYLE. Kept honest by
+# test_tweeter_style_floor_mirror_covers_every_registered_style below: a mirror
+# that silently omits a registered style would quietly narrow every test
+# parametrized over it. Each pair's floor is asserted against the real policy
+# by those same parametrized tests.
+_TWEETER_STYLE_FLOORS = [
+    ("compression_driver", 2000.0),
+    ("horn_compression_driver", 2000.0),
+    ("dome_tweeter", 3000.0),
+    ("amt_tweeter", 3000.0),
+    ("planar_tweeter", 3500.0),
+    ("ribbon_tweeter", 5000.0),
+    ("supertweeter", 8000.0),
+    ("unknown_high_frequency", 5000.0),
+    ("unspecified", 5000.0),
+]
+
+
+def test_tweeter_style_floor_mirror_covers_every_registered_style() -> None:
+    """The mirror above must not silently omit a style the policy registers.
+
+    Every test that parametrizes over ``_TWEETER_STYLE_FLOORS`` is only as
+    broad as this list, so an omission narrows them all without failing
+    anything. Verified to bite: adding a style to ``_STYLE_HIGH_PASS_HZ``
+    alone left the whole suite green before this assertion existed.
+
+    One-directional on purpose. The reverse — a mirror entry policy does not
+    know — is already caught, because an unregistered style resolves to the
+    unknown-style fallback and its parametrized floor assertion then fails.
+    Same shape as ``tests/test_driver_style_floor_contract.py``, which pins
+    the JS display copy of this same table.
+    """
+
+    from jasper.active_speaker.driver_protection import _STYLE_HIGH_PASS_HZ
+
+    missing = sorted(set(_STYLE_HIGH_PASS_HZ) - {style for style, _ in _TWEETER_STYLE_FLOORS})
+    assert not missing, (
+        "driver_protection._STYLE_HIGH_PASS_HZ registers tweeter styles this "
+        f"test file's mirror does not cover: {missing}. Add them to "
+        "_TWEETER_STYLE_FLOORS so the parametrized tests actually exercise them."
+    )
+
+
+@pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
+def test_prompt_result_shape_template_is_storable_not_gate_refused(
+    style: str,
+    expected_floor: float,
+) -> None:
+    """The template taught shapes the gate then refused (#2186 leg 1).
+
+    Two defects, both of which produced blockers from the very example the
+    assistant was told to copy: ``"max_effective_peak_dbfs": null`` normalised
+    away to nothing (``tweeter:max_effective_peak_dbfs_missing``), and a fixed
+    high-pass cutoff that no tweeter style's floor cleared.
+
+    Fixing the cutoff to one constant only moved the defect: 3000 clears a dome
+    but is refused for planar, ribbon, supertweeter, and an undeclared tweeter.
+
+    The durable property is not that this test catches a future style — it does
+    not, and cannot: the worked example is *derived* from ``_STYLE_HIGH_PASS_HZ``,
+    so a newly registered style is correct by construction and adding one leaves
+    this green. What this proves is that the derivation itself is right, run
+    through the REAL gate for every style the policy registers today;
+    ``test_tweeter_style_floor_mirror_covers_every_registered_style`` is what
+    keeps "every style" true as the registry grows.
+    """
+
+    prompt = _mono_prompt(style)
+    driver = _prompt_json_example(prompt)["drivers"][0]
+
+    # Feed the template's own values through the real normalise + gate path,
+    # standing in as the tweeter of a live two-way.
+    topology = _topology_with_tweeter_style(style)
+    raw_drivers = [
+        {
+            "target_id": "mono:woofer",
+            "role": "woofer",
+            "model": "Example W6",
+            **{
+                key: deepcopy(_cx120_safety("woofer")[key])
+                for key in _cx120_safety("woofer")
+            },
+        },
+        {
+            "target_id": "mono:tweeter",
+            "role": "tweeter",
+            "model": "Example T1",
+            "hard_excitation_band_hz": driver["hard_excitation_band_hz"],
+            "required_protection_filters": driver["required_protection_filters"],
+            "measurement_band_hz": driver["measurement_band_hz"],
+            "crossover_search_band_hz": driver["crossover_search_band_hz"],
+            "level_duration_limits": driver["level_duration_limits"],
+        },
+    ]
+    manual = normalise_manual_settings(
+        {"drivers": raw_drivers, "crossover_candidates": []}
+    )
+    assert manual is not None
+    profile = build_driver_safety_profile(
+        topology, manual_settings=manual, driver_research=None, confirm=False
+    )
+    assert profile["issues"] == [], (
+        f"the worked example is refused for driver_style={style}: "
+        f"{[issue['code'] for issue in profile['issues']]}"
+    )
+    assert profile["status"] == "needs_confirmation"
+
+    # And it confirms — "no blockers" and "actually freezable" are different
+    # claims, and the template has to satisfy the second one too.
+    confirmed = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-08-06T12:00:00Z",
+    )
+    assert confirmed["status"] == "confirmed"
+
+    # The example's cutoff tracks this style's floor rather than a constant.
+    cutoff = driver["required_protection_filters"][0]["cutoff_hz"]
+    assert float(cutoff) >= expected_floor
+    # All four limit fields survive normalisation (the original null defect).
+    for field in (
+        "max_effective_peak_dbfs",
+        "max_sweep_duration_s",
+        "max_repeat_count",
+        "minimum_cooldown_s",
+    ):
+        assert driver["level_duration_limits"].get(field) is not None
+
+
+def test_prompt_orders_published_first_then_conservative_estimate() -> None:
+    """The ask ranks its own answers instead of stonewalling on null."""
+
+    prompt = _mono_prompt()
+
+    # The retired absolute. Its removal is the whole ruling; a re-added ban
+    # would deadlock every driver whose protection numbers are unpublished.
+    assert "Never estimate from a similar model" not in prompt
+    assert "null is a correct answer, not a failure" not in prompt
+
+    assert "give a conservative engineering estimate" in prompt
+    assert 'Tag it confidence "low"' in prompt
+    assert "an estimate should look like one" in prompt
+    assert "Conservative means the safer side of the guess" in prompt
+    assert "Use null only for a field with no engineering basis at all" in prompt
+
+    # Operator authority over installation choices is NOT part of the ruling
+    # and must survive it intact.
+    assert "Never infer physical installation choices" in prompt
+
+    # A constraint the researcher was never told about cannot be satisfied.
+    assert "Nest the three bands" in prompt
+
+    # The template teaches the contract: one estimated field, tagged low.
+    provenance = _prompt_json_example(prompt)["drivers"][0]["field_provenance"]
+    confidences = {entry["confidence"] for entry in provenance.values()}
+    assert "low" in confidences, "template must show an estimated field"
+    assert "high" in confidences, "template must show a published field too"
+    assert any(
+        entry["basis"].startswith("estimated:")
+        for entry in provenance.values()
+        if entry["confidence"] == "low"
+    )
+
+
+@pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
+def test_prompt_limits_are_read_from_code_policy_not_restated(
+    style: str,
+    expected_floor: float,
+) -> None:
+    """The bounds in the ask come from the one owner of that policy.
+
+    Four styles with four different floors: a prose constant cannot satisfy
+    all of them, so this fails the moment someone hand-writes a number here
+    instead of reading ``driver_protection_profile``.  Naming the bound is
+    what lets an ESTIMATE land on the first try; the gate still refuses an
+    out-of-bounds value on its own, so telling the researcher can only
+    narrow the answer, never widen what is accepted.
+    """
+
+    from jasper.active_speaker.driver_protection import driver_protection_profile
+
+    policy = driver_protection_profile("tweeter", driver_style=style)
+    assert policy.min_highpass_hz == expected_floor
+
+    prompt = _mono_prompt(style)
+    limits_block, _, _ = prompt.partition("\nRESULT SHAPE\n")
+    _, _, limits_block = limits_block.partition("\nLIMITS\n")
+    assert limits_block, "prompt has no LIMITS section"
+
+    assert (
+        f"mono:tweeter: required high-pass cutoff_hz at or above {expected_floor:g}"
+        in limits_block
+    )
+    assert (
+        f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
+        in limits_block
+    )
+    # A floor read as a target would talk a researcher DOWN from a stricter
+    # published requirement.
+    assert "not recommended values" in limits_block
+    assert "the published one wins" in limits_block
+
+    # The woofer has no high-pass floor, and inventing one here would be a
+    # second, drifting copy of the policy.
+    assert "mono:woofer: max_effective_peak_dbfs at or below 0." in limits_block
+
+
+def test_protection_filter_without_numbers_is_refused_by_name() -> None:
+    """"Required, numbers unpublished" is unstorable — and says so (#2186 leg 2).
+
+    The old message named the two missing keys but not the fix, and the
+    browser dropped the whole packet before the operator ever saw it.  Under
+    the estimate contract the honest answer to an unpublished protective
+    cutoff is a conservative estimate, so the refusal says that out loud.
+    """
+
+    from jasper.active_speaker.driver_safety import _normalise_protection_filters
+
+    honest_null = [{
+        "kind": "highpass",
+        "cutoff_hz": None,
+        "minimum_slope_db_per_octave": None,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }]
+    with pytest.raises(DriverSafetyProfileError) as excinfo:
+        _normalise_protection_filters(honest_null, "driver.required_protection_filters")
+
+    message = str(excinfo.value)
+    assert "cutoff_hz and minimum_slope_db_per_octave" in message
+    assert "conservative estimate, not null" in message
+    # Naming the entry is what lets the operator find it among several drivers.
+    assert "driver.required_protection_filters[0]" in message
+
+    # Half a filter is refused for the same reason, not quietly half-stored.
+    with pytest.raises(DriverSafetyProfileError):
+        _normalise_protection_filters(
+            [{"kind": "highpass", "cutoff_hz": 3000}],
+            "driver.required_protection_filters",
+        )
+
+
+# --- The field case: Dayton CX120-8 on jts5, 2026-08-06 ---------------------
+#
+# A real coax whose datasheet publishes usable ranges (90-8500 / 4500-20000)
+# and sensitivities (88.5 / 89.2) and nothing else the safety profile needs.
+# Under the old ask this driver could not be commissioned without nine
+# hand-typed numbers; under the estimate contract it commissions from the
+# published facts plus conservative estimates the operator reviews.
+
+
+def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
+    """The safety block an estimating researcher returns for one CX120 section.
+
+    ``tweeter_peak_dbfs`` is a knob only because the declared tweeter peak is a
+    SENTINEL downstream — see
+    ``test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal``.
+    """
+
+    if role == "woofer":
+        return {
+            # Published usable range.
+            "hard_excitation_band_hz": [90, 8500],
+            # Estimated: no published protective low-pass for the woofer section.
+            "required_protection_filters": [{
+                "kind": "lowpass",
+                "cutoff_hz": 3000,
+                "minimum_slope_db_per_octave": 24,
+            }],
+            "measurement_band_hz": [100, 8000],
+            "crossover_search_band_hz": [1500, 3500],
+            # Protocol discipline, not a datasheet fact.
+            "level_duration_limits": {
+                "max_effective_peak_dbfs": -20,
+                "max_sweep_duration_s": 4,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 2,
+            },
+            "cabinet": {
+                "enclosure_kind": "sealed",
+                "radiator_count": 1,
+                "effective_radiating_diameter_mm": 120,
+                "baffle_width_mm": 200,
+            },
+        }
+    return {
+        "hard_excitation_band_hz": [4500, 20000],
+        # Estimated from a 25 mm dome with no published Fs. Clears the
+        # dome_tweeter code-policy floor of 3000 Hz with room to spare.
+        "required_protection_filters": [{
+            "kind": "highpass",
+            "cutoff_hz": 4500,
+            "minimum_slope_db_per_octave": 24,
+        }],
+        "measurement_band_hz": [4500, 18000],
+        "crossover_search_band_hz": [4500, 6000],
+        "level_duration_limits": {
+            "max_effective_peak_dbfs": tweeter_peak_dbfs,
+            "max_sweep_duration_s": 4,
+            "max_repeat_count": 3,
+            "minimum_cooldown_s": 2,
+        },
+        "cabinet": {
+            "enclosure_kind": "sealed",
+            "radiator_count": 1,
+            "effective_radiating_diameter_mm": 25,
+        },
+    }
+
+
+_CX120_MODELS = {
+    "woofer": "Dayton Audio CX120-8 (woofer section)",
+    "tweeter": "Dayton Audio CX120-8 (tweeter section)",
+}
+# Which fields the reply sourced from the datasheet, and which it estimated.
+_CX120_ESTIMATED = {"required_protection_filters", "level_duration_limits"}
+
+
+def _cx120_operator_inputs() -> dict[str, str]:
+    return {
+        "woofer": _CX120_MODELS["woofer"],
+        "tweeter": _CX120_MODELS["tweeter"],
+        "notes": "Sealed coax bench cabinet",
+    }
+
+
+_CX120_SENSITIVITY = {"woofer": 88.5, "tweeter": 89.2}
+
+
+def _cx120_manual_settings(*, tweeter_peak_dbfs: float = -65) -> dict:
+    # The browser copies every researched value into the visible form on
+    # import, and _validate_v2_research_prefill re-proves that match on save.
+    normalised = normalise_manual_settings({
+        "drivers": [
+            {
+                "target_id": f"mono:{role}",
+                "role": role,
+                "model": _CX120_MODELS[role],
+                "sensitivity_db_2v83_1m": _CX120_SENSITIVITY[role],
+                **_cx120_safety(role, tweeter_peak_dbfs=tweeter_peak_dbfs),
+            }
+            for role in ("woofer", "tweeter")
+        ],
+        "crossover_candidates": [],
+    })
+    assert normalised is not None
+    return normalised
+
+
+def _cx120_research(request: dict, *, estimating: bool) -> dict:
+    """The reply, either estimating (new contract) or honest-null (old one)."""
+
+    drivers = []
+    for target in request["targets"]:
+        role = target["role"]
+        safety = deepcopy(_cx120_safety(role))
+        if not estimating:
+            # Exactly what the retired "null is a correct answer" rule produced:
+            # the requirement is asserted, its numbers are not.
+            safety["required_protection_filters"] = [{
+                "kind": "lowpass" if role == "woofer" else "highpass",
+                "cutoff_hz": None,
+                "minimum_slope_db_per_octave": None,
+                "family_or_equivalent": "equivalent_or_steeper",
+            }]
+            safety["level_duration_limits"] = {
+                "max_effective_peak_dbfs": None,
+                "max_sweep_duration_s": None,
+                "max_repeat_count": None,
+                "minimum_cooldown_s": None,
+            }
+        drivers.append({
+            "target_id": target["target_id"],
+            "target_fingerprint": target["target_fingerprint"],
+            "role": role,
+            "model": target["manufacturer_and_model"],
+            "sensitivity_db_2v83_1m": _CX120_SENSITIVITY[role],
+            **safety,
+            "unknowns": [],
+            "field_provenance": {
+                field: (
+                    {
+                        "confidence": "low",
+                        "basis": (
+                            "estimated: 25 mm soft dome, Fs unpublished"
+                            if field == "required_protection_filters"
+                            else "estimated: protocol default, no published limit"
+                        ),
+                        "sources": [],
+                    }
+                    if field in _CX120_ESTIMATED
+                    else {
+                        "confidence": "high",
+                        "basis": "datasheet usable range",
+                        "sources": ["https://example.test/cx120"],
+                    }
+                )
+                for field in ("hard_excitation_band_hz", *_CX120_ESTIMATED)
+            },
+            "sources": ["https://example.test/cx120"],
+        })
+    return {
+        "artifact_schema_version": 2,
+        "kind": DRIVER_RESEARCH_KIND,
+        "request_fingerprint": request["request_fingerprint"],
+        "drivers": drivers,
+        "crossover_candidates": [],
+    }
+
+
+def _cx120_setup() -> tuple[OutputTopology, dict, dict]:
+    topology = _topology_with_tweeter_style("dome_tweeter")
+    manual = _cx120_manual_settings()
+    request = build_driver_research_request(
+        topology, _cx120_operator_inputs(), manual
+    )
+    return topology, manual, request
+
+
+def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
+    """Direction 1: the artifact that deadlocked jts5 fails LOUDLY.
+
+    It stays unstorable — a declared-but-numberless protective filter is not a
+    thing this contract can freeze — but the refusal names the entry and the
+    fix instead of the packet vanishing with its provenance and sources.
+    """
+
+    topology, manual, request = _cx120_setup()
+
+    with pytest.raises(ActiveSpeakerDesignDraftError) as excinfo:
+        build_design_draft(
+            topology,
+            driver_research_request=request,
+            driver_research=_cx120_research(request, estimating=False),
+            manual_settings=manual,
+            operator_inputs=_cx120_operator_inputs(),
+        )
+
+    message = str(excinfo.value)
+    assert "required_protection_filters" in message
+    assert "conservative estimate, not null" in message
+
+
+def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
+    """Direction 2: the same driver, answered under the estimate contract.
+
+    Published bands and sensitivities where the datasheet has them, conservative
+    estimates where it does not — and that is enough to confirm.  This is the
+    end of the two-leg deadlock: no honest-null wall, no nine manual fields.
+    """
+
+    topology, manual, request = _cx120_setup()
+    research = _cx120_research(request, estimating=True)
+
+    draft = build_design_draft(
+        topology,
+        driver_research_request=request,
+        driver_research=research,
+        manual_settings=manual,
+        operator_inputs=_cx120_operator_inputs(),
+        confirm_safety_profile=True,
+        created_at="2026-08-06T12:00:00Z",
+    )
+
+    profile = draft["driver_safety_profile"]
+    assert profile["issues"] == []
+    assert profile["status"] == "confirmed"
+    assert draft["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    # Advice never becomes permission, whatever its provenance.
+    assert profile["authorizes_playback"] is False
+    assert profile["research"]["advisory_only"] is True
+    assert profile["authority"] == "operator_visible_values"
+
+    tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    # The estimate survived as an estimate: low confidence, derivation stated.
+    filter_provenance = tweeter["field_provenance"]["required_protection_filters"]
+    assert filter_provenance["confidence"] == "low"
+    assert filter_provenance["basis"].startswith("estimated:")
+    # A published field is still distinguishable from an estimated one.
+    assert tweeter["field_provenance"]["hard_excitation_band_hz"]["confidence"] == "high"
+    # The code-owned policy snapshot is frozen alongside, not replaced by advice.
+    assert tweeter["code_owned_policy"]["min_highpass_hz"] == 3000.0
+    assert tweeter["code_owned_policy"]["max_auto_level_dbfs"] == -65.0
+
+
+def _cx120_confirmed_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
+    """Return (confirmed safety profile, pad-folded declared sensitivities)."""
+
+    from jasper.active_speaker.design_draft import (
+        declared_effective_driver_sensitivities,
+    )
+
+    topology = _topology_with_tweeter_style("dome_tweeter")
+    manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
+    request = build_driver_research_request(topology, _cx120_operator_inputs(), manual)
+    draft = build_design_draft(
+        topology,
+        driver_research_request=request,
+        driver_research=None,
+        manual_settings=manual,
+        operator_inputs=_cx120_operator_inputs(),
+        confirm_safety_profile=True,
+        created_at="2026-08-06T12:00:00Z",
+    )
+    profile = draft["driver_safety_profile"]
+    assert profile["issues"] == []
+    return profile, declared_effective_driver_sensitivities(draft)
+
+
+def test_template_tweeter_peak_lands_on_the_derivation_sentinel() -> None:
+    """The template's tweeter peak is a SENTINEL, and the chain is pinned.
+
+    ``max_effective_peak_dbfs`` is not merely a ceiling for a high-frequency
+    role. ``resolve_driver_excitation_ceilings`` treats a declared value that
+    EQUALS the class default as "no driver-specific level intent was
+    expressed" and replaces it with a sensitivity-derived ceiling; a value one
+    dB either side is honoured literally. #2186 made the research ask an
+    automated writer of that value, and it deliberately lands on the sentinel.
+
+    Three links, so any one drifting breaks loudly here rather than silently
+    moving a real measurement level by up to 30 dB:
+      1. the RESULT SHAPE template's tweeter peak,
+      2. ``driver_protection_profile(...).max_auto_level_dbfs``,
+      3. the value the excitation plan actually compares against.
+    """
+
+    from jasper.active_speaker.driver_protection import driver_protection_profile
+
+    policy = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+
+    # Link 1 == link 2.
+    template_peak = _prompt_json_example(_mono_prompt())["drivers"][0][
+        "level_duration_limits"
+    ]["max_effective_peak_dbfs"]
+    assert float(template_peak) == policy.max_auto_level_dbfs
+
+    # ... and the prose that steers a reply onto it points at the same number.
+    limits_block, _, _ = _mono_prompt().partition("\nRESULT SHAPE\n")
+    _, _, limits_block = limits_block.partition("\nLIMITS\n")
+    assert (
+        f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
+        in limits_block
+    )
+
+    # Link 2 == link 3, proved behaviourally rather than by reading a constant:
+    # the policy value triggers derivation, one dB quieter does not.
+    on_sentinel, sensitivities = _cx120_confirmed_profile(
+        tweeter_peak_dbfs=policy.max_auto_level_dbfs
+    )
+    off_sentinel, _ = _cx120_confirmed_profile(
+        tweeter_peak_dbfs=policy.max_auto_level_dbfs - 1
+    )
+    tweeter_fp = next(
+        t["target_fingerprint"] for t in on_sentinel["targets"] if t["role"] == "tweeter"
+    )
+    _band, derived = resolve_driver_excitation_ceilings(
+        on_sentinel,
+        tweeter_fp,
+        program_admission=True,
+        declared_sensitivities=sensitivities,
+    )
+    _band, literal = resolve_driver_excitation_ceilings(
+        off_sentinel,
+        next(
+            t["target_fingerprint"]
+            for t in off_sentinel["targets"]
+            if t["role"] == "tweeter"
+        ),
+        program_admission=True,
+        declared_sensitivities=sensitivities,
+    )
+    assert derived != policy.max_auto_level_dbfs, (
+        "the declared class default must be superseded on the proven-HP path"
+    )
+    assert literal == pytest.approx(policy.max_auto_level_dbfs - 1)
+
+
+def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> None:
+    """The field case, through the real resolver, with the numbers named.
+
+    The CX120 reply declares the tweeter at -65 because it has no published
+    level limit. On the proven-high-pass path that delegates the choice: the
+    derived ceiling is -35 dBFS, thirty decibels louder than the declared
+    number. Declaring -66 instead — a deliberate quieter limit — is honoured
+    literally. Both are intended; the discontinuity is documented at the
+    equality site in excitation_safety_plan and in the research ask itself.
+    """
+
+    from jasper.active_speaker.driver_protection import (
+        HF_MEASUREMENT_ABS_CEILING_DBFS,
+    )
+
+    profile, sensitivities = _cx120_confirmed_profile()
+    # Pad-free declaration, so the effective sensitivities are the datasheet
+    # ones the reply reported.
+    assert sensitivities == pytest.approx({"woofer": 88.5, "tweeter": 89.2})
+
+    tweeter_fp = next(
+        t["target_fingerprint"] for t in profile["targets"] if t["role"] == "tweeter"
+    )
+    _band, ceiling = resolve_driver_excitation_ceilings(
+        profile,
+        tweeter_fp,
+        program_admission=True,
+        declared_sensitivities=sensitivities,
+    )
+    # woofer cap -20, sensitivity delta 0.7 dB -> min(-20.7, -35) = -35: the
+    # absolute hearing-safety ceiling binds, not the sensitivity arithmetic.
+    assert ceiling == pytest.approx(HF_MEASUREMENT_ABS_CEILING_DBFS)
+    assert ceiling == pytest.approx(-35.0)
+
+    # Without the proven-high-pass path the declared number stands. Delegation
+    # is what the protective high-pass buys; it is not unconditional.
+    _band, naked = resolve_driver_excitation_ceilings(
+        profile, tweeter_fp, declared_sensitivities=sensitivities
+    )
+    assert naked == pytest.approx(-65.0)
+
+    # One dB quieter is a deliberate choice and is never raised.
+    quieter, quieter_sens = _cx120_confirmed_profile(tweeter_peak_dbfs=-66)
+    _band, quieter_ceiling = resolve_driver_excitation_ceilings(
+        quieter,
+        next(
+            t["target_fingerprint"] for t in quieter["targets"] if t["role"] == "tweeter"
+        ),
+        program_admission=True,
+        declared_sensitivities=quieter_sens,
+    )
+    assert quieter_ceiling == pytest.approx(-66.0)
+
+
+def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itself(
+) -> None:
+    """The guidance has to survive being read literally.
+
+    An earlier draft said "use the ceiling listed under LIMITS" and then "a
+    ceiling is not a recommendation" two clauses later, which is a
+    contradiction and hid the sentinel entirely.
+    """
+
+    prompt = _mono_prompt()
+    assert "a ceiling is not a recommendation" not in prompt
+    assert "send exactly the ceiling listed under LIMITS" in prompt
+    assert "hands the level choice to this build's own protection logic" in prompt
+    # The condition on delegation is stated, not implied.
+    assert "only once a protective high-pass is proven in the signal path" in prompt
+    # And the other branch: quieter is literal.
+    assert "taken literally and is never raised" in prompt
+    assert "Never send a value above the ceiling." in prompt
+
+
+@pytest.mark.parametrize(
+    "field,mutation,expected_code",
+    [
+        # An estimate below the dome_tweeter floor: refused BY NAME, not
+        # quietly raised to 3000. The operator sees the bound and decides.
+        (
+            "required_protection_filters",
+            [{"kind": "highpass", "cutoff_hz": 2500, "minimum_slope_db_per_octave": 24}],
+            "tweeter:highpass_below_code_policy",
+        ),
+        # An estimate louder than the high-frequency ceiling.
+        (
+            "level_duration_limits",
+            {
+                "max_effective_peak_dbfs": -60,
+                "max_sweep_duration_s": 4,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 2,
+            },
+            "tweeter:max_effective_peak_above_code_policy",
+        ),
+        # Nesting: a measurement band reaching below the hard excitation floor.
+        (
+            "measurement_band_hz",
+            [3000, 18000],
+            "tweeter:measurement_band_outside_hard_band",
+        ),
+        # Nesting, inner half: a crossover-search band escaping the measurement
+        # band. Deleting this clamp left every test in the suite green before
+        # #2186, so it is pinned here rather than assumed.
+        (
+            "crossover_search_band_hz",
+            [4000, 6000],
+            "tweeter:search_band_outside_measurement_band",
+        ),
+    ],
+)
+def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
+    field: str,
+    mutation: object,
+    expected_code: str,
+) -> None:
+    """The non-negotiable half of the ruling.
+
+    Widening where a number may come from is not widening what it may be. An
+    out-of-bounds value carrying impeccable research provenance is refused
+    exactly as an out-of-bounds hand-typed one is — and refused by name rather
+    than silently clamped, so the operator can raise the bound deliberately or
+    fix the value.
+    """
+
+    topology = _topology_with_tweeter_style("dome_tweeter")
+    raw_drivers = [
+        {
+            "target_id": f"mono:{role}",
+            "role": role,
+            "model": _CX120_MODELS[role],
+            **_cx120_safety(role),
+        }
+        for role in ("woofer", "tweeter")
+    ]
+    tweeter_raw = next(d for d in raw_drivers if d["role"] == "tweeter")
+    tweeter_raw[field] = mutation
+    manual = normalise_manual_settings(
+        {"drivers": raw_drivers, "crossover_candidates": []}
+    )
+    assert manual is not None
+
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        confirm=False,
+    )
+    codes = [issue["code"] for issue in profile["issues"]]
+    assert expected_code in codes, codes
+    assert profile["status"] == "incomplete"
+
+    # Nothing was rewritten behind the operator's back: the refused value is
+    # still exactly what was entered.
+    tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    if field == "required_protection_filters":
+        assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 2500.0
+
+    with pytest.raises(DriverSafetyProfileError, match="cannot be confirmed"):
+        build_driver_safety_profile(
+            topology,
+            manual_settings=manual,
+            driver_research=None,
+            confirm=True,
+            confirmed_at="2026-08-06T12:00:00Z",
+        )
