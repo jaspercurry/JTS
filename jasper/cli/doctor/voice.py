@@ -79,7 +79,15 @@ _IMPORT_PROBE = (
 _IMPORT_PROBE_TIMEOUT_SEC = 30.0
 
 
-@doctor_check(order=2.5, group="voice")
+# Shares the "memory-sample" exclusive lane with check_memory_headroom. The
+# import child is the largest allocation jasper-doctor makes: measured on a
+# full install (jts3, Pi 5, 2026-08-06), the gemini adapter peaks at 82.8 MB
+# RSS and drops system MemAvailable by ~70 MB for ~1.5 s; the openai adapter
+# plus SDK is 47.6 MB. check_memory_headroom warns below 100 MB available on
+# a 1 GB Pi, so an unserialized probe could trip that threshold itself and
+# report a shortage it created. Serializing the two is cheaper than teaching
+# an operator to discount it.
+@doctor_check(order=2.5, group="voice", exclusive_group="memory-sample")
 def check_provider_importable() -> CheckResult:
     """Check that the *configured* voice provider's adapter and its
     lazily-imported SDK can actually be imported in this venv.

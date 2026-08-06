@@ -294,6 +294,23 @@ def test_check_is_registered_in_the_doctor_registry():
     assert "check_provider_importable" in names
 
 
+def test_import_probe_cannot_perturb_the_memory_headroom_check():
+    """The import child is the biggest allocation the doctor makes — measured
+    at ~70 MB of MemAvailable for the gemini adapter, against a 100 MB warn
+    threshold on a 1 GB Pi. The doctor runs checks concurrently, so without a
+    shared exclusive lane the probe can trip the headroom check itself and
+    report a shortage it created."""
+    lanes = {
+        c.func.__name__: c.exclusive_group
+        for c in registered_checks()
+        if c.func.__name__ in {"check_provider_importable", "check_memory_headroom"}
+    }
+    assert lanes == {
+        "check_provider_importable": "memory-sample",
+        "check_memory_headroom": "memory-sample",
+    }, f"expected both in one exclusive lane, got {lanes}"
+
+
 def test_import_probe_reports_the_first_failing_module_end_to_end():
     """The probe source itself, run for real: a good module then a bad one
     exits non-zero and names the bad one on stdout."""
