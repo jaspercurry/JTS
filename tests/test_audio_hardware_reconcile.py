@@ -2652,11 +2652,14 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
         tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
     )
 
+    # BYTES FIRST: the substantive harm is the good graph being overwritten
+    # with an unmuted one, so that is the assertion that must fail without the
+    # fix — not the log line.
+    assert cutover.read_bytes() == good
     # The reconcile itself still completes (a render failure is best-effort),
-    # but the render is reported FAILED and the good graph is untouched.
+    # but it is reported FAILED rather than logged as a successful render.
     assert corrupt.returncode == 0, corrupt.stderr
     assert _flat_cutover_event(corrupt.stderr)["result"] == "failed"
-    assert cutover.read_bytes() == good
 
 
 def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
