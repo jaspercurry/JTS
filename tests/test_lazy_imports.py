@@ -23,6 +23,7 @@ import ast
 import importlib.util
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -141,8 +142,8 @@ def _collect_openwakeword_sites(
     guard_lines = _guard_call_lines(body)
     first_guard = min(guard_lines) if guard_lines else None
 
-    def walk(nodes: object) -> None:
-        for node in nodes:  # type: ignore[union-attr]
+    def walk(nodes: Iterable[ast.AST]) -> None:
+        for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 _collect_openwakeword_sites(node.body, out)
                 continue
