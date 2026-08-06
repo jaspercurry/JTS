@@ -46,6 +46,63 @@ import {
   assert.equal(activeSpeakerStepState("profile", ctx), "todo");
 }
 
+// One rung at a time. This client-side ladder is the fallback main.js uses
+// while a draft is being edited (driverResearch.dirty short-circuits the
+// backend view even when the saved topology is clean), so it is what a
+// household sees on exactly the screen where the jts5 stuck state was found:
+// outputs and drivers already confirmed, crossover values not yet re-saved.
+// Each rung used to answer "am I active?" from its own predicate alone, so
+// `research` and `safety` both came back active and the combined-test card
+// three rungs down invited a click the graph could not honour.
+{
+  const ctx = {
+    hasLayout: true,
+    dirty: false,
+    hardwareMatchesSaved: true,
+    driverResearchSatisfied: false,
+    outputIdentityComplete: true,
+    driverChecksComplete: true,
+    driverTargetProofComplete: true,
+    summedValidationComplete: false,
+    baselineProfileApplied: false,
+  };
+  const states = ["layout", "research", "map", "safety", "profile"]
+    .map((step) => [step, activeSpeakerStepState(step, ctx)]);
+  assert.deepEqual(
+    states.filter(([, state]) => state === "active").map(([step]) => step),
+    ["research"],
+    `exactly one rung may be active: ${JSON.stringify(states)}`
+  );
+  assert.equal(activeSpeakerStepState("safety", ctx), "todo");
+  assert.equal(defaultActiveSpeakerStep(ctx), "research");
+}
+
+// The same ladder, once the values ARE saved: the baton moves on rather than
+// being held by two rungs. Mutation guard for the collapse above — restore any
+// rung's independent `active` branch and the previous block fails.
+{
+  const ctx = {
+    hasLayout: true,
+    dirty: false,
+    hardwareMatchesSaved: true,
+    driverResearchSatisfied: true,
+    outputIdentityComplete: true,
+    driverChecksComplete: true,
+    driverTargetProofComplete: true,
+    summedValidationComplete: false,
+    baselineProfileApplied: false,
+  };
+  const states = ["layout", "research", "map", "safety", "profile"]
+    .map((step) => [step, activeSpeakerStepState(step, ctx)]);
+  assert.deepEqual(
+    states.filter(([, state]) => state === "active").map(([step]) => step),
+    ["safety"],
+    `the combined test is the one live rung: ${JSON.stringify(states)}`
+  );
+  assert.equal(activeSpeakerStepState("research", ctx), "done");
+  assert.equal(activeSpeakerStepState("map", ctx), "done");
+}
+
 // Measured override: each driver's trim is "Measured", config is not provisional.
 {
   const s = levelMatchSummary({

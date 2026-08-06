@@ -13,6 +13,7 @@ is and how failure evidence should be presented to a household.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from jasper.output_topology import (
@@ -39,17 +40,156 @@ STEP_STATUS_NOT_REQUIRED = "not_required"
 # an active-crossover commissioning ladder ever applying to this speaker.
 VIEW_STATUS_NOT_REQUIRED = "not_required"
 
+# The card titles /sound/ actually renders (`renderOutputStepCard` in
+# deploy/assets/sound-profile/js/main.js). This is the ONE name each step has:
+# the `label` in every emitted step is taken from here, `outputStepTitle` in the
+# page's helper module matches it, and remedy copy below quotes it — so telling
+# a household to "go back to X" always names a heading they can find. Pinned
+# against the page by tests/test_active_speaker_commissioning_coordinator.py.
+COMMISSIONING_STEP_PAGE_TITLES: dict[str, str] = {
+    "layout": "Choose speaker layout",
+    "research": "Add your components",
+    "map": "Confirm outputs",
+    "safety": "Test combined drivers",
+    "profile": "Validate and apply",
+}
+
 # The ordered commissioning step ids `build_commissioning_view` emits, exported
 # so envelope/progress consumers derive from ONE tuple instead of re-typing the
-# literals. Keep this tuple in sync with the view construction
-# (`build_commissioning_view`) below.
-COMMISSIONING_STEP_IDS: tuple[str, ...] = (
-    "layout",
-    "research",
-    "map",
-    "safety",
-    "profile",
+# literals. Derived from the titles above so the two can never disagree.
+COMMISSIONING_STEP_IDS: tuple[str, ...] = tuple(COMMISSIONING_STEP_PAGE_TITLES)
+
+_RESEARCH = COMMISSIONING_STEP_PAGE_TITLES["research"]
+_MAP = COMMISSIONING_STEP_PAGE_TITLES["map"]
+
+# Household copy for a failed combined test, grouped by the ACTION available to
+# a household rather than by the backend's internal cause, and searched in
+# order: the FIRST code present wins.
+#
+# Grouping is deliberate. Most of these codes cannot be distinguished into
+# distinct advice from here — `commission_startup_anchor_not_staged` alone fires
+# for every staging blocker (staging reports "staged" only at blocker_count == 0
+# with the file present: unresolved DAC route, unresolved subwoofer, incomplete
+# guard, failed generation, preset bind, ...), and the specific sub-code never
+# reaches this module because only the first load issue is forwarded. So the
+# copy routes ("go back to X, then retry") without diagnosing ("X is stale"),
+# which would be a claim this module cannot make. Per-cause detail needs the
+# sub-code plumbed through first — issue #2184.
+#
+# Coverage matters more than nuance here: an unmapped code falls through to the
+# blocker's own prose, and that prose carries absolute paths, exception class
+# names, and the DSP engine's name (see `_household_safe_reason`). Mapping the
+# reachable load-path codes keeps the household on written copy.
+_SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("tone_backend_failed", "commission_tone_backend_failed"),
+        "JTS could not prepare the combined test audio. Retry after the setup "
+        "finishes; if it fails again, open System status.",
+    ),
+    # The setup for this layout was never prepared. Route back to the values.
+    (
+        (
+            "commission_startup_anchor_not_staged",
+            "commission_active_graph_not_staged",
+            "staged_candidate_not_ready",
+            "staged_topology_mismatch",
+            "active_startup_candidate_required",
+            "commission_tone_preset_unresolved",
+            "commission_tone_preset_unreadable",
+        ),
+        f"JTS could not prepare the crossover setup for this layout. Go back to "
+        f"{_RESEARCH}, run the preview, then retry the combined test.",
+    ),
+    # The outputs or their safety evidence are not proven. Route back to Confirm
+    # outputs.
+    (
+        (
+            "commission_startup_anchor_path_safety_blocked",
+            "path_safety_evidence_missing",
+            "path_safety_evidence_invalid",
+            "physical_identity_unverified",
+            "no_assigned_outputs",
+            "summed_test_driver_target_proof_missing",
+        ),
+        f"JTS could not verify the speaker outputs for this test. Re-check "
+        f"{_MAP}, then retry the combined test.",
+    ),
+    (
+        ("summed_test_output_mismatch",),
+        "The last combined test did not match the saved speaker outputs. "
+        f"Re-check {_MAP} before retrying.",
+    ),
+    (
+        ("summed_test_already_active",),
+        "A combined speaker test is already running. Stop it, then try again.",
+    ),
+    # The quiet test path could not be opened or restored. Nothing the household
+    # can prepare differently — retry, then escalate.
+    (
+        (
+            "commission_startup_anchor_load_failed",
+            "summed_commission_load_failed",
+            "driver_commission_load_failed",
+            "startup_config_load_failed",
+            "startup_config_missing",
+            "startup_config_path_missing",
+            "startup_config_unreadable",
+            "startup_config_validation_not_valid",
+            "current_config_snapshot_failed",
+            "current_config_snapshot_missing",
+            "rollback_anchor_missing",
+            "commission_rollback_anchor_missing",
+            "rollback_config_missing",
+            "commission_rollback_config_missing",
+            "commission_live_state_stale",
+            "commission_output_hardware_reconcile_failed",
+            "commissioning_protection_while_audible",
+            "calibration_level_guard_missing",
+        ),
+        "JTS could not open the quiet crossover setup. Press Play combined "
+        "test to retry; if it fails again, open System status.",
+    ),
+    (
+        (
+            "summed_commission_rollback_failed",
+            "commission_rollback_failed",
+            "commission_rollback_unavailable",
+            "startup_rollback_failed",
+            "startup_rollback_unavailable",
+        ),
+        "The combined test finished but JTS could not restore the quiet setup. "
+        "Open System status before playing anything else.",
+    ),
+    (
+        ("safe_session_not_armed",),
+        "JTS could not open the quiet combined-test session. Press Play "
+        "combined test to retry.",
+    ),
+    (
+        ("summed_test_artifact_missing", "summed_test_playback_incomplete"),
+        "The combined test did not finish. Press Play combined test to retry.",
+    ),
 )
+
+# Flattened for lookup. The families above are the readable form; this is the
+# one consumers (and the copy guards) walk.
+_SUMMED_TEST_FAILURE_COPY: tuple[tuple[str, str], ...] = tuple(
+    (code, message)
+    for codes, message in _SUMMED_TEST_FAILURE_FAMILIES
+    for code in codes
+)
+
+# Nothing in the last line of defence may reach a household carrying an absolute
+# path, an exception class name, or a raw identifier. Backend prose does carry
+# all three — "all-muted staged rollback anchor does not exist:
+# /var/lib/jasper/...", "could not read current CamillaDSP config path: OSError"
+# — and the /sound/ no-jargon rule
+# (tests/test_sound_setup.py::test_active_speaker_setup_copy_has_no_backend_jargon)
+# reads only the JS files, so this Python surface has to enforce it itself.
+_COPY_PATH_RE = re.compile(r"(?:^|(?<=\s))~?/\S*")
+_COPY_EXCEPTION_RE = re.compile(r"\b\w*(?:Error|Exception)\b")
+_COPY_BANNED_TOKENS = ("camilladsp", "yaml", "alsa", "configfs", "systemd", "snd-aloop")
+
 
 def issue_codes(issues: Any) -> set[str]:
     if not isinstance(issues, list):
@@ -68,34 +208,64 @@ def has_blocker(issues: Any) -> bool:
     )
 
 
+def first_blocker(issues: Any) -> tuple[str, str]:
+    """Return the first blocker's ``(code, message)``, blank when there is none."""
+
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, Mapping) or issue.get("severity") != "blocker":
+            continue
+        code = str(issue.get("code") or "")
+        if code:
+            return code, str(issue.get("message") or "").strip()
+    return "", ""
+
+
+def _household_safe_reason(text: str) -> str:
+    """Return backend prose fit to show a household, or "" when it is not.
+
+    Strips the two shapes that carry no meaning for a household anyway (paths,
+    exception classes), then FAILS CLOSED on anything still holding backend
+    vocabulary or a raw identifier. Sanitising rather than rejecting outright
+    keeps a genuinely readable reason readable; rejecting whatever survives
+    keeps the guarantee absolute, because prose is written far from here and
+    the next unmapped code is unknowable from this module.
+    """
+
+    reason = _COPY_PATH_RE.sub(" ", text)
+    reason = _COPY_EXCEPTION_RE.sub(" ", reason)
+    reason = re.sub(r"\s+", " ", reason).strip(" :;,.-")
+    if not reason or "_" in reason:
+        return ""
+    lowered = reason.lower()
+    if any(token in lowered for token in _COPY_BANNED_TOKENS):
+        return ""
+    return reason
+
+
 def summed_test_failure_message(issues: Any) -> str:
     """Return the one user-facing reason for a failed combined test."""
 
     codes = issue_codes(issues)
-    if "tone_backend_failed" in codes:
+    for code, message in _SUMMED_TEST_FAILURE_COPY:
+        if code in codes:
+            return message
+    # Unmapped blocker. Show the backend's own prose when it is fit to show, so
+    # a new failure mode is not silently flattened into a familiar sentence that
+    # is wrong about what to do next. When it is not fit to show, the fail-loud
+    # part rides `combined_groups[].failure_code` — a structured field, not the
+    # sentence — so the household still gets plain copy and support still gets
+    # the exact code.
+    reason = _household_safe_reason(first_blocker(issues)[1])
+    if reason:
         return (
-            "JTS could not prepare the combined test audio. Retry after the setup "
-            "finishes; if it fails again, open System status."
-        )
-    if "summed_commission_load_failed" in codes:
-        return (
-            "JTS could not open the quiet combined-test path. Press Play combined "
-            "test to retry."
-        )
-    if "safe_session_not_armed" in codes:
-        return (
-            "JTS could not open the quiet combined-test session. Press Play "
-            "combined test to retry."
-        )
-    if "summed_test_artifact_missing" in codes or "summed_test_playback_incomplete" in codes:
-        return "The combined test did not finish. Press Play combined test to retry."
-    if "summed_test_output_mismatch" in codes:
-        return (
-            "The last combined test did not match the saved speaker outputs. "
-            "Re-check Confirm outputs before retrying."
+            f"The combined test did not play: {reason.rstrip('.')}. "
+            "Press Play combined test to retry."
         )
     if codes:
-        return "The last combined test did not play. Press Play combined test to retry."
+        return (
+            "The combined test did not play. Press Play combined test to "
+            "retry; if it fails again, open System status."
+        )
     return ""
 
 
@@ -106,6 +276,60 @@ def _step(step_id: str, label: str, status: str, message: str) -> dict[str, Any]
         "status": status,
         "message": message,
     }
+
+
+def _derive_step_statuses(
+    rungs: tuple[tuple[str, bool, bool], ...],
+) -> dict[str, str]:
+    """Turn per-rung completion into ONE ordered ladder with one live step.
+
+    Each rung reports only the two facts it genuinely owns: whether it is
+    finished, and whether this speaker's shape will ever run it. Which rung is
+    *active* is a property of the LADDER, not of any rung — it is the first
+    unfinished rung this speaker can still reach.
+
+    Deriving "active" per rung instead is what put two steps live at once on
+    jts5 (2026-08-06): a freshly-drawn active 2-way still carried confirmed
+    outputs and captured driver checks from before the redraw, so the combined
+    driver test's own readiness predicate came true three rungs before the
+    crossover values were saved. It lit up, invited a click, and the graph
+    fail-closed on the stale staged config.
+
+    A finished rung still reports "done" even when an earlier rung is not,
+    because hiding completed work would be the same dishonesty pointing the
+    other way; it simply does not claim the baton.
+    """
+
+    statuses: dict[str, str] = {}
+    baton_taken = False
+    for step_id, done, not_required in rungs:
+        if done:
+            statuses[step_id] = "done"
+        elif not_required:
+            statuses[step_id] = STEP_STATUS_NOT_REQUIRED
+        elif not baton_taken:
+            statuses[step_id] = "active"
+            baton_taken = True
+        else:
+            statuses[step_id] = "todo"
+    return statuses
+
+
+def _waiting_message(baton_step: str, then_do: str) -> str:
+    """Copy for a rung the ladder has not reached yet.
+
+    Names the rung that actually holds the baton. Hard-coding one prerequisite
+    instead reads as a contradiction the moment a different rung is live: on a
+    box with no saved topology the values rung reports "no active crossover
+    values are needed", and a waiting rung that still said "add the driver and
+    crossover values first" demanded exactly what the card above it had just
+    called unnecessary.
+    """
+
+    title = COMMISSIONING_STEP_PAGE_TITLES.get(baton_step)
+    if not title:
+        return f"Finish the earlier steps first, then {then_do}."
+    return f"Finish {title} first, then {then_do}."
 
 
 def _action(
@@ -247,7 +471,7 @@ def _combined_group_view(
     *,
     summary: Mapping[str, Any],
     calibration_level: Mapping[str, Any] | None,
-    driver_target_proof_complete: bool,
+    blocked_by: str,
 ) -> dict[str, Any]:
     group_id = str(target.get("speaker_group_id") or "")
     label = str(target.get("speaker_group_label") or group_id or "Speaker")
@@ -274,11 +498,25 @@ def _combined_group_view(
         and latest_test_id
         and latest_validation_test_id == latest_test_id
     )
+    reported = (
+        ("", "")
+        if has_audible_test or not latest_test
+        else first_blocker(latest_test.get("issues"))
+    )
+    failure_code = reported[0]
     failure_message = (
         ""
         if has_audible_test or not latest_test
         else summed_test_failure_message(latest_test.get("issues"))
     )
+
+    # Running the combined test needs the WHOLE ladder above it, not just the
+    # driver proof: it plays through the staged crossover graph, which only
+    # exists once the driver/crossover values are saved and previewed. Gating on
+    # the proof alone offered the button while the staged graph was stale, so
+    # the household's click could only ever be refused. `blocked_by` is the
+    # first unfinished prerequisite rung — empty means every one is done.
+    combined_test_ready = not blocked_by
 
     if validated:
         status = "validated"
@@ -288,7 +526,7 @@ def _combined_group_view(
         status = "ready_to_record"
         status_label = "ready to record"
         message = "Combined speaker test played. Record what you heard."
-    elif driver_target_proof_complete:
+    elif combined_test_ready:
         status = "ready_to_test" if not failure_message else "test_failed"
         status_label = "next" if not failure_message else "not tested"
         message = failure_message or (
@@ -297,14 +535,14 @@ def _combined_group_view(
         )
     else:
         status = "blocked"
-        status_label = "after outputs"
-        message = "Confirm each output and driver first, then test the combined speaker."
+        status_label = "after outputs" if blocked_by == "map" else "after setup"
+        message = _waiting_message(blocked_by, "test the combined speaker")
 
     actions = {
         "start_combined_test": _action(
             "start_combined_test",
             "Play combined test",
-            enabled=driver_target_proof_complete,
+            enabled=combined_test_ready,
             endpoint="./active-speaker/summed-test",
             body={
                 "speaker_group_id": group_id,
@@ -335,6 +573,10 @@ def _combined_group_view(
         "status_label": status_label,
         "message": message,
         "failure_message": failure_message,
+        # The blocker's raw code, kept OUT of the sentence. Household copy stays
+        # plain; support and diagnostics still get the exact identifier, so an
+        # unmapped failure is loud without leaking jargon onto the card.
+        "failure_code": failure_code,
         "latest_test_id": latest_test_id,
         "has_audible_test": has_audible_test,
         "validated": validated,
@@ -434,39 +676,67 @@ def build_commissioning_view(
         crossover_preview=crossover_preview,
     )
     driver_values_complete = bool(driver_values.get("complete"))
+    # The rungs the combined driver test sits behind. Split out because the
+    # groups are built before `summed_complete` exists, and because the first
+    # unfinished one answers BOTH "may the test be offered?" and "which card do
+    # we tell the household to finish?" — one value, so the button and the copy
+    # can never disagree.
+    prerequisite_rungs: tuple[tuple[str, bool, bool], ...] = (
+        ("layout", has_layout, False),
+        ("research", driver_values_complete, False),
+        # Confirming outputs is deliberately gated behind the saved values, so
+        # this rung is not "done" until the ladder legitimately reached it.
+        ("map", driver_values_complete and driver_target_proof_complete, False),
+    )
+    blocked_by = next(
+        (step_id for step_id, done, _ in prerequisite_rungs if not done), ""
+    )
     combined_groups = [
         _combined_group_view(
             target,
             summary=summary,
             calibration_level=calibration_level,
-            driver_target_proof_complete=driver_target_proof_complete,
+            blocked_by=blocked_by,
         )
         for target in active_targets
     ]
     summed_complete = bool(active_targets) and all(
         group.get("validated") is True for group in combined_groups
     )
+    # One ordered ladder: each rung declares only "am I finished?" and "will
+    # this speaker ever run me?". `_derive_step_statuses` decides which single
+    # rung holds the baton. Every message below then reads that DERIVED status
+    # — never a predicate of its own. When the two disagreed, `map` sat "todo"
+    # under the sentence "All assigned outputs and drivers are confirmed."
+    step_status = _derive_step_statuses(prerequisite_rungs + (
+        ("safety", summed_complete, commissioning_not_required),
+        ("profile", profile_applied, commissioning_not_required),
+    ))
+    # The one live rung, so a waiting rung can name it rather than guess.
+    baton_step = next(
+        (step_id for step_id in COMMISSIONING_STEP_IDS
+         if step_status[step_id] == "active"),
+        "",
+    )
     steps = [
         _step(
             "layout",
-            "Choose speaker layout",
-            "done" if has_layout else "active",
-            "Speaker layout is saved." if has_layout else "Choose what is wired.",
+            COMMISSIONING_STEP_PAGE_TITLES["layout"],
+            step_status["layout"],
+            "Speaker layout is saved."
+            if step_status["layout"] == "done"
+            else "Choose what is wired.",
         ),
         _step(
             "research",
-            "Add driver and crossover values",
-            "done"
-            if driver_values_complete
-            else ("active" if has_layout else "todo"),
+            COMMISSIONING_STEP_PAGE_TITLES["research"],
+            step_status["research"],
             str(driver_values.get("message") or "Save driver and crossover values."),
         ),
         _step(
             "map",
-            "Confirm outputs",
-            "done"
-            if driver_values_complete and driver_target_proof_complete
-            else ("active" if driver_values_complete else "todo"),
+            COMMISSIONING_STEP_PAGE_TITLES["map"],
+            step_status["map"],
             (
                 # Say only what was actually proven. When no driver listening
                 # check was ever REQUIRED (`driver_target_proof.source` is
@@ -475,53 +745,58 @@ def build_commissioning_view(
                 # this speaker had to prove.
                 "All assigned outputs are confirmed. This layout needs no "
                 "separate driver listening checks."
-                if driver_target_proof_complete and not active_setup
+                if step_status["map"] == "done" and not active_setup
                 else "All assigned outputs and drivers are confirmed."
-                if driver_target_proof_complete
+                if step_status["map"] == "done"
                 else "Play each assigned driver quietly, then confirm what you hear."
+                if step_status["map"] == "active"
+                # Not reached yet. Name the rung that actually holds the baton
+                # instead of reporting work that has not been authorised to
+                # count — or naming a prerequisite that is not the live one.
+                else _waiting_message(baton_step, "confirm each output")
             ),
         ),
         _step(
             "safety",
-            "Test combined drivers",
-            "done" if summed_complete else (
-                STEP_STATUS_NOT_REQUIRED if commissioning_not_required else
-                "active" if driver_target_proof_complete else "todo"
-            ),
+            COMMISSIONING_STEP_PAGE_TITLES["safety"],
+            step_status["safety"],
             (
                 "Combined crossover check is saved."
-                if summed_complete
-                # A layout with no active crossover has no combined driver test
-                # to offer, whatever stage its outputs are at. Saying "confirm
-                # each output and driver first" here contradicted the map step,
-                # which had just reported them confirmed.
+                if step_status["safety"] == "done"
+                # A saved layout with no active crossover has no combined driver
+                # test to offer, whatever stage its outputs are at. Saying
+                # "confirm each output and driver first" here contradicted the
+                # map step, which had just reported them confirmed. Gated on a
+                # saved layout: with nothing wired yet there is no "this layout"
+                # to make the claim about, and the waiting copy below is right.
                 else "No combined driver test applies to this layout."
-                if not active_setup
+                if has_layout and not active_setup
                 else "Existing active profile covers driver/output proof; "
                 "revalidate the combined crossover."
-                if driver_target_proof_satisfied_by_revalidation
+                if step_status["safety"] == "active"
+                and driver_target_proof_satisfied_by_revalidation
                 else "Run the combined speaker test through the saved crossover."
-                if raw_driver_checks_complete
-                else "Confirm each output and driver before the combined test."
+                if step_status["safety"] == "active"
+                # Waiting. Which rung it is waiting ON is the whole point: the
+                # old copy always blamed the outputs, so a household whose
+                # outputs were already confirmed had nowhere to go.
+                else _waiting_message(baton_step, "test the combined speaker")
             ),
         ),
         _step(
             "profile",
-            "Validate and apply",
-            "done" if profile_applied else (
-                STEP_STATUS_NOT_REQUIRED if commissioning_not_required else
-                "active" if summed_complete else "todo"
-            ),
+            COMMISSIONING_STEP_PAGE_TITLES["profile"],
+            step_status["profile"],
             (
                 "This is now the active speaker profile."
-                if profile_applied
+                if step_status["profile"] == "done"
                 # A subless passive speaker plays through the flat program
                 # lane, so it never compiles an active speaker profile. (A
                 # passive speaker WITH a sub still does — bass management —
                 # so this copy is gated on the subless shape, not on
                 # `not active_setup`.)
                 else "No active speaker profile is needed for this layout."
-                if commissioning_not_required
+                if step_status["profile"] == STEP_STATUS_NOT_REQUIRED
                 else "Save and apply a fresh profile after revalidation."
                 if revalidation_required
                 else "Save the active speaker profile after the combined check."
