@@ -214,8 +214,13 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
     not move the correction the household is actually offered.
 
     Compared against a run with the sweep replaced by a no-op — the same
-    fixture, the same captures, so any difference is the selector's leakage
-    through the seven ``_last_*`` conductor fields the fit writes.
+    fixture, the same captures, so any difference is the selector's doing.
+
+    **This test does NOT prove the ``_last_*`` restore.** On the ordinary
+    eligible path the anchor's own fit re-runs at the walk's close and
+    overwrites all seven fields anyway, so deleting the restore leaves this
+    green (verified by mutation). What it covers is everything else the sweep
+    touches; the restore has its own two guards below.
     """
     def walk(sweep: bool) -> dict:
         fakes = _eligible_seams()
@@ -240,6 +245,51 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
     with_sweep, without = walk(True), walk(False)
     assert with_sweep["candidate"] == without["candidate"]
     assert with_sweep["predicted_sum"] == without["predicted_sum"]
+
+
+def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
+    """The restore's REAL failure mode, which the comparison above cannot see.
+
+    ``_build_candidate``'s SF2 degrade clears six of the seven fields when the
+    anchor's own fit raises — but not ``_last_linearized_predicted_sum``. So
+    without the restore, a session whose sweep succeeded and whose anchor fit
+    then failed publishes the LAST CANDIDATE's predicted sum as the anchor's
+    VERIFY prior: a prediction for a crossover this speaker does not have,
+    which VERIFY would then grade the real one against.
+    """
+    fakes = _eligible_seams()
+    c = _selector_conductor(fakes)
+    original = flow.CrossoverV2Conductor._fit_linearization
+    swept: list = []
+
+    def anchor_fit_fails(self, analysis, cand, cloud=None, *, candidate_sections=None):
+        # Raise ONLY for the anchor's own close (no candidate sections), so
+        # the sweep's successful fits stay exactly as they were. Each
+        # candidate's prediction is captured the moment it is written —
+        # ``_last_linearized_predicted_sum`` cannot be read afterwards,
+        # because the restore under test has already put it back.
+        if candidate_sections is None:
+            raise ValueError("forced anchor fit failure")
+        out = original(
+            self, analysis, cand, cloud, candidate_sections=candidate_sections
+        )
+        swept.append(self._last_linearized_predicted_sum)
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow.CrossoverV2Conductor, "_fit_linearization", anchor_fit_fails)
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 1)
+        assert swept and swept[-1] is not None, "the sweep must have fitted first"
+        for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+            _run_phase(c, index, 1)
+
+    assert c.candidate.linearization_outcome == "fit_failed"
+    published = np.asarray(c.measure_predicted_sum[1])
+    for candidate_sum in swept:
+        assert not np.array_equal(published, np.asarray(candidate_sum[1])), (
+            "a candidate's predicted sum reached the anchor's published prior"
+        )
 
 
 def test_the_seven_conductor_fields_are_restored_after_the_sweep():
