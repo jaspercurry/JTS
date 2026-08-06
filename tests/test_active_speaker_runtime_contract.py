@@ -1536,6 +1536,263 @@ def test_full_range_mono_rejects_wider_flat_outputd_cutover(tmp_path: Path) -> N
     }
 
 
+# --- width-matched flat cutover ----------------------------------------------
+#
+# The mono deploy blocker (field occurrence 2026-08-06, jts4): a mono
+# full-range topology assigns one physical output, the stereo-pinned flat graph
+# carries two, and the second one puts full-range program on an output the
+# household never declared. The refusal was RIGHT; what was missing was a graph
+# that does not do that. The emitter now hard-mutes the unclaimed channel, and
+# this checker re-proves the mute STRUCTURALLY off the YAML — it never trusts
+# the emitter's intent, so an unmuted surplus channel is refused exactly as
+# before (the test above).
+
+
+def _mono_flat_yaml(*, muted: int | None, terminal: bool = True) -> str:
+    """A flat 2-channel graph, optionally hard-muting one channel.
+
+    ``terminal=False`` appends a Gain AFTER the mute in the same step — the
+    shape CamillaDSP would re-amplify, so it must not count as muted.
+    """
+    chains = {0: ["flat"], 1: ["flat"]}
+    filters = [
+        "  flat:",
+        "    type: Gain",
+        "    parameters: { gain: 0.0, mute: false }",
+    ]
+    if muted is not None:
+        name = f"as_out{muted}_commission_mute"
+        chains[muted] = ["flat", name] if terminal else ["flat", name, "boost"]
+        filters += [
+            f"  {name}:",
+            "    type: Gain",
+            f"    parameters: {{ gain: {STARTUP_MUTE_GAIN_DB}, mute: true }}",
+        ]
+        if not terminal:
+            filters += [
+                "  boost:",
+                "    type: Gain",
+                "    parameters: { gain: 40.0, mute: false }",
+            ]
+    return "\n".join(
+        [
+            "devices:",
+            "  samplerate: 48000",
+            "  volume_limit: 0.0",
+            "  playback:",
+            "    type: Alsa",
+            "    channels: 2",
+            "    device: outputd_content_playback",
+            "filters:",
+            *filters,
+            "pipeline:",
+            "  - type: Filter",
+            "    channels: [0]",
+            f"    names: [{', '.join(chains[0])}]",
+            "  - type: Filter",
+            "    channels: [1]",
+            f"    names: [{', '.join(chains[1])}]",
+            "",
+        ]
+    )
+
+
+def _full_range_mono_on(output_index: int) -> OutputTopology:
+    return _topology(
+        [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [
+                    {"role": "full_range", "physical_output_index": output_index}
+                ],
+            }
+        ],
+        {"mono_group_id": "mono"},
+    )
+
+
+@pytest.mark.parametrize("assigned", [0, 1])
+def test_full_range_mono_allows_flat_cutover_with_unclaimed_channel_muted(
+    tmp_path: Path, assigned: int
+) -> None:
+    topology = _full_range_mono_on(assigned)
+    unclaimed = 1 - assigned
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_mono_flat_yaml(muted=unclaimed), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        flat_config_path=flat,
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == "select_flat"
+    assert decision.fallback_graph is not None
+    assert decision.fallback_graph.allowed is True
+    assert decision.fallback_graph.details["hard_muted_outputs"] == [unclaimed]
+
+
+def test_rendered_mono_cutover_passes_the_statefile_guard_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The field case, emitter through checker (jts4, 2026-08-06).
+
+    The two halves must agree by construction: whatever
+    ``emit_flat_outputd_cutover_config`` renders for a mono topology is what the
+    statefile guard re-proves. Hand-written fixtures cannot catch a drift
+    between them; this can.
+    """
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    topology = _full_range_mono_on(0)
+    flat = tmp_path / "outputd-cutover.yml"
+    emit_flat_outputd_cutover_config(out_path=flat, topology=topology)
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=tmp_path / "outputd-statefile.yml",
+        flat_config_path=flat,
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == "select_flat"
+    assert decision.fallback_graph.details["hard_muted_outputs"] == [1]
+    # The ALSA device keeps the hardware width; only the graph is narrowed.
+    assert "channels: 2" in flat.read_text()
+
+
+def test_muting_the_CLAIMED_channel_does_not_buy_a_mono_topology_anything(
+    tmp_path: Path,
+) -> None:
+    """Mute credit is per-channel, not a token: silencing the wrong one still
+    leaves a live channel with no output to land on."""
+    topology = _full_range_mono_on(0)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_mono_flat_yaml(muted=0), encoding="utf-8")
+
+    graph = classify_camilla_graph(topology=topology, text=flat.read_text())
+
+    assert graph.allowed is False
+    assert "flat_full_range_graph_wider_than_topology" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_mute_that_is_not_terminal_does_not_count_as_muted() -> None:
+    """A Gain after the mute in the same step re-amplifies it.
+
+    The same falsification the parked-graph checker learned: "a mute appears
+    somewhere in the chain" is not a mute.
+    """
+    graph = classify_camilla_graph(
+        topology=_full_range_mono_on(0),
+        text=_mono_flat_yaml(muted=1, terminal=False),
+    )
+
+    assert graph.details["hard_muted_outputs"] == []
+    assert graph.allowed is False
+
+
+def test_step_after_the_mute_does_not_count_as_muted() -> None:
+    """A later pipeline step touching the channel can undo the mute.
+
+    A trailing Mixer can re-inject the other channel's signal; a channel-less
+    Filter step applies to every channel. Neither may leave the mute standing.
+    """
+    muted = _mono_flat_yaml(muted=1)
+    for suffix in (
+        "  - type: Mixer\n    name: reinject\n",
+        "  - type: Filter\n    names: [flat]\n",
+        "  - type: Filter\n    channels: [1]\n    names: [flat]\n",
+    ):
+        graph = classify_camilla_graph(
+            topology=_full_range_mono_on(0), text=muted + suffix
+        )
+        assert graph.details["hard_muted_outputs"] == [], suffix
+        assert graph.allowed is False, suffix
+
+
+def test_a_hard_mute_never_makes_a_flat_graph_legal_for_a_roleful_topology() -> None:
+    """The roleful refusal is untouched. Muting a channel cannot buy a flat
+    graph a topology with a protected driver — that refusal is about roles, not
+    width, and issue #2145 owns making it park rather than abort."""
+    topology = _active_topology("mono", "active_2_way")
+
+    for text in (_flat_yaml(), _mono_flat_yaml(muted=1)):
+        graph = classify_camilla_graph(topology=topology, text=text)
+        assert graph.allowed is False
+        assert "flat_full_range_graph_illegal_for_roleful_topology" in {
+            issue["code"] for issue in graph.issues
+        }
+
+
+def _dual_apple_stereo_topology() -> OutputTopology:
+    """Composite (dual-Apple) stereo: L on output 0, R on output 2."""
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual",
+        "name": "Dual Apple",
+        "status": "draft",
+        "hardware": {
+            "device_id": "dual_apple_usb_c_dac_4ch",
+            "device_label": "Dual Apple",
+            "physical_output_count": 4,
+            "child_devices": [
+                {"child_id": "a", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
+                {"child_id": "b", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
+            ],
+        },
+        "speaker_groups": [
+            {"id": "left", "label": "Left", "kind": "left",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 0}]},
+            {"id": "right", "label": "Right", "kind": "right",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 2}]},
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
+def test_composite_stereo_is_judged_by_channel_COUNT_not_index() -> None:
+    """A working dual-Apple box sits on outputs 0 and 2 because outputd fans the
+    stereo program across the child DACs. Channel 1 is not output 1 there, so an
+    index-wise refusal would be a false alarm; the count rule is the honest one
+    and it passes."""
+    topology = _dual_apple_stereo_topology()
+
+    graph = classify_camilla_graph(topology=topology, text=_flat_yaml())
+
+    assert graph.allowed is True
+    assert graph.details["hard_muted_outputs"] == []
+    """The renderer's muted set is index-wise, so it is withheld wherever
+    Camilla channel i is not physical output i, or the claim sits outside the
+    graph's width. Both cases fall back to the unmuted graph, which the checker
+    then judges on its own terms."""
+    from jasper.active_speaker.runtime_contract import flat_graph_muted_outputs
+
+    assert flat_graph_muted_outputs(_full_range_mono_on(0), width=2) == frozenset({1})
+    assert flat_graph_muted_outputs(_full_range_mono_on(1), width=2) == frozenset({0})
+    # Stereo, unconfigured, and roleful topologies mute nothing.
+    assert flat_graph_muted_outputs(_full_range_stereo(), width=2) == frozenset()
+    assert flat_graph_muted_outputs(_topology([]), width=2) == frozenset()
+    assert flat_graph_muted_outputs(
+        _active_topology("mono", "active_2_way"), width=2
+    ) == frozenset()
+    # A claim outside the width proves the graph is not addressing by index.
+    assert flat_graph_muted_outputs(_full_range_mono_on(4), width=2) == frozenset()
+    # A composite sink lets outputd choose the mapping — never mute by index.
+    assert flat_graph_muted_outputs(
+        _dual_apple_stereo_topology(), width=2
+    ) == frozenset()
+
+
 def test_mono_active_2way_rejects_flat_and_allows_guarded_graphs() -> None:
     topology = _active_topology("mono", "active_2_way")
 
