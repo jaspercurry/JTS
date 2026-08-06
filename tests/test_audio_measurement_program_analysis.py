@@ -479,13 +479,27 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
 # 2000 Hz order 4; woofer hard [45,4000], measurement [60,4000], NO required
 # protection filters, driven (150,4000).
 #
-# The tweeter's DRIVEN band is (2000, 20000) — its upper edge is the resolver's
-# hard edge, not the measurement band's 18000. Recorded because the two differ
-# only at the top and the fixture previously took both edges from the
-# measurement band (routed nit from #2126's gate). Nothing this module asserts
-# moves with it: every margin below is |P| at the LOWER edge.
+# The tweeter's DRIVEN band is (1600, 20000) — BOTH edges are the resolver's
+# hard band, not the measurement band's (2000, 18000). The upper edge was
+# recorded first (routed nit from #2126's gate); the lower one is #1654's
+# low-side asymmetry for a proven-HP high-frequency role, which moved the
+# derived excitation floor from the measurement band's 2000 down to the
+# declared hard floor of 1600 so a sub-2-kHz candidate can be judged where it
+# actually hands over. Every margin below is |P| at that LOWER edge, so unlike
+# the upper edge this one IS what the numbers move with.
+#
+# **This value was stale for the whole of #1654 and the guard stayed green.**
+# The comment above promised a change to the sweep-floor derivation would fail
+# here; #1654 changed exactly that and nothing fired, because the derived
+# output is transcribed rather than derived. The transcription is still here —
+# calling ``resolve_driver_excitation_ceilings`` needs a topology carrying
+# ``driver_style="compression_driver"`` (the 2 kHz protection high-pass is
+# below every other HF style's policy minimum) and the shared
+# ``mono_output_topology`` fixture has no such parameter. Until that exists the
+# promise above is only as good as this line, and the next person to move the
+# floor has to move it here too.
 _CHECKPOINT_FC_HZ = 2000.0
-_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (2000.0, 20000.0)}
+_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
 _CHECKPOINT_PROTECTION = {
     "woofer": (), "tweeter": (CrossoverSection(2000.0, 4, True),),
 }
@@ -520,22 +534,29 @@ def test_the_live_checkpoint_declarations_compose():
         assert np.all(np.isfinite(composed)), role
 
     # |P| at each role's required-mask lower edge. The tweeter's edge is its
-    # driven floor, 2000 Hz — exactly its protection corner, where an LR4
-    # high-pass is 0.5 by identity (-6.0206 dB), leaving 5.98 dB over the floor.
+    # driven floor, now 1600 Hz (#1654) — 0.8x its 2000 Hz protection corner,
+    # where an LR4 high-pass has fallen to -10.79 dB, leaving only 1.21 dB over
+    # the -12 dB refusal. THAT margin is the governing constraint on how low an
+    # Fc candidate may be proposed, and it was 5.98 dB before #1654 widened the
+    # sweep. It does not erode further as candidates move down: P is the
+    # PROTECTION transfer, fixed at 2000 Hz whatever Fc is being evaluated, and
+    # the mask floor is pinned by the sweep floor rather than by the candidate.
     floor_db = -12.0
-    at_corner = np.abs(crossover_response_complex(
-        np.array([2000.0]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
-    assert at_corner == pytest.approx(0.5, abs=1e-9)
-    assert 20 * np.log10(at_corner) - floor_db == pytest.approx(5.979, abs=0.01)
-    # On the analysis grid the edge lands on the first bin at or above 2000 Hz,
-    # which is where the ruling's -6.01 dB / +5.99 dB margin comes from: the
-    # figure is grid-dependent, not a pure LR4 constant.
+    at_floor = np.abs(crossover_response_complex(
+        np.array([1600.0]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
+    assert 20 * np.log10(at_floor) == pytest.approx(-10.786, abs=0.01)
+    assert 20 * np.log10(at_floor) - floor_db == pytest.approx(1.214, abs=0.01)
+    # On the analysis grid the edge lands on the first bin at or above 1600 Hz
+    # (1602.54 Hz here), so the realized margin is 1.25 dB: the figure is
+    # grid-dependent, not a pure LR4 constant. Both are quoted because the
+    # ruling's number is the continuous one and the refusal uses the grid one.
     freqs = np.fft.rfftfreq(impulse.size, 1.0 / SR)
     edge = freqs[freqs >= _CHECKPOINT_DRIVEN_HZ["tweeter"][0]][0]
     on_grid = np.abs(crossover_response_complex(
         np.array([edge]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
-    assert on_grid == pytest.approx(0.500494, abs=1e-6)
-    assert 20 * np.log10(on_grid) - floor_db == pytest.approx(5.99, abs=0.01)
+    assert on_grid == pytest.approx(0.290190, abs=1e-6)
+    assert 20 * np.log10(on_grid) - floor_db == pytest.approx(1.254, abs=0.01)
+    assert 20 * np.log10(on_grid) - floor_db > 0.0, "the checkpoint must admit"
     # The woofer declares no protection at all, so |P| is unity across its whole
     # driven band — the full 12 dB of margin.
     woofer_p = np.abs(crossover_response_complex(
@@ -545,10 +566,14 @@ def test_the_live_checkpoint_declarations_compose():
 
 @pytest.mark.parametrize(
     ("corner_hz", "admits"),
-    # (c): the reconciliation's closed form is corner <= 1.3085 * max(driven_lo,
-    # Fc/2) = 2617 Hz here. Solved exactly against the shipped response,
-    # |P(2000)| hits the -12 dB floor at corner = 2617.198 Hz.
-    [(2000.0, True), (2617.0, True), (2700.0, False), (3000.0, False)],
+    # (c): the reconciliation's closed form is corner <= K * max(driven_lo,
+    # Fc/2), and K is NOT a constant — the digital LR4's bilinear prewarp
+    # destroys the analog prototype's scale-invariant 1.30719, so K is 1.31052
+    # at this 1600 Hz floor and 1.30859 at the 2000 Hz floor #1654 replaced.
+    # Solved against the shipped response on the analysis grid: |P| at the
+    # 1602.54 Hz edge bin hits the -12 dB floor at corner = 2100.15 Hz (it was
+    # 2618.47 Hz before the sweep widened, which is why every row here moved).
+    [(2000.0, True), (2100.0, True), (2200.0, False), (2617.0, False)],
 )
 def test_a_higher_declared_protection_corner_is_the_refusing_direction(
     corner_hz, admits,
