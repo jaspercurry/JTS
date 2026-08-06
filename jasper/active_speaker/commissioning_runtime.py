@@ -985,14 +985,14 @@ async def _apply_graph(
         )
     raw = await port.read_active_raw()
     observed = _active_identity(raw, field="candidate active_raw readback")
-    # KNOWN DEFECT, tracked separately — do not "fix" this line in isolation.
+    # KNOWN DEFECT (issue #2202) — do not "fix" this line in isolation.
     # `graph` is JTS's own in-memory config; `observed` is CamillaDSP's
     # default-filled readback, so on real hardware these fingerprints cannot
     # agree. It is the same defect class the live-graph boundary had (see
     # runtime_contract.classify_active_bass_extension_graph, which now
     # canonicalizes through `port.canonicalize_raw`). The one-line change here
     # is NOT the whole fix: this module's tests assume a CamillaDSP that echoes
-    # the config back, and 45 of them fail against a faithful double
+    # the config back, and 35 of them fail against a faithful double
     # (tests/_camilla_readback_double.py), so repairing this needs the harness
     # reworked alongside it rather than a patch landed on a suite that only
     # passes because its fake is unrealistic.

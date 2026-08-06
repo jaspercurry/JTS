@@ -1,5 +1,14 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
+> **Revision 13 (2026-08-06; live-comparison correction).** Revision 12 and
+> earlier prescribed comparing the live `active_raw` readback against the
+> selected-file **bytes**. That comparison can never match — `active_raw` is
+> CamillaDSP's own serialization with every omitted key default-filled — so the
+> boundary refused everything it was asked to prove, which took a bonded stereo
+> pair silent on 2026-08-06. The selected file must be canonicalized by
+> CamillaDSP (`ReadConfig`) before its fingerprint is compared. Signature and
+> prose below corrected; everything else in revision 12 stands.
+
 > **Revision 12 (2026-07-18; post-apply evidence seam repair).** Static graph
 > groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
@@ -185,6 +194,7 @@ authorized.
       topology, *,
       statefile_path: Path,
       read_active_graph_text: Callable[[], Awaitable[str | None]],
+      canonicalize_graph_text: Callable[[str], Awaitable[str | None]],
       applied_baseline_path: Path,
       profile_path: Path,
       intent_path: Path,
@@ -215,8 +225,13 @@ authorized.
   normalized fingerprint to equal the stable boot-selected file. It
   never treats path equality alone as active-graph proof. CamillaDSP's
   `active_raw` is the executable semantic/readback witness only: compare
-  its normalized parsed-YAML fingerprint with the stable selected-file
-  bytes, but do **not** send `active_raw` to the canonical classifier.
+  its normalized parsed-YAML fingerprint with the stable selected file
+  **as CamillaDSP itself canonicalizes it** (`ReadConfig`, via
+  `CamillaController.normalize_config_raw`) — comparing against the raw
+  selected-file bytes can never match, because `active_raw` is
+  CamillaDSP's own serialization with every omitted key default-filled,
+  and the boundary then refuses everything it is asked to prove. Still
+  do **not** send `active_raw` to the canonical classifier.
   CamillaDSP strips comments, including the bounded `# Source:`
   provenance used to distinguish a legal saved baseline. After the
   complete paired snapshot and semantic equality succeed, classify the
@@ -342,8 +357,9 @@ authorized.
   `jasper/multiroom/{active_leader_config,follower_config}.py`; do not
   add caller-specific profile policy. The live correction host passes
   `lambda: cam.get_active_config_raw(best_effort=False)` into
-  `classify_active_bass_extension_graph`; it does not await or parse the
-  live graph first. Generated pre-publication YAML continues to use the
+  `classify_active_bass_extension_graph`, paired with
+  `lambda raw: cam.normalize_config_raw(raw, best_effort=False)`; it does
+  not await or parse the live graph first. Generated pre-publication YAML continues to use the
   synchronous `desired` proof path. Production startup/doctor hosts
   thread CLI `--staged-metadata` or the existing
   `staged_metadata_path()` default into the resolver; they no longer
@@ -353,7 +369,8 @@ authorized.
 - `jasper/active_speaker/commissioning_verification.py` — post-apply
   evidence seam only. Inside `_capture_current_graph`'s existing
   `dsp_writer_lock`, invoke `classify_active_bass_extension_graph` exactly
-  once with `producer.topology`, `port.read_active_raw`, and the same five
+  once with `producer.topology`, `port.read_active_raw`,
+  `port.canonicalize_raw`, and the same five
   canonical authority paths used by `commissioning_runtime._run_locked`:
   `Path(DEFAULT_CAMILLA_STATEFILE)`, `baseline_profile_state_path()`,
   `DEFAULT_PROFILE_PATH`, `BASS_EXTENSION_APPLY_INTENT_PATH`, and

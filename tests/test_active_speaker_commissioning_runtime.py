@@ -219,7 +219,7 @@ class FakePort:
     async def read_active_raw(self) -> str:
         # NOTE: this echoes the config back, which the real CamillaDSP does
         # NOT do (it default-fills — tests/_camilla_readback_double.py).
-        # Swapping in the faithful double fails 45 tests in this module and
+        # Swapping in the faithful double fails 35 tests in this module and
         # surfaces the readback-vs-in-memory-graph defect commented at
         # commissioning_runtime._apply_candidate_graph. Left echoing on
         # purpose until that is repaired together with this harness.

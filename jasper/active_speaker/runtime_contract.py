@@ -3866,7 +3866,11 @@ def classify_bass_extension_graph(
 async def _invoke_active_graph_reader(
     reader: Callable[[], Awaitable[str | None]],
 ) -> str | None:
-    """Invoke a live reader inside a task so arbitrary failures become evidence."""
+    """Invoke one live CamillaDSP query inside a task so failures become evidence.
+
+    Used for both queries the live boundary makes — reading the running graph
+    and canonicalizing the selected file — since either can fail the same ways.
+    """
 
     return await reader()
 

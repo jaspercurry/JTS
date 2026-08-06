@@ -24,7 +24,10 @@ politer than the DSP again.
 
 **Provenance.** The default set below is transcribed from a real capture:
 CamillaDSP 4.1.3 on jts5, 2026-08-06, ``GetConfig`` against a JTS-emitted
-active-speaker baseline, which added 36 keys the file omitted.
+active-speaker baseline, which added 36 distinct key paths the file omitted
+(counting each list entry once; 49 if every list entry is counted separately —
+the fixture pair in ``tests/fixtures/camilla_readback/`` is the actual evidence,
+and the number depends on how you count).
 
 **What it models, and what it does not.** It models the one property the
 boundary depends on: CamillaDSP returns a normalized *superset* of the file, so
@@ -55,9 +58,10 @@ _DEVICE_DEFAULTS = {
     "volume_ramp_time": None,
     "worker_threads": None,
 }
-#: Endpoint defaults are per device TYPE. In the captured topology the ALSA
-#: capture side gains these four and the File playback side gains none, so they
-#: are applied to ``capture`` only rather than to both.
+#: Capture-side only. Both endpoints in the capture are ``type: Alsa``, yet the
+#: capture side gains these four and the playback side gains none — so the rule
+#: is which side of the graph it is, NOT the device type. Applying them to both
+#: over-fills by four keys, which the fixture pin catches.
 _CAPTURE_DEFAULTS = {
     "labels": None,
     "link_mute_control": None,

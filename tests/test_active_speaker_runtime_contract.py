@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import collections
 from dataclasses import replace
@@ -1071,6 +1072,10 @@ async def test_live_boundary_refuses_mismatched_live_yaml_as_unstable(
     assert callback_count == 2
     assert graph.allowed is False
     assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+    # The code is coarse — every way of declining reports the same one — so the
+    # MESSAGE is the only thing that says which way. Reporting "unstable" for a
+    # mismatch is what cost a hardware debugging session.
+    assert "does not match" in graph.issues[0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -1383,6 +1388,41 @@ async def test_live_boundary_propagates_reader_cancellation(tmp_path: Path) -> N
             statefile_path=authority["statefile_path"],
             read_active_graph_text=active_readback,
             canonicalize_graph_text=camilla_canonicalize,
+            applied_baseline_path=authority["applied_baseline_path"],
+            profile_path=authority["profile_path"],
+            intent_path=authority["intent_path"],
+            staged_metadata_path=authority["staged_metadata_path"],
+        )
+
+
+async def test_live_boundary_propagates_canonicalizer_cancellation(
+    tmp_path: Path,
+) -> None:
+    """A cancelled canonicalizer must cancel, not be swallowed into a refusal.
+
+    Mirrors the reader's own cancellation pin. Without it, shutdown or an
+    ``asyncio.wait_for`` around this boundary would see a normal refusal
+    return instead of the cancellation it asked for.
+    """
+
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+
+    async def canonicalize(_text: str) -> str:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await classify_active_bass_extension_graph(
+            topology,
+            statefile_path=authority["statefile_path"],
+            read_active_graph_text=lambda: asyncio.sleep(
+                0, result=_active_baseline_yaml("mono", 2)
+            ),
+            canonicalize_graph_text=canonicalize,
             applied_baseline_path=authority["applied_baseline_path"],
             profile_path=authority["profile_path"],
             intent_path=authority["intent_path"],
@@ -4332,3 +4372,46 @@ def test_parked_blocked_path_does_not_repeat_topology_issues(
     # NOT asserted: total uniqueness. `bass_extension_snapshot_unstable` is
     # reported once per classification (current / preferred / staged) and that
     # pre-dates #2135 — it is issue #2135 item 3, deliberately untouched here.
+
+
+def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
+    """No caller may pass an identity canonicalizer.
+
+    The required parameter stops a caller OMITTING the canonicalizer; it cannot
+    stop one passing ``lambda text: text``, which silently restores the exact
+    bug this boundary was fixed for — a gate that looks healthy and refuses
+    everything. So pin that every production call site routes through
+    CamillaDSP's own ReadConfig.
+    """
+
+    repo_root = Path(__file__).resolve().parent.parent
+    call_sites: list[tuple[str, str]] = []
+    for path in sorted((repo_root / "jasper").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(
+                func, "id", None
+            )
+            if name != "classify_active_bass_extension_graph":
+                continue
+            supplied = {
+                kw.arg: ast.unparse(kw.value)
+                for kw in node.keywords
+                if kw.arg is not None
+            }
+            assert "canonicalize_graph_text" in supplied, (
+                f"{path.relative_to(repo_root)} calls the boundary without a "
+                "canonicalizer"
+            )
+            call_sites.append(
+                (str(path.relative_to(repo_root)), supplied["canonicalize_graph_text"])
+            )
+
+    assert call_sites, "boundary call sites should be discoverable"
+    for where, expression in call_sites:
+        assert (
+            "normalize_config_raw" in expression or "canonicalize_raw" in expression
+        ), f"{where} passes a canonicalizer that is not CamillaDSP's: {expression}"

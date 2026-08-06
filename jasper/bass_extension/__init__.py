@@ -184,6 +184,15 @@ async def _reload_and_match(
         or not isinstance(live_text, str)
         or _selected_path(statefile_path) != selected_path
         or selected_path.read_bytes() != expected_bytes
+        # KNOWN DEFECT (issue #2202) — do not "fix" this line in isolation.
+        # `live_text` is CamillaDSP's default-filled readback; every caller
+        # passes `expected_graph_fingerprint` from JTS-authored text, so these
+        # cannot agree on real hardware. Same class as the live-graph boundary
+        # (runtime_contract.classify_active_bass_extension_graph, now
+        # canonicalized). This check runs BEFORE that boundary, so the proof
+        # below is unreachable until this is repaired. Not urgent only because
+        # `apply_bass_extension` has no production caller yet — tests and
+        # bass_extension/bench only.
         or _normal_fingerprint(live_text) != expected_graph_fingerprint
     ):
         raise BassExtensionApplyError("CamillaDSP graph/path readback did not match")

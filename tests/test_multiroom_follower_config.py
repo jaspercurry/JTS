@@ -430,6 +430,53 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
         )
 
 
+def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
+    """The raised error must carry the issue MESSAGE, not just its code.
+
+    The boundary's codes are coarse: every way of declining reports
+    ``bass_extension_active_snapshot_unstable``. If this caller logs only the
+    code, an operator reading the journal is told "unstable" no matter what
+    actually happened — which is exactly how the 2026-08-06 bonded-pair outage
+    stayed misdiagnosed.
+    """
+
+    monkeypatch.setattr(
+        output_topology_mod,
+        "load_output_topology_strict",
+        lambda: object(),
+    )
+
+    async def classify(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_UNSAFE,
+            allowed=False,
+            issues=(
+                {
+                    "severity": "blocker",
+                    "code": "bass_extension_active_snapshot_unstable",
+                    "message": "the running CamillaDSP graph does not match it",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+
+    with pytest.raises(RuntimeError, match="does not match it"):
+        asyncio.run(
+            _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
+                _FakeCamilla(current="/tmp/expected.yml"),
+                expected_config_path="/tmp/expected.yml",
+                expected_classification=(
+                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                ),
+            )
+        )
+
+
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
