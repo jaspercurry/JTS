@@ -1214,6 +1214,33 @@ def _shape_from_kwargs(
     )
 
 
+def relay_plan_attempts_required(
+    *,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
+) -> int:
+    """Relay blob indexes one journey needs — the SINGLE producer of that fact.
+
+    Both consumers read it: :func:`assert_cloud_plan_fits_relay_capacity` (with
+    the WORST-CASE position counts, "can the relay carry any shape this flow can
+    be configured into") and ``jasper-doctor``'s ``check_capture_relay`` (with
+    the shipped defaults, "can it carry what THIS Pi will actually run"). The
+    two questions differ; the arithmetic must not, which is why they pass
+    arguments to one function instead of each adding their own terms.
+
+    R16's walk is counted **when its flag is on** — 23 → 29 at the doctor's
+    defaults the moment it flips, with no second edit. That is the whole point:
+    before this was one producer, the guard added the poses unconditionally
+    while the doctor did not, so a flipped build would have had the doctor
+    under-report by six and pass a Pi whose Worker ceiling sat in [23, 28] —
+    green in the diagnostic, refused mid-walk.
+    """
+    return cloud_plan_max_attempts(
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    ) + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+
+
 def assert_cloud_plan_fits_relay_capacity() -> None:
     """Raise unless the WORST-CASE cloud plan fits the relay's index space.
 
@@ -1228,24 +1255,22 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     """
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
-    # R16: the lateral walk is stage-1 entries too, so the worst case the relay
-    # must carry includes it. Counted unconditionally rather than behind
-    # ``STAGE1_INCLUDES_LATERAL`` — a capacity guard that only holds while a
-    # flag is off is not a guard.
+    # R16's walk is stage-1 entries too. Flag-aware via the shared producer
+    # below, so this and jasper-doctor can never disagree about the number.
     entries = cloud_capture_target(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    ) + len(LATERAL_POSE_PROMPTS)
+    ) + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
     if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2FlowError(
             f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
             f"relay blob indexes but the relay ceiling is "
             f"{MAX_CAPTURE_PLAN_ATTEMPTS}"
         )
-    attempts = cloud_plan_max_attempts(
+    attempts = relay_plan_attempts_required(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    ) + len(LATERAL_POSE_PROMPTS)
+    )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2FlowError(
             f"worst-case cloud plan's attempt budget {attempts} exceeds the "

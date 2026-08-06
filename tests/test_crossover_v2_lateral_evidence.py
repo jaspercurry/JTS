@@ -329,28 +329,38 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
         assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
-def test_the_relay_capacity_guard_counts_the_lateral_walk():
-    """Worst case is cloud PLUS walk, not cloud alone. ``ceiling`` is re-derived
-    to sit strictly between the two, so the guard passing there would prove it
-    had stopped counting the poses.
+def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
+    """The guard reads the SAME flag-aware producer ``jasper-doctor`` does, so
+    the two can never disagree about the number. ``ceiling`` is re-derived to
+    sit strictly between the cloud-only and cloud-plus-walk cases, so a guard
+    that had stopped counting the poses would pass there.
     """
     import jasper.capture_relay.spec as spec
 
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds today
-    cloud_only = flow.cloud_plan_max_attempts(
+    flow.assert_cloud_plan_fits_relay_capacity()  # holds today, walk off
+    worst = dict(
         cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
-    with_walk = cloud_only + LATERAL_COUNT
-    assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
-        "the shipped relay ceiling no longer carries the worst-case plan"
-    )
-    ceiling = cloud_only + 1
-    assert ceiling < with_walk, "the walk must be long enough to be countable"
+    cloud_only = flow.relay_plan_attempts_required(**worst)
     with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
+        with_walk = flow.relay_plan_attempts_required(**worst)
+        assert with_walk == cloud_only + LATERAL_COUNT
+        assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
+            "the shipped relay ceiling no longer carries the worst-case plan"
+        )
+        # The in-between ceiling: enough for the cloud alone, not for the walk.
+        ceiling = cloud_only + 1
+        assert ceiling < with_walk, "the walk must be long enough to be countable"
         mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
+    # …and with the walk off, that same ceiling is fine — the guard tracks the
+    # flag rather than asserting a worst case no shipped session runs.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", cloud_only + 1)
+        flow.assert_cloud_plan_fits_relay_capacity()
 
 
 def test_a_lateral_only_stage_1_still_consents_to_a_walk():
