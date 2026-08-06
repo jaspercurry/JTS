@@ -1115,6 +1115,41 @@ def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
     return json.dumps(projection, indent=1, sort_keys=True)
 
 
+def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
+    """The worked RESULT SHAPE example's tweeter cutoff, in Hz.
+
+    Read from policy for the same reason ``_driver_research_prompt_limits``
+    is: a fixed constant here is only legal for the styles whose floor it
+    happens to clear.  A hard-coded 3000 reads as a worked answer to a ribbon
+    (floor 5000) or supertweeter (floor 8000) target whose own LIMITS line one
+    screen above says otherwise — the reply then lands
+    ``tweeter:highpass_below_code_policy``, which is precisely the deadlock
+    #2186 exists to end.
+
+    The strictest high-frequency floor among this request's targets is used, so
+    a mixed request cannot teach a cutoff that is illegal for one of its own
+    drivers.  The floor itself is a legal and conservative worked answer; a
+    request with no high-frequency target falls back to the class default for
+    an undeclared tweeter, which is the most conservative entry in the table.
+    """
+
+    floors = [
+        policy.min_highpass_hz
+        for target in request.get("targets", [])
+        if isinstance(target, Mapping)
+        for policy in (
+            driver_protection_profile(
+                str(target.get("role") or ""),
+                driver_style=target.get("driver_style"),
+            ),
+        )
+        if policy.min_highpass_hz is not None
+    ]
+    if floors:
+        return max(floors)
+    return driver_protection_profile("tweeter").min_highpass_hz or 5000.0
+
+
 def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     """Return the per-target code-policy bounds ``_target_issues`` enforces.
 
@@ -1211,6 +1246,14 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     # code block's contents, not the prose around it.
     target_count = len(request.get("targets", []))
     entries = "entry" if target_count == 1 else "entries"
+    # The worked example's own numbers, derived so they are legal for THIS
+    # request's drivers and mutually nested. Round by construction (every
+    # policy floor is a round number and every offset here is a multiple of
+    # 500), because the ask tells the assistant an estimate should look like
+    # one and the example has to model that.
+    hp = int(_prompt_example_highpass_hz(request))
+    hard_low = hp - 500
+    search_high = min(hp * 2, 18000)
     return "\n".join(
         (
             "You are a loudspeaker-driver datasheet researcher. Your entire reply is data for a machine to parse, not prose for a human.",
@@ -1240,7 +1283,8 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "measurement_band_hz and crossover_search_band_hz are protocol choices, not driver facts. A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
             "Nest the three bands: the crossover-search band sits inside the measurement band, the measurement band sits inside the hard excitation band, and every filter cutoff sits inside the hard excitation band. A reply that does not nest is refused.",
             "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
-            "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver, and for a tweeter use the ceiling listed under LIMITS. Never send a value above that ceiling — a ceiling is not a recommendation.",
+            "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver. For a tweeter with no published level limit, send exactly the ceiling listed under LIMITS: that hands the level choice to this build's own protection logic, which raises it only once a protective high-pass is proven in the signal path.",
+            "Send a lower tweeter number only when you mean it as a deliberate quieter limit — anything below the ceiling is taken literally and is never raised. Never send a value above the ceiling.",
             "",
             "LIMITS",
             "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
@@ -1259,13 +1303,13 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "model": "echo manufacturer_and_model from TARGETS",',
             '    "nominal_impedance_ohm": 8,',
             '    "sensitivity_db_2v83_1m": 90,',
-            '    "usable_frequency_range_hz": [2000, 20000],',
-            '    "recommended_highpass_hz": 3000,',
-            '    "do_not_test_below_hz": 2500,',
-            '    "hard_excitation_band_hz": [2500, 20000],',
-            '    "required_protection_filters": [{"kind":"highpass","cutoff_hz":3000,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}],',
-            '    "measurement_band_hz": [3000, 18000],',
-            '    "crossover_search_band_hz": [3500, 5000],',
+            f'    "usable_frequency_range_hz": [{hp - 1000}, 20000],',
+            f'    "recommended_highpass_hz": {hp},',
+            f'    "do_not_test_below_hz": {hard_low},',
+            f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
+            f'    "required_protection_filters": [{{"kind":"highpass","cutoff_hz":{hp},"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}}],',
+            f'    "measurement_band_hz": [{hp}, 18000],',
+            f'    "crossover_search_band_hz": [{hp + 500}, {search_high}],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',

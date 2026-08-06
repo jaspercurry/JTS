@@ -4162,7 +4162,208 @@ async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
       importBox: importBox.slice(0, 400),
     });
   }
+
+  // The guard mirrors its server twin (_positive_float), which refuses '' and
+  // 0 as well as null -- a bare null check would let both through to a server
+  // 400 or, worse, to protectionFiltersFromSetting's drop. It must NOT be
+  // tighter than the server either: a numeric string is accepted by float()
+  // server-side, so it is accepted here.
+  const refused = [["empty string", ""], ["zero", 0], ["negative", -1]];
+  for (const [label, value] of refused) {
+    const packet = _honestNullPacket();
+    packet.drivers[1].required_protection_filters = [{
+      kind: "highpass",
+      cutoff_hz: value,
+      minimum_slope_db_per_octave: 24,
+      family_or_equivalent: "equivalent_or_steeper",
+    }];
+    const box = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    }));
+    await loadAndSetActiveState(box);
+    box.dispatchInput({ "data-driver-import": "" }, JSON.stringify(packet));
+    box.dispatchClick({ "data-act": "parse-driver-research" });
+    await box.flush();
+    const text = box.elements.get("status").textContent;
+    if (!text.includes("without both a cutoff and a minimum slope")) {
+      fail(`a ${label} cutoff must be refused like a null one`, { label, text });
+    }
+  }
+
+  // ... and the subset property: what the server accepts, this accepts.
+  const numericString = _honestNullPacket();
+  numericString.drivers[1].required_protection_filters = [{
+    kind: "highpass",
+    cutoff_hz: "4500",
+    minimum_slope_db_per_octave: "24",
+    family_or_equivalent: "equivalent_or_steeper",
+  }];
+  const ok = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+  }));
+  await loadAndSetActiveState(ok);
+  ok.dispatchInput({ "data-driver-import": "" }, JSON.stringify(numericString));
+  ok.dispatchClick({ "data-act": "parse-driver-research" });
+  await ok.flush();
+  const okText = ok.elements.get("status").textContent;
+  if (okText.includes("without both a cutoff and a minimum slope")) {
+    fail("the browser guard must not be tighter than its server twin", { okText });
+  }
   return { driverResearchNullProtectionNumbersAreRefusedNotDropped: true };
+}
+
+// #2186 resilience follow-up. The import-boundary guard above is only one of
+// the three places the silent drop had to die, and the other two live on the
+// SAVE path -- which nothing in this harness exercised. Both of these tests
+// must go RED against a revert of their half; the status line alone is not
+// enough, because the operator's next ordinary click overwrites it and the
+// panel is then the only surviving account of what happened.
+function _honestNullPacket(fingerprint) {
+  return {
+    artifact_schema_version: 2,
+    kind: "jts_active_crossover_driver_research",
+    request_fingerprint: fingerprint || "a".repeat(64),
+    drivers: [
+      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
+      {
+        target_id: "main:tweeter",
+        role: "tweeter",
+        model: "Dayton CX120-8",
+        required_protection_filters: [{
+          kind: "highpass",
+          cutoff_hz: null,
+          minimum_slope_db_per_octave: null,
+          family_or_equivalent: "equivalent_or_steeper",
+        }],
+      },
+    ],
+    crossover_candidates: [],
+  };
+}
+
+async function _harnessWithNamedDrivers(designSaves) {
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        // The server saves the visible values and NOT the dropped packet --
+        // which is exactly why ingestDesignDraft would blank the paste box.
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          summary: { manual_driver_count: 2 },
+          manual_settings: body.manual_settings,
+          driver_research: body.driver_research,
+          operator_inputs: body.operator_inputs || {},
+        }));
+      }
+      return Promise.resolve(response({
+        status: "not_saved", summary: {}, operator_inputs: {},
+      }));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
+  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
+  return harness;
+}
+
+async function testRejectedImportReasonSurvivesTheSaveInThePanel() {
+  // The paste -> "Update working setup" path WITHOUT pressing Parse first.
+  // Nothing else guards it: the reason is produced inside saveDriverResearchDraft
+  // and was then cleared before the first render.
+  const designSaves = [];
+  const harness = await _harnessWithNamedDrivers(designSaves);
+  harness.dispatchInput(
+    { "data-driver-import": "" },
+    JSON.stringify(_honestNullPacket(), null, 2)
+  );
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) {
+    fail("the visible values should still save when the packet is dropped", {
+      designSaves,
+    });
+  }
+  if (designSaves[0].driver_research !== null) {
+    fail("an unstorable packet must not be sent as research evidence", {
+      sent: designSaves[0].driver_research,
+    });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("driver-research__error")) {
+    fail("the drop reason must reach the panel, not only the status line", { html });
+  }
+  if (!html.includes("without both a cutoff and a minimum slope")) {
+    fail("the panel must name WHY the packet was dropped", {
+      panel: html.slice(html.indexOf("driver-research__error") - 200, 600),
+    });
+  }
+  const statusText = harness.elements.get("status").textContent;
+  if (!statusText.includes("Imported JSON was not saved")) {
+    fail("the toast should still name the outcome", { statusText });
+  }
+  return { rejectedImportReasonSurvivesTheSaveInThePanel: true };
+}
+
+async function testRejectedPasteAndReasonSurviveDraftIngest() {
+  // ingestDesignDraft blanks importText whenever the saved draft carries no
+  // driver_research. Handing back an explanation with nothing to act on is
+  // half a fix, so the paste has to survive the round trip too.
+  const designSaves = [];
+  const harness = await _harnessWithNamedDrivers(designSaves);
+  const pasted = JSON.stringify(_honestNullPacket(), null, 2);
+  harness.dispatchInput({ "data-driver-import": "" }, pasted);
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Dayton CX120-8")) {
+    fail("a refused paste must survive the draft ingest so it can be fixed", {
+      html: html.slice(0, 600),
+    });
+  }
+  if (!html.includes("driver-research__error")) {
+    fail("the reason must survive the draft ingest alongside the paste", { html });
+  }
+
+  // The v2-invalidation drop path is the OTHER way a packet gets dropped
+  // here (valid JSON, but no longer bound to the current request). It must
+  // reach the panel too, not just the ephemeral status line.
+  const invalidationSaves = [];
+  const second = await _harnessWithNamedDrivers(invalidationSaves);
+  const boundPacket = _honestNullPacket();
+  boundPacket.drivers[1].required_protection_filters = [{
+    kind: "highpass",
+    cutoff_hz: 4500,
+    minimum_slope_db_per_octave: 24,
+    family_or_equivalent: "equivalent_or_steeper",
+  }];
+  second.dispatchInput(
+    { "data-driver-import": "" }, JSON.stringify(boundPacket, null, 2)
+  );
+  second.dispatchClick({ "data-act": "save-driver-design" });
+  await second.flush();
+  await second.flush();
+  await second.flush();
+  const secondHtml = second.elements.get("view-body").innerHTML;
+  if (!secondHtml.includes("invalidated by a visible edit")) {
+    fail("the v2-invalidation drop must also explain itself in the panel", {
+      secondHtml: secondHtml.slice(0, 800),
+    });
+  }
+  if (!secondHtml.includes("Dayton CX120-8")) {
+    fail("the v2-invalidation drop must keep the paste too", {
+      secondHtml: secondHtml.slice(0, 600),
+    });
+  }
+  return { rejectedPasteAndReasonSurviveDraftIngest: true };
 }
 
 // The other half of the #2186 contract: an ESTIMATED value is storable, and the
@@ -4204,6 +4405,14 @@ async function testConfirmCalloutCountsResearchEstimates() {
             basis: "estimated: protocol default, no published limit",
             sources: [],
           },
+          // NOT a limit: sensitivity is a gain trim. A low-confidence entry
+          // here must not inflate a count the operator reads as "limits I am
+          // about to freeze" -- so this key is what pins the scoping.
+          sensitivity_db_2v83_1m: {
+            confidence: "low",
+            basis: "estimated: no published sensitivity",
+            sources: [],
+          },
         },
       },
     ],
@@ -4218,12 +4427,14 @@ async function testConfirmCalloutCountsResearchEstimates() {
   const calloutAt = html.indexOf('id="confirm-safety-limits"');
   if (calloutAt < 0) fail("expected the confirm callout to render", { html });
   const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  // Two low-confidence assertions across both drivers, one high-confidence one.
+  // Two low-confidence LIMIT keys across both drivers. The tweeter's
+  // low-confidence sensitivity is a gain trim, not a limit, and must not be
+  // counted here -- reverting the key scoping makes this read "3".
   if (!callout.includes("2 of these limits came from the research reply as estimates")) {
-    fail("the confirm callout must count the estimated limits", { callout });
+    fail("the confirm callout must count only the estimated LIMITS", { callout });
   }
-  if (!callout.includes("Check them before confirming")) {
-    fail("the estimate note must name the action", { callout });
+  if (!callout.includes("not published figures. Check them before confirming")) {
+    fail("the estimate note must agree in number and name the action", { callout });
   }
 
   // No research packet at all means nothing was estimated — no sentence.
@@ -6817,6 +7028,8 @@ results.push(await testDriverResearchImportPreservesOperatorInstalledConfigurati
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
 results.push(await testLoadedResearchHidesStalePreparedPreview());
 results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
+results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
+results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
 results.push(await testConfirmCalloutCountsResearchEstimates());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());

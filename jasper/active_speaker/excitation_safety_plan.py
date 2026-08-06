@@ -592,6 +592,26 @@ def resolve_driver_excitation_ceilings(
     # Safe direction (quieter than the typed intent), but the intent is
     # silently unmet; wizard-side validation of the declared HF cap is the
     # noted follow-up.
+    #
+    # #2186 widened who writes this value. The driver-research ask now tells an
+    # assistant to send exactly this class default for a tweeter with no
+    # published level limit, so a research reply is an AUTOMATED writer landing
+    # deliberately on the sentinel. That is intended and it does not change the
+    # premise -- it extends it: "equals the seed" used to mean "the operator
+    # left the wizard default alone", and now also means "the reply had no
+    # driver-specific level knowledge". Both are the same claim, that no
+    # driver-specific level intent was expressed, which is exactly when
+    # deriving from sensitivity is the better answer. A reply that DOES know
+    # better sends a different number and is honoured literally by the branch
+    # below never running.
+    #
+    # The discontinuity is real and deliberate: on this path -65.0 resolves to
+    # the derived ceiling (up to HF_MEASUREMENT_ABS_CEILING_DBFS) while -66.0
+    # resolves to -66.0. Anything that changes the class default, or the value
+    # the research template emits, must move both together --
+    # tests/test_active_speaker_driver_safety.py's
+    # test_template_tweeter_peak_lands_on_the_derivation_sentinel pins the
+    # three-way chain (template value == class default == this comparison).
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES

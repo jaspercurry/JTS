@@ -445,13 +445,30 @@ only route through. The research ask therefore ranks its own answers: the
 published value first, then a **conservative engineering estimate** derived from
 the driver's type and size, tagged `confidence: "low"` with its derivation in
 `basis`, and `null` only where there is no engineering basis at all. The ask
-also names, per target, the code-owned bounds the reply must clear, read from
-`driver_protection_profile` rather than restated — so an estimate can land on
-the first try. What did not move is the bound itself: `_target_issues` refuses
+also names, per target, the code-owned bounds the reply must clear, and its
+worked example fills itself in from those same bounds — both read from
+`driver_protection_profile` rather than restated, so an estimate can land on
+the first try and the example is never a worked answer the gate refuses for the
+tweeter style actually installed. What did not move is the bound itself: `_target_issues` refuses
 an out-of-bounds value however impeccable its provenance, and refuses it **by
 name** rather than silently clamping it, so the operator sees the bound and
 decides. The confirm callout states how many of the limits arrived as estimates
 rather than published figures. Owner ruling, 2026-08-06 (issue #2186).
+
+One of those bounds is also a **sentinel**, and the ask lands on it deliberately.
+For a high-frequency role on the proven-high-pass path,
+`resolve_driver_excitation_ceilings` reads a declared
+`max_effective_peak_dbfs` that exactly equals the class default as "no
+driver-specific level intent was expressed" and supersedes it with the
+sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS`; any
+other declared value is honoured literally. So a tweeter declared at the class
+default can be measured up to 30 dB louder than that number suggests, while one
+declared a single dB quieter is taken at face value. That discontinuity predates
+the estimate contract, but the research ask is now its first automated writer,
+so the ask tells the assistant what declaring the ceiling actually delegates,
+and the template value, the class default, and the equality comparison are
+pinned as one three-link chain in
+`tests/test_active_speaker_driver_safety.py`.
 
 ### Step 3A: manual crossover
 
