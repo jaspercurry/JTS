@@ -7180,11 +7180,9 @@ def test_the_section_7_claims_are_persisted_even_on_a_pass():
     """R18 (#1868): WHICH claims were proved, on every outcome.
 
     Same always-persisted shape and argument as the graded band above, one
-    step further. That band bounds how wide the tracking claim is; this says
-    which claims exist at all — and two of the four (per-branch realization)
-    are structurally not-evaluated, because VERIFY plays one summed sweep. A
-    "Verified." screen backed by state that names no claim set reads as four
-    proofs where there are two.
+    step further: that band bounds how wide the tracking claim is, this says
+    which claims exist at all — and two of the four are structurally
+    not-evaluated, because VERIFY plays one summed sweep.
     """
     claims = {
         "woofer_branch": {
@@ -7206,8 +7204,7 @@ def test_the_section_7_claims_are_persisted_even_on_a_pass():
     v2host.persist_conductor_state(conductor, failure_code=None)
     assert (v2host.load_v2_state() or {})["verify"]["claims"] == claims
 
-    # A verify that graded nothing writes no key rather than an empty claim
-    # set — absent means "nothing was judged", never "everything passed".
+    # Graded nothing ⇒ no key: absent means "nothing was judged", not "passed".
     plain = _StubConductor("s1")
     plain.verify_outcome = "fail"
     v2host.persist_conductor_state(plain, failure_code=None)

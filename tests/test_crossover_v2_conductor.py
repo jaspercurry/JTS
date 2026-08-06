@@ -12222,12 +12222,10 @@ def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
 # R18 — honest post-apply verification (issues #1868 / #1654)
 # --------------------------------------------------------------------------- #
 #
-# The numbers in these records are SYNTHETIC and labelled so. The 2026-08-05
-# JTS3 checkpoint's dip depth reached this work through a rendered chart, and a
-# chart in this flow has already been found rendering prediction under a
-# measured title (#2152), so it is not restated as ground truth anywhere. The
-# journal-verified fact these fixtures DO reproduce is the graded band:
-# ``tracking_band_lo_hz=2000.0`` on a box whose tweeter is swept from Fc.
+# The numbers in these records are SYNTHETIC and labelled so — no hardware
+# measurement is restated as a fixture value. The journal-verified fact they DO
+# reproduce is the graded band: ``tracking_band_lo_hz=2000.0`` on a box whose
+# tweeter is swept from Fc.
 
 
 def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
@@ -12279,7 +12277,7 @@ def test_the_same_capture_passed_before_the_absolute_claim_existed():
 
 
 def test_absolute_claim_inside_tolerance_passes_and_still_reports_its_numbers():
-    """A passing handoff is disclosed, not silent — the number IS the claim."""
+    """A passing handoff is disclosed, not silent."""
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(
@@ -12293,9 +12291,8 @@ def test_absolute_claim_inside_tolerance_passes_and_still_reports_its_numbers():
 
 
 def test_not_evaluated_claims_never_gate_and_keep_the_kernels_own_reason():
-    """Refusing on a measurement nobody made would be the same dishonesty in
-    the other direction — and a re-labelled reason would erase which one it
-    was."""
+    """Refusing on a measurement nobody made is the same dishonesty pointed
+    the other way — and a re-labelled reason erases which one it was."""
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(
@@ -12309,9 +12306,9 @@ def test_not_evaluated_claims_never_gate_and_keep_the_kernels_own_reason():
 
 
 def test_per_branch_claims_are_named_not_evaluated_never_silently_claimed():
-    """Plan §7 names three claims; VERIFY plays ONE summed sweep, so two of
-    them have no evidence at all. R18 does not widen the capture plan — it
-    refuses to let "Verified." imply those two were proved."""
+    """§7 names three claims; VERIFY plays ONE summed sweep, so two have no
+    evidence. R18 does not widen the capture plan — it refuses to let
+    "Verified." imply those two were proved."""
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(
@@ -12360,18 +12357,37 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
     assert verify_absolute_tolerance_db([1000.0]) is None
 
 
-def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():
-    """SSOT: the two absolute grades are NOT peers, and the reason is
-    structural rather than stylistic (R18 review finding).
+def test_the_delta_probe_still_refuses_first_so_its_rollback_is_never_displaced():
+    """R18 is purely additive to the refusal order (resilience review finding).
 
-    ``assemble_cloud_group_result``'s ``flatness`` answers "is the speaker
-    flat" from the spatial mean, self-referenced to its own 250 Hz-8 kHz mean.
-    It cannot own plan §7 claim 3 because it does not EXIST when the verdict
-    that claim gates is computed — it is assembled at group close, after
-    VERIFY — and on a session with no post-apply cloud it never exists at all.
-    This pins that the crossover-region verdict stands on a capture the cloud
-    has not contributed to, so a future consolidation cannot quietly delete
-    the claim on the paths that have no cloud.
+    The probe's refusals carry an AUTOMATIC remedy. Gating ahead of it would
+    let a capture that fails this claim AND warrants a rollback get neither.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.069, verify_absolute=_absolute(3.98),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow.CrossoverV2Conductor, "_delta_probe_refusal",
+            lambda self, verdict: REASON_CORRECTION_MODEL_ERROR,
+        )
+        verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
+    # The claim was still GRADED and still says it failed — the ordering
+    # decides which refusal is reported, never whether the claim was made.
+    assert c.verify_claims["absolute"]["status"] == CLAIM_FAIL
+
+
+def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():
+    """SSOT: the two absolute grades are NOT peers, for a structural reason.
+
+    ``assemble_cloud_group_result``'s ``flatness`` cannot own §7 claim 3 — it
+    is assembled at group close, AFTER this verdict, and never exists at all
+    on a session with no post-apply cloud. Pins that the crossover-region
+    verdict stands on a capture the cloud has not contributed to, so a future
+    consolidation cannot quietly delete the claim on cloudless paths.
     """
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)

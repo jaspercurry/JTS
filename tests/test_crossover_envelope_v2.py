@@ -1539,12 +1539,8 @@ _R18_CLAIMS_FAIL = {
 
 
 def test_done_screen_names_the_crossover_region_finding_and_the_unchecked_claims():
-    """R18 (#1868) — the screen that says "Verified." must name what the
-    handoff measured and which of §7's claims nobody made.
-
-    Two of the four are structurally not-evaluated (VERIFY plays one summed
-    sweep), and a badge over an unstated claim set reads as four proofs.
-    """
+    """R18 (#1868) — "Verified." must name what the handoff measured and which
+    of §7's claims nobody made; two of four are structurally not-evaluated."""
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={
@@ -1560,8 +1556,8 @@ def test_done_screen_names_the_crossover_region_finding_and_the_unchecked_claims
 
 
 def test_verify_fail_screen_names_the_crossover_region_finding():
-    """The same disclosure on the failure screen, where the household is
-    choosing between §7's bounded actions."""
+    """The same disclosure on the failure screen, where the household chooses
+    between §7's bounded actions."""
     env = build_crossover_envelope_v2(_status(
         phase="verify",
         failure={"code": "verify_crossover_region"},
@@ -1572,17 +1568,21 @@ def test_verify_fail_screen_names_the_crossover_region_finding():
     ))
     assert env["screen"] == "verify_fail"
     assert "crossover blend -3.98 dB at 1700 Hz (limit 2.0 dB)" in env["expert_details"]
-    assert "didn't blend as designed" in env["nudges"][0]["text"]
-    # §7's bounded actions, and nothing automatic: the household chooses.
-    assert env["next_action"]["id"] == "verify_retry"
+    text = env["nudges"][0]["text"]
+    assert "didn't blend as designed" in text
+    # The copy names levers that EXIST on this screen and change the outcome —
+    # never a dead one. It deliberately omits "try again": that re-checks the
+    # same applied graph, and this defect is deterministic.
+    assert "Re-measure to fit it again, or undo" in text
+    assert "Try again" not in text
+    assert env["next_action"]["id"] == "verify_retry"  # still offered, not sold
     assert {a["id"] for a in env["alternate_actions"]} == {
-        "verify_undo", "verify_remeasure",
-    }
+        "verify_undo", "verify_remeasure"}
 
 
 def test_a_passing_crossover_region_is_disclosed_not_silent():
-    """The number IS the claim: a household that only meets it on a failure
-    cannot know a passing handoff was measured at all."""
+    """The number IS the claim: shown only on a failure, a household could not
+    know a passing handoff was measured at all."""
     claims = {
         **_R18_CLAIMS_FAIL,
         "absolute": {
@@ -1601,8 +1601,7 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
 
 
 def test_a_not_evaluated_crossover_region_renders_no_number():
-    """Absence stays absence — a claim nobody could grade must not produce a
-    sentence a household could read as a result."""
+    """Absence stays absence — an ungraded claim produces no sentence."""
     claims = {
         **_R18_CLAIMS_FAIL,
         "absolute": {

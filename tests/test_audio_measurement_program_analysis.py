@@ -5485,8 +5485,7 @@ R18_FC_HZ = 2000.0
 #: so ``overlap_band_hz`` clamps VERIFY's tracking band up to 2000 Hz and the
 #: sub-Fc half of the crossover region is structurally ungradeable by it.
 #: ``tracking_band_lo_hz=2000.0`` in that session's ``verify_diag`` is the
-#: journal-verified half of the #1894 Gate 0 record, and the only half quoted
-#: anywhere in these tests.
+#: journal-verified fact, and the only one quoted in these tests.
 R18_OLD_TRACKING_BAND_HZ = (2000.0, 4000.0)
 R18_LP4 = (CrossoverSection(fc_hz=R18_FC_HZ, order=4, highpass=False),)
 R18_HP4 = (CrossoverSection(fc_hz=R18_FC_HZ, order=4, highpass=True),)
@@ -5504,12 +5503,10 @@ def _r18_system(*, dip_center_hz=None, dip_depth_db=0.0):
     """A SYNTHETIC applied system: an ideal LR4 pair, optionally with a
     realization suck-out injected at ``dip_center_hz``.
 
-    Synthetic on purpose and labelled as such. The 2026-08-05 hardware dip's
-    DEPTH reached this work only through a rendered chart, and a chart in this
-    flow has already been found rendering prediction under a measured title
-    (#2152), so no number here is presented as that measurement. What IS
-    reproduced from the journal is the shape of the blind spot: a defect
-    centred below Fc, inside the crossover region, below the old band's floor.
+    Synthetic and labelled as such — no number here is presented as the
+    2026-08-05 hardware measurement. What IS reproduced from that session is
+    the SHAPE of the blind spot: a defect centred below Fc, inside the
+    crossover region, below the old band's floor.
 
     Returns ``(freqs, ir, system_db)``. The ideal pair sums FLAT by
     construction (LR4 lowpass + highpass is allpass), so ``system_db`` carries
@@ -5545,9 +5542,8 @@ def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
     """Analyze one synthetic VERIFY capture of :func:`_r18_system`.
 
     ``predicted_sum`` is the system's OWN response — the worst case for the
-    tracking comparator and the exact shape #1868 is about: a model that
-    faithfully reproduces the defect, so measured-minus-predicted is ~0 and
-    tracking structurally cannot fail on it.
+    tracking comparator and exactly the shape #1868 is about: a model that
+    reproduces the defect, so tracking structurally cannot fail on it.
     """
     freqs, ir, system_db = _r18_system(
         dip_center_hz=dip_center_hz, dip_depth_db=dip_depth_db
@@ -5571,10 +5567,10 @@ def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
 def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
     """The band widening, isolated (#1654's revival for #1868).
 
-    ``overlap_band_hz`` clamps UP to the tweeter's MEASURE sweep floor because
-    its consumers read that branch ALONE. The summed VERIFY capture does not,
-    so its honest region reaches the woofer's side of Fc — which is exactly
-    where a handoff null lands when the tweeter is swept from Fc.
+    ``overlap_band_hz`` clamps UP to the tweeter's sweep floor because its
+    consumers read that branch ALONE. The summed capture does not, so its
+    honest region reaches the woofer's side of Fc — where a handoff null lands
+    when the tweeter is swept from Fc.
     """
     old = overlap_band_hz(R18_FC_HZ, tweeter_sweep_lo_hz=R18_FC_HZ)
     assert old == R18_OLD_TRACKING_BAND_HZ
@@ -5587,9 +5583,8 @@ def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
 
 
 def test_crossover_region_band_is_bounded_by_the_captures_own_evidence():
-    """Never a frequency literal: a reflective sitting whose gate window is
-    short raises the floor, and an unradiated band or an empty intersection
-    yields ``None`` rather than a fabricated span."""
+    """Never a frequency literal: a short gate window raises the floor, and an
+    unradiated band or empty intersection yields ``None``, never a span."""
     assert crossover_region_band_hz(
         R18_FC_HZ, trusted_floor_hz=1200.0, radiated_band_hz=(150.0, 20_000.0),
     ) == (1200.0, 4000.0)
@@ -5614,11 +5609,9 @@ def test_absolute_claim_sees_a_model_reproduced_dip_that_tracking_cannot():
 
     A synthetic 5 dB suck-out at 1700 Hz — inside the crossover region, below
     the old tracking band's 2000 Hz floor — that the prediction reproduces
-    exactly. Tracking passes it with two orders of magnitude to spare, because
-    measured-minus-predicted is ~0 by construction AND the defect sits outside
-    the band it grades. The absolute claim, which grades against the
-    CANDIDATE'S OWN crossover rather than a defect-reproducing model, reports
-    it at its true frequency.
+    exactly. Tracking passes with two orders of magnitude to spare: the
+    defect is in BOTH curves and outside the band it grades. The absolute
+    claim grades against the candidate's own crossover instead, and reports it.
     """
     result = _r18_verify(dip_center_hz=1700.0, dip_depth_db=5.0)
 
@@ -5637,8 +5630,7 @@ def test_absolute_claim_sees_a_model_reproduced_dip_that_tracking_cannot():
 
 
 def test_absolute_claim_needs_the_widened_band_to_see_that_dip():
-    """The widening is load-bearing, not decorative — the other direction of
-    the same mutation.
+    """The widening is load-bearing, not decorative.
 
     Re-grade the SAME capture against the SAME target over the OLD
     [2000, 4000] band: a 1.7 kHz defect barely registers there. Revert the
@@ -5658,7 +5650,7 @@ def test_absolute_claim_needs_the_widened_band_to_see_that_dip():
 
 
 def test_absolute_claim_is_quiet_on_a_speaker_that_meets_its_crossover():
-    """No defect, no finding. An instrument that fired on a correct handoff
+    """No defect, no finding — an instrument that fired on a correct handoff
     would be worse than none."""
     result = _r18_verify()
     absolute = result.verify_absolute
@@ -5668,8 +5660,8 @@ def test_absolute_claim_is_quiet_on_a_speaker_that_meets_its_crossover():
 
 
 def test_absolute_claim_records_why_it_could_not_be_evaluated():
-    """Not-evaluated is a first-class outcome carrying its own reason — never
-    an absent key a consumer could read as a pass."""
+    """Not-evaluated carries its own reason — never an absent key a consumer
+    could read as a pass."""
     assert _r18_verify(with_target=False).verify_absolute == {
         "not_evaluated": ABSOLUTE_NO_TARGET
     }
@@ -5680,8 +5672,8 @@ def test_absolute_claim_records_why_it_could_not_be_evaluated():
 
 
 def test_absolute_claim_refuses_an_untrusted_crossover_region():
-    """A capture whose own gate floor sits above the crossover region grades
-    nothing there and says so — it does not fall back to a nominal band."""
+    """A region outside the capture's trusted band grades nothing and says so,
+    never falling back to a nominal band."""
     _freqs, ir, _db = _r18_system()
     prog, cap = _r18_capture(ir)
     # Fc low enough that [Fc/2, 2Fc] lands entirely below the summed sweep's
@@ -5700,10 +5692,9 @@ def test_absolute_claim_refuses_an_untrusted_crossover_region():
 def test_absolute_target_carries_the_candidates_configured_polarity():
     """The target is the candidate's own crossover INCLUDING region polarity.
 
-    Flip the tweeter's declared sign and the design target stops being flat —
-    it develops the deep null an inverted LR4 pair actually produces — so a
-    correctly-summing measurement now reads as a large deviation. A target
-    that dropped polarity would report the same number either way.
+    Flip the tweeter's declared sign and the design target stops being flat, so
+    a correctly-summing measurement reads as a large deviation. A target that
+    dropped polarity would report the same number either way.
     """
     _freqs, ir, _db = _r18_system()
     prog, cap = _r18_capture(ir)

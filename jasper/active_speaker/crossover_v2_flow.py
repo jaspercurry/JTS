@@ -2171,14 +2171,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
-        # Says what was measured and stops. It does NOT diagnose: a handoff dip
-        # can be alignment, driver spacing, Fc, or the horn, and this
-        # instrument cannot tell them apart (#1868's forensics needed a
-        # separate decomposition to split phase from slope). Numbers ride the
-        # expert disclosure; the actions are §7's bounded three.
+        # Says what was measured, no diagnosis — a handoff dip can be
+        # alignment, spacing, Fc, or the horn, and this cannot tell them apart.
+        # The hint deliberately does NOT lead with "try again": a retry
+        # re-checks the SAME applied graph and this defect is deterministic, so
+        # that is a near-dead lever. It names the two that change the outcome.
         RetryableReasonCopy(
             "The two drivers didn't blend as designed where they hand over.",
-            "Try again, or undo to restore the previous sound.",
+            "Re-measure to fit it again, or undo to restore the previous sound.",
         ),
     ),
     REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
@@ -10301,34 +10301,6 @@ class CrossoverV2Conductor:
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
                 payload={"tracking": dict(tracking)},
             )
-        # §7 claim 3's ABSOLUTE half (R18, #1868) — the only gate on this path
-        # that can fail a capture the MODEL agrees with, which is the whole
-        # point. On 2026-08-05 the JTS3 checkpoint passed at 0.919 dB against
-        # 1.5 dB with its tracking band floored at 2000 Hz
-        # (``tracking_band_lo_hz=2000.0``, that session's ``verify_diag``)
-        # while its own post-apply cloud measured −4.80 dB at 1656 Hz (signal-
-        # derived, 1/3-octave) — 344 Hz below that floor, so nothing here could
-        # see it. The cloud gauge that DID see it closes after this verdict
-        # runs and does not exist on every path; see ``program_analysis``'
-        # absolute-verify note for why it cannot own this claim.
-        #
-        # Ahead of the delta probe because THIS is the claim §7 names; the
-        # probe is the linearization ladder's separate instrument.
-        #
-        # NOT_EVALUATED never gates. Refusing on a measurement nobody made
-        # would be the same dishonesty in the other direction; the claim record
-        # says so out loud instead.
-        if (self._verify_claims["absolute"] or {}).get("status") == CLAIM_FAIL:
-            self._set_verify_outcome(
-                "fail", REASON_VERIFY_CROSSOVER_REGION, gate_record,
-            )
-            return PhaseVerdict(
-                False, REASON_VERIFY_CROSSOVER_REGION,
-                payload={
-                    "tracking": dict(tracking),
-                    "claims": dict(self._verify_claims),
-                },
-            )
         # PR-L5's delta probe. Runs only once tracking has PASSED — a session
         # that already failed at the handoff band does not need a second
         # verdict about the same capture, and its retry budget (2) still means
@@ -10350,6 +10322,34 @@ class CrossoverV2Conductor:
                         self._delta_probe.to_dict()
                         if self._delta_probe is not None else {}
                     ),
+                },
+            )
+        # §7 claim 3's ABSOLUTE half (R18, #1868) — the only gate here that can
+        # fail a capture the MODEL agrees with, which is the whole point. On
+        # 2026-08-05 the JTS3 checkpoint passed at 0.919 dB against 1.5 dB with
+        # its tracking band floored at 2000 Hz (``tracking_band_lo_hz=2000.0``,
+        # that session's ``verify_diag``) while its own post-apply cloud
+        # measured −4.80 dB at 1656 Hz (signal-derived, 1/3-octave) — 344 Hz
+        # below that floor. See ``program_analysis``' absolute-verify note for
+        # why that cloud gauge cannot own this claim.
+        #
+        # LAST on purpose, behind the delta probe, whose refusals carry an
+        # AUTOMATIC remedy (correction rollback). Gating ahead of it would let
+        # a capture that both fails this claim AND warrants a rollback get
+        # neither — sitting applied, waiting on a household never offered the
+        # automatic fix. Last keeps R18 purely additive.
+        #
+        # NOT_EVALUATED never gates: refusing on a measurement nobody made is
+        # the same dishonesty pointed the other way.
+        if (self._verify_claims["absolute"] or {}).get("status") == CLAIM_FAIL:
+            self._set_verify_outcome(
+                "fail", REASON_VERIFY_CROSSOVER_REGION, gate_record,
+            )
+            return PhaseVerdict(
+                False, REASON_VERIFY_CROSSOVER_REGION,
+                payload={
+                    "tracking": dict(tracking),
+                    "claims": dict(self._verify_claims),
                 },
             )
         self._set_verify_outcome("pass", None, gate_record)
