@@ -7,11 +7,13 @@
 The closed sweep/level ledger below derives every field passed to Shared's
 persisted admission types. It deliberately remains pure: the production
 adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
-playback, and writer-lock lifetime. The one deliberate exception is the pair
-of ``log_event`` calls in :func:`resolve_driver_excitation_ceilings` when it
-supersedes a stale HF class-default ceiling with the sensitivity-derived one
-(or names why it could not) -- audit lines, not state mutations; see the W6.5
-ruling in that function's docstring.
+playback, and writer-lock lifetime. The one deliberate exception is the
+``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two when
+it supersedes a stale HF class-default ceiling with the sensitivity-derived
+one (or names why it could not), and one when a proven-HP high-frequency
+role's excitation floor follows its declared hard band below its declared
+analysis window (#1654). Audit lines, not state mutations; see the W6.5 and
+"Low-side asymmetry" rulings in that function's docstring.
 """
 
 from __future__ import annotations
@@ -479,11 +481,8 @@ def resolve_driver_excitation_ceilings(
     which is the one owner of that physical property. Optional: without it the
     proven-HP path simply keeps the class-default ceiling (and logs the skip).
 
-    Band-edge asymmetry (sweep-composition PR-A, #1668): the LOWER permitted
-    edge is ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
-    measurement_band[0])`` -- excursion protection, an absolute boundary that
-    stays untouched by this PR. The UPPER permitted edge is
-    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
+    Band-edge asymmetry (sweep-composition PR-A, #1668): the UPPER permitted
+    edge is ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
     ``measurement_band[1]`` is deliberately EXCLUDED from it.
     ``measurement_band`` is analysis-window metadata (what the wizard tells
     the confidence/SNR scoring to expect), not a protection boundary the
@@ -495,6 +494,33 @@ def resolve_driver_excitation_ceilings(
     OWN hard band's edge (or the global ceiling, whichever is lower) instead
     of being silently capped at the narrower analysis window -- wider MEASURE
     sweeps without loosening excursion protection.
+
+    Low-side asymmetry, PROVEN-HP HIGH-FREQUENCY ROLES ONLY (#1654): the same
+    argument, applied to the LOWER edge, but deliberately NOT generalised. The
+    lower edge is normally ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
+    measurement_band[0])`` and stays exactly that for every low-frequency role
+    and every naked-tone caller, because there ``measurement_band[0]`` is a
+    real EXCURSION hedge: a woofer driven below its declared analysis floor
+    has nothing between it and its own suspension. A high-frequency role on
+    the ``program_admission`` path is the one case where that reasoning does
+    not hold -- the graph carries the driver's crossover high-pass by
+    construction (the same proven-HP property this flag already gates the
+    level ceiling on), so the sub-window region reaches the driver ATTENUATED
+    by that filter rather than naked, and the declared HARD floor is the
+    operator-confirmed datasheet minimum for exactly this question. There the
+    floor becomes ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``.
+
+    Why it matters (#1654, R17's unblocker): a tweeter declared
+    hard=[1600, 20000] / measurement=[2000, 18000] was swept from 2000 Hz --
+    which on the shipped JTS3 box is also the configured Fc. Every scoring
+    band a crossover candidate is judged over clamps its low edge up to that
+    real sweep floor, so a candidate BELOW 2 kHz was scored on a mask that
+    excluded its own handoff, and the measured -4.80 dB @ 1656 Hz dip
+    (#1894 Gate 0) sat under the floor entirely. This widening is what lets a
+    downward candidate be judged where it actually hands over. It moves only
+    the DERIVED excitation floor -- the declared ``measurement_band`` is
+    untouched, and :func:`resolve_driver_measurement_band_hz` still returns
+    the declared window verbatim to its own consumers.
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -517,11 +543,27 @@ def resolve_driver_excitation_ceilings(
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
         )
-    lower = max(
-        MIN_DRIVER_TEST_FREQUENCY_HZ,
-        float(hard_band[0]),
-        float(measurement_band[0]),
-    )
+    # measurement_band[0] participates in the lower edge for every role and
+    # every path EXCEPT a high-frequency role on the proven-HP path -- see the
+    # "Low-side asymmetry" paragraph in this function's docstring for why the
+    # excursion argument that keeps it binding elsewhere does not apply there.
+    lower_edges = [MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[0])]
+    if not (program_admission and role in HIGH_FREQUENCY_ROLES):
+        lower_edges.append(float(measurement_band[0]))
+    lower = max(lower_edges)
+    if lower < float(measurement_band[0]):
+        # Named, so an operator triaging a session can see that this driver was
+        # deliberately excited BELOW its declared analysis window, and to what.
+        # Logged only when the widening actually moves the floor (a declaration
+        # whose analysis floor already equals its hard floor is silent).
+        log_event(
+            logger,
+            "active_speaker.excitation_floor_widened_to_hard_band",
+            target_id=target_id,
+            role=role,
+            declared_measurement_floor_hz=f"{float(measurement_band[0]):.1f}",
+            excitation_floor_hz=f"{lower:.1f}",
+        )
     # measurement_band[1] is deliberately NOT part of this min() -- see the
     # "Band-edge asymmetry" paragraph in this function's docstring. The hard
     # band + global ceiling are the only upper-edge protection boundaries.

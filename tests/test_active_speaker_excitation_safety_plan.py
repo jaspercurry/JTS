@@ -400,6 +400,101 @@ def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
     assert band.lower_hz == pytest.approx(1800.0)
 
 
+# --- low-side asymmetry: HF proven-HP floor follows the declaration (#1654) --
+#
+# The declared JTS3 tweeter (hard=[1600, 20000], measurement=[2000, 18000]) is
+# the case throughout: its analysis floor 2000 is ALSO the configured Fc, which
+# is what made every downward Fc candidate unscorable on its own handoff (#1894
+# R17 STOP record). The widening is deliberately narrow -- one role class, one
+# path -- so the three negative cases below are as load-bearing as the positive
+# one. Each pins declaration -> derivation, not a literal.
+
+_JTS3_TWEETER = {"hard_band": [1600, 20_000], "measurement_band": [2000, 18_000],
+                 "search_band": [2000, 2500]}
+
+
+def test_hf_proven_hp_sweep_floor_follows_the_declared_hard_band():
+    # THE change: on the proven-HP path the tweeter is swept from its declared
+    # HARD floor, not its narrower declared analysis window.
+    _topology, profile, targets = _profile_and_targets(**_JTS3_TWEETER)
+    band, _cap = resolve_driver_excitation_ceilings(
+        profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
+    )
+    # Follows hard_band[0], NOT measurement_band[0] (2000) and not a literal.
+    assert band.lower_hz == pytest.approx(1600.0)
+
+
+def test_hf_naked_tone_sweep_floor_still_binds_at_the_declared_analysis_window():
+    # Negative 1: without the proven high-pass in the graph there is no filter
+    # between the driver and the sub-window region, so the analysis floor
+    # keeps binding. Same declaration, same role, only the path differs.
+    _topology, profile, targets = _profile_and_targets(**_JTS3_TWEETER)
+    band, _cap = resolve_driver_excitation_ceilings(
+        profile, targets["tweeter"]["target_fingerprint"],
+    )
+    assert band.lower_hz == pytest.approx(2000.0)
+
+
+def test_low_frequency_floor_keeps_the_analysis_window_as_excursion_protection():
+    # Negative 2 -- the safety guard. A woofer driven below its declared
+    # analysis floor has nothing between it and its own suspension, so
+    # measurement_band[0] stays an absolute boundary on EVERY path, including
+    # the proven-HP one. This is what keeps the widening from generalising.
+    # hard[0]=45 well below measurement[0]=60, so the two floors are
+    # distinguishable: were the HF rule to leak to low-frequency roles this
+    # would read 45.0. (The upper edges keep the shared fixture's tweeter
+    # high-pass inside the declared hard band.)
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[45, 20_000], measurement_band=[60, 10_000],
+        search_band=[1500, 2500],
+    )
+    band, _cap = resolve_driver_excitation_ceilings(
+        profile, targets["woofer"]["target_fingerprint"], program_admission=True,
+    )
+    assert band.lower_hz == pytest.approx(60.0)
+
+
+def test_the_widened_floor_never_reaches_below_the_declared_hard_band():
+    # Negative 3 -- containment. The widening swaps WHICH declared floor binds;
+    # it never removes the hard band as the absolute floor. A declaration whose
+    # hard floor sits above its analysis floor is still held at the hard floor.
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[2500, 20_000], measurement_band=[2500, 18_000],
+        search_band=[2600, 2800],
+    )
+    band, _cap = resolve_driver_excitation_ceilings(
+        profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
+    )
+    assert band.lower_hz == pytest.approx(2500.0)
+
+
+def test_the_widened_floor_is_announced_when_it_moves(caplog):
+    # Observability: an operator triaging a hardware session can see that this
+    # driver was deliberately excited below its declared analysis window.
+    _topology, profile, targets = _profile_and_targets(**_JTS3_TWEETER)
+    with caplog.at_level(logging.INFO):
+        resolve_driver_excitation_ceilings(
+            profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
+        )
+    assert "active_speaker.excitation_floor_widened_to_hard_band" in caplog.text
+    assert "declared_measurement_floor_hz=2000.0" in caplog.text
+    assert "excitation_floor_hz=1600.0" in caplog.text
+
+
+def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog):
+    # No event when there is nothing to announce -- a declaration whose
+    # analysis floor already equals its hard floor is unchanged by this rule.
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[1600, 20_000], measurement_band=[1600, 18_000],
+        search_band=[2000, 2500],
+    )
+    with caplog.at_level(logging.INFO):
+        resolve_driver_excitation_ceilings(
+            profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
+        )
+    assert "excitation_floor_widened_to_hard_band" not in caplog.text
+
+
 # --- resolve_driver_measurement_band_hz (flat-linearization plan PR-4) ------
 #
 # The declared measurement_band_hz itself, separate from

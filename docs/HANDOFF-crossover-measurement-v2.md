@@ -72,6 +72,22 @@ direction is household-visible hard stops: an LR4 `|P|` crosses −12 dB at
 `0.765·fc`, so a declared sweep floor roughly 0.39 octave under the protection
 corner would refuse MEASURE on a shape §4.2 admits.
 
+**Since #1654 that is a live margin, not a hypothetical.** The HF sweep floor
+now follows the declared HARD band, so JTS3 sweeps its tweeter from 1600 Hz
+against a 2000 Hz protection corner: `|P(1600)| = −10.79 dB`, **1.21 dB above
+the −12 dB refusal**. Re-derived with this repo's own
+`crossover_response_complex` (the digital realization crosses at `0.7629·fc`,
+slightly under the analog `0.765` above), the admissible corner is
+`≤ 1.3108 · max(sweep floor, Fc/2)` — 2097 Hz here. The margin is
+deterministic (filter math over declared numbers, not a measurement) but it is
+thin, and the DECLARATION spends it: a household declaring a hard floor more
+than ~0.39 octave under its protection corner gets a hard MEASURE stop. The
+corner is not free to follow the floor down — it is a code-owned class default
+(`driver_protection._STYLE_HIGH_PASS_HZ`, 2000 Hz for a compression driver)
+enforced as a minimum by `driver_safety._target_issues`, and `code_owned_policy`
+is fingerprint-checked, so lowering it un-confirms every stored profile of that
+style. Open question tracked on #1654.
+
 **Outside those bins** the same exact ratio still applies, magnitude-saturated
 at the policy's own +12 dB ceiling — provably inactive where the policy binds,
 since a ceiling breach there has already refused. Bins where `P` is exactly
@@ -330,7 +346,11 @@ correlation peak at LOW prominence whose position wanders (not lobe
 ambiguity). **The naive sub-sample anchor upgrade is refuted** — it left the
 iMM-6C span unchanged and degraded the UMIK span 12× in direct testing — so
 the standing levers are tweeter-sweep bandwidth (Fix 4, #1654) and/or
-energy, decided after the iPhone-chain series. Live trail: #1654 (Fix 4
+energy, decided after the iPhone-chain series. **Bandwidth has since been
+pulled** — #1654 landed 2026-08-06, but for the R17 scoring-band unblock, not
+for this scatter; whether the extra correlation bandwidth actually sharpens
+the phone-mic snap peak is **unmeasured**, so the question above stays open
+and energy remains untried. Live trail: #1654 (Fix 4
 shelf + mechanism data), #1652 (anomaly detection/attribution), #1650
 (relay voids), #1656 (calibration identity — the iMM-6C series silently ran
 under the UMIK's calibration curve. **That application is fixed**: the stored
@@ -556,11 +576,14 @@ no `cloud_measure` phase or prompt. Stage 2 is unchanged.
 **R16 Stage 1 — built, and OFF until R17 lands.** `STAGE1_INCLUDES_LATERAL` is
 `False`, so no shipped session walks this yet and stage 1 is still the two
 captures above. Gate 0 pairs every producer with a current consumer, and this
-one's is R17's Fc selector, which is deferred: at the checkpoint's declared
-2 kHz tweeter measurement floor every sub-2 kHz candidate has its own handoff
-clamped out of `overlap_band_hz`, so the selector cannot honestly score the
-direction the evidence points. #1654 (sweep the HF driver to its declared
-1600 Hz floor) is the unblocker; R17 is the flipper. What follows describes the
+one's is R17's Fc selector, which is still deferred — but its **structural**
+blocker is gone. #1654 landed: the HF sweep floor follows the declared hard
+band, so on JTS3 `overlap_band_hz` clamps to 1600 Hz instead of 2 kHz and a
+sub-2 kHz candidate's own handoff is inside its scoring band
+(Fc 1700 → `(1600, 3400)`, was `(2000, 3400)`). Candidates at or below the
+sweep floor itself stay unscorable — at Fc 1600 the handoff sits exactly on the
+band edge — so the honest downward limit is **Fc strictly above the declared
+hard floor**. R17 remains the flipper. What follows describes the
 shape the moment it flips — **8 captures at either tier:**
 
 | index | phase | gate | what it is |
@@ -887,7 +910,7 @@ both-branches-excited overlap band.
 Why: band-power-averaging is a level match only when each branch is
 weighted symmetrically about Fc. The shared band's lower edge is clamped UP
 to the tweeter's sweep floor (`overlap_band_hz`), and a tweeter swept from
-Fc upward — JTS3's real geometry — leaves `[Fc, 2·Fc]`, entirely on the side
+Fc upward leaves `[Fc, 2·Fc]`, entirely on the side
 where the woofer is inside its crossover skirt. That measures skirt depth,
 not sensitivity: **+10.59 dB on an ideal LR4 pair with two equal-sensitivity
 drivers** (closed form, pinned by
@@ -901,7 +924,19 @@ trim is what the linearized give-back anchors on — the origin of the
 ~10 dB-dark tweeter. Widening back
 to the nominal `[Fc/2, 2·Fc]` is not a fix either (+3.03 dB residual on the
 same ideal pair, and it averages the tweeter over bins it was never excited
-in). Every MEASURE analysis now discloses the frame:
+in).
+
+**What #1654 changed here, and what it did not.** The archived numbers above
+were measured when the tweeter's sweep floor WAS Fc, making the shared band
+exactly one-sided. It no longer is: the floor follows the declared hard band,
+so on JTS3 the shared band starts at 1600 Hz and the sub-Fc bins are now
+genuinely excited rather than absent. The log-symmetric
+`branch_level_bands_hz` frame is unchanged and still correct — it never read
+the shared band — so this is context for the archived figures, not a reason to
+re-open the frame. A box whose declared hard and analysis floors coincide still
+gets the fully one-sided band.
+
+Every MEASURE analysis now discloses the frame:
 `event=program_analysis.branch_level_match` carries `level_w_db`,
 `level_t_db`, and both bands, to be read beside the per-role
 `target_level_db` that `correction.crossover_v2_linearization_giveback`
@@ -3453,7 +3488,15 @@ can until `STAGE1_INCLUDES_LATERAL` flips with R17, so every claim about it is
 about what the code does, not about what a household or a microphone did.
 Position groups, failure taxonomy, benchmarks, and history were not re-verified.
 
-Last verified: 2026-08-05 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
+**2026-08-06 #1654 scope:** three sections only — the conditioning-policy
+margin, the R16-stage-1 blocker paragraph, and the level-match frame's
+one-sided-band context — re-verified against the shipped
+`resolve_driver_excitation_ceilings` / `overlap_band_hz` and re-derived with
+this repo's `crossover_response_complex`. **No hardware ran**: the widened
+sweep is offline-proven only (unit tests + closed-form filter math), and the
+owner's CHECK/MEASURE slice is still owed. Nothing else was re-verified.
+
+Last verified: 2026-08-06 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the
