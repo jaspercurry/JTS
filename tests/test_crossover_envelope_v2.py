@@ -1517,23 +1517,18 @@ def test_verify_fail_states_the_band_even_when_the_numbers_are_missing():
     assert "checked 2000–4000 Hz" in env["expert_details"]
 
 
+_R18_BRANCH = {"status": "not_evaluated", "reason": "no_per_branch_verify_capture"}
+# SYNTHETIC numbers — no hardware measurement is restated here (#2152).
 _R18_CLAIMS_FAIL = {
-    "woofer_branch": {
-        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-    },
-    "hf_branch": {
-        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-    },
+    "woofer_branch": dict(_R18_BRANCH),
+    "hf_branch": dict(_R18_BRANCH),
     "integration": {
         "status": "pass", "max_db": 0.069, "tolerance_db": 1.5,
         "band_hz": [2000.0, 4000.0],
     },
-    # SYNTHETIC numbers: the 2026-08-05 checkpoint's dip depth came off a
-    # rendered chart (#2152) and is not restated as a measurement anywhere.
     "absolute": {
-        "status": "fail", "max_db": 3.98, "rms_db": 1.2,
-        "worst_db": -3.98, "worst_hz": 1700.0,
-        "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
+        "status": "fail", "max_db": 3.98, "rms_db": 1.2, "worst_db": -3.98,
+        "worst_hz": 1700.0, "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
     },
 }
 
@@ -1551,13 +1546,18 @@ def test_done_screen_names_the_crossover_region_finding_and_the_unchecked_claims
         candidate=_candidate_summary(),
     ))
     assert env["screen"] == "done"
-    assert "crossover blend -3.98 dB at 1700 Hz (limit 2.0 dB)" in env["expert_details"]
+    # The finding carries the CLAIM's own band, not the tracking band beside
+    # it — a 1700 Hz dip under a bare "checked 2000–4000 Hz" reads as noise.
+    assert "checked 2000–4000 Hz" in env["expert_details"]
+    assert (
+        "crossover blend -3.98 dB at 1700 Hz over 1000–4000 Hz (limit 2.0 dB)"
+        in env["expert_details"]
+    )
     assert "each driver on its own was not checked" in env["expert_details"]
 
 
 def test_verify_fail_screen_names_the_crossover_region_finding():
-    """The same disclosure on the failure screen, where the household chooses
-    between §7's bounded actions."""
+    """Same disclosure on the failure screen, where the household chooses."""
     env = build_crossover_envelope_v2(_status(
         phase="verify",
         failure={"code": "verify_crossover_region"},
@@ -1567,7 +1567,10 @@ def test_verify_fail_screen_names_the_crossover_region_finding():
         },
     ))
     assert env["screen"] == "verify_fail"
-    assert "crossover blend -3.98 dB at 1700 Hz (limit 2.0 dB)" in env["expert_details"]
+    assert (
+        "crossover blend -3.98 dB at 1700 Hz over 1000–4000 Hz (limit 2.0 dB)"
+        in env["expert_details"]
+    )
     text = env["nudges"][0]["text"]
     assert "didn't blend as designed" in text
     # The copy names levers that EXIST on this screen and change the outcome —
@@ -1586,9 +1589,8 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
     claims = {
         **_R18_CLAIMS_FAIL,
         "absolute": {
-            "status": "pass", "max_db": 0.69, "rms_db": 0.3,
-            "worst_db": 0.69, "worst_hz": 1050.0,
-            "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
+            "status": "pass", "max_db": 0.69, "rms_db": 0.3, "worst_db": 0.69,
+            "worst_hz": 1050.0, "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
         },
     }
     env = build_crossover_envelope_v2(_status(
@@ -1597,7 +1599,10 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
         cloud=_cloud_flatness_status(passed=True),
         candidate=_candidate_summary(),
     ))
-    assert "crossover blend +0.69 dB at 1050 Hz (limit 2.0 dB)" in env["expert_details"]
+    assert (
+        "crossover blend +0.69 dB at 1050 Hz over 1000–4000 Hz (limit 2.0 dB)"
+        in env["expert_details"]
+    )
 
 
 def test_a_not_evaluated_crossover_region_renders_no_number():

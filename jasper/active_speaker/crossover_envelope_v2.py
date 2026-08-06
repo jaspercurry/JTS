@@ -397,12 +397,9 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     "Verified." badge over an unstated claim set reads as four proofs where
     there are two.
 
-    The crossover-region line prints on a PASS too, because the number IS the
-    disclosure and a household that only meets it on a failure cannot know a
-    passing handoff was measured at all. A not-evaluated region claim prints
-    nothing: its reasons are measurement-internal (no trusted band, no
-    candidate target), no household action follows, and a sentence for each
-    would be noise in the one paragraph that must stay readable.
+    The crossover-region line prints on a PASS too: the number IS the
+    disclosure. A not-evaluated region claim prints nothing — its reasons are
+    measurement-internal and no household action follows.
     """
     claims = _mapping(_mapping(_v2(status).get("verify")).get("claims"))
     lines: list[str] = []
@@ -410,10 +407,18 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     worst_db = _finite(absolute.get("worst_db"))
     worst_hz = _finite(absolute.get("worst_hz"))
     tolerance_db = _finite(absolute.get("tolerance_db"))
-    if worst_db is not None and worst_hz is not None and tolerance_db is not None:
+    # The claim's OWN band, printed WITH the number (R18 hearing-safety
+    # review): this line lands under ``checked …`` — the TRACKING band — and
+    # the dip can sit outside that one, reading as out-of-band noise on the
+    # screen where Re-measure vs Undo is chosen. Two claims, two bands, said.
+    band = absolute.get("band_hz")
+    pair = band if isinstance(band, (list, tuple)) and len(band) == 2 else (None, None)
+    lo, hi = _finite(pair[0]), _finite(pair[1])
+    if (worst_db is not None and worst_hz is not None and tolerance_db is not None
+            and lo is not None and hi is not None):
         lines.append(
             f"crossover blend {worst_db:+.2f} dB at {worst_hz:.0f} Hz "
-            f"(limit {tolerance_db:.1f} dB)"
+            f"over {lo:.0f}–{hi:.0f} Hz (limit {tolerance_db:.1f} dB)"
         )
     if _mapping(claims.get("woofer_branch")).get("reason") == CLAIM_NO_PER_BRANCH_CAPTURE:
         # Household terms: the reason code is about a capture plan, the
