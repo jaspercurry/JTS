@@ -176,11 +176,9 @@ def test_doctor_needed_count_follows_the_lateral_walk_flag(monkeypatch):
     """The number the doctor reports must move with the walk that causes it.
 
     Before R16 gave the two surfaces one producer, this check read the cloud
-    figure while the runtime capacity guard added the poses — so a flipped
-    build would under-report by the walk's length. The gap is not cosmetic: a
-    Pi on an older Worker whose ceiling lands BETWEEN the two numbers reads
-    green here and then refuses partway through the walk, which is the one
-    place a diagnostic is supposed to save an operator from.
+    figure while the capacity guard added the poses, so a flipped build would
+    under-report by the walk's length — and a Pi whose Worker ceiling lands
+    BETWEEN the two reads green here, then refuses partway through the walk.
     """
     from jasper.active_speaker import crossover_v2_flow as flow
     from jasper.cli.doctor.correction import check_capture_relay
@@ -193,9 +191,8 @@ def test_doctor_needed_count_follows_the_lateral_walk_flag(monkeypatch):
     monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
     with_walk = flow.relay_plan_attempts_required()
     assert with_walk == without + len(flow.LATERAL_POSE_PROMPTS)
-
-    # A ceiling strictly between the two: enough for the cloud alone, not for
-    # the walk. Derived, so it stays the in-between case if either number moves.
+    # A ceiling strictly between the two: enough for the cloud alone, not the
+    # walk. Derived, so it stays in-between if either number moves.
     ceiling = without + 1
     assert without <= ceiling < with_walk
     monkeypatch.setattr(

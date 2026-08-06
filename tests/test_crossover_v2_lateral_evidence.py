@@ -331,9 +331,9 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
 
 def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
     """The guard reads the SAME flag-aware producer ``jasper-doctor`` does, so
-    the two can never disagree about the number. ``ceiling`` is re-derived to
-    sit strictly between the cloud-only and cloud-plus-walk cases, so a guard
-    that had stopped counting the poses would pass there.
+    the two can never disagree. ``ceiling`` is re-derived to sit strictly
+    between the cloud-only and cloud-plus-walk cases, so a guard that stopped
+    counting the poses would pass there — and, walk off, must still pass.
     """
     import jasper.capture_relay.spec as spec
 
@@ -343,6 +343,7 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
     cloud_only = flow.relay_plan_attempts_required(**worst)
+    ceiling = cloud_only + 1
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
         with_walk = flow.relay_plan_attempts_required(**worst)
@@ -350,16 +351,12 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
         assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
             "the shipped relay ceiling no longer carries the worst-case plan"
         )
-        # The in-between ceiling: enough for the cloud alone, not for the walk.
-        ceiling = cloud_only + 1
         assert ceiling < with_walk, "the walk must be long enough to be countable"
         mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
-    # …and with the walk off, that same ceiling is fine — the guard tracks the
-    # flag rather than asserting a worst case no shipped session runs.
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", cloud_only + 1)
+        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         flow.assert_cloud_plan_fits_relay_capacity()
 
 
@@ -473,8 +470,7 @@ def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity()
         for curve in pose.curves:
             assert curve.freqs_hz.size == grid.size
             assert curve.complex_tf.size == grid.size
-            # Sampled, never interpolated: every retained frequency is one the
-            # analysis grid actually carried.
+            # Sampled, never interpolated: every retained frequency is real.
             assert np.all(np.isin(curve.freqs_hz, np.asarray(
                 next(r.freqs_hz for r in
                      _measure_analysis(program).driver_responses
@@ -561,8 +557,6 @@ def test_the_anchor_solution_is_held_fixed_across_the_walk():
     assert walked.fingerprint == expected.fingerprint
     assert walked.alignment.polarity != "inverted"
 
-
-# --- honesty screens ----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -734,13 +728,12 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
     assert grid[-1] == pytest.approx(hi)
     ratios = grid[1:] / grid[:-1]
     assert np.allclose(ratios, ratios[0])
-    # The declared density is NOMINAL: the point count is rounded to an integer
-    # so the grid can land exactly on both band edges, which makes the realized
-    # density differ by under one bin in a hundred. Asserted as a bound rather
-    # than an equality so the test says what is actually true.
+    # The declared density is NOMINAL — the point count rounds to an integer so
+    # the grid lands exactly on both band edges — so this is a bound, not an
+    # equality, because that is what is actually true.
     per_octave = math.log(2.0) / math.log(ratios[0])
     nominal = flow.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
     assert abs(per_octave - nominal) / nominal < 0.01
-    # Bounded: the whole walk's retention is a few thousand complex values, not
-    # the analysis grid's hundreds of thousands.
+    # Bounded: a few thousand complex values, not the analysis grid's hundreds
+    # of thousands.
     assert grid.size * 2 * LATERAL_COUNT < 2000

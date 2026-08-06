@@ -1221,18 +1221,16 @@ def relay_plan_attempts_required(
 ) -> int:
     """Relay blob indexes one journey needs — the SINGLE producer of that fact.
 
-    Both consumers read it: :func:`assert_cloud_plan_fits_relay_capacity` (with
-    the WORST-CASE position counts, "can the relay carry any shape this flow can
-    be configured into") and ``jasper-doctor``'s ``check_capture_relay`` (with
-    the shipped defaults, "can it carry what THIS Pi will actually run"). The
-    two questions differ; the arithmetic must not, which is why they pass
-    arguments to one function instead of each adding their own terms.
+    Both consumers read it — :func:`assert_cloud_plan_fits_relay_capacity` with
+    the WORST-CASE counts ("any shape this flow can be configured into") and
+    ``jasper-doctor``'s ``check_capture_relay`` with the shipped defaults ("what
+    THIS Pi will actually run"). The two questions differ; the arithmetic must
+    not, so they pass arguments here rather than each adding their own terms.
 
-    R16's walk is counted **when its flag is on** — 23 → 29 at the doctor's
-    defaults the moment it flips, with no second edit. That is the whole point:
-    before this was one producer, the guard added the poses unconditionally
-    while the doctor did not, so a flipped build would have had the doctor
-    under-report by six and pass a Pi whose Worker ceiling sat in [23, 28] —
+    R16's walk counts **when its flag is on** — 23 → 29 at the doctor's defaults
+    the moment it flips, no second edit. Before one producer, the guard added
+    the poses unconditionally and the doctor did not, so a flipped build would
+    under-report by six and pass a Pi whose Worker ceiling sat in [23, 28]:
     green in the diagnostic, refused mid-walk.
     """
     return cloud_plan_max_attempts(
