@@ -790,26 +790,156 @@ reset_failed_core_graph_restart_targets() {
     done
 }
 
+# Second phase of the low-memory build park: the core graph itself plus the
+# control plane. Deliberately disjoint from JASPER_CORE_GRAPH_PARK_UNITS (phase
+# one, the graph's CLIENTS) — an ordinary deploy restarts these in place rather
+# than parking them, and only the constrained build window stops them outright.
+JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
+    jasper-fanin.service
+    jasper-camilla.service
+    jasper-camilla-crossover.service
+    jasper-control.service
+    jasper-system-web.service
+    jasper-input.service
+    jasper-accessory-reconcile.service
+    jasper-aec-init.service
+    jasper-aec-reconcile.service
+    bt-agent.service
+)
+
+# Units this install actually STOPPED for the constrained build window, so an
+# aborted install can put back exactly what it took away — no more (a unit the
+# profile deliberately keeps parked must stay parked) and no less.
+JASPER_LOW_MEMORY_PARK_RECORD=()
+
+# Restore order after an aborted install: the units' own declared After= chain.
+# jasper-camilla is After=jasper-outputd jasper-fanin; jasper-mux is
+# After=jasper-fanin. Bringing the output owner and the graph back before the
+# renderers that attach to them avoids handing a renderer a graph that has no
+# sink yet. Everything not named here is restored afterwards, in park order.
+# Entries that were not parked are simply absent from the record and skipped.
+JASPER_LOW_MEMORY_UNPARK_FIRST=(
+    jasper-outputd.service
+    jasper-fanin.service
+    jasper-camilla.service
+    jasper-camilla-crossover.service
+    jasper-mux.service
+)
+
+_jasper_unit_in_list() {
+    # $1 = unit, $2.. = list to search. Linear scan over ~11 entries; bash 3.2
+    # safe (no associative arrays — the test harness runs on macOS bash).
+    local needle="$1" candidate
+    shift
+    for candidate in "$@"; do
+        [[ "${candidate}" == "${needle}" ]] && return 0
+    done
+    return 1
+}
+
 park_low_memory_build_units() {
     build_swap_required || return 0
     _build_sandbox_log "low_memory_build_park" \
         "stopping runtime units before constrained install/build steps"
-    park_audio_clients_for_core_graph_restart
+    JASPER_LOW_MEMORY_PARK_RECORD=()
     local unit
-    for unit in \
-        jasper-fanin.service \
-        jasper-camilla.service \
-        jasper-camilla-crossover.service \
-        jasper-control.service \
-        jasper-system-web.service \
-        jasper-input.service \
-        jasper-accessory-reconcile.service \
-        jasper-aec-init.service \
-        jasper-aec-reconcile.service \
-        bt-agent.service; do
+    # Snapshot BOTH phases before anything is stopped. Recording after the
+    # phase-one park would miss every renderer plus the output owner and mux —
+    # precisely the units whose absence the household notices ("it's gone from
+    # my AirPlay list"), while the control plane came back and made the box
+    # look healthy.
+    #
+    # Record only what was RUNNING. Restoring a unit that was already stopped
+    # would start something this box had deliberately off.
+    for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
+        if systemctl is-active --quiet "${unit}" 2>/dev/null; then
+            JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
+        fi
+    done
+    for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
+        # The two lists overlap by jasper-camilla-crossover today; skip so the
+        # record cannot hold a unit twice regardless of future edits.
+        _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
+        if systemctl is-active --quiet "${unit}" 2>/dev/null; then
+            JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
+        fi
+    done
+
+    park_audio_clients_for_core_graph_restart
+    for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
+}
+
+# Outcome counters for one unpark pass. Module-scope because the per-unit
+# helper below is called from two ordered loops and bash 3.2 has no nameref.
+_JASPER_LOW_MEMORY_UNPARK_RESTORED=0
+_JASPER_LOW_MEMORY_UNPARK_FAILED=0
+
+_unpark_one_low_memory_unit() {
+    local unit="$1" enablement
+    # Already back — the normal success path restarted it. The trap must not
+    # churn a live graph.
+    systemctl is-active --quiet "${unit}" 2>/dev/null && return 0
+
+    # Intent can change AFTER the snapshot, and a recovery path must not undo
+    # a deliberate decision. park_streambox_brain_units disables the brain
+    # surfaces on a full->streambox conversion; enable_streambox_web_sockets
+    # disables a wizard .service in favour of its .socket. Re-checking intent
+    # here covers both (and anything added later) where filtering the recorded
+    # array at each disable site would not. `is-enabled` reports
+    # static/indirect/generated for units that legitimately carry no [Install]
+    # section, so only the two deliberate-off states skip.
+    enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+    case "${enablement}" in
+        disabled|masked)
+            _build_sandbox_log "low_memory_build_unpark_skip" \
+                "unit=${unit} state=${enablement} left off on purpose"
+            return 0
+            ;;
+    esac
+
+    if systemctl start "${unit}" 2>/dev/null; then
+        _JASPER_LOW_MEMORY_UNPARK_RESTORED=$(( _JASPER_LOW_MEMORY_UNPARK_RESTORED + 1 ))
+        return 0
+    fi
+    _JASPER_LOW_MEMORY_UNPARK_FAILED=$(( _JASPER_LOW_MEMORY_UNPARK_FAILED + 1 ))
+    _build_sandbox_log "low_memory_build_unpark_failed" \
+        "unit=${unit} recover=systemctl start ${unit}"
+    echo "  WARN: could not restart ${unit} after a failed install;" >&2
+    echo "  recover with: sudo systemctl start ${unit}" >&2
+}
+
+unpark_low_memory_build_units() {
+    # Recovery for an install that dies between the park above and the systemd
+    # step that would normally restart these. Without it, ANY abort in that
+    # window leaves the speaker silently dead: every daemon exited cleanly, so
+    # nothing looks broken, the box just vanishes from AirPlay and stays gone
+    # with no cue, no alert and nothing retrying. A failed install is expected;
+    # a speaker that stays dead afterwards is not.
+    #
+    # Called from install.sh's EXIT trap. Idempotent and best-effort: a unit
+    # that is already back is skipped, and a failure to restore one unit must
+    # not stop the others.
+    (( ${#JASPER_LOW_MEMORY_PARK_RECORD[@]} )) || return 0
+    local unit
+    _JASPER_LOW_MEMORY_UNPARK_RESTORED=0
+    _JASPER_LOW_MEMORY_UNPARK_FAILED=0
+    for unit in "${JASPER_LOW_MEMORY_UNPARK_FIRST[@]}"; do
+        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_PARK_RECORD[@]}" || continue
+        _unpark_one_low_memory_unit "${unit}"
+    done
+    for unit in "${JASPER_LOW_MEMORY_PARK_RECORD[@]}"; do
+        _jasper_unit_in_list "${unit}" "${JASPER_LOW_MEMORY_UNPARK_FIRST[@]}" && continue
+        _unpark_one_low_memory_unit "${unit}"
+    done
+    # Unconditional: restored=0 is the normal success path (the trap ran and
+    # found nothing to do) and needs to be distinguishable in the journal from
+    # the trap never running at all.
+    _build_sandbox_log "low_memory_build_unpark" \
+        "parked=${#JASPER_LOW_MEMORY_PARK_RECORD[@]} restored=${_JASPER_LOW_MEMORY_UNPARK_RESTORED} failed=${_JASPER_LOW_MEMORY_UNPARK_FAILED}"
+    JASPER_LOW_MEMORY_PARK_RECORD=()
 }
 
 park_streambox_brain_units() {

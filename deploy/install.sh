@@ -2241,7 +2241,7 @@ main() {
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
-        trap cleanup_build_swap EXIT
+        trap install_exit_cleanup EXIT
         create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
@@ -2289,7 +2289,7 @@ main() {
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
-    trap cleanup_build_swap EXIT
+    trap install_exit_cleanup EXIT
     create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
     park_low_memory_build_units
     install_deps

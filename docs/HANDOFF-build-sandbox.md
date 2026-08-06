@@ -103,6 +103,22 @@ full speaker does not compile `jasper-fanin` while voice/AEC/web Python
 heaps are resident. JTS2 validated this path on 2026-06-29 after the old
 live-build path repeatedly OOM-killed `rustc`.
 
+**The park is undone on every exit path, not just success.** `install.sh`
+traps `install_exit_cleanup`, which tears down the build swap and then calls
+`unpark_low_memory_build_units`. Before it stops anything,
+`park_low_memory_build_units` snapshots which of its units were actually
+running — both phases, the renderers/output-owner/mux parked by
+`park_audio_clients_for_core_graph_restart` **and** the graph plus control
+plane it stops itself — and the trap restarts exactly that set, in the units'
+own `After=` order (output owner and graph, then mux, then renderers and the
+control plane). Two units are deliberately *not* restored: one that was
+already stopped before the install began (a source the household turned off at
+`/sources/`), and one that is `disabled`/`masked` at restore time, which is how
+a `full` → `streambox` conversion's deliberate brain park survives the trap.
+Without this, any abort in the build window left the speaker silently dead —
+every daemon exited cleanly, so nothing looked broken; the box just vanished
+from AirPlay and stayed gone (issue #2178, hit twice on a Pi Zero 2 W).
+
 ### Graceful degradation
 
 `run_contained_build` contains only when it safely can. In `auto` mode
@@ -126,7 +142,15 @@ journalctl -t jasper-install | grep event=build_sandbox
 # event=build_sandbox.uncontained label=nqptp reason=systemd-unavailable-or-disabled
 # event=build_sandbox.swap_enabled path=/var/tmp/jasper-build.swap size_mb=2048 priority=200
 # event=build_sandbox.low_memory_build_park stopping runtime units before constrained Rust builds
+# event=build_sandbox.low_memory_build_unpark parked=9 restored=9 failed=0
+# event=build_sandbox.low_memory_build_unpark_failed unit=jasper-mux.service recover=systemctl start jasper-mux.service
+# event=build_sandbox.low_memory_build_unpark_skip unit=jasper-input.service state=disabled left off on purpose
 ```
+
+The unpark summary is emitted on every exit path, so `restored=0` ("the trap
+ran and found the install had already restarted everything") is
+distinguishable from the trap never running. `..._failed` is the line to grep
+for after a household reports the speaker missing from their output list.
 
 journald is persistent (PR #160), so the decision survives the watchdog
 reboot a real build-OOM can trigger — which is exactly when you need to
@@ -264,6 +288,9 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-07-27 (enhanced WebRTC AEC3 v2 moved out of the core
-deploy into the bounded opt-in oneshot; mandatory v1 and the other six build
-classes retain the shared containment policy)
+Last verified: 2026-08-06 (re-verified the low-memory park/unpark section
+against `park_low_memory_build_units` / `unpark_low_memory_build_units` and
+`install_exit_cleanup` after #2178 made the park recoverable on abort; the
+containment, job-budget, and build-inventory sections were last re-verified
+2026-07-27, when enhanced WebRTC AEC3 v2 moved out of the core deploy into the
+bounded opt-in oneshot)

@@ -192,6 +192,42 @@ cleanup_build_swap() {
     _build_sandbox_log "swap_removed" "path=${path}"
 }
 
+install_exit_cleanup() {
+    # The installer's single EXIT trap.
+    #
+    # Capturing and re-returning $? is defensive hardening. It is NOT fixing an
+    # observed clobber: with every command below `|| true`-guarded the trap
+    # already ends 0, and an A/B on bash 3.2.57 gave the same exit code with
+    # and without the capture on every path tried. It is deliberately
+    # unfalsifiable by the tests for that reason.
+    #
+    # The shape it guards against is real and measured, just one careless edit
+    # away rather than present: a trap whose LAST command is a short-circuit
+    # list or an arithmetic test that yields non-zero (`cmd && continue`,
+    # `(( n ))` — both idioms this codebase uses, both exempt from `set -e`, so
+    # neither aborts the trap) returns non-zero, and bash then reports THAT as
+    # the script's exit status. Measured on bash 3.2.57: an installer exiting 5
+    # reports 1 without the capture and 5 with it. scripts/deploy-to-pi.sh gates
+    # the whole deploy on install.sh's status, so that swap would be silent.
+    #
+    # Order: tear the build swap down first. It is the step that must happen on
+    # every exit path, and `systemctl start` blocks on its job — unparking
+    # first lets one hung unit strand a 2 GB swap file and its swapon entry.
+    # This is NOT "give the daemons their RAM back first": swapoff PULLS pages
+    # back into RAM, so this instant is a pressure spike, not relief. Doing it
+    # first means the graph restarts onto the box's ordinary memory
+    # configuration instead of onto a temporary swap about to be yanked.
+    local rc=$?
+    cleanup_build_swap || true
+    # Defined in systemd-units.sh, which install.sh always sources. Guarded so
+    # a partial source (a stray test context) degrades to skipping the unpark
+    # rather than erroring inside the trap.
+    if declare -F unpark_low_memory_build_units >/dev/null 2>&1; then
+        unpark_low_memory_build_units || true
+    fi
+    return "${rc}"
+}
+
 # Default MemoryHigh (soft throttle): ~85% of MemTotal, leaving headroom
 # for PID1/sshd/the running daemons. Soft, so the build leans on swap
 # past it rather than being killed. Empty when MemTotal is unreadable
