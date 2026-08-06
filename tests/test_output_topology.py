@@ -36,6 +36,8 @@ from jasper.output_topology import (
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
+    topology_is_passive_mains,
+    topology_is_subless_passive_mains,
 )
 
 
@@ -145,6 +147,80 @@ def _topology(*, groups: list[dict], routing: dict | None = None) -> OutputTopol
         "routing": routing or {},
     }
     return OutputTopology.from_mapping(raw)
+
+
+def _passive_main(group_id: str, kind: str, index: int) -> dict:
+    return {
+        "id": group_id,
+        "label": group_id.title(),
+        "kind": kind,
+        "mode": "full_range_passive",
+        "channels": [{"role": "full_range", "physical_output_index": index}],
+    }
+
+
+def _sub_group(index: int) -> dict:
+    return {
+        "id": "sub",
+        "label": "Subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [{"role": "subwoofer", "physical_output_index": index}],
+    }
+
+
+def test_passive_shape_predicates_separate_subless_from_with_sub() -> None:
+    """The ONE owner of "these mains carry no inter-driver crossover".
+
+    ``active_speaker.staging.topology_is_passive_mains_with_sub`` and
+    ``topology_is_subless_passive_mains`` are the two shapes built on it; the
+    setup ladder terminates for the subless one only.
+    """
+
+    mono = _topology(groups=[_passive_main("mono", "mono", 0)])
+    stereo = _topology(groups=[
+        _passive_main("left", "left", 0),
+        _passive_main("right", "right", 1),
+    ])
+    with_sub = _topology(
+        groups=[_passive_main("mono", "mono", 0), _sub_group(1)],
+        routing={"mono_group_id": "mono", "subwoofer_group_ids": ["sub"]},
+    )
+    active = _topology(groups=[{
+        "id": "mono",
+        "label": "Mono",
+        "kind": "mono",
+        "mode": "active_2_way",
+        "channels": [
+            {"role": "woofer", "physical_output_index": 0},
+            {"role": "tweeter", "physical_output_index": 1},
+        ],
+    }])
+
+    assert topology_is_subless_passive_mains(mono) is True
+    assert topology_is_subless_passive_mains(stereo) is True
+    # A sub means bass management, which IS an active split — different shape.
+    assert topology_is_passive_mains(with_sub) is True
+    assert topology_is_subless_passive_mains(with_sub) is False
+    assert topology_is_passive_mains(active) is False
+    assert topology_is_subless_passive_mains(active) is False
+    # One passive main plus one active main is not a passive speaker.
+    mixed = _topology(groups=[
+        _passive_main("left", "left", 0),
+        {
+            "id": "right",
+            "label": "Right",
+            "kind": "right",
+            "mode": "active_2_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 1},
+                {"role": "tweeter", "physical_output_index": 2},
+            ],
+        },
+    ])
+    assert topology_is_subless_passive_mains(mixed) is False
+    # No mains at all is not a passive speaker either (fail-closed).
+    assert topology_is_subless_passive_mains(_topology(groups=[])) is False
 
 
 def test_hardware_from_env_reports_known_output_counts() -> None:

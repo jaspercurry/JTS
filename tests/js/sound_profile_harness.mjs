@@ -1319,6 +1319,102 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
   return { oneDriverComponentCanPrepareResearchPrompt: true };
 }
 
+// A subless passive speaker: the backend terminates the ladder (safety and
+// profile are `not_required`) and the page must render that termination
+// instead of a titled-but-empty combined-test card, a "0/1 heard" pill styled
+// ready, and a profile card asking for a combined check that cannot run.
+async function testSublessPassiveLayoutRendersATerminatedLadder() {
+  const passiveTopology = topologyPayload();
+  passiveTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 1,
+    verified_channel_count: 1,
+    unverified_channel_count: 0,
+    targets: [{
+      id: "main:full_range",
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      assigned: true,
+      identity_verified: true,
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: passiveTopology,
+      channel_identity: passiveTopology.channel_identity,
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      commissioningViewPayload({
+        status: "not_required",
+        current_step: "map",
+        stepStatuses: {
+          layout: "done",
+          research: "done",
+          map: "done",
+          safety: "not_required",
+          profile: "not_required",
+        },
+        steps: [
+          {id: "layout", label: "Choose speaker layout", status: "done",
+            message: "Speaker layout is saved."},
+          {id: "research", label: "Add your components", status: "done",
+            message: "No active crossover values are needed for this layout."},
+          {id: "map", label: "Confirm outputs", status: "done",
+            message: "All assigned outputs are confirmed. This layout needs no " +
+              "separate driver listening checks."},
+          {id: "safety", label: "Test combined drivers", status: "not_required",
+            message: "No combined driver test applies to this layout."},
+          {id: "profile", label: "Validate and apply", status: "not_required",
+            message: "No active speaker profile is needed for this layout."},
+        ],
+        driver_target_proof: {
+          complete: true, source: "not_required", captured: 0, required: 0,
+        },
+        output_identity: {
+          assigned_channel_count: 1, unverified_channel_count: 0, complete: true,
+        },
+        next_action: {id: "setup_complete", label: "Setup complete", enabled: false},
+      })
+    )),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    'data-output-step="safety"',
+    'data-output-step="profile"',
+    "No combined driver test applies to this layout.",
+    "No active speaker profile is needed for this layout.",
+    "Speaker setup is complete once every output is confirmed.",
+    // The pill reports the confirmation that actually happened.
+    "1/1 confirmed",
+    "Every output is confirmed. This speaker needs no separate driver checks.",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("A subless passive layout must render a terminated ladder", { expected, html });
+    }
+  }
+  for (const forbidden of [
+    "0/1 heard",
+    "Continue to the combined test",
+    'data-act="prepare-summed-test"',
+    'data-act="save-apply-baseline-profile"',
+    "Finish the combined crossover check before saving the active profile.",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("A subless passive layout must not offer active-crossover work",
+        { forbidden, html });
+    }
+  }
+  // No step may render a title over an empty body.
+  const emptyBody = html.match(/<div class="output-step__body"><\/div>/);
+  if (emptyBody) fail("A step card must never render an empty body", { html });
+  return { sublessPassiveLayoutRendersATerminatedLadder: true };
+}
+
 async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
   const researchPosts = [];
   const fetchHandler = baseFetch({
@@ -6442,6 +6538,7 @@ results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
+results.push(await testSublessPassiveLayoutRendersATerminatedLadder());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat());
 results.push(await testOneDriverComponentCanPrepareResearchPrompt());

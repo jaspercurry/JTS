@@ -4,12 +4,86 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jasper.active_speaker.commissioning_coordinator import (
+    STEP_STATUS_NOT_REQUIRED,
+    VIEW_STATUS_NOT_REQUIRED,
     build_commissioning_view,
     summed_test_failure_message,
 )
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 from tests.active_speaker_fixtures import mono_output_topology as _topology
+
+
+def _step(view: dict, step_id: str) -> dict:
+    return next(step for step in view["steps"] if step["id"] == step_id)
+
+
+def _passive_stereo_topology() -> OutputTopology:
+    """Full-range passive left+right mains with no subwoofer."""
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_stereo_passive",
+        "name": "Bench stereo passive",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [
+                    {
+                        "role": "full_range",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                    },
+                ],
+            },
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
+def _no_measurements() -> dict:
+    """The measurement summary a passive speaker actually has: nothing."""
+
+    return {
+        "summary": {
+            "driver_checks_complete": False,
+            "driver_measurements_complete": False,
+            "captured_driver_check_count": 0,
+            "required_driver_check_count": 0,
+            "summed_validation_complete": False,
+            "validated_summed_group_count": 0,
+            "required_summed_group_count": 0,
+            "latest_summed_tests": {},
+            "latest_summed_validations": {},
+        },
+    }
 
 
 def _ready_design() -> dict:
@@ -515,3 +589,160 @@ def test_research_next_action_endpoints_match_frontend_footer_dispatch():
     )["next_action"]
     assert preview["id"] == "preview_crossover"
     assert "/crossover-preview" in preview["endpoint"]
+
+
+@pytest.mark.parametrize(
+    "make_topology",
+    [
+        pytest.param(lambda: _topology(mode="full_range_passive"), id="mono"),
+        pytest.param(_passive_stereo_topology, id="stereo"),
+    ],
+)
+def test_subless_passive_layout_terminates_the_ladder_after_confirm_outputs(
+    make_topology,
+):
+    """A full-range passive speaker finishes at Confirm outputs.
+
+    It has no inter-driver crossover and no bass-management split, so the last
+    two rungs (combined driver test, active speaker profile) can never run.
+    Before this, the view dead-ended: `safety` sat "active" forever, `profile`
+    sat "todo", and `next_action` was `{}` — the coordinator's shape for "no
+    idea", which is what a household saw on jts4.
+    """
+
+    view = build_commissioning_view(
+        make_topology(),
+        design_draft={"status": "not_saved"},
+        crossover_preview={"status": "not_prepared"},
+        measurements=_no_measurements(),
+    )
+
+    assert view["status"] == VIEW_STATUS_NOT_REQUIRED
+    assert view["driver_target_proof"]["complete"] is True
+    assert view["driver_target_proof"]["source"] == "not_required"
+    assert _step(view, "map")["status"] == "done"
+    assert _step(view, "safety")["status"] == STEP_STATUS_NOT_REQUIRED
+    assert _step(view, "profile")["status"] == STEP_STATUS_NOT_REQUIRED
+    # The flow points at the last step this speaker can actually reach, not at
+    # a rung it will never run.
+    assert view["current_step"] == "map"
+    assert view["next_action"]["id"] == "setup_complete"
+    assert view["next_action"]["enabled"] is False
+    assert view["combined_groups"] == []
+
+
+@pytest.mark.parametrize(
+    "make_topology",
+    [
+        pytest.param(lambda: _topology(mode="full_range_passive"), id="mono"),
+        pytest.param(_passive_stereo_topology, id="stereo"),
+    ],
+)
+def test_subless_passive_layout_never_claims_unheld_driver_evidence(make_topology):
+    """No step may claim drivers were confirmed when zero checks were required.
+
+    `driver_target_proof` reports `captured: 0` with `source: "not_required"`,
+    so "All assigned outputs and drivers are confirmed" was a verification
+    claim nothing backed, and the safety step then contradicted it outright.
+    """
+
+    view = build_commissioning_view(
+        make_topology(),
+        design_draft={"status": "not_saved"},
+        crossover_preview={"status": "not_prepared"},
+        measurements=_no_measurements(),
+    )
+
+    assert view["driver_target_proof"]["captured"] == 0
+    map_message = _step(view, "map")["message"]
+    assert "drivers are confirmed" not in map_message
+    assert "needs no separate driver listening checks" in map_message
+    # The safety step must not tell the household to go back and confirm
+    # outputs that the map step just reported confirmed.
+    safety_message = _step(view, "safety")["message"]
+    assert "Confirm each output and driver" not in safety_message
+    assert safety_message == "No combined driver test applies to this layout."
+    assert _step(view, "profile")["message"] == (
+        "No active speaker profile is needed for this layout."
+    )
+
+
+def test_passive_layout_still_owes_output_identity_before_it_is_complete():
+    """Terminating the ladder must not skip the one check passive DOES owe."""
+
+    view = build_commissioning_view(
+        _topology(mode="full_range_passive", identity_verified=False),
+        design_draft={"status": "not_saved"},
+        crossover_preview={"status": "not_prepared"},
+        measurements=_no_measurements(),
+    )
+
+    assert view["status"] == "needs_driver_target_proof"
+    assert view["driver_target_proof"]["complete"] is False
+    assert view["current_step"] == "map"
+    assert view["next_action"]["id"] == "confirm_outputs"
+    assert _step(view, "map")["status"] == "active"
+    assert "Play each assigned driver quietly" in _step(view, "map")["message"]
+    # The two rungs are still not applicable — the shape decides that, not the
+    # confirmation progress — but the flow is NOT reported complete.
+    assert _step(view, "safety")["status"] == STEP_STATUS_NOT_REQUIRED
+    assert _step(view, "profile")["status"] == STEP_STATUS_NOT_REQUIRED
+
+
+def test_active_shapes_still_require_driver_checks_and_the_combined_test():
+    """The no-regression guard for the shape that DOES need the ladder.
+
+    Mutation check: point the passive disposition at an active_2_way topology
+    and this test fails — `safety` becomes not_applicable and `status` becomes
+    "not_required" instead of demanding the driver checks.
+    """
+
+    for mode in ("active_2_way", "active_3_way"):
+        view = build_commissioning_view(
+            _topology(mode=mode),
+            design_draft=_ready_design(),
+            crossover_preview=_ready_preview(),
+            measurements={
+                "summary": {
+                    "driver_checks_complete": False,
+                    "driver_measurements_complete": False,
+                    "captured_driver_check_count": 0,
+                    "required_driver_check_count": 2,
+                    "summed_validation_complete": False,
+                    "latest_summed_tests": {},
+                    "latest_summed_validations": {},
+                },
+            },
+        )
+
+        assert view["status"] == "needs_driver_target_proof", mode
+        assert view["driver_target_proof"]["source"] == "missing", mode
+        assert view["next_action"]["id"] == "confirm_outputs", mode
+        assert _step(view, "safety")["status"] == "todo", mode
+        assert _step(view, "profile")["status"] == "todo", mode
+        assert _step(view, "map")["message"] == (
+            "Play each assigned driver quietly, then confirm what you hear."
+        ), mode
+        assert view["combined_groups"], mode
+
+
+def test_passive_mains_with_a_sub_keep_the_active_profile_rung():
+    """A passive speaker WITH a sub is a different shape — do not terminate it.
+
+    Bass management still compiles a (degenerate 1-way) active profile for it,
+    so the profile rung stays live. Only the contradictory safety-step copy is
+    repaired here; the combined test genuinely has no target either way.
+    """
+
+    view = build_commissioning_view(
+        _topology(mode="full_range_passive", with_subwoofer=True),
+        design_draft={"status": "not_saved"},
+        crossover_preview={"status": "not_prepared"},
+        measurements=_no_measurements(),
+    )
+
+    assert view["status"] != VIEW_STATUS_NOT_REQUIRED
+    assert _step(view, "profile")["status"] != STEP_STATUS_NOT_REQUIRED
+    assert _step(view, "safety")["status"] != STEP_STATUS_NOT_REQUIRED
+    # Item 1 still applies: no step may contradict the map step.
+    assert "Confirm each output and driver" not in _step(view, "safety")["message"]

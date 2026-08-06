@@ -15,13 +15,29 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, channel_identity_report
+from jasper.output_topology import (
+    OutputTopology,
+    channel_identity_report,
+    topology_is_subless_passive_mains,
+)
 
 from ._common import finite_float as _finite_float
 from .measurement import active_summed_targets
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
+
+# A step this speaker's shape will never run. Distinct from "done" (which claims
+# work happened) and from "todo"/"active" (which promise work still can); the
+# /sound/ page renders it as an explanatory card instead of a dead end. The
+# spelling is deliberate and shared: it is the word the /correction/ journey's
+# closed step vocabulary already uses for a passive topology
+# (docs/correction-journey-design.md §5, "this step doesn't apply") and the word
+# `driver_target_proof.source` below already reports for the same shape.
+STEP_STATUS_NOT_REQUIRED = "not_required"
+# The matching terminal view status: the flow is finished, and finished WITHOUT
+# an active-crossover commissioning ladder ever applying to this speaker.
+VIEW_STATUS_NOT_REQUIRED = "not_required"
 
 # The ordered commissioning step ids `build_commissioning_view` emits, exported
 # so envelope/progress consumers derive from ONE tuple instead of re-typing the
@@ -402,6 +418,16 @@ def build_commissioning_view(
     driver_target_proof_complete = (
         output_identity_complete and (not active_setup or driver_checks_complete)
     )
+    # Full-range passive mains with no sub: no inter-driver crossover and no
+    # bass-management split, so the last two rungs of the ladder (combined
+    # driver test, active speaker profile) never apply. `not active_setup` is
+    # implied by the predicate — a topology whose mains are all passive and
+    # which has no sub group cannot hold an active group — but it is kept as
+    # the fail-CLOSED conjunct: if the two ever disagreed we would rather keep
+    # asking for driver checks than silently drop a required one.
+    commissioning_not_required = not active_setup and topology_is_subless_passive_mains(
+        topology
+    )
     driver_values = _driver_values_view(
         active_setup=active_setup,
         design_draft=design_draft,
@@ -442,7 +468,15 @@ def build_commissioning_view(
             if driver_values_complete and driver_target_proof_complete
             else ("active" if driver_values_complete else "todo"),
             (
-                "All assigned outputs and drivers are confirmed."
+                # Say only what was actually proven. When no driver listening
+                # check was ever REQUIRED (`driver_target_proof.source` is
+                # "not_required"), claiming the drivers were confirmed is a
+                # verification claim nothing backs — output identity is all
+                # this speaker had to prove.
+                "All assigned outputs are confirmed. This layout needs no "
+                "separate driver listening checks."
+                if driver_target_proof_complete and not active_setup
+                else "All assigned outputs and drivers are confirmed."
                 if driver_target_proof_complete
                 else "Play each assigned driver quietly, then confirm what you hear."
             ),
@@ -451,11 +485,18 @@ def build_commissioning_view(
             "safety",
             "Test combined drivers",
             "done" if summed_complete else (
+                STEP_STATUS_NOT_REQUIRED if commissioning_not_required else
                 "active" if driver_target_proof_complete else "todo"
             ),
             (
                 "Combined crossover check is saved."
                 if summed_complete
+                # A layout with no active crossover has no combined driver test
+                # to offer, whatever stage its outputs are at. Saying "confirm
+                # each output and driver first" here contradicted the map step,
+                # which had just reported them confirmed.
+                else "No combined driver test applies to this layout."
+                if not active_setup
                 else "Existing active profile covers driver/output proof; "
                 "revalidate the combined crossover."
                 if driver_target_proof_satisfied_by_revalidation
@@ -468,20 +509,35 @@ def build_commissioning_view(
             "profile",
             "Validate and apply",
             "done" if profile_applied else (
+                STEP_STATUS_NOT_REQUIRED if commissioning_not_required else
                 "active" if summed_complete else "todo"
             ),
             (
                 "This is now the active speaker profile."
                 if profile_applied
+                # A subless passive speaker plays through the flat program
+                # lane, so it never compiles an active speaker profile. (A
+                # passive speaker WITH a sub still does — bass management —
+                # so this copy is gated on the subless shape, not on
+                # `not active_setup`.)
+                else "No active speaker profile is needed for this layout."
+                if commissioning_not_required
                 else "Save and apply a fresh profile after revalidation."
                 if revalidation_required
                 else "Save the active speaker profile after the combined check."
             ),
         ),
     ]
+    # An "active" step wins; otherwise fall back to the last step this speaker
+    # can actually reach, so a terminated ladder points at Confirm outputs
+    # rather than a step it will never run.
+    applicable_steps = [
+        step for step in steps
+        if step.get("status") != STEP_STATUS_NOT_REQUIRED
+    ]
     current_step = next(
         (step["id"] for step in steps if step.get("status") == "active"),
-        steps[-1]["id"] if steps else "",
+        applicable_steps[-1]["id"] if applicable_steps else "",
     )
     next_action = None
     if has_layout and not driver_values_complete:
@@ -507,6 +563,15 @@ def build_commissioning_view(
             method="GET",
             message="Play each assigned driver quietly, then confirm what you hear.",
         )
+    elif next_action is None and commissioning_not_required:
+        # Terminal, and said so: an empty next_action reads the same as "the
+        # coordinator has no idea", which is exactly the dead end this replaces.
+        next_action = _action(
+            "setup_complete",
+            "Setup complete",
+            enabled=False,
+            message="This speaker is set up. No crossover checks apply to it.",
+        )
     elif next_action is None and not summed_complete:
         next_action = _first_enabled_action(combined_groups)
     elif next_action is None and summed_complete and not profile_applied:
@@ -522,6 +587,10 @@ def build_commissioning_view(
         "ready_to_save_profile" if summed_complete else
         "needs_driver_values" if has_layout and not driver_values_complete else
         "needs_driver_target_proof" if driver_values_complete and not driver_target_proof_complete else
+        # Outputs are confirmed and nothing further applies -- the terminal
+        # state for a subless passive speaker. Sits AFTER the proof gate so an
+        # unconfirmed passive layout still reports what it owes.
+        VIEW_STATUS_NOT_REQUIRED if commissioning_not_required else
         "needs_revalidation" if revalidation_required else
         "needs_combined_check" if driver_target_proof_complete else
         "needs_layout"
