@@ -328,6 +328,68 @@ def _after_draft():
     return new_topology_draft()
 
 
+def test_reset_from_the_web_sandbox_reports_the_render_it_could_not_do(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Called from /sound/, the in-process render CANNOT write /etc/camilladsp.
+
+    jasper-web.service's ReadWritePaths does not include it — a WS1-deliberate
+    boundary that must not be widened for this. So the render raises OSError,
+    which `_CONVERGENCE_ERRORS` swallows; before this round the reset then
+    reported plain success and loaded the stale half-muted graph, with the
+    failure visible nowhere. Two things must hold now: the reset still succeeds
+    (the topology is already passive and safe), and the failure is REPORTED so
+    the page can say so.
+    """
+    from jasper.sound import camilla_yaml as sound_camilla_yaml
+
+    def _sandboxed(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(
+        sound_camilla_yaml, "render_flat_cutover_configs", _sandboxed
+    )
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["after"]["speaker_groups"] == []
+    assert result["camilla"]["ok"] is True
+    assert "Read-only file system" in (result["camilla"]["render_error"] or "")
+
+
+def test_sound_page_surfaces_the_reset_render_error() -> None:
+    """The honesty belt: `render_error` must reach the household, not just logs.
+
+    `resetCleanupWarning` used to read only `active_speaker_reset.status`, so a
+    failed render was invisible on the page that triggered it.
+    """
+    main_js = (
+        Path(__file__).resolve().parent.parent
+        / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
+    ).read_text(encoding="utf-8")
+
+    warning = main_js[main_js.index("function resetCleanupWarning") :]
+    warning = warning[: warning.index("\n  async function")]
+    compact = "".join(warning.split())
+
+    # The exact payload path the reset returns, so a renamed field breaks here
+    # rather than going quiet on the page.
+    assert "payload.reset.camilla&&payload.reset.camilla.render_error" in compact
+    # ...and it must actually be surfaced, not merely read.
+    assert "warnings.push" in compact
+    # The pre-existing artifact warning is still emitted.
+    assert "active_speaker_reset" in compact
+
+
 def test_reset_camilla_convergence_is_best_effort_and_reported(
     topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

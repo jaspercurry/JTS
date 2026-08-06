@@ -16,6 +16,7 @@ import logging
 import math
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -256,21 +257,33 @@ def emit_sound_config(
             )
     muted_channels = _normalize_muted_outputs(muted_outputs)
     # Third mutually-exclusive pair, same shape and same fail-loud posture as
-    # the two above. `weave_channel_split` splices the channel_select mixer and
-    # (for a sub) the crossover into the pipeline AFTER this function builds it,
-    # which would place a Mixer downstream of a mute the caller was promised is
-    # TERMINAL — silently defeating the invariant
-    # `jasper.active_speaker.runtime_contract._flat_output_terminally_muted`
-    # verifies. The axes also come from different topology models: muting is a
-    # SOLO speaker declining its own unclaimed physical output, while
-    # channel_split is a bonded MEMBER selecting a channel out of a shared
-    # stereo program. Both present indicates a wiring bug, not a topology.
+    # the two above, and deliberately broad — it refuses EVERY channel value,
+    # for two different reasons:
+    #
+    # * `channel="sub"`: `weave_channel_split` APPENDS its crossover to each
+    #   per-channel Filter step's `names:` list, so the lowpass lands AFTER the
+    #   mute inside that step. CamillaDSP applies a step's filters in order, so
+    #   the mute is no longer terminal — exactly what
+    #   `jasper.active_speaker.runtime_contract._flat_output_terminally_muted`
+    #   refuses. (The channel_select Mixer itself is spliced right after
+    #   `master_gain`, i.e. BEFORE the per-channel steps, so it is not the
+    #   mechanism here — only the sub's appended crossover is.)
+    # * every channel: the weave duplicates ONE program channel onto both
+    #   outputs, so "output index i" no longer means what the saved topology's
+    #   per-output claim meant when the muted set was derived.
+    #
+    # The axes also come from different topology models: muting is a SOLO
+    # speaker declining its own unclaimed physical output, while channel_split
+    # is a bonded MEMBER selecting a channel out of a shared stereo program.
+    # Both present indicates a wiring bug, not a topology.
     if muted_channels and channel_split is not None:
         raise ValueError(
             "muted_outputs (solo unclaimed-output silencing) and channel_split "
-            "(member channel-selection weave) are mutually exclusive — the "
-            "weave splices a Mixer after the mute, breaking the terminal-mute "
-            "invariant the runtime contract verifies"
+            "(member channel-selection weave) are mutually exclusive — the sub "
+            "weave appends its crossover after the mute in the same pipeline "
+            "step, breaking the terminal-mute invariant the runtime contract "
+            "verifies, and the weave's channel duplication makes a per-output "
+            "muted set meaningless"
         )
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
@@ -503,6 +516,85 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
         enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
         out_path=out_path,
     )
+
+
+# The flat cutover configs are read by whoever loads them (CamillaDSP, the
+# runtime contract's classifier, the camillagui config browser), not only by a
+# group-jasper daemon, so they are world-readable — wider than the 0640 the
+# ordinary sound configs get from `_atomic_write_text`.
+FLAT_CUTOVER_MODE = 0o644
+
+
+@dataclass(frozen=True)
+class RenderedFlatConfig:
+    """One flat startup config as written (or found already correct)."""
+
+    path: Path
+    text: str
+    changed: bool
+
+
+@dataclass(frozen=True)
+class FlatCutoverRender:
+    """The result of one :func:`render_flat_cutover_configs` pass."""
+
+    config_dir: Path
+    rendered: tuple[RenderedFlatConfig, ...]
+
+    @property
+    def changed(self) -> bool:
+        return any(item.changed for item in self.rendered)
+
+
+def render_flat_cutover_configs(
+    *,
+    config_dir: str | Path | None = None,
+    topology: OutputTopology | None = None,
+) -> FlatCutoverRender:
+    """Write both flat startup configs, WRITE-ON-CHANGE. The single writer.
+
+    ``outputd-cutover.yml`` (the loopback flat startup graph, width-matched to
+    the saved topology) and ``outputd-cutover-ring.yml`` (its ``shm_ring``
+    sibling, INERT until a coupling arms the rings but required on disk so a
+    ring-armed box re-seeds a ring graph instead of reverting to loopback).
+
+    THREE callers must produce byte-identical files or the box's graph depends
+    on which one ran last: ``deploy/install.sh`` at deploy time,
+    ``jasper-audio-hardware-reconcile`` at boot / udev / topology-save, and
+    ``jasper-output-topology-reset``. They all reach this one function through
+    ``jasper-sound render-flat-cutover``, so there is no second writer and no
+    second spelling of the file mode.
+
+    Write-on-change because the reconciler runs on every boot and every sound-card
+    event: an unconditional write would churn mtimes and make "did the graph
+    change?" unanswerable from the filesystem. Same discipline as the reconciler's
+    own ``set_env_var_if_changed``. The mode is asserted on every pass even when
+    the bytes match, so a file left narrow by an older writer is repaired.
+
+    Never raises for an unreadable existing file — that is simply "different".
+    Write failures DO raise: the caller decides whether a failed render is fatal
+    (install) or best-effort (the reset's convergence step).
+    """
+
+    directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent
+    rendered: list[RenderedFlatConfig] = []
+    for name, text in (
+        (BASE_CONFIG_PATH.name, emit_flat_outputd_cutover_config(topology=topology)),
+        (RING_FLAT_CONFIG_NAME, emit_flat_ring_config()),
+    ):
+        path = directory / name
+        try:
+            unchanged = path.read_text(encoding="utf-8") == text
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            atomic_write_text(path, text, mode=FLAT_CUTOVER_MODE)
+        else:
+            path.chmod(FLAT_CUTOVER_MODE)
+        rendered.append(
+            RenderedFlatConfig(path=path, text=text, changed=not unchanged)
+        )
+    return FlatCutoverRender(config_dir=directory, rendered=tuple(rendered))
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

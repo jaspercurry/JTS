@@ -169,6 +169,16 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
     websocket, which reloads AND persists the statefile itself (the seam the
     room-correction wizard already uses).
 
+    **The in-process render only works for the ROOT CLI path.** Called from the
+    /sound/ wizard, this runs inside jasper-web's sandbox, which has no
+    ``/etc/camilladsp`` write path (``ReadWritePaths`` in jasper-web.service —
+    a WS1-deliberate boundary that must NOT be widened for this). There the
+    render raises ``OSError``, is caught below, and the file is re-rendered
+    instead by ``jasper-audio-hardware-reconcile``, which runs as root and is
+    kicked by ``_trigger_reconcile`` immediately after. ``render_error`` is
+    reported either way, and the /sound/ page surfaces it — a render that
+    silently failed is how a half-muted graph got loaded in the first place.
+
     The re-render is load-bearing, not tidiness. The on-disk cutover is
     width-matched to whatever topology was saved when it was last rendered, so
     after resetting a MONO box the file still hard-mutes the channel that
@@ -190,14 +200,15 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
 
     render_error: str | None = None
     try:
-        from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+        from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
-        cutover = Path(runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG)
-        emit_flat_outputd_cutover_config(out_path=cutover, topology=topology)
-        # Mirror install's `_render_outputd_cutover_configs`, which widens the
-        # emitter's 0640 to 0644 — the cutover is read by whoever loads it, and
-        # this recovery path must not leave a narrower file than a deploy does.
-        cutover.chmod(0o644)
+        # The same single writer install and the reconciler use — it owns the
+        # write-on-change and the 0644 mode, so this recovery path cannot leave
+        # a file that differs from what a deploy would produce.
+        render_flat_cutover_configs(
+            config_dir=Path(runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG).parent,
+            topology=topology,
+        )
     except _CONVERGENCE_ERRORS as exc:
         # Fall through to the contract with whatever is on disk: that is the
         # pre-existing behaviour, and the contract still refuses an over-wide

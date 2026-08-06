@@ -1108,37 +1108,13 @@ ensure_output_hardware_state() {
 }
 
 _render_outputd_cutover_configs() {
-    /opt/jasper/.venv/bin/python - <<'PY'
-from pathlib import Path
-
-from jasper.camilla_config_contract import parse_camilla_devices_config
-from jasper.sound.camilla_yaml import (
-    emit_flat_outputd_cutover_config,
-    emit_flat_ring_config,
-)
-
-path = Path("/etc/camilladsp/outputd-cutover.yml")
-yaml = emit_flat_outputd_cutover_config(out_path=path)
-path.chmod(0o644)
-devices = parse_camilla_devices_config(yaml)
-print(
-    "rendered outputd-cutover.yml "
-    f"path={path} "
-    f"chunksize={devices.get('chunksize')} "
-    f"target_level={devices.get('target_level')}"
-)
-
-ring_path = Path("/etc/camilladsp/outputd-cutover-ring.yml")
-ring_yaml = emit_flat_ring_config(out_path=ring_path)
-ring_path.chmod(0o644)
-ring_devices = parse_camilla_devices_config(ring_yaml)
-print(
-    "rendered outputd-cutover-ring.yml "
-    f"path={ring_path} "
-    f"chunksize={ring_devices.get('chunksize')} "
-    f"target_level={ring_devices.get('target_level')} (inert until shm_ring armed)"
-)
-PY
+    # `jasper-sound render-flat-cutover` wraps
+    # jasper.sound.camilla_yaml.render_flat_cutover_configs — the ONE writer of
+    # these two files. The root reconciler (jasper-audio-hardware-reconcile) and
+    # jasper-output-topology-reset call the same command, so the graph a box
+    # boots cannot depend on which writer ran last. It used to be an inline
+    # heredoc here, which is exactly how a second spelling gets born.
+    /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
 }
 
 render_outputd_cutover_config() {

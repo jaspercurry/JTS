@@ -1696,14 +1696,18 @@ def test_mute_that_is_not_terminal_does_not_count_as_muted() -> None:
     assert graph.allowed is False
 
 
-@pytest.mark.parametrize("flag", [True, "true", "True"])
+# `True` / `true` are YAML booleans; the QUOTED forms parse to Python strings
+# and are the only ones that reach `truthy_bool`'s string branch. Writing the
+# unquoted forms alone (as the first draft of this test did) leaves that branch
+# unexercised while appearing to cover it — every value renders to `True`.
+@pytest.mark.parametrize("flag", [True, "true", "'true'", "'True'"])
 def test_bypassed_step_does_not_count_as_muted(flag: object) -> None:
     """``bypassed: true`` forges the mute proof unless it is read.
 
     CamillaDSP skips a bypassed step entirely, so a bypassed mute leaves the
     channel fully live on the undeclared output while the Gain/wired facts still
     read as satisfied — ``GraphView`` models filters and channels, not the
-    per-step bypass flag. Accepts CamillaDSP's string booleans too.
+    per-step bypass flag.
     """
     muted = _mono_flat_yaml(muted=1)
     # Bypass the mute's own step (the forgery), and — since the guard is
@@ -1714,6 +1718,11 @@ def test_bypassed_step_does_not_count_as_muted(flag: object) -> None:
     unrelated = muted.replace(
         "    channels: [0]\n", f"    bypassed: {flag}\n    channels: [0]\n"
     )
+
+    # The quoted forms must really reach the parser as strings, or the string
+    # arm of `truthy_bool` is not what is being tested.
+    expected_type = str if isinstance(flag, str) and flag.startswith("'") else bool
+    assert type(yaml.safe_load(forged)["pipeline"][1]["bypassed"]) is expected_type
 
     for text in (forged, unrelated):
         graph = classify_camilla_graph(topology=_full_range_mono_on(0), text=text)
@@ -1755,6 +1764,44 @@ def test_a_hard_mute_never_makes_a_flat_graph_legal_for_a_roleful_topology() -> 
         assert "flat_full_range_graph_illegal_for_roleful_topology" in {
             issue["code"] for issue in graph.issues
         }
+
+
+def _dual_apple_mono_topology(output_index: int) -> OutputTopology:
+    """Composite (dual-Apple) MONO, claiming an output INSIDE the graph width.
+
+    The only shape that isolates the composite withhold rule. Every other
+    composite fixture claims {0, 2}, which is out-of-width — so the
+    claims-inside-width rule forces the withhold and deleting the composite
+    check changes nothing. Here the claim IS inside the width, so the composite
+    check is the sole thing standing between the renderer and muting a channel
+    whose physical output outputd chooses, not the index.
+    """
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual-mono",
+        "name": "Dual Apple mono",
+        "status": "draft",
+        "hardware": {
+            "device_id": "dual_apple_usb_c_dac_4ch",
+            "device_label": "Dual Apple",
+            "physical_output_count": 4,
+            "child_devices": [
+                {"child_id": "a", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
+                {"child_id": "b", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
+            ],
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [
+                {"role": "full_range", "physical_output_index": output_index}
+            ],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
 
 
 def _dual_apple_stereo_topology() -> OutputTopology:
@@ -1822,6 +1869,17 @@ def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> 
     assert flat_graph_muted_outputs(
         _dual_apple_stereo_topology(), width=2
     ) == frozenset()
+    # ...and this is the pair that actually PROVES the composite rule. The
+    # stereo composite above claims {0, 2}, which is out-of-width, so the
+    # claims-inside-width rule already forces the withhold and deleting the
+    # composite check would not change the answer. A composite MONO claiming an
+    # output INSIDE the width isolates it: without the composite check the
+    # renderer would mute the other channel, whose physical output outputd — not
+    # the index — decides.
+    for claimed in (0, 1):
+        assert flat_graph_muted_outputs(
+            _dual_apple_mono_topology(claimed), width=2
+        ) == frozenset(), claimed
 
 
 def test_mono_active_2way_rejects_flat_and_allows_guarded_graphs() -> None:

@@ -169,10 +169,13 @@ class _StereoHostCarrier:
           would strip it out of the group's stream, not silence a local output.
           Same load-bearing "no DAC attached" key the runtime contract's
           program-bake exemption rests on.
-        * ``channel_split`` (member channel-selection weave). It splices a Mixer
-          AFTER the pipeline this builds, which would defeat the terminal-mute
-          invariant — ``emit_sound_config`` raises on the combination. Canonical
-          members always resolve ``channel_split=None``
+        * ``channel_split`` (member channel-selection weave). It duplicates ONE
+          program channel onto both outputs, so a per-output muted set no longer
+          means what the topology's per-output claim meant; and for
+          ``channel="sub"`` the weave APPENDS its crossover after the mute in the
+          same Filter step, defeating terminality outright.
+          ``emit_sound_config`` raises on the combination. Canonical members
+          always resolve ``channel_split=None``
           (:func:`jasper.multiroom.member_config.member_camilla_kwargs`), so this
           is a belt for a future caller, not a live path.
 

@@ -849,22 +849,33 @@ def test_muted_outputs_leaves_the_CLAIMED_channel_byte_identical():
 
 
 def test_muted_outputs_and_channel_split_are_mutually_exclusive():
-    """The member weave splices a Mixer AFTER the mute, defeating terminality.
-
-    Third exclusive pair in this emitter, same fail-loud posture as the two
+    """Third exclusive pair in this emitter, same fail-loud posture as the two
     already guarded. Not reachable today (`member_camilla_kwargs` always
     resolves `channel_split=None`), so this is the guard that keeps it that way.
+
+    `sub` first, because it is the value that genuinely breaks terminality: the
+    weave APPENDS its crossover to each per-channel `names:` list, landing after
+    the mute inside the same step. `left`/`right` carry no `filter_chain_names`
+    at all, so they break the muted set for the other reason (the weave
+    duplicates one program channel onto both outputs) — the guard is correctly
+    broad, and testing only `left` would have exercised the weaker case.
     """
     import pytest
 
     from jasper.multiroom.channel_split import build_channel_split
 
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        emit_sound_config(
-            SoundProfile(enabled=False),
-            muted_outputs=[1],
-            channel_split=build_channel_split("left"),
-        )
+    for channel in ("sub", "left", "right"):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            emit_sound_config(
+                SoundProfile(enabled=False),
+                muted_outputs=[1],
+                channel_split=build_channel_split(channel),
+            )
+
+    # The mechanism, pinned rather than asserted in prose: only `sub` appends
+    # filters that would land after the mute.
+    assert build_channel_split("sub").filter_chain_names
+    assert not build_channel_split("left").filter_chain_names
 
 
 # --- the production call shape ------------------------------------------------

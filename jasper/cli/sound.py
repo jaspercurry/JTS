@@ -78,6 +78,47 @@ def _cmd_reconcile_current_dsp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_render_flat_cutover(args: argparse.Namespace) -> int:
+    """Render both flat startup configs through the product emitter.
+
+    The ONE entry every writer uses — deploy/install.sh, the root
+    jasper-audio-hardware-reconcile, and jasper-output-topology-reset — so the
+    file a box boots cannot depend on which of them ran last. Write-on-change,
+    and the graph is width-matched to the saved output topology (a mono layout
+    gets its unclaimed channel hard muted; see
+    jasper.active_speaker.runtime_contract.flat_graph_muted_outputs).
+    """
+
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.sound.camilla_yaml import render_flat_cutover_configs
+
+    result = render_flat_cutover_configs(config_dir=args.config_dir)
+    if args.json:
+        print(json.dumps(
+            {
+                "config_dir": str(result.config_dir),
+                "changed": result.changed,
+                "rendered": [
+                    {"path": str(item.path), "changed": item.changed}
+                    for item in result.rendered
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        ))
+        return 0
+    for item in result.rendered:
+        devices = parse_camilla_devices_config(item.text)
+        print(
+            f"rendered {item.path.name} "
+            f"path={item.path} "
+            f"chunksize={devices.get('chunksize')} "
+            f"target_level={devices.get('target_level')} "
+            f"changed={'yes' if item.changed else 'no'}"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-sound",
@@ -112,6 +153,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reconcile.add_argument("--json", action="store_true")
     reconcile.set_defaults(func=_cmd_reconcile_current_dsp)
+
+    render = sub.add_parser(
+        "render-flat-cutover",
+        help=(
+            "render outputd-cutover.yml + its ring sibling, width-matched to "
+            "the saved output topology (write-on-change)"
+        ),
+    )
+    render.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="CamillaDSP config directory (default: /etc/camilladsp)",
+    )
+    render.add_argument("--json", action="store_true")
+    render.set_defaults(func=_cmd_render_flat_cutover)
 
     return parser
 

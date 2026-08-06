@@ -1445,6 +1445,36 @@ def test_stereo_host_reemit_on_stereo_and_unconfigured_is_byte_unchanged(
         assert carrier.reemit(profile).yaml == golden
 
 
+def test_channel_split_reemit_is_never_width_matched(tmp_path, monkeypatch):
+    """The channel_split withhold branch, pinned on its own.
+
+    Deleting it fails nothing else: `emit_sound_config`'s loud raise is the
+    backstop, so the branch's only observable job is to reach that call WITHOUT
+    a muted set rather than crash a member re-emit. Reachable only through an
+    explicit `member_kwargs` (canonical members always resolve `None`), which is
+    exactly why it needs its own test.
+    """
+    from jasper.multiroom.channel_split import build_channel_split
+    from jasper.sound.profile import SoundProfile
+
+    _persist_topology(_full_range_mono_topology(), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+
+    carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=config_dir)
+    result = carrier.reemit(
+        SoundProfile(enabled=False),
+        member_kwargs={
+            "enable_rate_adjust": True,
+            "channel_split": build_channel_split("sub"),
+            "playback_pipe_path": None,
+        },
+    )
+
+    # Withheld, so the emit succeeds instead of raising the exclusivity error.
+    assert "commission_mute" not in result.yaml
+
+
 def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     """A bonded leader writes the SHARED stereo program to Snapcast's FIFO.
 
