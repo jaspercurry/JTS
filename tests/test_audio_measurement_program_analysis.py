@@ -137,6 +137,10 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     radiating_band_hz,
 )
+from jasper.active_speaker.driver_protection import driver_protection_profile
+from jasper.active_speaker.excitation_safety_plan import (
+    resolve_driver_excitation_ceilings,
+)
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
     CDHORN_ROOT,
@@ -381,6 +385,13 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
 
 
 def test_configured_path_conditioning_accepts_both_inclusive_boundaries():
+    """Both ±12 dB VALUE boundaries admit: P exactly ON the floor, C/P exactly
+    ON the limit.
+
+    Says nothing about the required-bin mask's FREQUENCY edges — the name reads
+    as though it covers those too, and it does not. Those are
+    ``test_configured_path_required_mask_frequency_edges_are_inclusive``.
+    """
     floor = 10.0 ** (-12.0 / 20.0)
     limit = 10.0 ** (12.0 / 20.0)
 
@@ -395,6 +406,64 @@ def test_configured_path_conditioning_accepts_both_inclusive_boundaries():
         "woofer", impulse, SR, (0.0, SR / 2), priors
     )
     np.testing.assert_allclose(composed, impulse * limit, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("edge", ["lo", "hi"])
+def test_configured_path_required_mask_frequency_edges_are_inclusive(edge):
+    """A violation sitting exactly ON a band edge is inside the policy.
+
+    Pins ``required = (freqs >= lo_hz) & (freqs <= hi_hz)``. Both comparisons,
+    one parameter each, because either could be flipped on its own. Flip one to
+    exclusive and that edge bin silently stops being required, so the ±12 dB
+    conditioning policy stops binding there and the composition admits a shape
+    §4.2 says to refuse.
+
+    Distinct from ``..._accepts_both_inclusive_boundaries``, which is about the
+    ±12 dB VALUE boundaries, and from
+    ``test_conditioning_binds_on_candidate_required_bins_not_the_driven_band``,
+    which is about the mask's SCOPE. This one is only about its edges.
+    """
+    # The whole guard rests on the edge landing exactly ON an FFT bin: off-grid,
+    # >= and > agree there and this test would stay green under the very flip it
+    # exists to catch. So take the edges FROM the grid the kernel builds from
+    # the same n and sample rate, and assert the hit rather than assume it.
+    n = 64
+    freqs = np.fft.rfftfreq(n, 1.0 / SR)  # 750.0 Hz bins at SR = 48 kHz
+    lo_hz, hi_hz = float(freqs[4]), float(freqs[8])  # 3000.0, 6000.0
+    violating_hz = lo_hz if edge == "lo" else hi_hz
+    assert np.count_nonzero(freqs == violating_hz) == 1, "edge is not on a bin"
+    # One bin further out, for the just-outside half of the boundary check.
+    outside_hz = float(freqs[3] if edge == "lo" else freqs[9])
+
+    floor = 10.0 ** (-12.0 / 20.0)
+
+    def _priors_with_p_underfloor_at(bad_hz):
+        def protection(f):
+            out = np.ones(f.shape, dtype=np.complex128)
+            out[f == bad_hz] = floor * 0.5  # one bin, clearly under the floor
+            return out
+        return _configured_path_priors(
+            {"woofer": protection},
+            {"woofer": lambda f: np.ones(f.shape, dtype=np.complex128)},
+            tweeter_sign=1,
+        )
+
+    impulse = np.zeros(n)
+    impulse[3] = 1.0
+
+    # ON the edge: refused.
+    with pytest.raises(ConfiguredPathConditioningError, match="P below -12 dB"):
+        _compose_configured_path_ir(
+            "woofer", impulse, SR, (lo_hz, hi_hz),
+            _priors_with_p_underfloor_at(violating_hz),
+        )
+    # One bin OUTSIDE it: admitted. Without this half, widening the mask by a
+    # bin would read as "inclusive" too.
+    composed = _compose_configured_path_ir(
+        "woofer", impulse, SR, (lo_hz, hi_hz),
+        _priors_with_p_underfloor_at(outside_hz),
+    )
+    assert np.all(np.isfinite(composed))
 
 
 @pytest.mark.parametrize(
@@ -438,8 +507,9 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
     """§4.2 scopes the policy to candidate-REQUIRED bins, and only those.
 
     The driven band is a superset; over-refusing a frozen contract shows up as
-    hard stops (LR4 |P| crosses -12 dB at 0.765*fc; #1654 pushes sweep floors
-    toward it — panel SF2). Both directions: no consumed bin may be weakened.
+    hard stops (an analog LR4 |P| crosses -12 dB at 0.761*fc; #1654 pushes
+    sweep floors toward it — panel SF2). Both directions: no consumed bin may
+    be weakened.
     """
     def priors(candidate_band):
         # P = HP4@1200, C = HP4@2400: |P| crosses the -12 dB floor at ~918 Hz.
@@ -471,38 +541,121 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
         )
 
 
-# The live fixed-Fc checkpoint's declared values, read from jts3 on 2026-08-05
-# and hardcoded on purpose: a future change to the required-bin mask, the
-# sweep-floor derivation, or the +-12 dB constants must fail HERE, in seconds,
-# rather than at the hardware bench with a household waiting. Fc 2000 LR4;
-# tweeter hard [1600,20000], measurement [2000,18000], protection high-pass
-# 2000 Hz order 4; woofer hard [45,4000], measurement [60,4000], NO required
-# protection filters, driven (150,4000).
+# The live fixed-Fc checkpoint. Its DECLARATIONS were read from jts3 on
+# 2026-08-05 and are hardcoded on purpose.
 #
-# The tweeter's DRIVEN band is (1600, 20000) — BOTH edges are the resolver's
-# hard band, not the measurement band's (2000, 18000). The upper edge was
-# recorded first (routed nit from #2126's gate); the lower one is #1654's
-# low-side asymmetry for a proven-HP high-frequency role, which moved the
-# derived excitation floor from the measurement band's 2000 down to the
-# declared hard floor of 1600 so a sub-2-kHz candidate can be judged where it
-# actually hands over. Every margin below is |P| at that LOWER edge, so unlike
-# the upper edge this one IS what the numbers move with.
+# What this block catches, stated narrowly — an earlier version claimed three
+# things and covered one:
 #
-# **This value was stale for the whole of #1654 and the guard stayed green.**
-# The comment above promised a change to the sweep-floor derivation would fail
-# here; #1654 changed exactly that and nothing fired, because the derived
-# output is transcribed rather than derived. The transcription is still here —
-# calling ``resolve_driver_excitation_ceilings`` needs a topology carrying
-# ``driver_style="compression_driver"`` (the 2 kHz protection high-pass is
-# below every other HF style's policy minimum) and the shared
-# ``mono_output_topology`` fixture has no such parameter. Until that exists the
-# promise above is only as good as this line, and the next person to move the
-# floor has to move it here too.
+#   LIVE. The sweep-floor derivation. The driven bands are recomputed from the
+#   declaration on every run and checked against what jts3 was read to sweep,
+#   so moving that derivation fails HERE, in seconds, rather than at the
+#   hardware bench with a household waiting. The declared protection corner is
+#   live too, against its code-owned class minimum.
+#
+#   TRANSCRIBED. The +-12 dB conditioning constants and the required-bin mask.
+#   ``floor_db`` below copies the kernel's function-local literals
+#   (``_compose_configured_path_ir``'s ``10.0 ** (-12.0 / 20.0)`` and
+#   ``10.0 ** (12.0 / 20.0)``), which have no exported name to import — a
+#   second copy of a number, which is the thing this block exists to avoid.
+#   Measured, not assumed: loosening the kernel
+#   floor to -13 dB leaves this block green, and so does over-scoping the mask
+#   to the whole driven band. Each is caught elsewhere in this module — by
+#   test_configured_path_conditioning_refuses_without_clipping[p_underfloor...]
+#   and test_conditioning_binds_on_candidate_required_bins_not_the_driven_band
+#   respectively — so the coverage exists; it just is not here. Making them
+#   live here wants a named kernel constant to import, which is its own PR.
+#
+# Why the live half is derived rather than transcribed: #1654 changed the
+# sweep-floor derivation — moving the tweeter's floor from the measurement
+# band's 2000 Hz down to its declared hard floor of 1600 Hz, so a sub-2-kHz Fc
+# candidate can be judged where it actually hands over — and this guard stayed
+# green through the exact change it promised to catch, because the literal WAS
+# the input. It is now an expectation checked against the live derivation.
 _CHECKPOINT_FC_HZ = 2000.0
-_CHECKPOINT_DRIVEN_HZ = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
+# jts3's declaration, in the shape the resolver reads.
+# ``max_effective_peak_dbfs`` is NOT a recorded jts3 value on either role: the
+# resolver requires the field and the band derivation never reads it, so -65.0
+# is filler. It is the class-default seed for the TWEETER only
+# (``driver_protection``'s high-frequency branch); the woofer's low-frequency
+# class default is ``MAX_TEST_LEVEL_DBFS`` = 0.0, and -65.0 there is just the
+# conservative value matching its sibling.
+_CHECKPOINT_DECLARED_TARGETS = {
+    "woofer": {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "checkpoint-woofer",
+        "role": "woofer",
+        "hard_excitation_band_hz": [45, 4000],
+        "measurement_band_hz": [60, 4000],
+        "required_protection_filters": [],
+        "level_duration_limits": {"max_effective_peak_dbfs": -65.0},
+    },
+    "tweeter": {
+        "target_id": "mono:tweeter",
+        "target_fingerprint": "checkpoint-tweeter",
+        "role": "tweeter",
+        # A compression driver, which is what makes a 2000 Hz declared
+        # high-pass legal: it sits exactly ON that style's code-owned class
+        # minimum. Asserted below, so a policy move fails here too.
+        "driver_style": "compression_driver",
+        "hard_excitation_band_hz": [1600, 20_000],
+        "measurement_band_hz": [2000, 18_000],
+        "required_protection_filters": [
+            {"kind": "highpass", "cutoff_hz": 2000,
+             "minimum_slope_db_per_octave": 24},
+        ],
+        "level_duration_limits": {"max_effective_peak_dbfs": -65.0},
+    },
+}
+# The REALIZED protection graph. Order 4 (LR4) stays recorded rather than
+# inferred: the declaration above states a MINIMUM slope, which an LR8 would
+# also satisfy. The corner is tied back to the declaration by assertion.
 _CHECKPOINT_PROTECTION = {
     "woofer": (), "tweeter": (CrossoverSection(2000.0, 4, True),),
 }
+
+
+def _checkpoint_driven_hz():
+    """Each role's swept band, derived the way a live session derives it.
+
+    Two stages, both real. ``resolve_driver_excitation_ceilings`` turns the
+    declaration into a permitted band — ``program_admission=True`` is the
+    conductor's own flag (``jasper.web.correction_crossover_v2``), since these
+    bands exist to serve the admission-gated CHECK/MEASURE programs. Then
+    ``build_measure_program`` intersects that with the MEASURE sweep window,
+    which is what puts the woofer at 150 Hz rather than its declared 60 Hz
+    analysis floor. The analysis reads a sweep SEGMENT's ``(f1, f2)``, so the
+    segments are what this returns — the peaks and durations are the module's
+    standard MEASURE fixture values and do not touch the bands.
+
+    Both of the tweeter's edges come from its declared HARD band rather than
+    its narrower measurement band: the upper since #1668, the lower since
+    #1654. Only the lower one is load-bearing below — every margin in these
+    tests is |P| at that edge.
+    """
+    profile = {"targets": list(_CHECKPOINT_DECLARED_TARGETS.values())}
+    roles = [
+        RoleBand(
+            role, channel,
+            resolve_driver_excitation_ceilings(
+                profile, target["target_fingerprint"], program_admission=True,
+            )[0],
+        )
+        for channel, (role, target) in enumerate(
+            _CHECKPOINT_DECLARED_TARGETS.items()
+        )
+    ]
+    program = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, roles,
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    return {
+        seg.role: (seg.f1_hz, seg.f2_hz)
+        for seg in (program.segment("sweep_w"), program.segment("sweep_t"))
+    }
+
+
+_CHECKPOINT_DRIVEN_HZ = _checkpoint_driven_hz()
 
 
 def _checkpoint_priors(fc_hz, protection):
@@ -525,7 +678,30 @@ def _checkpoint_priors(fc_hz, protection):
 
 
 def test_the_live_checkpoint_declarations_compose():
-    """(a) + (b): both roles ADMIT, with the margins the ruling records."""
+    """(a) + (b): both roles ADMIT, with the margins the ruling records.
+
+    Opens with the two facts everything below rests on: that the derivation
+    still lands on the bands jts3 was read to sweep, and that the protection
+    corner is still the class minimum it was declared against.
+    """
+    # THE tripwire. The right-hand side is what jts3 was read to sweep; the
+    # left-hand side is derived from its declaration on every run. Move the
+    # sweep-floor derivation and this line fails, naming both numbers.
+    assert _CHECKPOINT_DRIVEN_HZ == {
+        "woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0),
+    }
+    # The corner that makes the tweeter's margin thin is not a household
+    # choice: the declared high-pass sits exactly ON the code-owned class
+    # minimum for this driver style, so a policy move breaks the declaration
+    # rather than quietly following it down. Both halves pinned — the realized
+    # graph against the declaration, the declaration against the policy.
+    declared_hp = _CHECKPOINT_DECLARED_TARGETS["tweeter"]
+    corner_hz = declared_hp["required_protection_filters"][0]["cutoff_hz"]
+    assert _CHECKPOINT_PROTECTION["tweeter"][0].fc_hz == corner_hz
+    assert driver_protection_profile(
+        "tweeter", driver_style=declared_hp["driver_style"],
+    ).min_highpass_hz == corner_hz
+
     impulse = np.zeros(16_384)
     impulse[9] = 1.0
     priors = _checkpoint_priors(_CHECKPOINT_FC_HZ, _CHECKPOINT_PROTECTION)
@@ -543,7 +719,8 @@ def test_the_live_checkpoint_declarations_compose():
     # the mask floor is pinned by the sweep floor rather than by the candidate.
     floor_db = -12.0
     at_floor = np.abs(crossover_response_complex(
-        np.array([1600.0]), _CHECKPOINT_PROTECTION["tweeter"]))[0]
+        np.array([_CHECKPOINT_DRIVEN_HZ["tweeter"][0]]),
+        _CHECKPOINT_PROTECTION["tweeter"]))[0]
     assert 20 * np.log10(at_floor) == pytest.approx(-10.786, abs=0.01)
     assert 20 * np.log10(at_floor) - floor_db == pytest.approx(1.214, abs=0.01)
     # On the analysis grid the edge lands on the first bin at or above 1600 Hz
@@ -567,10 +744,16 @@ def test_the_live_checkpoint_declarations_compose():
 @pytest.mark.parametrize(
     ("corner_hz", "admits"),
     # (c): the reconciliation's closed form is corner <= K * max(driven_lo,
-    # Fc/2), and K is NOT a constant — the digital LR4's bilinear prewarp
-    # destroys the analog prototype's scale-invariant 1.30719, so K is 1.31052
+    # Fc/2), and K is NOT a constant. The ANALOG LR4 prototype is
+    # scale-invariant — |P| = w^4/(1+w^4) crosses -12 dB at w = 0.761039, i.e.
+    # K = 1.313993 at every frequency — but the shipped response is the
+    # bilinear/tan-prewarped DIGITAL realization at 48 kHz, so K sags below
+    # that analog value, and sags further as the floor rises: ON-GRID, 1.31052
     # at this 1600 Hz floor and 1.30859 at the 2000 Hz floor #1654 replaced.
-    # Solved against the shipped response on the analysis grid: |P| at the
+    # Say which floor AND which basis: the same K solved CONTINUOUSLY at
+    # exactly 1600 Hz is 1.31053 (the figure HANDOFF-crossover-measurement-v2
+    # quotes), because the grid edge bin is 1602.54 Hz, not 1600.
+    # Both solved against the shipped response on the analysis grid: |P| at the
     # 1602.54 Hz edge bin hits the -12 dB floor at corner = 2100.15 Hz (it was
     # 2618.47 Hz before the sweep widened, which is why every row here moved).
     [(2000.0, True), (2100.0, True), (2200.0, False), (2617.0, False)],
