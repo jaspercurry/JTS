@@ -530,8 +530,12 @@ What exists:
   packaged configs. That boundary reads the saved
   `jasper.output_topology` contract before choosing a fallback: an absent
   saved topology or explicit stereo full-range/passive topology may use the
-  flat outputd graph, but explicit mono full-range topology cannot be driven
-  by a wider flat stereo graph, and any topology with a tweeter, protected
+  flat outputd graph; an explicit mono full-range topology uses a
+  WIDTH-MATCHED one — the ALSA device stays at the DAC's own width, and the
+  emitter hard-mutes the channel the topology does not claim, so no program
+  reaches an undeclared output. The contract re-proves that mute structurally
+  off the YAML, so an unmuted surplus channel is still refused; and any
+  topology with a tweeter, protected
   output, or subwoofer roleful assignment must preserve/select a matching
   all-muted active startup graph. Guarded commissioning graphs are active test
   surfaces, not persisted boot/deploy fallbacks. When the SOLE missing piece is

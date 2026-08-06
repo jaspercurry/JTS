@@ -135,7 +135,15 @@ def test_assert_flat_apply_safe_allows_full_range() -> None:
 
 
 def test_assert_correction_graph_safe_rejects_mono_width_mismatch() -> None:
-    with pytest.raises(CorrectionRuntimeSafetyError, match="exposes 2 output"):
+    # The correction lane emits a plain 2-channel graph, so on a mono topology
+    # its second channel lands on an output the household never declared. Still
+    # refused; the reason now NAMES the output, because a single (non-composite)
+    # sink maps Camilla channel i to physical output i. Correction on a mono box
+    # therefore stays blocked until that lane learns to render the unclaimed
+    # channel muted the way the flat cutover now does.
+    with pytest.raises(
+        CorrectionRuntimeSafetyError, match="emits on physical output\\(s\\) 1"
+    ):
         assert_correction_graph_safe(_flat_yaml(), topology=_full_range_mono())
 
 

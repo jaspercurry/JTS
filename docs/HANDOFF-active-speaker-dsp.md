@@ -701,7 +701,14 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > preserve or select a validated all-muted active startup graph. Guarded
 > commissioning graphs may be legal for an active test session, but they are
 > not legal persisted deploy/restart fallbacks. Explicit mono full-range
-> layouts must not be driven by a wider flat stereo graph. If no legal graph
+> layouts must not be driven by a flat stereo graph that emits on the output
+> they do not claim — the flat emitter renders that channel HARD MUTED for
+> them (`flat_graph_muted_outputs`), and the contract re-proves the mute
+> structurally off the YAML, so an unmuted surplus channel is still refused.
+> The mute is index-wise, so it is withheld where Camilla channel *i* is not
+> physical output *i* (a composite dual-Apple sink, whose stereo pair
+> legitimately sits on outputs 0 and 2); there the contract falls back to
+> comparing live-channel COUNT against assigned outputs. If no legal graph
 > matches the saved topology/guard evidence, the result is fail-closed rather
 > than silently restoring flat stereo. `jasper-doctor` uses the same classifier
 > and fails when a saved tweeter/protected topology is running a flat
