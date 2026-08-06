@@ -43,7 +43,7 @@ For every hot-pluggable component, all four must hold:
 | **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22; tightened 2026-07-06.** ALSA control events plus Apple USB remove helper wake reconcile; outputd stages and validates buffer/period env before retry, and config exits get one bounded reconcile/retry before parking |
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile`; optional output reference owned by `jasper-outputd` | voice clean park; outputd keeps DAC playback running and retries the chip-reference sink in the background | udev → reconcile restart; outputd reconnects its reference writer without a playback restart | **Fixed 2026-06-21; output/reference isolation tightened 2026-07-10.** A missing mic may park voice and degrade chip AEC, but cannot silence speaker output |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
-| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
+| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-wiim-remote-ce` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice; adapter re-requests the BLE connection-event reservation on every reconnect | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure. **Realtime delivery additionally depends on the CE reservation landing** — see the degraded mode below |
 
 The original Workstream C gap was the **microphone**. A later JTS5
 dual-Apple unplug incident found one output-side edge too: when one Apple
@@ -287,6 +287,52 @@ after the first visible event) and retries; `jasper-voice` keeps the
 normal primary mic path alive and only routes the manual source when
 `/session/start` names it.
 
+### BLE connection-event reservation — a second convergence, per connection
+
+Getting the adapter running is necessary but not sufficient for realtime
+audio. The remote's mic needs 62.5 GATT notifications/second and each one
+takes about 6 Link Layer PDUs, but BlueZ hardcodes the connection-event
+length to 0. On the Pi Zero 2 W's BCM43436 that default admits roughly one
+PDU per connection event, so the mic runs at about a quarter of realtime
+(measured on jts4: 196/190 packets against 794/805 with the reservation).
+
+So right after `char.call_start_notify()`, the adapter asks jasper-control's
+restart broker to `start`
+[`jasper-wiim-remote-ce`](../deploy/systemd/jasper-wiim-remote-ce.service),
+a root oneshot that issues one `HCI_LE_Connection_Update` on the live link
+(design + threat model in
+[HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md)). **The
+reservation lives on the connection**, so it is lost on every disconnect and
+cannot be expressed as unit ordering — the adapter re-requests it on each
+reconnect, and the helper is `StartLimitIntervalSec=0` so a flapping link
+cannot rate-limit it into `failed`.
+
+This adds one convergence dependency worth knowing about when reading a
+slow-mic report: **realtime delivery now also needs `jasper-control` to be
+up**, because the broker socket is the adapter's only route to the helper
+(the adapter is non-root, so there is no direct-systemctl fallback).
+
+The new mode is **degraded but working**, and every step fails soft:
+
+- broker unreachable, unit missing, or the request rejected — the adapter
+  logs `event=wiim_remote_mic.ce_request ok=0` and carries on. Audio flows
+  at the starved rate; the mic is not dead.
+- helper ran but changed nothing — `event=wiim_remote_ce.skipped` at WARNING
+  with a reason (`no_le_links`, `no_match`, `ambiguous`, `handle_reused`,
+  `bluez_unavailable`, `conn_list_failed`). In production this only runs
+  after the adapter subscribed to a live name-matched link, so any of these
+  is an anomaly.
+- controller refused or never confirmed — `event=wiim_remote_ce.not_applied`
+  at WARNING, and the unit exits 1 so it is visible in `systemctl --failed`.
+- applied — `event=wiim_remote_ce.applied`. The `ce_*_requested` fields are
+  named that way deliberately: `LE Connection Update Complete` carries no CE
+  fields, so the interval/latency/timeout in that line are confirmed and the
+  CE values are what we asked for.
+
+Two symptoms to keep apart: `bad_packets=0` with a low `packets` count in
+`event=wiim_remote_mic.disconnected` is a *delivery* problem and points here;
+distorted or wrong-sounding audio is decode and does not.
+
 ## Verified vs needs-hardware
 
 **Verified hardware-free (tests):**
@@ -359,6 +405,7 @@ session):**
 - [`deploy/systemd/jasper-outputd.service`](../deploy/systemd/jasper-outputd.service) — output device gate + failure-time reconcile hook
 - [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
+- [`deploy/systemd/jasper-wiim-remote-ce.service`](../deploy/systemd/jasper-wiim-remote-ce.service) + [`jasper/cli/wiim_remote_ce.py`](../jasper/cli/wiim_remote_ce.py) — per-connection BLE connection-event reservation, re-requested on every reconnect
 
 Last verified: 2026-07-14 (accessory/grouping timeout relationship rechecked
 against both systemd units and `jasper.multiroom.reconcile`; other subsystem

@@ -280,6 +280,23 @@ class _FakeSocket:
     def __init__(self, packets: list[bytes | type[TimeoutError]]) -> None:
         self._packets = list(packets)
         self.timeouts: list[float] = []
+        self.sent: list[bytes] = []
+
+    def __enter__(self) -> _FakeSocket:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def setsockopt(self, *_args: object) -> None:
+        return None
+
+    def bind(self, _addr: tuple) -> None:
+        return None
+
+    def send(self, payload: bytes) -> int:
+        self.sent.append(payload)
+        return len(payload)
 
     def settimeout(self, value: float) -> None:
         self.timeouts.append(value)
@@ -316,6 +333,109 @@ def test_read_update_outcome_handles_a_closed_socket():
     outcome = ce.read_update_outcome(_FakeSocket([b""]), handle=0x0040, timeout=1.0)
     assert outcome.applied is False
     assert outcome.reason == "socket_closed"
+
+
+# ---------------------------------------------- recycled-handle (TOCTOU) guard
+
+
+def test_confirm_target_requires_handle_address_and_le_link_to_all_agree():
+    live = [_conn()]
+    assert ce.confirm_target(live, handle=0x0040, bdaddr=WIIM_BDADDR) is True
+    # Same handle, different device — the recycled-handle case.
+    assert ce.confirm_target(live, handle=0x0040, bdaddr=OTHER_BDADDR) is False
+    # Right device, different handle.
+    assert ce.confirm_target(live, handle=0x0041, bdaddr=WIIM_BDADDR) is False
+    # Gone entirely.
+    assert ce.confirm_target([], handle=0x0040, bdaddr=WIIM_BDADDR) is False
+    # Handle+address agree but the link is no longer LE.
+    assert ce.confirm_target(
+        [_conn(link_type=0x00)], handle=0x0040, bdaddr=WIIM_BDADDR,
+    ) is False
+
+
+def test_apply_reservation_sends_nothing_when_the_handle_changed_owner(monkeypatch):
+    """The TOCTOU guard, at the only place it can be enforced.
+
+    Handles are recycled. If the remote drops between enumeration and send and
+    another LE device inherits handle 0x0040, we would retune a stranger's
+    link — and nothing downstream would catch it, because LE Connection Update
+    Complete reports a handle and no address, so the journal would log success
+    against the WiiM's BD_ADDR.
+    """
+    sock = _FakeSocket([_update_complete(0x00, 0x0040)])
+    monkeypatch.setattr(ce, "_hci_socket", lambda: sock)
+    # By send time the handle belongs to somebody else.
+    monkeypatch.setattr(
+        ce, "live_connections",
+        lambda *a, **k: [_conn(bdaddr=OTHER_BDADDR)],
+    )
+
+    outcome = ce.apply_reservation(0x0040, expect_bdaddr=WIIM_BDADDR)
+
+    assert outcome.applied is False
+    assert outcome.reason == "handle_reused"
+    assert sock.sent == [], "no HCI command may reach a recycled handle"
+
+
+def test_apply_reservation_sends_when_the_handle_still_agrees(monkeypatch):
+    sock = _FakeSocket([_update_complete(0x00, 0x0040)])
+    monkeypatch.setattr(ce, "_hci_socket", lambda: sock)
+    monkeypatch.setattr(ce, "live_connections", lambda *a, **k: [_conn()])
+
+    outcome = ce.apply_reservation(0x0040, expect_bdaddr=WIIM_BDADDR)
+
+    assert outcome.applied is True
+    assert sock.sent == [ce.encode_connection_update(0x0040)]
+
+
+def test_run_applies_nothing_when_the_handle_is_recycled_mid_flight(monkeypatch):
+    """End to end: enumeration sees the WiiM at 0x0040, but by send time that
+    handle is another device. Nothing is written, and the unit still exits 0 —
+    a lost race is self-healing (the adapter re-requests on reconnect), so it
+    must not park in `failed`."""
+    sock = _FakeSocket([_update_complete(0x00, 0x0040)])
+    reads = iter([[_conn()], [_conn(bdaddr=OTHER_BDADDR)]])
+    monkeypatch.setattr(ce, "_hci_socket", lambda: sock)
+    monkeypatch.setattr(ce, "live_connections", lambda *a, **k: next(reads))
+    monkeypatch.setattr(
+        ce, "_bluez_managed_objects", _async_return({"/d/a": _device(WIIM_BDADDR)}),
+    )
+
+    assert ce.run() == 0
+    assert sock.sent == []
+
+
+def test_run_reads_bluez_before_enumerating_connections(monkeypatch):
+    """Ordering is load-bearing, not stylistic: the bus read is the slow step
+    (5 s bound) and the connection list is what we write a command against, so
+    enumerating first would leave seconds for a handle to be recycled."""
+    order: list[str] = []
+
+    async def fake_bluez(*_args, **_kwargs):
+        order.append("bluez")
+        return {"/d/a": _device(WIIM_BDADDR)}
+
+    def fake_connections(*_args, **_kwargs):
+        order.append("enumerate")
+        return [_conn()]
+
+    monkeypatch.setattr(ce, "_bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(ce, "live_connections", fake_connections)
+    monkeypatch.setattr(
+        ce, "apply_reservation",
+        lambda *a, **k: ce.UpdateOutcome(applied=True, reason="applied", status=0),
+    )
+
+    assert ce.run() == 0
+    assert order == ["bluez", "enumerate"]
+
+
+def test_apply_reservation_requires_the_expected_address(monkeypatch):
+    """`expect_bdaddr` is keyword-only and has no default, so a caller cannot
+    quietly opt out of the recycled-handle check."""
+    parameter = inspect.signature(ce.apply_reservation).parameters["expect_bdaddr"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
 
 
 # ------------------------------------------------------------- run() policy
@@ -407,10 +527,12 @@ def test_run_reports_failure_when_the_controller_refuses(
     assert ce.run() == 1
 
 
-def test_run_survives_a_failing_connection_list(monkeypatch):
+def test_run_survives_a_failing_connection_list(monkeypatch, bluez_sees_one_wiim):
     def boom(*_args, **_kwargs):
         raise OSError("no adapter")
 
+    # BlueZ is patched to succeed so this really exercises the ioctl-failure
+    # path and not, accidentally, the bluez_unavailable one above it.
     monkeypatch.setattr(ce, "live_connections", boom)
     monkeypatch.setattr(ce, "apply_reservation", _unreachable)
     assert ce.run() == 0

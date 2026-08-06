@@ -701,6 +701,21 @@ def test_wiim_remote_ce_unit_grants_only_raw_hci():
         "not carry an [Install] section."
     )
 
+    # A flapping BLE link makes the adapter re-request on every reconnect, and
+    # its retry floor is 2 s. Without this, systemd's default 5-starts/10 s
+    # limit parks the unit `failed` and that connection stays at ~26% of
+    # realtime — the exact failure this helper exists to fix. Both sibling
+    # on-demand oneshots set it for the same reason.
+    assert ("StartLimitIntervalSec", "0") in pairs, (
+        "jasper-wiim-remote-ce must disable start-rate limiting (mirrors "
+        "jasper-fanin-coupling-auto / jasper-source-intent-reconcile)"
+    )
+    # A request landing mid-deploy must skip cleanly, not fail 203/EXEC into
+    # `failed` — nothing in this repo ever reset-failed's this unit.
+    assert (
+        "ConditionPathExists", "/opt/jasper/.venv/bin/jasper-wiim-remote-ce",
+    ) in pairs
+
 
 USBNET_DHCP_UNIT = ROOT / "deploy/systemd/jasper-usbnet-dhcp.service"
 

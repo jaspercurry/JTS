@@ -1,11 +1,20 @@
 [Unit]
 Description=Reserve BLE connection-event time for the WiiM Remote 2 microphone
-Documentation=file:/opt/jasper/AGENTS.md
+Documentation=file:/opt/jasper/docs/HANDOFF-privilege-separation.md
 # Started on demand by jasper-wiim-remote-mic (through jasper-control's restart
 # broker) every time the remote's voice notifications start — the reservation
 # lives on the connection, so it is lost on every disconnect and cannot be
 # expressed as unit ordering. Never enabled: no [Install] section.
 After=bluetooth.service
+# This oneshot has no automatic Restart= loop. A flapping BLE link makes the
+# adapter re-request on every reconnect, and its retry floor is 2 s — so the
+# default 5-starts-per-10 s limit would park this unit `failed` and leave that
+# connection at ~26% of realtime, which is the exact failure being fixed here.
+StartLimitIntervalSec=0
+# A start request landing mid-deploy (the venv is being rebuilt) would fail
+# 203/EXEC into `failed`, and nothing in this repo ever reset-failed's this
+# unit. Skip cleanly instead; the adapter re-requests on the next reconnect.
+ConditionPathExists=/opt/jasper/.venv/bin/jasper-wiim-remote-ce
 
 [Service]
 Type=oneshot

@@ -228,9 +228,14 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/usb_mic.env",
         ),
     ),
-    # jasper-wiim-remote-mic reads NO on-disk config/state at runtime. It listens
-    # to BlueZ over system D-Bus ('bluetooth' supplementary group) and forwards
-    # decoded PCM to the localhost manual-mic UDP source.
+    # jasper-wiim-remote-mic reads NO on-disk config/state at runtime, so paths
+    # is empty. It has three runtime channels, none of them a config file:
+    # BlueZ over system D-Bus ('bluetooth' supplementary group); decoded PCM
+    # out to the localhost manual-mic UDP source; and jasper-control's restart
+    # broker socket (/run/jasper-control/restart.sock, 0660 jasper-control:
+    # jasper — reached via the primary 'jasper' group below), used to ask the
+    # root jasper-wiim-remote-ce helper for a BLE connection-event reservation
+    # on each reconnect.
     DaemonReadSpec(
         unit="jasper-wiim-remote-mic",
         unit_file="deploy/systemd/jasper-wiim-remote-mic.service",

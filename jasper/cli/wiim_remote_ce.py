@@ -35,22 +35,40 @@ Connection *latency* is not the lever: latency 0 with the default CE length
 still gave 196 packets. Do not "fix" throughput by changing latency.
 
 The Pi 5 always worked because its controller's *default* event scheduling
-already admits ~3.9 PDUs/event. Same lever, different default.
+already admits the ~4 PDUs/event realtime needs (62.5 notifications/s x 6 PDUs
+= 375 PDUs/s, over 88.9 connection events/s at 11.25 ms). Same lever,
+different default.
 
 What it does
 ------------
 This is a short-lived root oneshot. It takes **no argument that identifies a
-connection** — it discovers and validates the target itself, so an
-unprivileged caller (jasper-wiim-remote-mic, via the restart broker's
-start-only allowlist) can never point it at an unrelated BLE link:
+connection** — it discovers and validates the target itself, so the caller
+(jasper-wiim-remote-mic, via the restart broker's start-only allowlist) hands
+over nothing this helper trusts:
 
-1. enumerate live connections with the ``HCIGETCONNLIST`` ioctl;
-2. keep only LE links;
-3. ask BlueZ which of those BD_ADDRs is a connected WiiM Remote 2;
+1. ask BlueZ which connected devices are named like a WiiM Remote 2;
+2. enumerate live connections with the ``HCIGETCONNLIST`` ioctl;
+3. keep only LE links whose BD_ADDR is one of those devices;
 4. exactly one match -> send ``HCI_LE_Connection_Update`` on that handle;
    zero or several -> log and change nothing;
 5. read HCI events back and only report success on
    ``LE Connection Update Complete`` with status 0 **and** our handle.
+
+The BlueZ read comes first on purpose. It is the slow step (bounded at 5 s),
+and **connection handles are recycled**: if the remote dropped while we were
+waiting on the bus and another LE device inherited its handle, we would retune
+a stranger's link. ``LE Connection Update Complete`` carries no address, so the
+journal would happily log success against the WiiM's BD_ADDR. Enumerating last
+shrinks that window to the microseconds inside :func:`select_target`, and
+:func:`apply_reservation` re-reads the connection list one syscall before it
+sends to confirm the handle still belongs to the same address.
+
+What this is NOT: a guarantee that a compromised caller cannot get some other
+device retuned. Anything in the ``bluetooth`` group can set a BlueZ device's
+``Alias``, so a hostile ``jasper-input`` could rename a device into the regex.
+That buys it nothing it does not already have — it can drive the whole adapter
+over D-Bus — but the honest claim is "this helper adds no new authority",
+not "this target can never be spoofed".
 
 Deliberately not done here: no ``main.conf`` edit and no debugfs
 ``conn_min_interval``/``conn_max_interval`` write. Those are adapter-global;
@@ -113,14 +131,22 @@ HCI_MAX_CONN_LIST = 16
 LE_LINK = 0x80
 
 # ---- HCI_LE_Connection_Update parameters ---------------------------------
-# Interval / latency / supervision timeout restate what BlueZ already
-# negotiated: the command has no "leave this field alone" encoding, so every
-# field must be sent, and re-sending the current values keeps this change
-# scoped to the two CE fields that were actually measured to matter.
+# All seven fields go out every time: the command has no "leave this one
+# alone" encoding. And HCI offers no way to READ a live connection's current
+# parameters back — HCIGETCONNLIST returns handle/bdaddr/type/out/state/
+# link_mode and nothing else — so the three below are FORCED to fixed values,
+# not echoed. They are set to what this link is expected to already be using,
+# so forcing them should be a no-op; only the two CE fields further down were
+# measured to change throughput.
 CONN_INTERVAL_MIN = 0x0009      # 11.25 ms (units of 1.25 ms)
 CONN_INTERVAL_MAX = 0x0009      # 11.25 ms
 CONN_LATENCY = 0x0000           # measured NOT to be the lever; keep it at 0
-SUPERVISION_TIMEOUT = 0x0258    # 6000 ms (units of 10 ms)
+# 6000 ms (units of 10 ms). PENDING HARDWARE MEASUREMENT: Linux's default
+# outgoing LE supervision timeout is 420 ms. If that is what this link
+# actually negotiated, forcing 6000 ms makes link-loss detection ~14x slower
+# and delays reconnect. The owner is reading the negotiated value off btmon;
+# do not change this number until that measurement lands.
+SUPERVISION_TIMEOUT = 0x0258
 # The whole point of this helper. 0x0000/0x0000 is the BlueZ default that
 # starves the link to ~26 % of realtime (see the table in the module
 # docstring). Reverting these two to zero re-breaks the microphone.
@@ -302,6 +328,24 @@ def select_target(
     return TargetSelection(matches[0], "ok", len(le_links), 1)
 
 
+def confirm_target(
+    connections: list[HciConnection], *, handle: int, bdaddr: str,
+) -> bool:
+    """True when ``handle`` is still an LE link to ``bdaddr``.
+
+    The anti-TOCTOU check. Controllers recycle connection handles, so the
+    handle we validated a moment ago can belong to a different device by the
+    time we send — and nothing downstream would notice, because
+    ``LE Connection Update Complete`` reports a handle and no address.
+    """
+    return any(
+        conn.handle == handle
+        and conn.bdaddr == bdaddr
+        and conn.link_type == LE_LINK
+        for conn in connections
+    )
+
+
 def interpret_event(packet: bytes, *, handle: int) -> UpdateOutcome | None:
     """Classify one HCI event packet. ``None`` means "keep waiting".
 
@@ -376,10 +420,17 @@ def read_update_outcome(
 def apply_reservation(
     handle: int,
     *,
+    expect_bdaddr: str,
     device_id: int = HCI_DEVICE_ID,
     timeout: float = HCI_EVENT_TIMEOUT_SEC,
 ) -> UpdateOutcome:
-    """Send the connection update on ``handle`` and verify the controller's answer."""
+    """Send the connection update on ``handle`` and verify the controller's answer.
+
+    ``expect_bdaddr`` is required, not optional: re-confirming the handle
+    still belongs to that address is the last thing done before ``send``, so
+    a recycled handle cannot be retuned. Keeping the check in here rather
+    than in :func:`run` means no caller can skip it.
+    """
     with _hci_socket() as sock:
         # Order matters: the filter must be installed BEFORE bind(), or the
         # early events are dropped. bind() takes a 1-TUPLE on this CPython —
@@ -387,6 +438,13 @@ def apply_reservation(
         # HCI_CHANNEL_RAW. Both verified on jts4.
         sock.setsockopt(SOL_HCI, HCI_FILTER, hci_event_filter())
         sock.bind((device_id,))
+        # Last check before the write: one ioctl, then one send. Anything
+        # slower than that in between is a window a recycled handle can fit
+        # through.
+        if not confirm_target(
+            live_connections(device_id), handle=handle, bdaddr=expect_bdaddr,
+        ):
+            return UpdateOutcome(applied=False, reason="handle_reused")
         sock.send(encode_connection_update(handle))
         return read_update_outcome(sock, handle=handle, timeout=timeout)
 
@@ -412,19 +470,13 @@ def run(
 
     Exit 1 is reserved for the one actionable failure: we found the right link
     and the controller refused (or never confirmed) the update. Everything
-    else — no LE links, no WiiM among them, two of them, an unreachable BlueZ
-    — changed nothing, is logged, and exits 0 so a transient condition does
-    not park the unit in ``failed``.
+    else — no LE links, no WiiM among them, two of them, an unreachable BlueZ,
+    or a handle that changed owner mid-flight — changed nothing, is logged at
+    WARNING, and exits 0 so a transient condition does not park the unit in
+    ``failed``. Every one of those is still an anomaly worth reading: in
+    production this only runs *after* the adapter subscribed to a live,
+    name-matched LE link.
     """
-    try:
-        connections = live_connections()
-    except OSError as exc:
-        log_event(
-            logger, "wiim_remote_ce.skipped", reason="conn_list_failed",
-            err=str(exc), level=logging.WARNING,
-        )
-        return 0
-
     try:
         # TimeoutError covers asyncio.wait_for on 3.11+ (they are the same
         # class); DBusError is what a missing/wedged BlueZ raises.
@@ -436,6 +488,18 @@ def run(
         )
         return 0
 
+    # Enumerate AFTER the bus read, never before: handles are recycled, and
+    # this is the value we are about to write a command against. See the
+    # module docstring.
+    try:
+        connections = live_connections()
+    except OSError as exc:
+        log_event(
+            logger, "wiim_remote_ce.skipped", reason="conn_list_failed",
+            err=str(exc), level=logging.WARNING,
+        )
+        return 0
+
     selection = select_target(
         connections, connected_bluez_names(managed), name_regex=name_regex,
     )
@@ -443,13 +507,15 @@ def run(
         log_event(
             logger, "wiim_remote_ce.skipped", reason=selection.reason,
             le_links=selection.le_links, matches=selection.matches,
-            level=logging.INFO,
+            level=logging.WARNING,
         )
         return 0
 
     target = selection.connection
     try:
-        outcome = apply_reservation(target.handle, timeout=timeout)
+        outcome = apply_reservation(
+            target.handle, expect_bdaddr=target.bdaddr, timeout=timeout,
+        )
     except OSError as exc:
         log_event(
             logger, "wiim_remote_ce.not_applied", reason="hci_send_failed",
@@ -457,13 +523,28 @@ def run(
         )
         return 1
 
+    if outcome.reason == "handle_reused":
+        # The link moved out from under us between enumeration and send, so
+        # nothing was written. Benign and self-healing — the adapter asks
+        # again on the next reconnect — so don't park the unit in `failed`.
+        log_event(
+            logger, "wiim_remote_ce.skipped", reason="handle_reused",
+            handle=f"0x{target.handle:04x}", bdaddr=target.bdaddr,
+            level=logging.WARNING,
+        )
+        return 0
+
     if outcome.applied:
         log_event(
             logger, "wiim_remote_ce.applied",
             handle=f"0x{target.handle:04x}",
             bdaddr=target.bdaddr,
-            ce_min_ms=CE_LENGTH_MIN * 0.625,
-            ce_max_ms=CE_LENGTH_MAX * 0.625,
+            # "requested", not "applied": LE Connection Update Complete
+            # carries no CE fields — per spec they are hints the controller
+            # may ignore. Only the interval/latency/timeout below are
+            # confirmed values read back off the completion event.
+            ce_min_ms_requested=CE_LENGTH_MIN * 0.625,
+            ce_max_ms_requested=CE_LENGTH_MAX * 0.625,
             interval_ms=outcome.interval_ms,
             latency=outcome.latency,
             supervision_timeout_ms=outcome.supervision_timeout_ms,
