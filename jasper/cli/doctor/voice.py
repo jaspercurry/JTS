@@ -79,9 +79,46 @@ _IMPORT_PROBE = (
     "        raise SystemExit(1)\n"
 )
 
-# Importing google.genai cold on a Zero-class box is seconds, not the 5 s
-# _run default. A timeout here means "could not tell", not "broken".
-_IMPORT_PROBE_TIMEOUT_SEC = 30.0
+# `-P` (3.11+) stops the interpreter putting the caller's cwd on sys.path.
+# `python -c` sets sys.path[0] = '' by default, so a doctor run started from
+# the rsync checkout (`cd ~/jts && sudo /opt/jasper/.venv/bin/jasper-doctor`)
+# would resolve `jasper.voice.*` from the checkout instead of /opt/jasper —
+# two different copies, per AGENTS.md "Runtime Python lives in /opt/jasper".
+# That inverts the check: after a mid-install abort leaves the old runtime in
+# place, the fixed checkout would report green while the daemon still loads
+# the broken adapter. The probe needs nothing from cwd.
+_PROBE_INTERPRETER_FLAGS = ("-P",)
+
+# The probe must finish INSIDE the doctor's per-row guard
+# (JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS, 15 s by default), which the harness
+# applies to every check with asyncio.wait_for. Two things break when it does
+# not: the row guard reports "check timed out" first, so this check's own
+# could-not-verify warn is unreachable; and the cancelled row releases the
+# memory-sample lock while subprocess.run's child is still resident —
+# reopening exactly the perturbation that lock exists to prevent, in the
+# slow-import case that correlates with memory pressure.
+#
+# Derived from the row guard rather than restated as a second constant, so
+# the two cannot drift. `.env.example` states the same invariant in prose
+# ("Keep this above the low-level probe timeouts") next to the value it
+# ships; tests/test_voice_provider_runtime_imports.py asserts it holds across
+# operator-configured row timeouts, including values small enough that the
+# subtraction alone would not.
+_IMPORT_PROBE_MARGIN_SEC = 5.0
+_IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
+
+
+def _import_probe_timeout() -> float:
+    """Subprocess timeout for the import probe: strictly below the doctor's
+    per-row guard, so the child is always killed by its own timeout first."""
+    # Imported lazily: the doctor package's __init__ imports this module, so
+    # a module-level import would be circular. By call time it is loaded.
+    from . import _doctor_check_timeout
+    row = _doctor_check_timeout()
+    return max(
+        min(_IMPORT_PROBE_MIN_TIMEOUT_SEC, row / 2),
+        row - _IMPORT_PROBE_MARGIN_SEC,
+    )
 
 
 # Shares the "memory-sample" exclusive lane with check_memory_headroom. The
@@ -132,16 +169,18 @@ def check_provider_importable() -> CheckResult:
     assert provider is not None  # read_active_provider_state validated it
     modules = list(provider.runtime_imports)
     joined = ", ".join(modules)
+    timeout = _import_probe_timeout()
     try:
         proc = _run(
-            [sys.executable, "-c", _IMPORT_PROBE, *modules],
-            timeout=_IMPORT_PROBE_TIMEOUT_SEC,
+            [sys.executable, *_PROBE_INTERPRETER_FLAGS, "-c", _IMPORT_PROBE,
+             *modules],
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return CheckResult(
             "voice provider imports", "warn",
             f"{state.provider}: import probe timed out after "
-            f"{_IMPORT_PROBE_TIMEOUT_SEC:.0f}s ({joined}) — could not verify",
+            f"{timeout:.0f}s ({joined}) — could not verify",
         )
     if proc.returncode == 0:
         return CheckResult(

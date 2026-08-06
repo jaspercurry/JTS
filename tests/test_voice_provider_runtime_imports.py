@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import jasper.cli.doctor as doctor_pkg
 from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._registry import registered_checks
 from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
@@ -186,12 +188,14 @@ def probe(monkeypatch):
     """Capture the argv the check hands its import probe, and control the
     result, without spawning a real interpreter."""
     calls: list[list[str]] = []
+    timeouts: list[float] = []
     box: dict[str, object] = {
         "returncode": 0, "stdout": "", "stderr": "", "raises": None,
     }
 
     def fake_run(cmd, timeout=5.0):
         calls.append(cmd)
+        timeouts.append(timeout)
         if box["raises"] is not None:
             raise box["raises"]
         return subprocess.CompletedProcess(
@@ -200,6 +204,7 @@ def probe(monkeypatch):
 
     monkeypatch.setattr(doctor_voice, "_run", fake_run)
     box["calls"] = calls
+    box["timeouts"] = timeouts
     return box
 
 
@@ -241,8 +246,10 @@ def test_probes_exactly_the_declared_modules(monkeypatch, probe):
     result = doctor_voice.check_provider_importable()
     assert result.status == "ok"
     openai = next(e for e in PROVIDERS if e.id == "openai")
-    # argv tail is the module list; argv[0:2] is <python> -c <probe source>.
-    assert probe["calls"][0][3:] == list(openai.runtime_imports)
+    # argv is <python> <flags…> -c <probe source> <module…>; the module list
+    # is everything after the probe source.
+    argv = probe["calls"][0]
+    assert argv[argv.index("-c") + 2:] == list(openai.runtime_imports)
     assert "not a live-session probe" in result.detail
 
 
@@ -321,6 +328,120 @@ def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
     result = doctor_voice.check_provider_importable()
     assert result.status == "warn"
     assert "timed out" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# The probe must die before the doctor's per-row guard does
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "row_timeout",
+    ["0.5", "1", "1.5", "3", "6", "7", "10", "15", "20", "120"],
+)
+def test_probe_timeout_stays_under_the_row_guard(monkeypatch, row_timeout):
+    """`.env.example` promises "Keep this above the low-level probe timeouts"
+    for JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS. Nothing asserted it.
+
+    It has to hold at *every* operator-configured row timeout, not just the
+    shipped 15 s: subtraction alone goes negative on a small row value, and a
+    probe timeout at or above the row guard means the row is cancelled first —
+    which makes this check's could-not-verify warn unreachable AND releases
+    the memory-sample lock while subprocess.run's child is still resident.
+    """
+    monkeypatch.setenv("JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS", row_timeout)
+    row = doctor_pkg._doctor_check_timeout()
+    probe = doctor_voice._import_probe_timeout()
+    assert probe > 0, f"probe timeout must be positive, got {probe}"
+    assert probe < row, (
+        f"probe timeout {probe} is not below the row guard {row} — the row "
+        "would be cancelled first and leave the child running"
+    )
+
+
+def test_probe_timeout_at_the_shipped_default_matches_the_doctor_ceiling():
+    """At the shipped 15 s row guard the probe gets 10 s — the same ceiling
+    the doctor's other subprocess probes already use."""
+    assert doctor_pkg._DOCTOR_DEFAULT_CHECK_TIMEOUT_SECONDS == 15.0
+    assert doctor_voice._import_probe_timeout() == 10.0
+
+
+def test_env_example_ships_a_row_timeout_above_the_probe():
+    """The prose promise and the shipped value are checked together, so
+    editing one without the other fails here rather than in the field."""
+    text = (ROOT / ".env.example").read_text()
+    match = re.search(
+        r"^JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS=([0-9.]+)$", text, re.MULTILINE,
+    )
+    assert match, ".env.example no longer ships JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS"
+    assert "Keep this above the low-level probe timeouts." in text
+    shipped = float(match.group(1))
+    assert doctor_voice._IMPORT_PROBE_MARGIN_SEC > 0
+    assert shipped - doctor_voice._IMPORT_PROBE_MARGIN_SEC < shipped
+
+
+def test_check_passes_the_derived_timeout_to_the_probe(monkeypatch, probe):
+    """The derived value is what actually reaches subprocess.run — not a
+    constant the check computes and then ignores."""
+    monkeypatch.setenv("JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS", "20")
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "gemini"),
+    )
+    doctor_voice.check_provider_importable()
+    assert probe["timeouts"] == [15.0]
+
+
+# ---------------------------------------------------------------------------
+# The probe must not import from the caller's cwd
+# ---------------------------------------------------------------------------
+
+
+def test_probe_does_not_put_cwd_on_sys_path(tmp_path):
+    """`python -c` sets sys.path[0] = '' — so without `-P` a doctor run
+    started from the rsync checkout imports `jasper.voice.*` from there
+    instead of /opt/jasper, and reports the checkout green while the daemon
+    still loads the old runtime.
+
+    Runs the real probe source with the real flags against a marker module
+    that exists only in cwd, so this pins the behaviour and not just the
+    presence of a flag in an argv list.
+    """
+    (tmp_path / "jts_probe_cwd_marker.py").write_text("VALUE = 1\n")
+
+    def run(flags):
+        return subprocess.run(
+            [sys.executable, *flags, "-c", doctor_voice._IMPORT_PROBE,
+             "jts_probe_cwd_marker"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        )
+
+    # Control: without the flag the cwd module is importable, which is the
+    # hazard. If this ever stops being true the guard below is vacuous.
+    assert run(()).returncode == 0, (
+        "control failed: cwd is not on sys.path, so this test proves nothing"
+    )
+    blocked = run(doctor_voice._PROBE_INTERPRETER_FLAGS)
+    assert blocked.returncode == 1
+    assert "ModuleNotFoundError" in blocked.stdout
+
+
+def test_check_uses_the_cwd_isolating_flags(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "gemini"),
+    )
+    doctor_voice.check_provider_importable()
+    argv = probe["calls"][0]
+    assert argv[0] == sys.executable
+    # Without this the loop below is vacuous when the tuple is emptied.
+    assert doctor_voice._PROBE_INTERPRETER_FLAGS, "no cwd-isolating flags left"
+    for flag in doctor_voice._PROBE_INTERPRETER_FLAGS:
+        assert flag in argv[: argv.index("-c")], (
+            f"{flag} must precede -c to take effect; argv={argv}"
+        )
 
 
 def test_check_is_registered_in_the_doctor_registry():
