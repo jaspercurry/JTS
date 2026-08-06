@@ -129,7 +129,8 @@ class ProviderCatalogEntry:
     #        they are installed (OpenAI/Grok defer ``from openai import
     #        AsyncOpenAI`` to ``_resolve_connect_call`` — deliberately, so
     #        tests can build a connection object without the SDK, and so a
-    #        gemini box never pays the openai SDK's ~11 MB).
+    #        gemini box never loads the openai SDK at all; the memory that
+    #        buys is owned by tests/test_lazy_imports.py).
     #
     # Consumed by jasper-doctor's ``check_provider_importable``. REQUIRED,
     # no default: an empty default would make that check silently vacuous

@@ -277,6 +277,40 @@ def test_falls_back_to_stderr_when_probe_dies_without_output(monkeypatch, probe)
     assert "SegmentationFault" in result.detail
 
 
+def test_child_output_is_redacted_before_it_reaches_the_report(monkeypatch, probe):
+    """The failure line is arbitrary text from a child's traceback. It goes
+    through the doctor's own redaction policy, not straight into a report an
+    operator pastes into an issue."""
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "openai"),
+    )
+    probe["returncode"] = 1
+    probe["stdout"] = (
+        "jasper.voice.openai_session\tRuntimeError: bad config "
+        "api_key=sk-abcd1234efgh5678\n"
+    )
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "fail"
+    assert "sk-abcd1234efgh5678" not in result.detail
+
+
+def test_child_output_is_length_capped(monkeypatch, probe):
+    """A runaway traceback line must not flood the flat report."""
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "gemini"),
+    )
+    probe["returncode"] = 1
+    probe["stdout"] = "jasper.voice.gemini_session\tImportError: " + "x" * 5000
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "fail"
+    assert "x" * 5000 not in result.detail
+    assert result.detail.count("x") <= doctor_voice._EXCEPTION_DETAIL_LIMIT
+
+
 def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
     monkeypatch.setattr(
         doctor_voice,

@@ -22,7 +22,12 @@ from ...voice.catalog import (
 )
 from ...voice.provider_state import read_active_provider_state
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import (
+    _EXCEPTION_DETAIL_LIMIT,
+    CheckResult,
+    _redact_exception_message,
+    _run,
+)
 
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
@@ -61,9 +66,9 @@ def check_provider_key(cfg: Config) -> CheckResult:
 # FIRST one that fails. Run in a child interpreter rather than in-process for
 # two reasons: (1) a fresh process is what jasper-voice actually is, so a
 # module that only imports because the doctor already loaded something is not
-# mistaken for a working provider; (2) the adapters pull in heavy SDKs
-# (`google.genai` is ~49 MB resident) and a child frees that on exit instead
-# of carrying it through the rest of the doctor run on a 1 GB Pi.
+# mistaken for a working provider; (2) the adapters pull in heavy SDKs, and a
+# child frees that on exit instead of carrying it through the rest of the
+# doctor run on a 1 GB Pi. Measured footprint is on the check below.
 _IMPORT_PROBE = (
     "import importlib, sys\n"
     "for name in sys.argv[1:]:\n"
@@ -144,10 +149,19 @@ def check_provider_importable() -> CheckResult:
             f"{state.provider}: {joined} import cleanly "
             f"(import-only; not a live-session probe)",
         )
-    first = (proc.stdout or "").strip().splitlines()
-    failure = first[0].replace("\t", ": ") if first else (
-        (proc.stderr or "").strip().splitlines() or ["unknown import failure"]
-    )[-1]
+    reported = (proc.stdout or "").strip().splitlines()
+    if reported:
+        # The probe's own one-line report: "<module>\t<ExcType>: <message>".
+        failure = reported[0].replace("\t", ": ")
+    else:
+        # The child died before it could report (import-time crash, signal).
+        crash = (proc.stderr or "").strip().splitlines()
+        failure = crash[-1] if crash else "unknown import failure"
+    # Arbitrary text from a child's traceback goes through the doctor's own
+    # redaction + length policy, not straight into the report.
+    failure = _redact_exception_message(failure)
+    if len(failure) > _EXCEPTION_DETAIL_LIMIT:
+        failure = failure[:_EXCEPTION_DETAIL_LIMIT - 3] + "..."
     return CheckResult(
         "voice provider imports", "fail",
         f"{state.provider} is the active provider but its code will not "
