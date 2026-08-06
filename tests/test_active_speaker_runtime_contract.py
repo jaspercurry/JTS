@@ -4382,6 +4382,11 @@ def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
     bug this boundary was fixed for — a gate that looks healthy and refuses
     everything. So pin that every production call site routes through
     CamillaDSP's own ReadConfig.
+
+    Three of the six sites pass ``port.canonicalize_raw``, so checking the call
+    site alone proves nothing about them — the wiring is one indirection away,
+    in ``commissioning_service.commissioning_runtime_port``. Both levels are
+    checked here; guarding only the call sites is a guard that guards half.
     """
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -4415,3 +4420,37 @@ def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
         assert (
             "normalize_config_raw" in expression or "canonicalize_raw" in expression
         ), f"{where} passes a canonicalizer that is not CamillaDSP's: {expression}"
+
+    # Now the indirection: a port-supplied canonicalizer is only as good as the
+    # port's wiring, and that lives in a different module.
+    ports: list[tuple[str, str]] = []
+    for path in sorted((repo_root / "jasper").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(
+                func, "id", None
+            )
+            if name != "CommissioningRuntimePort":
+                continue
+            supplied = {
+                kw.arg: ast.unparse(kw.value)
+                for kw in node.keywords
+                if kw.arg is not None
+            }
+            assert "canonicalize_raw" in supplied, (
+                f"{path.relative_to(repo_root)} builds a runtime port without a "
+                "canonicalizer"
+            )
+            ports.append(
+                (str(path.relative_to(repo_root)), supplied["canonicalize_raw"])
+            )
+
+    assert ports, "the production runtime port should be discoverable"
+    for where, expression in ports:
+        assert "normalize_config_raw" in expression, (
+            f"{where} wires a runtime-port canonicalizer that is not "
+            f"CamillaDSP's ReadConfig: {expression}"
+        )

@@ -745,6 +745,17 @@ class CamillaController:
         ``ReadConfig`` parses, validates, and default-fills WITHOUT applying, so
         a live load compares THIS against :meth:`get_active_config_raw` rather
         than the caller's own text (the readback is a normalized superset).
+
+        **Must NOT take ``camilla_graph_mutation``.** Its neighbours
+        :meth:`set_active_config_raw` and :meth:`patch_config` both do, so
+        "make it match its siblings" is the tempting wrong edit — but this call
+        mutates nothing, and the live-graph boundary
+        (``runtime_contract.classify_active_bass_extension_graph``) invokes it
+        from *inside* that lock via ``commissioning_runtime._run_locked`` and
+        ``commissioning_verification._capture_current_graph``. Taking the lock
+        here deadlocks those paths: a live speaker hanging mid-commissioning
+        rather than failing cleanly. Pinned by
+        ``tests/test_camilla_readback_double.py``.
         """
         import yaml
 

@@ -3926,6 +3926,10 @@ async def classify_active_bass_extension_graph(
 
         # Both CamillaDSP queries share the ONE await window this sandwich
         # brackets, so the authority re-read below still covers every await.
+        # Safe to gather because every caller hands both callables the SAME
+        # CamillaController, whose `_call` holds its lock for the whole call —
+        # so these serialize rather than interleaving two requests on one
+        # pycamilladsp websocket.
         active_result, canonical_result = await asyncio.gather(
             _invoke_active_graph_reader(read_active_graph_text),
             _invoke_active_graph_reader(
