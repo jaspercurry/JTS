@@ -8786,8 +8786,6 @@ class CrossoverV2Conductor:
             # No protection map means no §4.2 composition at all, so a
             # candidate's crossover cannot be substituted for the emitted one.
             return
-        candidates = self._fc_candidate_set()
-        budget_s = self._fc_evaluation_budget_s()
         # The fit writes SEVEN conductor fields that the walk's own candidate
         # build reads. Saved and restored around the sweep because the restore
         # is what makes the published candidate byte-identical to a no-selector
@@ -8798,6 +8796,15 @@ class CrossoverV2Conductor:
         slowest_s = 0.0
         evaluations: list[FcCandidateEvaluation] = []
         try:
+            # INSIDE the try, with the disclosure log, so "never raises" is
+            # structural rather than a claim about which of these happens to be
+            # total today. Deriving the candidate set reads household
+            # declarations and the budget reads the MEASURE program; both are
+            # ordinary sources of a malformed-input raise, and both used to sit
+            # outside this block — where an advisory could have cost the
+            # household an ACCEPTED MEASURE (resilience lens).
+            candidates = self._fc_candidate_set()
+            budget_s = self._fc_evaluation_budget_s()
             for fc_hz in candidates.candidates:
                 elapsed = time.monotonic() - started
                 # Forecast, not a bare deadline check: a candidate costs about
@@ -8827,20 +8834,35 @@ class CrossoverV2Conductor:
                     )
                     evaluations.append(_fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE))
                 slowest_s = max(slowest_s, time.monotonic() - started - elapsed)
+            log_event(
+                logger, "correction.crossover_v2_fc_sweep",
+                session_id=self.session_id, configured_hz=round(self._fc_hz, 1),
+                planned=len(candidates.candidates),
+                evaluated=sum(1 for e in evaluations if e.refusal is None),
+                elapsed_s=round(time.monotonic() - started, 2),
+                budget_s=round(budget_s, 2),
+                limits={k: round(v, 1) for k, v in candidates.limits.items()},
+                rejected=[
+                    [round(fc, 1), reason] for fc, reason in candidates.rejected
+                ],
+            )
+        except (
+            ArithmeticError, AttributeError, RuntimeError, TypeError,
+            ValueError, KeyError, IndexError,
+        ) as exc:
+            # The whole advisory declined, loudly. Same caught set as the
+            # per-candidate handler above; ``CrossoverV2FlowError`` is a
+            # ``RuntimeError``, so a refused candidate-set derivation lands here
+            # rather than escaping into the capture's accept path.
+            log_event(
+                logger, "correction.crossover_v2_fc_sweep_refused",
+                level=logging.WARNING, session_id=self.session_id,
+                reason=type(exc).__name__,
+            )
         finally:
             for name, value in saved.items():
                 setattr(self, name, value)
             self._fc_evaluations = tuple(evaluations)
-        log_event(
-            logger, "correction.crossover_v2_fc_sweep",
-            session_id=self.session_id, configured_hz=round(self._fc_hz, 1),
-            planned=len(candidates.candidates),
-            evaluated=sum(1 for e in evaluations if e.refusal is None),
-            elapsed_s=round(time.monotonic() - started, 2),
-            budget_s=round(budget_s, 2),
-            limits={k: round(v, 1) for k, v in candidates.limits.items()},
-            rejected=[[round(fc, 1), reason] for fc, reason in candidates.rejected],
-        )
 
     def _adjudicate_fc(self) -> None:
         """Turn the retained per-candidate evidence into ONE recommendation.

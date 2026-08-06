@@ -284,10 +284,18 @@ def test_no_configured_candidate_is_named_as_such_rather_than_guessed():
 
 
 def test_a_candidate_evaluation_retains_no_analysis_sized_object():
-    """The ruling caps the selector at one analysis + 50 MB by releasing each
-    candidate's intermediates before the next. This pins the retained half:
-    a six-candidate sweep must stay in the tens of kilobytes, and no field may
-    reference a ProgramAnalysis / DriverResponse / EnvelopeCurve.
+    """The retained record's DECLARED shape, on a constructed instance.
+
+    **Scope, stated because an earlier version of this docstring overclaimed
+    it:** these subjects are hand-built, so this cannot see a field that
+    production populates and the fixture does not — the resilience lens proved
+    exactly that by adding an ``analysis`` field, hoarding a full
+    ``ProgramAnalysis`` per candidate, and leaving the suite green. What this
+    pins is that the shape as declared stays in the tens of kilobytes.
+
+    The PRODUCTION guard is
+    ``test_crossover_v2_fc_selector_wiring.test_the_sweep_retains_no_analysis_sized_object``,
+    which walks a real sweep's records and whitelists their fields by type.
     """
     sweep = [_evaluation(fc_hz=fc) for fc in
              (1648.7, 1698.9, 1750.6, 1803.9, 1858.9, 2000.0)]

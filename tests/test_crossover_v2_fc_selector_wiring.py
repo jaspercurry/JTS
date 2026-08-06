@@ -8,8 +8,10 @@ exactly what a session without it would.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -421,9 +423,54 @@ def test_the_seven_conductor_fields_are_restored_after_the_sweep():
     assert c._fc_evaluations, "the sweep must still have produced evidence"
 
 
+def _retained_bytes(evaluation) -> int:
+    """Bytes one retained record holds, refusing anything not small by TYPE.
+
+    A **whitelist over the record's actual fields**, walked with
+    ``dataclasses.fields`` rather than a list of known names, because the
+    failure this guards against is a NEW field hoarding — and a blacklist of
+    forbidden attributes (`driver_responses`, `complex_tf`, …) cannot see an
+    object that simply does not have them. Anything outside the whitelist
+    raises here, naming the field.
+    """
+    total = 0
+    for field in dataclasses.fields(evaluation):
+        value = getattr(evaluation, field.name)
+        if value is None or isinstance(value, (bool, int, float, str)):
+            continue
+        if isinstance(value, np.ndarray):
+            total += value.nbytes
+        elif isinstance(value, tuple) and all(
+            isinstance(item, (int, float)) for item in value
+        ):
+            continue
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                assert isinstance(item, np.ndarray), (
+                    f"{field.name}[{key!r}] retains a {type(item).__name__}"
+                )
+                total += item.nbytes
+        else:
+            raise AssertionError(
+                f"{field.name} retains a {type(value).__name__} — the retained "
+                "record must stay scalars plus small arrays"
+            )
+    return total
+
+
 def test_the_sweep_retains_no_analysis_sized_object():
-    """The memory contract, at the WIRING level: whatever the loop retains has
-    to be the kernel's small record, never a live analysis or driver response.
+    """The memory contract, at the WIRING level and against REAL swept records.
+
+    ``_eligible_seams`` drives an actual sweep through
+    ``_evaluate_fc_candidate``, so this asserts what production retained rather
+    than what a fixture was hand-built to hold.
+
+    **The earlier version of this test was vacuous** and the resilience lens
+    proved it: adding an ``analysis`` field to ``FcCandidateEvaluation`` and
+    populating it in production left all six candidates hoarding a full
+    ``ProgramAnalysis`` with 42 tests green, because the assertions enumerated
+    the fields that already existed. The whitelist in ``_retained_bytes`` is
+    the fix — a new field of an unexpected type fails by construction.
     """
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
@@ -436,10 +483,43 @@ def test_the_sweep_retains_no_analysis_sized_object():
         for operator in evaluation.branch_operator_by_role.values():
             assert operator.shape == grid.shape
         assert evaluation.anchor_sum_db.size in (0, grid.size)
+
+    # GROWTH, bounded across the whole sweep rather than per record: the
+    # ruling's cap is on what the walk carries, and one small record times N is
+    # what makes it small. 64 kB is ~4x the real figure, so it fails on a
+    # hoarded object (megabytes) without being a tripwire on an honest field.
+    swept = sum(_retained_bytes(e) for e in c._fc_evaluations)
+    assert swept < 64_000, f"the retained sweep grew to {swept} bytes"
+
     # …and the walk's close releases even those.
     for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
         _run_phase(c, index, 1)
     assert c._fc_evaluations == ()
+
+
+def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
+    """"Never raises" as a STRUCTURAL property, not a claim about which of the
+    sweep's steps happens to be total today.
+
+    Deriving the candidate set reads household declarations and the budget
+    reads the MEASURE program; both are ordinary sources of a malformed-input
+    raise, and both sat OUTSIDE the try until the resilience lens named it. An
+    advisory must never cost a household a capture they already completed.
+    """
+    for broken in ("_fc_candidate_set", "_fc_evaluation_budget_s"):
+        fakes = _eligible_seams()
+        c = _selector_conductor(fakes)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                flow.CrossoverV2Conductor, broken,
+                lambda self: (_ for _ in ()).throw(ValueError("forced")),
+            )
+            _run_phase(c, 1, 1)
+            accepted = _run_phase(c, 2, 1)  # must NOT raise
+        assert accepted is not None, broken
+        assert PHASE_MEASURE in c.accepted_phases, broken
+        # …and the sweep declined cleanly rather than half-populating.
+        assert c._fc_evaluations == (), broken
 
 
 def test_the_evaluation_budget_is_bounded_by_the_phones_own_deadline():

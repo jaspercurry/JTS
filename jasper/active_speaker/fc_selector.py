@@ -81,9 +81,16 @@ class FcCandidateEvaluation:
     next starts. What survives is this: scalars plus complex arrays on the
     shared ~120-point lateral basis, so a six-candidate sweep retains tens of
     KILObytes. Nothing here references a ``ProgramAnalysis``,
-    ``DriverResponse`` or ``EnvelopeCurve``, and
-    ``test_a_candidate_evaluation_retains_no_analysis_sized_object`` fails if
-    one is added.
+    ``DriverResponse`` or ``EnvelopeCurve``.
+
+    The guard is
+    ``test_crossover_v2_fc_selector_wiring.test_the_sweep_retains_no_analysis_sized_object``,
+    which walks the fields of records a REAL sweep produced and whitelists them
+    by type — so a new field of an unexpected type fails by construction. It is
+    named here rather than the kernel suite's shape test because that one
+    inspects a hand-built instance: a field populated only in production would
+    never be set on it, which the resilience lens demonstrated by hoarding a
+    full analysis past a green suite.
 
     ``branch_operator_by_role`` carries everything a candidate would do to one
     driver's neutral measurement — polarity, the ``C_c / P`` re-composition,
