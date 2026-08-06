@@ -105,6 +105,14 @@ SUPPORTED_GROUP_MODES = {
     "active_3_way",
     "subwoofer",
 }
+# The listening (non-subwoofer) group kinds, and the mode that means "one
+# full-range driver per side, no active crossover". Named here — beside the
+# vocabulary they belong to — so the shape predicates below are the ONE place
+# that spells them out. MAIN_GROUP_KINDS is DERIVED, not re-listed: a fifth
+# supported kind must land on one side of the main/sub line deliberately, not by
+# being forgotten here and silently dropping out of the passive predicates.
+MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
+PASSIVE_MAIN_MODE = "full_range_passive"
 REQUIRED_ROLES_BY_MODE = {
     "full_range_passive": ("full_range",),
     "active_2_way": ("woofer", "tweeter"),
@@ -1096,6 +1104,62 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
             "next_step": next_step,
         },
     }
+
+
+def main_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
+    """Return the listening (left / right / mono) groups of ``topology``."""
+
+    return [
+        group for group in topology.speaker_groups
+        if group.kind in MAIN_GROUP_KINDS
+    ]
+
+
+def subwoofer_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
+    """Return every group that is a subwoofer by kind, mode, or routing."""
+
+    routed_subwoofers = set(topology.routing.subwoofer_group_ids)
+    return [
+        group
+        for group in topology.speaker_groups
+        if (
+            group.kind == "subwoofer"
+            or group.mode == "subwoofer"
+            or group.id in routed_subwoofers
+        )
+    ]
+
+
+def topology_is_passive_mains(topology: OutputTopology) -> bool:
+    """True iff mains exist and EVERY main is a full-range passive speaker.
+
+    The one owner of "this speaker's mains carry no inter-driver crossover".
+    Both passive shape predicates below/elsewhere compose it rather than
+    restating the kind/mode vocabulary: ``topology_is_subless_passive_mains``
+    here, and ``active_speaker.staging.topology_is_passive_mains_with_sub``.
+    """
+
+    mains = main_speaker_groups(topology)
+    if not mains:
+        return False
+    return all(group.mode == PASSIVE_MAIN_MODE for group in mains)
+
+
+def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
+    """True iff the topology is full-range passive mains with NO subwoofer.
+
+    The shape that takes the flat program lane: no inter-driver crossover (the
+    mains are passive) and no bass-management split (no sub). Nothing about it
+    needs active-crossover commissioning, so the setup flow terminates after
+    output identity instead of offering a combined-driver test it can never
+    run. The with-sub sibling — passive mains PLUS a sub — is a DIFFERENT shape
+    (``staging.topology_is_passive_mains_with_sub``): it still rides the
+    roleful multi-output emitter for bass management.
+    """
+
+    return topology_is_passive_mains(topology) and not subwoofer_speaker_groups(
+        topology
+    )
 
 
 def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:

@@ -23,7 +23,14 @@ from typing import Any, Callable
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
-from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
+from jasper.output_topology import (
+    OutputTopology,
+    SpeakerChannel,
+    SpeakerGroup,
+    main_speaker_groups,
+    subwoofer_speaker_groups,
+    topology_is_passive_mains,
+)
 
 from ._common import gate as _gate, issue as _issue
 from .camilla_yaml import (
@@ -353,19 +360,6 @@ def _target_outputs_for_groups(
     return target_outputs
 
 
-def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
-    routed_subwoofers = set(topology.routing.subwoofer_group_ids)
-    return [
-        group
-        for group in topology.speaker_groups
-        if (
-            group.kind == "subwoofer"
-            or group.mode == "subwoofer"
-            or group.id in routed_subwoofers
-        )
-    ]
-
-
 def _local_subwoofer_from_topology(
     topology: OutputTopology,
     *,
@@ -387,7 +381,7 @@ def _local_subwoofer_from_topology(
     (``subwoofer_crossover_out_of_range``), so a value that reaches here is
     in-range; ``LocalSubwoofer.validate`` re-checks it as defense in depth.
     """
-    sub_groups = _subwoofer_groups(topology)
+    sub_groups = subwoofer_speaker_groups(topology)
     if not sub_groups:
         return None, []
     issues: list[dict[str, str]] = []
@@ -736,7 +730,6 @@ def compile_preset_from_crossover_preview(
 # multi-output emitter when a LOCAL SUBWOOFER is present (bass management: the sub
 # gets an LR4 low-pass, each main its complementary high-pass). That degenerate
 # 1-way preset is built directly from the saved topology here, NOT from a preview.
-_PASSIVE_MAIN_MODE = "full_range_passive"
 _PASSIVE_MAIN_ROLE = "full_range"
 
 
@@ -746,16 +739,14 @@ def topology_is_passive_mains_with_sub(topology: OutputTopology) -> bool:
     This is the single predicate the build path uses to route a passive+sub
     topology through the active multi-output emitter (the degenerate 1-way bass-
     management path) instead of the flat ``emit_sound_config`` lane. A SUBLESS
-    passive speaker returns False and stays on the flat path (byte-identical).
+    passive speaker returns False and stays on the flat path (byte-identical) —
+    ``output_topology.topology_is_subless_passive_mains`` is that sibling shape.
+    Both compose ``topology_is_passive_mains``, which owns the kind/mode
+    vocabulary so the two cannot drift.
     """
-    mains = [
-        group
-        for group in topology.speaker_groups
-        if group.kind in {"left", "right", "mono"}
-    ]
-    if not mains or any(group.mode != _PASSIVE_MAIN_MODE for group in mains):
-        return False
-    return bool(_subwoofer_groups(topology))
+    return topology_is_passive_mains(topology) and bool(
+        subwoofer_speaker_groups(topology)
+    )
 
 
 def build_passive_mains_with_sub_preset(
@@ -774,11 +765,7 @@ def build_passive_mains_with_sub_preset(
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
 
-    mains = [
-        group
-        for group in topology.speaker_groups
-        if group.kind in {"left", "right", "mono"}
-    ]
+    mains = main_speaker_groups(topology)
     by_kind = {group.kind: group for group in mains}
     if set(by_kind) == {"mono"} and len(mains) == 1:
         layout = "mono"
@@ -1220,7 +1207,7 @@ def _build_active_commissioning_context(
     # was actually resolved onto the staged preset; a sub group present in the topology
     # but absent from the bound preset means the fail-closed resolution rejected it
     # (its blocker is already in `issues`), so staging stays blocked.
-    subwoofer_groups = _subwoofer_groups(topology)
+    subwoofer_groups = subwoofer_speaker_groups(topology)
     sub_armed = bool(bound_preset and bound_preset.local_subwoofer is not None)
     subwoofer_staging_supported = (not subwoofer_groups) or sub_armed
     gates.append(_gate(

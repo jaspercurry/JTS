@@ -2204,7 +2204,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function commissioningStepState(step) {
     var item = commissioningStepView(step);
     var state = item && String(item.status || '');
-    return state === 'done' || state === 'active' || state === 'todo' ? state : '';
+    return state === 'done' || state === 'active' || state === 'todo' ||
+      state === 'not_required' ? state : '';
+  }
+  // A rung this speaker's shape will never run (a full-range passive speaker
+  // has no combined driver test and no active speaker profile). The backend
+  // coordinator owns the decision; the page only renders it. Without this the
+  // unknown status fell through commissioningStepState to the client-side
+  // guess, which put the step back on 'todo' and re-opened the dead end.
+  function commissioningStepNotRequired(step) {
+    return commissioningStepState(step) === 'not_required';
   }
   function commissioningCurrentStep() {
     var view = activeSpeaker.commissioningView || {};
@@ -3415,7 +3424,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Test combined drivers',
         outputStepHint('safety', 'Play the saved crossover with all confirmed drivers.'),
         topology,
-        renderSummedValidationCard(topology),
+        commissioningStepNotRequired('safety')
+          ? renderStepNotRequiredCard(
+              'safety',
+              'This speaker has no combined driver test to run.')
+          : renderSummedValidationCard(topology),
         ''
       ) +
       renderOutputStepCard(
@@ -3423,7 +3436,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Validate and apply',
         outputStepHint('profile', 'Save and apply the checked active profile.'),
         topology,
-        renderBaselineProfileCard(),
+        commissioningStepNotRequired('profile')
+          ? renderStepNotRequiredCard(
+              'profile',
+              'This speaker does not use an active speaker profile.')
+          : renderBaselineProfileCard(),
         ''
       ) +
       renderOutputTopologyResetAction() +
@@ -3707,6 +3724,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       assigned ||
       0
     );
+    // The backend already publishes WHY the driver proof is what it is. When no
+    // driver listening check was ever required, "0/1 heard" (styled ready) read
+    // as a verification result nothing had produced; report the confirmation
+    // that actually happened — output identity — instead.
+    var proofNotRequired = String(proof.source || '') === 'not_required';
+    var proofPill = proofNotRequired ?
+      (verified + '/' + assigned + ' confirmed') :
+      (proofCaptured + '/' + proofRequired + ' heard');
     var targets = Array.isArray(report.targets) ? report.targets : [];
     var rows = targets.length ? targets.map(function(target) {
       var heard = driverMeasurementCaptured(target.speaker_group_id, target.role);
@@ -3721,10 +3746,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
         '<p class="setting-row__hint">Play each quiet ramp, then confirm the driver you hear.</p></div>' +
         '<span class="status-pill' + (proofComplete ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(proofCaptured + '/' + proofRequired + ' heard') + '</span></div>' +
+          escapeHtml(proofPill) + '</span></div>' +
       (outputTopology.dirty ? '<p class="setting-row__hint">Save the draft before changing confirmed outputs.</p>' : '') +
       '<ul class="output-identity-list">' + rows + '</ul>' +
       '<p class="setting-row__hint">' + escapeHtml(
+        proofComplete && proofNotRequired ?
+          'Every output is confirmed. This speaker needs no separate driver checks.' :
         proofComplete ? 'Outputs and drivers are confirmed. Continue to the combined test.' :
         unverified > 0 ? 'Play and confirm each assigned output above to continue.' :
           'Each output is assigned; finish hearing each driver to continue.'
@@ -3882,9 +3909,37 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<span class="setting-row__hint">' + escapeHtml(hint) + '</span>' +
     '</label>';
   }
+  // The body of a step this speaker's shape will never run. Says why, and says
+  // the setup is finished, instead of leaving a titled card with nothing in it.
+  // The sentence comes from the backend step message; `fallback` only covers a
+  // view that has not loaded yet.
+  function renderStepNotRequiredCard(step, fallback) {
+    return '<div class="output-card output-card--not-required">' +
+      '<div class="output-card__head"><div>' +
+        '<p class="output-card__title">Not needed for this speaker</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(outputStepHint(step, fallback)) +
+        '</p></div>' +
+        '<span class="status-pill">not needed</span></div>' +
+      '<p class="setting-row__hint">Speaker setup is complete once every output is confirmed.</p>' +
+    '</div>';
+  }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
-    if (!groups.length) return '';
+    // Reached today, not hypothetically: a passive-mains-WITH-sub layout keeps
+    // the safety step live (it still compiles a degenerate 1-way bass-management
+    // profile) but has no active driver group to test together, so this runs
+    // with zero groups on every render of that shape. The SUBLESS passive
+    // layout never arrives — the backend terminates it (`not_required`) before
+    // this call. Either way, say why instead of rendering a step title over an
+    // empty body: that silent blank is how the passive dead end went unnoticed.
+    if (!groups.length) {
+      return '<div class="output-card output-card--not-required">' +
+        '<div class="output-card__head"><div>' +
+          '<p class="output-card__title">No combined test available</p>' +
+          '<p class="setting-row__hint">This speaker layout has no group of drivers to test together.</p>' +
+        '</div><span class="status-pill">unavailable</span></div>' +
+      '</div>';
+    }
     var canRecord = driverTargetProofComplete();
     var revalidation = baselineProfileRevalidation();
     var revalidating = revalidation.required === true;
@@ -6155,7 +6210,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return;
       }
       openOutputStep('safety');
-      status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
+      status(commissioningStepNotRequired('safety') ?
+        'Every output is confirmed. This speaker needs no crossover checks.' :
+        'Outputs and drivers are confirmed. Continue with the combined speaker test.');
       return;
     }
     if (step === 'safety') {

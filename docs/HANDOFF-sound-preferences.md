@@ -433,6 +433,14 @@ The same `/sound/setup/` page renders a lightweight **Active crossover setup**
 surface over that endpoint as collapsible task cards: **Choose speaker
 layout**, **Add your components**, **Confirm outputs**, **Test combined
 drivers**, and **Validate and apply**.
+A full-range passive layout with no subwoofer reaches only the first three: it
+has no inter-driver crossover and no bass-management split, so the coordinator
+(`build_commissioning_view`) reports the last two steps `not_required` and the
+flow finishes at **Confirm outputs**. Those two cards then explain that they do
+not apply instead of offering a combined test with no target. The shape
+predicate is `output_topology.topology_is_subless_passive_mains`; its sibling —
+passive mains PLUS a sub — still compiles a (degenerate 1-way) active profile
+and keeps the full ladder.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
 exists. The UI keeps one card open at a time, prevents opening future

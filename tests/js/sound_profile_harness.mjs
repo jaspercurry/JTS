@@ -773,6 +773,21 @@ function fail(message, details = {}) {
   throw new Error(`${message}\n${JSON.stringify(details, null, 2)}`);
 }
 
+// The rendered BODY of one step card, so an assertion cannot be satisfied by
+// the step's summary hint or by a different step's card. Slices from the step's
+// `output-step__body` to the next step marker; safe for the safety/profile
+// steps, which contain no nested <details>.
+function outputStepBodyHtml(html, step) {
+  const at = String(html || "").indexOf('data-output-step="' + step + '"');
+  if (at < 0) return null;
+  const open = '<div class="output-step__body">';
+  const bodyAt = html.indexOf(open, at);
+  if (bodyAt < 0) return null;
+  const start = bodyAt + open.length;
+  const next = html.indexOf('data-output-step="', start);
+  return html.slice(start, next < 0 ? html.length : next);
+}
+
 function commissionCardHtml(html) {
   const match = String(html || "").match(
     /<div class="commission-card">[\s\S]*?commission-card__followup[\s\S]*?<\/p><\/div>/
@@ -1317,6 +1332,176 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
     });
   }
   return { oneDriverComponentCanPrepareResearchPrompt: true };
+}
+
+// A subless passive speaker: the backend terminates the ladder (safety and
+// profile are `not_required`) and the page must render that termination
+// instead of a titled-but-empty combined-test card, a "0/1 heard" pill styled
+// ready, and a profile card asking for a combined check that cannot run.
+async function testSublessPassiveLayoutRendersATerminatedLadder() {
+  const passiveTopology = topologyPayload();
+  passiveTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 1,
+    verified_channel_count: 1,
+    unverified_channel_count: 0,
+    targets: [{
+      id: "main:full_range",
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      assigned: true,
+      identity_verified: true,
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: passiveTopology,
+      channel_identity: passiveTopology.channel_identity,
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      commissioningViewPayload({
+        status: "not_required",
+        current_step: "map",
+        stepStatuses: {
+          layout: "done",
+          research: "done",
+          map: "done",
+          safety: "not_required",
+          profile: "not_required",
+        },
+        steps: [
+          {id: "layout", label: "Choose speaker layout", status: "done",
+            message: "Speaker layout is saved."},
+          {id: "research", label: "Add your components", status: "done",
+            message: "No active crossover values are needed for this layout."},
+          {id: "map", label: "Confirm outputs", status: "done",
+            message: "All assigned outputs are confirmed. This layout needs no " +
+              "separate driver listening checks."},
+          {id: "safety", label: "Test combined drivers", status: "not_required",
+            message: "No combined driver test applies to this layout."},
+          {id: "profile", label: "Validate and apply", status: "not_required",
+            message: "No active speaker profile is needed for this layout."},
+        ],
+        driver_target_proof: {
+          complete: true, source: "not_required", captured: 0, required: 0,
+        },
+        output_identity: {
+          assigned_channel_count: 1, unverified_channel_count: 0, complete: true,
+        },
+        next_action: {id: "setup_complete", label: "Setup complete", enabled: false},
+      })
+    )),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    'data-output-step="safety"',
+    'data-output-step="profile"',
+    "No combined driver test applies to this layout.",
+    "No active speaker profile is needed for this layout.",
+    "Speaker setup is complete once every output is confirmed.",
+    // The pill reports the confirmation that actually happened.
+    "1/1 confirmed",
+    "Every output is confirmed. This speaker needs no separate driver checks.",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("A subless passive layout must render a terminated ladder", { expected, html });
+    }
+  }
+  for (const forbidden of [
+    "0/1 heard",
+    "Continue to the combined test",
+    'data-act="prepare-summed-test"',
+    'data-act="save-apply-baseline-profile"',
+    "Finish the combined crossover check before saving the active profile.",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("A subless passive layout must not offer active-crossover work",
+        { forbidden, html });
+    }
+  }
+  // No step may render a title over an empty body.
+  const emptyBody = html.match(/<div class="output-step__body"><\/div>/);
+  if (emptyBody) fail("A step card must never render an empty body", { html });
+  // Pin the BODY of each terminated step, not just the page. The step summary
+  // carries the same backend message, and both cards carry the same closing
+  // sentence, so a page-wide `includes` is satisfied even if one card falls
+  // back to the generic no-groups backstop.
+  for (const step of ["safety", "profile"]) {
+    const body = outputStepBodyHtml(html, step);
+    if (!body || !body.includes("Not needed for this speaker") ||
+        !body.includes("Speaker setup is complete once every output is confirmed.")) {
+      fail("A terminated step must render the not-needed card in its own body",
+        { step, body });
+    }
+    if (body.includes("No combined test available")) {
+      fail("A terminated step must not fall back to the no-groups backstop",
+        { step, body });
+    }
+  }
+  return { sublessPassiveLayoutRendersATerminatedLadder: true };
+}
+
+// The LIVE caller of renderSummedValidationCard's no-groups backstop. A
+// passive-mains-WITH-sub layout keeps the safety step active (it still compiles
+// a degenerate 1-way bass-management profile, so the backend does NOT terminate
+// it) while activeOutputGroups yields nothing to test together. That is the
+// shape that used to render a step title over an empty body.
+async function testPassiveMainWithSubRendersAnExplainedCombinedStep() {
+  const withSub = passiveWithSubwooferTopologyPayload();
+  withSub.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 2,
+    verified_channel_count: 2,
+    unverified_channel_count: 0,
+    targets: [],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: withSub,
+      channel_identity: withSub.channel_identity,
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      commissioningViewPayload({
+        status: "needs_combined_check",
+        current_step: "safety",
+        stepStatuses: {
+          layout: "done", research: "done", map: "done",
+          safety: "active", profile: "todo",
+        },
+        driver_target_proof: {
+          complete: true, source: "not_required", captured: 0, required: 0,
+        },
+        output_identity: {
+          assigned_channel_count: 2, unverified_channel_count: 0, complete: true,
+        },
+      })
+    )),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const body = outputStepBodyHtml(html, "safety");
+  if (body === null) fail("The combined-test step must render", { html });
+  // Non-empty means "a card was rendered", not "the slice has closing tags".
+  if (!body.includes('<div class="output-card')) {
+    fail("A live step with no testable group must still explain itself",
+      { body, html });
+  }
+  if (!body.includes("No combined test available")) {
+    fail("The no-groups backstop copy must reach the combined-test step body",
+      { body });
+  }
+  if (html.match(/<div class="output-step__body"><\/div>/)) {
+    fail("A step card must never render an empty body", { html });
+  }
+  return { passiveMainWithSubRendersAnExplainedCombinedStep: true };
 }
 
 async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
@@ -6442,6 +6627,8 @@ results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
+results.push(await testSublessPassiveLayoutRendersATerminatedLadder());
+results.push(await testPassiveMainWithSubRendersAnExplainedCombinedStep());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat());
 results.push(await testOneDriverComponentCanPrepareResearchPrompt());
