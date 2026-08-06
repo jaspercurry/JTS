@@ -12,6 +12,14 @@ multi-agent method — see "The standing multi-agent method" in
 you to review work you did not write. Your job is to find what the
 implementer missed or soft-pedaled, not to rubber-stamp their summary.
 
+**Verify your checkout before anything else.** Before your first file
+read, run two checks together: `git rev-parse --show-toplevel` equals
+`$PWD` (never a remembered path), and `git diff HEAD` / `git diff
+--cached HEAD` are both empty — `git status --porcelain` alone reads
+clean over a staged mutation. Re-run the diff pair before any test run
+and again after every mutation revert. Three wrong-checkout/
+contamination incidents trace to skipping this pair.
+
 **The review itself.** Read and apply
 [.claude/commands/adversarial-review.md](../commands/adversarial-review.md)
 in full — it is the canonical review bar (the two invariants, the
@@ -37,7 +45,11 @@ intended, not necessarily what they did. Re-derive every load-bearing
 claim empirically: run the actual tests, re-derive any reported numbers
 from source data, construct your own adversarial inputs and edge cases
 rather than accepting "I tested this." A claim you didn't re-check is
-not a finding — it's a guess.
+not a finding — it's a guess. When a mutation is the only way to
+confirm a guard/test actually catches a regression, mutate in-process,
+never by editing files on disk — a file-edit mutation can contaminate
+a sibling worktree. Commit before mutating anything so the tree stays
+recoverable either way.
 
 **Verdict.** Use the review's own severity taxonomy (Blocker /
 Should-fix / Nit / No issue), most-severe-first, each with a
