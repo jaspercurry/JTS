@@ -1666,11 +1666,76 @@ relay cannot repair this late: its host-event slot is last-write-wins, and
 `capture_set_complete` routinely overwrites the final `capture_result` before
 the page's ~250 ms poll reads it.
 
+## Recommending an Fc
+
+R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
+tells the household which one measured best. **It never changes the crossover.**
+The declared crossover in `/sound` remains Fc's only writer, so the household
+reads the number, declares it there, and the next session's configured Fc *is*
+that number — applied through the untouched golden path. A screen saying "JTS
+moved your crossover" would describe something that did not happen; the copy
+says "set it in Sound settings and measure again", and a test pins that.
+
+Why recommend rather than apply: `baseline_profile` refuses any candidate whose
+preset differs from the saved crossover — a deliberate one-writer-per-fact
+defence, not an oversight — so a selected Fc has nowhere to go without a
+nine-site change across six modules. That is its own round, and it becomes
+justified when recommendations prove consistently right.
+
+**Where each piece lives.**
+
+- [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py)
+  — the pure kernel: `band_flatness` (R18's mean-removed signed-worst
+  arithmetic), `predict_pose_sum_db`, `score_candidate`, `select_fc`. No
+  conductor state, no I/O. `FcCandidateEvaluation` is the memory contract.
+- `fc_candidate_set` / `resolve_fc_search_band` in the flow module — the set,
+  bounded by four declarations: the HF driver's hard floor, the lower driver's
+  ceiling, the INTERSECTED declared `crossover_search_band_hz` (a two-way Fc
+  puts both drivers at Fc, so every participating role must admit it, and an
+  undeclared role means no proposal), and the ka beaming ceiling from the
+  declared diameter. The configured Fc is always evaluated even when a bound
+  excludes it — otherwise the speaker has no golden candidate.
+- `CrossoverV2Conductor._sweep_fc_candidates` — runs at MEASURE-consume,
+  because the raw capture is alive only there. Per candidate:
+  re-corner the sections, re-point THREE prior fields (`crossover_fc_hz`, the
+  configured crossover response, the candidate-required bands — polarity and
+  the protection map are preset/safety-derived and ride unchanged), re-analyze,
+  fit against that candidate's own branch target, reduce to one small record,
+  **release**. The seven `_last_*` fields the fit writes are saved and restored
+  around the sweep.
+- `_adjudicate_fc` at the walk's close — §4.4's rule that anything reading the
+  whole walk waits for the whole walk.
+
+**Two bounds worth knowing before you touch it.**
+
+*The phone's deadline is a session-killer, not a retry.*
+`waitForCaptureResult` allows `max(30 000, spec.duration_ms)` — 41 885 ms on
+the live stage-1 spec — and throws a terminal `sweepFailed` on expiry. The
+sweep's budget is a conservative fraction of that, and a candidate is not
+STARTED unless the slowest one so far fits in what remains. Scoring fewer than
+proposed is disclosed as k-of-N (`FcSelection.evaluated` / `planned`), never
+hidden and never a failure.
+
+*Memory is bounded by releasing, not by caching.* One MEASURE analysis is ~7.0 s
+and ~400–430 MB on a Pi 5. Six naive is 39.9 s and 464 MB; the
+deconvolve-cached variant is faster but heavier (491 MB) and is a recorded
+later optimization, not this design. Each candidate's intermediates are freed
+before the next allocates; what survives the walk is scalars plus ~120-point
+arrays per candidate.
+
+**Debugging.** `event=correction.crossover_v2_fc_sweep` (planned, evaluated,
+elapsed, budget, the derived limits, each rejected proposal and why) and
+`event=correction.crossover_v2_fc_selection` (the verdict). A candidate that
+could not be scored is disclosed with a reason code, never dropped: `fit_refused`
+(no candidate, or the session is not Layer-1a eligible), `no_trusted_crossover_region`,
+`evaluation_budget_spent`.
+
 ## File map
 
 | File | Responsibility |
 |---|---|
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz` → `_CloudEchoBand`, which clamps the analysis band up to `ECHO_BAND_HF_REGIME_FLOOR_HZ` and discloses the clamp — issue #1763) and the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`). |
+| [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector, as pure functions over small arrays: `band_flatness`, `predict_pose_sum_db`, `score_candidate`, `select_fc`, and the `FcCandidateEvaluation` memory contract. No conductor state, no I/O, no imports from the flow. Produces a RECOMMENDATION — see "Recommending an Fc" above for why it cannot apply one. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
 | [`jasper/audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner + echo/geometry diagnostics (flat-linearization S1, #1741 offline core; wired into the live flow by PR-4, #1756): `combine_positions` → `CombinedResponse` (power-mean spec curve, per-position curves, exclusion mask, `.geometry`/`GeometryLock`), `detect_echo` → `EchoDiagnostic` (two-estimator echo detection; `effective_floor_us`, `earlier_dominant_arrival`/`band_below_passband` refusal hardening from PR-2, #1749), `assess_geometry`, `usable_echo_estimates`. Pure computation, numpy only, no I/O/logging/policy. |
@@ -3513,5 +3578,9 @@ paragraph under Failure taxonomy) against `crossover_v2_flow.py` /
 ruling; then re-verified that same retry/refusal contract after #2097's
 adversarial review against the structured all-reason diagnosis model, the
 final-capture terminal runner path, final-index stage-1/stage-2 rendering, and
-the stable spent-event evidence pairing. Sections outside those paths carry
-their 2026-07-30 verification.
+the stable spent-event evidence pairing. R17 added the "Recommending an Fc"
+section, written and verified against `fc_selector.py` and the conductor's
+`_fc_candidate_set` / `_sweep_fc_candidates` / `_adjudicate_fc` as landed, with
+the phone-deadline figures re-derived from `capture-page/js/main.js` and the
+memory/wall numbers quoted from the #1894 on-Pi profile rather than re-measured
+here. Sections outside those paths carry their 2026-07-30 verification.
