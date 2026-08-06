@@ -4705,6 +4705,18 @@ class V2ConductorContext:
     # schema or allowlist change. A role absent here simply gets no beaming
     # prior; the selector discloses that rather than assuming a diameter.
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
+    # Per-role declared ``crossover_search_band_hz`` — the range each driver
+    # may be crossed over IN, which R17's Fc selector intersects across the
+    # participating roles (``crossover_v2_flow.resolve_fc_search_band``). Like
+    # the diameter above it has been a REQUIRED declaration since the safety
+    # profile shipped (``driver_safety._target_issues`` refuses a target
+    # without one) and had no Python reader; without it the candidate set would
+    # propose an Fc below the tweeter's own declaration. A role maps to
+    # ``None`` when its declaration is absent or malformed, which the resolver
+    # turns into "no proposal" with that role named — never "anything goes".
+    crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = field(
+        default_factory=dict
+    )
     # Flat-linearization plan PR-4: the tweeter's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
@@ -4883,6 +4895,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
+        resolve_driver_crossover_search_band_hz,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
     )
@@ -4994,6 +5007,16 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         )
     except (ExcitationSafetyPlanError, ValueError):
         tweeter_measurement_band_hz = None
+    # R17: every PARTICIPATING role's declared crossover search band, keyed by
+    # role. Both roles are always present as KEYS — a missing declaration is a
+    # ``None`` VALUE, not an absent key, because the intersection rule needs to
+    # know the role participated in order to fail closed on it.
+    crossover_search_band_hz_by_role = {
+        role: resolve_driver_crossover_search_band_hz(
+            safety_profile, role_targets[role],
+        )
+        for role in role_targets
+    }
     region = preset.crossover_regions[0]
     fc_hz = float(region.fc_hz)
     session_volume_db = derive_session_volume_db(
@@ -5037,6 +5060,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
         radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
+        crossover_search_band_hz_by_role=crossover_search_band_hz_by_role,
         tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
 
@@ -5447,6 +5471,11 @@ def prepare_v2_session(
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
+            # R17. Threaded on the MEASURING session only — the verify re-arm
+            # below runs no lateral walk (it maps VERIFY alone), so the Fc
+            # selector cannot fire there and an argument passed to it would be
+            # dead rather than symmetric.
+            crossover_search_band_hz_by_role=context.crossover_search_band_hz_by_role,
             measurement_protection_sections_by_role=protection_sections,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,

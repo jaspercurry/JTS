@@ -6083,6 +6083,9 @@ class CrossoverV2Conductor:
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
+        crossover_search_band_hz_by_role: Mapping[
+            str, tuple[float, float] | None
+        ] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ] | None = None,
@@ -6167,6 +6170,21 @@ class CrossoverV2Conductor:
         self._radiating_diameter_mm_by_role = (
             dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
         )
+        # R17: each participating role's declared crossover search band. An
+        # EMPTY map is not "no constraint" — ``_fc_candidate_set`` reads a role
+        # that is absent here exactly as a role that declared nothing, so a
+        # caller which passes none gets no proposal at all. That is the
+        # fail-closed direction ``resolve_fc_search_band`` documents.
+        self._crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = (
+            dict(crossover_search_band_hz_by_role)
+            if crossover_search_band_hz_by_role else {}
+        )
+        # R17's retained per-candidate evidence, gathered at MEASURE-consume
+        # and adjudicated at the walk's close. Each entry is scalars plus
+        # ~120-point arrays (``FcCandidateEvaluation`` is the memory contract),
+        # so a six-candidate sweep is tens of kilobytes, not tens of megabytes.
+        self._fc_evaluations: tuple[Any, ...] = ()
+        self._fc_selection: Any = None
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
@@ -6815,6 +6833,31 @@ class CrossoverV2Conductor:
                 for role, sec in sections_by_role(
                     self._preset.crossover_regions).items()
             },
+        )
+
+    def _fc_candidate_set(self) -> FcCandidateSet:
+        """This session's proposable Fc set, from DECLARATIONS only (R17).
+
+        Four bounds, all already owned elsewhere and merely gathered here: the
+        HF role's declared hard floor and the lower role's declared ceiling
+        (``roles_bands``, which is what ``resolve_driver_excitation_ceilings``
+        confirmed), the intersected declared search band, and the beaming
+        ceiling from the lower driver's declared diameter.
+
+        The configured Fc is always in the returned set even when every bound
+        would exclude it (§9.8, and on live jts3 the ka ceiling genuinely sits
+        below it) — otherwise this speaker would have no golden candidate to
+        prove equivalence against.
+        """
+        search = resolve_fc_search_band(self._crossover_search_band_hz_by_role)
+        return fc_candidate_set(
+            configured_hz=self._fc_hz,
+            hf_hard_floor_hz=self._tweeter.band.lower_hz,
+            lower_driver_hard_ceiling_hz=self._woofer.band.upper_hz,
+            search_band_hz=search.band_hz,
+            lower_driver_diameter_mm=self._radiating_diameter_mm_by_role.get(
+                self._woofer.role
+            ),
         )
 
     def _lateral_priors(self) -> MeasurementPriors:
