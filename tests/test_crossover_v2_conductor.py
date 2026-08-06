@@ -1376,9 +1376,18 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
         assert detail["capture_target"] == (
             detail["stage1_captures"] + detail["stage2_captures"]
         ), tier
-        # Honest minutes: a real duration, and small enough to be a two-capture
-        # stage 1 plus its verify walk rather than a ten-position cloud.
-        assert 0 < detail["estimated_minutes"] <= 10, tier
+        # Honest minutes: a real duration, bounded by the module's OWN
+        # per-entry wall-clock ceiling for the captures this build plans, so
+        # the bound moves with the plan instead of going stale. It was a flat
+        # ``<= 10`` written for a two-capture stage 1; R17's walk makes Full's
+        # honest quote 12 min (6 before the flip), which that bound would have
+        # failed for being TRUE. The sharp anti-cloud guards are the two
+        # assertions above — the flag itself and the flag-derived stage-1
+        # count; this one only checks the promise tracks the plan rather than
+        # being a hand-written figure.
+        assert 0 < detail["estimated_minutes"] <= (
+            detail["capture_target"] * flow.WALL_CLOCK_CEILING_PER_ENTRY_S / 60.0
+        ), tier
 
     # The degraded fallback answers with the SAME numbers, so a failure in the
     # memoized build cannot quietly restore the cloud-inclusive figures.

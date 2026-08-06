@@ -8699,7 +8699,15 @@ class CrossoverV2Conductor:
             )
         )
         cand = analysis.candidate
-        if cand is None:
+        # The SAME hard gate ``_build_candidate`` applies, and applied for the
+        # same reason: ``_fit_linearization`` states in its own docstring that
+        # it assumes eligibility and does not re-check, so calling it on a
+        # phone-tier or under-repeated session raises inside the fit engine
+        # rather than declining. An ineligible session simply has no linearized
+        # model to compare candidates with — an honest refusal, never a
+        # fallback to the raw prediction, which would put candidates fitted
+        # differently side by side and call the difference a crossover.
+        if cand is None or not self._linearization_eligible(analysis):
             return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
         trims, linearization = self._fit_linearization(
             analysis, cand, None, candidate_sections=sections,
@@ -8708,10 +8716,7 @@ class CrossoverV2Conductor:
         tweeter_lo, woofer_hi = self._measure_sweep_bounds()
         anchor_sum = self._last_linearized_predicted_sum
         if anchor_sum is None:
-            # No fit ran (ineligible mic tier / too few repeats), so there is
-            # no linearized model to score. Honest refusal, not a fallback to
-            # the raw prediction: the household would be shown a comparison
-            # between candidates fitted differently.
+            # Eligible but the fit still produced no linearized prediction.
             return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
         return FcCandidateEvaluation(
             fc_hz=float(fc_hz),
