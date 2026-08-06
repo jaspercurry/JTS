@@ -1,0 +1,38 @@
+thinking-orbs
+https://github.com/Jakubantalik/thinking-orbs
+
+JTS vendors a port of this project's rendering engine as
+deploy/assets/shared/js/orbs.js. The draw math in that file is upstream's
+work, transcribed from src/engine/*.ts and src/presets.ts; the TypeScript
+annotations were stripped, the ES modules flattened into one file, and the
+grayscale ink ramp was replaced by a two-token CSS ramp (see the file header
+for the full list of changes). Preserve this notice with any redistributed
+image or bundle that ships the JTS management web assets.
+
+Verified 2026-08-06 against upstream commit
+e94f207ea122f8cca0aaa6409ab7fe82d55c38f1; LICENSE file SHA-256
+915a283980628a0ca9e7b423ebafc6f3a0fa1e630ff17d34e59034808d92011c.
+
+--------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 Jakub Antalik
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
