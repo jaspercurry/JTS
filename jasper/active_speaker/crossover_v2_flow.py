@@ -1601,6 +1601,13 @@ REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
 # template as the two codes above (one more parameterization of that
 # screen, not a fifth screen) with its own copy naming the actual cause.
 REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
+# R18 / #1868: the applied result tracks the model but does NOT meet the
+# candidate's own crossover target through the handoff — the case
+# ``REASON_VERIFY_OUT_OF_TOLERANCE`` structurally cannot catch, since it grades
+# measured-vs-model and a defect present in BOTH sides cancels. Its own code
+# because the household's situation differs: the graph did what it was told,
+# and the crossover as designed-and-aligned is what does not sum.
+REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # Owner ruling (2026-07-20): the alignment-estimator confidence floor that
 # used to gate ONLY a review-screen nudge (informed consent, Apply stayed
 # available regardless) is now a hard MEASURE-phase gate — see
@@ -2162,6 +2169,18 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Try again, or undo to restore the previous sound.",
         ),
     ),
+    REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
+        REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
+        # Says what was measured, no diagnosis — a handoff dip can be
+        # alignment, spacing, Fc, or the horn, and this cannot tell them apart.
+        # The hint deliberately does NOT lead with "try again": a retry
+        # re-checks the SAME applied graph and this defect is deterministic, so
+        # that is a near-dead lever. It names the two that change the outcome.
+        RetryableReasonCopy(
+            "The two drivers didn't blend as designed where they hand over.",
+            "Re-measure to fit it again, or undo to restore the previous sound.",
+        ),
+    ),
     REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
         REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
         # NOT a literal (issue #1974). This copy used to assert "the room
@@ -2433,6 +2452,44 @@ LOCATE_MIN_CONFIDENCE = 0.1
 # measured against the notch-excluded max (W6.7 ruling 1 —
 # `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
+
+
+def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
+    """How far the realized sum may sit from the candidate's own crossover
+    target across ``band_hz``, in dB — or ``None``, no tolerance to apply.
+
+    **Derived, never chosen.** The product already promises an absolute
+    magnitude tolerance over this frequency range — ``flat_spec.SPEC_BANDS``,
+    the adopted spec table — so this returns the LOOSEST entry the region
+    overlaps and a crossover-region result is never held to a tighter bar than
+    the speaker's own spec applies somewhere inside it. For the shipped 2 kHz
+    two-way: ``max(1.5 [250–2k], 2.0 [2k–8k]) = 2.0 dB``. It inherits that
+    table's S0-contingent status rather than restating a literal.
+
+    Deliberately NOT :data:`VERIFY_TOLERANCE_DB`, which bounds
+    measured-vs-MODEL; this bounds measured-vs-DESIGN. Same units, different
+    question.
+
+    Known contributor, not corrected for: rung P1 measured a frame tilt
+    between VERIFY's in-room curve and its on-axis model, and part of that
+    frame lands in this residual too. It is DISCLOSED beside the number
+    (``_verify_frame_lines``) rather than removed, following this flow's
+    standing rule that a measured tilt is evidence, not permission to re-grade.
+
+    ``None`` when the region overlaps no specced band (a crossover high enough
+    that the region is entirely ``flat_spec.BEST_EFFORT_ABOVE_HZ``, where the
+    table itself declines): the caller records the claim not-evaluated rather
+    than inventing a bar.
+    """
+    from jasper.active_speaker.flat_spec import SPEC_BANDS
+
+    if len(band_hz) != 2:
+        return None
+    lo, hi = float(band_hz[0]), float(band_hz[1])
+    overlapping = [tol for f_lo, f_hi, tol in SPEC_BANDS if f_lo < hi and lo < f_hi]
+    return max(overlapping) if overlapping else None
+
+
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
 # Below this GCC-seed/capture confidence (see ``AlignmentEstimate.confidence``
@@ -3096,6 +3153,96 @@ def _verify_graded_band_from_tracking(
     if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
         return None
     return [float(lo), float(hi)]
+
+
+#: The three states a plan §7 claim can be in. ``not_evaluated`` is
+#: first-class and never collapses into the other two — R18's entire point is
+#: that a claim nobody could grade must not read as one that passed.
+CLAIM_PASS = "pass"
+CLAIM_FAIL = "fail"
+CLAIM_NOT_EVALUATED = "not_evaluated"
+#: Why the two per-branch claims are never graded today: a VERIFY program plays
+#: ONE mono summed sweep (``build_verify_program``'s ``KIND_SUMMED_SWEEP``), so
+#: the capture holds no woofer-alone or HF-alone response to compare with its
+#: candidate branch. Widening the capture plan is out of R18's ratified scope;
+#: naming the gap rather than silently claiming it is what R18 owes.
+CLAIM_NO_PER_BRANCH_CAPTURE = "no_per_branch_verify_capture"
+#: A crossover-region band exists but ``flat_spec.SPEC_BANDS`` sets no
+#: tolerance across it — see :func:`verify_absolute_tolerance_db`.
+ABSOLUTE_NO_SPEC_TOLERANCE = "no_spec_tolerance_for_region"
+CLAIM_NAMES = ("woofer_branch", "hf_branch", "integration", "absolute")
+
+
+def _verify_claims(
+    tracking: Mapping[str, Any], absolute: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The plan §7 claim record for one VERIFY capture — ONE producer.
+
+    Four entries for §7's three claims: its third is two questions in one
+    sentence ("the measured sum tracks the candidate **and** does not merely
+    reproduce a model-predicted crossover null"), so ``integration`` is the
+    tracking half and ``absolute`` the other. Every number is LIFTED from the
+    record its own owner already computed — nothing re-graded — so a screen and
+    a gate cannot quote different figures. The kernel supplies the absolute
+    band and scalars; the tolerance and both verdicts are this module's,
+    mirroring where ``VERIFY_TOLERANCE_DB`` already lives.
+    """
+    tracking_max = tracking.get("max_db_notch_excluded")
+    band = (absolute or {}).get("band_hz")
+    absolute_max = (absolute or {}).get("max_db")
+    tolerance_db = (
+        verify_absolute_tolerance_db(band) if isinstance(band, (list, tuple)) else None
+    )
+    absolute_claim: dict[str, Any]
+    if not isinstance(absolute_max, (int, float)):
+        # The kernel's own reason survives, never re-labelled: "no trusted
+        # crossover region" and "no candidate target" stay distinguishable.
+        absolute_claim = {
+            "status": CLAIM_NOT_EVALUATED,
+            "reason": str((absolute or {}).get("not_evaluated") or CLAIM_NOT_EVALUATED),
+        }
+    elif tolerance_db is None or not isinstance(band, (list, tuple)):
+        absolute_claim = {
+            "status": CLAIM_NOT_EVALUATED, "reason": ABSOLUTE_NO_SPEC_TOLERANCE,
+        }
+    else:
+        absolute_claim = {
+            "status": CLAIM_PASS if absolute_max <= tolerance_db else CLAIM_FAIL,
+            "tolerance_db": float(tolerance_db),
+            "band_hz": [float(band[0]), float(band[1])],
+            **{k: _rounded((absolute or {}).get(k), 4)
+               for k in ("max_db", "rms_db", "worst_db", "worst_hz")},
+        }
+    branch = {"status": CLAIM_NOT_EVALUATED, "reason": CLAIM_NO_PER_BRANCH_CAPTURE}
+    return {
+        "woofer_branch": dict(branch),
+        "hf_branch": dict(branch),
+        "integration": {
+            "status": (
+                CLAIM_NOT_EVALUATED if not isinstance(tracking_max, (int, float))
+                else CLAIM_PASS if tracking_max <= VERIFY_TOLERANCE_DB
+                else CLAIM_FAIL
+            ),
+            "max_db": _rounded(tracking_max, 4),
+            "tolerance_db": float(VERIFY_TOLERANCE_DB),
+            "band_hz": _verify_graded_band_from_tracking(tracking),
+        },
+        "absolute": absolute_claim,
+    }
+
+
+def _claims_log_field(claims: Mapping[str, Any]) -> str:
+    """One logfmt token for the whole §7 claim record: ``name:state`` per
+    claim, comma-joined, a not-evaluated one carrying its reason. So a corpus
+    sweep can count what was actually judged instead of inferring it from a
+    bare ``accepted=true``. ``""`` for an early refusal that graded nothing.
+    """
+    return ",".join(
+        f"{name}:{claims[name].get('status')}"
+        f"{'(%s)' % claims[name]['reason'] if claims[name].get('reason') else ''}"
+        for name in CLAIM_NAMES
+        if isinstance(claims.get(name), Mapping)
+    )
 
 
 def _rounded(value: Any, digits: int) -> float | None:
@@ -6120,6 +6267,11 @@ class CrossoverV2Conductor:
         # band above, and for the same class of reason: the band bounds how
         # WIDE the claim is, this bounds how much of it was the instrument.
         self._verify_frame: dict[str, Any] | None = None
+        # The plan §7 claim record — all four entries, on EVERY outcome that
+        # reached a grade (R18, #1868). Same lifecycle and surfaced-on-a-pass
+        # rule as the two above: "Verified." over no claim list reads as
+        # "everything was checked", and two of the four never are.
+        self._verify_claims: dict[str, Any] | None = None
         # (``_flatness_evidence`` lived here until PR-5. The flatness a
         # household sees is now the cloud-verify group's spec verdict, read
         # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
@@ -6359,9 +6511,27 @@ class CrossoverV2Conductor:
         """
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
+    def _configured_crossover_transfers(
+        self,
+    ) -> tuple[dict[str, Any] | None, dict[str, int]]:
+        """``(response_by_role, polarity_sign_by_role)`` for the committed
+        crossover — ONE derivation, two phases. MEASURE consumes it as §4.2's
+        ``C_c``; VERIFY as the candidate's design target for the summed
+        response (R18, #1868). They must be the same filters, or "the
+        measurement matches the design" is about a design nothing emitted.
+        """
+        return (
+            _role_transfers(sections_by_role(self._preset.crossover_regions)),
+            {role: -1 if inverted else 1
+             for role, inverted in role_polarity(self._preset).items()},
+        )
+
     def _measure_priors(self) -> MeasurementPriors:
         protection = self._measurement_protection_sections_by_role
         overlap = overlap_band_hz(self._fc_hz)
+        configured_response, configured_polarity = (
+            self._configured_crossover_transfers()
+        )
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
@@ -6376,14 +6546,11 @@ class CrossoverV2Conductor:
             # guessed.
             ambient_report=self._check_ambient_report,
             measurement_protection_response_by_role=_role_transfers(protection),
-            configured_crossover_response_by_role=_role_transfers(
-                sections_by_role(self._preset.crossover_regions)
-                if protection is not None else None
+            configured_crossover_response_by_role=(
+                configured_response if protection is not None else None
             ),
             configured_polarity_sign_by_role=(
-                {role: -1 if inverted else 1 for role, inverted in
-                 role_polarity(self._preset).items()}
-                if protection is not None else None
+                configured_polarity if protection is not None else None
             ),
             # §4.2's candidate-required bins: radiating span (what the fit
             # masks to) union the trim/alignment overlap band, which together
@@ -6436,11 +6603,22 @@ class CrossoverV2Conductor:
                 woofer_sweep_hi_hz = self._measure_program.segment("sweep_w").f2_hz
             except KeyError:
                 pass
+        # The candidate's own crossover, for the ABSOLUTE claim (R18, #1868).
+        # Unguarded by ``measurement_protection``, unlike MEASURE — which needs
+        # it only as the ``C_c`` half of a de-embedding that cannot run without
+        # ``P``. Here it IS the design target. Safe because that de-embedding
+        # (``_compose_configured_path_ir``, which RAISES on a partial prior
+        # set) is reachable only from ``_analyze_measure``; keep it that way.
+        configured_response, configured_polarity = (
+            self._configured_crossover_transfers()
+        )
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             predicted_sum=self._measure_predicted_sum,
             measure_tweeter_sweep_lo_hz=tweeter_sweep_lo_hz,
             measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
+            configured_crossover_response_by_role=configured_response,
+            configured_polarity_sign_by_role=configured_polarity,
         )
 
     def _cloud_priors(self) -> MeasurementPriors:
@@ -6458,6 +6636,15 @@ class CrossoverV2Conductor:
         needs no prior at all — since PR-5 it is made ONCE per group, on the
         combined cloud (:func:`assemble_cloud_group_result`), never per
         position.
+
+        Withholding the candidate's crossover transfers (R18, #1868) is the
+        same decision for the same reason, and is deliberate: a
+        crossover-region ABSOLUTE claim off the design axis would grade the
+        crossover's own lobing — which moves with angle BY DESIGN — as a
+        realization defect (#1868's forensics measured one design-axis defect
+        at a different depth at every cloud position). So the kernel records
+        that claim not-evaluated at every cloud position and the design-axis
+        capture stays its only judge. Do not "fix" this by threading them here.
         """
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
@@ -6659,6 +6846,15 @@ class CrossoverV2Conductor:
         read model agreement into what was partly instrument.
         """
         return dict(self._verify_frame) if self._verify_frame else None
+
+    @property
+    def verify_claims(self) -> dict[str, Any] | None:
+        """The plan §7 claim record, or ``None`` (R18, #1868) — surfaced on
+        every outcome including a pass, because two of its four entries are
+        structurally not-evaluated and a household reading "Verified." has no
+        other way to learn that. See :func:`_verify_claims`.
+        """
+        return dict(self._verify_claims) if self._verify_claims else None
 
     @property
     def applied(self) -> bool:
@@ -9963,6 +10159,7 @@ class CrossoverV2Conductor:
         self._verify_evidence = None
         self._verify_graded_band_hz = None
         self._verify_frame = None
+        self._verify_claims = None
         # THIS attempt's gate, as a LOCAL — deliberately not written to
         # ``self`` here. It is computed before the early returns because the
         # gate-comparability refusal below needs it (that is the verdict whose
@@ -10075,6 +10272,10 @@ class CrossoverV2Conductor:
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
         self._verify_graded_band_hz = _verify_graded_band_from_tracking(tracking)
         self._verify_frame = _verify_frame_from_tracking(tracking)
+        # Every §7 claim, graded here BEFORE any of them gates — so a capture
+        # that fails one still discloses the others rather than reporting only
+        # the first thing that went wrong.
+        self._verify_claims = _verify_claims(tracking, analysis.verify_absolute)
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -10121,6 +10322,34 @@ class CrossoverV2Conductor:
                         self._delta_probe.to_dict()
                         if self._delta_probe is not None else {}
                     ),
+                },
+            )
+        # §7 claim 3's ABSOLUTE half (R18, #1868) — the only gate here that can
+        # fail a capture the MODEL agrees with, which is the whole point. On
+        # 2026-08-05 the JTS3 checkpoint passed at 0.919 dB against 1.5 dB with
+        # its tracking band floored at 2000 Hz (``tracking_band_lo_hz=2000.0``,
+        # that session's ``verify_diag``) while its own post-apply cloud
+        # measured −4.80 dB at 1656 Hz (signal-derived, 1/3-octave) — 344 Hz
+        # below that floor. See ``program_analysis``' absolute-verify note for
+        # why that cloud gauge cannot own this claim.
+        #
+        # LAST on purpose, behind the delta probe, whose refusals carry an
+        # AUTOMATIC remedy (correction rollback). Gating ahead of it would let
+        # a capture that both fails this claim AND warrants a rollback get
+        # neither — sitting applied, waiting on a household never offered the
+        # automatic fix. Last keeps R18 purely additive.
+        #
+        # NOT_EVALUATED never gates: refusing on a measurement nobody made is
+        # the same dishonesty pointed the other way.
+        if (self._verify_claims["absolute"] or {}).get("status") == CLAIM_FAIL:
+            self._set_verify_outcome(
+                "fail", REASON_VERIFY_CROSSOVER_REGION, gate_record,
+            )
+            return PhaseVerdict(
+                False, REASON_VERIFY_CROSSOVER_REGION,
+                payload={
+                    "tracking": dict(tracking),
+                    "claims": dict(self._verify_claims),
                 },
             )
         self._set_verify_outcome("pass", None, gate_record)
@@ -10609,6 +10838,8 @@ class CrossoverV2Conductor:
         # that was the instrument" has to be readable. Lifted, never
         # recomputed — ``_verify_frame_from_tracking`` already reduced it.
         frame = self._verify_frame or {}
+        claims = self._verify_claims or {}
+        absolute = claims.get("absolute") or {}
         log_event(
             logger, "correction.crossover_v2_verify_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -10633,6 +10864,19 @@ class CrossoverV2Conductor:
             frame_tilt_db_per_octave=_rounded(frame.get("tilt_db_per_octave"), 3),
             rms_db_tilt_removed=_rounded(frame.get("rms_db_tilt_removed"), 4),
             max_db_tilt_removed=_rounded(frame.get("max_db_tilt_removed"), 4),
+            # §7's claims, on the SAME line an operator already greps for a
+            # verify outcome (R18, #1868) — including the two that are
+            # structurally not-evaluated, so a corpus sweep counts what was
+            # judged instead of inferring it from a bare accepted=true. The
+            # absolute scalars ride beside it because a band and a verdict
+            # without the number are not a measurement. All lifted.
+            claims=_claims_log_field(claims),
+            absolute_worst_db=absolute.get("worst_db"),
+            absolute_worst_hz=absolute.get("worst_hz"),
+            absolute_max_db=absolute.get("max_db"),
+            absolute_tolerance_db=absolute.get("tolerance_db"),
+            absolute_band_lo_hz=_band_edge(absolute.get("band_hz"), 0),
+            absolute_band_hi_hz=_band_edge(absolute.get("band_hz"), 1),
             pilot_transfer_db=(
                 round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
             ),
@@ -12858,8 +13102,10 @@ __all__ = [
     "REASON_PROGRAM_PROFILE_INCOMPLETE",
     "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
+    "REASON_VERIFY_CROSSOVER_REGION",
     "REASON_VERIFY_INCONCLUSIVE",
     "REASON_VERIFY_LEVEL_SHIFT",
+    "verify_absolute_tolerance_db",
     "REASON_LOW_ALIGNMENT_CONFIDENCE",
     "REASON_APPLY_FAILED",
     "REASON_USER_STOPPED",

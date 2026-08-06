@@ -2202,6 +2202,18 @@ def persist_conductor_state(
                     if conductor.verify_frame
                     else {}
                 ),
+                # WHICH OF §7's CLAIMS WERE PROVED, on EVERY outcome including
+                # a pass (R18, #1868). Same shape and argument as the graded
+                # band and frame above, one step further: those bound how wide
+                # and how honest a claim is, this says which claims exist. Two
+                # of the four are structurally not-evaluated (VERIFY plays one
+                # summed sweep), and "Verified." over an unstated claim set
+                # reads as all four.
+                **(
+                    {"claims": dict(conductor.verify_claims)}
+                    if conductor.verify_claims
+                    else {}
+                ),
                 # The level-reference reset this session performed, when the
                 # previous session's reference differed enough to be worth
                 # saying (#1927). Same every-outcome shape as the graded band

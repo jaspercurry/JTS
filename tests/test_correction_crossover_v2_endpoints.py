@@ -7034,6 +7034,7 @@ class _StubConductor:
     verify_evidence = None
     verify_graded_band_hz = None
     verify_frame = None
+    verify_claims = None
     delta_probe = None
     measure_predicted_sum = None
     measure_gate_window_ms = None
@@ -7173,6 +7174,41 @@ def test_the_graded_band_is_persisted_even_on_a_pass():
     plain.verify_outcome = "fail"
     v2host.persist_conductor_state(plain, failure_code=None)
     assert "graded_band_hz" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_the_section_7_claims_are_persisted_even_on_a_pass():
+    """R18 (#1868): WHICH claims were proved, on every outcome.
+
+    Same always-persisted shape and argument as the graded band above, one
+    step further: that band bounds how wide the tracking claim is, this says
+    which claims exist at all — and two of the four are structurally
+    not-evaluated, because VERIFY plays one summed sweep.
+    """
+    claims = {
+        "woofer_branch": {
+            "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+        },
+        "hf_branch": {
+            "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
+        },
+        "integration": {"status": "pass", "max_db": 0.069, "tolerance_db": 1.5},
+        "absolute": {
+            "status": "pass", "max_db": 0.69, "tolerance_db": 2.0,
+            "band_hz": [1000.0, 4000.0], "worst_db": 0.69, "worst_hz": 1050.0,
+        },
+    }
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "pass"
+    conductor.verify_claims = claims
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (v2host.load_v2_state() or {})["verify"]["claims"] == claims
+
+    # Graded nothing ⇒ no key: absent means "nothing was judged", not "passed".
+    plain = _StubConductor("s1")
+    plain.verify_outcome = "fail"
+    v2host.persist_conductor_state(plain, failure_code=None)
+    assert "claims" not in (v2host.load_v2_state() or {})["verify"]
 
 
 def test_the_compared_frame_is_persisted_even_on_a_pass():

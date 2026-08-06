@@ -967,10 +967,14 @@ together. Design rationale:
 5. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
    summed sweep through the **applied production graph** + a pilot pair,
    captured back at the mark (the apply hold's copy is where the
-   household is told to walk back). Pass = notch-excluded,
-   validity-floor-clamped tracking error ≤ ±1.5 dB. On fail the applied
-   graph **stays in force** (proof-checked safe) and the household is
-   offered Try again / Undo.
+   household is told to walk back). Pass = **two** claims, both of which
+   must hold (R18, #1868): notch-excluded, validity-floor-clamped tracking
+   error ≤ ±1.5 dB against the model, **and** the measured sum within the
+   crossover region's derived tolerance of the candidate's own crossover
+   target (`verify_crossover_region` on failure). On fail the applied graph
+   **stays in force** (proof-checked safe) and the household is offered
+   Try again / Undo. See "The two absolute grades" below for which
+   instrument owns which question.
 
 6. **CLOUD-VERIFY** (5 × ~16 s, one tap each). The post-apply cloud,
    walking the same prompted positions.
@@ -2036,6 +2040,60 @@ pair from the same record; the verify_fail screen already has it above and does
 not repeat it. An unfitted frame is disclosed as ABSENT, never as a flat one.
 The delta probe takes no second fit — it reads the same `verify_tracking_curve`,
 so its frame is this one.
+
+**VERIFY judges the crossover region against the DESIGN, not only the model**
+(R18, issues #1868 / #1654). Tracking grades measured-vs-`predicted_sum`, and
+`predicted_sum` is built from the measured branches — so a real crossover null
+the model faithfully reproduces cancels out of that comparison and passes.
+Worse, the band it grades (`overlap_band_hz`) clamps its lower edge UP to the
+tweeter's MEASURE sweep floor, which on a box whose tweeter is swept from Fc
+is Fc itself: the sub-Fc half of the crossover region was structurally
+ungradeable. The 2026-08-05 JTS3 checkpoint is the worked case — accepted at
+`max_db_notch_excluded = 0.919 dB` over `[2000, 4000] Hz` while its own
+post-apply cloud measured **−4.80 dB at 1656 Hz** (signal-derived, 1/3-octave),
+344 Hz below the graded floor.
+
+So VERIFY now also grades an ABSOLUTE claim:
+[`crossover_region_band_hz`](../jasper/audio_measurement/program_analysis.py)
+gives the region a SUMMED capture can honestly be judged over — `[Fc/2, 2Fc]`
+intersected with the capture's own gate-derived trusted floor and radiated band
+— which reaches BELOW the tweeter's sweep floor precisely because the composite
+is real there even though the tweeter branch alone is not. Widening the
+*tracking* band there would be dishonest and was not done. The reference is
+`Σ_role sign_role · C_role(f)`, the candidate's own committed crossover
+transfers with their configured polarity, so the question becomes "did this
+crossover hand off as DESIGNED" rather than "did the graph reproduce a model".
+The tolerance is derived, never chosen: `verify_absolute_tolerance_db` returns
+the loosest `flat_spec.SPEC_BANDS` entry the region overlaps (2.0 dB for the
+shipped 2 kHz two-way), and returns `None` — claim not-evaluated — where the
+spec table sets no tolerance.
+
+All four of plan §7's claims now travel as one record (`verify.claims`, the
+diag line's `claims=`, and the expert-details disclosure), each `pass` / `fail`
+/ `not_evaluated` with its numbers. **Two of them are always
+`not_evaluated`**: VERIFY plays ONE mono summed sweep, so there is no
+woofer-alone or HF-alone response to compare against its branch. R18
+deliberately did not widen the capture plan; it refuses to let "Verified."
+imply those two were proved. A not-evaluated claim never gates — refusing on a
+measurement nobody made is the same dishonesty pointed the other way.
+
+**The two absolute grades, and which owns what.** `assemble_cloud_group_result`
+already produces a `flatness` gauge (`flat_spec.spec_flatness_gauge`). It is
+NOT a peer of the crossover-region claim and neither was retired:
+
+| | cloud `flatness` | VERIFY `claims.absolute` |
+|---|---|---|
+| question | is the speaker flat? | did THIS crossover hand off as designed? |
+| curve | spatial mean, post-apply cloud | one design-axis VERIFY capture |
+| reference | its own 250 Hz–8 kHz mean | the candidate's crossover transfer |
+| band | `SPEC_BANDS`, 250 Hz–16 kHz | `[Fc/2, 2Fc]` ∩ trusted |
+| gates? | no (flips the done badge) | yes, at VERIFY |
+
+The gauge structurally cannot own §7 claim 3: it is assembled when a position
+group CLOSES, i.e. after `_verify_verdict` has already run, and Express and the
+R15 driver-only path have no post-apply cloud at all. Its spatial mean also
+understates a design-axis null (#1868's forensics: the 8-position mean was
+shallower than any single position in it).
 
 **VERIFY discloses WHAT THE GATE DID, and the inconclusive copy speaks from
 it** (issues #1966 / #1974). A record printing `gate_window_ms = 7.0` and
@@ -3381,7 +3439,12 @@ crossover-measurement flow now.
 
 **2026-08-05 verification scope:** opening/capture-flow only against the current
 R15 diff; no review, merge, deployment, or measurement claim. Remaining
-operational detail and history were not re-verified.
+operational detail and history were not re-verified. A later same-day R18 pass
+re-verified the VERIFY-phase grading section against the shipped
+`_analyze_verify` / `_verify_verdict` and added the absolute crossover-region
+claim and the two-absolute-grades table; nothing else was re-verified, and no
+hardware ran — R18's evidence is offline (synthetic fixtures + the 2026-08-05
+checkpoint's own journal).
 
 **2026-08-05 R16 scope:** the capture-flow section only, rewritten against the
 R16 lateral-evidence diff and its tests. The lateral walk is code-complete,

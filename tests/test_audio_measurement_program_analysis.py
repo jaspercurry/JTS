@@ -117,8 +117,12 @@ from jasper.audio_measurement.program_analysis import (
     _snr_floor_ok,
     _solve_gain_plan,
     _sweep_occurrence_index,
+    ABSOLUTE_NO_FC,
+    ABSOLUTE_NO_TARGET,
+    ABSOLUTE_NO_TRUSTED_BAND,
     analysis_diagnostic_summary,
     analyze_program_capture,
+    crossover_region_band_hz,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
     overlap_band_hz,
@@ -5469,3 +5473,241 @@ def test_the_frame_gate_ruling_does_not_reach_a_session_whose_frames_agree(
     # healthy hardware would have to move it by more than four times the
     # residual #1929 left behind.
     assert LEVEL_FRAME_AGREEMENT_TOLERANCE_DB - disagreement_db > 2.0
+
+
+# --------------------------------------------------------------------------- #
+# R18 — honest post-apply verification (issues #1868 / #1654)
+# --------------------------------------------------------------------------- #
+
+
+R18_FC_HZ = 2000.0
+#: The JTS3 shape the 2026-08-05 checkpoint ran: the tweeter is swept FROM Fc,
+#: so ``overlap_band_hz`` clamps VERIFY's tracking band up to 2000 Hz and the
+#: sub-Fc half of the crossover region is structurally ungradeable by it.
+#: ``tracking_band_lo_hz=2000.0`` in that session's ``verify_diag`` is the
+#: journal-verified fact, and the only one quoted in these tests.
+R18_OLD_TRACKING_BAND_HZ = (2000.0, 4000.0)
+R18_LP4 = (CrossoverSection(fc_hz=R18_FC_HZ, order=4, highpass=False),)
+R18_HP4 = (CrossoverSection(fc_hz=R18_FC_HZ, order=4, highpass=True),)
+
+
+def _r18_transfers():
+    """The candidate's committed crossover, as the host hands it to the kernel."""
+    return {
+        "woofer": functools.partial(crossover_response_complex, sections=R18_LP4),
+        "tweeter": functools.partial(crossover_response_complex, sections=R18_HP4),
+    }
+
+
+def _r18_system(*, dip_center_hz=None, dip_depth_db=0.0):
+    """A SYNTHETIC applied system: an ideal LR4 pair, optionally with a
+    realization suck-out injected at ``dip_center_hz``.
+
+    Synthetic and labelled as such — no number here is presented as the
+    2026-08-05 hardware measurement. What IS reproduced from that session is
+    the SHAPE of the blind spot: a defect centred below Fc, inside the
+    crossover region, below the old band's floor.
+
+    Returns ``(freqs, ir, system_db)``. The ideal pair sums FLAT by
+    construction (LR4 lowpass + highpass is allpass), so ``system_db`` carries
+    exactly the injected defect and the design target is exactly 0 dB.
+    """
+    n_fft = 8192
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    total = crossover_response_complex(
+        freqs, R18_LP4
+    ) + crossover_response_complex(freqs, R18_HP4)
+    if dip_center_hz is not None:
+        octaves = np.zeros_like(freqs)
+        positive = freqs > 0.0
+        octaves[positive] = np.log2(freqs[positive] / dip_center_hz)
+        total = total * 10.0 ** (
+            -dip_depth_db * np.exp(-((octaves / (1.0 / 6.0)) ** 2)) / 20.0
+        )
+    # Bulk delay so the impulse is causal inside the deconvolution window; the
+    # analysis re-references the direct peak itself.
+    bulk = np.exp(-1j * 2.0 * np.pi * freqs * 300.0 / SR)
+    ir = np.fft.irfft(total * bulk, n_fft)
+    return freqs, ir, 20.0 * np.log10(np.maximum(np.abs(total), 1e-12))
+
+
+def _r18_capture(ir):
+    prog = build_verify_program(R18_FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    return prog, np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+
+
+def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
+    """Analyze one synthetic VERIFY capture of :func:`_r18_system`.
+
+    ``predicted_sum`` is the system's OWN response — the worst case for the
+    tracking comparator and exactly the shape #1868 is about: a model that
+    reproduces the defect, so tracking structurally cannot fail on it.
+    """
+    freqs, ir, system_db = _r18_system(
+        dip_center_hz=dip_center_hz, dip_depth_db=dip_depth_db
+    )
+    prog, cap = _r18_capture(ir)
+    return analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=R18_FC_HZ,
+            predicted_sum=(freqs, system_db),
+            measure_tweeter_sweep_lo_hz=R18_FC_HZ,
+            measure_woofer_sweep_hi_hz=6000.0,
+            configured_crossover_response_by_role=(
+                _r18_transfers() if with_target else None
+            ),
+            configured_polarity_sign_by_role={"woofer": 1, "tweeter": 1},
+        ),
+    )
+
+
+def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
+    """The band widening, isolated (#1654's revival for #1868).
+
+    ``overlap_band_hz`` clamps UP to the tweeter's sweep floor because its
+    consumers read that branch ALONE. The summed capture does not, so its
+    honest region reaches the woofer's side of Fc — where a handoff null lands
+    when the tweeter is swept from Fc.
+    """
+    old = overlap_band_hz(R18_FC_HZ, tweeter_sweep_lo_hz=R18_FC_HZ)
+    assert old == R18_OLD_TRACKING_BAND_HZ
+
+    new = crossover_region_band_hz(
+        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+    )
+    assert new == (1000.0, 4000.0)
+    assert new[0] < old[0]
+
+
+def test_crossover_region_band_is_bounded_by_the_captures_own_evidence():
+    """Never a frequency literal: a short gate window raises the floor, and an
+    unradiated band or empty intersection yields ``None``, never a span."""
+    assert crossover_region_band_hz(
+        R18_FC_HZ, trusted_floor_hz=1200.0, radiated_band_hz=(150.0, 20_000.0),
+    ) == (1200.0, 4000.0)
+    # Gate floor above the whole region ⇒ nothing this capture supports.
+    assert crossover_region_band_hz(
+        R18_FC_HZ, trusted_floor_hz=9000.0, radiated_band_hz=(150.0, 20_000.0),
+    ) is None
+    # An absent floor or band is "the record does not say", never a default.
+    assert crossover_region_band_hz(
+        R18_FC_HZ, trusted_floor_hz=None, radiated_band_hz=(150.0, 20_000.0),
+    ) is None
+    assert crossover_region_band_hz(
+        R18_FC_HZ, trusted_floor_hz=357.0, radiated_band_hz=None,
+    ) is None
+    assert crossover_region_band_hz(
+        0.0, trusted_floor_hz=357.0, radiated_band_hz=(150.0, 20_000.0),
+    ) is None
+
+
+def test_absolute_claim_sees_a_model_reproduced_dip_that_tracking_cannot():
+    """THE headline (#1868). One capture, two graders, opposite answers.
+
+    A synthetic 5 dB suck-out at 1700 Hz — inside the crossover region, below
+    the old tracking band's 2000 Hz floor — that the prediction reproduces
+    exactly. Tracking passes with two orders of magnitude to spare: the
+    defect is in BOTH curves and outside the band it grades. The absolute
+    claim grades against the candidate's own crossover instead, and reports it.
+    """
+    result = _r18_verify(dip_center_hz=1700.0, dip_depth_db=5.0)
+
+    tracking = result.verify_tracking
+    assert tracking is not None
+    assert tuple(tracking["tracking_band_hz"]) == R18_OLD_TRACKING_BAND_HZ
+    assert tracking["max_db_notch_excluded"] < 0.2  # shipped gate is 1.5 dB
+
+    absolute = result.verify_absolute
+    assert "not_evaluated" not in absolute
+    assert absolute["band_hz"] == [1000.0, 4000.0]
+    assert absolute["max_db"] > 3.0  # derived tolerance is 2.0 dB
+    # A DIP: signed, and reported where it actually is.
+    assert absolute["worst_db"] < -3.0
+    assert 1650.0 < absolute["worst_hz"] < 1750.0
+
+
+def test_absolute_claim_needs_the_widened_band_to_see_that_dip():
+    """The widening is load-bearing, not decorative.
+
+    Re-grade the SAME capture against the SAME target over the OLD
+    [2000, 4000] band: a 1.7 kHz defect barely registers there. Revert the
+    widening and the headline test above stops failing.
+    """
+    result = _r18_verify(dip_center_hz=1700.0, dip_depth_db=5.0)
+    summed = result.summed_response
+    target_db = np.zeros_like(summed.freqs_hz)  # ideal LR4 pair sums flat
+    measured_db = analysis_mod.smooth_fractional_octave(
+        summed.freqs_hz, summed.magnitude_db, 6,
+    )
+    _rms, old_band_max = analysis_mod.tracking_error_db(
+        summed.freqs_hz, measured_db, target_db, R18_OLD_TRACKING_BAND_HZ,
+    )
+    assert old_band_max < 1.0  # under the 2.0 dB tolerance: would have passed
+    assert result.verify_absolute["max_db"] > old_band_max + 2.5
+
+
+def test_absolute_claim_is_quiet_on_a_speaker_that_meets_its_crossover():
+    """No defect, no finding — an instrument that fired on a correct handoff
+    would be worse than none."""
+    result = _r18_verify()
+    absolute = result.verify_absolute
+    assert "not_evaluated" not in absolute
+    assert absolute["max_db"] < 0.5
+    assert result.verify_tracking["max_db_notch_excluded"] < 0.2
+
+
+def test_absolute_claim_records_why_it_could_not_be_evaluated():
+    """Not-evaluated carries its own reason — never an absent key a consumer
+    could read as a pass."""
+    assert _r18_verify(with_target=False).verify_absolute == {
+        "not_evaluated": ABSOLUTE_NO_TARGET
+    }
+    _freqs, ir, _db = _r18_system()
+    prog, cap = _r18_capture(ir)
+    no_fc = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    assert no_fc.verify_absolute == {"not_evaluated": ABSOLUTE_NO_FC}
+
+
+def test_absolute_claim_refuses_an_untrusted_crossover_region():
+    """A region outside the capture's trusted band grades nothing and says so,
+    never falling back to a nominal band."""
+    _freqs, ir, _db = _r18_system()
+    prog, cap = _r18_capture(ir)
+    # Fc low enough that [Fc/2, 2Fc] lands entirely below the summed sweep's
+    # own radiated floor (150 Hz), so the trusted intersection is empty.
+    result = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=60.0,
+            configured_crossover_response_by_role=_r18_transfers(),
+            configured_polarity_sign_by_role={"woofer": 1, "tweeter": 1},
+        ),
+    )
+    assert result.verify_absolute == {"not_evaluated": ABSOLUTE_NO_TRUSTED_BAND}
+
+
+def test_absolute_target_carries_the_candidates_configured_polarity():
+    """The target is the candidate's own crossover INCLUDING region polarity.
+
+    Flip the tweeter's declared sign and the design target stops being flat, so
+    a correctly-summing measurement reads as a large deviation. A target that
+    dropped polarity would report the same number either way.
+    """
+    _freqs, ir, _db = _r18_system()
+    prog, cap = _r18_capture(ir)
+
+    def analyze(signs):
+        return analyze_program_capture(
+            prog, cap, SR,
+            priors=MeasurementPriors(
+                crossover_fc_hz=R18_FC_HZ,
+                configured_crossover_response_by_role=_r18_transfers(),
+                configured_polarity_sign_by_role=signs,
+            ),
+        ).verify_absolute
+
+    assert analyze({"woofer": 1, "tweeter": 1})["max_db"] < 0.5
+    assert analyze({"woofer": 1, "tweeter": -1})["max_db"] > 5.0
