@@ -522,6 +522,47 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         assert c._fc_evaluations == (), broken
 
 
+def test_the_evaluation_budget_tracks_the_measure_programs_real_duration():
+    """The budget must be DERIVED from the phone's deadline, not a constant.
+
+    ``max(PHONE_RESULT_WAIT_FLOOR_MS, measure_ms)`` is the whole derivation, and
+    the neighbouring bound test cannot see it: that one asserts
+    ``0 < budget < deadline``, an inequality with slack that a hardcoded
+    floor-based constant satisfies just as well (correctness lens — hardcoding
+    it left 601 tests passing). A broken derivation would then be
+    indistinguishable from a loaded Pi, because both surface only as a smaller
+    ``k`` in the k-of-N disclosure.
+
+    Two durations straddling the 30 000 ms floor, so the ``max`` is exercised in
+    both directions. This bites on the shipped shape rather than in principle:
+    the live stage-1 spec is 41 885 ms and even this fixture's own MEASURE
+    program is 40 385 ms — both above the floor, so the floor is NOT what
+    governs today and a constant would be wrong right now.
+    """
+    c = _selector_conductor(_eligible_seams())
+
+    def budget_for(duration_ms: int) -> float:
+        # ``_program_duration_ms`` is samples/rate, so a duck-typed stub is
+        # enough and keeps this about the derivation rather than program
+        # composition.
+        c._measure_program = SimpleNamespace(
+            total_samples=duration_ms * 48, sample_rate_hz=48_000,
+        )
+        return c._fc_evaluation_budget_s()
+
+    below = budget_for(10_000)   # + margin = 12 000 ms, under the floor
+    above = budget_for(50_000)   # + margin = 52 000 ms, over it
+    assert below < above, "the budget does not track the MEASURE program at all"
+
+    fraction = flow.FC_EVALUATION_BUDGET_FRACTION
+    assert below == pytest.approx(
+        fraction * flow.PHONE_RESULT_WAIT_FLOOR_MS / 1000.0
+    ), "under the floor, the floor governs"
+    assert above == pytest.approx(
+        fraction * (50_000 + flow.CAPTURE_ENTRY_MARGIN_MS) / 1000.0
+    ), "over the floor, the recording window governs"
+
+
 def test_the_evaluation_budget_is_bounded_by_the_phones_own_deadline():
     """The page throws a TERMINAL ``sweepFailed`` when its result wait expires,
     so the sweep's budget must sit strictly inside that deadline — and a
