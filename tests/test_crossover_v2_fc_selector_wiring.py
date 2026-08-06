@@ -405,13 +405,34 @@ def test_the_walk_close_publishes_a_recommendation_that_names_sound_settings():
 
     lines = _fc_recommendation_lines({"crossover_v2": {"fc_selection": summary}})
     assert lines, "keep-configured is a verdict too, never silence"
+    assert "crossover" in " ".join(lines).lower()
+
+
+def test_a_recommending_verdict_always_says_the_household_must_edit_sound():
+    """The hearing-safety promise of Reading 1, asserted on the RECOMMENDING
+    branch unconditionally.
+
+    Written against a constructed payload rather than the fixture's own
+    verdict: the fixture keeps configured, so a conditional assertion here
+    guards nothing — verified by mutation (rewriting the copy to "JTS moved
+    your crossover" left the fixture-driven version green).
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        _fc_recommendation_lines,
+    )
+
+    lines = _fc_recommendation_lines({"crossover_v2": {"fc_selection": {
+        "verdict": "recommend_alternative",
+        "configured_hz": 2000.0, "recommended_hz": 1750.0, "margin_db": 1.4,
+        "evaluated": 6, "planned": 6, "limits": {}, "refusals": [], "scores": [],
+    }}})
     joined = " ".join(lines).lower()
-    assert "crossover" in joined
-    if selection.recommended_hz is not None:
-        assert "sound settings" in joined and "measure again" in joined
-    assert not any(
-        word in joined for word in ("applied", "changed it", "we moved")
-    ), joined
+    assert "1750 hz" in joined and "2000 hz" in joined
+    # The ACTION, and whose it is. Without these two the screen reads as a
+    # change JTS made, and the household waits for something nothing will do.
+    assert "sound settings" in joined, joined
+    assert "measure again" in joined, joined
+    assert "does not change it for you" in joined, joined
 
 
 def test_no_recommendation_is_rendered_when_no_sweep_ran():
