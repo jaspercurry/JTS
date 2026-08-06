@@ -120,10 +120,18 @@ from jasper.active_speaker.branch_chain import (
     HEADROOM_MARGIN_DB,
     CrossoverSection,
     branch_chain_peak_db,
+    chain_response,
     crossover_response_complex,
     headroom_charge_db,
     radiating_band_hz,
     sections_by_role,
+)
+from jasper.active_speaker.fc_selector import (
+    EVAL_REFUSED_BUDGET,
+    EVAL_REFUSED_UNFITTABLE,
+    FcCandidateEvaluation,
+    FcSelection,
+    select_fc,
 )
 from jasper.active_speaker.camilla_yaml import role_polarity
 from jasper.active_speaker.branch_target import branch_target
@@ -133,6 +141,7 @@ from jasper.active_speaker.linearization_fit import (
     core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
+    linearization_filters_by_role,
     solve_shared_level_frame,
     worst_headroom_cost_db,
 )
@@ -1341,6 +1350,47 @@ def fc_candidate_set(
 # edge comparison must not refuse a value it just rounded onto that edge.
 _FC_GRID_EPS_HZ = 0.05
 
+# The floor in the PHONE's own result-wait deadline
+# (``waitForCaptureResult``: ``max(30000, spec.duration_ms)``), spelled here
+# because the Pi has to bound itself by a number the page owns. Its expiry is
+# a TERMINAL ``sweepFailed``, so this is a session-killing ceiling, not a
+# retry. Pinned against the page by ``tests/test_crossover_v2_fc_selector_wiring``.
+PHONE_RESULT_WAIT_FLOOR_MS = 30_000
+
+#: Share of that deadline the candidate sweep may spend. Conservative on
+#: purpose: the anchor's own analysis (7.0 s measured on jts3, #1894
+#: 2026-08-06 profile) has ALREADY come out of the window before the sweep
+#: starts, the verdict still has to travel back, and the deadline is a hard
+#: session failure rather than a degraded result. At the live 41.9 s deadline
+#: this is ~21 s — three candidates on a quiet Pi, fewer under load, disclosed
+#: either way as k-of-N.
+FC_EVALUATION_BUDGET_FRACTION = 0.5
+
+# The conductor fields ``_fit_linearization`` writes as side effects. Saved and
+# restored around the candidate sweep: the walk's own candidate build re-runs
+# the fit and overwrites them, but ONLY when it is eligible and does not raise
+# — and the SF2 degrade path notably does not clear
+# ``_last_linearized_predicted_sum``. Without the restore a sweep leftover
+# could become the anchor's published VERIFY prior.
+_FC_SWEEP_CONDUCTOR_FIELDS = (
+    "_last_level_frame",
+    "_last_level_frame_cores",
+    "_last_level_frame_disagreement_db",
+    "_last_level_frame_trims",
+    "_last_linearization_outcome",
+    "_last_linearized_predicted_sum",
+    "_last_realized_level_match",
+)
+
+
+def _fc_refusal(fc_hz: float, reason: str) -> FcCandidateEvaluation:
+    """A candidate that produced no score, carrying WHY — never a silent drop."""
+    empty = np.zeros(0, dtype=np.float64)
+    return FcCandidateEvaluation(
+        fc_hz=float(fc_hz), freqs_hz=empty, branch_operator_by_role={},
+        anchor_sum_db=empty, scoring_band_hz=None, refusal=reason,
+    )
+
 
 def _fc_rejection(
     fc_hz: float,
@@ -1612,19 +1662,19 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # groups answer different questions and are separately authorized — the
 # pre-apply cloud stays off.
 #
-# **OFF until R17 lands.** Gate 0 pairs every producer with a CURRENT consumer,
-# and R16's is R17's Fc selector, which is deferred: at the checkpoint's declared
-# tweeter measurement floor (2000 Hz, equal to the configured Fc) every candidate
-# below 2 kHz has its own handoff clamped out of ``overlap_band_hz``, so the
-# selector cannot honestly score the direction the evidence points. #1654 (sweep
-# the HF driver to its declared 1600 Hz floor) is the unblocker, R17 the flipper.
-# Everything behind it — including ``_measure_verdict``'s fit-timing move — is
-# complete and dormant, so "the fit runs at the last capture before the apply"
-# holds the moment this flips.
+# **ON since R17.** Gate 0 pairs every producer with a CURRENT consumer, and
+# R16's is R17's Fc selector — now landed, so the walk has one. It was held off
+# through R16 because at the then-declared tweeter measurement floor (2000 Hz,
+# equal to the configured Fc) every candidate below 2 kHz had its own handoff
+# clamped out of ``overlap_band_hz`` and could not be honestly scored; #1654
+# swept the HF driver to its declared 1600 Hz floor and removed that clamp.
+# What the walk buys: the lateral robustness term in ``fc_selector.
+# score_candidate``, which is the only evidence in the session that a
+# candidate's handoff survives OFF the design axis.
 # Applied at the PRODUCTION seams (``_stage1_capture_target``,
 # ``prepare_v2_session``), not as a builder default — the two builders keep
 # whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
-STAGE1_INCLUDES_LATERAL = False
+STAGE1_INCLUDES_LATERAL = True
 
 
 def _stage1_capture_target(shape: Any) -> int:
@@ -6886,19 +6936,28 @@ class CrossoverV2Conductor:
             ambient_report=self._check_ambient_report,
         )
 
+    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
+        """MEASURE's ACTUAL ``(tweeter sweep lo, woofer sweep hi)``, or ``None``s.
+
+        Read off the composed MEASURE program rather than derived from Fc, so
+        every consumer of :func:`overlap_band_hz`'s clamp — VERIFY's tracking
+        comparison and R17's per-candidate scoring band — bounds itself by the
+        frequencies both branches were actually excited at (§5.6). One reader
+        because a second would be a second answer to "what did this session
+        sweep".
+        """
+        if self._measure_program is None:
+            return None, None
+        try:
+            return (
+                self._measure_program.segment("sweep_t").f1_hz,
+                self._measure_program.segment("sweep_w").f2_hz,
+            )
+        except KeyError:
+            return None, None
+
     def _verify_priors(self) -> MeasurementPriors:
-        # Carry MEASURE's actual per-driver sweep bounds forward (§5.6 fix) so
-        # VERIFY's tracking comparison trusts the SAME true driver-sweep
-        # overlap `_build_candidate` used to build `predicted_sum` — never a
-        # hardcoded frequency, always read off the composed MEASURE program.
-        tweeter_sweep_lo_hz: float | None = None
-        woofer_sweep_hi_hz: float | None = None
-        if self._measure_program is not None:
-            try:
-                tweeter_sweep_lo_hz = self._measure_program.segment("sweep_t").f1_hz
-                woofer_sweep_hi_hz = self._measure_program.segment("sweep_w").f2_hz
-            except KeyError:
-                pass
+        tweeter_sweep_lo_hz, woofer_sweep_hi_hz = self._measure_sweep_bounds()
         # The candidate's own crossover, for the ABSOLUTE claim (R18, #1868).
         # Unguarded by ``measurement_protection``, unlike MEASURE — which needs
         # it only as the ``C_c`` half of a de-embedding that cannot run without
@@ -7704,6 +7763,15 @@ class CrossoverV2Conductor:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:
             verdict = self._consume_measure(analysis)
+            # R17's candidate sweep, HERE and nowhere later: ``result`` is the
+            # raw capture, and it is alive only inside this call. What the
+            # conductor retains past it are derived ``DriverResponse``s, which
+            # §4.2's conditioning policy refuses to un-compose. Only on an
+            # accepted MEASURE that a walk will follow — a rejected capture has
+            # no evidence to adjudicate from, and a session with no walk has no
+            # lateral robustness term and no close to adjudicate at.
+            if verdict.accepted and PHASE_LATERAL in self._phases:
+                self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
             verdict = self._consume_lateral_pose(index, attempt, analysis)
         elif phase in GROUP_PHASES:
@@ -8485,6 +8553,12 @@ class CrossoverV2Conductor:
                 "lateral walk closed with no retained MEASURE analysis"
             )
         analysis, self._measure_analysis = self._measure_analysis, None
+        # R17 adjudicates HERE — §4.4's rule that anything reading the whole
+        # walk waits for the whole walk. Before the candidate build below, so
+        # a selector bug cannot be blamed on the published candidate; it
+        # cannot raise (``_adjudicate_fc`` is total over its inputs) and it
+        # writes nothing the build reads.
+        self._adjudicate_fc()
         log_event(
             logger, "correction.crossover_v2_lateral_walk_closed",
             session_id=self.session_id,
@@ -8493,6 +8567,309 @@ class CrossoverV2Conductor:
             mark_return_drift_db=self.lateral_mark_return_drift_db(),
         )
         return self._publish_measure_candidate(analysis, None)
+
+    # --- R17: the Fc candidate sweep -----------------------------------------
+
+    def _fc_candidate_sections(
+        self, fc_hz: float,
+    ) -> dict[str, tuple[CrossoverSection, ...]]:
+        """The configured branch sections, re-cornered at ``fc_hz``.
+
+        Order, direction and role assignment are the preset's — only the corner
+        moves, because R17 adjudicates WHERE to cross, never what shape to
+        cross with (topology search is deferred, #1894).
+        """
+        return {
+            role: tuple(replace(section, fc_hz=float(fc_hz)) for section in sections)
+            for role, sections in sections_by_role(
+                getattr(self._preset, "crossover_regions", ()) or ()
+            ).items()
+        }
+
+    def _fc_candidate_priors(
+        self, fc_hz: float, sections: Mapping[str, tuple[CrossoverSection, ...]],
+    ) -> MeasurementPriors:
+        """MEASURE's priors re-pointed at one candidate — THREE fields move.
+
+        ``configured_polarity_sign_by_role`` and
+        ``measurement_protection_response_by_role`` are carried UNCHANGED:
+        polarity is how the drivers are wired and protection is the filter the
+        graph actually emitted, and neither moves when the crossover corner
+        does. They are also load-bearing here rather than merely harmless —
+        ``_compose_configured_path_ir`` raises on a PARTIAL prior set, so
+        dropping either would refuse the composition outright instead of
+        producing a candidate.
+        """
+        overlap = overlap_band_hz(float(fc_hz))
+        return replace(
+            self._measure_priors(),
+            crossover_fc_hz=float(fc_hz),
+            configured_crossover_response_by_role=_role_transfers(sections),
+            # Same union as ``_measure_priors``, at THIS candidate's corner:
+            # the radiating span the fit masks to, widened by the unclamped
+            # overlap band. A superset is the safe side for a required mask.
+            candidate_required_band_hz_by_role={
+                role: (min(radiating_band_hz(sec)[0], overlap[0]),
+                       max(radiating_band_hz(sec)[1], overlap[1]))
+                for role, sec in sections.items()
+            },
+        )
+
+    def _fc_branch_operators(
+        self,
+        freqs: np.ndarray,
+        analysis: Any,
+        sections: Mapping[str, tuple[CrossoverSection, ...]],
+        linearization: Mapping[str, Any],
+        trims: Mapping[str, float],
+    ) -> dict[str, np.ndarray]:
+        """What this candidate does to one driver's NEUTRAL pose measurement.
+
+        ``sign * (C_c / P) * K * 10**(trim/20)``, plus the alignment's polarity
+        and residual delay on the tweeter — §4.2's re-composition cascaded with
+        everything :func:`predicted_branch_sum` applies to the linearized pair.
+        So ``sum_role M_pose,role * operator_role`` IS this candidate's model at
+        that pose, and the kernel's pose sum is one multiply-add.
+
+        Every factor is evaluated by the SAME function the emitted graph is
+        built from — :func:`crossover_response_complex` for the crossover,
+        :func:`chain_response` for the correction biquads — so this model and
+        the speaker can never disagree about what a filter does.
+        """
+        protection = _role_transfers(self._measurement_protection_sections_by_role) or {}
+        polarity = {
+            role: -1 if inverted else 1
+            for role, inverted in role_polarity(self._preset).items()
+        }
+        filters = linearization_filters_by_role(linearization)
+        residual_us = summed_model_residual_delay_us(
+            analysis.alignment.anchor_delay_us
+            if analysis.alignment.status == ALIGNMENT_OK else None,
+            analysis.alignment.delay_us,
+        )
+        operators: dict[str, np.ndarray] = {}
+        for role, section in sections.items():
+            emitted = np.asarray(protection[role](freqs), dtype=np.complex128)
+            configured = np.asarray(
+                crossover_response_complex(freqs, section), dtype=np.complex128
+            )
+            # ``where=`` guards an exact zero only. The CONDITIONING of this
+            # ratio is the analysis's gate, not this function's: a candidate
+            # whose C/P left the composition policy's window never reached here
+            # (it refused as unfittable), and any non-finite bin that survives
+            # is dropped by ``band_flatness``'s own finite mask rather than
+            # scored. Re-stating the policy's ceiling here would put a second
+            # writer on a number that has one.
+            operator = (
+                polarity.get(role, 1)
+                * np.divide(
+                    configured, emitted,
+                    out=np.zeros_like(configured), where=emitted != 0,
+                )
+                * chain_response(filters.get(role, ()), freqs)
+                * 10.0 ** (float(trims.get(role, 0.0)) / 20.0)
+            )
+            if role == self._tweeter.role:
+                operator = (
+                    operator
+                    * analysis.alignment.polarity_sign
+                    * np.exp(-1j * 2.0 * np.pi * freqs * residual_us * 1e-6)
+                )
+            operators[role] = operator
+        return operators
+
+    def _evaluate_fc_candidate(
+        self, fc_hz: float, anchor: Any, program: Any, result: Any,
+    ) -> FcCandidateEvaluation:
+        """One candidate, fitted and reduced to its retained record.
+
+        **This method is the release point.** The per-candidate analysis and
+        fit — hundreds of megabytes between them — are locals here, so they are
+        unreachable the moment it returns and the next candidate's allocation
+        never overlaps them. The configured candidate reuses the anchor's own
+        analysis rather than re-running it: it is the same priors, so a second
+        run would buy an identical result for 7 s and 400 MB.
+        """
+        sections = self._fc_candidate_sections(fc_hz)
+        analysis = (
+            anchor if fc_hz == self._fc_hz
+            else self._seams.analyze(
+                program, result, self._fc_candidate_priors(fc_hz, sections),
+                self._geometry, phase=PHASE_MEASURE,
+            )
+        )
+        cand = analysis.candidate
+        if cand is None:
+            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
+        trims, linearization = self._fit_linearization(
+            analysis, cand, None, candidate_sections=sections,
+        )
+        grid = lateral_evidence_grid_hz()
+        tweeter_lo, woofer_hi = self._measure_sweep_bounds()
+        anchor_sum = self._last_linearized_predicted_sum
+        if anchor_sum is None:
+            # No fit ran (ineligible mic tier / too few repeats), so there is
+            # no linearized model to score. Honest refusal, not a fallback to
+            # the raw prediction: the household would be shown a comparison
+            # between candidates fitted differently.
+            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
+        return FcCandidateEvaluation(
+            fc_hz=float(fc_hz),
+            freqs_hz=grid,
+            branch_operator_by_role=self._fc_branch_operators(
+                grid, analysis, sections, linearization, trims,
+            ),
+            anchor_sum_db=np.interp(grid, anchor_sum[0], anchor_sum[1]),
+            # ``overlap_band_hz`` with the REAL sweep bounds, never
+            # ``crossover_region_band_hz``: that one is built for summed
+            # CAPTURES and takes a gate-derived floor, while this scores a
+            # per-branch MODEL on the grid the poses share.
+            scoring_band_hz=overlap_band_hz(
+                float(fc_hz),
+                tweeter_sweep_lo_hz=tweeter_lo,
+                woofer_sweep_hi_hz=woofer_hi,
+            ),
+            headroom_cost_db=max(
+                (float(fit.get("headroom_cost_db") or 0.0)
+                 for fit in linearization.values() if isinstance(fit, Mapping)),
+                default=0.0,
+            ),
+        )
+
+    def _fc_evaluation_budget_s(self) -> float:
+        """Wall this sweep may spend, bounded by the PHONE's own deadline.
+
+        ``waitForCaptureResult`` allows ``max(30 s, spec.duration_ms)`` for the
+        Pi to answer a capture and throws a TERMINAL ``sweepFailed`` on expiry
+        — so overrunning does not degrade a recommendation, it kills the
+        household's session. The budget is therefore a FRACTION of that
+        deadline: the anchor's own analysis has already spent part of the
+        window before this starts, and the answer still has to travel. Scoring
+        fewer candidates than proposed is disclosed as k-of-N.
+        """
+        measure_ms = (
+            _program_duration_ms(self._measure_program) + CAPTURE_ENTRY_MARGIN_MS
+            if self._measure_program is not None else 0
+        )
+        deadline_ms = max(PHONE_RESULT_WAIT_FLOOR_MS, measure_ms)
+        return FC_EVALUATION_BUDGET_FRACTION * deadline_ms / 1000.0
+
+    def _sweep_fc_candidates(self, program: Any, result: Any, anchor: Any) -> None:
+        """Evaluate the proposable Fc set against THIS capture, then release.
+
+        Runs at MEASURE-consume because the raw capture is alive only here: the
+        retained anchor holds derived ``DriverResponse``s, and §4.2's own
+        conditioning policy refuses to un-compose them. Adjudication still
+        happens at the walk's close, so nothing publishes early (§4.4).
+
+        **Never raises.** A sweep that cannot run leaves the disclosure short
+        and says so; no household loses a measured capture because an advisory
+        could not be computed. Nothing here writes an emitted filter — the
+        result is a recommendation the household applies by editing ``/sound``.
+        """
+        if self._measurement_protection_sections_by_role is None:
+            # No protection map means no §4.2 composition at all, so a
+            # candidate's crossover cannot be substituted for the emitted one.
+            return
+        candidates = self._fc_candidate_set()
+        budget_s = self._fc_evaluation_budget_s()
+        # The fit writes SEVEN conductor fields that the walk's own candidate
+        # build reads. Saved and restored around the sweep because the restore
+        # is what makes the published candidate byte-identical to a no-selector
+        # run: the anchor's build re-runs the fit and overwrites all seven only
+        # when it is eligible AND does not raise, and neither is guaranteed.
+        saved = {name: getattr(self, name) for name in _FC_SWEEP_CONDUCTOR_FIELDS}
+        started = time.monotonic()
+        slowest_s = 0.0
+        evaluations: list[FcCandidateEvaluation] = []
+        try:
+            for fc_hz in candidates.candidates:
+                elapsed = time.monotonic() - started
+                # Forecast, not a bare deadline check: a candidate costs about
+                # what the slowest one so far did, and STARTING one that cannot
+                # finish inside the phone's window is how an advisory becomes a
+                # terminal failure. The first candidate always runs — there is
+                # nothing to forecast from, and a sweep that scores nothing has
+                # no comparison to offer.
+                if evaluations and elapsed + slowest_s > budget_s:
+                    evaluations.extend(
+                        _fc_refusal(rest, EVAL_REFUSED_BUDGET)
+                        for rest in candidates.candidates[len(evaluations):]
+                    )
+                    break
+                try:
+                    evaluations.append(
+                        self._evaluate_fc_candidate(fc_hz, anchor, program, result)
+                    )
+                except (
+                    ArithmeticError, AttributeError, RuntimeError, TypeError,
+                    ValueError, KeyError, IndexError,
+                ) as exc:
+                    log_event(
+                        logger, "correction.crossover_v2_fc_candidate_refused",
+                        level=logging.WARNING, session_id=self.session_id,
+                        fc_hz=round(float(fc_hz), 1), reason=type(exc).__name__,
+                    )
+                    evaluations.append(_fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE))
+                slowest_s = max(slowest_s, time.monotonic() - started - elapsed)
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
+            self._fc_evaluations = tuple(evaluations)
+        log_event(
+            logger, "correction.crossover_v2_fc_sweep",
+            session_id=self.session_id, configured_hz=round(self._fc_hz, 1),
+            planned=len(candidates.candidates),
+            evaluated=sum(1 for e in evaluations if e.refusal is None),
+            elapsed_s=round(time.monotonic() - started, 2),
+            budget_s=round(budget_s, 2),
+            limits={k: round(v, 1) for k, v in candidates.limits.items()},
+            rejected=[[round(fc, 1), reason] for fc, reason in candidates.rejected],
+        )
+
+    def _adjudicate_fc(self) -> None:
+        """Turn the retained per-candidate evidence into ONE recommendation.
+
+        At the walk's close, where §4.4 puts every judgement that reads the
+        whole walk. Releases the evaluations after: the selection is what the
+        review screen renders, and the evidence behind it has done its job.
+        """
+        evaluations, self._fc_evaluations = self._fc_evaluations, ()
+        if not evaluations:
+            return
+        self._fc_selection = select_fc(
+            evaluations,
+            [pose.curves for pose in self._lateral_poses],
+            configured_hz=self._fc_hz,
+            limits=self._fc_candidate_set().limits,
+            planned=len(evaluations),
+        )
+        log_event(
+            logger, "correction.crossover_v2_fc_selection",
+            session_id=self.session_id, verdict=self._fc_selection.verdict,
+            configured_hz=round(self._fc_hz, 1),
+            recommended_hz=(
+                round(self._fc_selection.recommended_hz, 1)
+                if self._fc_selection.recommended_hz is not None else None
+            ),
+            margin_db=(
+                round(self._fc_selection.margin_db, 3)
+                if self._fc_selection.margin_db is not None else None
+            ),
+            evaluated=self._fc_selection.evaluated,
+            planned=self._fc_selection.planned,
+            poses=len(self._lateral_poses),
+        )
+
+    @property
+    def fc_selection(self) -> FcSelection | None:
+        """This session's Fc RECOMMENDATION, or ``None`` if no sweep ran.
+
+        A recommendation, never an instruction: the declared crossover in
+        ``/sound`` remains Fc's only writer, so what the household does with
+        this is edit that declaration and measure again.
+        """
+        return self._fc_selection
 
     def _consume_cloud_position(
         self,
@@ -11514,6 +11891,8 @@ class CrossoverV2Conductor:
         analysis: ProgramAnalysis,
         cand: Any,
         cloud: _CloudFitEvidence | None = None,
+        *,
+        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     ) -> tuple[dict[str, float], dict[str, Any]]:
         """Fit both drivers, apply the correction in the linear domain, and
         re-solve the trim from the LINEARIZED branch pair — the ordering
@@ -11623,8 +12002,18 @@ class CrossoverV2Conductor:
         # the give-back is a power-domain average that quiet stopband bins
         # barely reach, and the fit target is #1817's crossover-shaped-target
         # question, not a band. See `driver_core_level_db`'s own docstring.
+        # ``candidate_sections`` is R17's per-candidate branch target: each Fc
+        # candidate must be fitted against ITS OWN crossover, or every one of
+        # them is corrected toward the configured corner's shape and the
+        # comparison measures the fit's mismatch instead of the crossover's.
+        # ``None`` — every pre-R17 caller — reads the configured sections, so
+        # the anchor's fit is unchanged.
         sections = {
-            role: self._branch_crossover_sections(role)
+            role: (
+                tuple(candidate_sections[role])
+                if candidate_sections is not None and role in candidate_sections
+                else self._branch_crossover_sections(role)
+            )
             for role in (woofer_role, tweeter_role)
         }
         radiating_bands = {
