@@ -3925,10 +3925,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderSummedValidationCard(topology) {
     var groups = activeOutputGroups(topology);
-    // BACKSTOP, not the fix: the shapes that legitimately have no combined test
-    // are terminated by the backend (`not_required`) and never reach here. If
-    // some future shape still does, say so rather than rendering a step title
-    // with an empty body — a silent blank is how this stayed unnoticed.
+    // Reached today, not hypothetically: a passive-mains-WITH-sub layout keeps
+    // the safety step live (it still compiles a degenerate 1-way bass-management
+    // profile) but has no active driver group to test together, so this runs
+    // with zero groups on every render of that shape. The SUBLESS passive
+    // layout never arrives — the backend terminates it (`not_required`) before
+    // this call. Either way, say why instead of rendering a step title over an
+    // empty body: that silent blank is how the passive dead end went unnoticed.
     if (!groups.length) {
       return '<div class="output-card output-card--not-required">' +
         '<div class="output-card__head"><div>' +

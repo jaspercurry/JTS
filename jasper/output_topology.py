@@ -108,8 +108,10 @@ SUPPORTED_GROUP_MODES = {
 # The listening (non-subwoofer) group kinds, and the mode that means "one
 # full-range driver per side, no active crossover". Named here — beside the
 # vocabulary they belong to — so the shape predicates below are the ONE place
-# that spells them out.
-MAIN_GROUP_KINDS = frozenset({"left", "right", "mono"})
+# that spells them out. MAIN_GROUP_KINDS is DERIVED, not re-listed: a fifth
+# supported kind must land on one side of the main/sub line deliberately, not by
+# being forgotten here and silently dropping out of the passive predicates.
+MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
 PASSIVE_MAIN_MODE = "full_range_passive"
 REQUIRED_ROLES_BY_MODE = {
     "full_range_passive": ("full_range",),
