@@ -78,10 +78,11 @@ _STUB_MARKER = "_jasper_openwakeword_stub"
 def ensure_openwakeword_import_safe() -> None:
     """Keep scikit-learn out of this process's openWakeWord import.
 
-    Idempotent, cheap, and safe to call from any thread before the
-    first ``import openwakeword``. See the module docstring for what
-    the stub costs openWakeWord (speaker-verification training only)
-    and what it saves.
+    Idempotent and cheap. Call it before the first ``import
+    openwakeword``; see the module docstring for what the stub costs
+    openWakeWord (speaker-verification training only) and what it
+    saves. Two threads racing here can both build a stub and the last
+    write wins, which is harmless — the stubs are equivalent.
 
     If openWakeWord was already imported by the time this runs, the
     saving is gone and the call cannot recover it. That case logs
