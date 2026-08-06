@@ -2054,6 +2054,50 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
     )
 
 
+def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
+    """R17, on the SAME predicate and for the same reason as the finding below.
+
+    The Fc recommendation is produced at the lateral walk's close, which only a
+    MEASURING session runs. Stage 2 is a different session whose conductor has
+    no ``fc_selection`` at all, so without the carry-forward it persists
+    ``None`` over the recommendation — the household reads "your crossover
+    could be 1750 Hz" while deciding, and then nothing once the tuning is
+    applied. That is the half where they would act on it.
+
+    The converse is asserted too: a session that DOES measure writes its own
+    value, ``None`` included, so a fresh measurement clears a superseded
+    recommendation rather than replaying it.
+    """
+    recommendation = {
+        "verdict": "recommend_alternative", "configured_hz": 2000.0,
+        "recommended_hz": 1750.0, "margin_db": 1.4, "evaluated": 6,
+        "planned": 6, "limits": {}, "refusals": [], "scores": [],
+    }
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "fc_selection": recommendation,
+    })
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
+        failure_code=None,
+    )
+    assert v2host.load_v2_state()["fc_selection"] == recommendation
+
+    # …and a session that measures owns the answer, including "none".
+    v2host.persist_conductor_state(
+        _rearm_conductor(
+            "cap_fresh_measure",
+            index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE},
+        ),
+        failure_code=None,
+    )
+    assert v2host.load_v2_state()["fc_selection"] is None
+
+
 def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
     """CC1: the DONE screen is in a different session from the one that banked.
 
