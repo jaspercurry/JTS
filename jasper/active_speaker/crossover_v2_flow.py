@@ -1365,6 +1365,98 @@ def _fc_rejection(
     return None
 
 
+@dataclass(frozen=True)
+class FcSearchBand:
+    """Which declared search band binds the candidate set, and who narrowed it.
+
+    ``band_hz`` is ``None`` when no proposal may be made at all; the caller
+    then evaluates the configured Fc alone, which is an honest verdict rather
+    than a failure (plan §9.8).
+
+    ``lo_role`` / ``hi_role`` name a role whose own declaration set each
+    surviving edge. They are the whole point of this type: with one number per
+    edge and no owner, a household that has declared a stale band sees only
+    "nothing was proposed" and has nowhere to go. With the owner named, the
+    disclosure can say WHICH driver's declaration is the binding one — the
+    operator edits that declaration, which is where the fact lives.
+
+    There is deliberately no "do the roles disagree?" boolean. In a two-way the
+    intersection is narrower than somebody's declaration almost every time, so
+    such a flag would read ``True`` on nearly every session and mean nothing;
+    and a flag comparing only the two EDGE OWNERS misses the live jts3 case
+    outright, where both roles declare the same upper limit and the
+    disagreement is entirely on the lower one. The two role names carry the
+    actionable fact without either failure mode.
+    """
+
+    band_hz: tuple[float, float] | None
+    lo_role: str | None
+    hi_role: str | None
+    undeclared_roles: tuple[str, ...]
+
+
+def resolve_fc_search_band(
+    declared_band_hz_by_role: Mapping[str, tuple[float, float] | None],
+) -> FcSearchBand:
+    """Intersect the participating roles' declared crossover search bands.
+
+    **The rule, stated once.** A two-way crossover at ``Fc`` puts BOTH drivers
+    at ``Fc`` — the lower driver is low-passed there and the upper driver is
+    high-passed there — so an ``Fc`` is only proposable when EVERY participating
+    role's declaration admits it. The binding band is therefore the
+    intersection, and it is the fail-closed direction: a tweeter's declared low
+    limit is an excursion claim, and the cost of honouring a stale one is a
+    proposal not made, while the cost of ignoring it is a driver asked to cross
+    below what its declaration permits.
+
+    **A participating role with no declared band yields ``None``** — no
+    proposal, disclosed via ``undeclared_roles``. ``crossover_search_band_hz``
+    is a required declaration (``driver_safety._target_issues`` refuses a
+    target without one), so absence here is an anomaly, and the safe reading of
+    an anomaly is "this role has told us nothing about where it may be
+    crossed", never "this role permits everything".
+
+    **An empty intersection also yields ``None``** with both edge owners still
+    named, because "your woofer says at-or-below 1500 and your tweeter says
+    at-or-above 2000" is precisely the actionable sentence, and losing the two
+    role names to a bare ``None`` would throw it away.
+
+    Not a safety gate on its own: :func:`fc_candidate_set` still applies the
+    declared floor, the lower driver's ceiling, and the ka prior on top of
+    whatever this returns. This narrows what may be PROPOSED; it never widens
+    it, and it has no say over the configured Fc, which is always evaluated.
+    """
+    lo_hz = -math.inf
+    hi_hz = math.inf
+    lo_role: str | None = None
+    hi_role: str | None = None
+    undeclared: list[str] = []
+    for role in sorted(declared_band_hz_by_role):
+        band = declared_band_hz_by_role[role]
+        if band is None:
+            undeclared.append(role)
+            continue
+        role_lo, role_hi = float(band[0]), float(band[1])
+        # Strict ">" / "<" keep the FIRST role to set an edge as its owner, so
+        # two roles declaring the same limit name the one that sorts first
+        # rather than whichever happened to be iterated last. Sorted iteration
+        # above is what makes that deterministic; a tie means both roles
+        # declared that limit, so either name is equally true.
+        if role_lo > lo_hz:
+            lo_hz, lo_role = role_lo, role
+        if role_hi < hi_hz:
+            hi_hz, hi_role = role_hi, role
+    if undeclared or lo_role is None or hi_role is None or lo_hz >= hi_hz:
+        return FcSearchBand(
+            band_hz=None, lo_role=lo_role, hi_role=hi_role,
+            undeclared_roles=tuple(undeclared),
+        )
+    return FcSearchBand(
+        band_hz=(lo_hz, hi_hz), lo_role=lo_role, hi_role=hi_role,
+        undeclared_roles=(),
+    )
+
+
 def relay_plan_attempts_required(
     *,
     cloud_measure_positions: int | None = None,

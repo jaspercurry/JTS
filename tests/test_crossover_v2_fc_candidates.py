@@ -259,3 +259,117 @@ def test_a_draft_without_declarations_yields_no_priors(draft):
     from jasper.web.correction_crossover_v2 import _resolve_radiating_diameter_by_role
 
     assert _resolve_radiating_diameter_by_role(draft) == {}
+
+
+# --- which roles' search bands bind the set (R17 PR-2 design point) ------------
+#
+# The jts3 declaration as it actually stands, quoted so these tests fail if the
+# owner's SSOT and this reasoning ever drift apart. The tweeter's [2000, 2500]
+# is the withdrawn arbitrary-2000 remnant; the RULE below is what makes that
+# visible instead of silently deciding for him in either direction.
+JTS3_SEARCH_BAND_BY_ROLE = {
+    "woofer": (1200.0, 2500.0),
+    "tweeter": (2000.0, 2500.0),
+}
+
+
+def test_the_binding_band_is_the_intersection_and_names_who_set_each_edge():
+    """Both drivers sit at Fc, so both declarations must admit it — the band is
+    the intersection. On the live declaration the tweeter owns the low edge,
+    which is the fact an operator needs in order to act."""
+    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+
+    assert band.band_hz == (2000.0, 2500.0)
+    # The tweeter's 2000 beats the woofer's 1200, so the tweeter owns the low
+    # edge — the fact that explains why nothing downward can be proposed. Both
+    # roles declare 2500, so the upper owner is a tie broken deterministically.
+    assert band.lo_role == "tweeter"
+    assert band.hi_role in ("tweeter", "woofer")
+    assert band.undeclared_roles == ()
+
+
+def test_the_live_declaration_proposes_nothing_and_that_is_a_verdict():
+    """End to end on the owner's own numbers: the intersection starts at 2000
+    and the ka ceiling ends at 1915.4, so there is no room to propose into. The
+    configured Fc survives anyway (§9.8), so the session has a golden candidate
+    and 'keep configured' is reachable rather than an error."""
+    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+    result = fc_candidate_set(
+        configured_hz=JTS3_CONFIGURED_HZ,
+        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
+        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
+        search_band_hz=band.band_hz,
+        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
+    )
+    assert band.band_hz is not None
+    assert band.band_hz[0] > result.limits["beaming_ceiling_hz"]
+    assert result.candidates == (JTS3_CONFIGURED_HZ,)
+    assert result.alternatives == ()
+    # …and the limits carry every bound that produced that verdict, so the
+    # disclosure is derivable without re-running the search.
+    assert result.limits["search_lo_hz"] == 2000.0
+    assert result.limits["beaming_ceiling_hz"] == pytest.approx(1915.4, abs=0.05)
+
+
+def test_repairing_the_stale_tweeter_declaration_reopens_the_downward_set():
+    """The rule's payoff, and the proof it is the DECLARATION that binds rather
+    than anything hardcoded: widen the tweeter to its declared hard floor and
+    proposals appear, with no other input changed."""
+    repaired = dict(JTS3_SEARCH_BAND_BY_ROLE, tweeter=(JTS3_HF_FLOOR_HZ, 2500.0))
+    band = flow.resolve_fc_search_band(repaired)
+
+    assert band.band_hz == (1600.0, 2500.0)
+    assert band.lo_role == "tweeter"
+    result = fc_candidate_set(
+        configured_hz=JTS3_CONFIGURED_HZ,
+        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
+        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
+        search_band_hz=band.band_hz,
+        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
+    )
+    assert result.alternatives, "a repaired declaration must open the search"
+    for fc in result.alternatives:
+        assert JTS3_HF_FLOOR_HZ < fc <= result.limits["beaming_ceiling_hz"]
+
+
+def test_an_undeclared_role_proposes_nothing_rather_than_permitting_everything():
+    """``crossover_search_band_hz`` is a REQUIRED declaration, so absence is an
+    anomaly — and the safe reading of an anomaly is 'this role has told us
+    nothing', never 'this role permits everything'. Fail-closed, and the role
+    is named so the disclosure can say which declaration is missing."""
+    band = flow.resolve_fc_search_band(
+        {"woofer": (1200.0, 2500.0), "tweeter": None}
+    )
+    assert band.band_hz is None
+    assert band.undeclared_roles == ("tweeter",)
+
+
+def test_an_empty_intersection_still_names_both_edge_owners():
+    """The actionable sentence is 'your woofer says at-or-below 1500 and your
+    tweeter says at-or-above 2000' — losing the role names to a bare None would
+    throw exactly that away."""
+    band = flow.resolve_fc_search_band(
+        {"woofer": (1200.0, 1500.0), "tweeter": (2000.0, 2500.0)}
+    )
+    assert band.band_hz is None
+    assert (band.lo_role, band.hi_role) == ("tweeter", "woofer")
+
+
+def test_one_role_can_own_both_edges():
+    """A role declared strictly inside every other role's band owns both edges,
+    and the disclosure then names one driver twice — which is the truth."""
+    band = flow.resolve_fc_search_band(
+        {"woofer": (1200.0, 4000.0), "tweeter": (1600.0, 2500.0)}
+    )
+    assert band.band_hz == (1600.0, 2500.0)
+    assert band.lo_role == "tweeter" and band.hi_role == "tweeter"
+
+
+def test_the_binding_band_never_widens_what_a_role_declared():
+    """The invariant that makes this safe to put in front of the safety bounds:
+    intersection only ever narrows, so no declared limit is escapable."""
+    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+    assert band.band_hz is not None
+    for role, declared in JTS3_SEARCH_BAND_BY_ROLE.items():
+        assert band.band_hz[0] >= declared[0], role
+        assert band.band_hz[1] <= declared[1], role
