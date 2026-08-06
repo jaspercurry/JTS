@@ -346,7 +346,11 @@ correlation peak at LOW prominence whose position wanders (not lobe
 ambiguity). **The naive sub-sample anchor upgrade is refuted** — it left the
 iMM-6C span unchanged and degraded the UMIK span 12× in direct testing — so
 the standing levers are tweeter-sweep bandwidth (Fix 4, #1654) and/or
-energy, decided after the iPhone-chain series. Live trail: #1654 (Fix 4
+energy, decided after the iPhone-chain series. **Bandwidth has since been
+pulled** — #1654 landed 2026-08-06, but for the R17 scoring-band unblock, not
+for this scatter; whether the extra correlation bandwidth actually sharpens
+the phone-mic snap peak is **unmeasured**, so the question above stays open
+and energy remains untried. Live trail: #1654 (Fix 4
 shelf + mechanism data), #1652 (anomaly detection/attribution), #1650
 (relay voids), #1656 (calibration identity — the iMM-6C series silently ran
 under the UMIK's calibration curve. **That application is fixed**: the stored
