@@ -790,8 +790,8 @@ def test_active_ladder_runs_one_rung_at_a_time_when_the_preview_is_stale():
 
     Field evidence (jts5, 2026-08-06): the view reported `current_step:
     research` AND rendered `safety` as a second active step, three rungs early.
-    The combined-test card that invites therefore sat open, the household
-    pressed it, and the backend fail-closed on the stale staged graph.
+    Its card offered the combined speaker test, the household pressed it, and
+    the backend fail-closed on the stale staged graph.
     """
 
     view = _stale_preview_view()
