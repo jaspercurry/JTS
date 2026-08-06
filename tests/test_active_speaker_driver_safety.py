@@ -1490,14 +1490,48 @@ def _mono_prompt(tweeter_style: str = "dome_tweeter") -> str:
     )
 
 
+# A hand-maintained mirror of driver_protection._STYLE_HIGH_PASS_HZ, plus the
+# undeclared-style case that falls back to _UNKNOWN_HF_STYLE. Kept honest by
+# test_tweeter_style_floor_mirror_covers_every_registered_style below: a mirror
+# that silently omits a registered style would quietly narrow every test
+# parametrized over it. Each pair's floor is asserted against the real policy
+# by those same parametrized tests.
 _TWEETER_STYLE_FLOORS = [
     ("compression_driver", 2000.0),
+    ("horn_compression_driver", 2000.0),
     ("dome_tweeter", 3000.0),
+    ("amt_tweeter", 3000.0),
     ("planar_tweeter", 3500.0),
     ("ribbon_tweeter", 5000.0),
     ("supertweeter", 8000.0),
+    ("unknown_high_frequency", 5000.0),
     ("unspecified", 5000.0),
 ]
+
+
+def test_tweeter_style_floor_mirror_covers_every_registered_style() -> None:
+    """The mirror above must not silently omit a style the policy registers.
+
+    Every test that parametrizes over ``_TWEETER_STYLE_FLOORS`` is only as
+    broad as this list, so an omission narrows them all without failing
+    anything. Verified to bite: adding a style to ``_STYLE_HIGH_PASS_HZ``
+    alone left the whole suite green before this assertion existed.
+
+    One-directional on purpose. The reverse — a mirror entry policy does not
+    know — is already caught, because an unregistered style resolves to the
+    unknown-style fallback and its parametrized floor assertion then fails.
+    Same shape as ``tests/test_driver_style_floor_contract.py``, which pins
+    the JS display copy of this same table.
+    """
+
+    from jasper.active_speaker.driver_protection import _STYLE_HIGH_PASS_HZ
+
+    missing = sorted(set(_STYLE_HIGH_PASS_HZ) - {style for style, _ in _TWEETER_STYLE_FLOORS})
+    assert not missing, (
+        "driver_protection._STYLE_HIGH_PASS_HZ registers tweeter styles this "
+        f"test file's mirror does not cover: {missing}. Add them to "
+        "_TWEETER_STYLE_FLOORS so the parametrized tests actually exercise them."
+    )
 
 
 @pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
@@ -1514,9 +1548,14 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
 
     Fixing the cutoff to one constant only moved the defect: 3000 clears a dome
     but is refused for planar, ribbon, supertweeter, and an undeclared tweeter.
-    So this runs the REAL gate over every registered style — a new style with a
-    higher floor re-breaks here loudly instead of silently shipping a worked
-    answer that the gate refuses.
+
+    The durable property is not that this test catches a future style — it does
+    not, and cannot: the worked example is *derived* from ``_STYLE_HIGH_PASS_HZ``,
+    so a newly registered style is correct by construction and adding one leaves
+    this green. What this proves is that the derivation itself is right, run
+    through the REAL gate for every style the policy registers today;
+    ``test_tweeter_style_floor_mirror_covers_every_registered_style`` is what
+    keeps "every style" true as the registry grows.
     """
 
     prompt = _mono_prompt(style)
