@@ -94,6 +94,7 @@ T = TypeVar("T")
 SummedGraphKind: TypeAlias = Literal["normal", "reverse", "delay"]
 
 ReadActiveRaw = Callable[[], Awaitable[str | None]]
+CanonicalizeRaw = Callable[[str], Awaitable[str | None]]
 ApplyActiveRaw = Callable[[str], Awaitable[bool]]
 ReadConfigPath = Callable[[], Awaitable[str | None]]
 ReadListeningVolume = Callable[[], Awaitable[float | None]]
@@ -115,6 +116,11 @@ class CommissioningRuntimePort:
     read_config_path: ReadConfigPath
     read_listening_volume_db: ReadListeningVolume
     set_listening_volume_db: SetListeningVolume
+    # CamillaDSP's ReadConfig (normalize_config_raw). The live-graph proof
+    # compares a JTS-authored file against CamillaDSP's default-filled
+    # readback, so the file has to be canonicalized BY CamillaDSP first. Seam,
+    # not a local reimplementation: CamillaDSP owns its own schema.
+    canonicalize_raw: CanonicalizeRaw
     _bass_extension_authority_paths: Mapping[str, Path] | None = None
 
     def __post_init__(self) -> None:
@@ -124,6 +130,7 @@ class CommissioningRuntimePort:
             "read_config_path",
             "read_listening_volume_db",
             "set_listening_volume_db",
+            "canonicalize_raw",
         ):
             if not callable(getattr(self, name)):
                 raise CommissioningRuntimeError(f"{name} must be callable")
@@ -978,6 +985,17 @@ async def _apply_graph(
         )
     raw = await port.read_active_raw()
     observed = _active_identity(raw, field="candidate active_raw readback")
+    # KNOWN DEFECT, tracked separately — do not "fix" this line in isolation.
+    # `graph` is JTS's own in-memory config; `observed` is CamillaDSP's
+    # default-filled readback, so on real hardware these fingerprints cannot
+    # agree. It is the same defect class the live-graph boundary had (see
+    # runtime_contract.classify_active_bass_extension_graph, which now
+    # canonicalizes through `port.canonicalize_raw`). The one-line change here
+    # is NOT the whole fix: this module's tests assume a CamillaDSP that echoes
+    # the config back, and 45 of them fail against a faithful double
+    # (tests/_camilla_readback_double.py), so repairing this needs the harness
+    # reworked alongside it rather than a patch landed on a suite that only
+    # passes because its fake is unrealistic.
     expected = NormalizedActiveRawIdentity(graph)
     if observed.active_raw_fingerprint != expected.active_raw_fingerprint:
         raise _OperationFailure(
@@ -1386,6 +1404,7 @@ async def _run_locked(
         authority = await classify_active_bass_extension_graph(
             topology,
             read_active_graph_text=port.read_active_raw,
+            canonicalize_graph_text=port.canonicalize_raw,
             **authority_paths,
         )
         bass_profile_summary = authority.details.get(

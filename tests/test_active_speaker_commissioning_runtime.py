@@ -182,6 +182,12 @@ def _fake_predecessor_raw() -> str:
     )
 
 
+async def _echo_canonicalize(raw: str) -> str:
+    """Echo, matching this module's fake DSP — see FakePort.read_active_raw."""
+
+    return raw
+
+
 class FakePort:
     def __init__(self) -> None:
         self.raw = _fake_predecessor_raw()
@@ -211,12 +217,21 @@ class FakePort:
         self.corrupt_next_read = False
 
     async def read_active_raw(self) -> str:
+        # NOTE: this echoes the config back, which the real CamillaDSP does
+        # NOT do (it default-fills — tests/_camilla_readback_double.py).
+        # Swapping in the faithful double fails 45 tests in this module and
+        # surfaces the readback-vs-in-memory-graph defect commented at
+        # commissioning_runtime._apply_candidate_graph. Left echoing on
+        # purpose until that is repaired together with this harness.
         if self.corrupt_next_read:
             self.corrupt_next_read = False
             graph = yaml.safe_load(self.raw)
             graph["filters"]["as_woofer_baseline_gain"]["parameters"]["gain"] = -9.0
             return _raw(graph)
         return self.raw
+
+    async def canonicalize_raw(self, raw: str) -> str:
+        return raw
 
     async def apply_active_raw(self, raw: str) -> bool:
         self.events.append("graph")
@@ -249,6 +264,7 @@ class FakePort:
             read_config_path=self.read_config_path,
             read_listening_volume_db=self.read_volume,
             set_listening_volume_db=self.set_volume,
+            canonicalize_raw=self.canonicalize_raw,
             _bass_extension_authority_paths={
                 "statefile_path": self._statefile_path,
                 "applied_baseline_path": self._applied_baseline_path,
@@ -558,6 +574,7 @@ async def test_fresh_readback_rereads_every_live_value_on_every_call(
         read_config_path=read_path,
         read_listening_volume_db=read_volume,
         set_listening_volume_db=base.set_listening_volume_db,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(context: runtime.CommissioningLiveContext):
@@ -639,6 +656,7 @@ async def test_fresh_readback_refuses_drift_before_low_level_play(
         read_config_path=read_path,
         read_listening_volume_db=read_volume,
         set_listening_volume_db=base.set_listening_volume_db,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(context: runtime.CommissioningLiveContext):
@@ -745,6 +763,7 @@ async def test_cancellation_during_safe_volume_set_restores_without_audio(
         read_config_path=base_port.read_config_path,
         read_listening_volume_db=base_port.read_listening_volume_db,
         set_listening_volume_db=set_volume,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(_context: runtime.CommissioningLiveContext):
@@ -1088,6 +1107,7 @@ async def test_delay_rechecks_safe_volume_before_second_graph_apply(
         read_config_path=base_port.read_config_path,
         read_listening_volume_db=read_volume,
         set_listening_volume_db=base_port.set_listening_volume_db,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(_context: runtime.CommissioningLiveContext):
@@ -1649,6 +1669,7 @@ async def test_restore_continues_after_one_adapter_raises(tmp_path: Path) -> Non
         read_config_path=read_config_path,
         read_listening_volume_db=read_volume,
         set_listening_volume_db=set_volume,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(_context: runtime.CommissioningLiveContext):
@@ -1711,6 +1732,7 @@ async def test_cancellation_during_restore_continues_remaining_cleanup(
         read_config_path=read_config_path,
         read_listening_volume_db=read_volume,
         set_listening_volume_db=set_volume,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(_context: runtime.CommissioningLiveContext):
@@ -2111,6 +2133,7 @@ async def test_wrong_graph_readback_refuses_before_audio_and_restores(
         read_config_path=port.read_config_path,
         read_listening_volume_db=port.read_listening_volume_db,
         set_listening_volume_db=port.set_listening_volume_db,
+        canonicalize_raw=_echo_canonicalize,
     )
 
     async def capture(_context: runtime.CommissioningLiveContext):

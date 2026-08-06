@@ -96,6 +96,10 @@ def _runtime(
     async def read_raw() -> str:
         return state["raw"]
 
+    async def canonicalize(raw: str) -> str:
+        # Echo, matching this module's fake DSP (read_raw echoes too).
+        return raw
+
     async def apply_raw(raw: str) -> bool:
         state["raw"] = raw
         return True
@@ -126,6 +130,7 @@ def _runtime(
             read_config_path=read_path,
             read_listening_volume_db=read_volume,
             set_listening_volume_db=set_volume,
+            canonicalize_raw=canonicalize,
         ),
         load_path,
         state,

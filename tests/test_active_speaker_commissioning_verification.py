@@ -193,6 +193,7 @@ async def test_one_live_authority_proof_threads_exact_summary_under_writer_lock(
         topology,
         *,
         read_active_graph_text,
+        canonicalize_graph_text,
         **kwargs,
     ):
         nonlocal classified_topology
@@ -201,6 +202,9 @@ async def test_one_live_authority_proof_threads_exact_summary_under_writer_lock(
         classified_topology = topology
         assert lock_held is True
         assert read_active_graph_text is port.read_active_raw
+        # Both sides of the boundary's comparison come from the SAME port, so
+        # the file it reads is canonicalized by the DSP that ran the readback.
+        assert canonicalize_graph_text is port.canonicalize_raw
         assert kwargs == authority_paths
         return GraphSafety(
             classification="approved_active_runtime",

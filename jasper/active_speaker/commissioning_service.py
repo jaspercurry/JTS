@@ -1424,4 +1424,7 @@ def commissioning_runtime_port(camilla: Any) -> Any:
         set_listening_volume_db=lambda db: camilla.set_volume_db(
             db, best_effort=False
         ),
+        canonicalize_raw=lambda raw: camilla.normalize_config_raw(
+            raw, best_effort=False
+        ),
     )

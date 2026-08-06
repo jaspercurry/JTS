@@ -3876,13 +3876,32 @@ async def classify_active_bass_extension_graph(
     *,
     statefile_path: Path,
     read_active_graph_text: Callable[[], Awaitable[str | None]],
+    canonicalize_graph_text: Callable[[str], Awaitable[str | None]],
     applied_baseline_path: Path,
     profile_path: Path,
     intent_path: Path,
     staged_metadata_path: Path,
 ) -> GraphSafety:
-    """Canonical live-active boundary with readback inside the sandwich."""
+    """Canonical live-active boundary with readback inside the sandwich.
 
+    Both sides of the fingerprint comparison MUST come from CamillaDSP.
+    ``read_active_graph_text`` already does — it is CamillaDSP's own
+    re-serialization of the running graph (``GetConfig``), which default-fills
+    every key the config omits. The statefile-selected file does NOT: it is
+    JTS-authored text whose emitters leave defaulted keys out entirely. So it
+    is put through CamillaDSP's ``ReadConfig`` — ``canonicalize_graph_text``,
+    i.e. :meth:`jasper.camilla.CamillaController.normalize_config_raw` — before
+    being fingerprinted. Comparing the raw file against the readback instead
+    can never match, and fails CLOSED, so the whole gate silently refuses
+    everything (the 2026-08-06 bonded-pair outage).
+
+    ``canonicalize_graph_text`` is a required caller-injected seam on purpose.
+    Injected, so CamillaDSP stays the single authority on its own schema and
+    this module holds no copy of its defaults. Required rather than defaulted,
+    so a new caller cannot re-open the same silent trap by omitting it.
+    """
+
+    reason = "live graph authority could not be proved"
     for _attempt in range(2):
         try:
             applied1 = _read_optional_bytes(applied_baseline_path)
@@ -3892,21 +3911,37 @@ async def classify_active_bass_extension_graph(
             selector1 = statefile_path.read_bytes()
             selected1_s = parse_camilla_statefile_config_path(selector1.decode("utf-8"))
             if not selected1_s:
+                reason = "the CamillaDSP statefile names no config"
                 continue
             selected_path = Path(selected1_s)
             selected1 = selected_path.read_bytes()
+            selected_text = selected1.decode("utf-8")
         except (OSError, UnicodeError, ValueError):
+            reason = "the graph authority could not be read"
             continue
 
-        (active_result,) = await asyncio.gather(
+        # Both CamillaDSP queries share the ONE await window this sandwich
+        # brackets, so the authority re-read below still covers every await.
+        active_result, canonical_result = await asyncio.gather(
             _invoke_active_graph_reader(read_active_graph_text),
+            _invoke_active_graph_reader(
+                lambda: canonicalize_graph_text(selected_text),
+            ),
             return_exceptions=True,
         )
-        if isinstance(active_result, asyncio.CancelledError):
-            raise active_result
+        for result in (active_result, canonical_result):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
         if isinstance(active_result, BaseException):
+            reason = "the running CamillaDSP graph could not be read"
+            continue
+        if isinstance(canonical_result, BaseException):
+            reason = (
+                "CamillaDSP could not canonicalize the statefile-selected config"
+            )
             continue
         active_text = active_result
+        canonical_text = canonical_result
 
         try:
             selected2 = selected_path.read_bytes()
@@ -3917,10 +3952,10 @@ async def classify_active_bass_extension_graph(
             intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
         except (OSError, UnicodeError, ValueError):
+            reason = "the graph authority could not be re-read"
             continue
         if (
-            not isinstance(active_text, str)
-            or selected2_s != str(selected_path)
+            selected2_s != str(selected_path)
             or not all((
                 applied1 == applied2,
                 intent1 == intent2,
@@ -3929,16 +3964,20 @@ async def classify_active_bass_extension_graph(
                 selected1 == selected2,
             ))
         ):
+            reason = "the graph authority changed while it was read"
             continue
-        try:
-            selected_text = selected1.decode("utf-8")
-        except UnicodeError:
+        if not isinstance(active_text, str) or not isinstance(canonical_text, str):
+            reason = "CamillaDSP returned no graph to compare"
             continue
+        active_fingerprint = _normalized_graph_fingerprint(active_text)
         if (
-            _normalized_graph_fingerprint(active_text) is None
-            or _normalized_graph_fingerprint(active_text)
-            != _normalized_graph_fingerprint(selected_text)
+            active_fingerprint is None
+            or active_fingerprint != _normalized_graph_fingerprint(canonical_text)
         ):
+            reason = (
+                "the running CamillaDSP graph does not match the "
+                "statefile-selected config"
+            )
             continue
         return _classify_bass_extension_snapshot(
             topology,
@@ -3950,7 +3989,7 @@ async def classify_active_bass_extension_graph(
             intent_bytes=intent1,
             staged_metadata_bytes=staged1,
         )
-    return _unsafe_boundary("bass_extension_active_snapshot_unstable", "live graph authority could not be proved")
+    return _unsafe_boundary("bass_extension_active_snapshot_unstable", reason)
 
 
 def _config_path_from_statefile_with_reason(

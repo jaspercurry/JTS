@@ -247,6 +247,7 @@ async def _capture_current_graph(
         authority = await classify_active_bass_extension_graph(
             producer.topology,
             read_active_graph_text=port.read_active_raw,
+            canonicalize_graph_text=port.canonicalize_raw,
             **authority_paths,
         )
         bass_profile_summary = authority.details.get(

@@ -148,14 +148,22 @@ async def _active_proof(
         read_active_graph_text=lambda: controller.get_active_config_raw(
             best_effort=False
         ),
+        canonicalize_graph_text=lambda raw: controller.normalize_config_raw(
+            raw, best_effort=False
+        ),
         applied_baseline_path=applied_baseline_path,
         profile_path=profile_path,
         intent_path=intent_path,
         staged_metadata_path=staged_metadata_path,
     )
     if not proof.allowed:
-        code = proof.issues[0]["code"] if proof.issues else proof.classification
-        raise BassExtensionApplyError(f"bass-extension graph proof failed: {code}")
+        issue = proof.issues[0] if proof.issues else {}
+        code = issue.get("code") or proof.classification
+        detail = issue.get("message") or ""
+        raise BassExtensionApplyError(
+            f"bass-extension graph proof failed: {code}"
+            + (f": {detail}" if detail else "")
+        )
 
 
 async def _reload_and_match(

@@ -71,6 +71,10 @@ from jasper.camilla_config_contract import (
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq, SoundProfile
 
+from tests._camilla_readback_double import (
+    camilla_canonicalize,
+    camilla_default_filled,
+)
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_bass_extension_profile import _applied_baseline, _profile
 
@@ -952,14 +956,13 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
             f"config_path: {authority['config']}\nvolume: -21.0\nmute: false\n",
             encoding="utf-8",
         )
-        return "\n".join(
-            line for line in text.splitlines() if not line.startswith("#")
-        ) + "\n"
+        return camilla_default_filled(text)
 
     graph = await classify_active_bass_extension_graph(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1016,12 +1019,13 @@ async def test_live_boundary_refuses_each_authority_mutation_across_await(
                 json.dumps({"mutation": callback_count}),
                 encoding="utf-8",
             )
-        return text
+        return camilla_default_filled(text)
 
     graph = await classify_active_bass_extension_graph(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1057,6 +1061,7 @@ async def test_live_boundary_refuses_mismatched_live_yaml_as_unstable(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1094,6 +1099,7 @@ async def test_live_boundary_refuses_invalid_live_result_with_stable_selected_fi
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1127,12 +1133,13 @@ async def test_live_boundary_refuses_changed_selector_as_unstable(
             f"config_path: {selected}\nvolume: -18.0\nmute: false\n",
             encoding="utf-8",
         )
-        return text
+        return camilla_default_filled(text)
 
     graph = await classify_active_bass_extension_graph(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1169,6 +1176,7 @@ async def test_live_boundary_refuses_changed_selected_file_as_unstable(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1202,6 +1210,7 @@ async def test_live_boundary_refuses_unparseable_selected_file_as_unstable(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1237,6 +1246,7 @@ async def test_live_boundary_refuses_embedded_nul_locator_without_raising(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1269,6 +1279,7 @@ async def test_live_boundary_refuses_recursive_yaml_without_raising(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1307,7 +1318,10 @@ async def test_live_boundary_preserves_stable_selected_classifier_issue(
     active = await classify_active_bass_extension_graph(
         topology,
         statefile_path=authority["statefile_path"],
-        read_active_graph_text=lambda: asyncio.sleep(0, result=selected_text),
+        read_active_graph_text=lambda: asyncio.sleep(
+            0, result=camilla_default_filled(selected_text)
+        ),
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1340,6 +1354,7 @@ async def test_live_boundary_fails_closed_on_arbitrary_reader_error(
         topology,
         statefile_path=authority["statefile_path"],
         read_active_graph_text=active_readback,
+        canonicalize_graph_text=camilla_canonicalize,
         applied_baseline_path=authority["applied_baseline_path"],
         profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
@@ -1367,6 +1382,7 @@ async def test_live_boundary_propagates_reader_cancellation(tmp_path: Path) -> N
             topology,
             statefile_path=authority["statefile_path"],
             read_active_graph_text=active_readback,
+            canonicalize_graph_text=camilla_canonicalize,
             applied_baseline_path=authority["applied_baseline_path"],
             profile_path=authority["profile_path"],
             intent_path=authority["intent_path"],

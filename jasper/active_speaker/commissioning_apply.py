@@ -1248,6 +1248,7 @@ async def _apply_measured_candidate_owned(
                         topology,
                         statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
                         read_active_graph_text=runtime_port.read_active_raw,
+                        canonicalize_graph_text=runtime_port.canonicalize_raw,
                         applied_baseline_path=baseline_profile_state_path(
                             state_path
                         ),
