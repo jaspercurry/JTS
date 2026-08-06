@@ -1533,9 +1533,10 @@ function staleValuesCommissioningView(groupOverrides = {}) {
       label: "Main speaker",
       status: "blocked",
       status_label: "after setup",
-      message: "Add the driver and crossover values first, then test the " +
-        "combined speaker.",
+      // Verbatim from the coordinator's _waiting_message for this state.
+      message: "Finish Add your components first, then test the combined speaker.",
       failure_message: "",
+      failure_code: "",
       has_audible_test: false,
       validated: false,
       test_level: levelPayload(-72).test_signal,
@@ -1593,7 +1594,7 @@ async function testCombinedTestCardAgreesWithItsDisabledButton() {
         { invitation, body });
     }
   }
-  if (!body.includes("Add the driver and crossover values first")) {
+  if (!body.includes("Finish Add your components first")) {
     fail("The card must carry the backend's reason for the gate", { body });
   }
   return { combinedTestCardAgreesWithItsDisabledButton: true };
@@ -1604,8 +1605,9 @@ async function testCombinedTestCardAgreesWithItsDisabledButton() {
 // message in this card" — and the card it pointed at is a step card the ladder
 // can legitimately keep closed, so the household had nowhere to look.
 async function testFailedCombinedTestBannerCarriesTheRemedy() {
-  const remedy = "The crossover preview is out of date for this layout. Go " +
-    "back to Add your components, run the preview, then retry the combined " +
+  // Verbatim from the coordinator's mapped copy for this blocker family.
+  const remedy = "JTS could not prepare the crossover setup for this layout. " +
+    "Go back to Add your components, run the preview, then retry the combined " +
     "test.";
   let posted = false;
   const fetchHandler = baseFetch({

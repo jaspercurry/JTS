@@ -817,13 +817,13 @@ def test_active_ladder_never_carries_done_copy_on_an_unreached_step():
     map_step = _step(view, "map")
     assert map_step["status"] == "todo"
     assert "are confirmed" not in map_step["message"]
-    # It must say what it is waiting on, and that is the values step.
-    assert "driver and crossover values" in map_step["message"]
+    # It must say what it is waiting on: the rung holding the baton.
+    assert COMMISSIONING_STEP_PAGE_TITLES["research"] in map_step["message"]
     # Same defect shape one rung further down: `safety` cannot advertise the
     # test it is not yet allowed to run.
     safety_step = _step(view, "safety")
     assert "Run the combined speaker test" not in safety_step["message"]
-    assert "driver and crossover values" in safety_step["message"]
+    assert COMMISSIONING_STEP_PAGE_TITLES["research"] in safety_step["message"]
 
 
 def test_active_ladder_disables_the_combined_test_until_its_prerequisites_hold():
@@ -838,7 +838,7 @@ def test_active_ladder_disables_the_combined_test_until_its_prerequisites_hold()
     group = view["combined_groups"][0]
     assert group["actions"]["start_combined_test"]["enabled"] is False
     assert group["status"] == "blocked"
-    assert "driver and crossover values" in group["message"]
+    assert COMMISSIONING_STEP_PAGE_TITLES["research"] in group["message"]
 
 
 def test_active_ladder_hands_the_baton_to_the_combined_test_when_ready():
@@ -1027,15 +1027,18 @@ def test_summed_test_failure_message_surfaces_an_unmapped_blocker_reason():
 
     assert "the crossover graph refused a channel remap" in message
 
-    # A blocker with no prose is reported as exactly that. It must NOT fall
-    # back to echoing the raw identifier: the /sound/ flow's no-jargon rule
+    # A blocker with no showable prose still gets plain copy and a next step.
+    # It must NOT echo the raw identifier: the /sound/ no-jargon rule
     # (tests/test_sound_setup.py::test_active_speaker_setup_copy_has_no_backend_jargon)
-    # forbids snake_case codes in household-facing copy.
+    # forbids snake_case codes in household-facing copy. The fail-loud half
+    # rides `combined_groups[].failure_code` instead — see
+    # test_blocked_combined_test_reports_its_blocker_code_out_of_band.
     coded_only = summed_test_failure_message([
         {"severity": "blocker", "code": "some_future_blocker"},
     ])
     assert "some_future_blocker" not in coded_only
-    assert "did not report why" in coded_only
+    assert "open System status" in coded_only
+    _assert_household_safe(coded_only, "coded-only blocker")
 
 
 def test_no_combined_test_failure_copy_leaks_a_raw_code():
@@ -1049,6 +1052,252 @@ def test_no_combined_test_failure_copy_leaks_a_raw_code():
     for code, message in _SUMMED_TEST_FAILURE_COPY:
         assert code not in message, code
         assert "_" not in message, message
+
+
+# Backend vocabulary that docs/HANDOFF-sound-preferences.md promises never
+# reaches this surface, plus the shapes that carry it: absolute filesystem
+# paths, exception class names, raw snake_case identifiers.
+_BANNED_COPY_TOKENS = (
+    "camilladsp",
+    "yaml",
+    "alsa",
+    "configfs",
+    "systemd",
+    "snd-aloop",
+)
+
+
+def _assert_household_safe(text: str, where: str) -> None:
+    assert "/" not in text, f"{where}: filesystem path in household copy: {text!r}"
+    assert not re.search(r"\b\w*(?:Error|Exception)\b", text), (
+        f"{where}: exception class in household copy: {text!r}"
+    )
+    assert "_" not in text, f"{where}: raw identifier in household copy: {text!r}"
+    lowered = text.lower()
+    for token in _BANNED_COPY_TOKENS:
+        assert token not in lowered, f"{where}: {token!r} in household copy: {text!r}"
+
+
+def test_combined_test_failure_copy_never_leaks_backend_prose():
+    """Real blocker prose from the load path must not reach a household verbatim.
+
+    These three messages are produced by the live commissioning-load path and
+    every one of them carries something this surface promises not to show — an
+    absolute path, an exception class, or the DSP engine's name. The unmapped
+    branch interpolates the blocker's own prose, so without sanitising it the
+    Python side walks straight around
+    tests/test_sound_setup.py::test_active_speaker_setup_copy_has_no_backend_jargon,
+    which reads only the JS files.
+
+    Mutation: drop the sanitiser and each of these fails here.
+    """
+
+    leaking = [
+        (
+            "rollback_anchor_missing",
+            "all-muted staged rollback anchor does not exist: "
+            "/var/lib/jasper/active_speaker/startup_rollback.yml",
+        ),
+        (
+            "current_config_snapshot_failed",
+            "could not read current CamillaDSP config path: OSError",
+        ),
+        (
+            "driver_commission_load_failed",
+            "CamillaDSP commissioning load failed: CamillaError",
+        ),
+    ]
+    for code, message in leaking:
+        rendered = summed_test_failure_message([
+            {"severity": "blocker", "code": code, "message": message},
+        ])
+        assert rendered, code
+        _assert_household_safe(rendered, code)
+
+
+def test_unmapped_blocker_prose_is_sanitised_before_it_is_shown():
+    """The guard for the FALLBACK branch, not for the mapping.
+
+    The three codes above are now mapped, so they never reach the sanitiser —
+    a test using them proves the table, not the scrubbing. These use an unmapped
+    code so the interpolating branch actually runs, and each case is chosen so a
+    different half of `_household_safe_reason` is what saves it.
+
+    Mutations, each of which fails a case here: drop the path substitution;
+    drop the exception substitution; drop the banned-vocabulary rejection.
+    """
+
+    def render(message: str) -> str:
+        return summed_test_failure_message([
+            {"severity": "blocker", "code": "some_future_blocker",
+             "message": message},
+        ])
+
+    # (a) path stripping is what saves this one — no identifier, no vocabulary.
+    stripped_path = render("could not open the quiet test tone at /tmp/tone.wav")
+    _assert_household_safe(stripped_path, "path")
+    assert "could not open the quiet test tone at" in stripped_path
+
+    # (b) exception-class stripping is what saves this one.
+    stripped_exception = render("could not start the quiet tone: RuntimeError")
+    _assert_household_safe(stripped_exception, "exception")
+    assert "could not start the quiet tone" in stripped_exception
+
+    # (c) rejection is what saves this one — nothing to strip, so the whole
+    # reason is dropped and the household gets the written fallback.
+    rejected = render("the CamillaDSP graph refused a channel remap")
+    _assert_household_safe(rejected, "vocabulary")
+    assert "refused a channel remap" not in rejected
+    assert "open System status" in rejected
+
+
+def test_every_step_message_is_household_safe():
+    """The same bar for the ladder's own copy, swept across the shapes."""
+
+    views = [
+        _stale_preview_view(),
+        build_commissioning_view(
+            _topology(),
+            design_draft={"status": "not_saved"},
+            crossover_preview={"status": "not_prepared"},
+            measurements=_no_measurements(),
+        ),
+        build_commissioning_view(
+            _topology(mode="full_range_passive"),
+            design_draft={"status": "not_saved"},
+            crossover_preview={"status": "not_prepared"},
+            measurements=_no_measurements(),
+        ),
+    ]
+    for view in views:
+        for step in view["steps"]:
+            _assert_household_safe(step["message"], f"step {step['id']}")
+        for group in view["combined_groups"]:
+            _assert_household_safe(group["message"], f"group {group['group_id']}")
+
+
+def test_anchor_remedy_routes_without_asserting_an_unverified_cause():
+    """`commission_startup_anchor_not_staged` covers ~8 distinct staging causes.
+
+    Staging reports "staged" only when the blocker count is zero and the file
+    exists, so this one code fires for an unresolved DAC route, an unresolved
+    subwoofer, an incomplete guard, a failed generation, a preset bind, and
+    more. The specific cause never reaches the coordinator — only the first
+    load issue is forwarded — so naming one ("the crossover preview is out of
+    date") is a diagnosis this module cannot make. Route without diagnosing;
+    the per-cause fix is issue #2184.
+    """
+
+    message = summed_test_failure_message([
+        {
+            "severity": "blocker",
+            "code": "commission_startup_anchor_not_staged",
+            "message": (
+                "could not stage the silent active-speaker setup before driver "
+                "testing"
+            ),
+        },
+    ])
+
+    assert "Add your components" in message
+    # Says what to DO, never why it failed.
+    assert "out of date" not in message
+    assert "stale" not in message.lower()
+
+
+def test_blocked_combined_test_reports_its_blocker_code_out_of_band():
+    """Fail loud without jargon: the code rides a field, not the sentence."""
+
+    view = build_commissioning_view(
+        _topology(),
+        design_draft=_ready_design(),
+        crossover_preview=_ready_preview(),
+        measurements={
+            "summary": {
+                "driver_checks_complete": True,
+                "captured_driver_check_count": 2,
+                "required_driver_check_count": 2,
+                "latest_summed_tests": {
+                    "mono": {
+                        "captured": False,
+                        "audio_emitted": False,
+                        "issues": [{
+                            "severity": "blocker",
+                            "code": "rollback_anchor_missing",
+                            "message": "anchor does not exist: /var/lib/jasper/x.yml",
+                        }],
+                    },
+                },
+                "latest_summed_validations": {},
+            },
+        },
+    )
+
+    group = view["combined_groups"][0]
+    assert group["failure_code"] == "rollback_anchor_missing"
+    _assert_household_safe(group["failure_message"], "failure_message")
+
+
+def test_waiting_copy_names_the_step_that_actually_holds_the_baton():
+    """A waiting rung must point at the live rung, not always at the values.
+
+    First-run state — no saved topology at all. `driver_values` reports
+    "not needed" (there is no active layout to need them), so a waiting message
+    hard-coded to the values rung told the household to finish work the card
+    directly above it had just said was unnecessary. The baton is on
+    Choose speaker layout, and that is what both waiting rungs must name.
+    """
+
+    view = build_commissioning_view(
+        OutputTopology.from_mapping({
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "empty",
+            "name": "Empty",
+            "status": "draft",
+            "hardware": {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+                "card_id": "DAC8",
+            },
+            "speaker_groups": [],
+        }),
+        design_draft={"status": "not_saved"},
+        crossover_preview={"status": "not_prepared"},
+        measurements=_no_measurements(),
+    )
+
+    assert _active_steps(view) == ["layout"]
+    layout_title = COMMISSIONING_STEP_PAGE_TITLES["layout"]
+    for step_id in ("map", "safety"):
+        step = _step(view, step_id)
+        assert step["status"] == "todo", step_id
+        assert layout_title in step["message"], (step_id, step["message"])
+        # It must not demand the values the research rung just called unneeded.
+        assert "driver and crossover values" not in step["message"], step_id
+
+
+def test_waiting_copy_names_the_values_step_when_that_is_the_live_one():
+    """The same derivation, one rung along — the jts5 field state."""
+
+    view = _stale_preview_view()
+
+    assert _active_steps(view) == ["research"]
+    research_title = COMMISSIONING_STEP_PAGE_TITLES["research"]
+    assert research_title in _step(view, "map")["message"]
+    assert research_title in _step(view, "safety")["message"]
+    assert research_title in view["combined_groups"][0]["message"]
+
+
+def test_step_labels_match_the_titles_the_page_renders():
+    """One name per step. Nothing renders `label`, but a second name is a bug
+    in waiting — and this module now quotes titles in remedy copy."""
+
+    view = _stale_preview_view()
+
+    for step in view["steps"]:
+        assert step["label"] == COMMISSIONING_STEP_PAGE_TITLES[step["id"]], step["id"]
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent

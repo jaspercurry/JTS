@@ -446,13 +446,28 @@ can still reach. Each step tells `build_commissioning_view` only whether it is
 finished and whether this shape will ever run it;
 `_derive_step_statuses` decides which one holds the baton, and every step
 message is chosen from that derived status so a `todo` step can never carry
-done-state copy. Steps after the live one are `todo`, and the combined-driver
-test's own action is disabled until both the values and the outputs are done —
-`jasper-web`'s staging refusal stays as the backstop behind it. Before
-2026-08-06 each step decided "am I active?" alone, so a redrawn active 2-way
-that still carried confirmed outputs lit up the values step AND the combined
-test three rungs below it; the household pressed the test and the graph
-fail-closed on a stale staged config with no way forward.
+done-state copy. A waiting step names the rung that actually holds the baton
+(`_waiting_message`) rather than a fixed prerequisite — on a box with no saved
+layout the values rung reports "not needed", so copy hard-coded to it demanded
+work the card above had just called unnecessary. Steps after the live one are
+`todo`, and the combined-driver test's own action is disabled until both the
+values and the outputs are done — `jasper-web`'s staging refusal stays as the
+backstop behind it. Before 2026-08-06 each step decided "am I active?" alone, so
+a redrawn active 2-way that still carried confirmed outputs lit up the values
+step AND the combined test three rungs below it; the household pressed the test
+and the graph fail-closed on a stale staged config with no way forward.
+
+Combined-test failure copy is owned by `summed_test_failure_message` and grouped
+by the ACTION available to a household, not by the backend's cause: one code
+(`commission_startup_anchor_not_staged`) covers every staging blocker, and the
+sub-cause is not forwarded to the coordinator, so the copy routes ("go back to
+Add your components") without diagnosing ("the preview is stale") — issue #2184
+tracks plumbing the sub-code through. An unmapped blocker's own prose is
+sanitised (`_household_safe_reason`: absolute paths and exception classes
+stripped, backend vocabulary rejected outright) before it is shown, because that
+prose carries all three and the no-jargon guard in `tests/test_sound_setup.py`
+reads only the JS. The raw code still rides `combined_groups[].failure_code`, a
+structured field, so a new failure mode is loud without leaking onto the card.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
 exists. The UI keeps one card open at a time, prevents opening future
