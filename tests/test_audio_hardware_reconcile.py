@@ -2615,6 +2615,74 @@ def test_reconcile_renders_the_width_matched_cutover_and_is_idempotent(
     assert (cutover.stat().st_mtime_ns, cutover.read_bytes()) == before
 
 
+def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
+    """A corrupt topology must FAIL the render, not succeed unmuted.
+
+    `flat_graph_muted_outputs` fails SOFT — mute nothing — which is right for
+    every caller that has a guard behind it (install's statefile check, the
+    reset's contract call, the carrier's `can_host_eq`). The reconciler has
+    NOTHING behind it: it renders on boot / udev / topology-save, and CamillaDSP
+    loads the cutover from its statefile on its next start with no ordering to
+    this. So a soft failure here would overwrite a healthy width-matched graph
+    with an unmuted one and log success — silently, in the hazard direction.
+    Keeping the previous file is the fail-closed answer.
+    """
+    conf_dir = tmp_path / "camilladsp"
+    conf_dir.mkdir()
+    topology = tmp_path / "output_topology.json"
+    extra = {
+        "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
+        "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
+        "PYTHONPATH": str(ROOT),
+    }
+
+    # A healthy mono box first: the good, width-matched graph on disk.
+    topology.write_text(json.dumps(_mono_topology_payload()), encoding="utf-8")
+    healthy = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+    assert healthy.returncode == 0, healthy.stderr
+    cutover = conf_dir / "outputd-cutover.yml"
+    good = cutover.read_bytes()
+    assert b"as_out1_commission_mute" in good
+
+    # Now the topology goes unparseable underneath it.
+    topology.write_text("{not json", encoding="utf-8")
+    corrupt = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
+    )
+
+    # The reconcile itself still completes (a render failure is best-effort),
+    # but the render is reported FAILED and the good graph is untouched.
+    assert corrupt.returncode == 0, corrupt.stderr
+    assert _flat_cutover_event(corrupt.stderr)["result"] == "failed"
+    assert cutover.read_bytes() == good
+
+
+def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
+    """MISSING is not CORRUPT. A fresh box declares nothing, so nothing is
+    undeclared, and the golden unmuted graph is the correct render."""
+    conf_dir = tmp_path / "camilladsp"
+    conf_dir.mkdir()
+    # No output_topology.json written at all.
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
+            "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
+            "PYTHONPATH": str(ROOT),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _flat_cutover_event(result.stderr)["result"] == "ok"
+    rendered = (conf_dir / "outputd-cutover.yml").read_text(encoding="utf-8")
+    assert "commission_mute" not in rendered
+
+
 def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
     tmp_path: Path,
 ):

@@ -366,6 +366,120 @@ def test_reset_from_the_web_sandbox_reports_the_render_it_could_not_do(
     assert "Read-only file system" in (result["camilla"]["render_error"] or "")
 
 
+def test_reset_reloads_the_graph_the_reconciler_rendered_underneath_it(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One reset must converge the RUNNING graph, not just the file.
+
+    The web-path sequence: the in-process render cannot write /etc/camilladsp
+    from jasper-web's sandbox, so `_converge_camilla_graph` loads the STALE
+    mono-era graph; the reconciler then re-renders the file correctly — but it
+    restarts outputd only, never jasper-camilla, and CamillaDSP reads its config
+    at load time. Without the reload the household gets: reset #1 -> disk
+    correct, RUNNING graph still half-muted, one output silent until a second
+    reset / deploy / reboot.
+    """
+    from jasper.sound import camilla_yaml as sound_camilla_yaml
+    from jasper.sound.camilla_yaml import (
+        emit_flat_outputd_cutover_config,
+        render_flat_cutover_configs,
+    )
+
+    # The mono-era render the last deploy left on disk.
+    emit_flat_outputd_cutover_config(
+        out_path=flat_config, topology=_mono_topology_for_reset()
+    )
+    assert "commission_mute" in flat_config.read_text(encoding="utf-8")
+
+    # jasper-web's sandbox: the in-process render cannot write.
+    def _sandboxed(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(
+        sound_camilla_yaml, "render_flat_cutover_configs", _sandboxed
+    )
+
+    # The root reconciler, which CAN write, does the render when kicked.
+    def _reconcile_renders():
+        render_flat_cutover_configs(
+            config_dir=flat_config.parent, topology=_after_draft()
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", _reconcile_renders)
+
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            # Snapshot what CamillaDSP would actually be running.
+            loaded.append(Path(path).read_text(encoding="utf-8"))
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    # The RUNNING graph — the last thing CamillaDSP was handed — has both
+    # channels live. This is the assertion that fails without the reload.
+    assert loaded, "CamillaDSP was never handed a graph"
+    assert "commission_mute" not in loaded[-1]
+    assert result["camilla"]["reloaded_after_render"] is True
+    assert result["camilla"]["ok"] is True
+    # ...and the first load really did take the stale graph, so the reload is
+    # doing the work rather than the test proving nothing.
+    assert "commission_mute" in loaded[0]
+
+
+def test_reset_does_not_reload_when_the_render_changed_nothing(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root CLI path already rendered the final bytes, so a second
+    CamillaDSP load would be a needless reload on every reset."""
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+
+    loads: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loads.append(path)
+            return True
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert len(loads) == 1
+    assert "reloaded_after_render" not in result["camilla"]
+
+
+def _mono_topology_for_reset():
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": DETECTED_LABEL,
+            "physical_output_count": DETECTED_OUTPUTS,
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
 def test_sound_page_surfaces_the_reset_render_error() -> None:
     """The honesty belt: `render_error` must reach the household, not just logs.
 

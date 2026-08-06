@@ -90,9 +90,22 @@ def _cmd_render_flat_cutover(args: argparse.Namespace) -> int:
     """
 
     from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.output_topology import OutputTopologyError
     from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
-    result = render_flat_cutover_configs(config_dir=args.config_dir)
+    try:
+        result = render_flat_cutover_configs(config_dir=args.config_dir)
+    except OutputTopologyError as exc:
+        # Fail LOUD and write nothing. The reconciler has no guard behind this
+        # render, so silently emitting the unmuted golden graph for an
+        # unparseable topology would overwrite a healthy width-matched one.
+        # Keeping the previous file on disk is the fail-closed answer; the
+        # operator sees the reason in the journal / install transcript.
+        print(
+            f"refusing to render flat cutover configs: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     if args.json:
         print(json.dumps(
             {

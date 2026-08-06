@@ -571,11 +571,32 @@ def render_flat_cutover_configs(
     own ``set_env_var_if_changed``. The mode is asserted on every pass even when
     the bytes match, so a file left narrow by an older writer is repaired.
 
-    Never raises for an unreadable existing file — that is simply "different".
-    Write failures DO raise: the caller decides whether a failed render is fatal
-    (install) or best-effort (the reset's convergence step).
+    Never raises for an unreadable existing CONFIG file — that is simply
+    "different". Write failures DO raise: the caller decides whether a failed
+    render is fatal (install) or best-effort (the reset's convergence step).
+
+    **A corrupt saved TOPOLOGY raises ``OutputTopologyError`` and writes
+    nothing.** This function owns that distinction because it is the one that
+    loads the topology, so missing / corrupt / ok is answered in a single place:
+
+    * **missing** — nothing is declared, so nothing is undeclared. Renders the
+      golden unmuted graph, which is correct for a fresh box.
+    * **corrupt** — refuse. ``flat_graph_muted_outputs`` fails SOFT (mutes
+      nothing) because its other callers all have a guard behind them, but the
+      reconciler has none: it renders on boot / udev / topology-save, and
+      CamillaDSP loads the cutover from its statefile on its next start with no
+      ordering to this. A soft failure there would overwrite a healthy
+      width-matched graph with an unmuted one and log success — silently, in the
+      hazard direction. Keeping the previous file is the fail-closed answer.
     """
 
+    if topology is None:
+        # Explicitly, so a corrupt artifact raises HERE rather than being
+        # swallowed downstream into "mute nothing". A missing file returns an
+        # empty draft (the golden case) and does not raise.
+        from jasper.output_topology import load_output_topology_strict
+
+        topology = load_output_topology_strict()
     directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent
     rendered: list[RenderedFlatConfig] = []
     for name, text in (

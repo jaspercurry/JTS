@@ -1295,9 +1295,15 @@ repair_generated_env_permissions
 render_changed=0
 render_asound_if_needed && render_changed=1
 render_ring_conf_if_needed
-# After the asound/outputd env is settled (the graph reads the active DAC's
-# latency floor from it) and BEFORE any camilla restart below, so a restart
-# loads the graph this pass rendered rather than the previous topology's.
+# After the asound/outputd env is settled — the graph reads the active DAC's
+# latency floor from it.
+#
+# This script never restarts jasper-camilla (it bounces outputd only), and
+# CamillaDSP reads its config at LOAD time, so re-rendering here does NOT make
+# the new graph run. It lands on disk for whoever loads next: camilla's own
+# start, a deploy's statefile seed, or `jasper-output-topology-reset`, which
+# blocks on this unit and then re-loads if this render changed the file
+# (`_reload_if_render_changed` in jasper/cli/output_topology_reset.py).
 render_flat_cutover_if_needed
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
