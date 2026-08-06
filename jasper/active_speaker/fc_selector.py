@@ -304,30 +304,29 @@ def select_fc(
     baseline = next(
         (s for s in ordered if math.isclose(s.fc_hz, float(configured_hz))), None
     )
-    common = dict(
-        configured_hz=float(configured_hz), scores=ordered,
-        refusals=tuple(refusals), limits=dict(limits),
-        evaluated=len(ordered), planned=int(planned),
-    )
+    def _verdict(
+        verdict: str, recommended_hz: float | None, margin_db: float | None,
+    ) -> FcSelection:
+        return FcSelection(
+            verdict=verdict, configured_hz=float(configured_hz),
+            recommended_hz=recommended_hz, margin_db=margin_db,
+            scores=ordered, refusals=tuple(refusals), limits=dict(limits),
+            evaluated=len(ordered), planned=int(planned),
+        )
+
     if baseline is None or len(ordered) < 2:
         # Nothing to compare — the honest verdict is the configured path, and
         # the disclosure's job is to say why nothing was proposed (``limits``
         # carries the derived bounds for exactly that).
-        return FcSelection(
-            verdict=(
-                SELECTION_NOTHING_TO_COMPARE if baseline is None
-                else SELECTION_KEEP_CONFIGURED
-            ),
-            recommended_hz=None, margin_db=None, **common,
+        return _verdict(
+            SELECTION_NOTHING_TO_COMPARE if baseline is None
+            else SELECTION_KEEP_CONFIGURED,
+            None, None,
         )
     best = ordered[0]
     improvement = baseline.score - best.score
     if best.fc_hz == baseline.fc_hz or improvement < float(margin_db):
-        return FcSelection(
-            verdict=SELECTION_KEEP_CONFIGURED,
-            recommended_hz=None, margin_db=float(improvement), **common,
-        )
-    return FcSelection(
-        verdict=SELECTION_RECOMMEND,
-        recommended_hz=float(best.fc_hz), margin_db=float(improvement), **common,
+        return _verdict(SELECTION_KEEP_CONFIGURED, None, float(improvement))
+    return _verdict(
+        SELECTION_RECOMMEND, float(best.fc_hz), float(improvement)
     )
