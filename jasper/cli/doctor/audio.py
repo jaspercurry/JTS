@@ -35,7 +35,7 @@ from ...output_hardware import (
     OutputHardwareState,
     load_state as _load_output_hardware_state,
 )
-from ...mic_presence import read_mic_presence
+from ...mic_presence import MicPresence, read_mic_presence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -171,6 +171,36 @@ def _check_arecord_l_card_device(card: int, device: int) -> bool:
             return True
     return False
 
+def _soften_for_push_to_talk(
+    result: CheckResult, presence: MicPresence,
+) -> CheckResult:
+    """Downgrade a *local* mic failure to an advisory when an accessory runs the box.
+
+    A speaker with no local microphone but a paired mic-bearing remote is a
+    working push-to-talk box (issue #2205), not a broken one — the voice-input
+    gate is open and jasper-voice is running on the accessory source. These
+    checks probe the local device, so they are the surface that can actually
+    tell "no local mic" from "local mic present"; the `microphone` headline
+    cannot, because it reads the OR verdict.
+
+    The local finding stays visible (``warn``, original detail appended) so an
+    operator can still see the local mic is gone. Only the register changes:
+    expected-idle, not failure. A ``warn``/``ok`` result is returned untouched —
+    this never upgrades a status.
+
+    Applied only to *device-absent / cannot-open* failures. A mic that opens but
+    records silence is a present-and-broken local mic, not an absent one; that
+    stays a red failure regardless of what accessory is paired."""
+    if result.status != "fail" or not presence.accessory_present:
+        return result
+    return CheckResult(
+        result.name,
+        "warn",
+        "no local microphone — voice runs push-to-talk only "
+        f"({presence.accessory_summary}). Local probe: {result.detail}",
+    )
+
+
 @doctor_check(order=3.5, group="audio", label="microphone")
 def check_microphone() -> CheckResult:
     """Single headline for microphone presence — the one flag for "is there
@@ -214,7 +244,8 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     # independently re-probing `arecord -L` here only to report a red FAILURE
     # for an expected, auto-recovering state was the exact contradiction this
     # check used to create. See jasper/mic_presence.py.
-    if read_mic_presence().absent_confirmed:
+    presence = read_mic_presence()
+    if presence.absent_confirmed:
         return CheckResult(
             "mic ALSA card", "ok",
             "no usable microphone input — see the `microphone` check "
@@ -238,7 +269,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
         label = f"mic ALSA card ({cfg.mic_device})"
         if _check_arecord_l_card_device(card, device):
             return CheckResult(label, "ok", f"card {card} device {device} present")
-        return CheckResult(
+        return _soften_for_push_to_talk(CheckResult(
             label, "fail",
             f"no card {card} / device {device} in `arecord -l` output. "
             f"The AEC bridge migrated to UDP in PR 2 and the old "
@@ -246,7 +277,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             f"JASPER_MIC_DEVICE to `udp:9876` (or `Array` for chip-direct). "
             f"Verify with `aplay -l | grep Loopback` and "
             f"`systemctl status jasper-aec-bridge`.",
-        )
+        ), presence)
     card = _extract_card_name(cfg.mic_device)
     if card is None:
         return CheckResult(
@@ -255,7 +286,9 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             f"JASPER_MIC_DEVICE='{cfg.mic_device}' is empty or numeric; "
             "skipping name check (open test will still run)",
         )
-    return check_alsa_card(card, "arecord", f"mic ALSA card ({card})")
+    return _soften_for_push_to_talk(
+        check_alsa_card(card, "arecord", f"mic ALSA card ({card})"), presence,
+    )
 
 @doctor_check(order=5, group="audio")
 def check_loopback() -> CheckResult:
@@ -350,7 +383,8 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     # line. A genuine open failure (no absent verdict but the device won't open
     # — custom or busy mic) still falls through to the probe + its fail below.
     # See jasper/mic_presence.py and docs/HANDOFF-hotplug-resilience.md "Layer 3".
-    if read_mic_presence().absent_confirmed:
+    presence = read_mic_presence()
+    if presence.absent_confirmed:
         return CheckResult(
             "mic capture", "ok",
             "no usable microphone input (expected) — see the `microphone` "
@@ -388,6 +422,9 @@ def check_mic_capture(cfg: Config) -> CheckResult:
         )
         peak = int(np.abs(rec).max())
         if peak == 0:
+            # NOT softened: the device opened, so a local microphone IS present
+            # — it is muted or misrouted. A paired accessory does not make that
+            # expected, and "no local microphone" would be a lie here.
             return CheckResult(
                 "mic capture", "fail",
                 f"recorded silence from {cfg.mic_device} — wrong device or muted",
@@ -404,7 +441,9 @@ def check_mic_capture(cfg: Config) -> CheckResult:
                 "mic capture", "ok",
                 f"skipped — jasper-voice holds {cfg.mic_device} (probe error: {e})",
             )
-        return CheckResult("mic capture", "fail", f"{cfg.mic_device}: {e}")
+        return _soften_for_push_to_talk(
+            CheckResult("mic capture", "fail", f"{cfg.mic_device}: {e}"), presence,
+        )
 
 @doctor_check(order=7, group="audio", label="tts output", needs_cfg=True)
 def check_tts_open(cfg: Config) -> CheckResult:

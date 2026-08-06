@@ -17,16 +17,22 @@ ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 MODE_FILE="${JASPER_AEC_MODE_FILE:-/var/lib/jasper/aec_mode.env}"
 VOICE_PROVIDER_FILE="${JASPER_VOICE_PROVIDER_FILE:-/var/lib/jasper/voice_provider.env}"
 VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice_provider_ids}"
-# Persistent NEGATIVE marker for the mic-presence gate
+# Persistent NEGATIVE marker for the voice-input gate
 # (docs/HANDOFF-hotplug-resilience.md "Layer 1"). This reconciler is the
-# SINGLE WRITER: created on every "no usable mic, park voice" path,
-# removed on every "mic present, (re)start voice" path. jasper-voice.service
-# gates ExecStart on its ABSENCE (ConditionPathExists=!<this path>), so a
-# no-mic box never start-crash-loops. PERSISTENT (/var/lib/jasper, not /run)
-# so a no-mic box stays gated across reboot before any reconcile runs;
-# absence fails OPEN (voice runs). The path is duplicated as a literal in
-# jasper-voice.service and jasper/voice/input_presence.py; agreement is
-# pinned by tests/test_voice_input_gate.py.
+# SINGLE WRITER: created on every "no usable voice input, park voice" path,
+# removed on every "voice input available, (re)start voice" path.
+# jasper-voice.service gates ExecStart on its ABSENCE
+# (ConditionPathExists=!<this path>), so a no-input box never
+# start-crash-loops. PERSISTENT (/var/lib/jasper, not /run) so a no-input box
+# stays gated across reboot before any reconcile runs; absence fails OPEN
+# (voice runs). The path is duplicated as a literal in jasper-voice.service and
+# jasper/voice/input_presence.py; agreement is pinned by
+# tests/test_voice_input_gate.py.
+#
+# "Usable voice input" is an OR over TWO owners: a local microphone (this
+# script) and a paired accessory microphone (jasper-accessory-reconcile — see
+# accessory_mic_present below). This script stays the single writer of the
+# derived AND; the accessory owner asks it to re-derive by starting this unit.
 VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
@@ -43,6 +49,10 @@ PROC_ROOT="${JASPER_PROC_ROOT:-/proc}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
+# Deferred voice restart for the "no local mic, accessory mic paired" case.
+# Set by stop_voice, flushed by restart_voice_for_accessory_mic once the
+# calling path's JASPER_MIC_DEVICE fixups have been written.
+ACCESSORY_VOICE_RESTART_NEEDED=0
 # Opt-in lab observation only. Production DAC authorization is fixed profile
 # data and never depends on this short live clock sample.
 CHIP_REF_OBSERVE=0
@@ -984,10 +994,52 @@ enable_start_aec() {
     run_systemctl restart jasper-aec-bridge.service
 }
 
+# The ACCESSORY half of the voice-input gate.
+#
+# "Is there usable voice input on this box?" is an OR over two independently
+# owned facts: a locally-attached microphone (this reconciler's job) and a
+# paired accessory microphone (jasper-accessory-reconcile's job, published as
+# JASPER_MANUAL_MIC_SOURCES). The gate marker below is the AND of their
+# absences, so every park-for-no-local-mic path has to consult this first.
+#
+# We do NOT look at BlueZ and we do NOT parse the env file in shell: the
+# published file IS the accessory verdict, and jasper.accessories.mic_env owns
+# its path and format (which is why no path literal appears here).
+#
+# Same principle as grouping_voice_parked — another owner's derived fact is
+# never re-derived in bash — but a different mechanism, deliberately.
+# JASPER_GROUPING_VOICE_PARK=1 is a fixed exact line, so a `grep -Fxq` IS a
+# faithful read. JASPER_MANUAL_MIC_SOURCES carries a structured, variable value
+# that jasper/config.py validates, so a shell match would be a second parser
+# free to disagree with the daemon's. We shell out instead, the way
+# observe_mic_profile_state already does for the mic-profile resolver.
+#
+# Fail-closed on EVERY error, including a missing interpreter: "no accessory"
+# means the marker gets written, which is exactly the pre-change behaviour.
+ACCESSORY_MIC_SOURCES=""
+
+accessory_mic_present() {
+    local payload
+    ACCESSORY_MIC_SOURCES=""
+    if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        log "accessory mic probe unavailable at ${MIC_PROFILE_PYTHON}; treating accessory microphones as absent"
+        return 1
+    fi
+    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.accessories.mic_env 2>/dev/null)"; then
+        # Source ids never contain whitespace (the parser rejects any that do),
+        # so this only strips the trailing newline.
+        ACCESSORY_MIC_SOURCES="${payload//[[:space:]]/}"
+        if [[ -n "$ACCESSORY_MIC_SOURCES" ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Mic-presence gate marker writers (docs/HANDOFF-hotplug-resilience.md
-# "Layer 1"). mark = "no usable mic, voice is parked"; clear = "a mic is
-# present". jasper-voice.service's ConditionPathExists=!<marker> reads the
-# absence. Both best-effort: a marker write failing must never abort a
+# "Layer 1"). mark = "no usable voice input, voice is parked"; clear = "voice
+# input is available". jasper-voice.service's ConditionPathExists=!<marker>
+# reads the absence. Both best-effort: a marker write failing must never abort a
 # reconcile pass (the daemon's exit-66 backstop still parks a no-mic start).
 # Do NOT re-mode the parent dir here — same trap as ensure_mode_file (#827).
 mark_voice_input_absent() {
@@ -1014,9 +1066,10 @@ clear_voice_input_absent() {
 }
 
 restart_voice() {
-    # A mic is present (this is only called from the mic-present paths),
+    # Voice input is available — either a local mic (the mic-present paths) or
+    # a paired accessory microphone (restart_voice_for_accessory_mic below) —
     # so open the presence gate before (re)starting. Done even on the
-    # provider-unset branch below: the mic axis is genuinely satisfied;
+    # provider-unset branch below: the input axis is genuinely satisfied;
     # the separate `disable --now` parks voice on the provider axis.
     clear_voice_input_absent
     if ! voice_provider_configured; then
@@ -1035,6 +1088,15 @@ restart_voice() {
 }
 
 park_managed_xvf() {
+    # Deliberately NOT accessory-aware, unlike stop_voice. This path parks a
+    # microphone that IS attached but is not safely usable (wrong firmware,
+    # unapproved output DAC, alignment not commissioned), and it leaves
+    # JASPER_MIC_DEVICE pointing at the AEC bridge's udp:PORT while
+    # stop_disable_aec has just stopped that bridge. Starting voice here would
+    # bind an unfed UDP socket, stall the wake loop, and hit WatchdogSec=30s in
+    # a restart spiral that escalates to StartLimitAction=reboot — see the
+    # jasper-aec-bridge note in jasper-voice.service. Un-parking this path needs
+    # the mic device normalised away from udp: first; that is its own change.
     local reason="$1"
     mark_voice_input_absent "$reason"
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
@@ -1153,13 +1215,32 @@ restart_outputd_if_needed() {
 }
 
 stop_voice() {
-    # Only ever reached when no candidate mic is present, so this is the
-    # canonical "park voice for no mic" action: stamp the presence marker
-    # so jasper-voice's ConditionPathExists gate keeps it from restarting
-    # (or boot-starting) until a mic reappears and clears it.
-    mark_voice_input_absent "no candidate microphone present"
+    # Only ever reached when no candidate LOCAL mic is present. That is only
+    # half the voice-input question: a paired accessory microphone is a working
+    # push-to-talk input on its own, and parking voice would make the remote's
+    # button do nothing (issue #2205). So consult the accessory half first, and
+    # park only when BOTH are absent — which is what the marker claims.
+    if accessory_mic_present; then
+        log "no candidate local microphone, but accessory microphone(s) present (${ACCESSORY_MIC_SOURCES}); keeping jasper-voice up for push-to-talk"
+        # DEFERRED, not immediate: restart_voice queues the systemd job with
+        # --no-block, and the callers below still have JASPER_MIC_DEVICE
+        # fixups to write. Starting voice here would race it into reading the
+        # stale device. Mirrors OUTPUTD_RESTART_NEEDED.
+        ACCESSORY_VOICE_RESTART_NEEDED=1
+        return
+    fi
+    mark_voice_input_absent "no candidate microphone present and no accessory microphone paired"
     run_systemctl stop jasper-voice.service
     reset_failed_units jasper-voice.service
+}
+
+# Flush the deferred accessory-mic voice restart. Called at the end of every
+# path that can reach stop_voice, AFTER that path's env writes have landed.
+restart_voice_for_accessory_mic() {
+    if [[ "$ACCESSORY_VOICE_RESTART_NEEDED" == "1" ]]; then
+        ACCESSORY_VOICE_RESTART_NEEDED=0
+        restart_voice
+    fi
 }
 
 load_env_file "$ENV_FILE"
@@ -1352,6 +1433,7 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
             log "AEC disabled and no candidate mic present"
         fi
     fi
+    restart_voice_for_accessory_mic
     exit 0
 fi
 
@@ -1393,3 +1475,4 @@ if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" || "$CURRENT_MIC" =~ ^hw:[0-9
 else
     log "no candidate mic present"
 fi
+restart_voice_for_accessory_mic

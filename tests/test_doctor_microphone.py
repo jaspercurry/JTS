@@ -97,3 +97,88 @@ def test_absent_mic_is_one_flag_zero_failures(monkeypatch: pytest.MonkeyPatch) -
     statuses = [r.status for r in results]
     assert statuses.count("fail") == 0
     assert statuses.count("warn") == 1
+
+
+# --- push-to-talk-only box (issue #2205) -------------------------------------
+
+def _push_to_talk_only() -> MicPresence:
+    """Gate open (a remote is paired), but no local mic to probe."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
+def test_push_to_talk_box_reads_as_advisory_not_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression this PR must not ship: opening the gate for an accessory
+    makes the local-device checks actually probe, and on a box with no local mic
+    they would find nothing and go RED. A working push-to-talk speaker must not
+    look broken."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    monkeypatch.setattr(
+        audio, "check_alsa_card",
+        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
+    )
+    card = audio.check_mic_card_matches_config(_CFG)
+    assert card.status == "warn"
+    assert "push-to-talk only" in card.detail
+    assert "wiim_remote_2" in card.detail
+    # The local finding is preserved, not swallowed.
+    assert "absent" in card.detail
+
+
+def test_push_to_talk_box_is_distinguishable_from_a_working_local_mic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator must be able to tell the two apart. The headline names the
+    accessory and never claims "present"; the local probe says which half is
+    actually there."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    headline = audio.check_microphone()
+    assert headline.status == "ok"
+    assert "push-to-talk accessory: wiim_remote_2" in headline.detail
+    assert not headline.detail.startswith("present")
+
+    monkeypatch.setattr(audio, "read_mic_presence", _present)
+    assert "push-to-talk" not in audio.check_microphone().detail
+
+
+def test_soften_never_upgrades_a_passing_or_warning_result() -> None:
+    presence = _push_to_talk_only()
+    for status in ("ok", "warn"):
+        original = audio.CheckResult("mic capture", status, "detail")
+        assert audio._soften_for_push_to_talk(original, presence) is original
+
+
+def test_recorded_silence_stays_a_failure_even_with_an_accessory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scope guard on the softening: a mic that OPENS but records silence is a
+    present-and-broken local mic, not an absent one. Calling that
+    "no local microphone" would be a lie, and hiding it behind an accessory
+    would let a muted array go unnoticed."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    rec = types.SimpleNamespace()
+
+    class _FakeSd:
+        @staticmethod
+        def rec(*_a: object, **_k: object) -> object:
+            return rec
+
+    class _FakeNp:
+        @staticmethod
+        def abs(_x: object) -> object:
+            return types.SimpleNamespace(max=lambda: 0)
+
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSd)
+    monkeypatch.setitem(__import__("sys").modules, "numpy", _FakeNp)
+    result = audio.check_mic_capture(_CFG)
+    assert result.status == "fail"
+    assert "recorded silence" in result.detail
+    assert "push-to-talk" not in result.detail
+
+
+def test_soften_leaves_failures_alone_without_an_accessory() -> None:
+    """No accessory means a missing local mic really is the whole story — the
+    existing red failure must survive untouched."""
+    original = audio.CheckResult("mic capture", "fail", "Array: no such device")
+    assert audio._soften_for_push_to_talk(original, _present_non_xvf()) is original

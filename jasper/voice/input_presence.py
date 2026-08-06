@@ -6,8 +6,24 @@
 
 `jasper-aec-reconcile` is the single *writer* of a persistent negative
 marker that means "the reconciler positively determined there is no
-usable microphone, so jasper-voice is intentionally parked." Several
-read-only surfaces need to consult it:
+usable voice input, so jasper-voice is intentionally parked."
+
+"Usable voice input" is an OR over two independently-owned facts, and the
+marker is the AND of their absences:
+
+- a **local** microphone, resolved by `jasper-aec-reconcile` itself;
+- an **accessory** microphone, resolved by `jasper-accessory-reconcile` and
+  published as `JASPER_MANUAL_MIC_SOURCES` (`jasper.accessories.mic_env`).
+
+The AEC reconciler consults the accessory owner's *published file* — never
+BlueZ — before it writes the marker, so a box with no local mic but a paired
+mic-bearing remote stays a working push-to-talk speaker (issue #2205). It
+remains the single writer; when the accessory half moves,
+`jasper-accessory-reconcile` starts it rather than writing here itself.
+`ConditionPathExists` cannot express an AND, which is exactly why the AND is
+computed before the single write instead of split across two markers.
+
+Several read-only surfaces need to consult it:
 
 - `jasper-voice.service` gates `ExecStart` on it via
   ``ConditionPathExists=!<marker>`` (evaluated by PID 1, not this
@@ -20,9 +36,14 @@ read-only surfaces need to consult it:
 Negative polarity + persistent storage are deliberate; see
 ``docs/HANDOFF-hotplug-resilience.md`` "Layer 1". The marker is the
 *absence* signal so the default (no file) fails **open** — voice runs
-unless the reconciler has explicitly said there is no mic — and it lives
-in ``/var/lib/jasper`` (persistent, not ``/run``) so a no-mic box is
+unless the reconciler has explicitly said there is no input — and it lives
+in ``/var/lib/jasper`` (persistent, not ``/run``) so a no-input box is
 gated from the very first instant of boot, before any reconcile runs.
+That cold-boot property is preserved by the accessory OR: a box with *no*
+input at all still carries the marker from its last reconcile and is gated at
+instant zero, while a box whose accessory satisfies the gate correctly boots
+with it open. A pairing change made while the box was off converges on the
+first accessory reconcile of the next boot, without a reboot.
 
 The path is duplicated as a literal in the systemd unit
 (``ConditionPathExists=``) and the bash reconciler; the agreement is
@@ -51,7 +72,8 @@ def voice_input_absent_marker_path() -> str:
 
 def voice_parked_no_mic() -> bool:
     """True when the AEC reconciler has marked the speaker as having no
-    usable microphone (so jasper-voice is intentionally parked).
+    usable voice input — neither a local microphone nor a paired accessory
+    one — so jasper-voice is intentionally parked.
 
     Fail-safe to False: an unreadable/erroring stat must never *invent*
     a no-mic state — the gate's whole point is that only a positive

@@ -269,6 +269,11 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
             )
         if command == ("is-active", "--quiet", "jasper-voice.service"):
             return SimpleNamespace(returncode=3, stdout="", stderr="")
+        if command == ("--no-block", "start", "jasper-aec-reconcile.service"):
+            # Voice is inactive, so refresh_voice_input hands the voice-input
+            # gate decision to its owner instead of restarting a unit that may
+            # be gated off (issue #2205).
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(command)
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
@@ -769,27 +774,84 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
         assert "event=accessory_mic.intent_invalid" in caplog.text
 
 
-def test_restart_voice_if_active_restarts_only_active_voice():
+def test_refresh_voice_input_restarts_running_voice():
+    """Voice up means the gate is already open — a restart re-reads the env."""
     calls = []
 
     def fake_systemctl(args):
         calls.append(tuple(args))
         return SimpleNamespace(returncode=0)
 
-    assert reconcile.restart_voice_if_active(systemctl=fake_systemctl) is True
+    assert reconcile.refresh_voice_input(systemctl=fake_systemctl) == "voice_restart"
     assert calls == [
         ("is-active", "--quiet", "jasper-voice.service"),
         ("--no-block", "restart", "jasper-voice.service"),
     ]
 
-    calls.clear()
 
-    def inactive_systemctl(args):
+def test_refresh_voice_input_hands_gated_voice_to_its_owner():
+    """Issue #2205: a stopped jasper-voice may be GATED off, and no restart can
+    open ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``. Only the
+    marker's single writer can, so start it and let it re-derive."""
+    calls = []
+
+    def fake_systemctl(args):
         calls.append(tuple(args))
-        return SimpleNamespace(returncode=3)
+        if tuple(args)[:2] == ("is-active", "--quiet"):
+            return SimpleNamespace(returncode=3)
+        return SimpleNamespace(returncode=0)
 
-    assert reconcile.restart_voice_if_active(systemctl=inactive_systemctl) is False
-    assert calls == [("is-active", "--quiet", "jasper-voice.service")]
+    assert reconcile.refresh_voice_input(systemctl=fake_systemctl) == "gate_reconcile"
+    assert calls == [
+        ("is-active", "--quiet", "jasper-voice.service"),
+        ("--no-block", "start", "jasper-aec-reconcile.service"),
+    ]
+
+
+def test_refresh_voice_input_reports_absent_gate_owner_without_warning(caplog):
+    """A streambox installs no gate owner. `systemctl start` answers rc=5
+    ("not installed"); that is the correct, complete answer there — nothing
+    writes the marker, so voice is never gated off for a missing local mic. It
+    must not be logged as a failure."""
+    def fake_systemctl(args):
+        if tuple(args)[:2] == ("is-active", "--quiet"):
+            return SimpleNamespace(returncode=3)
+        return SimpleNamespace(returncode=5, stdout="", stderr="not found")
+
+    with caplog.at_level(logging.INFO):
+        assert (
+            reconcile.refresh_voice_input(systemctl=fake_systemctl)
+            == "no_gate_owner"
+        )
+    assert "event=accessory_mic.gate_owner_absent" in caplog.text
+    assert "accessory_mic.systemctl_failed" not in caplog.text
+
+
+def test_refresh_voice_input_warns_on_real_gate_owner_failure(caplog):
+    def fake_systemctl(args):
+        if tuple(args)[:2] == ("is-active", "--quiet"):
+            return SimpleNamespace(returncode=3)
+        return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    with caplog.at_level(logging.WARNING):
+        assert reconcile.refresh_voice_input(systemctl=fake_systemctl) == "none"
+    assert "event=accessory_mic.systemctl_failed" in caplog.text
+
+
+def test_refresh_voice_input_stays_within_its_declared_systemctl_budget():
+    """The bound tests/test_systemd_hardening.py holds against the unit's
+    TimeoutStartSec is a claim about this function; measure it, don't assume."""
+    for voice_active in (True, False):
+        calls = []
+
+        def fake_systemctl(args, _active=voice_active):
+            calls.append(tuple(args))
+            if tuple(args)[:2] == ("is-active", "--quiet"):
+                return SimpleNamespace(returncode=0 if _active else 3)
+            return SimpleNamespace(returncode=0)
+
+        reconcile.refresh_voice_input(systemctl=fake_systemctl)
+        assert len(calls) <= reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS, calls
 
 
 def test_adapter_service_systemctl_failures_are_observable(caplog):
