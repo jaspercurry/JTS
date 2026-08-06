@@ -309,15 +309,16 @@ def test_reset_rerenders_the_cutover_so_a_mono_era_mute_cannot_survive(
 
     result = reset_cli.reset_to_detected_passive()
 
-    assert result["camilla"]["ok"] is True
-    assert result["camilla"]["render_error"] is None
+    # BEHAVIOUR FIRST (this is the assertion that must fail without the fix):
+    # the graph the box actually loaded has BOTH channels live again.
     assert loaded == [str(flat_config)]
-    # The graph the box actually loaded has BOTH channels live again.
     reloaded = flat_config.read_text(encoding="utf-8")
     assert "commission_mute" not in reloaded
     assert reloaded == emit_flat_outputd_cutover_config(topology=_after_draft())
-    # And install's file mode is preserved, not narrowed to the emitter's 0640.
+    # install's file mode is preserved, not narrowed to the emitter's 0640.
     assert flat_config.stat().st_mode & 0o777 == 0o644
+    assert result["camilla"]["ok"] is True
+    assert result["camilla"]["render_error"] is None
 
 
 def _after_draft():
