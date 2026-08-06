@@ -47,8 +47,14 @@ REPORT_REFERENCE_UUID = "00002908-0000-1000-8000-00805f9b34fb"
 WIIM_VOICE_REPORT_REFERENCE = bytes((0x03, 0x01))
 
 WIIM_VOICE_PACKET_BYTES = 131
+# The 3 bytes ahead of the ADPCM payload are an IMA block header carrying the
+# encoder's own state: a BIG-endian int16 predictor then the step index. Both
+# were confirmed exactly against hardware (jts3, 2620 packets, issue #2198):
+# int16be(payload[0:2]) equalled the last sample the previous packet decoded to
+# on 146/146 boundaries, and payload[2] equalled the decoder's step index on
+# 147/147. Little-endian — the WAV IMA convention — matched 1/146, so the byte
+# order here is load-bearing.
 WIIM_VOICE_FRAMING_BYTES = 3
-WIIM_STREAM_STARTUP_DROP_PACKETS = 2
 WIIM_VOICE_PACKET_SAMPLES = 256
 MANUAL_MIC_FRAME_SAMPLES = 1280
 MANUAL_MIC_FRAME_BYTES = MANUAL_MIC_FRAME_SAMPLES * 2
@@ -166,11 +172,17 @@ def voice_characteristic_candidates(
 
 
 class ImaAdpcmDecoder:
-    """Continuous IMA ADPCM decoder, low nibble first.
+    """IMA ADPCM decoder, low nibble first.
 
     TI's BLE voice HID examples use this nibble order, and the WiiM Remote 2
     capture confirmed the same shape: each 128-byte report payload decodes to
-    256 signed 16-bit samples at 16 kHz.
+    256 signed 16-bit samples at 16 kHz. Decoding high-nibble-first on the same
+    hardware capture railed 1572 samples and pulled DC to -26085, so the order
+    is not a coin flip.
+
+    State is normally carried across packets, but every WiiM packet also
+    reports the encoder's state in its header, so ``resync`` can realign the
+    two — see ``WiimVoicePacketStream.feed_notification``.
     """
 
     def __init__(self) -> None:
@@ -180,6 +192,17 @@ class ImaAdpcmDecoder:
     def reset(self) -> None:
         self.predictor = 0
         self.index = 0
+
+    def resync(self, predictor: int, index: int) -> None:
+        """Adopt the encoder's own state, as reported in a packet header.
+
+        IMA ADPCM is a pure integrator with no leakage, so any disagreement
+        between encoder and decoder state is permanent — it never decays out.
+        Adopting the transmitted state each packet keeps the two in lockstep
+        and bounds the damage from a dropped packet to that packet alone.
+        """
+        self.predictor = max(-32768, min(32767, predictor))
+        self.index = max(0, min(len(_ADPCM_STEP_TABLE) - 1, index))
 
     def decode(self, payload: bytes) -> list[int]:
         samples: list[int] = []
@@ -213,7 +236,6 @@ class WiimVoicePacketStream:
     def __init__(self) -> None:
         self._decoder = ImaAdpcmDecoder()
         self._pcm = bytearray()
-        self._drop_remaining = WIIM_STREAM_STARTUP_DROP_PACKETS
         self._last_packet_at: float | None = None
         self.packets = 0
         self.frames = 0
@@ -223,7 +245,6 @@ class WiimVoicePacketStream:
     def reset(self) -> None:
         self._decoder.reset()
         self._pcm.clear()
-        self._drop_remaining = WIIM_STREAM_STARTUP_DROP_PACKETS
         self._last_packet_at = None
         self.resets += 1
 
@@ -258,10 +279,15 @@ class WiimVoicePacketStream:
             return []
 
         self.packets += 1
-        if self._drop_remaining:
-            self._drop_remaining -= 1
-            return []
 
+        # Adopt the encoder's state before decoding. In an unbroken stream this
+        # is what the decoder already holds, so it changes nothing; after a lost
+        # packet it is the difference between losing that packet's 16 ms and
+        # decoding every later packet from a predictor that never recovers.
+        self._decoder.resync(
+            int.from_bytes(payload[0:2], "big", signed=True),
+            payload[2],
+        )
         adpcm = payload[WIIM_VOICE_FRAMING_BYTES:]
         samples = self._decoder.decode(adpcm)
         if len(samples) != WIIM_VOICE_PACKET_SAMPLES:

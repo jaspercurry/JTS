@@ -120,45 +120,116 @@ def _managed_voice_reports(
     return managed, chars, descs
 
 
-def _packet(seq: int) -> bytes:
+def _packet(seq: int, *, predictor: int = 0, index: int = 0) -> bytes:
+    """A well-formed voice report: IMA block header + 128 ADPCM bytes.
+
+    The header is a BIG-endian int16 predictor then the step index — see the
+    hardware-pinned contract in test_framing_header_is_big_endian_ima_state.
+    """
     adpcm = bytes(((seq + i) & 0xFF) for i in range(WIIM_VOICE_PACKET_BYTES - 3))
-    return bytes((0x21, 0x02, seq & 0xFF)) + adpcm
+    return predictor.to_bytes(2, "big", signed=True) + bytes((index,)) + adpcm
+
+
+# Six consecutive reports captured off a WiiM Remote 2 on jts3 (issue #2198),
+# starting at a button press — the remote restarts its encoder at predictor 0 /
+# index 0 on each press, which is why the first header is all zeroes.
+_HW_PACKETS = tuple(bytes.fromhex(h) for h in (
+    (
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000ffffffff0f0808800008800080"
+        "0000000000000101111121212242223343324323253233532343334333435331"
+        "812711"
+    ),
+    (
+        "f0db1b2222522815212122334324323244312432433243038642303123242133"
+        "3235151363102231321443302117302310333124324510445212332543120231"
+        "150c8103430132700420b1962a15190148b920968100908e71088080d1080388"
+        "2979ab3182811212109bb1461ac348a001b8310a1901012a29c3283101038d06"
+        "2180aa"
+    ),
+    (
+        "ffa50293500a24518039c3a4897290c348b4893a49f31028b13a00ff92089891"
+        "18791c86889091802089000a9932e018a2801e018138f9ba811f1000b931bb96"
+        "401a12c19128c4bb490ca9a017aad0380b15b9ba9adcb9b049d91a1aa1bc439a"
+        "fa020998b85139ba25019da9962aa982ace239b891ff8889a1091978a380b2f4"
+        "1b2309"
+    ),
+    (
+        "fee30c1a50fb10929100818f319928b0f389852909488d20a392b3318b9a007a"
+        "89c100a0bba0ea92309c013051808391d310419b1331ea93419d10901c011924"
+        "f42f19898010a0a019bb9592091aa5cf80918880097b8781a1d30b242a2a1aea"
+        "10a5010908af50908008f109121809199f38a0a114aa0198191131bb99b0a010"
+        "a37baa"
+    ),
+    (
+        "fe650612aa81b3b45c8932023aa0b3be321abaf188809b9f93982cbb2349e431"
+        "095ba0810993a04b83ff89008008007283118ba021229ca58993701922caa010"
+        "09730202289c34959119154000a990099d3132cba9b9211a90b0f11b01394b5e"
+        "be860118000899100081901910b31f01ba98912039cc87ab3889951908b41932"
+        "3a1197"
+    ),
+    (
+        "fea407bfa09101009c790290a2e40b322b3b40f00a958801118f30991201f20a"
+        "0508182aac38b281258b0990c9a940210eaa05902990c1192207392811e14029"
+        "b233ca852bcb230171c8a012991293510113b0594089a95315b220134aff8801"
+        "89819171808192d21d3388295bf928a4019002af32190098f4081010002b9f21"
+        "f11128"
+    ),
+))
+
+
+def _pcm_samples(frames: list[bytes]) -> list[int]:
+    joined = b"".join(frames)
+    return [
+        int.from_bytes(joined[i:i + 2], "little", signed=True)
+        for i in range(0, len(joined), 2)
+    ]
 
 
 def test_default_udp_port_matches_profile_constant():
     assert DEFAULT_UDP_PORT == WIIM_REMOTE_2_MIC_UDP_PORT
 
 
-def test_wiim_packet_stream_drops_startup_packets_and_batches_80ms_frame():
+def test_wiim_packet_stream_keeps_every_packet_and_batches_80ms_frame():
     stream = WiimVoicePacketStream()
     emitted = []
 
-    for idx in range(7):
+    # Exactly 5 packets * 256 samples == one 1280-sample UDP frame. Nothing is
+    # discarded at stream start: the old 2-packet startup drop threw away the
+    # only packets whose header aligns the decoder with the encoder, and left
+    # the rest of the session decoding from a predictor that never recovers
+    # (issue #2198).
+    for idx in range(5):
         emitted.extend(stream.feed_notification(_packet(idx), now=idx * 0.016))
 
     assert len(emitted) == 1
     assert len(emitted[0]) == MANUAL_MIC_FRAME_BYTES
-    # 2 startup packets are discarded, then 5 * 256 samples make one
-    # jasper-voice UDP frame.
-    assert stream.packets == 7
+    assert stream.packets == 5
     assert stream.frames == 1
 
 
-def test_wiim_packet_stream_gap_resets_decoder_and_startup_drop():
+def test_wiim_packet_stream_gap_resets_decoder_and_clears_partial_frame():
     stream = WiimVoicePacketStream()
     emitted = []
     for idx in range(7):
         emitted.extend(stream.feed_notification(_packet(idx), now=idx * 0.016))
-    assert len(emitted) == 1
+    assert len(emitted) == 1  # 7 * 256 = 1792 -> one frame, 512 samples held
 
+    # A gap past the threshold drops the partial frame rather than splicing it
+    # onto audio from the far side of a silence.
     after_gap = 7 * 0.016 + WIIM_STREAM_GAP_SEC + 0.010
     assert stream.feed_notification(_packet(10), now=after_gap) == []
-    assert stream.feed_notification(_packet(11), now=after_gap + 0.016) == []
     assert stream.resets == 1
 
-    # Third packet after the gap is decoded but not enough for an 80 ms frame.
-    assert stream.feed_notification(_packet(12), now=after_gap + 0.032) == []
+    # The held 512 samples were discarded, so a full 5 packets are needed again.
+    for step, idx in enumerate((11, 12, 13), start=1):
+        assert stream.feed_notification(
+            _packet(idx), now=after_gap + step * 0.016,
+        ) == []
     assert stream.frames == 1
+    assert stream.feed_notification(_packet(14), now=after_gap + 4 * 0.016)
+    assert stream.frames == 2
 
 
 def test_wiim_packet_stream_rejects_unexpected_report_lengths():
@@ -170,19 +241,104 @@ def test_wiim_packet_stream_rejects_unexpected_report_lengths():
 
 def test_adpcm_decode_packet_shape_is_16khz_16ms_chunk():
     stream = WiimVoicePacketStream()
-    # Skip the two startup packets.
-    stream.feed_notification(_packet(0), now=0.0)
-    stream.feed_notification(_packet(1), now=0.016)
-    stream.feed_notification(_packet(2), now=0.032)
-
     # One decoded WiiM notification is 256 samples, still below the 1280-sample
     # UDP frame threshold. The private byte buffer length is pinned indirectly
-    # by feeding four more packets and expecting exactly one frame.
+    # by feeding five packets and expecting exactly one frame.
     out = []
-    for idx in range(3, 7):
+    for idx in range(4):
+        assert stream.feed_notification(_packet(idx), now=idx * 0.016) == []
+    for idx in range(4, 5):
         out.extend(stream.feed_notification(_packet(idx), now=idx * 0.016))
     assert len(out) == 1
     assert len(out[0]) == WIIM_VOICE_PACKET_SAMPLES * 5 * 2
+
+
+def test_framing_header_is_big_endian_ima_state():
+    """The 3 framing bytes are the encoder's own predictor + step index.
+
+    Pinned against hardware: for consecutive real reports, the next packet's
+    header must equal the state the decoder holds after the current one. The
+    byte order is load-bearing — little-endian is the WAV IMA convention and
+    is wrong for this device, so both directions are asserted.
+    """
+    from jasper.accessories.wiim_remote_mic import ImaAdpcmDecoder
+
+    decoder = ImaAdpcmDecoder()
+    matched_be = matched_le = 0
+    for current, following in zip(_HW_PACKETS, _HW_PACKETS[1:]):
+        tail = decoder.decode(current[3:])[-1]
+        if int.from_bytes(following[0:2], "big", signed=True) == tail:
+            matched_be += 1
+        if int.from_bytes(following[0:2], "little", signed=True) == tail:
+            matched_le += 1
+        assert following[2] == decoder.index
+
+    assert matched_be == len(_HW_PACKETS) - 1
+    assert matched_le == 0
+
+
+def test_resync_changes_nothing_while_the_stream_is_intact():
+    """Adopting the header state is a no-op on an unbroken stream.
+
+    This is what makes the fix safe: it only ever acts after a real break.
+    """
+    from jasper.accessories.wiim_remote_mic import ImaAdpcmDecoder
+
+    stream = WiimVoicePacketStream()
+    got: list[bytes] = []
+    for idx, packet in enumerate(_HW_PACKETS):
+        got.extend(stream.feed_notification(packet, now=idx * 0.016))
+    got.append(bytes(stream._pcm))
+
+    decoder = ImaAdpcmDecoder()
+    expected: list[int] = []
+    for packet in _HW_PACKETS:
+        expected.extend(decoder.decode(packet[3:]))
+
+    assert _pcm_samples(got) == expected
+
+
+def test_lost_packet_costs_only_that_packet():
+    """A dropped report must not corrupt every report after it.
+
+    IMA ADPCM is a pure integrator with no leakage, so before the fix a single
+    loss offset the predictor for the rest of the session. With the header
+    adopted per packet, audio either side of the loss decodes bit-exactly.
+    """
+    from jasper.accessories.wiim_remote_mic import ImaAdpcmDecoder
+
+    def reference(packet: bytes) -> list[int]:
+        decoder = ImaAdpcmDecoder()
+        decoder.resync(int.from_bytes(packet[0:2], "big", signed=True), packet[2])
+        return decoder.decode(packet[3:])
+
+    survivors = [p for i, p in enumerate(_HW_PACKETS) if i != 2]
+    stream = WiimVoicePacketStream()
+    got: list[bytes] = []
+    for idx, packet in enumerate(survivors):
+        got.extend(stream.feed_notification(packet, now=idx * 0.016))
+    got.append(bytes(stream._pcm))
+
+    expected: list[int] = []
+    for packet in survivors:
+        expected.extend(reference(packet))
+    assert _pcm_samples(got) == expected
+
+
+def test_resync_clamps_a_corrupt_step_index():
+    """A malformed header must not index past the step table and crash."""
+    from jasper.accessories.wiim_remote_mic import ImaAdpcmDecoder
+
+    decoder = ImaAdpcmDecoder()
+    decoder.resync(999999, 255)
+    assert decoder.predictor == 32767
+    assert decoder.index == 88
+
+    stream = WiimVoicePacketStream()
+    # 0xFF is not a valid step index; decoding must still produce a full packet.
+    assert stream.feed_notification(_packet(0, index=255), now=0.0) == []
+    assert stream.packets == 1
+    assert stream.bad_packets == 0
 
 
 def test_voice_characteristic_candidates_match_connected_wiim_hid_report():
