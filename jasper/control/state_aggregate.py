@@ -1157,6 +1157,13 @@ async def _get_state(
             "provider_status": active_provider.status,
             "provider_error": active_provider.detail or None,
             "session_active": voice_session,
+            # Which mechanism closes the in-flight turn's user input:
+            # push_to_talk (an accessory button owns both boundaries),
+            # server_vad, or silero_aec. Curated pull-through like
+            # wake_legs / tool_packs below. Worth the field because
+            # "the remote cut me off" and "the remote never cut me off"
+            # are otherwise indistinguishable from outside the daemon.
+            "endpointer": (voice_st or {}).get("endpointer"),
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
             # usage.db writes failing -> recorded spend goes stale and the cap
             # can't enforce. Curated explicitly like the other voice fields
