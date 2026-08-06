@@ -27,9 +27,11 @@ from jasper.output_topology import OutputTopology
 
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
+    HIGH_FREQUENCY_ROLES,
     driver_protection_profile,
 )
 from .measurement import active_driver_targets, physical_driver_target
+from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DRIVER_RESEARCH_REQUEST_KIND = "jts_active_crossover_driver_research_request"
@@ -1405,6 +1407,67 @@ def _band_subset(inner: Sequence[float], outer: Sequence[float]) -> bool:
     return inner[0] >= outer[0] and inner[1] <= outer[1]
 
 
+def _search_band_issues(
+    role: str,
+    search: Sequence[float],
+    measurement: Sequence[float],
+    hard: Sequence[float] | None,
+) -> list[str]:
+    """Which declared band bounds each edge of ``crossover_search_band_hz``.
+
+    Low-edge asymmetry, HIGH-FREQUENCY ROLES ONLY (#2191, mirroring #1654).
+    ``resolve_driver_excitation_ceilings`` in
+    :mod:`jasper.active_speaker.excitation_safety_plan` already ships the same
+    asymmetry on the DERIVED excitation floor: it appends
+    ``measurement_band[0]`` to the floor candidates for every role and every
+    caller EXCEPT a high-frequency role on the ``program_admission`` path,
+    where the floor is ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``.
+    Its rationale is that such a graph carries the driver's crossover
+    high-pass by construction, so the sub-window region reaches the driver
+    ATTENUATED rather than naked, and the declared HARD floor is the
+    operator-confirmed datasheet minimum for exactly that question.
+
+    Every crossover search runs on that path --
+    :mod:`jasper.active_speaker.program_admission` and the v2 conductor in
+    ``jasper.web.correction_crossover_v2`` both pass ``program_admission=True``
+    -- so requiring ``search`` to be a subset of ``measurement`` made a search
+    band that MEASURE legitimately sweeps unstorable: the tweeter repair
+    ``[2000, 2500]`` -> ``[1600, 2500]`` against ``measurement=[2000, 18000]``
+    landed the profile ``incomplete`` and hid the Confirm control (#2191).
+    This function is the store-time half of one rule, restated because
+    ``excitation_safety_plan`` imports this module and cannot be imported back;
+    ``tests/test_active_speaker_driver_safety.py`` pins the two halves to the
+    same number so the restatement cannot drift.
+
+    The declared HARD floor still binds, always, for every role -- that is the
+    only relationship this relaxes away from, and it relaxes TO a bound the
+    hard band owns, never to none. A high-frequency role whose hard band is
+    missing (already its own blocking issue) keeps the unchanged subset rule
+    rather than losing a floor.
+
+    Every low-frequency role keeps ``measurement_band[0]``, because the shipped
+    floor keeps it there too: a woofer driven below its declared analysis floor
+    has nothing between it and its own suspension.
+
+    The UPPER edge is untouched for every role. #1668 already excludes
+    ``measurement_band[1]`` from the shipped excitation CEILING, so this
+    contract is deliberately more conservative than MEASURE on the high side.
+    Nothing has ruled on widening it, and refusing to STORE a wider search band
+    is a usability limit rather than a safety gap, so it stays as shipped.
+    """
+
+    if role not in HIGH_FREQUENCY_ROLES or hard is None:
+        if _band_subset(search, measurement):
+            return []
+        return [f"{role}:search_band_outside_measurement_band"]
+    reasons: list[str] = []
+    if float(search[1]) > float(measurement[1]):
+        reasons.append(f"{role}:search_band_outside_measurement_band")
+    if float(search[0]) < max(MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard[0])):
+        reasons.append(f"{role}:search_band_below_hard_band")
+    return reasons
+
+
 def _target_issues(target: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
     role = str(target.get("role") or "driver")
@@ -1451,8 +1514,14 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
         if not _band_subset(measurement, hard):
             reasons.append(f"{role}:measurement_band_outside_hard_band")
     if isinstance(measurement, list) and isinstance(search, list):
-        if not _band_subset(search, measurement):
-            reasons.append(f"{role}:search_band_outside_measurement_band")
+        reasons.extend(
+            _search_band_issues(
+                role,
+                search,
+                measurement,
+                hard if isinstance(hard, list) else None,
+            )
+        )
     filters = target.get("required_protection_filters")
     filters = filters if isinstance(filters, list) else []
     kinds = {str(item.get("kind")) for item in filters if isinstance(item, Mapping)}

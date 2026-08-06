@@ -263,21 +263,39 @@ def test_a_draft_without_declarations_yields_no_priors(draft):
 
 # --- which roles' search bands bind the set (R17 PR-2 design point) ------------
 #
-# The jts3 declaration as it actually stands, quoted so these tests fail if the
-# owner's SSOT and this reasoning ever drift apart. The tweeter's [2000, 2500]
-# is the withdrawn arbitrary-2000 remnant; the RULE below is what makes that
-# visible instead of silently deciding for him in either direction.
-JTS3_SEARCH_BAND_BY_ROLE = {
+# Two declaration SHAPES on this speaker's numbers, not two readings of the box.
+# The pre-repair tweeter band [2000, 2500] is the withdrawn arbitrary-2000
+# remnant; the repair moves its floor down to the tweeter's declared hard floor,
+# so that edge is written as JTS3_HF_FLOOR_HZ — the governing term — rather than
+# as a second free literal. Only the search bands are modelled here, because
+# resolve_fc_search_band reads nothing else.
+#
+# #2191: the earlier version of this block called the pre-repair shape "the jts3
+# declaration as it actually stands" and named its test after "the live
+# declaration". Nothing here can read the box, so that claim could only decay —
+# and it has: the owner's declaration has since been edited and re-confirmed,
+# and its tweeter search band is [1600, 2500], the REPAIRED shape below. What
+# these tests actually pin is the RULE — which role's declaration binds each
+# edge — so they say that instead, and both shapes are fixtures rather than
+# readings. Whether a repaired shape can be STORED and CONFIRMED is a different
+# question with a real in-repo owner: driver_safety's validator, pinned by
+# test_the_owner_ruled_search_repair_is_storable_and_offers_confirmation in
+# tests/test_active_speaker_driver_safety.py.
+PRE_REPAIR_SEARCH_BAND_BY_ROLE = {
     "woofer": (1200.0, 2500.0),
     "tweeter": (2000.0, 2500.0),
 }
+REPAIRED_SEARCH_BAND_BY_ROLE = dict(
+    PRE_REPAIR_SEARCH_BAND_BY_ROLE,
+    tweeter=(JTS3_HF_FLOOR_HZ, 2500.0),
+)
 
 
 def test_the_binding_band_is_the_intersection_and_names_who_set_each_edge():
     """Both drivers sit at Fc, so both declarations must admit it — the band is
-    the intersection. On the live declaration the tweeter owns the low edge,
+    the intersection. On the pre-repair shape the tweeter owns the low edge,
     which is the fact an operator needs in order to act."""
-    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
 
     assert band.band_hz == (2000.0, 2500.0)
     # The tweeter's 2000 beats the woofer's 1200, so the tweeter owns the low
@@ -288,12 +306,12 @@ def test_the_binding_band_is_the_intersection_and_names_who_set_each_edge():
     assert band.undeclared_roles == ()
 
 
-def test_the_live_declaration_proposes_nothing_and_that_is_a_verdict():
-    """End to end on the owner's own numbers: the intersection starts at 2000
-    and the ka ceiling ends at 1915.4, so there is no room to propose into. The
+def test_a_search_floor_above_the_ka_ceiling_proposes_nothing_and_that_is_a_verdict():
+    """End to end on the pre-repair shape: the intersection starts at 2000 and
+    the ka ceiling ends at 1915.4, so there is no room to propose into. The
     configured Fc survives anyway (§9.8), so the session has a golden candidate
     and 'keep configured' is reachable rather than an error."""
-    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
     result = fc_candidate_set(
         configured_hz=JTS3_CONFIGURED_HZ,
         hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
@@ -302,12 +320,16 @@ def test_the_live_declaration_proposes_nothing_and_that_is_a_verdict():
         lower_driver_diameter_mm=JTS3_DIAMETER_MM,
     )
     assert band.band_hz is not None
+    # The verdict's governing relationship, named rather than assumed: the
+    # search floor sits ABOVE the beaming ceiling, so the admissible interval
+    # is empty. (That the floor is also 2000 Hz is a property of this shape,
+    # not the reason.)
     assert band.band_hz[0] > result.limits["beaming_ceiling_hz"]
     assert result.candidates == (JTS3_CONFIGURED_HZ,)
     assert result.alternatives == ()
     # …and the limits carry every bound that produced that verdict, so the
     # disclosure is derivable without re-running the search.
-    assert result.limits["search_lo_hz"] == 2000.0
+    assert result.limits["search_lo_hz"] == PRE_REPAIR_SEARCH_BAND_BY_ROLE["tweeter"][0]
     assert result.limits["beaming_ceiling_hz"] == pytest.approx(1915.4, abs=0.05)
 
 
@@ -315,10 +337,13 @@ def test_repairing_the_stale_tweeter_declaration_reopens_the_downward_set():
     """The rule's payoff, and the proof it is the DECLARATION that binds rather
     than anything hardcoded: widen the tweeter to its declared hard floor and
     proposals appear, with no other input changed."""
-    repaired = dict(JTS3_SEARCH_BAND_BY_ROLE, tweeter=(JTS3_HF_FLOOR_HZ, 2500.0))
-    band = flow.resolve_fc_search_band(repaired)
+    band = flow.resolve_fc_search_band(REPAIRED_SEARCH_BAND_BY_ROLE)
 
-    assert band.band_hz == (1600.0, 2500.0)
+    # The repaired low edge is the tweeter's declared hard floor exactly — the
+    # search edge the repair moves, the value the owner's re-confirmed
+    # declaration now carries, and the same number driver_safety accepts as a
+    # stored search floor since #2191.
+    assert band.band_hz == (JTS3_HF_FLOOR_HZ, 2500.0)
     assert band.lo_role == "tweeter"
     result = fc_candidate_set(
         configured_hz=JTS3_CONFIGURED_HZ,
@@ -368,8 +393,8 @@ def test_one_role_can_own_both_edges():
 def test_the_binding_band_never_widens_what_a_role_declared():
     """The invariant that makes this safe to put in front of the safety bounds:
     intersection only ever narrows, so no declared limit is escapable."""
-    band = flow.resolve_fc_search_band(JTS3_SEARCH_BAND_BY_ROLE)
+    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
     assert band.band_hz is not None
-    for role, declared in JTS3_SEARCH_BAND_BY_ROLE.items():
+    for role, declared in PRE_REPAIR_SEARCH_BAND_BY_ROLE.items():
         assert band.band_hz[0] >= declared[0], role
         assert band.band_hz[1] <= declared[1], role
