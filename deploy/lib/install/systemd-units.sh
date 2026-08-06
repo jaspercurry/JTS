@@ -812,6 +812,13 @@ JASPER_LOW_MEMORY_BUILD_PARK_UNITS=(
 # profile deliberately keeps parked must stay parked) and no less.
 JASPER_LOW_MEMORY_PARK_RECORD=()
 
+# The subset of the record that was ALREADY `disabled`/`masked` when it was
+# parked. Restore skips a unit whose enablement CHANGED to off during this
+# install, which is not the same question as whether it is off right now:
+# several units run while permanently disabled because a reconciler starts
+# them and systemd never does. See _unpark_one_low_memory_unit.
+JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
+
 # Restore order after an aborted install: the units' own declared After= chain.
 # jasper-camilla is After=jasper-outputd jasper-fanin; jasper-mux is
 # After=jasper-fanin. Bringing the output owner and the graph back before the
@@ -837,11 +844,39 @@ _jasper_unit_in_list() {
     return 1
 }
 
+_jasper_unit_was_off_at_park() {
+    # $1 = unit. True when the unit was already `disabled`/`masked` at snapshot
+    # time. The emptiness check is load-bearing, not defensive: this array is
+    # empty on an ordinary install, and bash 3.2 under `set -u` treats
+    # "${empty[@]}" as an unbound variable (the test harness runs on macOS
+    # bash; verified 3.2.57 errors, 5.2.37 does not).
+    (( ${#JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]} )) || return 1
+    _jasper_unit_in_list "$1" "${JASPER_LOW_MEMORY_PARK_OFF_AT_PARK[@]}"
+}
+
+_record_low_memory_parked_unit() {
+    # $1 = unit the park is about to stop. Records it only if it is RUNNING,
+    # together with whether its enablement was already off, so restore can tell
+    # "this install turned it off" from "it was always off and something other
+    # than systemd runs it".
+    local unit="$1" enablement
+    systemctl is-active --quiet "${unit}" 2>/dev/null || return 0
+    JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
+    enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+    case "${enablement}" in
+        disabled|masked)
+            JASPER_LOW_MEMORY_PARK_OFF_AT_PARK+=("${unit}")
+            ;;
+    esac
+    return 0
+}
+
 park_low_memory_build_units() {
     build_swap_required || return 0
     _build_sandbox_log "low_memory_build_park" \
         "stopping runtime units before constrained install/build steps"
     JASPER_LOW_MEMORY_PARK_RECORD=()
+    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
     local unit
     # Snapshot BOTH phases before anything is stopped. Recording after the
     # phase-one park would miss every renderer plus the output owner and mux —
@@ -852,17 +887,13 @@ park_low_memory_build_units() {
     # Record only what was RUNNING. Restoring a unit that was already stopped
     # would start something this box had deliberately off.
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
-        if systemctl is-active --quiet "${unit}" 2>/dev/null; then
-            JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
-        fi
+        _record_low_memory_parked_unit "${unit}"
     done
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
         # The two lists overlap by jasper-camilla-crossover today; skip so the
         # record cannot hold a unit twice regardless of future edits.
         _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
-        if systemctl is-active --quiet "${unit}" 2>/dev/null; then
-            JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
-        fi
+        _record_low_memory_parked_unit "${unit}"
     done
 
     park_audio_clients_for_core_graph_restart
@@ -883,20 +914,36 @@ _unpark_one_low_memory_unit() {
     # churn a live graph.
     systemctl is-active --quiet "${unit}" 2>/dev/null && return 0
 
-    # Intent can change AFTER the snapshot, and a recovery path must not undo
-    # a deliberate decision. park_streambox_brain_units disables the brain
-    # surfaces on a full->streambox conversion; enable_streambox_web_sockets
-    # disables a wizard .service in favour of its .socket. Re-checking intent
-    # here covers both (and anything added later) where filtering the recorded
-    # array at each disable site would not. `is-enabled` reports
-    # static/indirect/generated for units that legitimately carry no [Install]
-    # section, so only the two deliberate-off states skip.
+    # Intent can change AFTER the snapshot, and a recovery path must not undo a
+    # deliberate decision: park_streambox_brain_units `disable --now`s the brain
+    # surfaces on a full->streambox conversion, well after the park. Re-checking
+    # at restore time covers that site and anything added later, where filtering
+    # the recorded array at each disable site would not.
+    #
+    # The question is whether intent CHANGED during this install, NOT whether
+    # the unit is off right now. Several units run while permanently disabled
+    # because a reconciler starts them and systemd never does: on a bonded
+    # speaker jasper-grouping-reconcile starts jasper-snapclient/-snapserver,
+    # which ship disabled and are never `enable`d. Skipping every off unit
+    # strands exactly those — and that reconciler is a WantedBy=multi-user
+    # oneshot with no timer and no path unit, so nothing re-runs it before the
+    # next boot. So: skip only a unit that is off NOW and was NOT off when it
+    # was parked.
+    #
+    # `is-enabled` reports static/indirect/generated for units that legitimately
+    # carry no [Install] directives; none of those are off states and all are
+    # restored. That is what the four socket-activated wizard .service units
+    # report — their [Install] sections are comment-only, so the `disable` in
+    # enable_streambox_web_sockets cannot move them to `disabled` and this
+    # branch never sees them.
     enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
     case "${enablement}" in
         disabled|masked)
-            _build_sandbox_log "low_memory_build_unpark_skip" \
-                "unit=${unit} state=${enablement} left off on purpose"
-            return 0
+            if ! _jasper_unit_was_off_at_park "${unit}"; then
+                _build_sandbox_log "low_memory_build_unpark_skip" \
+                    "unit=${unit} state=${enablement} left off on purpose"
+                return 0
+            fi
             ;;
     esac
 
@@ -940,6 +987,7 @@ unpark_low_memory_build_units() {
     _build_sandbox_log "low_memory_build_unpark" \
         "parked=${#JASPER_LOW_MEMORY_PARK_RECORD[@]} restored=${_JASPER_LOW_MEMORY_UNPARK_RESTORED} failed=${_JASPER_LOW_MEMORY_UNPARK_FAILED}"
     JASPER_LOW_MEMORY_PARK_RECORD=()
+    JASPER_LOW_MEMORY_PARK_OFF_AT_PARK=()
 }
 
 park_streambox_brain_units() {

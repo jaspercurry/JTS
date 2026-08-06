@@ -111,10 +111,15 @@ running — both phases, the renderers/output-owner/mux parked by
 `park_audio_clients_for_core_graph_restart` **and** the graph plus control
 plane it stops itself — and the trap restarts exactly that set, in the units'
 own `After=` order (output owner and graph, then mux, then renderers and the
-control plane). Two units are deliberately *not* restored: one that was
+control plane). Two categories are deliberately *not* restored: units that were
 already stopped before the install began (a source the household turned off at
-`/sources/`), and one that is `disabled`/`masked` at restore time, which is how
-a `full` → `streambox` conversion's deliberate brain park survives the trap.
+`/sources/`), and units *this install* turned off — `disabled`/`masked` at
+restore time but not at the snapshot, which is how a `full` → `streambox`
+conversion's deliberate brain park survives the trap. That second test is a
+**change** in enablement, not a state: `jasper-snapclient`/`-snapserver` run
+while permanently disabled on a bonded speaker (the grouping reconciler starts
+them; systemd never does), so skipping every unit that is merely off *now*
+would strand them with nothing to re-run the reconciler before the next boot.
 Without this, any abort in the build window left the speaker silently dead —
 every daemon exited cleanly, so nothing looked broken; the box just vanished
 from AirPlay and stayed gone (issue #2178, hit twice on a Pi Zero 2 W).

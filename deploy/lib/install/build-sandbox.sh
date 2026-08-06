@@ -195,20 +195,31 @@ cleanup_build_swap() {
 install_exit_cleanup() {
     # The installer's single EXIT trap.
     #
-    # Capturing and re-returning $? is defensive hardening. It is NOT fixing an
-    # observed clobber: with every command below `|| true`-guarded the trap
-    # already ends 0, and an A/B on bash 3.2.57 gave the same exit code with
-    # and without the capture on every path tried. It is deliberately
-    # unfalsifiable by the tests for that reason.
+    # Every command below is `|| true`-guarded, and that is the load-bearing
+    # part of this trap — not the `local rc=$?` capture.
     #
-    # The shape it guards against is real and measured, just one careless edit
-    # away rather than present: a trap whose LAST command is a short-circuit
-    # list or an arithmetic test that yields non-zero (`cmd && continue`,
-    # `(( n ))` — both idioms this codebase uses, both exempt from `set -e`, so
-    # neither aborts the trap) returns non-zero, and bash then reports THAT as
-    # the script's exit status. Measured on bash 3.2.57: an installer exiting 5
-    # reports 1 without the capture and 5 with it. scripts/deploy-to-pi.sh gates
-    # the whole deploy on install.sh's status, so that swap would be silent.
+    # The guards exist because under `set -e` an unguarded failing command
+    # ABORTS the trap function, and the unpark below would then simply never
+    # run: an aborted install would leave the speaker dead, which is the exact
+    # failure this handler exists to prevent. Measured on bash 5.2.37 (Debian
+    # Trixie — the shell the installer actually runs under): a trap function
+    # whose middle command is a bare failing arithmetic test `(( n ))` never
+    # reaches its remaining commands. So a future edit here must stay guarded;
+    # `(( ... ))` and bare commands are not safe to add unguarded, and bash
+    # 3.2's looser `set -e` (where the same body runs to completion) is not
+    # evidence that they are.
+    #
+    # Capturing and re-returning $? is separate, and is hardening rather than a
+    # fix for an observed clobber: with everything guarded the trap already
+    # ends 0, so an A/B gives the same exit code either way and the capture is
+    # deliberately unfalsifiable by the tests. What it does guard is measured:
+    # a trap whose LAST command is a short-circuit list yielding non-zero
+    # (`cmd && continue` — `set -e`-exempt, and an idiom this codebase uses)
+    # sets the script's exit status, and on bash 5.2.37 an installer exiting 5
+    # then reports 1 without the capture and 5 with it. scripts/deploy-to-pi.sh
+    # gates the whole deploy on install.sh's status, so that swap would be
+    # silent. Note the capture rescues only that shape: it cannot rescue an
+    # aborting command, which returns 1 with or without it.
     #
     # Order: tear the build swap down first. It is the step that must happen on
     # every exit path, and `systemctl start` blocks on its job — unparking

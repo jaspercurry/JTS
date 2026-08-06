@@ -2257,6 +2257,12 @@ case "${verb}" in
                 echo "Job for ${unit} failed." >&2
                 exit 1
             fi
+            # Real systemd refuses outright to start a masked unit, so a
+            # caller that decides to try one must see the failure.
+            if [[ "$(cat "${state}/enabled/${unit}" 2>/dev/null)" == masked ]]; then
+                echo "Failed to start ${unit}: Unit ${unit} is masked." >&2
+                exit 1
+            fi
             : >"${state}/active/${unit}"
         done
         exit 0
@@ -2267,9 +2273,12 @@ case "${verb}" in
         done
         exit 0
         ;;
-    disable)
+    disable|mask)
         for unit in ${units}; do
-            echo disabled >"${state}/enabled/${unit}"
+            case "${verb}" in
+                disable) echo disabled >"${state}/enabled/${unit}" ;;
+                mask) echo masked >"${state}/enabled/${unit}" ;;
+            esac
             case " $* " in
                 *" --now "*) rm -f "${state}/active/${unit}" ;;
             esac
@@ -2328,7 +2337,7 @@ def _run_park_cycle(
     *,
     active: list[str],
     scenario: str,
-    disabled: dict[str, str] | None = None,
+    enablement: dict[str, str] | None = None,
     failstart: list[str] | None = None,
 ) -> _ParkRun:
     state = tmp_path / "state"
@@ -2337,7 +2346,7 @@ def _run_park_cycle(
     (state / "calls").write_text("", encoding="utf-8")
     for unit in active:
         (state / "active" / unit).write_text("", encoding="utf-8")
-    for unit, value in (disabled or {}).items():
+    for unit, value in (enablement or {}).items():
         (state / "enabled" / unit).write_text(f"{value}\n", encoding="utf-8")
     if failstart:
         (state / "failstart").write_text(
@@ -2518,14 +2527,22 @@ def test_unpark_leaves_units_the_install_deliberately_disabled_alone(tmp_path):
     assert "shairport-sync.service" in run.active
 
 
-@pytest.mark.parametrize("state", ["disabled", "masked"])
-def test_unpark_skips_a_unit_left_off_on_purpose(tmp_path, state):
-    """Both deliberate-off states skip; `static` is not one of them.
+@pytest.mark.parametrize(
+    ("verb", "state"), [("disable", "disabled"), ("mask", "masked")]
+)
+def test_unpark_skips_a_unit_this_install_turned_off(tmp_path, verb, state):
+    """Both deliberate-off transitions skip; `static` is not one of them.
 
     `park_streambox_brain_units` only ever produces `disabled`, so `masked`
     (an operator's own decision) needs its own case. `static` is what a
     socket-activated unit with no [Install] directives reports, and must still
-    be restored.
+    be restored — that is what all four wizard `.service` units report, so
+    `enable_streambox_web_sockets`' `disable` cannot reach this branch at all.
+
+    The state change happens *during* the scenario, i.e. after the park
+    snapshot. That is the shape the skip exists for: intent changed under the
+    install's own hand. A unit that was already off when it was parked is a
+    different case entirely — see the runtime-managed test below.
     """
     run = _run_park_cycle(
         tmp_path,
@@ -2534,9 +2551,8 @@ def test_unpark_skips_a_unit_left_off_on_purpose(tmp_path, state):
             "jasper-system-web.service",
             "jasper-control.service",
         ],
-        disabled={"librespot.service": state,
-                  "jasper-system-web.service": "static"},
-        scenario="mark_trap; exit 1",
+        enablement={"jasper-system-web.service": "static"},
+        scenario=f"systemctl {verb} librespot.service; mark_trap; exit 1",
     )
 
     started = run.started_by_trap()
@@ -2545,6 +2561,65 @@ def test_unpark_skips_a_unit_left_off_on_purpose(tmp_path, state):
     assert f"state={state}" in run.syslog, run.syslog
     # `static` is not a deliberate-off state.
     assert "jasper-system-web.service" in run.active
+    assert "jasper-control.service" in run.active
+
+
+def test_unpark_restores_a_running_unit_that_was_always_disabled(tmp_path):
+    """`disabled` is not evidence of intent when something else does the start.
+
+    `jasper-snapclient`/`-snapserver` ship disabled and are never `enable`d —
+    on a bonded speaker `jasper-grouping-reconcile` starts them, so they are
+    RUNNING while `is-enabled` reports `disabled`. Skipping every unit that is
+    off at restore time strands exactly those: the reconciler is a
+    `WantedBy=multi-user.target` oneshot with no timer and no path unit, and
+    its in-install run is far past the abort point, so a bonded speaker stays
+    silent until someone reboots it (the 2026-06-11 jts3 incident shape).
+
+    What disqualifies a unit is its enablement CHANGING during the install,
+    not its being off. Unchanged here, so it must come back.
+    """
+    snapcast = ["jasper-snapclient.service", "jasper-snapserver.service"]
+    run = _run_park_cycle(
+        tmp_path,
+        active=snapcast + ["jasper-outputd.service", "jasper-control.service"],
+        enablement=dict.fromkeys(snapcast, "disabled"),
+        scenario="mark_trap; exit 1",
+    )
+
+    started = run.started_by_trap()
+    for unit in snapcast:
+        assert unit in started, f"{unit} was parked while running and dropped"
+        assert unit in run.active
+    assert "left off on purpose" not in run.syslog, run.syslog
+    assert "jasper-outputd.service" in run.active
+    assert "jasper-control.service" in run.active
+
+
+def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path):
+    """Stopping a running-but-masked unit is not something to hide.
+
+    Masking does not stop a unit, so an operator can mask one and leave it
+    running. The park stops it anyway, and systemd then refuses to start a
+    masked unit. Since the enablement did not change under the install's hand,
+    this is not the deliberate-off skip — it is a unit the install took away
+    and cannot return, which has to reach the journal rather than pass as
+    `left off on purpose`.
+    """
+    run = _run_park_cycle(
+        tmp_path,
+        active=["jasper-voice.service", "jasper-control.service"],
+        enablement={"jasper-voice.service": "masked"},
+        scenario="mark_trap; exit 1",
+    )
+
+    assert "jasper-voice.service" not in run.active
+    assert "left off on purpose" not in run.syslog, run.syslog
+    assert (
+        "event=build_sandbox.low_memory_build_unpark_failed "
+        "unit=jasper-voice.service" in run.syslog
+    ), run.syslog
+    assert "could not restart jasper-voice.service" in run.stderr
+    # The rest of the recovery still happened.
     assert "jasper-control.service" in run.active
 
 
