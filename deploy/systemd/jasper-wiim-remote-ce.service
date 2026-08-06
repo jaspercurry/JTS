@@ -60,6 +60,10 @@ UMask=0077
 # one is root by necessity. Listing it would imply a protection it has not.)
 
 # One short-lived Python process: the interpreter, dbus-next, and a couple of
-# sockets. Measured sibling (jasper-wiim-remote-mic) sits near 15 MB resident;
-# this box has ~139 MB free, so cap well below that rather than trusting it.
+# sockets. Measured on jts4, 2026-08-06: three runs of the same code path with
+# the same outcome peaked at 18.9 / 21.3 / 22.2 MB, so run-to-run variance is
+# ~2.4 MB on its own and any single sample is a poor baseline. 64M is ~3x the
+# top of that range — enough headroom for the variance, tight enough that a
+# leak or a runaway import is killed rather than competing with the audio
+# daemons for the box's ~139 MB of free memory.
 MemoryMax=64M

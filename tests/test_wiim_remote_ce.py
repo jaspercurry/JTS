@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import inspect
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,9 @@ from jasper.cli import wiim_remote_ce as ce
 
 WIIM_BDADDR = "AA:BB:CC:DD:EE:01"
 OTHER_BDADDR = "11:22:33:44:55:66"
+
+_CE_MODULE = Path(__file__).resolve().parents[1] / "jasper/cli/wiim_remote_ce.py"
+_CE_SOURCE = _CE_MODULE.read_text(encoding="utf-8")
 
 
 def _conn(
@@ -81,6 +85,57 @@ def test_connection_event_length_stays_reserved():
         "a zero CE length is the BlueZ default this helper exists to override"
     )
     assert ce.CE_LENGTH_MIN <= ce.CE_LENGTH_MAX
+
+
+def _comment_block_above(assignment: str) -> str:
+    """The contiguous run of `#` comment lines directly above an assignment."""
+    lines = _CE_SOURCE.splitlines()
+    index = next(
+        (i for i, line in enumerate(lines) if line.startswith(assignment)),
+        None,
+    )
+    assert index is not None, f"{assignment!r} not found in {_CE_MODULE}"
+    block: list[str] = []
+    cursor = index - 1
+    while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+        block.append(lines[cursor].strip())
+        cursor -= 1
+    return "\n".join(reversed(block))
+
+
+def test_supervision_timeout_pending_measurement_marker_is_a_tripwire():
+    """The supervision timeout is the one forced parameter we have NOT verified.
+
+    HCI has no read path for a live connection's parameters, so this helper
+    forces 6000 ms without knowing what the link negotiated. Linux's default
+    outgoing LE supervision timeout is 420 ms; if that is what this link uses,
+    we are making link-loss detection ~14x slower. It ships anyway (blast
+    radius is one optional accessory, the error direction is conservative, and
+    990 packets were delivered with 6000 ms in force) — but on the explicit
+    condition that the open question cannot rot into stale prose.
+
+    So the marker and the value are pinned together. Landing the btmon
+    measurement means changing the constant AND deleting the marker AND
+    updating this test — one deliberate edit, not three chances to forget.
+    Precedent: f3433f44c, "make the fixed-Fc checkpoint tripwire actually trip".
+    """
+    block = _comment_block_above("SUPERVISION_TIMEOUT = ")
+    assert "PENDING HARDWARE MEASUREMENT" in block, (
+        "the PENDING HARDWARE MEASUREMENT marker was removed from the comment "
+        "above SUPERVISION_TIMEOUT. If the btmon measurement landed, update "
+        "this test in the same commit and say what was measured; if it did "
+        "not, put the marker back — the value is still unverified."
+    )
+    assert "420" in block, (
+        "the marker must keep naming the value at risk (Linux's 420 ms default "
+        "outgoing LE supervision timeout), or it says nothing actionable"
+    )
+    assert ce.SUPERVISION_TIMEOUT == 0x0258, (
+        "SUPERVISION_TIMEOUT moved while the PENDING HARDWARE MEASUREMENT "
+        "marker above it still claims the value is unverified. Land the two "
+        "together: new value, marker deleted, this assertion replaced by "
+        "whatever the measurement showed."
+    )
 
 
 def test_latency_is_not_the_lever():
@@ -428,6 +483,61 @@ def test_run_reads_bluez_before_enumerating_connections(monkeypatch):
 
     assert ce.run() == 0
     assert order == ["bluez", "enumerate"]
+
+
+def test_apply_reservation_reports_a_failed_confirm_enumeration_honestly(monkeypatch):
+    """The confirm-time ioctl is not the send path.
+
+    `bluetooth.service` restarting between the two enumerations is enough to
+    make it raise ENODEV. Letting that OSError escape to run() got it labelled
+    `hci_send_failed` with exit 1 — a lie, since nothing was sent, and one
+    that contradicts run()'s own exit-code contract. The identical ENODEV on
+    the FIRST enumeration has always exited 0 as `conn_list_failed`.
+    """
+    sock = _FakeSocket([_update_complete(0x00, 0x0040)])
+    monkeypatch.setattr(ce, "_hci_socket", lambda: sock)
+
+    def gone(*_args, **_kwargs):
+        raise OSError(19, "No such device")
+
+    monkeypatch.setattr(ce, "live_connections", gone)
+
+    outcome = ce.apply_reservation(0x0040, expect_bdaddr=WIIM_BDADDR)
+
+    assert outcome.applied is False
+    assert outcome.reason == "conn_list_failed"
+    assert "No such device" in (outcome.detail or "")
+    assert sock.sent == []
+
+
+def test_run_exits_zero_when_the_confirm_enumeration_fails(monkeypatch):
+    """Nothing was written, so the unit must not park in `failed`."""
+    sock = _FakeSocket([_update_complete(0x00, 0x0040)])
+    calls = {"n": 0}
+
+    def connections(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [_conn()]
+        raise OSError(19, "No such device")
+
+    monkeypatch.setattr(ce, "_hci_socket", lambda: sock)
+    monkeypatch.setattr(ce, "live_connections", connections)
+    monkeypatch.setattr(
+        ce, "_bluez_managed_objects", _async_return({"/d/a": _device(WIIM_BDADDR)}),
+    )
+
+    assert ce.run() == 0
+    assert calls["n"] == 2, "the confirm-time enumeration must actually run"
+    assert sock.sent == []
+
+
+def test_nothing_written_reasons_all_exit_zero():
+    """Both members are produced by apply_reservation and routed by run(); a
+    new one added to the frozenset without a run() route would exit 1."""
+    assert ce.NOTHING_WRITTEN_REASONS == frozenset(
+        {"handle_reused", "conn_list_failed"},
+    )
 
 
 def test_apply_reservation_requires_the_expected_address(monkeypatch):

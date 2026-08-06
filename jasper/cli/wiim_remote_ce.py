@@ -54,6 +54,13 @@ over nothing this helper trusts:
 5. read HCI events back and only report success on
    ``LE Connection Update Complete`` with status 0 **and** our handle.
 
+The reservation lives on the connection, so it is lost on every disconnect —
+and it can also be overwritten mid-connection, because ``hci_le_conn_update()``
+zeroes the CE fields when BlueZ services a peripheral-initiated parameter
+update. Nothing here re-arms it; that residual risk, the jts4 measurement
+behind accepting it, and what to capture if it ever bites are recorded in
+``docs/HANDOFF-hotplug-resilience.md`` (the canonical WiiM mic lifecycle doc).
+
 The BlueZ read comes first on purpose. It is the slow step (bounded at 5 s),
 and **connection handles are recycled**: if the remote dropped while we were
 waiting on the bus and another LE device inherited its handle, we would retune
@@ -197,6 +204,15 @@ class UpdateOutcome:
     interval_ms: float | None = None
     latency: int | None = None
     supervision_timeout_ms: int | None = None
+    detail: str | None = None
+
+
+# Outcomes where the command was never written to the controller: the link
+# moved out from under us, or the confirm-time enumeration failed. Both are
+# benign and self-healing — the adapter re-requests on the next reconnect —
+# so they exit 0 rather than parking the unit in `failed`. Named once here
+# because :func:`apply_reservation` produces them and :func:`run` routes them.
+NOTHING_WRITTEN_REASONS = frozenset({"handle_reused", "conn_list_failed"})
 
 
 def hci_event_filter() -> bytes:
@@ -441,9 +457,18 @@ def apply_reservation(
         # Last check before the write: one ioctl, then one send. Anything
         # slower than that in between is a window a recycled handle can fit
         # through.
-        if not confirm_target(
-            live_connections(device_id), handle=handle, bdaddr=expect_bdaddr,
-        ):
+        #
+        # Its OSError is caught HERE rather than left to run(): by the time it
+        # reached run() the only thing left to say was "hci_send_failed",
+        # which is a lie — nothing was sent. bluetooth.service restarting
+        # between the two enumerations is enough to produce it (ENODEV).
+        try:
+            live = live_connections(device_id)
+        except OSError as exc:
+            return UpdateOutcome(
+                applied=False, reason="conn_list_failed", detail=str(exc),
+            )
+        if not confirm_target(live, handle=handle, bdaddr=expect_bdaddr):
             return UpdateOutcome(applied=False, reason="handle_reused")
         sock.send(encode_connection_update(handle))
         return read_update_outcome(sock, handle=handle, timeout=timeout)
@@ -468,14 +493,15 @@ def run(
 ) -> int:
     """Discover the WiiM link, apply the reservation, verify it. Returns an exit code.
 
-    Exit 1 is reserved for the one actionable failure: we found the right link
-    and the controller refused (or never confirmed) the update. Everything
-    else — no LE links, no WiiM among them, two of them, an unreachable BlueZ,
-    or a handle that changed owner mid-flight — changed nothing, is logged at
-    WARNING, and exits 0 so a transient condition does not park the unit in
-    ``failed``. Every one of those is still an anomaly worth reading: in
-    production this only runs *after* the adapter subscribed to a live,
-    name-matched LE link.
+    Exit 1 is reserved for failures where the command actually reached (or
+    should have reached) the controller: it refused the update, never
+    confirmed it, or the socket/send itself failed. Everything that wrote
+    nothing — no LE links, no WiiM among them, two of them, an unreachable
+    BlueZ, either enumeration failing, or a handle that changed owner
+    mid-flight — is logged at WARNING and exits 0, so a transient condition
+    does not park the unit in ``failed``. Every one of those is still an
+    anomaly worth reading: in production this only runs *after* the adapter
+    subscribed to a live, name-matched LE link.
     """
     try:
         # TimeoutError covers asyncio.wait_for on 3.11+ (they are the same
@@ -523,14 +549,16 @@ def run(
         )
         return 1
 
-    if outcome.reason == "handle_reused":
-        # The link moved out from under us between enumeration and send, so
-        # nothing was written. Benign and self-healing — the adapter asks
-        # again on the next reconnect — so don't park the unit in `failed`.
+    if outcome.reason in NOTHING_WRITTEN_REASONS:
+        fields: dict[str, Any] = {
+            "reason": outcome.reason,
+            "handle": f"0x{target.handle:04x}",
+            "bdaddr": target.bdaddr,
+        }
+        if outcome.detail:
+            fields["err"] = outcome.detail
         log_event(
-            logger, "wiim_remote_ce.skipped", reason="handle_reused",
-            handle=f"0x{target.handle:04x}", bdaddr=target.bdaddr,
-            level=logging.WARNING,
+            logger, "wiim_remote_ce.skipped", level=logging.WARNING, **fields,
         )
         return 0
 

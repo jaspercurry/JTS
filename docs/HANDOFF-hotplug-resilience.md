@@ -328,6 +328,30 @@ The new mode is **degraded but working**, and every step fails soft:
   named that way deliberately: `LE Connection Update Complete` carries no CE
   fields, so the interval/latency/timeout in that line are confirmed and the
   CE values are what we asked for.
+- **applied, then silently reverted mid-connection.** This is the one mode
+  with no log line at all, so read it before concluding from an `applied`
+  event that the reservation is still in force. `hci_le_conn_update()` in
+  `net/bluetooth/hci_conn.c` hardcodes `cp.min_ce_len = cp.max_ce_len = 0`,
+  and that is the function BlueZ calls to service a **peripheral-initiated**
+  L2CAP Connection Parameter Update Request. So a remote that asks for its
+  own parameters — typically slower ones when it goes idle — overwrites our
+  reservation, and nothing re-requests it until the next disconnect.
+
+  **Measured not to fire, on jts4, 2026-08-06:** the reservation was applied
+  at 18:38:49 and five push-to-talk holds spanning 18:40:31–18:42:43 all
+  delivered at full rate (990 packets, `bad_packets=0`), including across a
+  74 s idle gap — so it survived ~4 minutes and multiple idle→active cycles
+  on this remote.
+
+  **Re-arm machinery was deliberately declined**, not overlooked. Detecting
+  the revert means either polling connection parameters (HCI has no read
+  path, so it would mean a btmon-style event subscription) or watching packet
+  rate and re-requesting — a resident cost on a 415 MB Pi Zero 2 W, to defend
+  against something this remote was measured not to do. If a slow-mic report
+  ever survives all the checks above with an `applied` event in the journal,
+  **this is the remaining explanation**: capture `btmon` during an idle→active
+  cycle, look for a peripheral-initiated parameter update, and reopen with
+  that evidence.
 
 Two symptoms to keep apart: `bad_packets=0` with a low `packets` count in
 `event=wiim_remote_mic.disconnected` is a *delivery* problem and points here;
