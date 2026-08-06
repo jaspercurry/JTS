@@ -6898,6 +6898,15 @@ class CrossoverV2Conductor:
         would exclude it (§9.8, and on live jts3 the ka ceiling genuinely sits
         below it) — otherwise this speaker would have no golden candidate to
         prove equivalence against.
+
+        **``FcSearchBand.band_hz is None`` means NO PROPOSAL, and this is the
+        one place that has to know it.** The same ``None`` reaching
+        :func:`fc_candidate_set` as ``search_band_hz`` would mean the opposite
+        — "no declared band constrains this" — and the set would then be bounded
+        only by the excitation bands, proposing frequencies below the tweeter's
+        own declaration. Translated here to ``count=0``, so the refusal rides
+        the ordinary machinery and the returned ``limits`` still explain the
+        bounds rather than vanishing with the proposals.
         """
         search = resolve_fc_search_band(self._crossover_search_band_hz_by_role)
         return fc_candidate_set(
@@ -6908,6 +6917,7 @@ class CrossoverV2Conductor:
             lower_driver_diameter_mm=self._radiating_diameter_mm_by_role.get(
                 self._woofer.role
             ),
+            count=0 if search.band_hz is None else MAX_PROPOSED_FC_CANDIDATES,
         )
 
     def _lateral_priors(self) -> MeasurementPriors:
