@@ -1696,6 +1696,34 @@ def test_mute_that_is_not_terminal_does_not_count_as_muted() -> None:
     assert graph.allowed is False
 
 
+@pytest.mark.parametrize("flag", [True, "true", "True"])
+def test_bypassed_step_does_not_count_as_muted(flag: object) -> None:
+    """``bypassed: true`` forges the mute proof unless it is read.
+
+    CamillaDSP skips a bypassed step entirely, so a bypassed mute leaves the
+    channel fully live on the undeclared output while the Gain/wired facts still
+    read as satisfied — ``GraphView`` models filters and channels, not the
+    per-step bypass flag. Accepts CamillaDSP's string booleans too.
+    """
+    muted = _mono_flat_yaml(muted=1)
+    # Bypass the mute's own step (the forgery), and — since the guard is
+    # deliberately wholesale — an unrelated step as well.
+    forged = muted.replace(
+        "    channels: [1]\n", f"    bypassed: {flag}\n    channels: [1]\n"
+    )
+    unrelated = muted.replace(
+        "    channels: [0]\n", f"    bypassed: {flag}\n    channels: [0]\n"
+    )
+
+    for text in (forged, unrelated):
+        graph = classify_camilla_graph(topology=_full_range_mono_on(0), text=text)
+        assert graph.details["hard_muted_outputs"] == [], text
+        assert graph.allowed is False, text
+        assert "flat_full_range_graph_wider_than_topology" in {
+            issue["code"] for issue in graph.issues
+        }
+
+
 def test_step_after_the_mute_does_not_count_as_muted() -> None:
     """A later pipeline step touching the channel can undo the mute.
 
@@ -1771,6 +1799,9 @@ def test_composite_stereo_is_judged_by_channel_COUNT_not_index() -> None:
 
     assert graph.allowed is True
     assert graph.details["hard_muted_outputs"] == []
+
+
+def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> None:
     """The renderer's muted set is index-wise, so it is withheld wherever
     Camilla channel i is not physical output i, or the claim sits outside the
     graph's width. Both cases fall back to the unmuted graph, which the checker

@@ -34,6 +34,7 @@ from typing import cast
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
 from jasper.sound.camilla_yaml import (
+    FLAT_GRAPH_WIDTH,
     emit_sound_config,
     extract_room_peqs_from_config,
     extract_room_peqs_from_config_text,
@@ -114,6 +115,7 @@ class _StereoHostCarrier:
         # Lazy import keeps the base wizard path light (the one allowed
         # sound->active_speaker bridge, like _classify_loaded_config below).
         from jasper.active_speaker.runtime_contract import (
+            flat_graph_muted_outputs,
             flat_program_graph_blocked_reason,
         )
 
@@ -123,6 +125,20 @@ class _StereoHostCarrier:
             else None
         )
         self.can_host_eq = self._eq_block_reason is None
+        # Width match (issue #2179): a stereo-host graph carries FLAT_GRAPH_WIDTH
+        # channels, but the saved topology may claim fewer physical outputs. The
+        # unclaimed ones must be hard muted or this re-emit lands full-range
+        # program on an output the household never declared — and, on the deploy
+        # path, silently REPLACES the width-matched cutover the statefile guard
+        # just approved (install runs reconcile_sound_dsp_state, then restarts
+        # Camilla onto whatever this wrote). Same single owner the cutover render
+        # reads, so the two cannot disagree about which channels are unclaimed;
+        # this carrier restates no topology rules of its own.
+        self._flat_muted_outputs = (
+            flat_graph_muted_outputs(width=FLAT_GRAPH_WIDTH)
+            if guard_flat_topology
+            else frozenset()
+        )
 
     def _compute_room_peqs(self) -> list:
         raise NotImplementedError
@@ -141,6 +157,35 @@ class _StereoHostCarrier:
 
     def _validate_member_kwargs(self, member_kwargs: dict) -> None:
         """Carrier-specific guard after grouping policy is resolved."""
+
+    def _muted_outputs_for(self, emit_kwargs: Mapping[str, object]) -> frozenset[int]:
+        """The unclaimed playback channels to hard mute for THIS re-emit.
+
+        Withheld — empty — whenever the resolved sink is not this speaker's own
+        DAC, because then there is no physical output to decline:
+
+        * ``playback_pipe_path`` (bonded-leader Snapcast FIFO). The pipe carries
+          the SHARED stereo program to every follower; muting a channel there
+          would strip it out of the group's stream, not silence a local output.
+          Same load-bearing "no DAC attached" key the runtime contract's
+          program-bake exemption rests on.
+        * ``channel_split`` (member channel-selection weave). It splices a Mixer
+          AFTER the pipeline this builds, which would defeat the terminal-mute
+          invariant — ``emit_sound_config`` raises on the combination. Canonical
+          members always resolve ``channel_split=None``
+          (:func:`jasper.multiroom.member_config.member_camilla_kwargs`), so this
+          is a belt for a future caller, not a live path.
+
+        A grouped topology that genuinely needs both is the Distributed-Active
+        track's problem; withholding here is not fail-open, because the statefile
+        guard still refuses an over-wide graph out loud.
+        """
+
+        if emit_kwargs.get("playback_pipe_path"):
+            return frozenset()
+        if emit_kwargs.get("channel_split") is not None:
+            return frozenset()
+        return self._flat_muted_outputs
 
     def reemit(
         self,
@@ -186,12 +231,14 @@ class _StereoHostCarrier:
             member_kwargs=member_kwargs,
         )
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
+        muted_outputs = self._muted_outputs_for(emit_kwargs)
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
+            muted_outputs=muted_outputs,
             **emit_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))

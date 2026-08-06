@@ -539,6 +539,29 @@ def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
 
 
+def topology_sink_is_composite(topology: OutputTopology) -> bool:
+    """True iff the saved topology's output sink spans MULTIPLE child DACs.
+
+    Keyed on ``len(hardware.child_devices) >= 2`` — a *plurality* of child DACs,
+    each its own USB clock domain (``dac.py``'s only ``kind="composite"``
+    profile is the dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A
+    *single* child (``len == 1``) is the opposite: one coherent stereo sink on
+    one clock. The shipped-default dongle and hifiberry paths both populate
+    ``child_devices=(card,)`` for stable serial identity, so that single entry
+    must NOT read as composite — pre-2026-07 this was written as a bare
+    ``if child_devices:`` truthiness check, which wrongly classified every
+    shipped-default box (DEFECT 2 in ``topology_supports_shm_ring``).
+
+    Two callers need this same distinction for different reasons, so it is named
+    once here rather than spelled twice: ``topology_supports_shm_ring`` (a
+    stereo ring cannot drive a 4-ch composite sink) and
+    ``flat_graph_output_mapping_is_indexed`` (outputd fans the stereo program
+    across child DACs, so Camilla channel *i* is not physical output *i*).
+    """
+
+    return len(topology.hardware.child_devices) >= 2
+
+
 def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     """True iff the saved topology can be driven by the ``shm_ring`` coupling.
 
@@ -577,10 +600,8 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
         return False
     # Composite (dual-Apple, kind="composite") is excluded even when nominally
     # stereo: a MULTI-child sink spans >1 USB clock domain and is not the single
-    # coherent L/R sink the ring drives. A single child (len == 1) IS that coherent
-    # sink — the shipped-default dongle/hifiberry path records one child for stable
-    # identity — so gate on a plurality of children, never bare truthiness.
-    if len(topology.hardware.child_devices) >= 2:
+    # coherent L/R sink the ring drives.
+    if topology_sink_is_composite(topology):
         return False
     # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
     # shapes; an explicit mono full-range cannot be driven by a stereo ring.
@@ -716,10 +737,10 @@ def flat_graph_output_mapping_is_indexed(
     index and physical-output index coincide depends on the sink. Two conditions
     establish it, and neither is assumed:
 
-    * **fewer than two** ``hardware.child_devices``. A composite (dual-Apple)
-      sink has outputd fan the stereo program across child DACs, so a working
-      dual-Apple stereo box legitimately sits on outputs 0 and 2 — there,
-      channel 1 is not output 1.
+    * **not a composite sink** (:func:`topology_sink_is_composite`). A composite
+      (dual-Apple) sink has outputd fan the stereo program across child DACs, so
+      a working dual-Apple stereo box legitimately sits on outputs 0 and 2 —
+      there, channel 1 is not output 1.
     * **every claimed output lies inside ``width``**. If the topology names
       output 5 for a 2-wide graph, the graph plainly is not addressing outputs
       by index, so no per-index conclusion is available.
@@ -731,7 +752,7 @@ def flat_graph_output_mapping_is_indexed(
     safety.
     """
 
-    if len(topology.hardware.child_devices) >= 2:
+    if topology_sink_is_composite(topology):
         return False
     claimed = flat_full_range_outputs(contract)
     return bool(claimed) and claimed <= frozenset(range(width))
@@ -779,7 +800,8 @@ def flat_graph_muted_outputs(
     if width <= 0:
         return frozenset()
     try:
-        topology = topology or load_output_topology_strict()
+        if topology is None:
+            topology = load_output_topology_strict()
         contract = classify_output_contract(topology)
     except OutputTopologyError:
         return frozenset()
@@ -797,8 +819,8 @@ def _flat_output_terminally_muted(
 ) -> bool:
     """True iff channel ``index`` ends the pipeline in a hard mute nothing undoes.
 
-    Two facts, both read off the parsed graph — never off a filename or a source
-    marker:
+    Three facts, all read off the parsed graph — never off a filename or a
+    source marker:
 
     1. The channel carries the repo's one mute idiom — a ``Gain`` at
        :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true``, wired to that channel —
@@ -807,6 +829,12 @@ def _flat_output_terminally_muted(
     2. That mute is TERMINAL for the channel: it is the last name in its own
        ``Filter`` step, no later ``Filter`` step touches the channel, and no
        step of any other type follows it at all.
+    3. **No pipeline step is ``bypassed``.** CamillaDSP skips a bypassed step
+       entirely, so ``bypassed: true`` on the mute's own step leaves the channel
+       fully live while fact 1 still reads as satisfied — ``GraphView`` models
+       filters and channels, not the per-step bypass flag, so the primitive in
+       fact 1 cannot see it. This is checked here, on the raw pipeline, where
+       the flag actually lives.
 
     Fact 2 exists because of the lesson ``_parked_graph_allowed`` learned the
     hard way: CamillaDSP applies a step's filters in order, so a ``Gain``
@@ -814,7 +842,17 @@ def _flat_output_terminally_muted(
     another channel's signal into a "muted" one. A mute that merely *appears
     somewhere* in the chain is not a mute. A ``Filter`` step with no
     ``channels`` key applies to every channel, so it counts as touching this
-    one. Fails closed on any shape it cannot read.
+    one.
+
+    Fact 3 is deliberately WHOLESALE — any bypassed step anywhere refuses the
+    proof for every channel, not just a bypassed mute. No JTS emitter ever
+    writes ``bypassed``, so its presence means the graph was hand-edited, and
+    reasoning about which bypassed step is harmless is exactly the "generous
+    shape" fact 2 was written to reject. Both bench derivation checkers
+    (``jasper.active_speaker.bench.derivation``,
+    ``jasper.bass_extension.bench.derivation``) refuse bypassed steps outright
+    for the same reason; this matches them. Fails closed on any shape it cannot
+    read.
     """
 
     mute_name = _commission_mute_name(index)
@@ -828,6 +866,8 @@ def _flat_output_terminally_muted(
     muted = False
     for raw_step in pipeline:
         step = raw_step if isinstance(raw_step, dict) else {}
+        if _truthy_bool(step.get("bypassed")):
+            return False
         if step.get("type") != "Filter":
             # Mixer / Processor / Dither / anything else after the mute can
             # re-inject or generate signal on the channel.

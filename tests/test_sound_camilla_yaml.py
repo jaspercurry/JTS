@@ -826,3 +826,111 @@ def test_muted_outputs_none_and_empty_are_byte_identical_to_default():
 
     assert emit_sound_config(profile, muted_outputs=None) == baseline
     assert emit_sound_config(profile, muted_outputs=[]) == baseline
+
+
+def test_muted_outputs_leaves_the_CLAIMED_channel_byte_identical():
+    """Muting one channel must not perturb the other's chain.
+
+    The claimed output is the one the household actually hears; the only
+    permitted difference between the golden graph and a width-matched one is
+    the muted channel's own Filter step plus the mute's filter definition.
+    """
+    profile = SoundProfile(enabled=False)
+    baseline = emit_sound_config(profile)
+    width_matched = emit_sound_config(profile, muted_outputs=[1])
+
+    assert _pipeline_names(width_matched, 0) == _pipeline_names(baseline, 0)
+    # Everything above the `filters:` block (devices, samplerate, volume_limit,
+    # capture/playback) is untouched, and so is the mixer.
+    assert width_matched.split("filters:")[0] == baseline.split("filters:")[0]
+    assert width_matched.split("mixers:")[1].split("pipeline:")[0] == (
+        baseline.split("mixers:")[1].split("pipeline:")[0]
+    )
+
+
+def test_muted_outputs_and_channel_split_are_mutually_exclusive():
+    """The member weave splices a Mixer AFTER the mute, defeating terminality.
+
+    Third exclusive pair in this emitter, same fail-loud posture as the two
+    already guarded. Not reachable today (`member_camilla_kwargs` always
+    resolves `channel_split=None`), so this is the guard that keeps it that way.
+    """
+    import pytest
+
+    from jasper.multiroom.channel_split import build_channel_split
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            muted_outputs=[1],
+            channel_split=build_channel_split("left"),
+        )
+
+
+# --- the production call shape ------------------------------------------------
+#
+# deploy/install.sh calls emit_flat_outputd_cutover_config with out_path ONLY,
+# so `topology=None` -> flat_graph_muted_outputs(None, ...) ->
+# load_output_topology_strict(). That is the branch a real box executes; every
+# other test here injects a topology and skips it.
+
+
+def _write_topology_artifact(tmp_path, monkeypatch, payload) -> None:
+    import json
+
+    artifact = tmp_path / "output_topology.json"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(artifact))
+
+
+def test_production_call_shape_reads_the_saved_topology_from_disk(
+    tmp_path, monkeypatch
+):
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    _write_topology_artifact(tmp_path, monkeypatch, _mono_topology(0).to_dict())
+
+    yaml = emit_flat_outputd_cutover_config()
+
+    assert _pipeline_names(yaml, 1) == (
+        f"names: [flat, {output_commission_mute_name(1)}]"
+    )
+
+
+def test_production_call_shape_missing_topology_renders_the_golden(
+    tmp_path, monkeypatch
+):
+    """A fresh box has no topology artifact — it must boot the golden graph."""
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "does-not-exist.json")
+    )
+
+    assert emit_flat_outputd_cutover_config() == emit_flat_outputd_cutover_config(
+        topology=new_topology_draft()
+    )
+
+
+def test_production_call_shape_corrupt_topology_renders_the_golden_without_raising(
+    tmp_path, monkeypatch
+):
+    """A corrupt topology must not take the RENDER down.
+
+    The renderer declines to guess and emits the unmuted graph; the statefile
+    guard is what fails closed on the same corrupt artifact, and it can say why.
+    A raise here would abort the deploy at the render step with a traceback
+    instead.
+    """
+    from jasper.output_topology import new_topology_draft
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    artifact = tmp_path / "output_topology.json"
+    artifact.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(artifact))
+
+    assert emit_flat_outputd_cutover_config() == emit_flat_outputd_cutover_config(
+        topology=new_topology_draft()
+    )

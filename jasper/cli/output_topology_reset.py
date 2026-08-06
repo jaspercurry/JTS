@@ -164,17 +164,45 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
     the next deploy re-seeded the statefile — the "reset output topology to
     passive" exit did not actually exit.
 
-    Asks the runtime contract for the legal graph, then hands it to CamillaDSP
-    over the websocket, which reloads AND persists the statefile itself (the
-    seam the room-correction wizard already uses). Best-effort and never raises:
-    a down CamillaDSP or an unselectable graph leaves the previous, still-safe
-    graph and self-heals on the next deploy.
+    RE-RENDERS the flat cutover for the NEW topology first, then asks the
+    runtime contract for the legal graph, then hands it to CamillaDSP over the
+    websocket, which reloads AND persists the statefile itself (the seam the
+    room-correction wizard already uses).
+
+    The re-render is load-bearing, not tidiness. The on-disk cutover is
+    width-matched to whatever topology was saved when it was last rendered, so
+    after resetting a MONO box the file still hard-mutes the channel that
+    topology did not claim. An unconfigured topology claims nothing, so the
+    emission check has nothing to compare against and accepts the stale
+    half-muted graph — the box comes back audible on one output and silent on
+    the other, with no blocker to explain it, on the documented escape hatch.
+    Rendering first mirrors install's own render -> check -> load ordering, and
+    for an unconfigured draft it produces the golden unmuted graph.
+
+    Best-effort and never raises: a down CamillaDSP, a failed render, or an
+    unselectable graph leaves the previous, still-safe graph and self-heals on
+    the next deploy.
     """
 
     import asyncio
 
     from jasper.active_speaker import runtime_contract
 
+    render_error: str | None = None
+    try:
+        from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+        cutover = Path(runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG)
+        emit_flat_outputd_cutover_config(out_path=cutover, topology=topology)
+        # Mirror install's `_render_outputd_cutover_configs`, which widens the
+        # emitter's 0640 to 0644 — the cutover is read by whoever loads it, and
+        # this recovery path must not leave a narrower file than a deploy does.
+        cutover.chmod(0o644)
+    except _CONVERGENCE_ERRORS as exc:
+        # Fall through to the contract with whatever is on disk: that is the
+        # pre-existing behaviour, and the contract still refuses an over-wide
+        # graph out loud rather than loading it.
+        render_error = f"{type(exc).__name__}: {exc}"
     try:
         decision = runtime_contract.safe_graph_for_current_topology(
             topology,
@@ -215,13 +243,18 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
         config_path=selected,
         ok=bool(loaded),
         error=error,
-        level=logging.INFO if loaded else logging.WARNING,
+        render_error=render_error,
+        level=logging.INFO if loaded and not render_error else logging.WARNING,
     )
     return {
         "ok": bool(loaded),
         "status": decision.status,
         "config_path": selected,
         "error": error,
+        # Surfaced separately from `error`: the graph can load fine while the
+        # re-render failed, which means the loaded cutover is still the previous
+        # topology's width-matched one.
+        "render_error": render_error,
     }
 
 

@@ -177,6 +177,26 @@ refusal lives at the carrier (and, for the direct correction caller, at
 `emit_sound_config` leaf — the multiroom solo-restore emit must stay lenient
 (un-bonding must always succeed).
 
+**Stereo hosts are WIDTH-MATCHED to the saved topology (mono carve-out).** A
+stereo host emits `FLAT_GRAPH_WIDTH` channels, but a **mono** full-range
+topology claims only one physical output. `_StereoHostCarrier` therefore reads
+[`runtime_contract.flat_graph_muted_outputs()`](../jasper/active_speaker/runtime_contract.py)
+at construction — the *same* single owner the flat cutover render reads, so the
+carrier restates no topology rules of its own — and passes it to
+`emit_sound_config(muted_outputs=…)`, which appends the repo's hard-mute idiom
+as the terminal filter on each unclaimed channel. Without this the deploy
+un-mutes its own graph: install renders the width-matched cutover, the statefile
+guard approves it, then `reconcile_sound_dsp_state` re-emits through this
+carrier and the Camilla restart loads the unmuted result — the very graph the
+guard refuses. The mute is **withheld** whenever the resolved sink is not this
+speaker's own DAC: a `playback_pipe_path` (bonded-leader Snap FIFO) carries the
+SHARED stereo program, so muting a channel would strip it out of the group's
+stream rather than silence a local output; a `channel_split` weave splices a
+Mixer after the mute and `emit_sound_config` raises on the combination.
+Non-mono topologies (stereo, unconfigured, composite) mute nothing and re-emit
+byte-for-byte as before. The **correction** lane still emits unmuted and is
+still refused on a mono box by `assert_correction_graph_safe` — issue #2180.
+
 **Concrete dispatcher, not a `Protocol`/registry.** This is a 5-member
 set and only the active/program-bake carriers need special behavior; per AGENTS.md
 (avoid single-use abstractions) the dispatcher + recognizer is the

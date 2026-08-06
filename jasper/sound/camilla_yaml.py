@@ -255,6 +255,23 @@ def emit_sound_config(
                 "HANDOFF-multiroom.md §2"
             )
     muted_channels = _normalize_muted_outputs(muted_outputs)
+    # Third mutually-exclusive pair, same shape and same fail-loud posture as
+    # the two above. `weave_channel_split` splices the channel_select mixer and
+    # (for a sub) the crossover into the pipeline AFTER this function builds it,
+    # which would place a Mixer downstream of a mute the caller was promised is
+    # TERMINAL — silently defeating the invariant
+    # `jasper.active_speaker.runtime_contract._flat_output_terminally_muted`
+    # verifies. The axes also come from different topology models: muting is a
+    # SOLO speaker declining its own unclaimed physical output, while
+    # channel_split is a bonded MEMBER selecting a channel out of a shared
+    # stereo program. Both present indicates a wiring bug, not a topology.
+    if muted_channels and channel_split is not None:
+        raise ValueError(
+            "muted_outputs (solo unclaimed-output silencing) and channel_split "
+            "(member channel-selection weave) are mutually exclusive — the "
+            "weave splices a Mixer after the mute, breaking the terminal-mute "
+            "invariant the runtime contract verifies"
+        )
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);

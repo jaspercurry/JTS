@@ -258,6 +258,75 @@ def test_reset_loads_the_passive_graph_into_camilla(
     assert loaded == [str(flat_config)]
 
 
+def test_reset_rerenders_the_cutover_so_a_mono_era_mute_cannot_survive(
+    topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reset must not load the PREVIOUS topology's width-matched graph.
+
+    On a mono box the on-disk cutover hard-mutes the channel that topology did
+    not claim. The reset writes an unconfigured draft, which claims nothing — so
+    the emission check has nothing to compare against and would happily accept
+    the stale half-muted graph. The box comes back audible on one output and
+    silent on the other, with no blocker to explain it, on the documented escape
+    hatch. Re-rendering first is what closes it.
+    """
+    from jasper.output_topology import OutputTopology
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    mono = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "mono",
+        "name": "Mono passive output",
+        "status": "verified",
+        "hardware": {
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": DETECTED_LABEL,
+            "physical_output_count": DETECTED_OUTPUTS,
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+    # The mono-era render, exactly as the last deploy left it on disk.
+    emit_flat_outputd_cutover_config(out_path=flat_config, topology=mono)
+    assert "commission_mute" in flat_config.read_text(encoding="utf-8")
+
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loaded.append(path)
+            return True
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["camilla"]["ok"] is True
+    assert result["camilla"]["render_error"] is None
+    assert loaded == [str(flat_config)]
+    # The graph the box actually loaded has BOTH channels live again.
+    reloaded = flat_config.read_text(encoding="utf-8")
+    assert "commission_mute" not in reloaded
+    assert reloaded == emit_flat_outputd_cutover_config(topology=_after_draft())
+    # And install's file mode is preserved, not narrowed to the emitter's 0640.
+    assert flat_config.stat().st_mode & 0o777 == 0o644
+
+
+def _after_draft():
+    """The unconfigured passive draft the reset writes."""
+    from jasper.output_topology import new_topology_draft
+
+    return new_topology_draft()
+
+
 def test_reset_camilla_convergence_is_best_effort_and_reported(
     topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
