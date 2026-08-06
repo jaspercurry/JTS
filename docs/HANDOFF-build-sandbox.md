@@ -149,13 +149,18 @@ journalctl -t jasper-install | grep event=build_sandbox
 # event=build_sandbox.low_memory_build_park stopping runtime units before constrained Rust builds
 # event=build_sandbox.low_memory_build_unpark parked=9 restored=9 failed=0
 # event=build_sandbox.low_memory_build_unpark_failed unit=jasper-mux.service recover=systemctl start jasper-mux.service
+# event=build_sandbox.low_memory_build_unpark_failed unit=bt-agent.service recover=systemctl unmask bt-agent.service && systemctl start bt-agent.service
 # event=build_sandbox.low_memory_build_unpark_skip unit=jasper-input.service state=disabled left off on purpose
 ```
 
 The unpark summary is emitted on every exit path, so `restored=0` ("the trap
 ran and found the install had already restarted everything") is
 distinguishable from the trap never running. `..._failed` is the line to grep
-for after a household reports the speaker missing from their output list.
+for after a household reports the speaker missing from their output list. Its
+`recover=` is a command the operator can actually run: a unit that was masked
+while running (masking does not stop one) refuses `start` until it is
+unmasked, so that case names `unmask` first rather than repeating the command
+that just failed.
 
 journald is persistent (PR #160), so the decision survives the watchdog
 reboot a real build-OOM can trigger — which is exactly when you need to

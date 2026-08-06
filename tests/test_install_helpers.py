@@ -2243,7 +2243,7 @@ case "${verb}" in
                 # printing the state, so the caller must read stdout, not $?.
                 # static/indirect/generated exit 0.
                 case "${value}" in
-                    disabled|masked) rc=1 ;;
+                    disabled|masked|masked-runtime) rc=1 ;;
                 esac
             else
                 echo enabled
@@ -2258,8 +2258,9 @@ case "${verb}" in
                 exit 1
             fi
             # Real systemd refuses outright to start a masked unit, so a
-            # caller that decides to try one must see the failure.
-            if [[ "$(cat "${state}/enabled/${unit}" 2>/dev/null)" == masked ]]; then
+            # caller that decides to try one must see the failure. `masked*`
+            # covers `masked-runtime`, systemd's /run-scoped mask.
+            if [[ "$(cat "${state}/enabled/${unit}" 2>/dev/null)" == masked* ]]; then
                 echo "Failed to start ${unit}: Unit ${unit} is masked." >&2
                 exit 1
             fi
@@ -2277,7 +2278,15 @@ case "${verb}" in
         for unit in ${units}; do
             case "${verb}" in
                 disable) echo disabled >"${state}/enabled/${unit}" ;;
-                mask) echo masked >"${state}/enabled/${unit}" ;;
+                mask)
+                    # `mask --runtime` masks into /run rather than /etc, and
+                    # systemd reports that unit as `masked-runtime`.
+                    case " $* " in
+                        *" --runtime "*)
+                            echo masked-runtime >"${state}/enabled/${unit}" ;;
+                        *) echo masked >"${state}/enabled/${unit}" ;;
+                    esac
+                    ;;
             esac
             case " $* " in
                 *" --now "*) rm -f "${state}/active/${unit}" ;;
@@ -2528,16 +2537,27 @@ def test_unpark_leaves_units_the_install_deliberately_disabled_alone(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("verb", "state"), [("disable", "disabled"), ("mask", "masked")]
+    ("verb", "state"),
+    [
+        ("disable", "disabled"),
+        ("mask", "masked"),
+        ("mask --runtime", "masked-runtime"),
+    ],
 )
 def test_unpark_skips_a_unit_this_install_turned_off(tmp_path, verb, state):
-    """Both deliberate-off transitions skip; `static` is not one of them.
+    """Every deliberate-off transition skips; `static` is not one of them.
 
     `park_streambox_brain_units` only ever produces `disabled`, so `masked`
     (an operator's own decision) needs its own case. `static` is what a
     socket-activated unit with no [Install] directives reports, and must still
     be restored — that is what all four wizard `.service` units report, so
     `enable_streambox_web_sockets`' `disable` cannot reach this branch at all.
+
+    `masked-runtime` is systemd's /run-scoped mask. No in-repo path produces
+    it today and it was NOT reproduced on hardware — it is carried purely so
+    the off-state vocabulary is complete, and this case is what stops a future
+    `mask --runtime` in the install from having its unit start-attempted and
+    reported as a failed restore instead of skipped as deliberate.
 
     The state change happens *during* the scenario, i.e. after the park
     snapshot. That is the shape the skip exists for: intent changed under the
@@ -2595,7 +2615,8 @@ def test_unpark_restores_a_running_unit_that_was_always_disabled(tmp_path):
     assert "jasper-control.service" in run.active
 
 
-def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path):
+@pytest.mark.parametrize("mask_state", ["masked", "masked-runtime"])
+def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path, mask_state):
     """Stopping a running-but-masked unit is not something to hide.
 
     Masking does not stop a unit, so an operator can mask one and leave it
@@ -2604,11 +2625,22 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path):
     this is not the deliberate-off skip — it is a unit the install took away
     and cannot return, which has to reach the journal rather than pass as
     `left off on purpose`.
+
+    The recovery the operator is handed must also be one that can work:
+    `systemctl start` on a masked unit fails exactly as the trap's attempt
+    just did, so the hint has to unmask first.
+
+    `masked-runtime` is systemd's documented /run-scoped mask and is exercised
+    here only through this fake — no in-repo path produces the state and it was
+    NOT reproduced on hardware. What the parameter pins is that both enablement
+    case sites (park-time record and restore-time skip) share one vocabulary:
+    drop `masked-runtime` from either and this unit reads as "left off on
+    purpose" instead of being reported.
     """
     run = _run_park_cycle(
         tmp_path,
         active=["jasper-voice.service", "jasper-control.service"],
-        enablement={"jasper-voice.service": "masked"},
+        enablement={"jasper-voice.service": mask_state},
         scenario="mark_trap; exit 1",
     )
 
@@ -2616,9 +2648,15 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path):
     assert "left off on purpose" not in run.syslog, run.syslog
     assert (
         "event=build_sandbox.low_memory_build_unpark_failed "
-        "unit=jasper-voice.service" in run.syslog
+        "unit=jasper-voice.service recover=systemctl unmask "
+        "jasper-voice.service && systemctl start jasper-voice.service"
+        in run.syslog
     ), run.syslog
     assert "could not restart jasper-voice.service" in run.stderr
+    assert (
+        "recover with: sudo systemctl unmask jasper-voice.service "
+        "&& sudo systemctl start jasper-voice.service" in run.stderr
+    ), run.stderr
     # The rest of the recovery still happened.
     assert "jasper-control.service" in run.active
 
@@ -2670,8 +2708,13 @@ def test_unpark_logs_a_stable_event_token_when_a_unit_will_not_restart(
     assert "could not restart shairport-sync.service" in run.stderr
     assert (
         "event=build_sandbox.low_memory_build_unpark_failed "
-        "unit=shairport-sync.service" in run.syslog
+        "unit=shairport-sync.service recover=systemctl start "
+        "shairport-sync.service" in run.syslog
     ), run.syslog
+    # Not masked, so the hint stays the plain start — the unmask branch must
+    # not leak onto every failure.
+    assert "unmask" not in run.stderr, run.stderr
+    assert "unmask" not in run.syslog, run.syslog
     # The summary carries counts even when the failure above happened.
     assert "event=build_sandbox.low_memory_build_unpark " in run.syslog
     assert "restored=1 failed=1" in run.syslog, run.syslog
@@ -2722,6 +2765,47 @@ def test_install_exit_cleanup_preserves_the_installers_exit_status(
     assert run.returncode == expected, run.stderr
     # The trap still ran, whatever the status.
     assert "shairport-sync.service" in run.active
+
+
+def test_exit_trap_still_unparks_when_swap_cleanup_fails(tmp_path):
+    """The `|| true` guards in the trap are what keep the unpark reachable.
+
+    `install_exit_cleanup` asserts in prose that its guards are load-bearing:
+    under `set -e` an unguarded failing command ABORTS the trap function, so
+    every step after it — including the unpark — simply never runs, and an
+    aborted install leaves the speaker dead. That is the exact failure the
+    handler exists to prevent, and nothing asserted it: removing the `|| true`
+    from `cleanup_build_swap || true` passed the whole suite.
+
+    It is not a hypothetical edit. `cleanup_build_swap` returns 0 on every path
+    today, but its `swapoff` step can genuinely fail on the low-memory box this
+    whole path exists for — it already logs `swapoff_failed` for that case — so
+    "make a failed swapoff fatal" is a plausible future change. This forces the
+    guard to survive it.
+
+    Measured on the harness's own shell (bash 3.2.57): with the guard, exit 5
+    and every unit back; with `cleanup_build_swap` bare, the trap aborts at
+    that line, the installer reports 1 instead of 5, and no unit is restored.
+    """
+    units = [
+        "shairport-sync.service",
+        "jasper-outputd.service",
+        "jasper-control.service",
+    ]
+    run = _run_park_cycle(
+        tmp_path,
+        active=units,
+        scenario="cleanup_build_swap() { return 1; }; mark_trap; exit 5",
+    )
+
+    # The installer's status still survives a failing cleanup step.
+    assert run.returncode == 5, run.stderr
+    # ...and, the point of the guard, the unpark still ran.
+    for unit in units:
+        assert unit in run.active, (
+            f"{unit} was left dead: a failing cleanup step aborted the trap "
+            f"before the unpark could run. stderr={run.stderr!r}"
+        )
 
 
 def test_both_install_paths_trap_the_unparking_handler():

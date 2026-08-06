@@ -863,8 +863,16 @@ _record_low_memory_parked_unit() {
     systemctl is-active --quiet "${unit}" 2>/dev/null || return 0
     JASPER_LOW_MEMORY_PARK_RECORD+=("${unit}")
     enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+    # `masked-runtime` is systemd's documented transient counterpart to
+    # `masked` (a /run rather than /etc mask) and is just as much an off
+    # state. Kept in step with the identical case in
+    # _unpark_one_low_memory_unit: if one site calls a state off and the
+    # other does not, a unit that was ALWAYS off reads as one this install
+    # turned off, and the restore skips it as deliberate instead of
+    # reporting a unit it could not put back. No in-repo path produces the
+    # state today, so this is vocabulary completeness, not a fixed defect.
     case "${enablement}" in
-        disabled|masked)
+        disabled|masked|masked-runtime)
             JASPER_LOW_MEMORY_PARK_OFF_AT_PARK+=("${unit}")
             ;;
     esac
@@ -938,7 +946,7 @@ _unpark_one_low_memory_unit() {
     # branch never sees them.
     enablement="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
     case "${enablement}" in
-        disabled|masked)
+        disabled|masked|masked-runtime)
             if ! _jasper_unit_was_off_at_park "${unit}"; then
                 _build_sandbox_log "low_memory_build_unpark_skip" \
                     "unit=${unit} state=${enablement} left off on purpose"
@@ -952,10 +960,25 @@ _unpark_one_low_memory_unit() {
         return 0
     fi
     _JASPER_LOW_MEMORY_UNPARK_FAILED=$(( _JASPER_LOW_MEMORY_UNPARK_FAILED + 1 ))
+    # A masked unit reaches here precisely because it was masked and running
+    # when the park stopped it (the branch above sends a newly-masked one down
+    # the deliberate-off skip). systemd refuses to start it, so handing the
+    # operator a bare `systemctl start` hands them the command that just
+    # failed — it has to be unmasked first. `case` rather than a `[[ ]] &&`
+    # one-liner because this runs inside the EXIT trap, where a command
+    # yielding non-zero aborts the remaining recovery under `set -e`.
+    local recover="systemctl start ${unit}"
+    local recover_sudo="sudo systemctl start ${unit}"
+    case "${enablement}" in
+        masked|masked-runtime)
+            recover="systemctl unmask ${unit} && systemctl start ${unit}"
+            recover_sudo="sudo systemctl unmask ${unit} && sudo systemctl start ${unit}"
+            ;;
+    esac
     _build_sandbox_log "low_memory_build_unpark_failed" \
-        "unit=${unit} recover=systemctl start ${unit}"
+        "unit=${unit} recover=${recover}"
     echo "  WARN: could not restart ${unit} after a failed install;" >&2
-    echo "  recover with: sudo systemctl start ${unit}" >&2
+    echo "  recover with: ${recover_sudo}" >&2
 }
 
 unpark_low_memory_build_units() {
