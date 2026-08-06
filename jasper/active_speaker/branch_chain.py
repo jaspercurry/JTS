@@ -56,6 +56,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.sound.profile import (
     RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
 )
@@ -457,6 +458,55 @@ def radiating_band_hz(
         else:
             hi_hz = min(hi_hz, section.fc_hz * (ratio - 1.0) ** (1.0 / order))
     return lo_hz, hi_hz
+
+
+# The ka value at which a circular piston is taken to be BEAMING outright, and
+# the one #1675's owner ruling names. It is a documented heuristic, not a
+# measured edge: ka = 1 is the classic onset of narrowing, ka = 2 is roughly
+# -6 dB at 45 deg off-axis, and the loudspeaker literature's usual rule of
+# thumb is to cross a cone below it (ATC / Acoustic Frontiers; a 5" cone
+# crossed at or under ~1.7 kHz, arithmetic checked in
+# docs/research/2026-07-23-driver-linearization/03-fact-check.md claim L).
+#
+# Named as a constant because it is a POLICY choice about where guidance
+# starts, exactly like CROSSOVER_EDGE_ATTENUATION_DB above — the physics below
+# is continuous and has no threshold in it.
+BEAMING_KA = 2.0
+
+
+def beaming_onset_hz(radiating_diameter_mm: float, *, ka: float = BEAMING_KA) -> float:
+    """Frequency at which a piston of this diameter reaches ``ka``.
+
+    ``ka`` is the dimensionless product of wavenumber and radius: for radius
+    ``a`` and speed of sound ``c``, ``ka = 2*pi*f*a/c``, so
+    ``f = ka*c / (2*pi*a)``. For the JTS3 woofer's declared 114 mm effective
+    diameter that is **957.7 Hz at ka = 1** and **1915.4 Hz at ka = 2**.
+
+    **This is GEOMETRY, and the honesty matters more than the number.** A
+    directivity step at the crossover survives any on-axis EQ — the remedy is
+    crossover placement, a different horn, or a different driver, never a
+    filter (#1675; the layer-model doc lists it as an explicit non-goal). So a
+    consumer may use this to PREFER a lower crossover or to warn, and must not
+    present it as something the DSP will fix.
+
+    Deliberately unrounded. The browser's component-entry hint
+    (``kaBeamingOnsetHz`` in deploy/assets/sound-profile/js/main.js) rounds
+    ka=1 to a whole Hz first so the "2x" it displays is exact; that is a
+    display concern. This value rounds TO that one — pinned by test — so the
+    two agree without either owning the other's job.
+
+    Raises ``ValueError`` on a non-positive diameter or ``ka``: there is no
+    conservative default for a dimension nobody declared, and inventing one
+    would manufacture a beaming ceiling out of nothing.
+    """
+    if not math.isfinite(radiating_diameter_mm) or radiating_diameter_mm <= 0.0:
+        raise ValueError(
+            f"radiating diameter must be positive (got {radiating_diameter_mm})"
+        )
+    if not math.isfinite(ka) or ka <= 0.0:
+        raise ValueError(f"ka must be positive (got {ka})")
+    radius_m = float(radiating_diameter_mm) / 2000.0
+    return ka * DEFAULT_SOUND_SPEED_M_S / (2.0 * math.pi * radius_m)
 
 
 def chain_response(

@@ -5839,6 +5839,7 @@ class CrossoverV2Conductor:
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
+        radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ] | None = None,
@@ -5913,6 +5914,15 @@ class CrossoverV2Conductor:
         # linearization_envelope.compose_envelope's own "unknown".
         self._driver_class_by_role = (
             dict(driver_class_by_role) if driver_class_by_role else {}
+        )
+        # #1675 owner ruling: the declared effective radiating diameter per
+        # role, the ka/beaming prior the Fc selector reads. Collected since
+        # #1665 and consumed by nothing in Python until R17 — it reaches here
+        # by the SAME draft path ``driver_class_by_role`` takes. Empty means
+        # undeclared, which a consumer must DISCLOSE rather than fill in: there
+        # is no conservative default diameter.
+        self._radiating_diameter_mm_by_role = (
+            dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
         )
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),

@@ -4697,6 +4697,14 @@ class V2ConductorContext:
     # ctor param, landed by #1668 PR-C ahead of this resolver populating it).
     # A role absent here fits under the conservative "unknown" class default.
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
+    # Per-role declared effective radiating diameter in mm (#1665 component
+    # entry), the ka/beaming prior R17's Fc selector reads (#1675 owner
+    # ruling). Collected since #1665 and, until this field, consumed by
+    # nothing in Python — the value reaches the conductor by the SAME draft
+    # path ``driver_class_by_role`` takes, which is why wiring it needs no
+    # schema or allowlist change. A role absent here simply gets no beaming
+    # prior; the selector discloses that rather than assuming a diameter.
+    radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
     # Flat-linearization plan PR-4: the tweeter's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
@@ -4806,6 +4814,45 @@ def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, float]:
+    """Per-role declared effective radiating diameter, mm (#1665 / #1675).
+
+    The same shape and the same fail-soft contract as
+    :func:`_resolve_driver_class_by_role` — role-keyed, a role with disagreeing
+    declarations drops entirely, anything malformed is skipped rather than
+    raised. A diameter is a beaming PRIOR, so a bad one must cost that one
+    role its prior, never the session.
+
+    Deliberately no default: absent means "not declared", which the selector
+    discloses. Substituting a nominal diameter would manufacture a beaming
+    ceiling out of nothing, and #1675 is explicit that this is geometry
+    guidance derived from a declared dimension.
+    """
+    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
+    if not isinstance(manual, Mapping):
+        return {}
+    drivers = manual.get("drivers")
+    out: dict[str, float] = {}
+    conflicted: set[str] = set()
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
+        role = str(driver.get("role") or "")
+        value = driver.get("radiating_diameter_mm")
+        if not role or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        millimetres = float(value)
+        if not math.isfinite(millimetres) or millimetres <= 0.0:
+            continue
+        if role in out and out[role] != millimetres:
+            conflicted.add(role)
+            continue
+        out[role] = millimetres
+    for role in conflicted:
+        out.pop(role, None)
+    return out
+
+
 def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """Resolve preset/bands/caps/targets/volume from live status + topology.
 
@@ -4906,6 +4953,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     # into the conductor construction sites below so the Layer-1a
     # linearization fit (compose_envelope's class_prior_limit term) sees it.
     driver_class_by_role = _resolve_driver_class_by_role(draft)
+    # #1675: the ka/beaming prior, off the SAME draft path, for R17's selector.
+    radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     for channel, role in enumerate(("woofer", "tweeter")):
@@ -4987,6 +5036,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         role_channels={"woofer": 0, "tweeter": 1},
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
+        radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
         tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
 
@@ -5396,6 +5446,7 @@ def prepare_v2_session(
             post_apply_verifies=plan_shape.verify_capture_target >= 1,
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
+            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
             measurement_protection_sections_by_role=protection_sections,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,
@@ -5658,6 +5709,7 @@ def prepare_v2_verify(
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
+            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
