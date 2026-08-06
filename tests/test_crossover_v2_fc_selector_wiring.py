@@ -206,6 +206,33 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
     assert len(corners) == len(fitted), "each candidate needs its OWN corner"
 
 
+def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
+    """``_fit_linearization`` states that it ASSUMES eligibility and does not
+    re-check, so calling it on a phone-tier or under-repeated session raises
+    inside the fit engine instead of declining — six spurious WARNING refusals
+    per capture, and a documented precondition violated. The sweep applies the
+    same gate ``_build_candidate`` does and refuses honestly instead.
+    """
+    fakes = FakeSeams()  # the DEFAULT measure fixture: no mic tier, no repeats
+    c = _selector_conductor(fakes)
+    calls: list[object] = []
+    original = flow.CrossoverV2Conductor._fit_linearization
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow.CrossoverV2Conductor, "_fit_linearization",
+            lambda self, *a, **k: (calls.append(1), original(self, *a, **k))[1],
+        )
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 1)
+
+    assert calls == [], "the fit was called outside its own precondition"
+    assert c._fc_evaluations, "the candidates must still be disclosed"
+    assert all(
+        e.refusal == flow.EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
+    )
+
+
 # --- the evaluate-and-release loop ---------------------------------------------
 
 
