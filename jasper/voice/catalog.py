@@ -119,6 +119,27 @@ class ProviderCatalogEntry:
     # tests/test_voice_catalog.py pins the known values; "Adding a fourth
     # provider" in docs/HANDOFF-voice-providers.md lists it.
     interrupt_reconcile: InterruptReconcile
+    # Every module that must import for this provider's adapter to run,
+    # ordered the way the daemon reaches them:
+    #
+    #   [0]  the adapter module ``jasper.voice.daemon_main._make_connection``
+    #        imports for this provider id;
+    #   [1:] the third-party SDKs that adapter imports *lazily*, inside a
+    #        function body, so a plain ``import <adapter>`` does NOT prove
+    #        they are installed (OpenAI/Grok defer ``from openai import
+    #        AsyncOpenAI`` to ``_resolve_connect_call`` — deliberately, so
+    #        tests can build a connection object without the SDK, and so a
+    #        gemini box never pays the openai SDK's ~11 MB).
+    #
+    # Consumed by jasper-doctor's ``check_provider_importable``. REQUIRED,
+    # no default: an empty default would make that check silently vacuous
+    # for a newly added provider, which is the exact failure this
+    # declaration exists to catch (issue #2197 — a venv missing
+    # ``audioop-lts`` made openai/grok unimportable with nothing but a
+    # failed daemon start to show for it).
+    # tests/test_voice_provider_runtime_imports.py pins both halves against
+    # the code they describe.
+    runtime_imports: tuple[str, ...]
     # Only meaningful when ``interrupt_reconcile`` is ``INHERITS``: the
     # provider id whose reconciliation kind this one adopts (its adapter
     # subclasses that provider's adapter). Empty otherwise.
@@ -180,6 +201,10 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         # Gemini cuts the unspoken tail server-side on
         # START_OF_ACTIVITY_INTERRUPTS; no client truncate call to make.
         interrupt_reconcile=InterruptReconcile.SERVER_SELF_TRUNCATES,
+        # gemini_session imports `google.genai` at module top, so importing
+        # the adapter already proves the SDK is installed — nothing deferred
+        # to add here.
+        runtime_imports=("jasper.voice.gemini_session",),
     ),
     ProviderCatalogEntry(
         id="openai",
@@ -267,6 +292,11 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         # WebSocket playback keeps the whole assistant turn server-side; the
         # client must send conversation.item.truncate at the heard boundary.
         interrupt_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
+        # The adapter's own module-top `import audioop` is why this entry
+        # exists: on Python 3.13 that name comes from the `audioop-lts`
+        # backport, not the stdlib. `openai` is listed separately because
+        # openai_session defers it to `_resolve_connect_call`.
+        runtime_imports=("jasper.voice.openai_session", "openai"),
     ),
     ProviderCatalogEntry(
         id="grok",
@@ -303,6 +333,13 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         # OpenAI's reconciliation kind rather than restating it.
         interrupt_reconcile=InterruptReconcile.INHERITS,
         interrupt_reconcile_base="openai",
+        # grok_session imports openai_session at module top (it subclasses
+        # the adapter), so it inherits the same audioop + openai SDK needs.
+        # Spelled out rather than derived from interrupt_reconcile_base:
+        # subclassing the adapter and sharing its dependencies are two
+        # different facts, and a future provider could do one without the
+        # other.
+        runtime_imports=("jasper.voice.grok_session", "openai"),
     ),
 )
 

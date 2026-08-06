@@ -11,6 +11,8 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from ...config import Config
 from ...voice.catalog import (
@@ -18,8 +20,9 @@ from ...voice.catalog import (
     provider_by_id,
     provider_ids_manifest_text,
 )
+from ...voice.provider_state import read_active_provider_state
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import CheckResult, _run
 
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
@@ -53,6 +56,99 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"doesn't start with '{prefix}' — may be a stale or wrong key",
         )
     return CheckResult(env_name, "ok", f"{key[:8]}...")
+
+# Imports the module names handed to it on argv, in order, and reports the
+# FIRST one that fails. Run in a child interpreter rather than in-process for
+# two reasons: (1) a fresh process is what jasper-voice actually is, so a
+# module that only imports because the doctor already loaded something is not
+# mistaken for a working provider; (2) the adapters pull in heavy SDKs
+# (`google.genai` is ~49 MB resident) and a child frees that on exit instead
+# of carrying it through the rest of the doctor run on a 1 GB Pi.
+_IMPORT_PROBE = (
+    "import importlib, sys\n"
+    "for name in sys.argv[1:]:\n"
+    "    try:\n"
+    "        importlib.import_module(name)\n"
+    "    except Exception as e:\n"
+    "        print(f'{name}\\t{type(e).__name__}: {e}')\n"
+    "        raise SystemExit(1)\n"
+)
+
+# Importing google.genai cold on a Zero-class box is seconds, not the 5 s
+# _run default. A timeout here means "could not tell", not "broken".
+_IMPORT_PROBE_TIMEOUT_SEC = 30.0
+
+
+@doctor_check(order=2.5, group="voice")
+def check_provider_importable() -> CheckResult:
+    """Check that the *configured* voice provider's adapter and its
+    lazily-imported SDK can actually be imported in this venv.
+
+    Nothing else catches this. The ``/voice`` wizard offers every provider
+    in the catalog and ``switch-voice-provider.sh`` will select any of
+    them, but neither verifies that the selected provider's code loads —
+    so a venv missing one package surfaces only as a jasper-voice that
+    will not start (issue #2197).
+
+    What this asserts, precisely: a fresh interpreter can import each
+    module in the provider's ``runtime_imports``. That covers the two ways
+    the daemon dies on a missing package — ``_make_connection``'s adapter
+    import, and the adapter's own deferred ``from openai import
+    AsyncOpenAI``. It does **not** prove jasper-voice starts (keys, mic,
+    ALSA, network are all separate) and does not open a session.
+
+    The active provider is read from the wizard-owned SSOT file rather
+    than ``Config``/``os.environ`` — see jasper.voice.provider_state.
+    """
+    state = read_active_provider_state()
+    if state.status in {"unset", "missing"}:
+        return CheckResult(
+            "voice provider imports", "ok",
+            "no provider configured (skipped — pick one in the /voice wizard)",
+        )
+    if state.status in {"unreadable", "invalid"}:
+        # Not this check's job to adjudicate: check_provider_key and the
+        # /voice wizard already report a bad or unreadable selection. Say
+        # "can't tell" rather than inventing a second verdict on it.
+        return CheckResult(
+            "voice provider imports", "warn",
+            f"active provider undetermined ({state.detail}); imports not checked",
+        )
+
+    provider = provider_by_id(state.provider)
+    assert provider is not None  # read_active_provider_state validated it
+    modules = list(provider.runtime_imports)
+    joined = ", ".join(modules)
+    try:
+        proc = _run(
+            [sys.executable, "-c", _IMPORT_PROBE, *modules],
+            timeout=_IMPORT_PROBE_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return CheckResult(
+            "voice provider imports", "warn",
+            f"{state.provider}: import probe timed out after "
+            f"{_IMPORT_PROBE_TIMEOUT_SEC:.0f}s ({joined}) — could not verify",
+        )
+    if proc.returncode == 0:
+        return CheckResult(
+            "voice provider imports", "ok",
+            f"{state.provider}: {joined} import cleanly "
+            f"(import-only; not a live-session probe)",
+        )
+    first = (proc.stdout or "").strip().splitlines()
+    failure = first[0].replace("\t", ": ") if first else (
+        (proc.stderr or "").strip().splitlines() or ["unknown import failure"]
+    )[-1]
+    return CheckResult(
+        "voice provider imports", "fail",
+        f"{state.provider} is the active provider but its code will not "
+        f"import: {failure}. jasper-voice cannot start with this provider "
+        f"selected — re-run the installer (bash scripts/deploy-to-pi.sh) to "
+        f"rebuild the venv, or select a provider that loads in the /voice "
+        f"wizard.",
+    )
+
 
 def _voice_provider_ids_manifest_path() -> Path:
     return Path(

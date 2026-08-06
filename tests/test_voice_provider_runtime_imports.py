@@ -1,0 +1,305 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Guards for ``ProviderCatalogEntry.runtime_imports`` and the doctor check
+that consumes it.
+
+Background (issue #2197). Nothing verified that the *configured* voice
+provider's code could be imported. The ``/voice`` wizard offers every
+provider in the catalog and ``switch-voice-provider.sh`` will select any of
+them; a venv missing one package surfaced only as a jasper-voice that would
+not start. ``check_provider_importable`` closes that, and it is only as good
+as the ``runtime_imports`` declaration it reads — so both halves of that
+declaration are pinned here against the code they describe:
+
+- ``runtime_imports[0]`` must be the adapter module
+  ``daemon_main._make_connection`` actually imports for that provider id.
+- ``runtime_imports[1:]`` must cover every third-party module an adapter
+  imports *lazily* (inside a function body), because those are exactly the
+  ones a plain ``import <adapter>`` does not prove are installed.
+
+Both are checked by parsing the real source with ``ast`` rather than by
+importing it, so the guards run on a machine that does not have the provider
+SDKs installed.
+"""
+from __future__ import annotations
+
+import ast
+import dataclasses
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from jasper.cli.doctor import voice as doctor_voice
+from jasper.cli.doctor._registry import registered_checks
+from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
+from jasper.voice.provider_state import ActiveProviderState
+
+ROOT = Path(__file__).resolve().parents[1]
+DAEMON_MAIN = ROOT / "jasper" / "voice" / "daemon_main.py"
+
+
+def _function_def(path: Path, name: str) -> ast.FunctionDef:
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{path.name} no longer defines {name}()")
+
+
+# ---------------------------------------------------------------------------
+# Half 1 — the declared adapter module is the one the daemon imports.
+# ---------------------------------------------------------------------------
+
+
+def test_declared_adapter_modules_match_daemon_dispatch():
+    """``runtime_imports[0]`` is the module ``_make_connection`` imports.
+
+    The provider-id → adapter-module mapping is stated in two places by
+    necessity: the daemon needs the concrete class (with per-provider
+    constructor kwargs), the doctor needs only the module name. This test is
+    what keeps them one fact. Rename an adapter module, or add a fourth
+    provider without declaring it, and this fails.
+    """
+    node = _function_def(DAEMON_MAIN, "_make_connection")
+    imported = {
+        f"jasper.voice.{child.module}"
+        for child in ast.walk(node)
+        if isinstance(child, ast.ImportFrom) and child.level == 1 and child.module
+    }
+    declared = {entry.runtime_imports[0] for entry in PROVIDERS}
+    assert imported == declared, (
+        "jasper/voice/daemon_main.py::_make_connection imports "
+        f"{sorted(imported)} but the catalog declares {sorted(declared)}. "
+        "Update ProviderCatalogEntry.runtime_imports[0] to match — "
+        "jasper-doctor's check_provider_importable reads it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Half 2 — every lazily-imported third-party module is declared.
+# ---------------------------------------------------------------------------
+
+
+def _lazy_third_party_imports(module_path: Path) -> set[str]:
+    """Root names of non-stdlib, non-first-party modules imported inside a
+    function body in ``module_path``."""
+    tree = ast.parse(module_path.read_text())
+    top_level = set(tree.body)
+    lazy: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if node in top_level:
+            continue  # module-top import — covered by importing the adapter
+        if isinstance(node, ast.ImportFrom):
+            if node.level:  # relative — first-party
+                continue
+            names = [node.module or ""]
+        else:
+            names = [alias.name for alias in node.names]
+        for name in names:
+            root = name.split(".")[0]
+            if not root or root == "jasper":
+                continue
+            # A lazily-imported stdlib module needs no declaration — it
+            # cannot be missing from the venv, which is the only thing
+            # runtime_imports exists to detect.
+            if root in sys.stdlib_module_names:
+                continue
+            lazy.add(root)
+    return lazy
+
+
+@pytest.mark.parametrize("entry", PROVIDERS, ids=lambda e: e.id)
+def test_lazy_sdk_imports_are_declared(entry: ProviderCatalogEntry):
+    """Any third-party module an adapter imports lazily must be declared.
+
+    A lazy SDK import is invisible to ``import <adapter>``: openai_session
+    defers ``from openai import AsyncOpenAI`` into ``_resolve_connect_call``
+    so a connection object can be built without the SDK. That is exactly the
+    package a broken venv is missing, so it has to be named explicitly.
+    """
+    adapter = entry.runtime_imports[0]
+    path = ROOT / Path(*adapter.split(".")).with_suffix(".py")
+    assert path.exists(), f"{adapter} does not resolve to a file"
+    lazy = _lazy_third_party_imports(path)
+    declared = set(entry.runtime_imports[1:])
+    assert lazy <= declared, (
+        f"{adapter} lazily imports {sorted(lazy - declared)} but provider "
+        f"{entry.id!r} declares {sorted(declared)}. Add the missing module(s) "
+        "to runtime_imports so check_provider_importable verifies them."
+    )
+
+
+def test_grok_inherits_the_openai_adapters_lazy_sdk():
+    """grok_session subclasses the OpenAI adapter, so it reaches the same
+    deferred ``openai`` import through inherited code its own AST never
+    shows. Named here so the parametrized guard above (which only reads
+    grok_session's own source) is not mistaken for full coverage."""
+    grok = next(e for e in PROVIDERS if e.id == "grok")
+    openai = next(e for e in PROVIDERS if e.id == "openai")
+    assert set(openai.runtime_imports[1:]) <= set(grok.runtime_imports[1:])
+
+
+# ---------------------------------------------------------------------------
+# The declaration itself
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_imports_is_a_required_field():
+    """No default. An empty default would make check_provider_importable
+    silently vacuous for a newly added provider — the exact silent pass this
+    declaration exists to prevent."""
+    field = {f.name: f for f in dataclasses.fields(ProviderCatalogEntry)}[
+        "runtime_imports"
+    ]
+    assert field.default is dataclasses.MISSING
+    assert field.default_factory is dataclasses.MISSING
+
+
+@pytest.mark.parametrize("entry", PROVIDERS, ids=lambda e: e.id)
+def test_every_provider_declares_at_least_its_adapter(entry: ProviderCatalogEntry):
+    assert entry.runtime_imports, f"{entry.id} declares no runtime_imports"
+    assert entry.runtime_imports[0].startswith("jasper.voice."), (
+        f"{entry.id}: runtime_imports[0] must be the adapter module, got "
+        f"{entry.runtime_imports[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The doctor check
+# ---------------------------------------------------------------------------
+
+
+def _state(status: str, provider: str = "") -> ActiveProviderState:
+    return ActiveProviderState(
+        provider, None, status, "/var/lib/jasper/voice_provider.env",
+    )
+
+
+@pytest.fixture
+def probe(monkeypatch):
+    """Capture the argv the check hands its import probe, and control the
+    result, without spawning a real interpreter."""
+    calls: list[list[str]] = []
+    box: dict[str, object] = {
+        "returncode": 0, "stdout": "", "stderr": "", "raises": None,
+    }
+
+    def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        if box["raises"] is not None:
+            raise box["raises"]
+        return subprocess.CompletedProcess(
+            cmd, box["returncode"], box["stdout"], box["stderr"],
+        )
+
+    monkeypatch.setattr(doctor_voice, "_run", fake_run)
+    box["calls"] = calls
+    return box
+
+
+def test_skips_when_no_provider_configured(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state("unset"),
+    )
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "ok"
+    assert "no provider configured" in result.detail
+    assert probe["calls"] == [], "must not spawn a probe with nothing selected"
+
+
+def test_skips_when_ssot_file_missing(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state("missing"),
+    )
+    assert doctor_voice.check_provider_importable().status == "ok"
+    assert probe["calls"] == []
+
+
+def test_warns_rather_than_failing_when_selection_unreadable(monkeypatch, probe):
+    """A non-root doctor that cannot traverse /var/lib/jasper knows nothing
+    about the provider's imports — that is 'can't tell', not 'broken'."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state("unreadable"),
+    )
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "warn"
+    assert probe["calls"] == []
+
+
+def test_probes_exactly_the_declared_modules(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "openai"),
+    )
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "ok"
+    openai = next(e for e in PROVIDERS if e.id == "openai")
+    # argv tail is the module list; argv[0:2] is <python> -c <probe source>.
+    assert probe["calls"][0][3:] == list(openai.runtime_imports)
+    assert "not a live-session probe" in result.detail
+
+
+def test_fails_and_names_the_missing_module(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "openai"),
+    )
+    probe["returncode"] = 1
+    probe["stdout"] = (
+        "jasper.voice.openai_session\tModuleNotFoundError: "
+        "No module named 'audioop'\n"
+    )
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "fail"
+    assert "jasper.voice.openai_session" in result.detail
+    assert "No module named 'audioop'" in result.detail
+    assert "deploy-to-pi.sh" in result.detail
+
+
+def test_falls_back_to_stderr_when_probe_dies_without_output(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "gemini"),
+    )
+    probe["returncode"] = 1
+    probe["stderr"] = "Traceback (most recent call last):\nSegmentationFault\n"
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "fail"
+    assert "SegmentationFault" in result.detail
+
+
+def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_provider_state",
+        lambda: _state("configured", "gemini"),
+    )
+    probe["raises"] = subprocess.TimeoutExpired(cmd=["python"], timeout=30.0)
+    result = doctor_voice.check_provider_importable()
+    assert result.status == "warn"
+    assert "timed out" in result.detail
+
+
+def test_check_is_registered_in_the_doctor_registry():
+    names = {c.func.__name__ for c in registered_checks()}
+    assert "check_provider_importable" in names
+
+
+def test_import_probe_reports_the_first_failing_module_end_to_end():
+    """The probe source itself, run for real: a good module then a bad one
+    exits non-zero and names the bad one on stdout."""
+    proc = subprocess.run(
+        [sys.executable, "-c", doctor_voice._IMPORT_PROBE, "json", "jts_no_such_mod"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 1
+    assert proc.stdout.startswith("jts_no_such_mod\tModuleNotFoundError")
