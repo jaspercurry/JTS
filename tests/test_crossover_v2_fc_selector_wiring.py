@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -204,6 +205,61 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
         next(iter(sections["woofer"])).fc_hz for sections in fitted
     }
     assert len(corners) == len(fitted), "each candidate needs its OWN corner"
+
+
+def _operators(c, *, fc_hz=1750.0, polarity="normal", trims=None, delay_us=0.0):
+    """``_fc_branch_operators`` over a hand-built alignment, so each factor can
+    be moved on its own. The analysis stand-in carries only ``alignment`` —
+    which is all this method reads from it."""
+    alignment = SimpleNamespace(
+        polarity_sign=1 if polarity == "normal" else -1,
+        anchor_delay_us=0.0, delay_us=delay_us, status=flow.ALIGNMENT_OK,
+    )
+    return c._fc_branch_operators(
+        flow.lateral_evidence_grid_hz(),
+        SimpleNamespace(alignment=alignment),
+        c._fc_candidate_sections(fc_hz),
+        {},
+        trims if trims is not None else {"woofer": 0.0, "tweeter": 0.0},
+    )
+
+
+def test_the_branch_operator_carries_polarity_trim_and_the_candidates_corner():
+    """``_fc_branch_operators`` is what turns a pose's NEUTRAL measurement into
+    this candidate's model, so a wrong factor there makes the whole lateral
+    robustness term noise while every other test stays green.
+
+    Asserted as PROPERTIES — move one factor, see the expected change — rather
+    than by re-deriving the formula, which would only prove the test and the
+    code were written by the same hand.
+    """
+    c = _selector_conductor(FakeSeams())
+    base = _operators(c)
+    assert set(base) == {"woofer", "tweeter"}
+
+    # 1. The alignment's polarity applies to the TWEETER alone — it is the
+    #    branch ``predicted_branch_sum`` signs, and signing both would leave
+    #    the summation identical and the model silently wrong.
+    inverted = _operators(c, polarity="inverted")
+    assert np.allclose(inverted["woofer"], base["woofer"])
+    assert np.allclose(inverted["tweeter"], -base["tweeter"])
+
+    # 2. Trim enters as a per-role linear gain.
+    trimmed = _operators(c, trims={"woofer": -6.0, "tweeter": 0.0})
+    assert np.allclose(trimmed["woofer"], base["woofer"] * 10.0 ** (-6.0 / 20.0))
+    assert np.allclose(trimmed["tweeter"], base["tweeter"])
+
+    # 3. A committed delay phases the tweeter and leaves its magnitude alone.
+    delayed = _operators(c, delay_us=250.0)
+    assert np.allclose(np.abs(delayed["tweeter"]), np.abs(base["tweeter"]))
+    assert not np.allclose(delayed["tweeter"], base["tweeter"])
+    assert np.allclose(delayed["woofer"], base["woofer"])
+
+    # 4. …and the candidate's OWN corner is in there, or every candidate would
+    #    predict the same pose sum and the comparison would be vacuous.
+    assert not np.allclose(
+        _operators(c, fc_hz=1650.0)["tweeter"], base["tweeter"]
+    )
 
 
 def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
