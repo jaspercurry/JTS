@@ -427,6 +427,72 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
+    """What the measurement says the CROSSOVER should be, and what to do.
+
+    R17's one household-facing surface. Three things, in the order somebody
+    deciding needs them: the number, why it won, and — always — that acting on
+    it means editing the declaration in ``/sound``. That last sentence is not
+    politeness. The selector RECOMMENDS; the declared crossover remains Fc's
+    only writer (#1894, PR-3 ruling), so a line that said "JTS moved your
+    crossover to 1750 Hz" would describe something that did not happen and
+    leave the household waiting for a change nothing will make.
+
+    **Keep-configured is a first-class outcome, not silence.** A session that
+    evaluated alternatives and kept the configured Fc has LEARNED something,
+    and printing nothing would be indistinguishable from a session where the
+    selector never ran. The two really are different, so they read differently:
+    no sweep prints nothing at all.
+
+    ``planned`` beyond ``evaluated`` is disclosed rather than smoothed — the
+    accept window is bounded by the phone's own result deadline, so a loaded
+    Pi legitimately scores fewer candidates than it proposed, and a household
+    told "we compared six" when four were compared has been told a number
+    nobody measured.
+    """
+    fc = _mapping(_v2(status).get("fc_selection"))
+    if not fc:
+        return []
+    configured = _finite(fc.get("configured_hz"))
+    if configured is None:
+        return []
+    recommended = _finite(fc.get("recommended_hz"))
+    evaluated = fc.get("evaluated")
+    planned = fc.get("planned")
+    lines: list[str] = []
+    if recommended is not None:
+        margin = _finite(fc.get("margin_db"))
+        lines.append(
+            f"crossover: {recommended:.0f} Hz measured better than the "
+            f"{configured:.0f} Hz you have"
+            + (f", by {margin:.2f} dB through the handoff" if margin else "")
+        )
+        lines.append(
+            f"to use it, set the crossover to {recommended:.0f} Hz in Sound "
+            "settings and measure again — JTS does not change it for you"
+        )
+    else:
+        lines.append(
+            f"crossover: {configured:.0f} Hz is the best of what could be "
+            "measured — nothing beat it, so leave it as it is"
+        )
+    if isinstance(evaluated, int) and isinstance(planned, int):
+        # The BOUND edges, named by the declaration that set them, so a
+        # household seeing "1 compared" knows which number to widen. The
+        # selector's own ``limits`` carry them; the two that bind in practice
+        # are the declared search band and the beaming ceiling.
+        bound = _finite(_mapping(fc.get("limits")).get("search_lo_hz"))
+        lines.append(
+            f"compared {evaluated} of {planned} crossover points"
+            + (
+                f" (nothing below {bound:.0f} Hz — that is what your drivers "
+                "are declared to allow)"
+                if planned <= 1 and bound is not None else ""
+            )
+        )
+    return lines
+
+
 def _verify_frame_lines(
     status: Mapping[str, Any], *, raw_already_shown: bool,
 ) -> list[str]:
@@ -1382,8 +1448,14 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # its flatness/carve-out disclosure belongs here — the same lines the
         # done screen folds away, on the screen where they inform a decision
         # rather than explain a fait accompli.
+        # R17: the Fc recommendation belongs on the screen where a household is
+        # already deciding what to do with this measurement — and it is the one
+        # finding here whose action is theirs alone, since applying it means
+        # editing the declaration in /sound rather than pressing Apply.
         expert_details=(
-            _flatness_details_lines(status) + _ripple_reservation_lines(status)
+            _flatness_details_lines(status)
+            + _ripple_reservation_lines(status)
+            + _fc_recommendation_lines(status)
         ),
         prediction=prediction,
         # CC1: this is the screen the #1949 ruling took a sentence away from.
