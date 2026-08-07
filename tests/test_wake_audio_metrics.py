@@ -129,3 +129,66 @@ def test_offline_counter_runs_standalone_with_staged_sibling(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "Run openWakeWord" in result.stdout
+
+
+# Runs a script the way `python <script>` does, but with `jasper` made
+# unimportable. Popping PYTHONPATH is not enough to prove independence from
+# `jasper`: CI installs the project into the venv (`uv sync` with no
+# --no-install-project), so `import jasper` resolves from any cwd and a
+# module-top `from jasper... import ...` would pass there while failing on a
+# box that only has the script and its sibling.
+_NO_JASPER_RUNNER = '''
+import os
+import runpy
+import sys
+
+
+class _BlockJasper:
+    def find_spec(self, name, path=None, target=None):
+        if name == "jasper" or name.startswith("jasper."):
+            raise ModuleNotFoundError("No module named %r" % name)
+        return None
+
+
+sys.meta_path.insert(0, _BlockJasper())
+
+script = sys.argv[1]
+# `python script.py` puts the script's own directory on sys.path;
+# runpy.run_path does not, and the sibling-helper import needs it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(script)))
+sys.argv = [script, *sys.argv[2:]]
+runpy.run_path(script, run_name="__main__")
+'''
+
+
+# Scripts whose `--help` must not need `jasper` importable.
+#
+# Both take a function-local `from jasper.openwakeword_guard import ...` for
+# this reason: argparse exits before the guard call, so usage text stays
+# available on an interpreter that has numpy/openwakeword but not the project.
+#   _offline_wake_count.py    — wake-rate-test.sh scp's it to a Pi's /tmp.
+#   score-baseline-wakeword.py — invocation documented in
+#                                docs/HANDOFF-mic-quality-v2.md.
+# scripts/_waveform_fusion_experiment.py is deliberately NOT here: it already
+# imported `jasper` at module top before the guard existed, so requiring it is
+# not a regression.
+_HELP_WITHOUT_JASPER_SCRIPTS = ("_offline_wake_count.py", "score-baseline-wakeword.py")
+
+
+@pytest.mark.parametrize("script_name", _HELP_WITHOUT_JASPER_SCRIPTS)
+def test_script_help_does_not_require_jasper(script_name: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", _NO_JASPER_RUNNER, str(_SCRIPTS / script_name), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"scripts/{script_name} --help needs `jasper` importable.\n"
+        "Keep the `from jasper.openwakeword_guard import ...` inside the "
+        "function that calls it, next to the openwakeword import it guards.\n"
+        f"{result.stderr}"
+    )
+    assert "usage:" in result.stdout

@@ -181,6 +181,25 @@ def main() -> int:
     audio_sb = signal.sosfilt(sos_sb, audio.astype(np.float32))
 
     # Run openWakeWord on the whole file.
+    #
+    # The guard import is function-local, not module-top: wake-rate-test.sh
+    # scp's this file plus _wake_audio_metrics.py to a Pi's /tmp, and `--help`
+    # must work there without the project installed — argparse exits above this
+    # line. Scoring itself does now need `jasper` importable, where before the
+    # guard this script needed only numpy + scipy + openwakeword — a deliberate
+    # trade for keeping one owner of the stub rather than a second copy here.
+    # It always runs under /opt/jasper/.venv (wake-rate-test.sh invokes it by
+    # that absolute path), which has both jasper and openwakeword, and a
+    # missing `jasper` fails loudly here before the model loads.
+    # Pinned by test_script_help_does_not_require_jasper
+    # in tests/test_wake_audio_metrics.py, which blocks `jasper` outright;
+    # test_offline_counter_runs_standalone_with_staged_sibling only pops
+    # PYTHONPATH, so it cannot see a module-top import on a box where the
+    # project is in site-packages (which CI is).
+    from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+
+    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    ensure_openwakeword_import_safe()
     from openwakeword.model import Model
     model = Model(wakeword_models=[args.model])
     model_key = Path(args.model).stem
