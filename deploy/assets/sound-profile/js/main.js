@@ -1272,14 +1272,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return true;
     });
   }
-  function roleListText(roles, options) {
+  function joinListText(items, options) {
     options = options || {};
+    if (!items.length) return '';
+    if (items.length === 1) return items[0];
+    if (items.length === 2) return items[0] + (options.two || ' + ') + items[1];
+    return items.slice(0, -1).join(', ') + (options.final || ', ') +
+      items[items.length - 1];
+  }
+  function roleListText(roles, options) {
     var labels = uniqueRoleLabels(roles);
     if (!labels.length) return 'drivers';
-    if (labels.length === 1) return labels[0];
-    if (labels.length === 2) return labels[0] + (options.two || ' + ') + labels[1];
-    return labels.slice(0, -1).join(', ') + (options.final || ', ') +
-      labels[labels.length - 1];
+    return joinListText(labels, options);
   }
   function roleSentenceText(roles) {
     return roleListText(roles, {two: ' and ', final: ', and '});
@@ -2606,6 +2610,49 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ) + '</p>' +
     '</div>';
   }
+  // Issue #2191. An 'incomplete' safety profile has two very different causes
+  // and only one of them is a blank field: a band-relationship issue leaves
+  // every declared value present, so "add the missing limits" sends the
+  // operator hunting for an empty box that does not exist. These are the
+  // relationship and policy codes _target_issues (driver_safety.py) can emit
+  // with nothing missing; every other code it emits ends in `_missing`.
+  var SAFETY_RELATIONSHIP_TEXT = {
+    search_band_below_hard_band:
+      'crossover search band starts below its hard excitation band',
+    search_band_outside_measurement_band:
+      'crossover search band reaches outside its measurement band',
+    measurement_band_outside_hard_band:
+      'measurement band reaches outside its hard excitation band',
+    highpass_cutoff_outside_hard_band:
+      'high-pass cutoff sits outside its hard excitation band',
+    lowpass_cutoff_outside_hard_band:
+      'low-pass cutoff sits outside its hard excitation band',
+    highpass_below_code_policy:
+      'high-pass cutoff is below what JTS allows for that driver',
+    max_effective_peak_above_code_policy:
+      'level ceiling is louder than what JTS allows for that driver'
+  };
+  // Reason codes are `<role>:<code>` (a few are bare). Server text, so read it
+  // as data: only codes this page knows how to phrase produce a sentence.
+  function driverSafetyConflicts(reasons) {
+    var out = [];
+    (reasons || []).forEach(function(raw) {
+      var parts = String(raw).split(':');
+      var code = parts[parts.length - 1];
+      if (!Object.prototype.hasOwnProperty.call(SAFETY_RELATIONSHIP_TEXT, code)) {
+        return;
+      }
+      var text = SAFETY_RELATIONSHIP_TEXT[code];
+      var line = parts.length > 1 ? 'the ' + parts[0] + "'s " + text : text;
+      if (out.indexOf(line) < 0) out.push(line);
+    });
+    return out;
+  }
+  function driverSafetyHasMissing(reasons) {
+    return (reasons || []).some(function(raw) {
+      return /_missing$/.test(String(raw));
+    });
+  }
   function renderDriverResearchSummary(options) {
     options = options || {};
     var saved = driverResearch.designDraft || {};
@@ -2629,7 +2676,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           safetyReady ? 'confirmed for the current outputs' :
             (driverResearch.safetyDirty ? 'needs confirmation after saving current edits' :
             (safetyStatus === 'stale' ? 'needs confirmation after an output change' :
-              (safetyStatus === 'incomplete' ? 'add the missing limits before confirmation' :
+              (safetyStatus === 'incomplete' ?
+                (driverSafetyConflicts(safetyEvaluation.reasons).length ?
+                  'resolve the limits that do not line up before confirmation' :
+                  'add the missing limits before confirmation') :
                 'review and confirm the visible limits')))
         ) + '.</p>' +
       '</div>';
@@ -3143,12 +3193,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status !== 'missing' && !confirmed;
     return {
       needsConfirmation: needsConfirmation,
-      // 'incomplete' means declared values are still missing, and
-      // build_driver_safety_profile REFUSES a confirm in that state — offering
-      // the button there would be an error waiting to happen, so the callout
-      // names the missing-values action instead.
+      // build_driver_safety_profile REFUSES a confirm while ANY issue stands,
+      // so offering the button in 'incomplete' would be an error waiting to
+      // happen and the callout names the remedy instead. WHICH remedy depends
+      // on the issues themselves — a missing value and a band relationship
+      // that does not line up are different actions (#2191) — so carry the
+      // evaluation's own reason codes rather than assuming one cause.
       canConfirm: needsConfirmation && status !== 'incomplete',
-      status: status
+      status: status,
+      reasons: Array.isArray(evaluation.reasons) ? evaluation.reasons : []
     };
   }
   function driverSafetyConfirmHint(state) {
@@ -3157,8 +3210,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'limits for the outputs in use.';
     }
     if (state.status === 'incomplete') {
-      return 'Some safety limits are still missing. Add them under Advanced, ' +
-        'then confirm.';
+      var conflicts = driverSafetyConflicts(state.reasons);
+      if (!conflicts.length) {
+        return 'Some safety limits are still missing. Add them under Advanced, ' +
+          'then confirm.';
+      }
+      return (driverSafetyHasMissing(state.reasons) ?
+        'Some safety limits are still missing, and some do not line up: ' :
+        'Nothing is missing, but some safety limits do not line up: ') +
+        joinListText(conflicts, {two: ' and ', final: ', and '}) +
+        '. Fix them under Advanced, then confirm.';
     }
     if (state.status === 'stale') {
       return 'The outputs changed since these limits were confirmed. Review ' +

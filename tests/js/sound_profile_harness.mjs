@@ -7126,6 +7126,67 @@ async function testIncompleteSafetyProfileExplainsWithoutADeadButton() {
   return { incompleteSafetyProfileExplainsWithoutADeadButton: true };
 }
 
+async function testIncompleteFromABandRelationshipNamesTheRelationship() {
+  // Issue #2191. 'incomplete' is also reached with every value present — the
+  // owner's tweeter repair hit exactly this — and "add the missing limits"
+  // then sends the operator hunting for a blank field that does not exist.
+  const harness = await harnessWithSafetyEvaluation({
+    status: "incomplete",
+    confirmed_and_current: false,
+    reasons: ["tweeter:search_band_below_hard_band"],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  if (calloutAt < 0) {
+    fail("an incomplete profile still needs the explanation", { html });
+  }
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (callout.includes("still missing")) {
+    fail("nothing is missing here — the copy must not say it is", { callout });
+  }
+  if (!callout.includes("Nothing is missing")) {
+    fail("the copy must contradict the missing-values reading", { callout });
+  }
+  if (!callout.includes(
+    "the tweeter&#39;s crossover search band starts below its hard excitation band"
+  )) {
+    fail("the copy must name which relationship does not line up", { callout });
+  }
+  // Same refusal as any other issue: the server will not confirm, so no button.
+  if (callout.includes('data-act="confirm-driver-safety"')) {
+    fail("an incomplete profile must not offer a confirm the server refuses", {
+      callout,
+    });
+  }
+  // The saved-summary line is the second place that read 'missing'.
+  if (!html.includes(
+    "Safety profile: resolve the limits that do not line up before confirmation"
+  )) {
+    fail("the saved summary must not send the operator after a blank field", {
+      html,
+    });
+  }
+
+  // Both causes at once names both actions rather than picking one.
+  const mixed = await harnessWithSafetyEvaluation({
+    status: "incomplete",
+    confirmed_and_current: false,
+    reasons: [
+      "tweeter:search_band_below_hard_band",
+      "woofer:max_sweep_duration_s_missing",
+    ],
+  });
+  const mixedHtml = mixed.elements.get("view-body").innerHTML;
+  const mixedCallout = mixedHtml.slice(
+    mixedHtml.indexOf('id="confirm-safety-limits"'),
+    mixedHtml.indexOf("data-driver-advanced"),
+  );
+  if (!mixedCallout.includes("still missing, and some do not line up")) {
+    fail("a mixed incomplete state must name both causes", { mixedCallout });
+  }
+  return { incompleteFromABandRelationshipNamesTheRelationship: true };
+}
+
 async function testConfirmSafetyDeepLinkOpensTheComponentStep() {
   const unconfirmed = {
     status: "unconfirmed",
@@ -7252,6 +7313,7 @@ results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 results.push(await testUnconfirmedSafetyProfileHoistsTheConfirmControl());
 results.push(await testConfirmedSafetyProfileRendersNoCallout());
 results.push(await testIncompleteSafetyProfileExplainsWithoutADeadButton());
+results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
 results.push(await testFailedCombinedTestBannerCarriesTheRemedy());

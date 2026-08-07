@@ -7,7 +7,9 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
+import re
 
 import pytest
 
@@ -18,10 +20,12 @@ from jasper.active_speaker.design_draft import (
     normalise_manual_settings,
     save_design_draft,
 )
+from jasper.active_speaker import driver_safety as driver_safety_module
 from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_KIND,
     DRIVER_RESEARCH_REQUEST_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
+    SUPPORTED_PROTECTION_KINDS,
     DriverSafetyProfileError,
     _V2_RESEARCH_DRIVER_FIELDS,
     build_driver_research_prompt,
@@ -1165,6 +1169,310 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     evaluation = evaluate_driver_safety_profile(profile, declared)
     assert evaluation.status == "confirmed"
     assert evaluation.confirmed_and_current is True
+
+
+# --- #2191: the search band's lower edge, and who owns it ---------------------
+#
+# The shipped excitation floor (#1654, resolve_driver_excitation_ceilings) drops
+# measurement_band[0] for a high-frequency role on the program_admission path --
+# the path every crossover search runs on. The store-time validator has to agree
+# with it, or the wizard refuses to store a band MEASURE will happily sweep.
+
+
+def _jts3_shaped_manual(
+    *,
+    tweeter_search: list[float],
+    tweeter_measurement: list[float] | None = None,
+    tweeter_hard: list[float] | None = None,
+) -> dict:
+    """The PRE-EDIT jts3 declaration shape #2191 was found on, parameterised.
+
+    hard=[1600, 20000] / measurement=[2000, 18000] is the exact asymmetry
+    ``resolve_driver_excitation_ceilings`` names in its "Low-side asymmetry"
+    paragraph, and 2000 Hz is also that speaker's configured Fc.
+
+    A fixture, not a reading: that box's declaration has since been edited and
+    re-confirmed (its analysis window was widened alongside the search band,
+    the interim two-field unblock #2191 describes). This shape is kept because
+    it is the one the defect was measured on and the one a household that edits
+    only the search band still lands in.
+    """
+
+    manual = _manual_settings()
+    tweeter = manual["drivers"][1]
+    tweeter["hard_excitation_band_hz"] = tweeter_hard or [1600.0, 20000.0]
+    tweeter["measurement_band_hz"] = tweeter_measurement or [2000.0, 18000.0]
+    tweeter["crossover_search_band_hz"] = tweeter_search
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000.0
+    return manual
+
+
+def _issue_codes(profile: dict) -> set[str]:
+    return {issue["code"] for issue in profile["issues"]}
+
+
+def test_the_owner_ruled_search_repair_is_storable_and_offers_confirmation() -> None:
+    """#2191's headline: widening the tweeter's search band down to its declared
+    hard floor -- ONE field, [2000, 2500] -> [1600, 2500], measurement window
+    untouched at [2000, 18000] -- must land a profile the operator can confirm.
+
+    Before this repair it landed ``incomplete``, which the /sound page renders
+    WITHOUT a Confirm button, so the ruled one-field edit had no way to be
+    applied. ``needs_confirmation`` / ``unconfirmed`` is the state whose Confirm
+    control the browser does render -- pinned on the client side by
+    ``testUnconfirmedSafetyProfileHoistsTheConfirmControl`` in
+    tests/js/sound_profile_harness.mjs.
+
+    The box the defect was found on took #2191's documented interim unblock
+    instead (widening the analysis window too), so this is the form that stays
+    blocked for any OTHER household until this validator change ships -- which
+    is why the test asserts the one-field edit rather than that box's history.
+    """
+
+    topology = _topology_with_tweeter_style("compression_driver")
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_jts3_shaped_manual(tweeter_search=[1600.0, 2500.0]),
+        driver_research=None,
+    )
+
+    assert profile["issues"] == []
+    assert profile["status"] == "needs_confirmation"
+    evaluation = evaluate_driver_safety_profile(profile, topology)
+    assert evaluation.status == "unconfirmed"
+
+    # …and it really is confirmable, not merely storable.
+    confirmed = build_driver_safety_profile(
+        topology,
+        manual_settings=_jts3_shaped_manual(tweeter_search=[1600.0, 2500.0]),
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-08-06T12:00:00Z",
+    )
+    assert confirmed["status"] == "confirmed"
+
+
+def test_the_stored_search_floor_is_exactly_the_shipped_excitation_floor() -> None:
+    """The one rule, two owners. ``driver_safety`` restates #1654's floor because
+    ``excitation_safety_plan`` imports it and cannot be imported back, so this
+    pins the restatement to the original by construction: the lowest search edge
+    the validator ACCEPTS is exactly the floor MEASURE derives, and the largest
+    float below it is refused. Either side drifting by one ULP fails this.
+
+    Run twice, because the shipped floor is a ``max()`` of two terms and one
+    fixture can only exercise whichever term wins in it. With hard=[1600, ...]
+    the declared hard floor owns the edge; with hard=[10, ...] --
+    physically absurd for a tweeter, which is the point -- the global
+    ``MIN_DRIVER_TEST_FREQUENCY_HZ`` term owns it instead, and dropping that
+    term from the restatement stops being invisible.
+    """
+
+    topology = _topology_with_tweeter_style("compression_driver")
+
+    def shipped_floor_hz(hard: list[float], seed_search: list[float]) -> float:
+        """Read MEASURE's derived floor for this declaration, then pin the
+        validator's accepted edge to it from both sides."""
+
+        def build(search: list[float], *, confirm: bool = False) -> dict:
+            return build_driver_safety_profile(
+                topology,
+                manual_settings=_jts3_shaped_manual(
+                    tweeter_search=search, tweeter_hard=hard
+                ),
+                driver_research=None,
+                confirm=confirm,
+                confirmed_at="2026-08-06T12:00:00Z" if confirm else None,
+            )
+
+        # seed_search is legal under any candidate floor, so reading the shipped
+        # value never depends on the value being read.
+        confirmed = build(seed_search, confirm=True)
+        tweeter = next(t for t in confirmed["targets"] if t["role"] == "tweeter")
+        permitted, _ = resolve_driver_excitation_ceilings(
+            confirmed,
+            tweeter["target_fingerprint"],
+            program_admission=True,
+        )
+        assert build([permitted.lower_hz, 2500.0])["issues"] == [], hard
+        just_below = build([math.nextafter(permitted.lower_hz, 0.0), 2500.0])
+        assert _issue_codes(just_below) == {
+            "tweeter:search_band_below_hard_band"
+        }, hard
+        return permitted.lower_hz
+
+    # 1. The declared hard floor owns the edge, below the declared analysis
+    #    window -- otherwise this test would pass without the asymmetry
+    #    existing at all.
+    declared_floor = shipped_floor_hz([1600.0, 20000.0], [1600.0, 2500.0])
+    assert declared_floor < 2000.0
+
+    # 2. The global test-frequency minimum owns the edge, ABOVE the declared
+    #    hard floor -- the case a bare ``float(hard[0])`` restatement gets wrong.
+    global_floor = shipped_floor_hz([10.0, 20000.0], [2000.0, 2500.0])
+    assert global_floor > 10.0
+
+
+def test_a_search_band_below_the_hard_band_is_refused_for_every_role() -> None:
+    """The relationship the relaxation must never touch. The hard band is the
+    operator-confirmed datasheet minimum; a search band reaching under it is
+    refused whether or not the role gets the analysis-window relaxation.
+    """
+
+    topology = _topology_with_tweeter_style("compression_driver")
+    tweeter_under = build_driver_safety_profile(
+        topology,
+        manual_settings=_jts3_shaped_manual(tweeter_search=[1599.0, 2500.0]),
+        driver_research=None,
+    )
+    assert tweeter_under["status"] == "incomplete"
+    assert "tweeter:search_band_below_hard_band" in _issue_codes(tweeter_under)
+
+    # The woofer's hard band starts at 25 Hz and its analysis window at 35 Hz,
+    # so this reaches under BOTH and the unchanged subset rule refuses it.
+    woofer_under = _manual_settings()
+    woofer_under["drivers"][0]["crossover_search_band_hz"] = [20.0, 3500.0]
+    profile = build_driver_safety_profile(
+        mono_output_topology(card_id=None),
+        manual_settings=woofer_under,
+        driver_research=None,
+    )
+    assert profile["status"] == "incomplete"
+    assert "woofer:search_band_outside_measurement_band" in _issue_codes(profile)
+
+
+def test_a_low_frequency_role_still_may_not_search_below_its_analysis_window(
+) -> None:
+    """The relaxation is high-frequency-only. For a woofer ``measurement_band[0]``
+    is a real excursion hedge -- the shipped floor keeps it, so this validator
+    keeps it too, even well inside the declared hard band.
+    """
+
+    manual = _manual_settings()
+    # hard=[25, 5000], measurement=[35, 4500]: 30 Hz is inside the hard band and
+    # below the analysis window, which is exactly what a tweeter may now declare.
+    manual["drivers"][0]["crossover_search_band_hz"] = [30.0, 3500.0]
+    profile = build_driver_safety_profile(
+        mono_output_topology(card_id=None),
+        manual_settings=manual,
+        driver_research=None,
+    )
+
+    assert profile["status"] == "incomplete"
+    assert _issue_codes(profile) == {"woofer:search_band_outside_measurement_band"}
+
+
+def test_the_relaxation_never_reaches_the_upper_edge() -> None:
+    """Scope. #1654 widened a FLOOR; nothing about it widens the top, so a
+    high-frequency search band above the declared analysis window is refused
+    with exactly the code it always was.
+    """
+
+    profile = build_driver_safety_profile(
+        _topology_with_tweeter_style("compression_driver"),
+        manual_settings=_jts3_shaped_manual(tweeter_search=[1600.0, 18001.0]),
+        driver_research=None,
+    )
+
+    assert _issue_codes(profile) == {"tweeter:search_band_outside_measurement_band"}
+
+
+def test_a_high_frequency_role_without_a_hard_band_keeps_the_stricter_rule(
+) -> None:
+    """Fail-closed: the relaxation binds to the hard band, so a declaration with
+    no hard band to bind to does not lose its floor -- it falls back to the
+    unchanged subset rule (alongside the missing-band issue it already raises).
+    """
+
+    manual = _jts3_shaped_manual(tweeter_search=[1600.0, 2500.0])
+    manual["drivers"][1].pop("hard_excitation_band_hz")
+    profile = build_driver_safety_profile(
+        _topology_with_tweeter_style("compression_driver"),
+        manual_settings=manual,
+        driver_research=None,
+    )
+
+    codes = _issue_codes(profile)
+    assert "tweeter:hard_excitation_band_missing" in codes
+    assert "tweeter:search_band_outside_measurement_band" in codes
+
+
+_SOUND_MAIN_JS = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "assets"
+    / "sound-profile"
+    / "js"
+    / "main.js"
+)
+# ``driver_safety`` emits reason codes three structurally different ways, and a
+# code escaping through ANY of them reaches ``evaluation.reasons`` and therefore
+# /sound's copy. A scan that saw one shape would go quiet exactly when the hole
+# it exists to catch reopened -- and the newest shape, a bare ``return [...]``,
+# is the one that now owns band relationships. So each shape is matched on its
+# own and each is required to have contributed: a pattern that silently stops
+# matching fails loudly instead of shrinking the derived set.
+_REASON_CODE_SHAPES = {
+    # _target_issues' per-target checks, and _search_band_issues' HF branch.
+    "reasons.append": re.compile(r'\breasons\.append\(\s*f?"([^"]+)"'),
+    # _profile_core's profile-wide issue and evaluate_driver_safety_profile's
+    # re-derivation of it, whose lists are named `issues` / `derived_issues`.
+    "issues.append": re.compile(r'\b\w*issues\.append\(\s*f?"([^"]+)"'),
+    # _search_band_issues returns its own list instead of appending to one.
+    "return [...]": re.compile(r'\breturn\s+\[\s*f?"([^"]+)"'),
+}
+
+
+def _reason_code_tail(template: str) -> str:
+    """The code half of a `<role>:<code>` template, interpolation stripped."""
+
+    tail = template.rsplit("}", 1)[-1] if "}" in template else template
+    return tail.rsplit(":", 1)[-1]
+
+
+def _emittable_reason_codes() -> set[str]:
+    """Every reason code ``driver_safety`` can emit, read from its own source.
+
+    Derived rather than restated. Two families are templated: the
+    ``{kind}_cutoff_outside_hard_band`` pair is expanded from the same
+    ``SUPPORTED_PROTECTION_KINDS`` the code interpolates, and ``{field}_missing``
+    collapses to the bare tail ``_missing`` -- which is enough, because the one
+    caller partitions on that suffix and never needs the field names.
+    """
+
+    source = Path(driver_safety_module.__file__).read_text()
+    codes: set[str] = set()
+    for shape, pattern in _REASON_CODE_SHAPES.items():
+        found = {_reason_code_tail(raw) for raw in pattern.findall(source)}
+        assert found, f"the reason-code scan stopped seeing {shape}"
+        for tail in found:
+            if tail == "_cutoff_outside_hard_band":
+                codes.update(f"{kind}{tail}" for kind in SUPPORTED_PROTECTION_KINDS)
+            else:
+                codes.add(tail)
+    assert len(codes) > 8, "the reason-code scan lost most of the source"
+    return codes
+
+
+def test_the_sound_page_can_phrase_every_reason_that_is_not_a_missing_value():
+    """#2191's regression guard, by construction rather than by restatement.
+
+    /sound splits an ``incomplete`` profile into "a value is missing" (every
+    code ending ``_missing``) and "something does not line up" (a phrase per
+    code). A NEW non-missing code with no phrase -- introduced through ANY of
+    the three emission shapes ``_REASON_CODE_SHAPES`` enumerates -- would
+    silently fall back to "Some safety limits are still missing", reintroducing
+    exactly the copy #2191 was filed about. Exact set equality both ways, so a
+    dead phrase is caught too.
+    """
+
+    js = _SOUND_MAIN_JS.read_text()
+    block = js.split("var SAFETY_RELATIONSHIP_TEXT = {", 1)[1].split("};", 1)[0]
+    phrased = set(re.findall(r"^\s{4}([a-z0-9_]+):$", block, re.MULTILINE))
+
+    expected = {
+        code for code in _emittable_reason_codes() if not code.endswith("_missing")
+    }
+    assert phrased == expected
 
 
 def test_driver_style_stales_only_safety_binding_not_measurement_identity() -> None:
