@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from jasper import output_topology as output_topology_mod
 from jasper.output_hardware import (
     OutputCardFact,
     classify_output_cards,
@@ -1067,6 +1069,120 @@ def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> No
 
     assert loaded.status == "draft"
     assert loaded.speaker_groups == ()
+
+
+# --------------------------------------------------------------------------- #
+# Fail-soft load WARN is rate-limited (#2140).
+#
+# `load_output_topology` is called every 60 s by jasper-control's audio_health
+# route sampler, so an unguarded WARN is ~1,440 identical journal lines/day in
+# an already-degraded state. What is pinned here is the promise: transitions
+# and due reminders are logged, steady repeats are not.
+#
+# Each test uses its own `tmp_path`, which is also the rate-limiter's key, so
+# these need no reset of the module-level state.
+# --------------------------------------------------------------------------- #
+
+
+def _load_failure_lines(text: str) -> list[str]:
+    return [
+        line for line in text.splitlines()
+        if "event=output_topology.load_failed" in line
+    ]
+
+
+def test_load_output_topology_warns_once_for_a_repeated_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "output_topology.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="jasper.output_topology"):
+        for _ in range(5):
+            assert load_output_topology(path).status == "draft"
+
+    lines = _load_failure_lines(caplog.text)
+    assert len(lines) == 1, caplog.text
+    assert "repeat_suppression_sec=3600" in lines[0]
+
+
+def test_load_output_topology_rewarns_when_the_failure_changes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "output_topology.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="jasper.output_topology"):
+        load_output_topology(path)
+        load_output_topology(path)
+        # A different corruption is a different failure: it must not inherit
+        # the suppression window of the one before it.
+        path.write_text(json.dumps({"kind": "not_a_topology"}), encoding="utf-8")
+        load_output_topology(path)
+
+    assert len(_load_failure_lines(caplog.text)) == 2, caplog.text
+
+
+def test_load_output_topology_rewarns_after_the_reminder_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "output_topology.json"
+    path.write_text("{not json", encoding="utf-8")
+    clock = [1_000.0]
+    monkeypatch.setattr(output_topology_mod, "_now", lambda: clock[0])
+
+    with caplog.at_level(logging.WARNING, logger="jasper.output_topology"):
+        load_output_topology(path)
+        clock[0] += output_topology_mod.LOAD_FAILURE_REMINDER_SEC - 1.0
+        load_output_topology(path)
+        assert len(_load_failure_lines(caplog.text)) == 1, caplog.text
+        clock[0] += 1.0
+        load_output_topology(path)
+
+    assert len(_load_failure_lines(caplog.text)) == 2, caplog.text
+
+
+def test_load_output_topology_logs_recovery_once_after_a_logged_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "output_topology.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.INFO, logger="jasper.output_topology"):
+        load_output_topology(path)
+        save_output_topology(new_topology_draft(), path)
+        load_output_topology(path)
+        load_output_topology(path)
+
+    assert caplog.text.count("event=output_topology.load_recovered") == 1
+
+
+def test_load_output_topology_is_silent_when_it_never_failed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "output_topology.json"
+    save_output_topology(new_topology_draft(), path)
+
+    with caplog.at_level(logging.INFO, logger="jasper.output_topology"):
+        load_output_topology(path)
+        load_output_topology(path)
+
+    assert "event=output_topology.load_" not in caplog.text
+
+
+def test_load_failure_state_is_bounded(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A caller passing many paths cannot grow the limiter without bound."""
+    for index in range(output_topology_mod._LOAD_FAILURE_STATE_MAX + 4):
+        path = tmp_path / f"topology-{index}.json"
+        path.write_text("{not json", encoding="utf-8")
+        load_output_topology(path)
+
+    assert (
+        len(output_topology_mod._load_failure_state)
+        <= output_topology_mod._LOAD_FAILURE_STATE_MAX
+    )
 
 
 def test_load_output_topology_strict_rejects_corrupt_state(
