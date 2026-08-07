@@ -525,6 +525,52 @@ def _read_target_status(
     )
 
 
+def _failed_siblings(path: str, source: Source) -> str:
+    """Name the sources OTHER than ``source`` that failed the same pass.
+
+    Only called once the requested source has been proved converged, so the
+    aggregate's non-zero exit belongs to something else. The coordinator
+    already published a per-source outcome for every source; reading it turns
+    an opaque ``aggregate_error="rc=1"`` into the source that actually failed.
+    Issue #2175 is the cost of not doing this: a reader of the journal saw
+    Bluetooth reconcile ``result=ok`` and the request still log a warning
+    naming ``source=bluetooth``, and concluded the Bluetooth toggle had failed
+    — it was USB's gadget restart timing out.
+
+    Only declared sources are named, so an untrusted key in the status
+    document can never reach the journal. Best-effort and non-raising: this
+    decorates a warning, so an unreadable or unexpected document reports
+    nothing rather than turning a converged request into a failed one. An
+    empty result is honest — the aggregate can also fail on a bad intent key
+    or an unpublishable status, neither of which is a sibling source.
+    """
+
+    declared = {declared_source.value for declared_source in source_intent_sources()}
+    try:
+        payload = json.loads(
+            read_regular_bytes_nofollow(path, max_bytes=_MAX_STATUS_BYTES)
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        TypeError,
+    ):
+        return ""
+    sources = payload.get("sources") if isinstance(payload, dict) else None
+    if not isinstance(sources, dict):
+        return ""
+    failures: list[str] = []
+    for name in sorted(declared - {source.value}):
+        entry = sources.get(name)
+        if not isinstance(entry, dict) or entry.get("result") != "failed":
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        failures.append(f"{name}: {reason}" if reason else name)
+    return "; ".join(failures)[:300]
+
+
 def _default_write_status(path: str, payload: Mapping[str, Any]) -> None:
     """Atomically publish the root-owned, world-readable completion fact."""
 
@@ -720,11 +766,15 @@ def request_source_intent(
         )
         raise RuntimeError(f"could not apply {source.value} {value} intent: {detail}")
     if not response.get("ok"):
+        # The requested source converged; the aggregate did not. Name the
+        # sibling that failed so this warning cannot be read as "the toggle the
+        # household pressed failed" (#2175).
         log_event(
             logger,
             "source.intent_sibling_failure",
             source=source.value,
             desired=value,
+            failed_siblings=_failed_siblings(status_path, source) or None,
             aggregate_error=aggregate_detail,
             target=target_status.detail,
             level=logging.WARNING,

@@ -198,6 +198,31 @@ class FaninRingSlotsResolution:
     error: str = ""
 
 
+# A DELIBERATE restart must not spend a daemon's CRASH-recovery start budget.
+# Every restart this reconciler issues is a control-plane config-apply (a source
+# toggle, a deploy, a boot pass) — never crash recovery. systemd counts them in
+# the same StartLimitBurst window anyway, and jasper-fanin / jasper-outputd
+# escalate an exhausted window straight to StartLimitAction=reboot (jasper-camilla
+# parks instead, via its recovery handler). Issue #2175: pressing the /bluetooth/
+# power toggle rebooted a Zero 2 W, because EVERY source transaction asks this
+# owner to converge and a desired-On USB source that cannot compose re-arms then
+# disarms fan-in on each pass — five fan-in starts inside 300 s, and PID 1
+# rebooted the speaker. ``systemctl reset-failed`` clears the failed latch AND
+# the start rate counter, so a config-apply restart starts from a clean budget.
+# Genuine crash loops still escalate: a daemon's own Restart= path never reaches
+# this code, so only reconciler-initiated starts are exempted.
+# Same fix and same rationale as jasper.multiroom.reconcile._reset_failed_unit
+# (the 2026-06-24 follower reboot: six /grouping/set POSTs in 44 s tripped
+# outputd's start-limit) — this module was the remaining audio-graph reconciler
+# without it. The units below are exactly the long-running daemons this module
+# bounces; the oneshot owners it starts have no crash budget to protect
+# (jasper-fanin-coupling-auto pins StartLimitIntervalSec=0 for that reason) and
+# are START_ONLY_UNITS in the broker, which would deny ``reset-failed`` anyway.
+_START_BUDGET_VERBS = frozenset({"start", "restart", "try-restart"})
+_CRASH_BUDGET_UNITS = frozenset({FANIN_UNIT, OUTPUTD_UNIT, CAMILLA_UNIT})
+_RESET_FAILED_TIMEOUT_SEC = 5.0
+
+
 def _restart_unit(
     unit: str, *, verb: str = "restart", reason: str, timeout: float
 ) -> tuple[bool, str]:
@@ -210,6 +235,12 @@ def _restart_unit(
     re-attached), which is the "wait for fan-in up" step the camilla coordination
     below relies on.
 
+    A start-consuming verb on one of the crash-budget daemons is preceded by a
+    best-effort ``reset-failed`` so this deliberate apply cannot walk the target
+    into StartLimitAction=reboot (see the block comment above). The reset never
+    gates the action it precedes: a denied or failed reset is logged and the
+    restart still runs.
+
     Guarded lazy import (mirrors buffer_reconcile SF-2): a missing/broken
     control package degrades to a reported failure, never an exception out of
     the reconcile that would defeat the fail-safe ladder.
@@ -218,6 +249,24 @@ def _restart_unit(
         from jasper.control import restart_broker
     except ImportError as e:  # pragma: no cover - control pkg always present in prod
         return False, f"restart_broker unavailable: {e}"
+    if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS:
+        reset = restart_broker.manage_units(
+            unit,
+            verb="reset-failed",
+            reason=reason,
+            no_block=False,
+            timeout=_RESET_FAILED_TIMEOUT_SEC,
+        )
+        if not reset.get("ok"):
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result="start_budget_reset_failed",
+                unit=unit,
+                reason=reason,
+                detail=str(reset.get("error") or f"rc={reset.get('rc')}"),
+                level=logging.WARNING,
+            )
     resp = restart_broker.manage_units(
         unit,
         verb=verb,
