@@ -190,12 +190,15 @@ def outputd_main_start_realtime(
     ``@<seconds>`` instead of a locale-formatted string.
 
     None means exactly three things, all of which leave the guard inert: the unit
-    has never started this boot (systemd reports ``@0``), the value did not
-    parse, or ``systemctl`` failed.  It does NOT mean "outputd is stopped" —
-    systemd RETAINS this timestamp after a unit stops, so a stopped outputd that
-    ran this boot still reports its old start instant and a newer declaration
-    reads as stale.  That is stricter than passing the case through, and it is
-    the safe direction.
+    has never started this boot (systemd reports ``@0``), the value did not parse,
+    or ``systemctl`` failed.  That last one covers a systemd too old to know
+    ``--timestamp=unix`` (added in 247; Trixie ships 257, so it is theoretical,
+    and it degrades to the pre-guard behaviour rather than to a wrong verdict).
+
+    None does NOT mean "outputd is stopped".  systemd RETAINS this timestamp after
+    a unit stops, so a stopped outputd that ran this boot still reports its old
+    start instant, and a declaration newer than it reads as stale.  That is
+    stricter than passing the case through, and it is the safe direction.
 
     Raises:
         _SystemctlTimeout: the query did not answer inside its own budget.  The
