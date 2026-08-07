@@ -192,6 +192,65 @@ cleanup_build_swap() {
     _build_sandbox_log "swap_removed" "path=${path}"
 }
 
+install_exit_cleanup() {
+    # The installer's single EXIT trap.
+    #
+    # Every command below is `|| true`-guarded, and that is the load-bearing
+    # part of this trap — not the `local rc=$?` capture.
+    #
+    # The guards exist because under `set -e` an unguarded failing command
+    # ABORTS the trap function, and the unpark below would then simply never
+    # run: an aborted install would leave the speaker dead, which is the exact
+    # failure this handler exists to prevent. Measured on bash 5.2.37 (Debian
+    # Trixie — the shell the installer actually runs under): a trap function
+    # whose middle command is a bare failing arithmetic test `(( n ))` never
+    # reaches its remaining commands. So a future edit here must stay guarded;
+    # `(( ... ))` and bare commands are not safe to add unguarded, and bash
+    # 3.2's looser `set -e` (where the same body runs to completion) is not
+    # evidence that they are.
+    #
+    # Capturing and re-returning $? is separate, and is hardening rather than a
+    # fix for an observed clobber: with everything guarded the trap already
+    # ends 0, so an A/B gives the same exit code either way and the capture is
+    # deliberately unfalsifiable by the tests. What it does guard is measured:
+    # a trap whose LAST command is a short-circuit list yielding non-zero
+    # (`cmd && continue` — `set -e`-exempt, and an idiom this codebase uses)
+    # sets the script's exit status, and on bash 5.2.37 an installer exiting 5
+    # then reports 1 without the capture and 5 with it. scripts/deploy-to-pi.sh
+    # gates the whole deploy on install.sh's status, so that swap would be
+    # silent. Note the capture rescues only that shape: it cannot rescue an
+    # aborting command, which returns 1 with or without it.
+    #
+    # Order: tear the build swap down first. It is the step that must happen on
+    # every exit path, and `systemctl start` blocks on its job — unparking
+    # first lets one hung unit strand a 2 GB swap file and its swapon entry.
+    # This is NOT "give the daemons their RAM back first": swapoff PULLS pages
+    # back into RAM, so this instant is a pressure spike, not relief. Doing it
+    # first means the graph restarts onto the box's ordinary memory
+    # configuration instead of onto a temporary swap about to be yanked.
+    local rc=$?
+    cleanup_build_swap || true
+    # Two guards, two different jobs — do not read either as cruft.
+    #
+    # `declare -F`: defined in systemd-units.sh, which install.sh always
+    # sources, so a partial source (a stray test context) degrades to skipping
+    # the unpark rather than erroring inside the trap.
+    #
+    # `|| true`: a caller's guard suspends `set -e` for the callee's ENTIRE
+    # body, not just for the call itself. That is what lets the unpark's three
+    # `_build_sandbox_log` calls stay bare — one that failed would otherwise
+    # abort the restore loop mid-pass, stranding every unit after it AND
+    # clobbering the status this trap just captured. Measured (bash 3.2.57),
+    # six parked units with one refusing to start: guarded -> exit 5, 5 of 6
+    # restored, summary line emitted; bare -> exit 1, 1 of 6 restored, summary
+    # never reached. Pinned by
+    # test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
+    if declare -F unpark_low_memory_build_units >/dev/null 2>&1; then
+        unpark_low_memory_build_units || true
+    fi
+    return "${rc}"
+}
+
 # Default MemoryHigh (soft throttle): ~85% of MemTotal, leaving headroom
 # for PID1/sshd/the running daemons. Soft, so the build leans on swap
 # past it rather than being killed. Empty when MemTotal is unreadable
