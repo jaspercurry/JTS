@@ -109,10 +109,28 @@ def test_supervision_timeout_pending_measurement_marker_is_a_tripwire():
     HCI has no read path for a live connection's parameters, so this helper
     forces 6000 ms without knowing what the link negotiated. Linux's default
     outgoing LE supervision timeout is 420 ms; if that is what this link uses,
-    we are making link-loss detection ~14x slower. It ships anyway (blast
-    radius is one optional accessory, the error direction is conservative, and
-    990 packets were delivered with 6000 ms in force) — but on the explicit
-    condition that the open question cannot rot into stale prose.
+    we are making link-loss detection ~14x slower and delaying reconnect by the
+    same window, because BlueZ holds the connection object until the timeout
+    expires.
+
+    Be precise about what the hardware run did and did not show: the 990
+    packets prove 6000 ms does not harm *throughput while connected*. They say
+    nothing about link-loss latency, which is the only thing this value
+    actually changes. The "remote absent" case exercises a link that never
+    existed, not one dying mid-stream. The closing probe is to power the remote
+    off mid-hold and time `Connected -> false`.
+
+    A second residual rides the same measurement: the reservation is requested
+    unconditionally, so Pi 4/5 — which never had the CE starvation bug — also
+    get this forced timeout for no corresponding benefit. Gating by hardware
+    was considered and declined: it adds a detection path whose failure mode is
+    silent (mis-detect a Zero and the mic is starved again), and it narrows the
+    blast radius of a risk the measurement removes outright. Landing the
+    measurement retires both residuals at once.
+
+    It ships anyway — blast radius is one optional accessory, the error
+    direction is conservative, and it is one constant to reverse — but on the
+    explicit condition that the open question cannot rot into stale prose.
 
     So the marker and the value are pinned together. Landing the btmon
     measurement means changing the constant AND deleting the marker AND
