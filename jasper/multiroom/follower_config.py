@@ -311,7 +311,12 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
                 )
             raise ActiveFollowerError(
                 "graph_unprovable",
-                "active follower driver-domain graph failed canonical live re-proof",
+                # `from exc` alone does NOT reach an operator: reconcile logs
+                # these as `error=<exception>`, which renders str(e) and never
+                # walks __cause__. Interpolate, or the journal says only
+                # "failed re-proof" for every distinct cause.
+                "active follower driver-domain graph failed canonical live "
+                f"re-proof: {exc}",
             ) from exc
         # Stash the prior solo-active config for the unwind — but only a
         # genuinely different (solo) config, never the follower config itself.
@@ -504,7 +509,9 @@ async def restore_active_camilla_solo(
                 )
             raise ActiveFollowerError(
                 "restore_graph_unprovable",
-                "restored solo graph failed canonical live re-proof",
+                # See the note at the `graph_unprovable` raise above: the
+                # detail has to be IN the message to reach the journal.
+                f"restored solo graph failed canonical live re-proof: {exc}",
             ) from exc
         _clear_stash(stash_path)
     log_event(

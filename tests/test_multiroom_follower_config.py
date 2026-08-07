@@ -10,13 +10,17 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 from dataclasses import replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
+
+from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
@@ -475,6 +479,136 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
                 ),
             )
         )
+
+
+def test_reconcile_logs_the_boundary_reason_not_just_the_code(
+    monkeypatch,
+    tmp_path,
+    caplog,
+) -> None:
+    """END TO END: the boundary's reason must reach the journal line.
+
+    The test above pins only the RAISE site. That is not where the detail was
+    being lost — it was lost one hop later. ``apply_prebuilt_follower_config``
+    re-wraps the RuntimeError as ``ActiveFollowerError(reason, short_message)
+    from exc``, and ``ActiveFollowerError.__init__`` passes only
+    ``short_message`` to ``super().__init__``. So the detail survived on
+    ``__cause__`` alone — and ``reconcile`` logs these with ``error=e`` and NO
+    ``exc_info``, which renders ``str(e)`` and never walks the cause. The
+    operator-visible line therefore said "failed canonical live re-proof" no
+    matter which of the boundary's causes had fired, which is how the
+    2026-08-06 bonded-pair outage stayed misdiagnosed.
+
+    So this walks all four hops with production code: boundary issue message ->
+    ``_prove_live_bass_extension_graph`` -> ``apply_prebuilt_follower_config``
+    -> the rendered ``event=multiroom.reconcile.camilla_failed`` line.
+    """
+
+    monkeypatch.setattr(
+        fc,
+        "FOLLOWER_CONFIG_PATH",
+        str(tmp_path / "grouping_follower.yml"),
+    )
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    monkeypatch.setattr(
+        output_topology_mod,
+        "load_output_topology_strict",
+        lambda: object(),
+    )
+    # Hop 1: the real boundary declines with its coarse code and a specific
+    # message. Every distinct cause reports this same code.
+    reason = "the running CamillaDSP graph does not match the statefile-selected config"
+
+    async def classify(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_UNSAFE,
+            allowed=False,
+            issues=(
+                {
+                    "severity": "blocker",
+                    "code": "bass_extension_active_snapshot_unstable",
+                    "message": reason,
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+    # Hops 2 and 3 are production code: the REAL prover (restored over the
+    # autouse stub) and the REAL apply, which is where the re-wrap happens.
+    monkeypatch.setattr(
+        fc,
+        "_prove_live_bass_extension_graph",
+        _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH,
+    )
+
+    with pytest.raises(fc.ActiveFollowerError) as caught:
+        asyncio.run(
+            fc.apply_prebuilt_follower_config(
+                camilla_factory=lambda: _FakeCamilla(
+                    current=str(tmp_path / "active_speaker_baseline.yml")
+                )
+            )
+        )
+
+    assert caught.value.reason == "graph_unprovable"
+
+    # Hop 4: render it the way reconcile does. `error=<exception>` is rendered
+    # by log_event as str(exception) — so if the detail is not IN the message
+    # it is not in the journal, full stop.
+    logger = logging.getLogger("jasper.multiroom.reconcile")
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        log_event(
+            logger,
+            "multiroom.reconcile.camilla_failed",
+            action="active_follower_apply",
+            error=caught.value,
+            level=logging.ERROR,
+        )
+    line = caplog.records[-1].getMessage()
+
+    assert "event=multiroom.reconcile.camilla_failed" in line
+    assert reason in line, (
+        "the operator-visible journal line does not name the cause; it reads: "
+        f"{line}"
+    )
+
+
+def test_reconcile_camilla_failed_still_logs_without_exc_info() -> None:
+    """Anti-drift anchor for the end-to-end test above.
+
+    That test models reconcile's rendering as ``error=<exception>`` with no
+    ``exc_info``. If reconcile ever starts passing ``exc_info``, ``__cause__``
+    would render on its own and the interpolation could be revisited — so fail
+    here and make someone re-read the pair, rather than letting the model
+    silently stop describing production.
+    """
+
+    source = (
+        Path(fc.__file__).resolve().parent / "reconcile.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "log_event"
+        and any(
+            isinstance(arg, ast.Constant)
+            and arg.value == "multiroom.reconcile.camilla_failed"
+            for arg in node.args
+        )
+    ]
+
+    assert sites, "the camilla_failed log sites should be discoverable"
+    for site in sites:
+        supplied = {kw.arg for kw in site.keywords if kw.arg is not None}
+        assert "error" in supplied
+        assert "exc_info" not in supplied
 
 
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:

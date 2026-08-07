@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import collections
+import copy
 from dataclasses import replace
 import json
 
@@ -43,6 +44,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_UNSAFE,
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
     PARKED_MUTED_STATUS,
+    _normalized_graph_fingerprint,
     _statefile_config_path,
     active_graph_is_parked,
     build_parked_muted_graph,
@@ -4374,6 +4376,26 @@ def test_parked_blocked_path_does_not_repeat_topology_issues(
     # pre-dates #2135 — it is issue #2135 item 3, deliberately untouched here.
 
 
+#: The exact canonicalizer expressions the six production call sites may pass,
+#: as ``ast.unparse`` renders them. An ALLOWLIST, not a substring match: the
+#: earlier "the expression mentions ``canonicalize_raw``" rule accepted any
+#: object at all that happened to have an attribute by that name, so wiring a
+#: site to ``_LegacyPort().canonicalize_raw`` returning its argument unchanged
+#: — the exact bug, restored on a production path — passed silently.
+#:
+#: Adding a call site therefore fails this test until its expression is added
+#: here. That friction is the point: a new caller of the live-graph boundary is
+#: exactly the change that should get a human read.
+_ALLOWED_CANONICALIZERS = frozenset({
+    # Supplied by CommissioningRuntimePort, whose own wiring is checked below.
+    "port.canonicalize_raw",
+    "runtime_port.canonicalize_raw",
+    # Bound straight to CamillaController.normalize_config_raw (ReadConfig).
+    "lambda raw: controller.normalize_config_raw(raw, best_effort=False)",
+    "lambda raw: cam.normalize_config_raw(raw, best_effort=False)",
+})
+
+
 def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
     """No caller may pass an identity canonicalizer.
 
@@ -4387,6 +4409,12 @@ def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
     site alone proves nothing about them — the wiring is one indirection away,
     in ``commissioning_service.commissioning_runtime_port``. Both levels are
     checked here; guarding only the call sites is a guard that guards half.
+
+    What this does NOT prove: that the ``port`` reaching those three sites is
+    the production port. That is a dataflow question this guard cannot answer.
+    The type annotation (``port: CommissioningRuntimePort``) plus the merge
+    lane's mypy is the layer that covers it, and ``__post_init__`` rejects a
+    non-callable at runtime. Stated rather than papered over.
     """
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -4417,9 +4445,13 @@ def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
 
     assert call_sites, "boundary call sites should be discoverable"
     for where, expression in call_sites:
-        assert (
-            "normalize_config_raw" in expression or "canonicalize_raw" in expression
-        ), f"{where} passes a canonicalizer that is not CamillaDSP's: {expression}"
+        assert expression in _ALLOWED_CANONICALIZERS, (
+            f"{where} passes an unreviewed canonicalizer: {expression!r}. If it "
+            "really does route through CamillaDSP's ReadConfig, add it to "
+            "_ALLOWED_CANONICALIZERS; if it does not, the live-graph boundary "
+            "will compare JTS-authored text against a default-filled readback "
+            "and refuse everything (issue #2202)."
+        )
 
     # Now the indirection: a port-supplied canonicalizer is only as good as the
     # port's wiring, and that lives in a different module.
@@ -4454,3 +4486,193 @@ def test_every_boundary_call_site_canonicalizes_through_camilladsp() -> None:
             f"{where} wires a runtime-port canonicalizer that is not "
             f"CamillaDSP's ReadConfig: {expression}"
         )
+
+
+# --------------------------------------------------------------------------
+# Fingerprint losslessness.
+#
+# Until this PR the live comparison never matched on hardware, so how faithful
+# `_normalized_graph_fingerprint` was gated nothing. Now it is the only thing
+# between a mis-loaded graph and the drivers: the boundary decides "running
+# graph == selected file" by comparing two of these digests and nothing else.
+# A digest that quietly ignores any part of the graph therefore declares a
+# graph safe that is not — a bypassed tweeter high-pass being the sharp case.
+#
+# Nothing pinned that. A reviewer made the digest drop `bypassed` and the
+# boundary suite stayed green, because both sides of every comparison lost the
+# same key. Sweeping ONE side is what makes the loss visible.
+# --------------------------------------------------------------------------
+
+_READBACK_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "camilla_readback"
+    / "camilladsp_4.1.3_getconfig.yml"
+)
+
+
+def _graph_key_paths(node: object, prefix: tuple = ()) -> list[tuple]:
+    """Every addressable path in a parsed graph, dict keys and list indices."""
+
+    found: list[tuple] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found.append((*prefix, key))
+            found.extend(_graph_key_paths(value, (*prefix, key)))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_graph_key_paths(value, (*prefix, index)))
+    return found
+
+
+def _at(node: object, path: tuple) -> object:
+    for step in path:
+        node = node[step]  # type: ignore[index]
+    return node
+
+
+def _without(node: object, path: tuple) -> object:
+    edited = copy.deepcopy(node)
+    parent = _at(edited, path[:-1])
+    del parent[path[-1]]  # type: ignore[union-attr]
+    return edited
+
+
+def _replacing(node: object, path: tuple, value: object) -> object:
+    edited = copy.deepcopy(node)
+    parent = _at(edited, path[:-1])
+    parent[path[-1]] = value  # type: ignore[index]
+    return edited
+
+
+def _perturbed(value: object) -> object:
+    """A definitely-different value of a shape the graph could really hold."""
+
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 1
+    if isinstance(value, str):
+        return value + "x"
+    raise AssertionError(f"unexpected leaf type {type(value)!r}")
+
+
+def test_graph_fingerprint_notices_every_dropped_key() -> None:
+    """Deleting ANY key from a real CamillaDSP readback changes the digest.
+
+    Swept over the whole captured graph rather than a hand-picked list, so a
+    future "normalization" that starts ignoring a key fails here without anyone
+    having predicted which key it would be.
+    """
+
+    text = _READBACK_FIXTURE.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    baseline = _normalized_graph_fingerprint(text)
+    # Non-vacuity: the digest must exist and must be reproducible from the
+    # re-serialized parse, otherwise every assertion below compares None.
+    assert baseline is not None
+    assert _normalized_graph_fingerprint(yaml.safe_dump(parsed, sort_keys=True)) == (
+        baseline
+    )
+
+    paths = _graph_key_paths(parsed)
+    assert len(paths) > 100, "the fixture should be a whole graph, not a stub"
+
+    missed = [
+        path
+        for path in paths
+        if _normalized_graph_fingerprint(
+            yaml.safe_dump(_without(parsed, path), sort_keys=True)
+        )
+        == baseline
+    ]
+    assert missed == [], (
+        "the graph digest ignores these keys, so a running graph that differs "
+        f"only there would compare EQUAL to the selected file: {missed}"
+    )
+
+
+def test_graph_fingerprint_notices_every_changed_leaf() -> None:
+    """Changing ANY leaf value in a real readback changes the digest.
+
+    The sibling of the dropped-key sweep: a digest can also lose information by
+    coercing values (rounding a gain, collapsing null to absent) rather than by
+    dropping keys. Same consequence — two different graphs, one digest.
+    """
+
+    text = _READBACK_FIXTURE.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    baseline = _normalized_graph_fingerprint(text)
+    assert baseline is not None
+
+    leaves = [
+        path
+        for path in _graph_key_paths(parsed)
+        if not isinstance(_at(parsed, path), (dict, list))
+    ]
+    assert len(leaves) > 100, "the fixture should be a whole graph, not a stub"
+
+    missed = [
+        path
+        for path in leaves
+        if _normalized_graph_fingerprint(
+            yaml.safe_dump(
+                _replacing(parsed, path, _perturbed(_at(parsed, path))),
+                sort_keys=True,
+            )
+        )
+        == baseline
+    ]
+    assert missed == [], (
+        "the graph digest ignores the VALUE at these paths, so a running graph "
+        f"that differs only there would compare EQUAL: {missed}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("bypass_the_running_graph", "expected_allowed"),
+    [(False, True), (True, False)],
+    ids=["identical-graphs-allowed", "lone-bypassed-flag-refused"],
+)
+async def test_live_boundary_refuses_a_lone_bypassed_divergence(
+    tmp_path: Path,
+    bypass_the_running_graph: bool,
+    expected_allowed: bool,
+) -> None:
+    """One bypassed pipeline step is enough to make the boundary refuse.
+
+    The end-to-end shape of the digest sweeps above, through the real boundary:
+    a running graph that is the selected file in every respect EXCEPT that one
+    step is bypassed. On a real speaker that step is a driver's crossover — a
+    bypassed high-pass is full range into a tweeter. The parametrized identical
+    case is the non-vacuity control: without it this test would also pass
+    against a boundary that refuses everything, which is the exact failure this
+    PR exists to repair.
+    """
+
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(tmp_path, topology=topology, graph_text=text)
+
+    running = yaml.safe_load(camilla_default_filled(text))
+    assert running["pipeline"], "the emitted baseline should have a pipeline"
+    if bypass_the_running_graph:
+        running["pipeline"][0]["bypassed"] = True
+    running_text = yaml.safe_dump(running, sort_keys=True)
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=lambda: asyncio.sleep(0, result=running_text),
+        canonicalize_graph_text=camilla_canonicalize,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is expected_allowed
+    if not expected_allowed:
+        assert "does not match" in graph.issues[0]["message"]

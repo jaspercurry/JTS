@@ -221,7 +221,7 @@ class FakePort:
         # NOT do (it default-fills — tests/_camilla_readback_double.py).
         # Swapping in the faithful double fails 35 tests in this module and
         # surfaces the readback-vs-in-memory-graph defect commented at
-        # commissioning_runtime._apply_candidate_graph. Left echoing on
+        # commissioning_runtime._apply_graph. Left echoing on
         # purpose until that is repaired together with this harness.
         if self.corrupt_next_read:
             self.corrupt_next_read = False

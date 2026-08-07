@@ -905,7 +905,7 @@ async def test_cancelled_connect_queued_on_global_lock_never_runs_mutation(
 
 
 def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
-    """The canonicalizer must stay lock-free, or the live-graph boundary hangs.
+    """The canonicalizer must stay lock-free, or live commissioning times out.
 
     ``runtime_contract.classify_active_bass_extension_graph`` calls
     ``normalize_config_raw`` from INSIDE the DSP writer lock — via
@@ -913,9 +913,18 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     ``commissioning_verification._capture_current_graph``. Its neighbours
     ``set_active_config_raw`` and ``patch_config`` both take
     ``camilla_graph_mutation``, so making this one "consistent" with them is a
-    plausible three-line edit that would hang a speaker mid-commissioning
-    instead of failing cleanly. The method's docstring states that invariant;
-    this is what makes the statement true.
+    plausible three-line edit.
+
+    NOT a deadlock, and this docstring said so until it was measured: the
+    writer lock is re-entrant per *task*, and the boundary reaches this method
+    through an ``asyncio.gather`` child (a new task), so it contends on the
+    underlying flock rather than re-entering. That is bounded by
+    ``dsp_apply.DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S`` (10 s) and ends in a
+    ``DspWriterLockTimeout`` logged at WARNING. So the cost is a ~10 s stall
+    mid-commissioning followed by a spurious canonicalization failure on a box
+    that is healthy — bounded and loud, but still a working re-proof turned
+    into a failure. The method's docstring states the invariant; this is what
+    makes the statement true.
 
     Checks the body AND the decorators, and separately forbids a module-scope
     import of the lock. ``camilla_graph_mutation`` is an

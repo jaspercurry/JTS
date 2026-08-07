@@ -36,6 +36,24 @@ byte-exact replica of any one CamillaDSP version's schema — pinning that here
 would make this a second source of truth for someone else's config format, and
 it would rot at the next upgrade. Tests that need byte-exact CamillaDSP
 behaviour need the real binary on the Pi, not this.
+
+**The bound on what these tests prove — read before trusting a green run.**
+``camilla_canonicalize`` (``ReadConfig``) and ``camilla_readback``
+(``GetConfig``) are the SAME function here, and the committed fixture pair
+captures ``GetConfig`` only. So every test using this double *assumes*
+``ReadConfig(f) ≡ GetConfig(running f)`` — it does not demonstrate it, and no
+committed fixture does either. That equality is the premise the whole
+canonicalize seam rests on: if the two ever diverge, the boundary compares two
+different normalizations and refuses a graph that is in fact correct.
+
+The evidence for it is a read-only hardware probe, not a test: jts.local,
+CamillaDSP 4.1.3, 2026-08-05, which measured ``ReadConfig``'s output *exactly
+equal* to ``GetConfig``'s readback for identical content — recorded in
+``docs/HANDOFF-crossover-measurement-v2.md`` ("So CamillaDSP canonicalizes for
+us"). One box, one version, one day. Re-measure it rather than assume it after
+a CamillaDSP upgrade; a fixture pair capturing ``ReadConfig`` alongside
+``GetConfig`` would turn the premise into a pin, and is worth capturing on the
+next hardware pass.
 """
 
 from __future__ import annotations
