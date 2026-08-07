@@ -197,6 +197,13 @@ def _apply_name(name: str) -> bool:
     # speaker name; the name-patch reruns as its ExecStartPre). It is always-on
     # (it carries the USB network), so restart it on any rename so both the NIC
     # label and — when audio is composed — the audio label track the new name.
+    # The audio label re-applies on this restart only once the module index
+    # already names the override, which is the steady state on any box that
+    # has composed USB audio before. On a box where it does not yet (first
+    # enable, first boot after a kernel update) the 10.3 s depmod runs out of
+    # band in jasper-usbsink-name-index.service and the audio label lands on
+    # the following restart; jasper-doctor's `usbsink name` check warns for
+    # that window rather than reporting a name the host is not showing (#2176).
     if _unit_active("jasper-usbgadget.service"):
         units.append("jasper-usbgadget.service")
 

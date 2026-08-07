@@ -709,8 +709,9 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             "usbsink name", "warn",
             "no name-patched module override — host shows the default "
             f"'Playback Inactive' label. Restart {USBGADGET_UNIT} "
-            "and check `journalctl -u jasper-usbsink-name-patch | grep "
-            "event=usbsink_name` (a kernel rename of the string degrades "
+            "and check `journalctl -u jasper-usbgadget "
+            "-u jasper-usbsink-name-index | grep event=usbsink_name` "
+            "(a kernel rename of the string degrades "
             "here gracefully; audio is unaffected).",
         )
 

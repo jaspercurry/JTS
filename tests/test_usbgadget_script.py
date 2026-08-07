@@ -28,6 +28,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
@@ -582,6 +584,352 @@ def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> 
         assert '"${SPEAKER_NAME_READER}" -m jasper.speaker_name' in text
         assert 'source "${SPEAKER_NAME_FILE}"' not in text
         assert "wc -c" not in text
+
+
+# A minimal blob shaped like usb_f_uac2.ko's .rodata: the four AudioStreaming
+# alt-setting strings uac2_name_patch.py's real patcher rewrites, surrounded
+# by neighbour strings and alignment slack -- mirrors _fake_module() in
+# tests/test_uac2_name_patch.py.
+_FAKE_STOCK_MODULE = (
+    b"\x7fELF\x00\x00\x00\x00"
+    b"Topology Control\x00"
+    b"Playback Inactive\x00"
+    b"\x00\x00\x00"
+    b"Playback Active\x00"
+    b"\x00"
+    b"Capture Inactive\x00"
+    b"Capture Active\x00"
+    b"Playback Volume\x00"
+)
+
+
+def _write_python_shim(path: Path, body: str) -> None:
+    """A fake PATH executable, in Python to sidestep shell-quoting entirely.
+    Used for depmod/lsmod/stat, none of which exist (or behave GNU-style) on
+    a macOS dev sandbox, and none of which a hermetic test should invoke for
+    real even on Linux (depmod/lsmod would read the actual running kernel)."""
+    path.write_text(f"#!/usr/bin/env python3\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _fake_modules_tree(
+    tmp_path: Path,
+    *,
+    stock_body: bytes = _FAKE_STOCK_MODULE,
+    indexed: bool = True,
+    dep_style: str = "relative",
+    preexisting_override: bool = False,
+) -> dict[str, Path]:
+    """A temp /lib/modules/<kver> tree for the name-patch script.
+
+    ``indexed`` picks which usb_f_uac2.ko modules.dep names. That file -- not
+    the presence of a .ko under updates/ -- is what request_module() follows
+    when gadget-up creates the uac2 function, so it decides whether publishing
+    the override is enough for the very next bring-up to load it.
+
+    ``dep_style`` writes the entry in either dialect depmod may emit. The
+    script must recognise both: reading an indexed override as un-indexed is
+    only a wasted rebuild, but it would also mean the completion marker is
+    never promoted and doctor warns forever."""
+    kver = os.uname().release
+    modules_root = tmp_path / "modules"
+    moddir = modules_root / kver
+    kernel_dir = moddir / "kernel" / "drivers" / "usb" / "gadget"
+    kernel_dir.mkdir(parents=True)
+    (kernel_dir / "usb_f_uac2.ko").write_bytes(stock_body)
+
+    resolved = (
+        "updates/usb_f_uac2.ko"
+        if indexed
+        else "kernel/drivers/usb/gadget/usb_f_uac2.ko"
+    )
+    assert dep_style in ("relative", "absolute"), dep_style
+    if dep_style == "absolute":
+        resolved = f"{moddir}/{resolved}"
+    (moddir / "modules.dep").write_text(
+        f"{resolved}: kernel/drivers/usb/gadget/u_audio.ko\n", encoding="utf-8"
+    )
+
+    updates = moddir / "updates"
+    if preexisting_override:
+        updates.mkdir(parents=True, exist_ok=True)
+        (updates / "usb_f_uac2.ko").write_bytes(b"\x7fELF stale override")
+    return {
+        "modules_root": modules_root,
+        "override": updates / "usb_f_uac2.ko",
+        "marker": updates / ".jasper-usbsink-name.marker",
+        "pending": updates / ".jasper-usbsink-name.pending",
+    }
+
+
+def _name_patch_env(
+    tmp_path: Path,
+    modules_root: Path,
+    *,
+    depmod_sleep: float = 0.0,
+    depmod_rc: int = 0,
+    inflate_override_size: bool = False,
+) -> dict:
+    """PATH shims + env for a hermetic name-patch run.
+
+    Returns the env plus the two sentinels the assertions read: whether the
+    depmod stand-in was ever executed, and what the script asked systemctl
+    to do."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    depmod_ran = tmp_path / "depmod-ran"
+    systemctl_log = tmp_path / "systemctl.log"
+
+    _write_python_shim(
+        bin_dir / "depmod",
+        "import pathlib, sys, time\n"
+        f"time.sleep({depmod_sleep!r})\n"
+        f"pathlib.Path({str(depmod_ran)!r}).write_text(sys.argv[1])\n"
+        f"sys.exit({depmod_rc!r})\n",
+    )
+    _write_python_shim(
+        bin_dir / "systemctl",
+        "import pathlib, sys\n"
+        f"with pathlib.Path({str(systemctl_log)!r}).open('a') as fh:\n"
+        "    fh.write(' '.join(sys.argv[1:]) + '\\n')\n",
+    )
+    _write_python_shim(bin_dir / "lsmod", "print('Module Size Used by')\n")
+    _write_python_shim(
+        bin_dir / "stat",
+        # Minimal GNU "stat -c%s FILE" shim -- BSD/macOS stat has no -c.
+        "import pathlib, sys\n"
+        "if len(sys.argv) >= 3 and sys.argv[1] == '-c%s':\n"
+        "    size = pathlib.Path(sys.argv[2]).stat().st_size\n"
+        f"    if {inflate_override_size!r} and sys.argv[2].endswith('.override.ko'):\n"
+        "        size += 1\n"
+        "    print(size)\n"
+        "else:\n"
+        "    sys.exit(1)\n",
+    )
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "JASPER_MODULES_ROOT": str(modules_root),
+        "JASPER_SPEAKER_NAME_FILE": str(tmp_path / "no-such-name.env"),
+        "JASPER_SPEAKER_NAME_READER": "/usr/bin/python3",
+    }
+    return {
+        "env": env,
+        "depmod_ran": depmod_ran,
+        "systemctl_log": systemctl_log,
+    }
+
+
+# #2176 depmod stand-in cost. Far above the publish phase's real work (a
+# handful of short python startups) and far below the wall-clock bound, so a
+# regression that puts depmod back on the publish path is unambiguous.
+_SLOW_DEPMOD_SEC = 4.0
+_PUBLISH_WALL_BOUND_SEC = 2.0
+
+
+@pytest.mark.parametrize(
+    "case, stock_body, inflate, expect_event",
+    [
+        ("success", _FAKE_STOCK_MODULE, False, "queued"),
+        ("patch_failed", b"\x7fELF nothing patchable in here", False, "patch_failed"),
+        ("override_invalid", _FAKE_STOCK_MODULE, True, "override_invalid"),
+    ],
+)
+def test_publish_phase_never_runs_depmod_on_the_gadget_start_path(
+    tmp_path: Path,
+    case: str,
+    stock_body: bytes,
+    inflate: bool,
+    expect_event: str,
+) -> None:
+    """#2176: depmod alone measures 10.3 s on a Pi Zero 2 W, over 2x
+    jasper-usbgadget.service's 5 s TimeoutStartSec. The publish phase -- which
+    IS that unit's ExecStartPre -- must therefore never invoke depmod on any
+    of its three exit paths; it hands the rebuild to
+    jasper-usbsink-name-index.service instead.
+
+    All three paths are pinned because the script header states the invariant
+    for all three. Each is double-guarded: the depmod stand-in leaves a
+    sentinel if it is ever executed (timing-independent), and it sleeps long
+    enough that a synchronous call also blows the wall-clock bound
+    (independent of the sentinel)."""
+    tree = _fake_modules_tree(
+        tmp_path, stock_body=stock_body, indexed=True, preexisting_override=True
+    )
+    shims = _name_patch_env(
+        tmp_path,
+        tree["modules_root"],
+        depmod_sleep=_SLOW_DEPMOD_SEC,
+        inflate_override_size=inflate,
+    )
+
+    started = time.monotonic()
+    proc = subprocess.run(
+        [str(NAME_PATCH)],
+        env=shims["env"],
+        capture_output=True,
+        text=True,
+        # Only a hang guard. The real assertions are below, so a slow machine
+        # produces a readable failure rather than a TimeoutExpired error.
+        timeout=60,
+    )
+    elapsed = time.monotonic() - started
+
+    assert proc.returncode == 0, proc.stderr
+    assert f"event=usbsink_name.{expect_event}" in proc.stderr, proc.stderr
+    assert not shims["depmod_ran"].exists(), (
+        f"the {case} path ran depmod inside jasper-usbgadget's 5s "
+        "TimeoutStartSec -- #2176 regression"
+    )
+    assert elapsed < _PUBLISH_WALL_BOUND_SEC, (
+        f"the {case} path blocked {elapsed:.2f}s, past jasper-usbgadget's 5s "
+        "TimeoutStartSec budget -- #2176 regression"
+    )
+    # The slow half must actually be handed off, not silently dropped.
+    assert shims["systemctl_log"].exists(), (
+        f"the {case} path never queued the index rebuild"
+    )
+    assert (
+        "--no-block start jasper-usbsink-name-index.service"
+        in shims["systemctl_log"].read_text()
+    )
+
+
+def test_publish_withholds_the_marker_when_the_override_is_not_indexed(
+    tmp_path: Path,
+) -> None:
+    """Honesty guard. modprobe follows modules.dep, not the filesystem. When
+    updates/ is NOT yet in the index (first enable, first boot after a kernel
+    update) gadget-up autoloads the STOCK module for this session, so arming
+    the completion marker would make jasper-doctor report `ok` while the host
+    shows 'Playback Inactive'. Publish must decline to promise convergence in
+    that case, leaving doctor on its honest `warn`."""
+    tree = _fake_modules_tree(tmp_path, indexed=False)
+    shims = _name_patch_env(
+        tmp_path, tree["modules_root"], depmod_sleep=_SLOW_DEPMOD_SEC
+    )
+
+    proc = subprocess.run(
+        [str(NAME_PATCH)], env=shims["env"], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "loads=stock_until_restart" in proc.stderr, proc.stderr
+    assert tree["override"].exists(), "the override is still published"
+    assert not tree["pending"].exists(), (
+        "publish armed a completion marker for a bring-up that will load the "
+        "stock module -- doctor would report a label the host is not showing"
+    )
+    assert not tree["marker"].exists()
+
+
+@pytest.mark.parametrize("dep_style", ["relative", "absolute"])
+def test_publish_arms_the_marker_when_the_override_is_already_indexed(
+    tmp_path: Path, dep_style: str,
+) -> None:
+    """The rename case: modules.dep already names updates/usb_f_uac2.ko, so
+    the gadget-up milliseconds after this ExecStartPre loads exactly the bytes
+    just published. Convergence is genuine, so the marker is armed.
+
+    Run over both modules.dep path dialects: this repo has no Linux host to
+    confirm which one the Pi's depmod emits, so the script recognises both
+    rather than asserting one."""
+    tree = _fake_modules_tree(tmp_path, indexed=True, dep_style=dep_style)
+    shims = _name_patch_env(
+        tmp_path, tree["modules_root"], depmod_sleep=_SLOW_DEPMOD_SEC
+    )
+
+    proc = subprocess.run(
+        [str(NAME_PATCH)], env=shims["env"], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "loads=override" in proc.stderr, proc.stderr
+    assert tree["pending"].exists()
+    fields = tree["pending"].read_text().split("\t")
+    assert fields[0] == "3"                       # patch schema
+    assert fields[1] == os.uname().release
+    assert fields[2] == "JTS"                     # no name file -> default
+    assert fields[3] == "JTS Mic"
+    # Not yet the real marker: only the index phase may promote it.
+    assert not tree["marker"].exists()
+
+
+def test_index_phase_promotes_the_pending_marker_after_depmod_succeeds(
+    tmp_path: Path,
+) -> None:
+    """The deferred half converges on its own: depmod, then an atomic rename
+    of the armed marker. Splitting publish/index is what lets a boot that
+    starts a rebuild finish it instead of repeating it forever (#2176)."""
+    tree = _fake_modules_tree(tmp_path, indexed=True, preexisting_override=True)
+    tree["pending"].write_text("3\tsome-kver\tKitchen\tKitchen Mic\tdeadbeef")
+    shims = _name_patch_env(tmp_path, tree["modules_root"])
+
+    proc = subprocess.run(
+        [str(NAME_PATCH), "--index"],
+        env=shims["env"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usbsink_name.applied" in proc.stderr, proc.stderr
+    assert shims["depmod_ran"].read_text() == os.uname().release
+    assert tree["marker"].read_text() == "3\tsome-kver\tKitchen\tKitchen Mic\tdeadbeef"
+    assert not tree["pending"].exists(), "pending marker was promoted, not copied"
+
+
+def test_index_phase_withholds_the_marker_when_depmod_fails(tmp_path: Path) -> None:
+    """A failed depmod leaves the override unreachable by modprobe, so the
+    marker must stay absent: doctor keeps warning and the next gadget start
+    rebuilds. The pre-fix script swallowed depmod's exit status entirely."""
+    tree = _fake_modules_tree(tmp_path, indexed=True, preexisting_override=True)
+    tree["pending"].write_text("3\tsome-kver\tKitchen\tKitchen Mic\tdeadbeef")
+    shims = _name_patch_env(tmp_path, tree["modules_root"], depmod_rc=1)
+
+    proc = subprocess.run(
+        [str(NAME_PATCH), "--index"],
+        env=shims["env"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usbsink_name.index_failed" in proc.stderr, proc.stderr
+    assert not tree["marker"].exists()
+    assert tree["pending"].exists(), "the armed marker survives for a later pass"
+
+
+def test_failure_path_reindexes_a_dangling_index_with_no_override_left(
+    tmp_path: Path,
+) -> None:
+    """Self-heal: when modules.dep still names updates/usb_f_uac2.ko but a
+    previous pass already deleted that file, modprobe fails and gadget-up
+    (set -euo pipefail) takes the USB management network down with it. A later
+    failed pass must re-index to repair that, even with no override on disk."""
+    tree = _fake_modules_tree(
+        tmp_path,
+        stock_body=b"\x7fELF nothing patchable in here",
+        indexed=True,
+        preexisting_override=False,
+    )
+    shims = _name_patch_env(
+        tmp_path, tree["modules_root"], depmod_sleep=_SLOW_DEPMOD_SEC
+    )
+
+    proc = subprocess.run(
+        [str(NAME_PATCH)], env=shims["env"], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usbsink_name.patch_failed" in proc.stderr, proc.stderr
+    assert (
+        "--no-block start jasper-usbsink-name-index.service"
+        in shims["systemctl_log"].read_text()
+    )
 
 
 def test_up_canonical_off_dominates_stale_enabled_mirror(tmp_path):
