@@ -167,6 +167,16 @@ CONN_LATENCY = 0x0000           # measured NOT to be the lever; keep it at 0
 # actually negotiated, forcing 6000 ms makes link-loss detection ~14x slower
 # and delays reconnect. The owner is reading the negotiated value off btmon;
 # do not change this number until that measurement lands.
+#
+# Two residuals ride that one measurement, so retire them together:
+#   1. the value itself is unverified (above);
+#   2. the reservation is requested unconditionally, so Pi 4/5 — which never
+#      had the CE starvation bug — also carry this forced timeout for no
+#      corresponding benefit. Gating by hardware was considered and declined:
+#      HCI_LE_Connection_Update has no partial-update encoding (all seven
+#      parameters go out together, so CE cannot be sent without this), and a
+#      mis-detecting gate would silently reinstate the original starvation bug
+#      on a Zero. Measuring the negotiated value removes both at once.
 SUPERVISION_TIMEOUT = 0x0258
 # The whole point of this helper. 0x0000/0x0000 is the BlueZ default that
 # starves the link to ~24 % of realtime (see the table in the module

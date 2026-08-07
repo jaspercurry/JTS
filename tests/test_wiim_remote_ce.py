@@ -148,6 +148,13 @@ def test_supervision_timeout_pending_measurement_marker_is_a_tripwire():
         "the marker must keep naming the value at risk (Linux's 420 ms default "
         "outgoing LE supervision timeout), or it says nothing actionable"
     )
+    assert "Pi 4/5" in block, (
+        "the marker must keep naming the second residual that the same "
+        "measurement retires — the reservation is requested unconditionally, "
+        "so Pi 4/5 carry this forced timeout for no benefit. Recorded here "
+        "rather than in a review comment so it is retired with the value, not "
+        "forgotten."
+    )
     assert ce.SUPERVISION_TIMEOUT == 0x0258, (
         "SUPERVISION_TIMEOUT moved while the PENDING HARDWARE MEASUREMENT "
         "marker above it still claims the value is unverified. Land the two "

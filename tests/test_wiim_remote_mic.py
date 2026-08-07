@@ -911,6 +911,68 @@ async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
 
 
 @pytest.mark.asyncio
+async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
+    monkeypatch, caplog
+):
+    """The teardown wiring for the segment rate — pinned separately from the
+    method, because they are two different promises and only one of them was
+    guarded.
+
+    `close_segment` on a bare stream is covered above. This pins the *call* in
+    `_run_subscription`'s teardown, which is the only path that reports a hold
+    still running when the connection ends — a dying remote battery, a user
+    walking out of range, or simply the last hold before disconnect. Nothing
+    else reaches it: no >250 ms gap ever arrives to trigger `reset()`, so
+    without this call that hold is silently never reported, and the failure is
+    invisible by construction — which is the whole reason the rate line exists.
+
+    Deliberately asserts the packet count and not `rate_hz`: these packets
+    arrive at real `time.monotonic()` spacing, so the rate here is meaningless.
+    The rate arithmetic is pinned deterministically by the bare-stream tests
+    (62.5/s healthy, 14.8/s starved); this test's job is the wiring.
+    """
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    bus, _sink = _subscription_harness(monkeypatch)
+
+    def fake_manage_units(*_units, **_kwargs):
+        bus.journal.append("ce_request")
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+
+    async def drive():
+        await _wait_until(
+            lambda: "ce_request" in bus.journal,
+            what="the CE reservation request",
+        )
+        # A hold in progress: no gap, so `reset()` never fires and the only
+        # thing that can report this hold is the teardown.
+        for seq in range(5):
+            bus.push_voice_packet(_packet(seq))
+        bus.push_disconnect()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            wiim_remote_mic._run_subscription(
+                wiim_remote_mic._parse_args([]), asyncio.Event()
+            ),
+            drive(),
+        ),
+        timeout=20,
+    )
+
+    assert _events(caplog, "wiim_remote_mic.stream_reset") == [], (
+        "premise: no gap fires during a hold, so teardown is the only reporter"
+    )
+    segments = _events(caplog, "wiim_remote_mic.segment")
+    assert len(segments) == 1, (
+        "the hold running when the link dropped was never reported — "
+        "`_run_subscription` must close the segment in its teardown"
+    )
+    assert segments[0]["packets"] == "5"
+
+
+@pytest.mark.asyncio
 async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
     monkeypatch,
 ):
