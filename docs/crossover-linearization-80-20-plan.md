@@ -304,13 +304,14 @@ They may not:
 Holding the anchor solution fixed at the sides is load-bearing: re-aligning at
 each pose would erase the off-axis consequence the samples are meant to expose.
 
-*Implemented scope (R16), shipped DORMANT.* `STAGE1_INCLUDES_LATERAL` is
-`False`: this section's producer is built and tested but no session walks it,
-because Gate 0 pairs every producer with a current consumer and R16's is R17's
-selector — deferred, since at the checkpoint's declared 2 kHz tweeter
-measurement floor every sub-2 kHz candidate has its own handoff clamped out of
-`overlap_band_hz`. #1654 is the unblocker and R17 is the flipper. What follows
-describes the shape the moment it flips. The walk is six prompted poses — the mark, ±12 cm
+*Implemented scope (R16), LIVE since R17.* `STAGE1_INCLUDES_LATERAL` is `True`:
+Gate 0 pairs every producer with a current consumer, and R16's consumer — R17's
+Fc selector — landed. It was held dormant through R16 because at the
+checkpoint's declared 2 kHz tweeter measurement floor every sub-2 kHz candidate
+had its own handoff clamped out of `overlap_band_hz`; #1654 swept the HF driver
+to its declared 1600 Hz floor and removed that clamp. The household-visible
+cost of the flip is stage 1 going from 2 captures to 8 and the chooser's honest
+quote for Full from 6 to 12 minutes. The walk is six prompted poses — the mark, ±12 cm
 and ±40 cm left/right, and a return to the mark — as a stage-1 position group
 (`PHASE_LATERAL`) that replays the **anchor's own MEASURE program object**
 through the protected-neutral graph, so each pose carries both drivers on one
@@ -534,6 +535,35 @@ with no ratified scope falls back to that general rule. Full record: the Gate 0
 comment on [#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5196968895).
 §9.8 is unchanged: configured 2 kHz stays the golden one-candidate mode until
 the multi-candidate path proves equivalence and then improvement.
+
+**R17 outcome — the selector RECOMMENDS; `/sound` remains Fc's only writer.**
+Three structural discoveries reshaped the round, each verified in code before
+it was acted on, and each recorded on
+[#1894](https://github.com/jaspercurry/JTS/issues/1894):
+
+1. *Evidence lifetime.* The raw capture is alive only inside `consume_capture`;
+   what the conductor retains past it are derived `DriverResponse`s that §4.2's
+   own conditioning policy refuses to un-compose. So every candidate is
+   evaluated at MEASURE-consume, **evaluate-and-release** — each candidate's
+   analysis and fit are freed before the next starts — and only the small
+   per-candidate records cross the walk to be adjudicated at its close.
+2. *The preset-mismatch gate.* A selected Fc cannot reach applied DSP:
+   `baseline_profile` refuses any candidate whose preset differs from the saved
+   crossover, a deliberate one-writer-per-fact defence. Making an alternative
+   applicable is a nine-site change across six modules — its own round. So the
+   selector produces a RECOMMENDATION: the household is told the measured
+   number, declares it in `/sound`, and the next session's configured Fc *is*
+   that number, applied through the untouched golden path. §9.8's
+   byte-equivalence becomes structural rather than asserted, and keep-configured
+   is a first-class honest verdict rather than silence.
+3. *The phone's deadline.* `waitForCaptureResult` allows `max(30 000,
+   spec.duration_ms)` — **41 885 ms** on the live stage-1 spec — and its expiry
+   is a TERMINAL `sweepFailed`, not a retry. The evaluation budget is therefore
+   derived from that deadline and spends a conservative fraction of it, because
+   the anchor's own ~7 s analysis has already come out of the window before the
+   sweep starts. A loaded Pi scores fewer candidates than it proposed; that is
+   disclosed as k-of-N and is never a session failure. (The profile's earlier
+   60 s figure was set independently of the deadline and is retired.)
 
 The dependency graph is now:
 

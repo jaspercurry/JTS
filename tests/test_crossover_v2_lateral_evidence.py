@@ -122,16 +122,17 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
 
 
-# --- dormancy: the household sees nothing until R17 lands ---------------------
+# --- the shipped stage-1 shape, now that R17 has flipped the walk on ----------
 
 
-def test_the_walk_is_off_and_stage_1_is_byte_identical_to_pre_r16():
-    """The walk ships DORMANT until R17, so a household must see exactly the
-    pre-R16 session. Asserted against that contract written out independently,
-    not against the flag — a test that only re-read ``STAGE1_INCLUDES_LATERAL``
-    would pass for a flag-off build that had changed the shape some other way.
+def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
+    """R17 flipped ``STAGE1_INCLUDES_LATERAL``, so a household now walks the
+    six poses after the anchor. Same guard as the dormancy pin it replaces, one
+    state over: the shape is written out INDEPENDENTLY of the flag, so a build
+    that flipped the flag and also changed the shape some other way still
+    fails. (The retired assertion was ``… is False`` over a 794-byte plan.)
     """
-    assert flow.STAGE1_INCLUDES_LATERAL is False
+    assert flow.STAGE1_INCLUDES_LATERAL is True
 
     index_phase = build_v2_cloud_index_phase_map(
         tier="full",
@@ -144,34 +145,49 @@ def test_the_walk_is_off_and_stage_1_is_byte_identical_to_pre_r16():
         include_lateral=flow.STAGE1_INCLUDES_LATERAL,
     )
 
-    # The pre-R16 stage 1, stated in full.
-    assert index_phase == {1: PHASE_CHECK, 2: PHASE_MEASURE}
-    assert [e.kind_label for e in plan.entries] == ["check", "measure"]
-    assert plan.capture_target == 2
-    assert plan.max_attempts == 2 + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 2
+    # Stage 1 with the walk on, stated in full: the anchor pair, then one entry
+    # per prompted pose. The pre-apply cloud stays off — a separate flag, and
+    # R17 did not authorize it.
+    poses = len(flow.LATERAL_POSE_PROMPTS)
+    assert index_phase == {1: PHASE_CHECK, 2: PHASE_MEASURE} | {
+        index: PHASE_LATERAL for index in range(3, 3 + poses)
+    }
+    assert [e.kind_label for e in plan.entries] == [
+        "check", "measure", *["lateral"] * poses,
+    ]
+    assert plan.capture_target == 2 + poses
+    assert plan.max_attempts == 2 + poses + flow.CLOUD_RETAKE_ALLOWANCE
+    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 2 + poses
 
-    # Nothing R16 added reaches the wire.
+    # The walk reaches the wire, and its bytes are pinned exactly as the
+    # dormant shape's were — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
-    assert b"lateral" not in raw
+    assert b"lateral" in raw
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        794, "3f33662b312a89ef23851d7d008651ff9f5783f3f8fc143273189802f6c635c7",
-    ), "the shipped stage-1 plan's wire bytes moved while the walk is off"
+        2379, "72bff8bad69cf9e95d6f12435c36a1a6285d229b2a408aa97d4684220e1401a3",
+    ), "the shipped stage-1 plan's wire bytes moved"
 
-    # …and the consent screen still describes a stationary microphone.
+    # …and the consent screen now tells the household they will be walked,
+    # rather than promising a stationary microphone.
     spec = build_v2_session_spec(
         _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=flow.STAGE1_INCLUDES_LATERAL,
     )
     notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-    assert not any("of the mark" in note for note in notes)
+    assert any("of the mark" in note for note in notes)
 
 
-def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
-    """End-to-end dormancy: the fit-timing move is IN but must not fire. Its
-    deferral keys off ``PHASE_LATERAL in self._phases``, so with no lateral
-    group MEASURE stays the last capture before the apply.
+def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure():
+    """The fit-timing deferral keys off ``PHASE_LATERAL in self._phases``, so a
+    session built WITHOUT the walk keeps MEASURE as the last capture before the
+    apply — and R17's sweep, which fires on the same condition, does not run.
+
+    ``include_lateral=False`` is written out rather than read off
+    ``STAGE1_INCLUDES_LATERAL``: this pins the no-walk SHAPE, which stays a
+    real shape (Express, the verify re-arm) now that R17 has flipped the
+    stage-1 flag on. Reading the flag would have made it silently retest the
+    walk instead.
     """
     fakes = FakeSeams()
     c = _conductor(
@@ -179,7 +195,7 @@ def test_a_dormant_walk_leaves_the_conductor_with_no_lateral_group():
         index_phase_map=build_v2_cloud_index_phase_map(
             tier="full",
             include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-            include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+            include_lateral=False,
         ),
     )
     assert PHASE_LATERAL not in c._group_indexes
@@ -337,12 +353,16 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
     """
     import jasper.capture_relay.spec as spec
 
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds today, walk off
+    flow.assert_cloud_plan_fits_relay_capacity()  # holds today, walk ON
     worst = dict(
         cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
-    cloud_only = flow.relay_plan_attempts_required(**worst)
+    with pytest.MonkeyPatch.context() as mp:
+        # The walk-off baseline is now the patched state, not the shipped one
+        # (R17 flipped the flag), so it is established under the patch.
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
+        cloud_only = flow.relay_plan_attempts_required(**worst)
     ceiling = cloud_only + 1
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
@@ -356,6 +376,11 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
     with pytest.MonkeyPatch.context() as mp:
+        # The control: at the SAME reduced ceiling, a build whose walk is off
+        # must still pass — otherwise the failure above would prove only that
+        # the ceiling is small, not that the poses are counted. The flag is
+        # patched off explicitly because R17 ships it on.
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
         mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         flow.assert_cloud_plan_fits_relay_capacity()
 
@@ -411,7 +436,13 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
         measurement_protection_sections_by_role={"woofer": (), "tweeter": ()},
     )
     _walk(c, through=FIRST_LATERAL_INDEX)
-    by_phase = {phase: priors for phase, _pp, _r, priors, _g in fakes.analyzed}
+    # FIRST call per phase, not last: R17's candidate sweep re-analyzes this
+    # same capture once per proposable Fc, all of them under ``PHASE_MEASURE``,
+    # so a last-wins read would compare a pose against a CANDIDATE's priors
+    # instead of the anchor's.
+    by_phase: dict[str, object] = {}
+    for phase, _pp, _r, priors, _g in fakes.analyzed:
+        by_phase.setdefault(phase, priors)
     anchor = by_phase[PHASE_MEASURE]
     pose = by_phase[PHASE_LATERAL]
     assert anchor.configured_crossover_response_by_role is not None

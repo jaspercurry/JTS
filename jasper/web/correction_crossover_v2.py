@@ -2002,6 +2002,60 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
     return out or None
 
 
+def _fc_selection_summary(conductor: Any) -> dict[str, Any] | None:
+    """R17's Fc RECOMMENDATION, small enough to live in durable state.
+
+    ``None`` when no candidate sweep ran (an Express/no-walk session, a
+    conductor double without the surface) — never a fabricated "keep what you
+    have", which would read as a verdict the measurement never reached.
+
+    What rides: the verdict and the two frequencies, the k-of-N counts, the
+    derived bounds that explain why nothing else was proposable, and the
+    per-candidate scores. What does NOT ride: the operators and predicted sums
+    behind them. Those are the working evidence, already released by the time
+    this is written, and a durable copy would be a second answer to "what did
+    this session measure" that nothing reads back.
+    """
+    selection = getattr(conductor, "fc_selection", None)
+    if selection is None:
+        return None
+    return {
+        "verdict": selection.verdict,
+        "configured_hz": round(float(selection.configured_hz), 1),
+        "recommended_hz": (
+            round(float(selection.recommended_hz), 1)
+            if selection.recommended_hz is not None else None
+        ),
+        "margin_db": (
+            round(float(selection.margin_db), 3)
+            if selection.margin_db is not None else None
+        ),
+        # k of N, disclosed rather than hidden: the accept window is bounded by
+        # the phone's own result deadline, so a loaded Pi legitimately scores
+        # fewer candidates than it proposed.
+        "evaluated": int(selection.evaluated),
+        "planned": int(selection.planned),
+        # WHY the set was the size it was — each bound traceable to a
+        # declaration the household can edit.
+        "limits": {k: round(float(v), 1) for k, v in selection.limits.items()},
+        "refusals": [
+            [round(float(fc), 1), str(reason)] for fc, reason in selection.refusals
+        ],
+        "scores": [
+            {
+                "fc_hz": round(float(s.fc_hz), 1),
+                "score": round(float(s.score), 3),
+                "worst_db": round(float(s.anchor.worst_db), 3),
+                "worst_hz": round(float(s.anchor.worst_hz), 1),
+                "lateral_excess_db": round(float(s.lateral_excess_db), 3),
+                "headroom_cost_db": round(float(s.headroom_cost_db), 3),
+                "poses": int(s.n_poses),
+            }
+            for s in selection.scores
+        ],
+    }
+
+
 def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     """The delta probe's verdict, small enough to live in durable state (#1811).
 
@@ -2310,6 +2364,10 @@ def persist_conductor_state(
         # screen, null registry, spec curve) alongside this block; the geometry
         # verdict is what PR-3b measured and so what PR-3b persists.
         "cloud": _cloud_summary(conductor),
+        # R17's Fc recommendation (§9.8): what the measurement says the
+        # crossover should be. A RECOMMENDATION — the declared crossover in
+        # ``/sound`` stays Fc's only writer, so nothing downstream applies it.
+        "fc_selection": _fc_selection_summary(conductor),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             # Two-stage commission D4: the spec verdict for the curve above,
@@ -2492,6 +2550,18 @@ def persist_conductor_state(
         # replaying a caveat about a capture that has been superseded.
         if isinstance(prior.get("measure"), Mapping) and state["measure"] is None:
             state["measure"] = dict(prior["measure"])
+        # R17's Fc recommendation, on the SAME predicate and for the same
+        # reason: it is produced at the lateral walk's close, which only a
+        # MEASURING session runs, and the DONE screen belongs to stage 2 —
+        # whose conductor has no ``fc_selection`` and would persist ``None``
+        # over it. Losing it there would show the household "your crossover
+        # could be 1750 Hz" while they decide and then nothing at all once the
+        # tuning is applied, which is the half where they act on it.
+        if (
+            isinstance(prior.get("fc_selection"), Mapping)
+            and state["fc_selection"] is None
+        ):
+            state["fc_selection"] = dict(prior["fc_selection"])
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
     # handle_v2_restore), ``expected_post_apply_offset_db`` (the apply's own
     # declared level move — observe_apply_success / the delta probe's
@@ -4705,6 +4775,18 @@ class V2ConductorContext:
     # schema or allowlist change. A role absent here simply gets no beaming
     # prior; the selector discloses that rather than assuming a diameter.
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
+    # Per-role declared ``crossover_search_band_hz`` — the range each driver
+    # may be crossed over IN, which R17's Fc selector intersects across the
+    # participating roles (``crossover_v2_flow.resolve_fc_search_band``). Like
+    # the diameter above it has been a REQUIRED declaration since the safety
+    # profile shipped (``driver_safety._target_issues`` refuses a target
+    # without one) and had no Python reader; without it the candidate set would
+    # propose an Fc below the tweeter's own declaration. A role maps to
+    # ``None`` when its declaration is absent or malformed, which the resolver
+    # turns into "no proposal" with that role named — never "anything goes".
+    crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = field(
+        default_factory=dict
+    )
     # Flat-linearization plan PR-4: the tweeter's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
@@ -4883,6 +4965,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
+        resolve_driver_crossover_search_band_hz,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
     )
@@ -4994,6 +5077,16 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         )
     except (ExcitationSafetyPlanError, ValueError):
         tweeter_measurement_band_hz = None
+    # R17: every PARTICIPATING role's declared crossover search band, keyed by
+    # role. Both roles are always present as KEYS — a missing declaration is a
+    # ``None`` VALUE, not an absent key, because the intersection rule needs to
+    # know the role participated in order to fail closed on it.
+    crossover_search_band_hz_by_role = {
+        role: resolve_driver_crossover_search_band_hz(
+            safety_profile, role_targets[role],
+        )
+        for role in role_targets
+    }
     region = preset.crossover_regions[0]
     fc_hz = float(region.fc_hz)
     session_volume_db = derive_session_volume_db(
@@ -5037,6 +5130,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
         radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
+        crossover_search_band_hz_by_role=crossover_search_band_hz_by_role,
         tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
 
@@ -5447,6 +5541,11 @@ def prepare_v2_session(
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
+            # R17. Threaded on the MEASURING session only — the verify re-arm
+            # below runs no lateral walk (it maps VERIFY alone), so the Fc
+            # selector cannot fire there and an argument passed to it would be
+            # dead rather than symmetric.
+            crossover_search_band_hz_by_role=context.crossover_search_band_hz_by_role,
             measurement_protection_sections_by_role=protection_sections,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             attempt_floor=attempt_store.floor,

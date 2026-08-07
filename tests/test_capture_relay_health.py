@@ -187,6 +187,9 @@ def test_doctor_needed_count_follows_the_lateral_walk_flag(monkeypatch):
     monkeypatch.setattr(
         health, "probe_relay_health", lambda *_a, **_k: (True, "reachable (ok)")
     )
+    # The walk-off baseline is a PATCHED state since R17 flipped the flag on,
+    # so it is established explicitly rather than read off the shipped build.
+    monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
     without = flow.relay_plan_attempts_required()
     monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
     with_walk = flow.relay_plan_attempts_required()
