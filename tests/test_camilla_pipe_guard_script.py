@@ -187,6 +187,28 @@ def test_non_snapcast_file_playback_is_a_noop(tmp_path):
     assert statefile.read_text() == before
 
 
+def test_parked_null_sink_is_a_noop_and_matches_the_python_constant(tmp_path):
+    """The parked graph's File sink (#2135) is ``/dev/null`` on both sides:
+    the Python emitter (``PARKED_SINK_PATH``) and this guard's own label
+    branch. Uses the actual Python constant as input rather than a second
+    hardcoded ``"/dev/null"`` literal, so the two cannot silently drift
+    apart (#2164) — today drift would only rename the journal label, but
+    nothing else pinned that it can't rename to something misleading.
+    """
+    from jasper.active_speaker.camilla_yaml import PARKED_SINK_PATH
+
+    configured_snapfifo = tmp_path / SNAPFIFO_NAME
+    cfg = _pipe_config(tmp_path, Path(PARKED_SINK_PATH))
+    statefile = _write_statefile(tmp_path, cfg)
+    before = statefile.read_text()
+
+    r = _run(tmp_path, statefile=statefile, fifo=configured_snapfifo)
+
+    assert r.returncode == 0
+    assert "event=camilla_pipe_guard.ok reason=parked_null_sink" in r.stderr
+    assert statefile.read_text() == before
+
+
 def test_missing_statefile_fails_open(tmp_path):
     r = _run(tmp_path, statefile=tmp_path / "absent.yml")
     assert r.returncode == 0

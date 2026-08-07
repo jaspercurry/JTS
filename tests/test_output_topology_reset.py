@@ -258,6 +258,55 @@ def test_reset_loads_the_passive_graph_into_camilla(
     assert loaded == [str(flat_config)]
 
 
+@pytest.fixture
+def ring_flat_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Where ``render_flat_cutover_configs`` writes the ring sibling of
+    ``flat_config`` (same directory, ``RING_FLAT_CONFIG_NAME``)."""
+    from jasper.active_speaker import runtime_contract
+    from jasper.sound.camilla_yaml import RING_FLAT_CONFIG_NAME
+
+    path = tmp_path / RING_FLAT_CONFIG_NAME
+    monkeypatch.setattr(runtime_contract, "DEFAULT_RING_FLAT_OUTPUTD_CONFIG", path)
+    return path
+
+
+def test_reset_reseeds_ring_flat_config_on_a_ring_armed_box(
+    topo_path: Path,
+    flat_config: Path,
+    ring_flat_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2164: convergence must consult the PERSISTED fan-in coupling, not
+    default to loopback. Before this fix, a reset on a ring-armed box
+    (coupling=shm_ring) silently reseeded the loopback flat config while
+    fan-in kept feeding the SHM ring — a false "converged" success. (Narrow
+    window: reachable only on a non-roleful topology, which is exactly what
+    a fresh reset produces.)
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loaded.append(path)
+            return True
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["camilla"]["ok"] is True
+    # The RING sibling was selected and loaded — never the loopback one.
+    assert loaded == [str(ring_flat_config)]
+    assert result["camilla"]["config_path"] == str(ring_flat_config)
+
+
 def test_reset_rerenders_the_cutover_so_a_mono_era_mute_cannot_survive(
     topo_path: Path, flat_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
