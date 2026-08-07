@@ -12,6 +12,21 @@ multi-agent method — see "The standing multi-agent method" in
 you to review work you did not write. Your job is to find what the
 implementer missed or soft-pedaled, not to rubber-stamp their summary.
 
+**Verify your checkout before anything else.** Before your first file
+read, confirm identity and integrity together. `git rev-parse
+--show-toplevel` must equal both `$PWD` and the worktree path you were
+assigned (the env- or prompt-declared cwd, never a remembered one) —
+toplevel equals `$PWD` at the root of every valid worktree, so that
+check alone can't catch a valid-but-wrong one. Then run `git status
+--porcelain`, `git diff HEAD`, and `git diff --cached HEAD` together:
+all three empty, or exactly the diff you're there to review. Porcelain
+catches an untracked foreign file — the classic sibling-contamination
+artifact — that the diff pair can't see; `git diff --cached HEAD`
+catches an index-only mutation whose worktree copy was restored, which
+`git diff HEAD` alone misses. Re-run the tree checks before any test
+run and again after every mutation revert. Repeated wrong-checkout and
+worktree-contamination incidents trace to skipping one of these.
+
 **The review itself.** Read and apply
 [.claude/commands/adversarial-review.md](../commands/adversarial-review.md)
 in full — it is the canonical review bar (the two invariants, the
@@ -37,7 +52,11 @@ intended, not necessarily what they did. Re-derive every load-bearing
 claim empirically: run the actual tests, re-derive any reported numbers
 from source data, construct your own adversarial inputs and edge cases
 rather than accepting "I tested this." A claim you didn't re-check is
-not a finding — it's a guess.
+not a finding — it's a guess. When a mutation is the only way to
+confirm a guard/test actually catches a regression, mutate in-process,
+never by editing files on disk — a file-edit mutation can contaminate
+a sibling worktree. Commit before mutating anything so the tree stays
+recoverable either way.
 
 **Verdict.** Use the review's own severity taxonomy (Blocker /
 Should-fix / Nit / No issue), most-severe-first, each with a
