@@ -314,10 +314,13 @@ Verified missing on main (2026-07-03):
    `check_fanin_service` recognizes the `shm_ring` transport. **Playback-format
    drift check added by the wide-output-path program's PR-1**:
    `check_camilla_playback_format` reads the loaded config's
-   `devices.playback.format` back (nothing did before) and compares it against
-   `DEFAULT_PLAYBACK_FORMAT`, so a half-flip is a red doctor line instead of
-   silence — see `captures/PLAN-wide-output-path-2026-08-07.md`. The E-list
-   loopback-check rewrites remain a later-phase (P7/P9) task.
+   `devices.playback.format` back (nothing did before) and compares it
+   against its lane's expected constant — `DEFAULT_PIPE_SINK_FORMAT` for a
+   `File` sink (the bonded-leader pipe, the parked `/dev/null` graph —
+   pinned narrow by D4), `DEFAULT_PLAYBACK_FORMAT` for every other sink —
+   so a half-flip is a red doctor line instead of silence — see
+   `captures/PLAN-wide-output-path-2026-08-07.md`. The E-list loopback-check
+   rewrites remain a later-phase (P7/P9) task.
 7. **/state observability**: ~~`/state.audio_graph` needs the resolved transport.~~
    **CLOSED by P2**: `/state.audio_graph.coupling` surfaces the persisted coupling,
    the outputd content bridge, whether the pair is coherent, and the live fan-in
