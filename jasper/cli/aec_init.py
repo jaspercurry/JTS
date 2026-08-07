@@ -24,6 +24,15 @@ from typing import Any
 
 from jasper import output_hardware
 from jasper.audio_hardware import dac as dac_registry
+
+# The declaration outputd loads through `EnvironmentFile=` (its runtime output
+# contract: sink, backend, active width, final-edge format). Imported, never
+# restated as a literal here: an unreadable path leaves the ordering guard below
+# fail-OPEN, so a drifted copy would silently disable it with every test still
+# green. jasper-audio-hardware-reconcile is the writer; the per-box override is
+# the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
+# tests/test_aec_init.py pins this against jasper-outputd.service's own
+# EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
     AlignmentIdentity,
@@ -41,13 +50,6 @@ COMMISSION_REQUIRED_EXIT = 2
 # activate_managed_chip_aec by tests/test_aec_reconcile.py.
 OUTPUTD_ENV_STALE_EXIT = 3
 OUTPUTD_UNIT = "jasper-outputd.service"
-# The declaration outputd loads through `EnvironmentFile=` (runtime output
-# contract: sink, backend, active width, final-edge format) is imported, never
-# restated: an unreadable path makes this guard fail OPEN, so a drifted literal
-# would silently disable it. jasper-audio-hardware-reconcile is the writer; the
-# override name is the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
-# tests/test_aec_init.py pins the constant against the unit's EnvironmentFile=.
-#
 # How long to let a queued outputd restart land before refusing to commission.
 # Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open).
 #
