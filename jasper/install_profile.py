@@ -19,14 +19,37 @@ tokens are still ACCEPTED here and mapped to ``streambox`` so a field box
 with a persisted ``endpoint``/``satellite`` marker auto-migrates on its
 next deploy instead of stranding.
 
+What a tier *grants* is named on its own axis: ``Capability``, with the
+per-profile grant table in ``PROFILE_CAPABILITIES`` and one predicate,
+``install_profile_has_capability``. A pure-data registry keyed by
+install profile — the data half of AGENTS.md's "pure-data registry +
+reconciler" pattern, the same shape as ``DacProfile``'s and
+``WakeModelEntry``'s registries. It lives HERE rather than in a new
+module because this file is already the single import surface every
+tier-aware caller uses (install.sh's landing-page bake, jasper-control,
+jasper-doctor, jasper.enhanced_aec, jasper.accessories.reconcile, the
+multiroom reconciler); a separate module would make all of them learn a
+second import for one enum and one mapping.
+
 Keep this module deliberately tiny and stdlib-only so it can be imported
 by lightweight surfaces such as jasper-control, jasper-doctor, and the
 multi-room reconciler without pulling in the full speaker stack.
+
+**Capabilities are a pure function of the tier — no I/O, ever.** They
+must never read hardware, the environment, or a file. Two consumers
+compute the same map at different times (install.sh bakes it into the
+static landing page; jasper-control serves it live at ``/system``), and
+they agree only because both derive from the marker and nothing else.
+The moment a capability reads something dynamic, a baked page can be
+wrong at runtime and the landing page's ``applyCapabilities`` fails
+closed — hiding a section forever with no error. Pinned by
+tests/test_install_profile_capabilities.py.
 """
 from __future__ import annotations
 
 import logging
 import os
+from enum import Enum
 from pathlib import Path
 from typing import Mapping
 
@@ -47,6 +70,63 @@ VALID_INSTALL_PROFILES = frozenset({
 # persisted marker or env value from before the third tier was removed
 # maps to streambox so the box auto-migrates rather than failing closed.
 _LEGACY_STREAMBOX_ALIASES = frozenset({"endpoint", "satellite"})
+
+
+class Capability(str, Enum):
+    """What an install tier grants, named one axis at a time.
+
+    Two capabilities, deliberately — not one per feature:
+
+    ``ASSISTANT``
+        The voice daemon, the provider session, tools, assistant
+        integrations, TTS playout, the assistant wizards, the spend cap.
+        "Can this box hold a conversation."
+
+    ``WAKE_DETECTION``
+        This *hardware class* has the headroom to run always-on wake
+        inference. What draws the line is structural, and checkable:
+        ``WakeLoop._handle_wake_frame`` calls
+        ``detector.score_frame(frame)`` synchronously on the asyncio
+        loop (jasper/voice_daemon.py — no ``to_thread``), once per
+        frame per leg, forever. On a board where that inference eats
+        most of a core, the Tier-1 heartbeat starves and
+        ``WatchdogSec=30s`` in jasper-voice.service kills the daemon.
+        The Zero 2 W measured over that line; the Pi 5 does not. It is
+        a property of the BOARD, not of what is plugged into it.
+
+    Note what is deliberately NOT here: "does this box have a
+    microphone". Mic presence is *dynamic* and already owned by
+    jasper-aec-reconcile; modelling it as a tier fact would break a real
+    case — a full-tier Pi 5 with no mic installed but a remote paired,
+    which must work. Do not add a ``LOCAL_MIC`` capability.
+
+    The mic/AEC stack rides with ``WAKE_DETECTION`` — not because mic
+    implies wake, but because always-on wake is the only always-on
+    consumer of that stack. Push-to-talk with a *local* mic and no wake
+    would be the second instance; split the axis then, not now.
+    """
+
+    ASSISTANT = "assistant"
+    WAKE_DETECTION = "wake_detection"
+
+
+# Pure-data grant table: install profile -> capabilities. The single
+# place a tier's grants are stated. Adding a tier means adding a row
+# here; tests/test_install_profile_capabilities.py fails if the rows and
+# VALID_INSTALL_PROFILES ever disagree, so a new tier cannot silently
+# ship with no capabilities.
+PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
+    FULL_INSTALL_PROFILE: frozenset({
+        Capability.ASSISTANT,
+        Capability.WAKE_DETECTION,
+    }),
+    # Streambox grants nothing on this axis today: a Zero 2 W has neither
+    # the headroom for always-on wake nor (yet) the assistant. Naming the
+    # axis is what makes granting ASSISTANT *without* WAKE_DETECTION —
+    # the Bluetooth-remote streambox — expressible at all; that flip is a
+    # separate, deliberate change, not this one.
+    STREAMBOX_INSTALL_PROFILE: frozenset(),
+}
 
 
 def normalize_install_profile(value: str | None) -> str:
@@ -151,9 +231,48 @@ def install_profile_allows_content_dsp(profile: str | None) -> bool:
     return install_profile_runs_local_audio_graph(profile)
 
 
+def install_profile_has_capability(
+    profile: str | None, capability: Capability,
+) -> bool:
+    """Whether an install profile grants ``capability``.
+
+    Legacy ``endpoint``/``satellite`` tokens normalize to ``streambox``
+    first, so a field box reads its real grants. Invalid tokens raise
+    ``ValueError`` (from ``normalize_install_profile``) and a valid
+    profile missing from ``PROFILE_CAPABILITIES`` raises ``KeyError`` —
+    both loud on purpose. A ``.get(role, frozenset())`` would turn "we
+    forgot to grant the new tier anything" into a silent, permanent
+    feature blackout, which is exactly the failure this axis exists to
+    make impossible.
+
+    Pure: derived from the argument alone — no env, no files, no
+    hardware. See the module docstring for why that is load-bearing.
+    """
+    return capability in PROFILE_CAPABILITIES[install_role_for_profile(profile)]
+
+
 def install_profile_allows_voice_brain(profile: str | None) -> bool:
-    """Whether voice, wake, mic/AEC, and assistant integrations run locally."""
-    return install_role_for_profile(profile) == FULL_INSTALL_PROFILE
+    """Whether the assistant runs locally on this install profile.
+
+    Exactly ``Capability.ASSISTANT``, under the name every existing
+    caller already imports. It does NOT also mean "wake detection runs
+    here" — that is ``install_profile_supports_wake_detection``. Today
+    the two answers coincide for both tiers; they are separate questions
+    and a caller that means one should not ask the other.
+    """
+    return install_profile_has_capability(profile, Capability.ASSISTANT)
+
+
+def install_profile_supports_wake_detection(profile: str | None) -> bool:
+    """Whether this hardware class can run always-on wake inference.
+
+    "supports", not "allows": this is a headroom fact about the board,
+    not a policy knob. A tier without it cannot be granted it by
+    changing its mind — the Zero 2 W starves its watchdog trying. The
+    mic/AEC stack rides along, because always-on wake is its only
+    always-on consumer.
+    """
+    return install_profile_has_capability(profile, Capability.WAKE_DETECTION)
 
 
 def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
@@ -165,14 +284,17 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     first paint with no network round-trip. Kept here (stdlib-only) so the
     installer can compute it without importing the full control stack.
 
-    Values are derived purely from the profile, so the baked page and the
-    live snapshot always agree for the same marker.
+    Values are derived purely from the profile — no env, no files, no
+    hardware probes — so the baked page and the live snapshot always
+    agree for the same marker. That purity is the whole contract here;
+    see the module docstring for what breaks without it.
     """
     role = install_role_for_profile(profile)
     full = role == FULL_INSTALL_PROFILE
     local_dsp = install_profile_allows_content_dsp(profile)
     local_sources = install_profile_allows_local_sources(profile)
     voice_brain = install_profile_allows_voice_brain(profile)
+    wake_detection = install_profile_supports_wake_detection(profile)
     return {
         # `install_profile` echoes the token this is CALLED with; the boolean
         # caps below — what the page gates on — derive from the normalized
@@ -186,6 +308,12 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "local_sources": local_sources,
         "content_dsp": local_dsp,
         "voice_brain": voice_brain,
+        # Separate key on purpose: a tier can hold a conversation without
+        # having the headroom to listen for a wake word all day. The
+        # landing page has no data-requires="wake_detection" gate yet —
+        # the key exists so a surface CAN gate on the right question
+        # instead of overloading voice_brain.
+        "wake_detection": wake_detection,
         "network_settings": True,
         "speaker_settings": True,
         "pair_management": True,
