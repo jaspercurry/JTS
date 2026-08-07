@@ -275,6 +275,19 @@ inherits it from the repo instead of being told.
   [`.claude/agents/adversarial-gate.md`](.claude/agents/adversarial-gate.md)
   packages this as a launchable subagent type so any session can
   dispatch it directly instead of re-deriving the method ad hoc.
+  **The dispatching architect posts every disposition as a PR comment
+  when the review returns** — verdict, findings, and what was done about
+  each — and in any case before merge. Record it when it lands, not when
+  the PR does: a PR that never merges still holds a review worth keeping,
+  and a session can end long before a merge. The gate itself stays
+  report-only (it never merges, pushes, or comments); the reviewer owns
+  the finding, the architect owns the record. An unrecorded review did
+  not happen, exactly as an unrecorded ratification did not happen: on
+  2026-08-06 eleven PRs were reviewed in subagents whose dispositions
+  were never posted, and when those sessions ended the verdicts were
+  recoverable only by mining `~/.claude/projects/` transcripts. Not one
+  of those eleven had merged when those sessions ended — which is why the
+  trigger is the review returning rather than the merge.
   Safety-critical changes — audio/hearing safety, the CamillaDSP graph,
   DSP math, or secrets — escalate from one reviewer to a
   perspective-diverse panel (correctness, hearing-safety, and resilience
