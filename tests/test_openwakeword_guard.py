@@ -68,7 +68,7 @@ def test_guard_is_idempotent_and_quiet(
 def test_guard_warns_when_openwakeword_was_already_imported(
     clean_verifier_slot: None, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A late guard cannot recover the ~78 MiB, so it must not be silent.
+    """A late guard cannot recover the saving, so it must not be silent.
 
     This is the exact state the guard exists to prevent: something imported
     openWakeWord first, so the real custom_verifier_model (and scikit-learn

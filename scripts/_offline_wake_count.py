@@ -185,8 +185,13 @@ def main() -> int:
     # The guard import is function-local, not module-top: wake-rate-test.sh
     # scp's this file plus _wake_audio_metrics.py to a Pi's /tmp, and `--help`
     # must work there without the project installed — argparse exits above this
-    # line. Scoring itself always runs under /opt/jasper/.venv, which has both
-    # jasper and openwakeword. Pinned by test_script_help_does_not_require_jasper
+    # line. Scoring itself does now need `jasper` importable, where before the
+    # guard this script needed only numpy + scipy + openwakeword — a deliberate
+    # trade for keeping one owner of the stub rather than a second copy here.
+    # It always runs under /opt/jasper/.venv (wake-rate-test.sh invokes it by
+    # that absolute path), which has both jasper and openwakeword, and a
+    # missing `jasper` fails loudly here before the model loads.
+    # Pinned by test_script_help_does_not_require_jasper
     # in tests/test_wake_audio_metrics.py, which blocks `jasper` outright;
     # test_offline_counter_runs_standalone_with_staged_sibling only pops
     # PYTHONPATH, so it cannot see a module-top import on a box where the

@@ -171,6 +171,14 @@ def main() -> int:
     # works on an interpreter without the project installed — argparse exits
     # above this line. Pinned by test_script_help_does_not_require_jasper in
     # tests/test_wake_audio_metrics.py.
+    #
+    # Scoring, unlike `--help`, now needs `jasper` importable; before the guard
+    # this script needed only numpy + openwakeword. That is a deliberate trade,
+    # not an oversight: the stub has exactly one owner, and a second copy here
+    # is the duplication this guard exists to delete. Both documented
+    # invocations already satisfy it (the repo venv on a laptop,
+    # /opt/jasper/.venv on a speaker), and a missing `jasper` fails loudly on
+    # this line — before the model loads and before any file is scored.
     from jasper.openwakeword_guard import ensure_openwakeword_import_safe
 
     # Must precede the openwakeword import; see jasper/openwakeword_guard.py.

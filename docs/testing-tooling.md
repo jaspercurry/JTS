@@ -309,6 +309,13 @@ called by `wake-rate-test.sh`. `score-baseline-wakeword.py` is a
 top-level user-callable tool because batch scoring across a corpus
 is a standalone use case.
 
+"Standalone" there means the *invocation* is standalone, not the
+dependencies: both scripts import `jasper` on the scoring path (for
+the openWakeWord import guard — see
+[`jasper/openwakeword_guard.py`](../jasper/openwakeword_guard.py)),
+so run them under `/opt/jasper/.venv/bin/python` on a speaker or the
+repo venv on a laptop. `--help` still works without either.
+
 ---
 
 ## Wake-event telemetry (production)
