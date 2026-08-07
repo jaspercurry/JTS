@@ -11,6 +11,8 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from ...config import Config
 from ...voice.catalog import (
@@ -18,8 +20,14 @@ from ...voice.catalog import (
     provider_by_id,
     provider_ids_manifest_text,
 )
+from ...voice.provider_state import read_active_provider_state
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import (
+    _EXCEPTION_DETAIL_LIMIT,
+    CheckResult,
+    _redact_exception_message,
+    _run,
+)
 
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
@@ -53,6 +61,155 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"doesn't start with '{prefix}' — may be a stale or wrong key",
         )
     return CheckResult(env_name, "ok", f"{key[:8]}...")
+
+# Imports the module names handed to it on argv, in order, and reports the
+# FIRST one that fails. Run in a child interpreter rather than in-process for
+# two reasons: (1) a fresh process is what jasper-voice actually is, so a
+# module that only imports because the doctor already loaded something is not
+# mistaken for a working provider; (2) the adapters pull in heavy SDKs, and a
+# child frees that on exit instead of carrying it through the rest of the
+# doctor run on a 1 GB Pi. Measured footprint is on the check below.
+_IMPORT_PROBE = (
+    "import importlib, sys\n"
+    "for name in sys.argv[1:]:\n"
+    "    try:\n"
+    "        importlib.import_module(name)\n"
+    "    except Exception as e:\n"
+    "        print(f'{name}\\t{type(e).__name__}: {e}')\n"
+    "        raise SystemExit(1)\n"
+)
+
+# `-P` (3.11+) stops the interpreter putting the caller's cwd on sys.path.
+# `python -c` sets sys.path[0] = '' by default, so a doctor run started from
+# the rsync checkout (`cd ~/jts && sudo /opt/jasper/.venv/bin/jasper-doctor`)
+# would resolve `jasper.voice.*` from the checkout instead of /opt/jasper —
+# two different copies, per AGENTS.md "Runtime Python lives in /opt/jasper".
+# That inverts the check: after a mid-install abort leaves the old runtime in
+# place, the fixed checkout would report green while the daemon still loads
+# the broken adapter. The probe needs nothing from cwd.
+_PROBE_INTERPRETER_FLAGS = ("-P",)
+
+# The probe must finish INSIDE the doctor's per-row guard
+# (JASPER_DOCTOR_CHECK_TIMEOUT_SECONDS, 15 s by default), which the harness
+# applies to every check with asyncio.wait_for. Two things break when it does
+# not: the row guard reports "check timed out" first, so this check's own
+# could-not-verify warn is unreachable; and the cancelled row releases the
+# memory-sample lock while subprocess.run's child is still resident —
+# reopening exactly the perturbation that lock exists to prevent, in the
+# slow-import case that correlates with memory pressure.
+#
+# Derived from the row guard rather than restated as a second constant, so
+# the two cannot drift. `.env.example` states the same invariant in prose
+# ("Keep this above the low-level probe timeouts") next to the value it
+# ships; tests/test_voice_provider_runtime_imports.py asserts it holds across
+# operator-configured row timeouts, including values small enough that the
+# subtraction alone would not.
+_IMPORT_PROBE_MARGIN_SEC = 5.0
+_IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
+
+
+def _import_probe_timeout() -> float:
+    """Subprocess timeout for the import probe: strictly below the doctor's
+    per-row guard, so the child is always killed by its own timeout first."""
+    # Imported lazily: the doctor package's __init__ imports this module, so
+    # a module-level import would be circular. By call time it is loaded.
+    from . import _doctor_check_timeout
+    row = _doctor_check_timeout()
+    return max(
+        min(_IMPORT_PROBE_MIN_TIMEOUT_SEC, row / 2),
+        row - _IMPORT_PROBE_MARGIN_SEC,
+    )
+
+
+# Shares the "memory-sample" exclusive lane with check_memory_headroom. The
+# import child is the largest allocation jasper-doctor makes: measured on a
+# full install (jts3, Pi 5, 2026-08-06), the gemini adapter peaks at 82.8 MB
+# RSS and drops system MemAvailable by ~70 MB for ~1.5 s; the openai adapter
+# plus SDK is 47.6 MB. check_memory_headroom warns below 100 MB available on
+# a 1 GB Pi, so an unserialized probe could trip that threshold itself and
+# report a shortage it created. Serializing the two is cheaper than teaching
+# an operator to discount it.
+@doctor_check(order=2.5, group="voice", exclusive_group="memory-sample")
+def check_provider_importable() -> CheckResult:
+    """Check that the *configured* voice provider's adapter and its
+    lazily-imported SDK can actually be imported in this venv.
+
+    Nothing else catches this. The ``/voice`` wizard offers every provider
+    in the catalog and ``switch-voice-provider.sh`` will select any of
+    them, but neither verifies that the selected provider's code loads —
+    so a venv missing one package surfaces only as a jasper-voice that
+    will not start (issue #2197).
+
+    What this asserts, precisely: a fresh interpreter can import each
+    module in the provider's ``runtime_imports``. That covers the two ways
+    the daemon dies on a missing package — ``_make_connection``'s adapter
+    import, and the adapter's own deferred ``from openai import
+    AsyncOpenAI``. It does **not** prove jasper-voice starts (keys, mic,
+    ALSA, network are all separate) and does not open a session.
+
+    The active provider is read from the wizard-owned SSOT file rather
+    than ``Config``/``os.environ`` — see jasper.voice.provider_state.
+    """
+    state = read_active_provider_state()
+    if state.status in {"unset", "missing"}:
+        return CheckResult(
+            "voice provider imports", "ok",
+            "no provider configured (skipped — pick one in the /voice wizard)",
+        )
+    if state.status in {"unreadable", "invalid"}:
+        # Not this check's job to adjudicate: check_provider_key and the
+        # /voice wizard already report a bad or unreadable selection. Say
+        # "can't tell" rather than inventing a second verdict on it.
+        return CheckResult(
+            "voice provider imports", "warn",
+            f"active provider undetermined ({state.detail}); imports not checked",
+        )
+
+    provider = provider_by_id(state.provider)
+    assert provider is not None  # read_active_provider_state validated it
+    modules = list(provider.runtime_imports)
+    joined = ", ".join(modules)
+    timeout = _import_probe_timeout()
+    try:
+        proc = _run(
+            [sys.executable, *_PROBE_INTERPRETER_FLAGS, "-c", _IMPORT_PROBE,
+             *modules],
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return CheckResult(
+            "voice provider imports", "warn",
+            f"{state.provider}: import probe timed out after "
+            f"{timeout:.0f}s ({joined}) — could not verify",
+        )
+    if proc.returncode == 0:
+        return CheckResult(
+            "voice provider imports", "ok",
+            f"{state.provider}: {joined} import cleanly "
+            f"(import-only; not a live-session probe)",
+        )
+    reported = (proc.stdout or "").strip().splitlines()
+    if reported:
+        # The probe's own one-line report: "<module>\t<ExcType>: <message>".
+        failure = reported[0].replace("\t", ": ")
+    else:
+        # The child died before it could report (import-time crash, signal).
+        crash = (proc.stderr or "").strip().splitlines()
+        failure = crash[-1] if crash else "unknown import failure"
+    # Arbitrary text from a child's traceback goes through the doctor's own
+    # redaction + length policy, not straight into the report.
+    failure = _redact_exception_message(failure)
+    if len(failure) > _EXCEPTION_DETAIL_LIMIT:
+        failure = failure[:_EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    return CheckResult(
+        "voice provider imports", "fail",
+        f"{state.provider} is the active provider but its code will not "
+        f"import: {failure}. jasper-voice cannot start with this provider "
+        f"selected — re-run the installer (bash scripts/deploy-to-pi.sh) to "
+        f"rebuild the venv, or select a provider that loads in the /voice "
+        f"wizard.",
+    )
+
 
 def _voice_provider_ids_manifest_path() -> Path:
     return Path(

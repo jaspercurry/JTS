@@ -489,9 +489,17 @@ should be:
    "required only when active provider" validation.
 4. New provider entry in `jasper/voice/catalog.py`, including model
    status labels (`tested` / `fallback` / `experimental`), voice
-   choices for the `/voice/` wizard, and an `interrupt_reconcile`
+   choices for the `/voice/` wizard, an `interrupt_reconcile`
    barge-in declaration (`needs_client_truncate` /
-   `server_self_truncates` / `inherits` + `interrupt_reconcile_base`).
+   `server_self_truncates` / `inherits` + `interrupt_reconcile_base`),
+   and a `runtime_imports` declaration — the adapter module first, then
+   any third-party SDK the adapter imports *lazily* (inside a function
+   body). Both fields are required, no default. `runtime_imports` is
+   what `jasper-doctor`'s `check_provider_importable` imports to prove
+   the selected provider's code actually loads in the venv; an
+   undeclared lazy SDK makes that check pass on a box where the
+   provider cannot run. `tests/test_voice_provider_runtime_imports.py`
+   parses the real source and fails if either half drifts.
 5. No reconciler shell allow-list edit: `install.sh` emits
    `/var/lib/jasper/voice_provider_ids` from the catalog, and
    `jasper-aec-reconcile` reads that generated file. Keep the

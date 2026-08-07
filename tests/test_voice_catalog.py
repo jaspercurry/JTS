@@ -113,6 +113,7 @@ def _entry(provider_id, kind, base=""):
         models=(),
         voices=(),
         interrupt_reconcile=kind,
+        runtime_imports=(f"jasper.voice.{provider_id}_session",),
         interrupt_reconcile_base=base,
     )
 

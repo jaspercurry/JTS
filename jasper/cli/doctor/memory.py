@@ -79,7 +79,13 @@ def check_ram() -> CheckResult:
         pass
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
-@doctor_check(order=34, group="memory")
+# "memory-sample" keeps this off the wire while another check is holding a
+# large transient allocation of its own. Today that is voice.py's
+# check_provider_importable, whose import child costs ~70 MB of MemAvailable
+# — enough to cross this check's 100 MB warn threshold on a 1 GB Pi and make
+# the doctor report a shortage it caused. A future check that allocates on
+# that scale should join the same lane.
+@doctor_check(order=34, group="memory", exclusive_group="memory-sample")
 def check_memory_headroom() -> CheckResult:
     """Live memory pressure check: WARN if MemAvailable is so low that
     the next ad-hoc allocation will tip the box into zram-thrash.
