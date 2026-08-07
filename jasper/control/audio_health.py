@@ -38,7 +38,11 @@ from ..audio_runtime_plan import (
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..source_intent import read_source_intents
-from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
+from .airplay_health import (
+    CAMILLA_UNIT_FULL,
+    AirPlayHealthSampler,
+    SAMPLE_INTERVAL_SEC,
+)
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .uds import MUX_CONTROL_SOCKET_PATH, _mux_socket_command
 
@@ -794,6 +798,19 @@ def _state_issues(
             title="Shared audio path unavailable",
             detail="Fan-in is not reporting health.",
         ))
+    if not warmup:
+        camilla_stopped = _camilla_stopped(
+            _mapping(service_states).get(CAMILLA_UNIT_FULL)
+        )
+        if camilla_stopped is not None:
+            issues.append(_issue(
+                "path.camilla_stopped",
+                scope="path",
+                impact="continuity",
+                severity="issue",
+                title="DSP engine is not running",
+                detail=camilla_stopped,
+            ))
     if not warmup and outputd is None:
         issues.append(_issue(
             "path.outputd_unavailable",
@@ -938,6 +955,47 @@ def _state_issues(
                 detail=failure,
             ))
     return issues
+
+
+# systemd ActiveState values that mean the unit is up or on its way up.
+# Everything else — `inactive`, `deactivating`, `failed`, `maintenance` — means
+# no process is doing the unit's job right now.
+_UNIT_RUNNING_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
+
+
+def _camilla_stopped(raw_state: Any) -> str | None:
+    """Detail for a CamillaDSP unit that is not running, else ``None``.
+
+    Deliberately wider than :func:`_service_failure`, which only fires on
+    `failed`/`error`/`not-found`. A CLEANLY stopped CamillaDSP — `inactive`
+    with `result=success` — was the state no surface could see (#2163), and it
+    is reachable: `jasper-camilla-recover` parks the unit stopped after an
+    exhausted start-limit burst, and a kill between the coupling reconciler's
+    camilla-stop and camilla-start leaves it stopped without ever going
+    `failed` (which is why `OnFailure=jasper-camilla-recover` does not catch
+    it).
+
+    Scoped to CamillaDSP rather than generalised over the core units, because
+    the two neighbours have a legitimate parked state and it would be a false
+    alarm to treat them the same way: `jasper-outputd` parks itself `inactive`
+    through a missing-DAC `ExecCondition`, and `jasper-voice` through the
+    `voice-input-absent` marker. CamillaDSP has no such gate — no `Condition*`,
+    no `ExecCondition` — and its unit file says it must never stay stopped.
+
+    Silent when systemd truth is unavailable (no `systemctl`, or before the
+    first service-state probe): unknown is not stopped.
+    """
+    state = _mapping(raw_state)
+    active_state = str(state.get("active_state") or "")
+    if not active_state or active_state in _UNIT_RUNNING_ACTIVE_STATES:
+        return None
+    sub_state = str(state.get("sub_state") or "")
+    observed = f"{active_state}/{sub_state}" if sub_state else active_state
+    return (
+        f"{CAMILLA_UNIT_FULL} reports {observed}. Every source's audio runs "
+        f"through CamillaDSP, so nothing will play until it starts. Check "
+        f"journalctl -u jasper-camilla -u jasper-camilla-recover."
+    )
 
 
 def _service_failure(unit: str, raw_state: Any) -> str | None:

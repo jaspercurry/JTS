@@ -10,6 +10,8 @@ import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+import pytest
+
 from jasper.control import audio_health
 from jasper.control.airplay_health import AirPlayHealthSampler
 from jasper.control.audio_health import (
@@ -588,6 +590,93 @@ def test_household_off_but_active_is_reported_as_drift() -> None:
         {"spotify": False},
     )
     assert any(issue["key"].endswith("off_drift") for issue in issues)
+
+
+# --------------------------------------------------------------------------- #
+# A stopped CamillaDSP is visible (#2163).
+#
+# `jasper-camilla.service` has no Condition gate and, per its own unit file,
+# "must NEVER stay stopped" — but a CLEAN stop passed every surface: doctor's
+# `check_service_runtime_state` flags only `failed`, `system_metrics` hides
+# cleanly-inactive units, and camilla is in no source's `health_units`.
+# --------------------------------------------------------------------------- #
+
+
+def _camilla_issues(camilla_state: dict | None, *, warmup: bool = False) -> list[dict]:
+    service_states = (
+        None if camilla_state is None else {"jasper-camilla.service": camilla_state}
+    )
+    issues = audio_health._state_issues(
+        _airplay(warmup=warmup),
+        _outputd(),
+        {"status": "idle", "headline": "No source is playing", "detail": ""},
+        {"status": "idle"},
+        None,
+        service_states,
+        None,
+    )
+    return [issue for issue in issues if issue["key"] == "path.camilla_stopped"]
+
+
+def test_cleanly_stopped_camilla_is_surfaced_as_a_path_issue() -> None:
+    """The exact state that was invisible: inactive, result=success."""
+    issues = _camilla_issues({
+        "load_state": "loaded",
+        "active_state": "inactive",
+        "sub_state": "dead",
+        "result": "success",
+    })
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["severity"] == "issue"
+    assert issue["scope"] == "path"
+    assert "jasper-camilla.service reports inactive/dead" in issue["detail"]
+    assert "jasper-camilla-recover" in issue["detail"]
+    # `AudioHealthSampler._tick` drops availability-impact issues whose
+    # source_id is not the active source. A path-scoped continuity issue is
+    # kept, which is what makes this reach `/state` and the /system audio card.
+    assert issue["impact"] == "continuity"
+    assert issue["source_id"] is None
+
+
+def test_failed_camilla_is_surfaced_by_the_same_issue() -> None:
+    issues = _camilla_issues({
+        "load_state": "loaded",
+        "active_state": "failed",
+        "sub_state": "failed",
+        "result": "exit-code",
+    })
+
+    assert len(issues) == 1
+    assert "reports failed/failed" in issues[0]["detail"]
+
+
+@pytest.mark.parametrize("active_state", ["active", "activating", "reloading"])
+def test_running_camilla_raises_no_issue(active_state: str) -> None:
+    assert _camilla_issues({
+        "load_state": "loaded",
+        "active_state": active_state,
+        "result": "success",
+    }) == []
+
+
+@pytest.mark.parametrize("states", [None, {}])
+def test_unknown_camilla_state_raises_no_issue(states: dict | None) -> None:
+    """Unknown is not stopped: no systemctl, or before the first probe."""
+    assert _camilla_issues(states) == []
+
+
+def test_stopped_camilla_is_suppressed_during_boot_warmup() -> None:
+    """A deploy restarts jasper-control, so the boot grace covers its bounce.
+
+    Same gate the sibling `path.fanin_unavailable` / `path.outputd_unavailable`
+    issues use, so the audio card does not flicker on every deploy.
+    """
+    assert _camilla_issues(
+        {"load_state": "loaded", "active_state": "inactive", "result": "success"},
+        warmup=True,
+    ) == []
 
 
 def test_usb_off_ignores_always_on_management_gadget() -> None:
