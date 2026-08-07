@@ -311,7 +311,12 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
                 )
             raise ActiveFollowerError(
                 "graph_unprovable",
-                "active follower driver-domain graph failed canonical live re-proof",
+                # `from exc` alone does NOT reach an operator: reconcile logs
+                # these as `error=<exception>`, which renders str(e) and never
+                # walks __cause__. Interpolate, or the journal says only
+                # "failed re-proof" for every distinct cause.
+                "active follower driver-domain graph failed canonical live "
+                f"re-proof: {exc}",
             ) from exc
         # Stash the prior solo-active config for the unwind — but only a
         # genuinely different (solo) config, never the follower config itself.
@@ -504,7 +509,9 @@ async def restore_active_camilla_solo(
                 )
             raise ActiveFollowerError(
                 "restore_graph_unprovable",
-                "restored solo graph failed canonical live re-proof",
+                # See the note at the `graph_unprovable` raise above: the
+                # detail has to be IN the message to reach the journal.
+                f"restored solo graph failed canonical live re-proof: {exc}",
             ) from exc
         _clear_stash(stash_path)
     log_event(
@@ -540,6 +547,9 @@ async def _prove_live_bass_extension_graph(
         load_output_topology_strict(),
         statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
         read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        canonicalize_graph_text=lambda raw: cam.normalize_config_raw(
+            raw, best_effort=False
+        ),
         applied_baseline_path=baseline_profile_state_path(),
         profile_path=DEFAULT_PROFILE_PATH,
         intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
@@ -550,11 +560,17 @@ async def _prove_live_bass_extension_graph(
         or proof.config_path != str(expected_config_path)
         or proof.classification != expected_classification
     ):
-        code = proof.issues[0].get("code") if proof.issues else proof.classification
+        issue = proof.issues[0] if proof.issues else {}
+        code = issue.get("code") or proof.classification
+        # Carry the issue MESSAGE, not just the code: the codes are coarse
+        # ("…_snapshot_unstable" covers every way the boundary can decline)
+        # and the message is the part that names which one actually happened.
+        detail = issue.get("message") or ""
         raise RuntimeError(
             "live bass-extension graph proof failed: "
             f"{code} (path={proof.config_path!r}, "
             f"classification={proof.classification!r})"
+            + (f": {detail}" if detail else "")
         )
     return proof
 

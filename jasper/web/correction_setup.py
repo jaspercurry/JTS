@@ -2363,6 +2363,9 @@ async def _classify_live_bass_extension_graph(cam: Any):
         load_output_topology_strict(),
         statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
         read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        canonicalize_graph_text=lambda raw: cam.normalize_config_raw(
+            raw, best_effort=False
+        ),
         applied_baseline_path=baseline_profile_state_path(),
         profile_path=DEFAULT_PROFILE_PATH,
         intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
@@ -2370,9 +2373,12 @@ async def _classify_live_bass_extension_graph(cam: Any):
     )
     summary = graph.details.get("bass_extension_profile_summary")
     if not graph.allowed or not isinstance(summary, Mapping):
-        code = graph.issues[0].get("code") if graph.issues else graph.classification
+        issue = graph.issues[0] if graph.issues else {}
+        code = issue.get("code") or graph.classification
+        detail = issue.get("message") or ""
         raise RuntimeError(
             f"the running CamillaDSP graph authority is unavailable ({code})"
+            + (f": {detail}" if detail else "")
         )
     return graph
 

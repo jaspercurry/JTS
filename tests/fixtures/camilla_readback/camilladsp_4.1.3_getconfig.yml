@@ -1,0 +1,168 @@
+title: null
+description: null
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  silence_threshold: null
+  silence_timeout: null
+  capture:
+    type: Alsa
+    channels: 2
+    device: plug:jasper_capture
+    format: S32_LE
+    stop_on_inactive: null
+    link_volume_control: null
+    link_mute_control: null
+    labels: null
+  playback:
+    type: Alsa
+    channels: 2
+    device: outputd_active_content_playback
+    format: S16_LE
+  enable_rate_adjust: true
+  target_level: 2048
+  adjust_period: null
+  resampler: null
+  capture_samplerate: null
+  stop_on_rate_change: null
+  rate_measure_interval: null
+  volume_ramp_time: null
+  volume_limit: 0.0
+  multithreaded: null
+  worker_threads: null
+mixers:
+  split_active_2way:
+    description: mono source -> 2 protected active outputs
+    channels:
+      in: 2
+      out: 2
+    mapping:
+    - dest: 0
+      sources:
+      - channel: 0
+        gain: -6.0206
+        inverted: false
+        mute: null
+        scale: null
+      - channel: 1
+        gain: -6.0206
+        inverted: false
+        mute: null
+        scale: null
+      mute: null
+    - dest: 1
+      sources:
+      - channel: 0
+        gain: -6.0206
+        inverted: false
+        mute: null
+        scale: null
+      - channel: 1
+        gain: -6.0206
+        inverted: false
+        mute: null
+        scale: null
+      mute: null
+    labels:
+    - DAC output 1
+    - DAC output 2
+filters:
+  as_tweeter_delay:
+    type: Delay
+    description: null
+    parameters:
+      delay: 0.0
+      unit: ms
+      subsample: null
+  as_woofer_baseline_gain:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  active_baseline_headroom:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  as_tweeter_baseline_limiter:
+    type: Limiter
+    description: null
+    parameters:
+      soft_clip: true
+      clip_limit: -1.0
+  as_tweeter_woofer_tweeter_5000hz_hp:
+    type: BiquadCombo
+    description: null
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 5000.0
+      order: 4
+  as_woofer_baseline_limiter:
+    type: Limiter
+    description: null
+    parameters:
+      soft_clip: true
+      clip_limit: -1.0
+  as_woofer_woofer_tweeter_5000hz_lp:
+    type: BiquadCombo
+    description: null
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 5000.0
+      order: 4
+  as_woofer_delay:
+    type: Delay
+    description: null
+    parameters:
+      delay: 0.0
+      unit: ms
+      subsample: null
+  as_tweeter_baseline_gain:
+    type: Gain
+    description: null
+    parameters:
+      gain: -0.7
+      inverted: false
+      mute: false
+      scale: null
+processors: null
+pipeline:
+- type: Filter
+  channels:
+  - 0
+  - 1
+  names:
+  - active_baseline_headroom
+  description: null
+  bypassed: null
+- type: Mixer
+  name: split_active_2way
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 1
+  names:
+  - as_woofer_woofer_tweeter_5000hz_lp
+  - as_woofer_delay
+  - as_woofer_baseline_gain
+  - as_woofer_baseline_limiter
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 0
+  names:
+  - as_tweeter_woofer_tweeter_5000hz_hp
+  - as_tweeter_delay
+  - as_tweeter_baseline_gain
+  - as_tweeter_baseline_limiter
+  description: null
+  bypassed: null

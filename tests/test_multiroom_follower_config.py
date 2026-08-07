@@ -10,13 +10,17 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 from dataclasses import replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
+
+from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
@@ -25,6 +29,7 @@ import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
+from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 
@@ -430,6 +435,241 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
         )
 
 
+def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
+    """The raised error must carry the issue MESSAGE, not just its code.
+
+    The boundary's codes are coarse: every way of declining reports
+    ``bass_extension_active_snapshot_unstable``. If this caller logs only the
+    code, an operator reading the journal is told "unstable" no matter what
+    actually happened — which is exactly how the 2026-08-06 bonded-pair outage
+    stayed misdiagnosed.
+    """
+
+    monkeypatch.setattr(
+        output_topology_mod,
+        "load_output_topology_strict",
+        lambda: object(),
+    )
+
+    async def classify(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_UNSAFE,
+            allowed=False,
+            issues=(
+                {
+                    "severity": "blocker",
+                    "code": "bass_extension_active_snapshot_unstable",
+                    "message": "the running CamillaDSP graph does not match it",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+
+    with pytest.raises(RuntimeError, match="does not match it"):
+        asyncio.run(
+            _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
+                _FakeCamilla(current="/tmp/expected.yml"),
+                expected_config_path="/tmp/expected.yml",
+                expected_classification=(
+                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                ),
+            )
+        )
+
+
+def test_reconcile_logs_the_boundary_reason_not_just_the_code(
+    monkeypatch,
+    tmp_path,
+    caplog,
+) -> None:
+    """END TO END: the boundary's reason must reach the journal line.
+
+    The test above pins only the RAISE site. That is not where the detail was
+    being lost — it was lost one hop later. ``apply_prebuilt_follower_config``
+    re-wraps the RuntimeError as ``ActiveFollowerError(reason, short_message)
+    from exc``, and ``ActiveFollowerError.__init__`` passes only
+    ``short_message`` to ``super().__init__``. So the detail survived on
+    ``__cause__`` alone — and ``reconcile`` logs these with ``error=e`` and NO
+    ``exc_info``, which renders ``str(e)`` and never walks the cause. The
+    operator-visible line therefore said "failed canonical live re-proof" no
+    matter which of the boundary's causes had fired, which is how the
+    2026-08-06 bonded-pair outage stayed misdiagnosed.
+
+    So this walks all four hops with production code: boundary issue message ->
+    ``_prove_live_bass_extension_graph`` -> ``apply_prebuilt_follower_config``
+    -> the rendered ``event=multiroom.reconcile.camilla_failed`` line.
+    """
+
+    monkeypatch.setattr(
+        fc,
+        "FOLLOWER_CONFIG_PATH",
+        str(tmp_path / "grouping_follower.yml"),
+    )
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    monkeypatch.setattr(
+        output_topology_mod,
+        "load_output_topology_strict",
+        lambda: object(),
+    )
+    # Hop 1: the real boundary declines with its coarse code and a specific
+    # message. Every distinct cause reports this same code.
+    reason = "the running CamillaDSP graph does not match the statefile-selected config"
+
+    async def classify(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_UNSAFE,
+            allowed=False,
+            issues=(
+                {
+                    "severity": "blocker",
+                    "code": "bass_extension_active_snapshot_unstable",
+                    "message": reason,
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+    # Hops 2 and 3 are production code: the REAL prover (restored over the
+    # autouse stub) and the REAL apply, which is where the re-wrap happens.
+    monkeypatch.setattr(
+        fc,
+        "_prove_live_bass_extension_graph",
+        _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH,
+    )
+
+    with pytest.raises(fc.ActiveFollowerError) as caught:
+        asyncio.run(
+            fc.apply_prebuilt_follower_config(
+                camilla_factory=lambda: _FakeCamilla(
+                    current=str(tmp_path / "active_speaker_baseline.yml")
+                )
+            )
+        )
+
+    assert caught.value.reason == "graph_unprovable"
+
+    # Hop 4: render it the way reconcile does. `error=<exception>` is rendered
+    # by log_event as str(exception) — so if the detail is not IN the message
+    # it is not in the journal, full stop.
+    logger = logging.getLogger("jasper.multiroom.reconcile")
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        log_event(
+            logger,
+            "multiroom.reconcile.camilla_failed",
+            action="active_follower_apply",
+            error=caught.value,
+            level=logging.ERROR,
+        )
+    line = caplog.records[-1].getMessage()
+
+    assert "event=multiroom.reconcile.camilla_failed" in line
+    assert reason in line, (
+        "the operator-visible journal line does not name the cause; it reads: "
+        f"{line}"
+    )
+
+
+def test_reconcile_camilla_failed_still_logs_without_exc_info() -> None:
+    """Anti-drift anchor for the end-to-end test above.
+
+    That test models reconcile's rendering as ``error=<exception>`` with no
+    ``exc_info``. If reconcile ever starts passing ``exc_info``, ``__cause__``
+    would render on its own and the interpolation could be revisited — so fail
+    here and make someone re-read the pair, rather than letting the model
+    silently stop describing production.
+    """
+
+    source = (
+        Path(fc.__file__).resolve().parent / "reconcile.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "log_event"
+        and any(
+            isinstance(arg, ast.Constant)
+            and arg.value == "multiroom.reconcile.camilla_failed"
+            for arg in node.args
+        )
+    ]
+
+    assert sites, "the camilla_failed log sites should be discoverable"
+    for site in sites:
+        supplied = {kw.arg for kw in site.keywords if kw.arg is not None}
+        assert "error" in supplied
+        assert "exc_info" not in supplied
+
+
+def test_every_chained_grouping_error_interpolates_its_cause() -> None:
+    """Every `raise Active*Error(...) from exc` must put `exc` IN the message.
+
+    The adjacency guard. The interpolation fix was applied at THREE raise sites
+    and originally only one was pinned — so stripping it from the leader-bake
+    site (the 2026-08-06 outage site) or the restore site left the suite fully
+    green. Per-site assertions close those two; this closes the *class*, so a
+    fourth site cannot be added unguarded.
+
+    Why the rule is safe to state absolutely: `reconcile` logs these as
+    `error=<exception>`, which `log_event` renders as `str(e)` and which never
+    walks `__cause__` — and it must stay that way, because `exc_info=True`
+    would attach a full traceback to all seven `camilla_failed` sites, which is
+    the journal spam AGENTS.md warns against. So for a chained grouping error,
+    `from exc` alone is decoration: if the cause is not in the message, it does
+    not exist as far as an operator is concerned. All 8 such sites across the
+    two modules satisfy this today.
+    """
+
+    modules = [
+        Path(fc.__file__).resolve(),
+        Path(alc.__file__).resolve(),
+    ]
+    checked = 0
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise):
+                continue
+            if not isinstance(node.cause, ast.Name):
+                continue
+            raised = node.exc
+            if not (
+                isinstance(raised, ast.Call)
+                and getattr(raised.func, "id", "")
+                in {"ActiveFollowerError", "ActiveLeaderError"}
+            ):
+                continue
+            cause = node.cause.id
+            assert len(raised.args) >= 2, (
+                f"{path.name}:{node.lineno} raises without a message argument"
+            )
+            message = ast.unparse(raised.args[1])
+            assert cause in message, (
+                f"{path.name}:{node.lineno} chains `from {cause}` but does not "
+                f"interpolate it into the message ({message!r}). The cause "
+                "would live only on __cause__, which reconcile never renders — "
+                "the operator would see a generic line for every distinct "
+                "failure, which is what cost the 2026-08-06 debugging session."
+            )
+            checked += 1
+
+    assert checked >= 8, (
+        f"expected at least the 8 known chained grouping raises, found {checked}"
+        " — the discovery walk has probably stopped matching"
+    )
+
+
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
@@ -493,6 +733,12 @@ def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
         asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
 
     assert exc.value.reason == "restore_graph_unprovable"
+    # The reason TOKEN alone is not enough: reconcile logs `error=e`, which
+    # renders str(e) and never walks __cause__, so a cause that lives only on
+    # `from exc` is invisible to an operator. Asserted here as well as at the
+    # apply site because the identical edit was made at three raise sites and
+    # only one was pinned — this is that adjacency gap closed.
+    assert "restore proof refused" in str(exc.value)
     assert cam.loaded == [str(solo), fc.FOLLOWER_CONFIG_PATH]
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == str(solo)
     assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None

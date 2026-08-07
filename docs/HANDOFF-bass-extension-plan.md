@@ -1130,8 +1130,12 @@ handles `persisted_boot`, host-restricted `persisted_candidate`, and
 disk-free `desired`. The async-only
 `classify_active_bass_extension_graph(...)` awaits the existing
 `CamillaController.get_active_config_raw(best_effort=False)` callback
-inside the persisted snapshot and fails closed on exception, `None`,
-non-string, or malformed readback. Both entry points construct one
+inside the persisted snapshot — paired with a required
+`CamillaController.normalize_config_raw(...)` callback, because the
+readback is CamillaDSP's own default-filled serialization and the
+selected file is JTS-authored text that omits those keys — and fails
+closed on exception, `None`, non-string, or malformed readback from
+either callback. Both entry points construct one
 immutable graph/authority snapshot and call one private disk-I/O-free
 evaluator for staged-guard parsing, bass-profile/intent policy, and the
 final low-level verifier; they do not duplicate policy or add a wrapper
@@ -1142,7 +1146,10 @@ and staged-metadata paths. Boot and active also require the outputd
 statefile; the resolver—not its callers—parses that statefile's
 `config_path` and reads the selected graph twice inside the authority
 sandwich. The async entry additionally requires live readback's
-normalized fingerprint to equal that stable selected file. Paired
+normalized fingerprint to equal that stable selected file *as CamillaDSP
+itself canonicalizes it* — comparing the readback against the raw file
+bytes can never match, and fails closed, so the boundary refuses
+everything it is asked to prove. Paired
 authority/graph-file reads match byte-for-byte and the parsed selector
 target remains equal; unrelated volume/mute fields may change.
 A paired missing staged-metadata file is empty evidence and can never

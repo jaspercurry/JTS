@@ -148,14 +148,22 @@ async def _active_proof(
         read_active_graph_text=lambda: controller.get_active_config_raw(
             best_effort=False
         ),
+        canonicalize_graph_text=lambda raw: controller.normalize_config_raw(
+            raw, best_effort=False
+        ),
         applied_baseline_path=applied_baseline_path,
         profile_path=profile_path,
         intent_path=intent_path,
         staged_metadata_path=staged_metadata_path,
     )
     if not proof.allowed:
-        code = proof.issues[0]["code"] if proof.issues else proof.classification
-        raise BassExtensionApplyError(f"bass-extension graph proof failed: {code}")
+        issue = proof.issues[0] if proof.issues else {}
+        code = issue.get("code") or proof.classification
+        detail = issue.get("message") or ""
+        raise BassExtensionApplyError(
+            f"bass-extension graph proof failed: {code}"
+            + (f": {detail}" if detail else "")
+        )
 
 
 async def _reload_and_match(
@@ -176,6 +184,15 @@ async def _reload_and_match(
         or not isinstance(live_text, str)
         or _selected_path(statefile_path) != selected_path
         or selected_path.read_bytes() != expected_bytes
+        # KNOWN DEFECT (issue #2202) — do not "fix" this line in isolation.
+        # `live_text` is CamillaDSP's default-filled readback; every caller
+        # passes `expected_graph_fingerprint` from JTS-authored text, so these
+        # cannot agree on real hardware. Same class as the live-graph boundary
+        # (runtime_contract.classify_active_bass_extension_graph, now
+        # canonicalized). This check runs BEFORE that boundary, so the proof
+        # below is unreachable until this is repaired. Not urgent only because
+        # `apply_bass_extension` has no production caller yet — tests and
+        # bass_extension/bench only.
         or _normal_fingerprint(live_text) != expected_graph_fingerprint
     ):
         raise BassExtensionApplyError("CamillaDSP graph/path readback did not match")

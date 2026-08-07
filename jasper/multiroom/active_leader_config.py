@@ -398,7 +398,12 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
                 )
             raise ActiveLeaderError(
                 "bake_graph_unprovable",
-                "active leader program-bake graph failed canonical live re-proof",
+                # Interpolated, not just chained: reconcile logs these as
+                # `error=<exception>`, which renders str(e) and never walks
+                # __cause__. See the sibling raise in
+                # `follower_config.apply_prebuilt_follower_config`.
+                "active leader program-bake graph failed canonical live "
+                f"re-proof: {exc}",
             ) from exc
         # Stash the prior solo-active config for the unwind — but only a
         # genuinely different (solo) config, never the bake itself.

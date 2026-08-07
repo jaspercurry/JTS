@@ -1227,6 +1227,14 @@ async def _apply_measured_candidate_owned(
                         ) from exc
                     observed_graph = _exact_graph(observed)
                     if (
+                        # KNOWN DEFECT (issue #2202) — do not "fix" in
+                        # isolation. `expected_graph` fingerprints the
+                        # JTS-compiled candidate .yml straight off disk;
+                        # `observed_graph` is CamillaDSP's default-filled
+                        # readback, so these cannot agree on real hardware.
+                        # Same class as the live-graph boundary below, which
+                        # this check gates — commissioning apply is production
+                        # wired and blocked here before reaching it.
                         observed_graph.fingerprint != expected_graph.fingerprint
                         or observed.state.get("config_path")
                         != _candidate_path(baseline)
@@ -1248,6 +1256,7 @@ async def _apply_measured_candidate_owned(
                         topology,
                         statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
                         read_active_graph_text=runtime_port.read_active_raw,
+                        canonicalize_graph_text=runtime_port.canonicalize_raw,
                         applied_baseline_path=baseline_profile_state_path(
                             state_path
                         ),

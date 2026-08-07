@@ -473,6 +473,12 @@ def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
         asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
 
     assert exc.value.reason == "bake_graph_unprovable"
+    # The reason TOKEN alone is not enough: reconcile logs `error=e`, which
+    # renders str(e) and never walks __cause__. This is THE outage site — the
+    # 2026-08-06 bonded pair died here, at `active_leader_bake_apply`, and the
+    # journal line was information-free. The identical fix was made at three
+    # raise sites and originally only one was pinned; this closes that gap.
+    assert "candidate proof refused" in str(exc.value)
     assert cam.loaded == [alc.LEADER_BAKE_CONFIG_PATH, prior]
     assert fc.read_stash(alc.LEADER_BAKE_PRIOR_STASH) is None
     assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None

@@ -745,6 +745,26 @@ class CamillaController:
         ``ReadConfig`` parses, validates, and default-fills WITHOUT applying, so
         a live load compares THIS against :meth:`get_active_config_raw` rather
         than the caller's own text (the readback is a normalized superset).
+
+        **Must NOT take ``camilla_graph_mutation``.** Its neighbours
+        :meth:`set_active_config_raw` and :meth:`patch_config` both do, so
+        "make it match its siblings" is the tempting wrong edit — but this call
+        mutates nothing, and the live-graph boundary
+        (``runtime_contract.classify_active_bass_extension_graph``) invokes it
+        from *inside* that lock via ``commissioning_runtime._run_locked`` and
+        ``commissioning_verification._capture_current_graph``.
+
+        What taking the lock would actually cost, stated precisely because an
+        earlier version of this note overstated it as a hang: the writer lock is
+        re-entrant per *task*, and the boundary reaches this method through an
+        ``asyncio.gather`` child — a NEW task — so re-entry does not apply and
+        it contends on the underlying flock instead. That is bounded by
+        ``dsp_apply.DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S`` (10 s), after which
+        ``DspWriterLockTimeout`` is raised and logged at WARNING. So the real
+        damage is a ~10 s stall mid-commissioning ending in a spurious
+        canonicalization failure — loud and bounded, not a deadlock. Still
+        worth forbidding: it turns a working live re-proof into a timeout on a
+        box that is fine. Pinned by ``tests/test_camilla_controller.py``.
         """
         import yaml
 
