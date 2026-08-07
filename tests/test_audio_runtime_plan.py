@@ -1396,3 +1396,43 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
     assert topo["camilla"]["queuelimit"] == RING_CAMILLA_QUEUELIMIT
     assert topo["camilla"]["enable_rate_adjust"] is False
     assert topo["outputd_content_source"] == "shm_ring"
+
+
+# --- D5 (wide-output-path program): shm_ring format-coherence axis -----------
+
+
+def test_transport_coherence_shm_ring_accepts_matching_wire_format():
+    """Today RING_WIRE_FORMAT == DEFAULT_PLAYBACK_FORMAT (S16_LE), so a
+    coherent ring pair produces NO format-axis error — the byte-identical-
+    release contract PR-1 exists to prove."""
+    errors = transport_coherence_errors(
+        coupling=COUPLING_SHM_RING,
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        camilla_devices={
+            "capture_device": "jts_ring_capture",
+            "playback_device": "jts_ring_playback",
+        },
+    )
+    assert errors == ()
+
+
+def test_transport_coherence_shm_ring_flags_a_narrower_ring_than_the_program_lane(
+    monkeypatch,
+):
+    """Simulates the future PR-6 world: DEFAULT_PLAYBACK_FORMAT widened while
+    a box is (somehow) still armed on the S16-only ring. This is the standing
+    coherence check that jasper.fanin.coupling_reconcile.ring_edge_width_ready's
+    arm-time gate is the belt to — it should never fire in practice because the
+    gate refuses the arm in the first place, but this proves the axis itself
+    can fail (the doctor-can-fail / mutation rule)."""
+    monkeypatch.setattr(audio_plan, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    errors = transport_coherence_errors(
+        coupling=COUPLING_SHM_RING,
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        camilla_devices={
+            "capture_device": "jts_ring_capture",
+            "playback_device": "jts_ring_playback",
+        },
+    )
+    assert len(errors) == 1
+    assert "S16_LE" in errors[0] and "S32_LE" in errors[0]

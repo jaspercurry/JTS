@@ -1461,7 +1461,10 @@ def transport_coherence_errors(
     ``TransportTopology`` is the policy source. This function compares its two
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
-    contradiction is.
+    contradiction is. Under ``shm_ring`` this also carries a FORMAT axis: the
+    ring's fixed wire format (``RING_WIRE_FORMAT``) must not be narrower than
+    the box's emitted program lane (``DEFAULT_PLAYBACK_FORMAT``) — see the
+    comment on that check for the wide-output-path program rationale.
     """
 
     outputd_values = dict(outputd_env or {})
@@ -1501,6 +1504,25 @@ def transport_coherence_errors(
             errors.append(
                 f"transport plan is shm_ring but Camilla playback={playback_device!r}; "
                 f"expected {expected_playback!r}"
+            )
+        # D5 belt-and-suspenders (wide-output-path program): the ring's fixed
+        # wire format must not be narrower than the box's emitted program lane
+        # (DEFAULT_PLAYBACK_FORMAT). jasper.fanin.coupling_reconcile's
+        # ring_edge_width_ready gate already refuses to ARM a ring on a
+        # wide-lane box; this is the standing coherence check for a box that
+        # somehow reached that state anyway (e.g. DEFAULT_PLAYBACK_FORMAT
+        # widened after the ring was already armed). Compared against the
+        # topology's own declared format (RING_WIRE_FORMAT), not a hardcoded
+        # literal, so this flips meaning automatically the same way the gate
+        # does. Today both are S16_LE, so this never fires.
+        ring_format = str(topology.camilla_to_outputd.get("format") or "")
+        if ring_format and ring_format != DEFAULT_PLAYBACK_FORMAT:
+            errors.append(
+                f"transport plan is shm_ring with wire format={ring_format!r}, "
+                f"narrower than the emitted program lane format "
+                f"{DEFAULT_PLAYBACK_FORMAT!r} — the ring cannot carry it "
+                "without silently requantizing; see ring_edge_width_ready "
+                "(jasper.fanin.coupling_reconcile)"
             )
         return tuple(errors)
 

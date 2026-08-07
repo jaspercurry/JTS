@@ -95,6 +95,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
+    RING_WIRE_FORMAT,
     coupling_value_removed,
     resolve_coupling,
     resolve_outputd_content_bridge,
@@ -1369,6 +1370,40 @@ def _block_unsupported_coupling(
     )
 
 
+def ring_edge_width_ready() -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate for wire WIDTH (D5, wide-output-path program).
+
+    Checked BEFORE arming (cheapest gate — a pure constant comparison, no I/O —
+    so it runs first). The SHM ring is pinned to :data:`RING_WIRE_FORMAT`
+    (S16_LE) until ring v2 (S32 slots + a matching ioplug/Rust rewrite;
+    ``captures/PLAN-wide-output-path-2026-08-07.md`` D5). Compares it against
+    the box's emitted loopback-lane playback format
+    (``DEFAULT_PLAYBACK_FORMAT``, ``jasper.camilla_config_contract`` — what
+    every non-ring emitter defaults its ALSA playback to). If that lane has
+    moved wider than the ring's fixed wire format, arming the ring would
+    silently NARROW every sample CamillaDSP emits back down to S16 on the way
+    into outputd — exactly the requantization-without-dither hazard the
+    wide-output-path program exists to remove. Refuse UP FRONT, fail-safe to
+    loopback, with an actionable reason.
+
+    Written against the constant, not a hardcoded ``"S16_LE"`` literal, so
+    this gate's verdict flips automatically the day ``DEFAULT_PLAYBACK_FORMAT``
+    widens (program PR-6) — today both constants are ``S16_LE``, so this
+    PASSES everywhere (byte-identical release).
+    """
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+
+    if DEFAULT_PLAYBACK_FORMAT == RING_WIRE_FORMAT:
+        return True, (
+            f"program lane format ({DEFAULT_PLAYBACK_FORMAT}) matches the SHM "
+            f"ring's wire format ({RING_WIRE_FORMAT})"
+        )
+    return False, (
+        f"program lane is {DEFAULT_PLAYBACK_FORMAT}; SHM ring is "
+        f"{RING_WIRE_FORMAT}-only until ring v2 — keeping loopback"
+    )
+
+
 def ring_assets_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate: are the P1 ring-platform assets present?
 
@@ -1495,9 +1530,14 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     composes.  Keeping the pure decision module independent of this transition
     owner makes the dependency one-way while still sharing the exact predicates
     used by a manual arm.  The unattended path deliberately uses the strict
-    topology probe so an unreadable topology fails closed.
+    topology probe so an unreadable topology fails closed.  ``ring_edge_width``
+    (D5, wide-output-path program) runs first — it is a pure constant
+    comparison with no I/O, and today it passes on every box (byte-identical
+    release), so ordering it ahead of the filesystem/topology probes costs
+    nothing and fails fastest once a box's program lane genuinely widens.
     """
     return (
+        ("ring_edge_width", ring_edge_width_ready),
         ("install_profile", ring_install_profile_ready),
         ("ring_assets", ring_assets_ready),
         ("ring_topology", ring_topology_ready_strict),
@@ -1962,7 +2002,10 @@ def _arm_ring(
     """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
 
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
-    all pass): (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
+    all pass): (0) wire-width coherence (``ring_edge_width_ready`` — D5,
+    wide-output-path program: the ring's fixed S16 wire must not be narrower
+    than the box's emitted program lane, or arming would silently requantize);
+    (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
     ring platform would strand the realtime path); (2) topology ring-eligible
     (``ring_topology_ready``); (3) conf.d period == outputd period
     (``ring_geometry_ready``); (4) Ring-A slot count == conf.d n_slots
@@ -1975,10 +2018,24 @@ def _arm_ring(
     last — matching the validated ring-proto arm order. Any failure rolls the whole
     box back to loopback + direct (``recovered=True``). The rings are forgiving
     (empty-ring reader/writer emit/drop silence), so there is no queue-drift
-    activation window; the gates are asset-presence + geometry coherence + the
-    ordered restart landing, and the fan-in STATUS transport is confirmed by the
-    doctor.
+    activation window; the gates are wire-width + asset-presence + geometry
+    coherence + the ordered restart landing, and the fan-in STATUS transport is
+    confirmed by the doctor.
     """
+    width_ok, width_detail = ring_edge_width_ready()
+    if not width_ok:
+        return _fail_ring_arm(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            desired,
+            reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_edge_width_mismatch",
+            detail=width_detail,
+        )
+
     assets_ok, assets_detail = ring_assets_ready()
     if not assets_ok:
         return _fail_ring_arm(

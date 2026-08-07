@@ -480,6 +480,51 @@ def test_playback_pipe_path_and_channel_split_are_mutually_exclusive():
         )
 
 
+def test_playback_pipe_path_format_stays_pinned_even_under_a_wide_default(
+    monkeypatch,
+):
+    """D4 (wide-output-path program): the pipe sink's format is
+    DEFAULT_PIPE_SINK_FORMAT, decoupled from DEFAULT_PLAYBACK_FORMAT. Proven
+    by simulating the future PR-6 world — DEFAULT_PLAYBACK_FORMAT monkeypatched
+    wide — and passing that SAME wide value explicitly as playback_format (so
+    it is no longer "non-default" relative to the live constant and the
+    caller-bug guard does not fire). The pipe sink must still emit S16_LE: if
+    the File branch ever regressed to reading playback_format instead of the
+    pinned constant, this test would catch it."""
+    import jasper.sound.camilla_yaml as camilla_yaml
+
+    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        enable_rate_adjust=False,
+        playback_format="S32_LE",
+        playback_pipe_path="/run/jasper-snapserver/snapfifo",
+    )
+    # Scope the assertion to the playback BLOCK — the capture block legitimately
+    # emits format: S32_LE always (DEFAULT_CAPTURE_FORMAT, unrelated to this
+    # axis), so a whole-document substring check would false-pass here.
+    playback_block = yaml.split("playback:", 1)[1]
+    assert "type: File" in playback_block
+    assert "format: S16_LE" in playback_block
+    assert "format: S32_LE" not in playback_block
+
+
+def test_playback_pipe_path_with_explicit_non_default_playback_format_raises():
+    """The ValueError case: a caller naming a playback_format that differs
+    from the CURRENT DEFAULT_PLAYBACK_FORMAT, alongside a pipe sink, is a
+    caller bug (the pipe sink cannot honor it) — refused loudly rather than
+    silently ignored."""
+    import pytest
+
+    with pytest.raises(ValueError, match="different axes"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_format="S32_LE",
+            playback_pipe_path="/run/jasper-snapserver/snapfifo",
+        )
+
+
 def test_channel_delays_emit_delay_filters_only_on_distinct_room_chains():
     """Time-of-arrival correction is a room/pair axis: it uses CamillaDSP
     Delay filters, no gain, and requires explicit L/R chains."""

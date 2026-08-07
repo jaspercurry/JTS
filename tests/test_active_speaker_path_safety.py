@@ -399,3 +399,43 @@ def test_parked_rollback_target_reaches_the_commission_startup_anchor(
         for issue in evidence["observed_issues"]
         if issue.get("severity") == "blocker"
     ]
+
+
+# --- D4 (wide-output-path program): parked graph's pipe format is pinned -----
+
+
+def test_parked_config_format_stays_pinned_even_under_a_wide_default(monkeypatch):
+    """The parked graph's /dev/null File sink always emits
+    DEFAULT_PIPE_SINK_FORMAT, decoupled from DEFAULT_PLAYBACK_FORMAT — mirrors
+    the bonded-leader pipe sink in jasper.sound.camilla_yaml.emit_sound_config.
+    Proven by simulating the future PR-6 world (DEFAULT_PLAYBACK_FORMAT
+    monkeypatched wide) and passing that same wide value explicitly as
+    playback_format (so it is no longer "non-default" relative to the live
+    constant and the caller-bug guard does not fire); the parked sink must
+    still emit S16_LE."""
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    yaml = camilla_yaml.emit_active_speaker_parked_config(
+        output_count=2, playback_format="S32_LE"
+    )
+    # Scope the assertion to the playback BLOCK — the capture block legitimately
+    # emits format: S32_LE always (DEFAULT_CAPTURE_FORMAT, unrelated to this
+    # axis), so a whole-document substring check would false-pass here.
+    playback_block = yaml.split("playback:", 1)[1]
+    assert "type: File" in playback_block
+    assert "format: S16_LE" in playback_block
+    assert "format: S32_LE" not in playback_block
+
+
+def test_parked_config_with_explicit_non_default_playback_format_raises():
+    """The ValueError case: an explicit playback_format that differs from the
+    CURRENT DEFAULT_PLAYBACK_FORMAT is a caller bug (the /dev/null File sink
+    cannot honor it) — refused loudly rather than silently ignored."""
+    import pytest
+
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+
+    with pytest.raises(ActiveSpeakerConfigError, match="different axes"):
+        emit_active_speaker_parked_config(output_count=2, playback_format="S32_LE")

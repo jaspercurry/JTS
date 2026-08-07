@@ -25,6 +25,7 @@ from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -163,14 +164,21 @@ def emit_sound_config(
     device becomes a CamillaDSP ``File`` sink writing the corrected
     stereo program to that FIFO (snapserver's pipe source) instead of
     the ALSA loopback. ``None`` (default — solo) is **byte-identical**
-    to before this parameter existed (the solo-impact contract). Two
-    fail-loud guards: a pipe sink REQUIRES ``enable_rate_adjust=False``
-    (a ``File`` backend has no output clock for rate_adjust to steer —
-    Snapcast's sample-stuffing is the one rate-tracker on the synced
-    chain, §2 invariant 5), and it never combines with
-    ``channel_split`` (the member weave selects a channel for a LOCAL
-    DAC; the pipe carries the SHARED two-channel program — members drop
-    channels downstream, in outputd's ChannelPick).
+    to before this parameter existed (the solo-impact contract). The
+    pipe sink's emitted ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``
+    (``jasper.camilla_config_contract``), a DIFFERENT axis from
+    ``playback_format`` — snapserver's pipe source is a fixed-format wire
+    contract (``sampleformat=48000:16:2``,
+    ``jasper.multiroom.reconcile.snapserver_argv``), so the ALSA loopback
+    lane's format can widen independently of the pipe. Three fail-loud guards: an
+    explicit non-default ``playback_format`` alongside a pipe sink is
+    refused (the two axes must not be conflated); a pipe sink REQUIRES
+    ``enable_rate_adjust=False`` (a ``File`` backend has no output clock
+    for rate_adjust to steer — Snapcast's sample-stuffing is the one
+    rate-tracker on the synced chain, §2 invariant 5); and it never
+    combines with ``channel_split`` (the member weave selects a channel
+    for a LOCAL DAC; the pipe carries the SHARED two-channel program —
+    members drop channels downstream, in outputd's ChannelPick).
 
     ``muted_outputs`` hard-mutes the named playback channels: each gets the
     repo's one mute idiom (a ``Gain`` at ``-120 dB`` with ``mute: true``)
@@ -240,6 +248,25 @@ def emit_sound_config(
     # SHARED stereo program — a member's channel_split weave on it
     # would strip the other speaker's channel out of the stream.
     if playback_pipe_path is not None:
+        # D4 (wide-output-path program): the pipe sink's format is pinned to
+        # DEFAULT_PIPE_SINK_FORMAT below, independently of playback_format —
+        # snapserver's pipe wire is a fixed-format contract. Compared LIVE
+        # against the module global (not the parameter's bound default) so
+        # this stays correct even after DEFAULT_PLAYBACK_FORMAT itself
+        # changes: a caller that didn't ask for anything special always
+        # inherits whatever the CURRENT default is and never trips this.
+        # Only a caller that explicitly names a playback_format different
+        # from the current default — while also asking for a pipe sink that
+        # cannot honor it — is a real caller bug worth failing loud on.
+        if playback_format != DEFAULT_PLAYBACK_FORMAT:
+            raise ValueError(
+                "playback_pipe_path (bonded-leader pipe sink) is pinned to "
+                f"DEFAULT_PIPE_SINK_FORMAT={DEFAULT_PIPE_SINK_FORMAT!r} "
+                "independently of playback_format — passing an explicit "
+                f"non-default playback_format={playback_format!r} alongside "
+                "it is a caller bug, not a wire-format request; they are "
+                "different axes"
+            )
         if enable_rate_adjust:
             raise ValueError(
                 "playback_pipe_path (bonded-leader pipe sink) requires "
@@ -350,11 +377,14 @@ def emit_sound_config(
     # or the bonded-leader File/pipe sink feeding snapserver. Identical
     # indentation so the surrounding template is sink-agnostic.
     if playback_pipe_path is not None:
+        # D4: pinned to DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see
+        # the guard above and the constant's own comment
+        # (jasper.camilla_config_contract).
         playback_yaml = f"""  playback:
     type: File
     channels: 2
     filename: "{playback_pipe_path}"
-    format: {playback_format}"""
+    format: {DEFAULT_PIPE_SINK_FORMAT}"""
     else:
         playback_yaml = f"""  playback:
     type: Alsa

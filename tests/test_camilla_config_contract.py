@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from jasper.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
+    DEFAULT_PIPE_SINK_FORMAT,
+    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
@@ -14,6 +16,18 @@ from jasper.camilla_config_contract import (
     snd_aloop_rate_adjust_oscillation_reason,
     total_positive_boost_db,
 )
+
+
+def test_pipe_sink_format_is_pinned_and_independent_of_playback_format_today():
+    """D4 (wide-output-path program): the pipe/File-sink format is its own
+    constant, separate from the ALSA loopback lane's DEFAULT_PLAYBACK_FORMAT
+    — the two happen to agree today (byte-identical release), but that must
+    be a coincidence of value, not a shared name, or a future
+    DEFAULT_PLAYBACK_FORMAT widening would silently corrupt the snapserver
+    pipe wire (`sampleformat=48000:16:2`,
+    jasper.multiroom.reconcile.snapserver_argv)."""
+    assert DEFAULT_PIPE_SINK_FORMAT == "S16_LE"
+    assert DEFAULT_PIPE_SINK_FORMAT == DEFAULT_PLAYBACK_FORMAT  # true only today
 
 
 def test_camilla_latency_knobs_default_to_literals_when_unset():
