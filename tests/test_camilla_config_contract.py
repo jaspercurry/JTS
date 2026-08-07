@@ -30,6 +30,39 @@ def test_pipe_sink_format_is_pinned_and_independent_of_playback_format_today():
     assert DEFAULT_PIPE_SINK_FORMAT == DEFAULT_PLAYBACK_FORMAT  # true only today
 
 
+def test_pipe_sink_format_matches_snapserver_wire_contract():
+    """NIT2 (PR-1 gate review): pin the promise between the two owners of the
+    snapserver pipe wire format — DEFAULT_PIPE_SINK_FORMAT (this module) and
+    the ``sampleformat=`` literal baked into
+    jasper.multiroom.reconcile.snapserver_argv. They can't share code (one is
+    a Python constant the CamillaDSP emitters read, the other is a literal
+    inside a DIFFERENT daemon's argv builder), so this test pins them
+    together the same way tests/test_wifi_profile_hardening_contract.py pins
+    its three writers to one canonical contract: widening either side alone,
+    without the other, fails a test naming the other.
+
+    "16:2" is snapserver's own ``<bits>:<channels>`` syntax for its pipe
+    source, not a JTS format literal — it can only mean ``S16_LE`` (no other
+    live format has a 16-bit depth), so the assertion below is a genuine
+    "iff": the argv carries ``48000:16:2`` iff the constant is ``S16_LE``.
+    """
+    from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
+    from jasper.multiroom.reconcile import snapserver_argv
+
+    cfg = GroupingConfig(
+        enabled=True,
+        role="leader",
+        channel="left",
+        bond_id="contract-test",
+        leader_addr="",
+        buffer_ms=DEFAULT_BUFFER_MS,
+        codec=DEFAULT_CODEC,
+        error=None,
+    )
+    argv_carries_16_2 = "sampleformat=48000:16:2" in " ".join(snapserver_argv(cfg))
+    assert argv_carries_16_2 == (DEFAULT_PIPE_SINK_FORMAT == "S16_LE")
+
+
 def test_camilla_latency_knobs_default_to_literals_when_unset():
     """G7: with the env vars unset and no profile floor the resolvers return the
     shipped literals. ``profile_floor=None`` pins the no-floor path so this tests

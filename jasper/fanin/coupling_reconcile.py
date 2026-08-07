@@ -1379,17 +1379,25 @@ def ring_edge_width_ready() -> tuple[bool, str]:
     ``captures/PLAN-wide-output-path-2026-08-07.md`` D5). Compares it against
     the box's emitted loopback-lane playback format
     (``DEFAULT_PLAYBACK_FORMAT``, ``jasper.camilla_config_contract`` — what
-    every non-ring emitter defaults its ALSA playback to). If that lane has
-    moved wider than the ring's fixed wire format, arming the ring would
-    silently NARROW every sample CamillaDSP emits back down to S16 on the way
-    into outputd — exactly the requantization-without-dither hazard the
-    wide-output-path program exists to remove. Refuse UP FRONT, fail-safe to
-    loopback, with an actionable reason.
+    every non-ring emitter defaults its ALSA playback to). If that lane's
+    format DIFFERS FROM the ring's fixed wire format, arming the ring would
+    silently mis-transcode every sample CamillaDSP emits on the way into
+    outputd — a requantization-without-dither hazard (in the direction this
+    program's constants can move today) the wide-output-path program exists
+    to remove. Refuse UP FRONT, fail-safe to loopback, with an actionable
+    reason.
 
-    Written against the constant, not a hardcoded ``"S16_LE"`` literal, so
-    this gate's verdict flips automatically the day ``DEFAULT_PLAYBACK_FORMAT``
-    widens (program PR-6) — today both constants are ``S16_LE``, so this
-    PASSES everywhere (byte-identical release).
+    Deliberately an EQUALITY check, never a bit-width ranking: no
+    width-comparison primitive exists in-repo for ALSA format strings (see
+    ``captures/PLAN-wide-output-path-2026-08-07.md`` D9 on ``S24_3LE``
+    landing as a genuinely different write path later), so this refuses ANY
+    mismatch rather than asserting a direction ("wider"/"narrower") the code
+    does not independently verify — a claim that would stop being reliably
+    true once a third live format exists. Written against the constant, not
+    a hardcoded ``"S16_LE"`` literal, so this gate's verdict flips
+    automatically the day ``DEFAULT_PLAYBACK_FORMAT`` changes (program
+    PR-6) — today both constants are ``S16_LE``, so this PASSES everywhere
+    (byte-identical release).
     """
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
 
@@ -2003,8 +2011,8 @@ def _arm_ring(
 
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
     all pass): (0) wire-width coherence (``ring_edge_width_ready`` — D5,
-    wide-output-path program: the ring's fixed S16 wire must not be narrower
-    than the box's emitted program lane, or arming would silently requantize);
+    wide-output-path program: the ring's fixed S16 wire must match the box's
+    emitted program lane's format, or arming would silently mis-transcode);
     (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
     ring platform would strand the realtime path); (2) topology ring-eligible
     (``ring_topology_ready``); (3) conf.d period == outputd period

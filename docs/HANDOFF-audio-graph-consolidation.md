@@ -273,7 +273,8 @@ Verified missing on main (2026-07-03):
    **CLOSED by P2**: `jasper-fanin-coupling-reconcile shm_ring` is a first-class
    mode. `_arm_ring` PREFLIGHTs wire WIDTH (`ring_edge_width_ready` — D5 of the
    wide-output-path program, `captures/PLAN-wide-output-path-2026-08-07.md`: the
-   ring's fixed S16 wire must not be narrower than the box's emitted program lane;
+   ring's fixed S16 wire must match the box's emitted program lane's format
+   (an equality check, not a width ranking — no such primitive exists in-repo);
    a pure constant comparison, so it runs first and passes everywhere today), P1
    ring assets (`ring_assets_ready`), topology
    eligibility (`ring_topology_ready`), and BOTH geometry axes — the period

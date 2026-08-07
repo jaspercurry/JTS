@@ -404,38 +404,63 @@ def test_parked_rollback_target_reaches_the_commission_startup_anchor(
 # --- D4 (wide-output-path program): parked graph's pipe format is pinned -----
 
 
-def test_parked_config_format_stays_pinned_even_under_a_wide_default(monkeypatch):
+def test_parked_config_format_stays_pinned_regardless_of_playback_format():
     """The parked graph's /dev/null File sink always emits
-    DEFAULT_PIPE_SINK_FORMAT, decoupled from DEFAULT_PLAYBACK_FORMAT — mirrors
-    the bonded-leader pipe sink in jasper.sound.camilla_yaml.emit_sound_config.
-    Proven by simulating the future PR-6 world (DEFAULT_PLAYBACK_FORMAT
-    monkeypatched wide) and passing that same wide value explicitly as
-    playback_format (so it is no longer "non-default" relative to the live
-    constant and the caller-bug guard does not fire); the parked sink must
-    still emit S16_LE."""
-    import jasper.active_speaker.camilla_yaml as camilla_yaml
+    DEFAULT_PIPE_SINK_FORMAT, decoupled from playback_format — mirrors the
+    bonded-leader pipe sink in jasper.sound.camilla_yaml.emit_sound_config.
+    No monkeypatch needed — the guard is a pure ``is not None`` presence
+    check now (SF1 fix: the old ``!= DEFAULT_PLAYBACK_FORMAT`` comparison
+    mixed a live global with a def-time-bound default and could diverge)."""
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 
-    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
-    yaml = camilla_yaml.emit_active_speaker_parked_config(
-        output_count=2, playback_format="S32_LE"
-    )
+    yaml = emit_active_speaker_parked_config(output_count=2)
     # Scope the assertion to the playback BLOCK — the capture block legitimately
     # emits format: S32_LE always (DEFAULT_CAPTURE_FORMAT, unrelated to this
     # axis), so a whole-document substring check would false-pass here.
     playback_block = yaml.split("playback:", 1)[1]
     assert "type: File" in playback_block
     assert "format: S16_LE" in playback_block
-    assert "format: S32_LE" not in playback_block
 
 
-def test_parked_config_with_explicit_non_default_playback_format_raises():
-    """The ValueError case: an explicit playback_format that differs from the
-    CURRENT DEFAULT_PLAYBACK_FORMAT is a caller bug (the /dev/null File sink
-    cannot honor it) — refused loudly rather than silently ignored."""
+def test_parked_config_with_explicit_playback_format_raises_regardless_of_value():
+    """The ValueError case: playback_format is not applicable to this
+    /dev/null File sink at all, so passing it EXPLICITLY — even a value that
+    happens to equal today's DEFAULT_PLAYBACK_FORMAT — is refused. Genuinely
+    a presence check (``is not None``), not a "does it match the current
+    default" check."""
     import pytest
 
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     with pytest.raises(ActiveSpeakerConfigError, match="different axes"):
-        emit_active_speaker_parked_config(output_count=2, playback_format="S32_LE")
+        emit_active_speaker_parked_config(
+            output_count=2,
+            playback_format="S16_LE",  # == today's DEFAULT_PLAYBACK_FORMAT —
+            # still refused: the guard is presence-based, not value-based.
+        )
+
+
+def test_parked_config_omitted_never_raises_even_after_the_default_rebinds(
+    monkeypatch,
+):
+    """SF1 regression (PR-1 gate review): the bug this reproduces — the
+    parked emitter's ONLY production caller
+    (jasper.active_speaker.runtime_contract) never passes playback_format, so
+    this call shape must NEVER raise, even if DEFAULT_PLAYBACK_FORMAT is
+    rebound after this module was imported (the exact scenario a
+    ``!= DEFAULT_PLAYBACK_FORMAT`` body-level comparison gets wrong — it
+    compares a LIVE global against playback_format's def-time-bound default,
+    two different bindings the moment they diverge). Before this fix that
+    divergence surfaced as ``parked_graph_emit_failed`` — a box that cannot
+    park. The sentinel (``str | None = None``) guard sidesteps this
+    unconditionally."""
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    yaml = camilla_yaml.emit_active_speaker_parked_config(
+        output_count=2
+        # playback_format deliberately omitted — the real calling convention.
+    )
+    playback_block = yaml.split("playback:", 1)[1]
+    assert "format: S16_LE" in playback_block  # DEFAULT_PIPE_SINK_FORMAT, untouched

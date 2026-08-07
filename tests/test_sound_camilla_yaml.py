@@ -480,24 +480,18 @@ def test_playback_pipe_path_and_channel_split_are_mutually_exclusive():
         )
 
 
-def test_playback_pipe_path_format_stays_pinned_even_under_a_wide_default(
-    monkeypatch,
-):
+def test_playback_pipe_path_format_stays_pinned_regardless_of_playback_format():
     """D4 (wide-output-path program): the pipe sink's format is
-    DEFAULT_PIPE_SINK_FORMAT, decoupled from DEFAULT_PLAYBACK_FORMAT. Proven
-    by simulating the future PR-6 world — DEFAULT_PLAYBACK_FORMAT monkeypatched
-    wide — and passing that SAME wide value explicitly as playback_format (so
-    it is no longer "non-default" relative to the live constant and the
-    caller-bug guard does not fire). The pipe sink must still emit S16_LE: if
-    the File branch ever regressed to reading playback_format instead of the
-    pinned constant, this test would catch it."""
-    import jasper.sound.camilla_yaml as camilla_yaml
-
-    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    DEFAULT_PIPE_SINK_FORMAT, decoupled from playback_format. No monkeypatch
+    needed — the guard is a pure ``is not None`` presence check now (SF1 fix:
+    the old ``!= DEFAULT_PLAYBACK_FORMAT`` comparison mixed a live global with
+    a def-time-bound default and could diverge), so passing a wide value
+    directly is enough to prove it would be refused rather than honored (see
+    the raise test below) — this test proves the OTHER half: the pipe sink
+    never reads playback_format for its emitted format at all."""
     yaml = emit_sound_config(
         SoundProfile(enabled=False),
         enable_rate_adjust=False,
-        playback_format="S32_LE",
         playback_pipe_path="/run/jasper-snapserver/snapfifo",
     )
     # Scope the assertion to the playback BLOCK — the capture block legitimately
@@ -506,23 +500,48 @@ def test_playback_pipe_path_format_stays_pinned_even_under_a_wide_default(
     playback_block = yaml.split("playback:", 1)[1]
     assert "type: File" in playback_block
     assert "format: S16_LE" in playback_block
-    assert "format: S32_LE" not in playback_block
 
 
-def test_playback_pipe_path_with_explicit_non_default_playback_format_raises():
-    """The ValueError case: a caller naming a playback_format that differs
-    from the CURRENT DEFAULT_PLAYBACK_FORMAT, alongside a pipe sink, is a
-    caller bug (the pipe sink cannot honor it) — refused loudly rather than
-    silently ignored."""
+def test_playback_pipe_path_with_explicit_playback_format_raises_regardless_of_value():
+    """The ValueError case: playback_format is not applicable to a pipe sink
+    at all, so passing it EXPLICITLY — even a value that happens to equal
+    today's DEFAULT_PLAYBACK_FORMAT — is refused. Genuinely a presence check
+    (``is not None``), not a "does it match the current default" check."""
     import pytest
 
     with pytest.raises(ValueError, match="different axes"):
         emit_sound_config(
             SoundProfile(enabled=False),
             enable_rate_adjust=False,
-            playback_format="S32_LE",
+            playback_format="S16_LE",  # == today's DEFAULT_PLAYBACK_FORMAT —
+            # still refused: the guard is presence-based, not value-based.
             playback_pipe_path="/run/jasper-snapserver/snapfifo",
         )
+
+
+def test_playback_pipe_path_omitted_never_raises_even_after_the_default_rebinds(
+    monkeypatch,
+):
+    """SF1 regression (PR-1 gate review): the bug this reproduces — a caller
+    that omits playback_format entirely (the ONLY calling convention every
+    production caller uses) must NEVER raise, even if DEFAULT_PLAYBACK_FORMAT
+    is rebound after this module was imported (the exact scenario a
+    ``!= DEFAULT_PLAYBACK_FORMAT`` body-level comparison gets wrong, because
+    it compares a LIVE global against playback_format's def-time-bound
+    default — two different bindings the moment they diverge). The sentinel
+    (``str | None = None``) guard sidesteps this: omitted means None,
+    unconditionally, regardless of what the module global currently reads."""
+    import jasper.sound.camilla_yaml as camilla_yaml
+
+    monkeypatch.setattr(camilla_yaml, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        enable_rate_adjust=False,
+        playback_pipe_path="/run/jasper-snapserver/snapfifo",
+        # playback_format deliberately omitted.
+    )
+    playback_block = yaml.split("playback:", 1)[1]
+    assert "format: S16_LE" in playback_block  # DEFAULT_PIPE_SINK_FORMAT, untouched
 
 
 def test_channel_delays_emit_delay_filters_only_on_distinct_room_chains():
