@@ -10,6 +10,7 @@ import sys
 import time
 import types
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,9 @@ from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.cli import aec_init
 from jasper.mics import xvf3800
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Closeable:
@@ -469,22 +473,27 @@ def test_staleness_accepts_an_outputd_started_after_its_declaration(
     assert aec_init.outputd_env_staleness() == ""
 
 
-def test_staleness_fails_closed_when_the_two_timestamps_tie(monkeypatch) -> None:
+def test_staleness_fails_closed_when_the_two_timestamps_tie(
+    tmp_path, monkeypatch
+) -> None:
     # Direction of the boundary, chosen deliberately: an env file exactly as old
     # as the process reads as STALE. systemd reads EnvironmentFile= just before
     # forking the main process, so a write that ties the recorded fork instant
     # landed after the read — and a tie is not proof of loading either way.
     # Both clocks are frozen because a real tie is decided by microseconds of
-    # clock-read skew, which would make this assertion a coin flip.
+    # clock-read skew, which would make this assertion a coin flip. Only
+    # aec_init's own `time` name is rebound; patching the shared os/time module
+    # objects would leak the fakes into pytest itself.
+    path = tmp_path / "outputd.env"
+    path.write_text("JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n", encoding="utf-8")
+    os.utime(path, (4_900.0, 4_900.0))
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(path))
     monkeypatch.setattr(
         aec_init,
         "time",
         types.SimpleNamespace(monotonic=lambda: 1_000.0, time=lambda: 5_000.0),
     )
     monkeypatch.setattr(aec_init, "outputd_main_start_monotonic", lambda **_k: 900.0)
-    monkeypatch.setattr(aec_init.os, "stat", lambda _p: os.stat_result(
-        (0o100640, 0, 0, 1, 0, 0, 0, 0, 4_900, 0)
-    ))
 
     # process_age = 1000 - 900 = 100; env_age = 5000 - 4900 = 100.
     assert "has not loaded the current output declaration" in (
@@ -637,6 +646,18 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     assert "has not loaded the current output declaration" in caplog.text
     assert "action=" in caplog.text
     assert "jasper-aec-commission" not in caplog.text
+
+
+def test_guard_watches_the_same_env_file_the_outputd_unit_loads() -> None:
+    # The guard fails OPEN on an unreadable path (a box with no declaration has
+    # nothing to be stale against), so a drift between the path it stats and the
+    # one systemd actually loads would silently disable it with every test still
+    # green. Pin the pair.
+    unit = (
+        ROOT / "deploy" / "systemd" / "jasper-outputd.service"
+    ).read_text(encoding="utf-8")
+
+    assert f"EnvironmentFile=-{aec_init.DEFAULT_OUTPUTD_ENV_PATH}\n" in unit
 
 
 def test_deferred_and_commission_required_exits_stay_distinct() -> None:

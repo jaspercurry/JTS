@@ -24,6 +24,7 @@ from typing import Any
 
 from jasper import output_hardware
 from jasper.audio_hardware import dac as dac_registry
+from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
     AlignmentIdentity,
     load_artifact,
@@ -40,11 +41,13 @@ COMMISSION_REQUIRED_EXIT = 2
 # activate_managed_chip_aec by tests/test_aec_reconcile.py.
 OUTPUTD_ENV_STALE_EXIT = 3
 OUTPUTD_UNIT = "jasper-outputd.service"
-# The declaration jasper-outputd loads through `EnvironmentFile=` — the runtime
-# output contract (sink, backend, active width, final-edge format).
-# jasper-audio-hardware-reconcile is its writer; the override name is the same
-# JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
-OUTPUTD_ENV_FILE = "/var/lib/jasper/outputd.env"
+# The declaration outputd loads through `EnvironmentFile=` (runtime output
+# contract: sink, backend, active width, final-edge format) is imported, never
+# restated: an unreadable path makes this guard fail OPEN, so a drifted literal
+# would silently disable it. jasper-audio-hardware-reconcile is the writer; the
+# override name is the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
+# tests/test_aec_init.py pins the constant against the unit's EnvironmentFile=.
+#
 # How long to let a queued outputd restart land before refusing to commission.
 # Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open)
 # and still well inside this oneshot's 90 s default start timeout once
@@ -207,7 +210,7 @@ def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
     """
 
     source = os.environ if env is None else env
-    path = source.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_FILE
+    path = source.get("JASPER_OUTPUTD_ENV_FILE") or DEFAULT_OUTPUTD_ENV_PATH
     try:
         env_mtime = os.stat(path).st_mtime
     except OSError:

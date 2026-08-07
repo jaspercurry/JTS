@@ -157,12 +157,28 @@ native reference writer active but parks the bridge and voice. Once silent
 reapply/readback succeeds it starts the bridge and voice. Ordinary lifecycle
 handling never plays audio, resets the chip, searches parameters, rewrites the
 artifact, starts a timer, or runs a servo. `/aec`, `/state`, and
-`jasper-doctor` expose `ready`, `commission_required`, `unavailable`, or
-`fault` with the reconciler-provided reason/action.
+`jasper-doctor` expose `ready`, `commission_required`, `deferred`,
+`unavailable`, or `fault` with the reconciler-provided reason/action.
 Specifically, reconcile installs outputd's final native-plus-UDP configuration
 while bridge/voice stay parked, requires that critical outputd restart to
 succeed, then init samples that same live writer before unpark; outputd is not
 restarted again after init.
+
+That ordering holds only *within* a reconcile pass. Across passes it does not:
+`jasper-audio-hardware-reconcile` writes `/var/lib/jasper/outputd.env` and then
+kicks `jasper-outputd` and `jasper-aec-reconcile` as two separate `--no-block`
+systemd transactions, and udev starts the reconciler in a transaction of its
+own, so `jasper-aec-init.service`'s `After=jasper-outputd.service` orders
+nothing here (it only orders jobs that already share one transaction). The live
+outputd can therefore still be answering STATUS with the *previous* geometry and
+final-edge format. `require_outputd_env_loaded`
+(`jasper/cli/aec_init.py`) closes that: before sampling any STATUS it compares
+outputd's `ExecMainStartTimestampMonotonic` against the env file's mtime, waits
+a bounded while for a queued restart, and then exits `3` rather than certify a
+stale edge. That is the `deferred` disposition above — an ordering race, not a
+moved artifact, so it deliberately does **not** ask for a recommission. A
+stopped or mid-restart outputd is left to the existing writer-not-ready path,
+since whichever process answers STATUS next is necessarily a newer one.
 
 The `jasper-aec-bridge` remains a shared mic-to-voice carrier, not synonymous
 with WebRTC AEC3. With commissioned chip AEC it forwards the selected hardware
