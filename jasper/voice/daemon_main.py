@@ -872,17 +872,10 @@ async def run() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
 
-    # `wake=` must report what this daemon actually DOES, not what the
-    # config happens to name. Keyed on the resolved leg plan (the same
-    # list the AsyncExitStack below opens mics from) rather than on
-    # `cfg.wake_model`, which would tell an operator wake detection is
-    # live on a speaker that built no detector at all.
-    planned_wake_legs = _configured_wake_legs(cfg)
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-        cfg.voice_provider, _active_model(cfg),
-        cfg.wake_model if planned_wake_legs else "disabled(no wake leg)",
-        cfg.mic_device or "(none)", _tts_ready_detail(cfg),
+        cfg.voice_provider, _active_model(cfg), cfg.wake_model,
+        cfg.mic_device, _tts_ready_detail(cfg),
     )
 
     # Open the persistent live connection ONCE at daemon startup and
@@ -968,7 +961,7 @@ async def run() -> None:
         # skipped so the speaker keeps waking on the healthy legs.
         async with contextlib.AsyncExitStack() as stack:
             legs: list[_LegRuntime] = []
-            for spec, device in planned_wake_legs:
+            for spec, device in _configured_wake_legs(cfg):
                 try:
                     leg_mic = await stack.enter_async_context(
                         make_mic_capture(
@@ -1037,19 +1030,6 @@ async def run() -> None:
                     manual_mic,
                     device,
                 ))
-            # No wake leg AND no manual mic = a daemon that can never hear
-            # anything. Today a planned "on" leg that fails to open already
-            # raises above, so this is the backstop for a daemon whose leg
-            # plan was empty and whose manual sources all failed to open
-            # (that loop skips a bad source rather than raising). Fail the
-            # same fatal-but-CLEAN way a primary mic-open failure does —
-            # systemd parks the unit — instead of idling deaf and looking
-            # healthy.
-            if not legs and not manual_mics:
-                raise InputDeviceUnavailable(
-                    ",".join(cfg.manual_mic_sources.values()) or "<none>",
-                    RuntimeError("no usable mic source: no wake leg, no manual mic"),
-                )
             tts = await stack.enter_async_context(make_tts_playout(
                 transport=cfg.tts_transport,
                 device=cfg.tts_device,

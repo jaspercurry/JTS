@@ -245,7 +245,19 @@ hardware measurement that might say "chip-AEC only").
   at DEBUG), `barge.truncate_failed` (WARN — the truncate wire send errored),
   `barge.server_only` (not yet built, PR 7 — server fired but local
   didn't — false-barge suspect),
-  `barge.flush_failed` (WARN). Reuse the existing `event=tts_flush.playout_ack`.
+  `barge.flush_failed` (WARN),
+  `barge.disabled_no_reference` (WARN, one-shot per daemon — the
+  no-AEC-reference turn-start guard below), and
+  `barge.disabled_push_to_talk` (WARN, its own one-shot latch so it
+  cannot swallow the no-reference WARN a later wake turn owes the
+  operator). Reuse the existing `event=tts_flush.playout_ack`.
+- **Push-to-talk turns refuse barge-in.** A turn whose audio comes from
+  an accessory mic (`_manual_endpoint_this_turn`, set in `_begin_turn`
+  from `_active_manual_source`) scores frames from *that* stream, but
+  `_barge_in_reference_available` was computed from `cfg.mic_device` —
+  a different one. The self-interrupt guard has therefore not cleared
+  the audio barge-in would run on, so the turn refuses and says so
+  rather than going quietly inert.
 - **`/state.voice.barge_in`** *(✅ landed PR-2)*: `enabled` (per active
   provider, read **fresh** in jasper-control's aggregator via
   `provider_state.read_barge_in_enabled` — not jasper-voice's

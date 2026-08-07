@@ -401,7 +401,6 @@ def _cfg(
     mic_device_dtln="",
     mic_device_chip_aec_150="",
     mic_device_chip_aec_210="",
-    manual_mic_sources=None,
 ):
     """Minimal Config stand-in for _configured_wake_legs (which reads each
     wake-input leg's device attr by name). SimpleNamespace, not MagicMock —
@@ -414,7 +413,6 @@ def _cfg(
         mic_device_dtln=mic_device_dtln,
         mic_device_chip_aec_150=mic_device_chip_aec_150,
         mic_device_chip_aec_210=mic_device_chip_aec_210,
-        manual_mic_sources=manual_mic_sources or {},
     )
 
 
@@ -666,98 +664,3 @@ def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
     wl._maybe_refresh_condition(now_loop=5.0)  # must not raise
     assert wl._current_condition == "ambient"  # stale condition kept
     assert wl._condition_refreshed_at == 5.0   # timer advanced -> ~1 Hz retry
-
-
-# ---------------------------------------------------------------------------
-# Push-to-talk-only speakers — no always-listening mic (Zero-class / WiiM
-# Remote 2). The WakeLoop tolerates that shape; the *leg planner* below does
-# NOT produce it, deliberately — see `_configured_wake_legs`' docstring.
-# ---------------------------------------------------------------------------
-
-
-def test_leg_planner_never_infers_push_to_talk_from_an_empty_mic_device():
-    """An empty `JASPER_MIC_DEVICE` must NOT be read as "this is a
-    push-to-talk speaker".
-
-    `Config.from_env` defaults `mic_device` to the literal "Array" and a
-    streambox `jasper.env` sets no `JASPER_MIC_DEVICE` at all, so "empty
-    primary device" never fires on a real box — it only fires under a
-    hand-written systemd drop-in. Inferring the tier from it therefore
-    reproduces a spike. The "on" leg stays planned so a mic-open failure
-    raises InputDeviceUnavailable and systemd parks the unit, rather than
-    the daemon silently coming up deaf.
-    """
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="",
-        manual_mic_sources={"wiim_remote_2": "udp:9892"},
-    ))
-    assert [(s.token, dev) for s, dev in legs] == [("on", "")]
-
-    # Same answer with no manual source at all — the planner does not read
-    # `manual_mic_sources`.
-    legs = _configured_wake_legs(_cfg(mic_device=""))
-    assert [(s.token, dev) for s, dev in legs] == [("on", "")]
-
-
-def test_manual_source_alongside_a_real_mic_keeps_wake_legs():
-    """A push-to-talk accessory on a speaker that DOES have a mic is additive:
-    the remote adds a manual source without disabling wake detection."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
-        mic_device="udp:9876",
-        mic_device_raw="udp:9877",
-        manual_mic_sources={"wiim_remote_2": "udp:9892"},
-    ))
-    assert [(s.token, dev) for s, dev in legs] == [
-        ("on", "udp:9876"), ("off", "udp:9877"),
-    ]
-
-
-def test_push_to_talk_only_is_derived_from_resolved_runtime():
-    """The daemon knows it is push-to-talk from what it actually opened —
-    zero wake legs plus at least one manual mic source — never from a
-    config string it might have inherited from a default."""
-    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
-
-    class _StubVad:
-        def predict(self, _frame):
-            return 0.0
-
-        def reset(self):
-            return None
-
-    def _remote():
-        return [_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")]
-
-    def _loop(*, legs, manual):
-        return WakeLoop.for_tests(
-            legs=legs, manual_mics=manual, vad=_StubVad(),
-        )
-
-    assert _loop(legs=[], manual=_remote())._push_to_talk_only is True
-    # Zero legs and no manual source is a broken speaker, not a PTT one.
-    assert _loop(legs=[], manual=[])._push_to_talk_only is False
-    # A remote on a speaker that also has a room mic is additive.
-    assert WakeLoop.for_tests(
-        manual_mics=_remote(), vad=_StubVad(),
-    )._push_to_talk_only is False
-
-
-def test_ptt_keepalive_stays_inside_heartbeat_stale_threshold():
-    """Load-bearing relationship: with no mic frames to bump the progress
-    sentinel, the keepalive tick IS the liveness proof. If its interval ever
-    drifts past Heartbeat's stale threshold, the heartbeat thread stops
-    patting systemd and WatchdogSec=30s reaps a perfectly healthy daemon."""
-    import inspect
-
-    from jasper.voice_daemon import PTT_KEEPALIVE_INTERVAL_SEC
-    from jasper.watchdog import Heartbeat
-
-    stale = inspect.signature(Heartbeat).parameters[
-        "stale_threshold_sec"
-    ].default
-    assert PTT_KEEPALIVE_INTERVAL_SEC < stale, (
-        f"keepalive {PTT_KEEPALIVE_INTERVAL_SEC}s must stay under the "
-        f"{stale}s heartbeat stale threshold"
-    )
