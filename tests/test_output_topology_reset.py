@@ -17,6 +17,7 @@ idempotent.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -256,6 +257,55 @@ def test_reset_loads_the_passive_graph_into_camilla(
     assert result["camilla"]["status"] == "select_flat"
     assert loaded == [result["camilla"]["config_path"]]
     assert loaded == [str(flat_config)]
+
+
+@pytest.fixture
+def ring_flat_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Where ``render_flat_cutover_configs`` writes the ring sibling of
+    ``flat_config`` (same directory, ``RING_FLAT_CONFIG_NAME``)."""
+    from jasper.active_speaker import runtime_contract
+    from jasper.sound.camilla_yaml import RING_FLAT_CONFIG_NAME
+
+    path = tmp_path / RING_FLAT_CONFIG_NAME
+    monkeypatch.setattr(runtime_contract, "DEFAULT_RING_FLAT_OUTPUTD_CONFIG", path)
+    return path
+
+
+def test_reset_reseeds_ring_flat_config_on_a_ring_armed_box(
+    topo_path: Path,
+    flat_config: Path,
+    ring_flat_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2164: convergence must consult the PERSISTED fan-in coupling, not
+    default to loopback. Before this fix, a reset on a ring-armed box
+    (coupling=shm_ring) silently reseeded the loopback flat config while
+    fan-in kept feeding the SHM ring — a false "converged" success. (Narrow
+    window: reachable only on a non-roleful topology, which is exactly what
+    a fresh reset produces.)
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    loaded: list[str] = []
+
+    class _FakeController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            loaded.append(path)
+            return True
+
+    monkeypatch.setattr(reset_cli, "_trigger_reconcile", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _FakeController()
+    )
+
+    result = reset_cli.reset_to_detected_passive()
+
+    assert result["camilla"]["ok"] is True
+    # The RING sibling was selected and loaded — never the loopback one.
+    assert loaded == [str(ring_flat_config)]
+    assert result["camilla"]["config_path"] == str(ring_flat_config)
 
 
 def test_reset_rerenders_the_cutover_so_a_mono_era_mute_cannot_survive(
@@ -590,3 +640,87 @@ def test_cli_json_output_is_machine_readable(
     payload = json.loads(capsys.readouterr().out)
     assert payload["after"]["speaker_groups"] == []
     assert payload["reconcile"]["skipped"] is True
+
+
+# --- #2164: the operator transcript may not promise what the reconcile can't --
+# `jasper-audio-hardware-reconcile` converges outputd. It never calls
+# `runtime-safe-graph` / `safe_graph_for_current_topology` and never restarts
+# jasper-camilla (pinned by `test_reconcile_script_never_reselects_the_camilla_graph`
+# in tests/test_audio_hardware_reconcile.py), so it cannot re-select the
+# CamillaDSP graph — and neither can a reboot, from either residual state the
+# module docstring names. #2164 retracted that claim from two docstrings but
+# left it in TWO of `_print_summary`'s three convergence strings, which had
+# never been covered by any test. The both-steps-failed transcript therefore
+# handed the operator two contradictory sentences: "until the next deploy" and
+# "on the next reconcile or reboot".
+
+# "the running graph" is this module's own term of art for the CamillaDSP graph
+# (every use in output_topology_reset.py means the graph `_converge_camilla_graph`
+# loads). Forbid it as the object of a convergence promise, in either word order,
+# within one sentence. Deliberately keyed on that phrase rather than a bare
+# "graph": the honest lines legitimately say "camilla graph: NOT converged" and
+# "it does not re-select the CamillaDSP graph".
+_GRAPH_PROMISED_CONVERGED = re.compile(
+    r"\bconverg\w*[^.]*\brunning graph\b|\brunning graph\b[^.]*\bconverg\w*",
+    re.IGNORECASE,
+)
+
+
+def _assert_no_graph_convergence_promise(out: str) -> None:
+    for line in out.splitlines():
+        assert not _GRAPH_PROMISED_CONVERGED.search(line), (
+            "operator guidance promises the RUNNING graph converges; only a "
+            f"deploy (or re-running this command) re-seeds it: {line!r}"
+        )
+
+
+def test_reconcile_failure_guidance_never_promises_the_running_graph_converges(
+    topo_path: Path,
+    flat_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both convergence steps fail — this command's habitat. The remediation
+    line must scope its promise to outputd (what the reconcile unit owns) and
+    must not contradict the camilla line printed just above it.
+    """
+
+    class _UnreachableController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            # What best_effort=True actually returns for an unreachable daemon.
+            return False
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _UnreachableController()
+    )
+    monkeypatch.setattr(
+        reset_cli,
+        "_trigger_reconcile",
+        lambda: {"ok": False, "error": "broker refused: unit start timed out"},
+    )
+
+    rc = reset_cli.main(["--yes"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    _assert_no_graph_convergence_promise(out)
+    # The claim #2164 kept, and the one the retracted sentence contradicted.
+    assert "the box stays on its previous safe graph until the next deploy" in out
+    # The remediation names what starting the unit actually delivers.
+    assert "to converge outputd" in out
+
+
+def test_no_reconcile_guidance_points_at_the_reset_for_the_graph(
+    topo_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--no-reconcile`` skips BOTH steps, so the graph was never loaded at
+    all. Offering only ``systemctl start <reconcile unit>`` sent the operator
+    to the one unit that provably cannot load it; the real remedy is re-running
+    without the flag.
+    """
+    rc = reset_cli.main(["--yes", "--no-reconcile"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    _assert_no_graph_convergence_promise(out)
+    assert "re-run without --no-reconcile to load the graph" in out

@@ -48,9 +48,17 @@ uses.
 Safe-by-construction: it makes the topology *passive*, so even if both
 convergence steps fail the worst residual state is passive-topology + a
 still-roleful (or parked) graph, which is safe — the active graph's crossover
-keeps protecting drivers, a parked graph emits nothing — and self-heals on the
-next deploy / reconcile / boot. It never produces the dangerous
-roleful-topology + flat-graph combination.
+keeps protecting drivers, a parked graph emits nothing — and self-heals on
+the next deploy, the only path that re-seeds this graph (the reconcile kick
+converges outputd, not CamillaDSP, and nothing re-selects a roleful or parked
+graph at boot). It never produces the dangerous roleful-topology + flat-graph
+combination.
+
+That "at boot" clause is scoped on purpose (#2164): ``jasper-camilla-pipe-guard``
+(``ExecStartPre=`` on jasper-camilla.service) *does* call ``runtime-safe-graph
+--write-statefile``, but only down its dead-BONDED-pipe branch — and both
+residual states above leave that guard first, a roleful ALSA config at
+``reason=solo_config`` and a parked one at ``reason=parked_null_sink``.
 """
 
 from __future__ import annotations
@@ -130,8 +138,8 @@ def _trigger_reconcile() -> dict[str, Any]:
     only ``start`` of this single unit is permitted to non-root clients, and a
     root operator falls back to a direct ``systemctl``. Best-effort and never
     raises — a failed reconcile leaves a SAFE state (passive topology + the
-    previous graph, which self-heals on the next reconcile / boot), reported so
-    an operator can re-run it.
+    previous graph, which self-heals on the next deploy — see the module
+    docstring), reported so an operator can re-run it.
     """
 
     from jasper.control.restart_broker import manage_units
@@ -214,13 +222,23 @@ def _converge_camilla_graph(topology: OutputTopology) -> dict[str, Any]:
         # graph out loud rather than loading it.
         render_error = f"{type(exc).__name__}: {exc}"
     try:
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+
         decision = runtime_contract.safe_graph_for_current_topology(
             topology,
-            # Read from the module global at CALL time (the reconcile idiom —
+            # Read from the module globals at CALL time (the reconcile idiom —
             # see multiroom.active_leader_config.seed_crossover_statefile) rather
-            # than letting the callee's def-time default bind it, so a test
+            # than letting the callee's def-time defaults bind them, so a test
             # redirect is honoured.
             flat_config_path=runtime_contract.DEFAULT_FLAT_OUTPUTD_CONFIG,
+            ring_flat_config_path=runtime_contract.DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
+            # Persisted fan-in -> CamillaDSP coupling, not the loopback default:
+            # this was defaulting coupling=None (always loopback), so a reset on
+            # a ring-armed box (coupling=shm_ring) silently reseeded the
+            # loopback flat config while fan-in kept feeding the SHM ring — a
+            # false "converged" success (#2164). Mirrors the CLI's own
+            # --coupling resolution in jasper/cli/active_speaker.py.
+            coupling=read_persisted_coupling(),
         )
     except _CONVERGENCE_ERRORS as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -281,7 +299,11 @@ def _load_graph(selected: str) -> tuple[bool, str | None]:
         )
     except _CONVERGENCE_ERRORS as exc:
         return False, f"{type(exc).__name__}: {exc}"
-    return loaded, None if loaded else "CamillaDSP did not accept the graph"
+    # best_effort=True swallows CamillaUnavailable (and its CamillaConfigRejected
+    # subclass) inside set_config_file_path and returns False either way, so a
+    # plain outage cannot be told apart from a rejected config at this layer —
+    # say so rather than implying the graph was definitely rejected (#2164).
+    return loaded, None if loaded else "CamillaDSP unreachable or rejected the graph"
 
 
 def _reload_if_render_changed(camilla: dict[str, Any]) -> dict[str, Any]:
@@ -430,9 +452,17 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
             "the box stays on its previous safe graph until the next deploy"
         )
     reconcile = result["reconcile"]
+    # Both remediation strings below name only what the reconcile unit can
+    # actually deliver — outputd. It never calls `runtime-safe-graph` and never
+    # restarts jasper-camilla (its own comment says so; pinned by
+    # `test_reconcile_script_never_reselects_the_camilla_graph`), so offering it
+    # — or a reboot — as the thing that converges the RUNNING graph is the exact
+    # overclaim #2164 retracted from the docstrings above, and it contradicted
+    # the camilla line printed a few lines up ("until the next deploy").
     if reconcile.get("skipped"):
         print(f"  reconcile: skipped (--no-reconcile); start "
-              f"{RECONCILE_UNIT} to converge the running graph")
+              f"{RECONCILE_UNIT} to converge outputd, and re-run without "
+              "--no-reconcile to load the graph")
     elif reconcile.get("ok"):
         print(f"  reconcile: kicked {RECONCILE_UNIT}")
     else:
@@ -441,9 +471,10 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
             f"{reconcile.get('error') or 'unknown error'}"
         )
         print(
-            "  The topology is now passive and SAFE; the running graph will "
-            "converge on the next reconcile or reboot. Re-run "
-            f"`sudo systemctl start {RECONCILE_UNIT}` to converge now."
+            "  The topology is now passive and SAFE, but outputd has NOT "
+            f"converged. Re-run `sudo systemctl start {RECONCILE_UNIT}` to "
+            "converge outputd; that unit does not re-select the CamillaDSP "
+            "graph (see the camilla line above)."
         )
 
 
