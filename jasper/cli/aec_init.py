@@ -179,6 +179,30 @@ def validate_reference_status(
     )
 
 
+def _log_ordering_probe_anomaly(
+    outcome: str, *, returncode: int, value: str
+) -> None:
+    """WARN that the ordering guard has gone inert for a reason that is not a state.
+
+    Without this the guard fails silent: it returns "not stale", commissioning
+    proceeds, and nothing anywhere says the check did not actually run. Only the
+    anomalous paths land here — a unit that has simply never started this boot is
+    a legitimate quiet case.
+    """
+
+    log_event(
+        logger,
+        "chip_aec_init.ordering_probe",
+        outcome=outcome,
+        unit=OUTPUTD_UNIT,
+        returncode=returncode,
+        # Truncated: systemctl's stderr/stdout is not a trusted length.
+        value=value[:120],
+        action="ordering guard is inert; inspect systemctl and jasper-outputd",
+        level=logging.WARNING,
+    )
+
+
 def outputd_main_start_realtime(
     *, env: Mapping[str, str] | None = None
 ) -> float | None:
@@ -187,13 +211,26 @@ def outputd_main_start_realtime(
     ``ExecMainStartTimestamp`` is the CLOCK_REALTIME sibling of the monotonic
     property, which is what lets the caller compare it against a file mtime
     without mixing clock domains.  ``--timestamp=unix`` renders it as
-    ``@<seconds>`` instead of a locale-formatted string.
+    ``@<seconds>`` instead of a locale-formatted string; the exact rendering is
+    load-bearing, so it is pinned against hardware in tests/test_aec_init.py.
 
-    None means exactly three things, all of which leave the guard inert: the unit
-    has never started this boot (systemd reports ``@0``), the value did not parse,
-    or ``systemctl`` failed.  That last one covers a systemd too old to know
-    ``--timestamp=unix`` (added in 247; Trixie ships 257, so it is theoretical,
-    and it degrades to the pre-guard behaviour rather than to a wrong verdict).
+    None means three things, all of which leave the guard inert:
+
+    * The unit has never started this boot.  systemd prints an EMPTY value for
+      that (probed on jts3/jts4, systemd 257) — quiet, because it is legitimate.
+    * ``systemctl`` exited non-zero.  That is the unsupported-``--timestamp=unix``
+      class (added in 247; Trixie ships 257, so it is theoretical).  WARN-logged.
+    * The value was non-empty but did not parse.  WARN-logged.
+
+    The last two are anomalies rather than states, so they are logged: an inert
+    guard is otherwise invisible, and silence would look exactly like success.
+
+    The asymmetry against `_SystemctlTimeout` is deliberate.  A timeout means
+    systemctl is unanswerable *while the flag is known-supported*, so there is no
+    reason to believe outputd is current — fail closed.  A non-zero exit is the
+    unsupported-flag class, where failing closed would park every speaker on an
+    older systemd for a guard it cannot run — fail open to the pre-guard
+    behaviour, and say so in the journal.
 
     None does NOT mean "outputd is stopped".  systemd RETAINS this timestamp after
     a unit stops, so a stopped outputd that ran this boot still reports its old
@@ -201,9 +238,7 @@ def outputd_main_start_realtime(
     stricter than passing the case through, and it is the safe direction.
 
     Raises:
-        _SystemctlTimeout: the query did not answer inside its own budget.  The
-            caller treats that as stale rather than inert — an unanswerable
-            systemctl is not evidence that outputd is current.
+        _SystemctlTimeout: the query did not answer inside its own budget.
     """
 
     source = os.environ if env is None else env
@@ -226,11 +261,26 @@ def outputd_main_start_realtime(
     except subprocess.TimeoutExpired as exc:
         raise _SystemctlTimeout(str(exc)) from exc
     except OSError:
+        # No systemctl at all: not a systemd host (tests, dev shells). Not an
+        # anomaly worth a WARN on a box where the daemon could never run anyway.
         return None
-    raw = result.stdout.strip().removeprefix("@")
-    if result.returncode or not raw.isdigit():
+    raw = result.stdout.strip()
+    if result.returncode:
+        _log_ordering_probe_anomaly(
+            "systemctl_failed", returncode=result.returncode, value=raw
+        )
         return None
-    seconds = int(raw)
+    if not raw:
+        # Never started this boot — systemd's empty value. Legitimate, so quiet.
+        return None
+    digits = raw.removeprefix("@")
+    if not digits.isdigit():
+        _log_ordering_probe_anomaly("unparseable", returncode=0, value=raw)
+        return None
+    seconds = int(digits)
+    # A literal zero is not what systemd 257 prints for never-run (it prints
+    # empty, probed) — kept as defence against another version rendering it that
+    # way, and treated as the same "nothing has run" case.
     return float(seconds) if seconds else None
 
 
@@ -250,12 +300,21 @@ def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
     truncates DOWN; within one second of an env write that can only over-report
     staleness (a bounded false defer), never certify a stale edge.
 
-    Honest residual: a clock step landing BETWEEN the process start and the env
-    write inverts their recorded order — a backward step can hide a stale
-    outputd, a forward step can defer a fresh one — bounded to the step's own
-    window.  ``After=time-sync.target`` on jasper-aec-reconcile.service and
-    jasper-aec-init.service closes the first-boot case, which is the only one
-    that happens routinely.
+    Honest residual, inherent to comparing recorded stamps: only a BACKWARD clock
+    step can invert their order, and only when it lands between the two stamps AND
+    exceeds their separation.  Forward steps are non-decreasing, so they cannot
+    invert anything — both stamps stay in the order they were recorded.  A
+    qualifying backward step goes either way depending on which stamp it lands
+    after: it can hide a genuinely stale outputd, or falsely defer a fresh one.
+
+    This is not closable by ordering the readers.  The verdict is a pure function
+    of two stamps already written by OTHER processes (systemd for the start,
+    jasper-audio-hardware-reconcile for the mtime), so no `After=` on this unit or
+    on jasper-aec-reconcile can change it — an earlier revision carried
+    `After=time-sync.target` for exactly that and it was a belt attached to
+    nothing.  It is also vanishingly rare on this fleet: fake-hwclock restores a
+    PAST time at boot, so NTP's first correction is a FORWARD step, which is the
+    harmless direction.
     """
 
     source = os.environ if env is None else env

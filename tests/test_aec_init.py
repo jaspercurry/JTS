@@ -411,6 +411,16 @@ def test_outputd_start_instant_is_read_from_the_realtime_systemd_property(
     # monotonic one does not, and mixing them fails open under an NTP step), and
     # without --timestamp=unix systemd emits a locale-formatted string. Pin the
     # argv so either change cannot pass silently.
+    #
+    # Hardware ground truth for the rendering, probed on jts3 (full tier) and
+    # jts4 (streambox tier), both systemd 257 (257.13-1~deb13u1):
+    #
+    #   RUNNING unit:
+    #     systemctl show --timestamp=unix -p ExecMainStartTimestamp --value \
+    #         jasper-outputd.service
+    #     -> `@1786127844`, rc=0
+    #   NEVER-RUN-THIS-BOOT unit: same command
+    #     -> EMPTY output, rc=0
     calls = _stub_systemctl_show(monkeypatch, "@1786127844\n")
     monkeypatch.setenv("JASPER_SYSTEMCTL", "/fake/systemctl")
 
@@ -446,10 +456,13 @@ def test_outputd_start_instant_probe_is_bounded_per_call(monkeypatch) -> None:
 @pytest.mark.parametrize(
     "stdout,returncode",
     [
-        ("@0\n", 0),         # never started this boot
-        ("0\n", 0),          # same, without the unix-render prefix
-        ("[not set]\n", 0),  # unparseable
-        ("", 0),             # unknown unit
+        # The probed never-run rendering on systemd 257: empty, rc=0.
+        ("", 0),
+        # Defensive only — systemd 257 prints empty, not a literal zero. Kept in
+        # case another version renders it this way; same "nothing has run" case.
+        ("@0\n", 0),
+        ("0\n", 0),
+        ("[not set]\n", 0),    # non-empty but unparseable
         ("@1786127844\n", 1),  # systemctl itself failed
     ],
 )
@@ -461,15 +474,55 @@ def test_outputd_start_instant_is_unknown_rather_than_guessed(
     assert aec_init.outputd_main_start_realtime() is None
 
 
+@pytest.mark.parametrize(
+    "stdout,returncode,outcome",
+    [
+        ("[not set]\n", 0, "unparseable"),
+        ("Unit not loaded.\n", 1, "systemctl_failed"),
+    ],
+)
+def test_an_inert_ordering_guard_says_so_in_the_journal(
+    monkeypatch, caplog, stdout: str, returncode: int, outcome: str
+) -> None:
+    # Failing open is defensible; failing open SILENTLY is not. These two paths
+    # are anomalies rather than states, so an operator has to be able to see that
+    # the guard did not actually run — otherwise it looks exactly like a pass.
+    _stub_systemctl_show(monkeypatch, stdout, returncode=returncode)
+    caplog.set_level("WARNING", logger="jasper.aec_init")
+
+    assert aec_init.outputd_main_start_realtime() is None
+
+    assert "event=chip_aec_init.ordering_probe" in caplog.text
+    assert f"outcome={outcome}" in caplog.text
+    assert "ordering guard is inert" in caplog.text
+
+
+@pytest.mark.parametrize("stdout", ["", "@0\n"])
+def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog, stdout: str) -> None:
+    # The legitimate case stays out of the journal: nothing has started, so there
+    # is nothing anomalous to report and a WARN would be noise on every box that
+    # boots with outputd gated off.
+    _stub_systemctl_show(monkeypatch, stdout)
+    caplog.set_level("WARNING", logger="jasper.aec_init")
+
+    assert aec_init.outputd_main_start_realtime() is None
+
+    assert "ordering_probe" not in caplog.text
+
+
 def test_outputd_start_instant_survives_a_host_without_systemctl(
-    monkeypatch,
+    monkeypatch, caplog
 ) -> None:
     def fake_run(_args, **_kwargs):
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+    caplog.set_level("WARNING", logger="jasper.aec_init")
 
     assert aec_init.outputd_main_start_realtime() is None
+    # Not a systemd host at all — the daemon could never run here, so this is not
+    # the inert-guard anomaly the WARN exists for.
+    assert "ordering_probe" not in caplog.text
 
 
 def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
@@ -756,20 +809,16 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     "unit_name",
     ["jasper-aec-reconcile.service", "jasper-aec-init.service"],
 )
-def test_aec_units_order_after_time_sync_without_requiring_it(
-    unit_name: str,
-) -> None:
-    # The guard compares recorded realtime instants, and a Pi has no
-    # battery-backed RTC, so a first-boot clock step landing between outputd's
-    # start and the env write would invert their order. After= makes the boot case
-    # impossible. It must NOT become Wants=/Requires=: an offline speaker with no
-    # reachable NTP still has to reconcile its mic and restore its chip profile.
+def test_aec_units_do_not_order_against_time_sync(unit_name: str) -> None:
+    # An earlier revision ordered these two After=time-sync.target to "close" the
+    # clock-step residual. It cannot: the verdict is a pure function of two stamps
+    # already written by OTHER processes (systemd for the start,
+    # jasper-audio-hardware-reconcile for the mtime), so ordering the READERS
+    # provably changes nothing. Keep it out rather than let a plausible-sounding
+    # dependency drift back in and couple mic reconcile to time infrastructure.
     unit = (ROOT / "deploy" / "systemd" / unit_name).read_text(encoding="utf-8")
-    after = [ln for ln in unit.splitlines() if ln.startswith("After=")]
-    wants = [ln for ln in unit.splitlines() if ln.startswith(("Wants=", "Requires="))]
 
-    assert any("time-sync.target" in line for line in after), unit_name
-    assert not any("time-sync.target" in line for line in wants), unit_name
+    assert "time-sync.target" not in unit, unit_name
 
 
 def test_guard_watches_the_same_env_file_the_outputd_unit_loads() -> None:

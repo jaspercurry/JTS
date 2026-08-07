@@ -1,14 +1,7 @@
 [Unit]
 Description=Reconcile microphone and AEC input-profile state
 Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
-# time-sync.target is After= ONLY, never Wants=/Requires=: an offline speaker
-# with no NTP reachable must still reconcile its microphone. The ordering exists
-# because aec-init's ordering guard compares outputd's recorded start instant
-# against a file mtime (jasper/cli/aec_init.py outputd_env_staleness), and a Pi
-# has no battery-backed RTC — a first-boot clock step landing between those two
-# instants inverts their order. Same no-RTC rationale as jasper-web.service,
-# different consequence.
-After=sound.target jasper-camilla.service time-sync.target
+After=sound.target jasper-camilla.service
 Wants=sound.target jasper-camilla.service
 
 [Service]

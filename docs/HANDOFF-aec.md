@@ -180,21 +180,27 @@ artifact, so it deliberately does **not** ask for a recommission, and
 `jasper-doctor` reports it as an intentional park on the `AEC bridge service` row
 rather than a bridge failure.
 
-Two details of that comparison are easy to get wrong. **Both sides must be the
+Three details of that comparison are easy to get wrong. **Both sides must be the
 same clock.** An earlier revision compared a CLOCK_REALTIME age against a
 CLOCK_MONOTONIC age, which fails *open* under a forward NTP step — routine on an
 RTC-less Pi at boot — and certifies exactly the stale outputd the guard exists to
-catch. It compares recorded realtime *instants*, so a step moves both together
-and cannot flip the verdict; `jasper-aec-reconcile.service` and
-`jasper-aec-init.service` additionally order `After=time-sync.target` (never
-`Wants=`, so an offline speaker still reconciles) to close the first-boot case.
-The residual is a step landing *between* the process start and the env write,
-which inverts their recorded order. **A stopped outputd is caught, not ignored.**
-systemd retains `ExecMainStartTimestamp` after a unit stops, so a stopped outputd
-that ran this boot still reports its old instant and a newer declaration reads as
-stale; only a unit that never started this boot reports zero and leaves the guard
-inert, where `collect_reference_queue`'s writer-not-ready path owns the
-diagnosis.
+catch. Comparing recorded realtime *instants* makes "now" not an input at all.
+The residual is inherent and not closable by unit ordering: only a **backward**
+step can invert the two stamps, and only when it lands between them and exceeds
+their separation (forward steps are non-decreasing). Both stamps are written by
+other processes — systemd for the start, `jasper-audio-hardware-reconcile` for the
+mtime — so no `After=` on the reading units can affect the verdict; an earlier
+revision carried `After=time-sync.target` for exactly this and it was a belt
+attached to nothing. fake-hwclock restores a *past* time at boot, so NTP's first
+correction is a forward step, the harmless direction. **A stopped outputd is
+caught, not ignored.** systemd retains `ExecMainStartTimestamp` after a unit
+stops, so a stopped outputd that ran this boot still reports its old instant and a
+newer declaration reads as stale; only a unit that never started this boot reports
+an empty value and leaves the guard inert, where `collect_reference_queue`'s
+writer-not-ready path owns the diagnosis. **An inert guard is logged.** The two
+anomalous inert paths — `systemctl` exiting non-zero, or a non-empty value that
+does not parse — emit `event=chip_aec_init.ordering_probe` at WARN, because a
+guard that silently does not run looks identical to one that passed.
 
 The `jasper-aec-bridge` remains a shared mic-to-voice carrier, not synonymous
 with WebRTC AEC3. With commissioned chip AEC it forwards the selected hardware
