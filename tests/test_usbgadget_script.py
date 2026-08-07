@@ -584,6 +584,123 @@ def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> 
         assert "wc -c" not in text
 
 
+# A minimal blob shaped like usb_f_uac2.ko's .rodata: the four AudioStreaming
+# alt-setting strings uac2_name_patch.py's real patcher rewrites, surrounded
+# by neighbour strings and alignment slack -- mirrors _fake_module() in
+# tests/test_uac2_name_patch.py.
+_FAKE_STOCK_MODULE = (
+    b"\x7fELF\x00\x00\x00\x00"
+    b"Topology Control\x00"
+    b"Playback Inactive\x00"
+    b"\x00\x00\x00"
+    b"Playback Active\x00"
+    b"\x00"
+    b"Capture Inactive\x00"
+    b"Capture Active\x00"
+    b"Playback Volume\x00"
+)
+
+
+def _write_python_shim(path: Path, body: str) -> None:
+    """A fake PATH executable, in Python to sidestep shell-quoting entirely.
+    Used for depmod/lsmod/stat, none of which exist (or behave GNU-style) on
+    a macOS dev sandbox, and none of which a hermetic test should invoke for
+    real even on Linux (depmod/lsmod would read the actual running kernel)."""
+    path.write_text(f"#!/usr/bin/env python3\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_name_patch_backgrounds_depmod_so_execstartpre_never_blocks(
+    tmp_path: Path,
+) -> None:
+    """#2176: depmod alone measures 10+ s on a Pi Zero 2 W, blowing past this
+    script's parent unit's 5 s TimeoutStartSec and killing the job before the
+    completion marker is ever written -- so every boot repeats the same
+    doomed rebuild. The fix backgrounds every depmod call.
+
+    Proven with a depmod stand-in slow enough that a regression (depmod back
+    on the blocking path) would time out the bounded wait() below; the
+    deferred work is then confirmed to converge on its own afterwards."""
+
+    kver = os.uname().release
+    modules_root = tmp_path / "modules"
+    kernel_dir = modules_root / kver / "kernel" / "drivers" / "usb" / "gadget"
+    kernel_dir.mkdir(parents=True)
+    (kernel_dir / "usb_f_uac2.ko").write_bytes(_FAKE_STOCK_MODULE)
+
+    updates_dir = modules_root / kver / "updates"
+    override = updates_dir / "usb_f_uac2.ko"
+    marker = updates_dir / ".jasper-usbsink-name.marker"
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    depmod_ran = tmp_path / "depmod-ran"
+    # Slow enough that a regression (depmod back on the blocking path) blows
+    # the bounded wait() below; short enough to keep this test fast.
+    _write_python_shim(
+        bin_dir / "depmod",
+        "import pathlib, sys, time\n"
+        "time.sleep(2)\n"
+        f"pathlib.Path({str(depmod_ran)!r}).write_text(sys.argv[1])\n",
+    )
+    _write_python_shim(bin_dir / "lsmod", "print('Module Size Used by')\n")
+    _write_python_shim(
+        bin_dir / "stat",
+        # Minimal GNU "stat -c%s FILE" shim -- BSD/macOS stat has no -c.
+        "import pathlib, sys\n"
+        "if len(sys.argv) >= 3 and sys.argv[1] == '-c%s':\n"
+        "    print(pathlib.Path(sys.argv[2]).stat().st_size)\n"
+        "else:\n"
+        "    sys.exit(1)\n",
+    )
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "JASPER_MODULES_ROOT": str(modules_root),
+        "JASPER_SPEAKER_NAME_FILE": str(tmp_path / "no-such-name.env"),
+        "JASPER_SPEAKER_NAME_READER": "/usr/bin/python3",
+    }
+
+    # subprocess.run(capture_output=True) waits for stdout/stderr EOF, which
+    # would itself block until the backgrounded subshell exits -- it inherits
+    # the same fds. That is a pipe-capture artifact, not the behaviour this
+    # test is verifying, so route to a file instead: wait() then only tracks
+    # the direct child, exactly like systemd's own job-completion tracking.
+    stderr_path = tmp_path / "stderr.log"
+    with open(stderr_path, "wb") as stderr_file:
+        proc = subprocess.Popen(
+            [str(NAME_PATCH)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+        )
+        try:
+            returncode = proc.wait(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise AssertionError(
+                "jasper-usbsink-name-patch blocked past its parent unit's "
+                "5s TimeoutStartSec waiting on depmod -- #2176 regression"
+            ) from None
+
+    stderr_text = stderr_path.read_text(encoding="utf-8")
+    assert returncode == 0, stderr_text
+    assert "event=usbsink_name.queued" in stderr_text
+    assert override.exists()  # decompress+patch+install stayed synchronous
+    assert not marker.exists()  # depmod hasn't converged yet -- still deferred
+    assert not depmod_ran.exists()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.05)
+
+    assert depmod_ran.exists(), "backgrounded depmod never ran"
+    assert depmod_ran.read_text() == kver
+    assert marker.exists(), "marker was never written once depmod converged"
+
+
 def test_up_canonical_off_dominates_stale_enabled_mirror(tmp_path):
     """Derived enablement cannot authorize UAC2 after the household turns it Off."""
     proc, cfg = _run(

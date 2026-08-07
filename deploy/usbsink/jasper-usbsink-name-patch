@@ -23,6 +23,18 @@
 # speaker name + mic name + stock-module hash) lets an unchanged boot exit in
 # milliseconds without touching the module tree, running depmod, or reloading.
 #
+# depmod alone measures 10+ s on a Pi Zero 2 W -- far past this unit's 5 s
+# TimeoutStartSec (#2176). Every depmod call below runs in a backgrounded
+# subshell so this script always returns in a fraction of a second no
+# matter how long the kernel module index rebuild takes; systemd's start
+# timeout never sees it. The completion marker is written only once depmod
+# actually finishes, so a boot that kicks off a rebuild converges on the
+# very next start instead of discarding the finished work and repeating
+# the rebuild forever. In the meantime the gadget composes against
+# whichever module is already loaded (stock, until the rebuild catches
+# up) -- purely cosmetic, matching this hook's existing best-effort
+# contract.
+#
 # Mirrors the deploy/bin/jasper-wifi-guardian self-heal idiom: oneshot,
 # structured event= logs, no-op steady state, degrade-don't-break.
 set -uo pipefail
@@ -118,8 +130,8 @@ if [[ ${rc} -ne 0 ]]; then
     emit "patch_failed" "rc=${rc} ${summary}"
     if [[ -f "${OVERRIDE}" ]]; then
         rm -f "${OVERRIDE}" "${MARKER}"
-        depmod "${KVER}" 2>/dev/null || true
-        emit "override_removed" "kver=${KVER}"
+        ( depmod "${KVER}" 2>/dev/null || true
+          emit "override_removed" "kver=${KVER}" ) &
     fi
     exit 0
 fi
@@ -138,30 +150,40 @@ if [[ "${out_size}" != "${raw_size}" || "${magic}" != "7f454c46" ]]; then
     emit "override_invalid" "out_size=${out_size} stock_size=${raw_size} magic=${magic}"
     if [[ -f "${OVERRIDE}" ]]; then
         rm -f "${OVERRIDE}" "${MARKER}"
-        depmod "${KVER}" 2>/dev/null || true
-        emit "override_removed" "kver=${KVER}"
+        ( depmod "${KVER}" 2>/dev/null || true
+          emit "override_removed" "kver=${KVER}" ) &
     fi
     exit 0
 fi
 
 install -m 0644 "${OUT_TMP}" "${OVERRIDE}"
-depmod "${KVER}" 2>/dev/null || true
-printf '%s' "${DESIRED_MARKER}" > "${MARKER}"
-emit "applied" "name=\"${NAME}\" kver=${KVER} ${summary}"
+emit "queued" "name=\"${NAME}\" kver=${KVER} ${summary}"
 
-# --- force the freshly-patched module to load ------------------------
-# We only get here when the marker was stale (enable, rename, or kernel
-# change), so any loaded usb_f_uac2 carries a stale string. Unload it so
-# gadget-up's function-create autoloads the new override. The gadget is
-# down at ExecStartPre time (the gadget unit's stop ran gadget-down first), so the
-# module's refcount is 0 and rmmod is safe. Best-effort: if it sticks,
-# the host just shows the old name until the next bring-up — cosmetic.
-if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then
-    if rmmod usb_f_uac2 2>/dev/null; then
-        emit "reloaded" "detail=stale_module_unloaded"
-    else
-        emit "reload_skipped" "detail=usb_f_uac2_busy"
+# depmod (module-index rebuild), the completion marker, and the forced
+# reload below all happen together in the background: a kill/exit here
+# can never leave the override published without the marker that says
+# so -- the exact "expensive work discarded on every run" failure this
+# hook had while depmod ran synchronously against a 5 s budget (#2176).
+(
+    depmod "${KVER}" 2>/dev/null || true
+    printf '%s' "${DESIRED_MARKER}" > "${MARKER}"
+    emit "applied" "name=\"${NAME}\" kver=${KVER} ${summary}"
+
+    # --- force the freshly-patched module to load ---------------------
+    # We only get here when the marker was stale (enable, rename, or
+    # kernel change), so any loaded usb_f_uac2 carries a stale string.
+    # Unload it so a future function-create autoloads the new override.
+    # Best-effort: gadget-up may already be using the module by the time
+    # depmod finishes, in which case rmmod fails (busy) and the host just
+    # shows the old name until the next bring-up -- cosmetic, matching
+    # this hook's existing degrade-don't-break contract.
+    if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then
+        if rmmod usb_f_uac2 2>/dev/null; then
+            emit "reloaded" "detail=stale_module_unloaded"
+        else
+            emit "reload_skipped" "detail=usb_f_uac2_busy"
+        fi
     fi
-fi
+) &
 
 exit 0
