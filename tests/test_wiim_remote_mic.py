@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+import time
 
 import pytest
 from dbus_next import Variant
@@ -16,6 +18,8 @@ from jasper.accessories.wiim_remote_mic import (
     BLUEZ_DEVICE_IFACE,
     BLUEZ_GATT_CHARACTERISTIC_IFACE,
     BLUEZ_GATT_DESCRIPTOR_IFACE,
+    BLUEZ_OBJECT_MANAGER_IFACE,
+    BLUEZ_PROPERTIES_IFACE,
     DEFAULT_UDP_PORT,
     HID_REPORT_UUID,
     MANUAL_MIC_FRAME_BYTES,
@@ -519,11 +523,120 @@ async def test_find_voice_characteristic_scans_after_match_and_propagates_error(
 
 
 # ---------------------------------------------------------------------------
+# Per-segment delivery rate — the starved-link instrument.
+# ---------------------------------------------------------------------------
+
+
+def _events(caplog, name: str) -> list[dict[str, str]]:
+    fields = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if message != f"event={name}" and not message.startswith(f"event={name} "):
+            continue
+        parsed = {}
+        for token in message.split()[1:]:
+            key, _, value = token.partition("=")
+            parsed[key] = value
+        fields.append(parsed)
+    return fields
+
+
+def _feed_hold(stream, *, packets: int, spacing: float, start: float = 0.0) -> None:
+    for seq in range(packets):
+        stream.feed_notification(_packet(seq), now=start + seq * spacing)
+
+
+def test_segment_reports_the_healthy_delivery_rate_at_a_hold_boundary(caplog):
+    """A released button ends a segment, and the segment reports its rate.
+
+    63 packets at the realtime 16 ms cadence is a ~1 s push-to-talk hold; the
+    rate is over the 62 observed gaps, so it lands exactly on 62.5/s.
+    """
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    stream = WiimVoicePacketStream()
+    _feed_hold(stream, packets=63, spacing=0.016)
+    # Button released, then pressed again well beyond the gap threshold.
+    stream.feed_notification(_packet(0), now=63 * 0.016 + 5.0)
+
+    segments = _events(caplog, "wiim_remote_mic.segment")
+    assert len(segments) == 1
+    assert segments[0]["packets"] == "63"
+    assert segments[0]["duration_ms"] == "992"
+    assert segments[0]["rate_hz"] == "62.5"
+
+
+def test_segment_exposes_the_starved_rate_the_gap_detector_cannot_see(caplog):
+    """Why this event has to exist at all.
+
+    At the starved cadence — 6 Link Layer PDUs x 11.25 ms = 67.5 ms between
+    notifications — the inter-packet gap sits 3.7x under `WIIM_STREAM_GAP_SEC`,
+    so `stream_reset` *structurally cannot* fire. Packets still decode, so
+    `bad_packets` stays 0, and the cumulative `packets` count logged at
+    disconnect has no denominator. The per-segment rate is the only instrument
+    on the audio path that tells a starved link from a healthy one, which is
+    what `docs/HANDOFF-hotplug-resilience.md` sends an operator here to read.
+    """
+    starved_spacing = 6 * 0.01125
+    assert starved_spacing < WIIM_STREAM_GAP_SEC, (
+        "premise of this test: the starved cadence never trips the gap detector"
+    )
+
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    stream = WiimVoicePacketStream()
+    _feed_hold(stream, packets=63, spacing=starved_spacing)
+    stream.close_segment()
+
+    assert stream.bad_packets == 0
+    assert _events(caplog, "wiim_remote_mic.stream_reset") == []
+    segments = _events(caplog, "wiim_remote_mic.segment")
+    assert len(segments) == 1
+    assert segments[0]["rate_hz"] == "14.8"
+    # The same hold length reports the same packet count either way, so the
+    # count alone cannot separate them — only the rate can.
+    assert segments[0]["packets"] == "63"
+
+
+def test_close_segment_reports_a_hold_still_running_at_disconnect(caplog):
+    """A hold in progress when the link drops never sees a gap, so without an
+    explicit close its rate — the sample an operator chasing a slow mic most
+    wants — would be the one that is never reported."""
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    stream = WiimVoicePacketStream()
+    _feed_hold(stream, packets=10, spacing=0.016)
+
+    assert _events(caplog, "wiim_remote_mic.segment") == []
+    stream.close_segment()
+    assert len(_events(caplog, "wiim_remote_mic.segment")) == 1
+
+
+def test_close_segment_does_not_invent_a_rate_for_a_single_packet(caplog):
+    """One packet spans no gaps, so it has no rate. Report nothing rather
+    than divide by a zero span."""
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    stream = WiimVoicePacketStream()
+    stream.feed_notification(_packet(0), now=1.0)
+    stream.close_segment()
+
+    assert _events(caplog, "wiim_remote_mic.segment") == []
+
+
+def test_close_segment_is_idempotent_and_does_not_repeat_a_hold(caplog):
+    """Closing twice must not double-report; the second close has no segment."""
+    caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
+    stream = WiimVoicePacketStream()
+    _feed_hold(stream, packets=10, spacing=0.016)
+    stream.close_segment()
+    stream.close_segment()
+
+    assert len(_events(caplog, "wiim_remote_mic.segment")) == 1
+
+
+# ---------------------------------------------------------------------------
 # BLE connection-event reservation request (see jasper/cli/wiim_remote_ce.py).
 #
 # The adapter asks a root helper to reserve connection-event length on the
 # live link every time notifications start. Without it BlueZ's hardcoded
-# min/max CE of 0 leaves the remote's mic at ~26 % of realtime on a Pi Zero
+# min/max CE of 0 leaves the remote's mic at ~24 % of realtime on a Pi Zero
 # 2 W (measured on jts4: 196/190 packets vs 794/805 with the reservation).
 # ---------------------------------------------------------------------------
 
@@ -601,3 +714,235 @@ async def test_ce_reservation_request_is_fail_soft_when_the_broker_raises(monkey
 
     monkeypatch.setattr(restart_broker, "manage_units", boom)
     await wiim_remote_mic._request_ce_reservation()
+
+
+# ---------------------------------------------------------------------------
+# `_run_subscription` — the wiring that makes the reservation actually happen.
+#
+# The four tests above cover `_request_ce_reservation` itself, and the CE
+# constants, HCI bytes, unit hardening, polkit rule and broker allowlist are
+# each pinned elsewhere. None of that pins the single `await` that causes any
+# of it to run. The fakes below exist so it can be.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSink:
+    def __init__(self, host: str, port: int) -> None:
+        self.addr = (host, port)
+        self.frames: list[bytes] = []
+        self.closed = False
+
+    def send(self, frame: bytes) -> None:
+        self.frames.append(frame)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeVoiceCharacteristic:
+    def __init__(self, journal: list[str]) -> None:
+        self._journal = journal
+
+    async def call_start_notify(self) -> None:
+        self._journal.append("start_notify")
+
+    async def call_stop_notify(self) -> None:
+        self._journal.append("stop_notify")
+
+
+class _FakeObjectManager:
+    def __init__(self, managed: dict) -> None:
+        self._managed = managed
+
+    async def call_get_managed_objects(self) -> dict:
+        return self._managed
+
+
+class _FakePropertiesInterface:
+    def __init__(self, bus: _SubscriptionBus, path: str) -> None:
+        self._bus = bus
+        self._path = path
+
+    def on_properties_changed(self, handler) -> None:
+        self._bus.handlers[self._path] = handler
+
+
+class _SubscriptionProxy:
+    def __init__(self, bus: _SubscriptionBus, path: str) -> None:
+        self._bus = bus
+        self._path = path
+
+    def get_interface(self, interface: str):
+        if interface == BLUEZ_OBJECT_MANAGER_IFACE:
+            return _FakeObjectManager(self._bus.managed)
+        if interface == BLUEZ_GATT_CHARACTERISTIC_IFACE:
+            return _FakeVoiceCharacteristic(self._bus.journal)
+        if interface == BLUEZ_PROPERTIES_IFACE:
+            return _FakePropertiesInterface(self._bus, self._path)
+        raise AssertionError(f"unexpected interface {interface}")
+
+
+class _SubscriptionBus:
+    """A BlueZ bus fake complete enough to drive `_run_subscription`.
+
+    `_FakeBus` above is a descriptor-read fake for `_find_voice_characteristic`
+    and deliberately hard-asserts that one interface; the subscription path
+    needs the ObjectManager, the characteristic, and two Properties interfaces,
+    so it gets its own object graph rather than loosening that assertion.
+    """
+
+    def __init__(self, managed: dict, char_path: str, device_path: str) -> None:
+        self.managed = managed
+        self.char_path = char_path
+        self.device_path = device_path
+        self.journal: list[str] = []
+        self.handlers: dict = {}
+
+    async def introspect(self, service: str, path: str) -> str:
+        assert service == "org.bluez"
+        return path
+
+    def get_proxy_object(
+        self, service: str, path: str, intro: str
+    ) -> _SubscriptionProxy:
+        assert service == "org.bluez"
+        assert intro == path
+        return _SubscriptionProxy(self, path)
+
+    def disconnect(self) -> None:
+        self.journal.append("bus_disconnect")
+
+    def push_voice_packet(self, payload: bytes) -> None:
+        self.handlers[self.char_path](
+            BLUEZ_GATT_CHARACTERISTIC_IFACE,
+            {"Value": Variant("ay", payload)},
+            [],
+        )
+
+    def push_disconnect(self) -> None:
+        self.handlers[self.device_path](
+            BLUEZ_DEVICE_IFACE,
+            {"Connected": Variant("b", False)},
+            [],
+        )
+
+
+async def _wait_until(predicate, *, what: str, timeout: float = 5.0) -> None:
+    """Bounded wait — never spin forever if the subscription wedges."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        await asyncio.sleep(0.001)
+
+
+def _subscription_harness(monkeypatch) -> tuple[_SubscriptionBus, _FakeSink]:
+    managed, chars, _descs = _managed_voice_reports([WIIM_VOICE_REPORT_REFERENCE])
+    device = next(
+        path for path, ifaces in managed.items() if BLUEZ_DEVICE_IFACE in ifaces
+    )
+    bus = _SubscriptionBus(managed, chars[0], device)
+    sink = _FakeSink("127.0.0.1", DEFAULT_UDP_PORT)
+
+    async def fake_connect():
+        return bus
+
+    monkeypatch.setattr(wiim_remote_mic, "_connect_bluez", fake_connect)
+    monkeypatch.setattr(wiim_remote_mic, "UdpPcmSink", lambda host, port: sink)
+    return bus, sink
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
+    monkeypatch,
+):
+    """The wiring guard for the whole feature.
+
+    Everything *around* the reservation is pinned hard, but the one line that
+    makes any of it run — `await _request_ce_reservation()` in
+    `_run_subscription` — was pinned by nothing: deleting it left the complete
+    candidate test set (53 tests) green while the mic silently returned to
+    ~24 % of realtime on a Pi Zero 2 W, which is the exact bug this feature
+    exists to fix.
+
+    Ordering is load-bearing, not decoration. The reservation acts on a live
+    link, so it has to follow `call_start_notify()`; asking before there is a
+    notifying connection reserves event time for nothing.
+    """
+    bus, sink = _subscription_harness(monkeypatch)
+
+    def fake_manage_units(*units, **kwargs):
+        bus.journal.append("ce_request")
+        assert units == (wiim_remote_mic.CE_HELPER_UNIT,)
+        assert kwargs["verb"] == "start"
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+
+    async def drive():
+        await _wait_until(
+            lambda: "ce_request" in bus.journal,
+            what="the CE reservation request",
+        )
+        for seq in range(5):
+            bus.push_voice_packet(_packet(seq))
+        bus.push_disconnect()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            wiim_remote_mic._run_subscription(
+                wiim_remote_mic._parse_args([]), asyncio.Event()
+            ),
+            drive(),
+        ),
+        timeout=20,
+    )
+
+    assert bus.journal == [
+        "start_notify",
+        "ce_request",
+        "stop_notify",
+        "bus_disconnect",
+    ]
+    # Not just the ordering: the notification path really is live, so this
+    # would also catch a subscription that requested the reservation but
+    # never wired the decoder to the sink.
+    assert len(sink.frames) == 1
+    assert sink.closed
+
+
+@pytest.mark.asyncio
+async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
+    monkeypatch,
+):
+    """Degraded audio beats a dead adapter, end to end rather than in
+    isolation: a broker that rejects the request must not stop the mic from
+    streaming or the subscription from shutting down cleanly."""
+    bus, sink = _subscription_harness(monkeypatch)
+
+    def refuse(*_units, **_kwargs):
+        bus.journal.append("ce_request")
+        return {"ok": False, "error": "unit(s) not in allowlist"}
+
+    monkeypatch.setattr(restart_broker, "manage_units", refuse)
+
+    async def drive():
+        await _wait_until(
+            lambda: "ce_request" in bus.journal,
+            what="the CE reservation request",
+        )
+        for seq in range(5):
+            bus.push_voice_packet(_packet(seq))
+        bus.push_disconnect()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            wiim_remote_mic._run_subscription(
+                wiim_remote_mic._parse_args([]), asyncio.Event()
+            ),
+            drive(),
+        ),
+        timeout=20,
+    )
+
+    assert len(sink.frames) == 1
+    assert sink.closed

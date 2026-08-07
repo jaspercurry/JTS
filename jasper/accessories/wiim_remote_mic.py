@@ -242,16 +242,58 @@ class WiimVoicePacketStream:
         self._decoder = ImaAdpcmDecoder()
         self._pcm = bytearray()
         self._last_packet_at: float | None = None
+        self._segment_first_at: float | None = None
+        self._segment_last_at: float | None = None
+        self._segment_packets = 0
         self.packets = 0
         self.frames = 0
         self.bad_packets = 0
         self.resets = 0
+
+    def close_segment(self) -> None:
+        """Log the delivery rate of the stream segment that just ended.
+
+        This is the starved-link detector, and the *rate* is the whole point:
+        a packet count on its own has no denominator. The remote only streams
+        while the button is held, so a per-connection count mixes holds with
+        idle time — the same 10 s hold logs ~625 packets healthy and ~148
+        starved, and a journal reader has no way to tell which hold produced
+        which. Per segment the two separate at a glance: ~62/s healthy, ~15/s
+        when the BLE connection-event reservation is not in force (see
+        ``jasper/cli/wiim_remote_ce.py``), and no line at all when idle.
+
+        The rate is over the observed arrival span, so N packets divide by the
+        N-1 gaps between them; a segment too short to have a gap is dropped
+        rather than reported at a made-up rate.
+        """
+        first, last = self._segment_first_at, self._segment_last_at
+        packets = self._segment_packets
+        self._segment_first_at = None
+        self._segment_last_at = None
+        self._segment_packets = 0
+        if first is None or last is None or packets < 2:
+            return
+        span = last - first
+        if span <= 0:
+            return
+        log_event(
+            logger,
+            "wiim_remote_mic.segment",
+            packets=packets,
+            duration_ms=round(span * 1000),
+            rate_hz=round((packets - 1) / span, 1),
+        )
 
     def reset(self) -> None:
         # Only the partial frame is dropped, so a silence is not spliced onto
         # the audio either side of it. The decoder needs no reset: the next
         # packet's header supplies the encoder's state before anything is
         # decoded from it.
+        #
+        # A reset is exactly a segment boundary — in practice the end of one
+        # push-to-talk hold — so this is where the closing segment's rate is
+        # reported.
+        self.close_segment()
         self._pcm.clear()
         self._last_packet_at = None
         self.resets += 1
@@ -287,6 +329,10 @@ class WiimVoicePacketStream:
             return []
 
         self.packets += 1
+        if self._segment_first_at is None:
+            self._segment_first_at = now
+        self._segment_last_at = now
+        self._segment_packets += 1
 
         # Adopt the encoder's state before decoding. In an unbroken stream this
         # is what the decoder already holds, so it changes nothing; after a lost
@@ -523,6 +569,10 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
                 await char.call_stop_notify()
             except (DBusError, OSError):
                 pass
+        # A hold still in progress when the link drops never sees a gap, so
+        # close it here or its rate is never reported — and that is precisely
+        # the sample an operator chasing a slow-mic report wants.
+        stream.close_segment()
         log_event(
             logger,
             "wiim_remote_mic.disconnected",

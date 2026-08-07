@@ -693,7 +693,15 @@ def test_wiim_remote_ce_unit_grants_only_raw_hci():
     assert ("NoNewPrivileges", "true") in pairs
     assert ("ProtectKernelModules", "true") in pairs
     assert ("ProtectKernelTunables", "true") in pairs
-    assert "MemoryMax" in keys, "the helper must be MemoryMax-bounded"
+    # Valued, not just present. The unit's own comment justifies 64M against a
+    # measured 18.9/21.3/22.2 MB peak — the bound is only meaningful if a leak
+    # or runaway import is actually killed rather than left to compete with the
+    # audio daemons for the Zero 2 W's ~139 MB of free memory, and `MemoryMax=64G`
+    # would satisfy a presence-only assertion while bounding nothing.
+    assert ("MemoryMax", "64M") in pairs, (
+        "the helper must stay bounded at the measured-and-justified 64M; "
+        "changing it means re-doing the measurement in the unit's comment"
+    )
     # TimeoutStartSec, not RuntimeMaxSec: the latter has no effect on oneshot.
     assert "TimeoutStartSec" in keys
     assert "WantedBy" not in keys, (
@@ -703,7 +711,7 @@ def test_wiim_remote_ce_unit_grants_only_raw_hci():
 
     # A flapping BLE link makes the adapter re-request on every reconnect, and
     # its retry floor is 2 s. Without this, systemd's default 5-starts/10 s
-    # limit parks the unit `failed` and that connection stays at ~26% of
+    # limit parks the unit `failed` and that connection stays at ~24% of
     # realtime — the exact failure this helper exists to fix. Both sibling
     # on-demand oneshots set it for the same reason.
     assert ("StartLimitIntervalSec", "0") in pairs, (

@@ -1068,7 +1068,7 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
     # Root oneshot the adapter kicks (through jasper-control's restart broker)
     # on every reconnect: it reserves BLE connection-event length on the live
-    # remote link. BlueZ hardcodes that to 0, which starves the mic to ~26% of
+    # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
     # realtime on a Pi Zero 2 W. Never enabled; started on demand only.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-ce.service" \

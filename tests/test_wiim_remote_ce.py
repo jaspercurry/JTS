@@ -8,9 +8,9 @@ The measured promise this pins (jts4, identical interval 11.25 ms, latency 0,
 mic packets over a fixed window):
 
     CE 0x0008/0x000c ->  794 / 805 packets  (~100 % of realtime)
-    CE 0x0000/0x0000 ->  196 / 190 packets  (~26 %)
+    CE 0x0000/0x0000 ->  196 / 190 packets  (~24 %)
 
-Between-condition ratio 4.2x; within-condition spread 1.4 % / 3.2 %;
+Between-condition ratio 4.1x; within-condition spread 1.4 % / 3.2 %;
 ``bad_packets=0`` throughout, so this is delivery, not decode. If someone
 reverts the CE fields to the BlueZ default of zero, the remote's microphone
 goes back to a quarter of realtime — so the constants and the exact encoded
@@ -77,7 +77,7 @@ def _update_complete(
 
 def test_connection_event_length_stays_reserved():
     """The whole point of the helper. 0x0000 is the BlueZ default that
-    measured at ~26 % of realtime; these are the values that measured at
+    measured at ~24 % of realtime; these are the values that measured at
     ~100 %."""
     assert ce.CE_LENGTH_MIN == 0x0008, "5.0 ms minimum connection-event length"
     assert ce.CE_LENGTH_MAX == 0x000C, "7.5 ms maximum connection-event length"

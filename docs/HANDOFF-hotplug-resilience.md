@@ -354,9 +354,16 @@ The new mode is **degraded but working**, and every step fails soft:
   - *Watch the packet rate* in the adapter and re-request when it collapses.
     This one is **not** a residency cost: the adapter is already resident and
     already counts packets (`WiimVoicePacketStream.packets`), and the
-    discriminator is clean — ~62.5/s holding, ~16/s starved, 0 idle. Its real
+    discriminator is clean — ~62.5/s holding, ~15/s starved, 0 idle. Its real
     cost is **complexity**: a rate window, starved-versus-idle logic, and
     debounce that has to interact correctly with the helper's start path.
+
+    Only the **automatic re-request** is declined. The *measurement* half is
+    cheap and now ships: `WiimVoicePacketStream.close_segment` logs each hold's
+    rate as `event=wiim_remote_mic.segment` (see the triage recipe below). It
+    needs no rate window or debounce because a hold boundary already exists —
+    the >250 ms gap that resets the stream. So an operator can see a starved
+    link; nothing acts on it automatically.
 
   Both were declined for the same reason — neither is worth carrying to defend
   against something this remote was measured not to do. If a slow-mic report
@@ -366,9 +373,28 @@ The new mode is **degraded but working**, and every step fails soft:
   that evidence. The packet-rate watcher is the cheaper of the two to build if
   it comes to that.
 
-Two symptoms to keep apart: `bad_packets=0` with a low `packets` count in
-`event=wiim_remote_mic.disconnected` is a *delivery* problem and points here;
-distorted or wrong-sounding audio is decode and does not.
+**How to tell a starved link from a healthy one.** Read the delivery *rate*,
+not a packet count:
+
+```sh
+journalctl -u jasper-wiim-remote-mic | grep 'event=wiim_remote_mic.segment'
+# event=wiim_remote_mic.segment packets=625 duration_ms=9984 rate_hz=62.5
+```
+
+One line is emitted per stream segment — in practice one push-to-talk hold —
+when the next hold begins or when the link drops mid-hold. **`rate_hz` near
+62.5 is realtime; near 15 is the starved link this section is about**, and the
+two are otherwise indistinguishable: the count alone has no denominator (the
+same 10 s hold reads `packets=625` healthy and `packets=148` starved), the
+packets still decode so `bad_packets` stays 0, and the starved 67.5 ms
+inter-packet gap is well under the 250 ms `WIIM_STREAM_GAP_SEC`, so
+`stream_reset` cannot fire either. The cumulative `packets` in
+`event=wiim_remote_mic.disconnected` spans idle time as well as holds, so do
+not try to derive a rate from it.
+
+Two symptoms to keep apart: a low `rate_hz` with `bad_packets=0` is a
+*delivery* problem and points here; distorted or wrong-sounding audio is
+decode and does not.
 
 ## Verified vs needs-hardware
 

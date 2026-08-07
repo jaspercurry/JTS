@@ -25,10 +25,10 @@ counting mic packets over a fixed window:
 CE length                    run 1   run 2   ~ realtime
 ===========================  ======  ======  ===========
 0x0008 / 0x000c (5.0-7.5ms)     794     805       ~100 %
-0x0000 / 0x0000 (BlueZ dflt)    196     190        ~26 %
+0x0000 / 0x0000 (BlueZ dflt)    196     190        ~24 %
 ===========================  ======  ======  ===========
 
-Within-condition spread was 1.4 % / 3.2 %; between conditions 4.2x. Decoding
+Within-condition spread was 1.4 % / 3.2 %; between conditions 4.1x. Decoding
 was never the problem (``bad_packets=0`` throughout) — only delivery was.
 
 Connection *latency* is not the lever: latency 0 with the default CE length
@@ -38,6 +38,20 @@ The Pi 5 always worked because its controller's *default* event scheduling
 already admits the ~4 PDUs/event realtime needs (62.5 notifications/s x 6 PDUs
 = 375 PDUs/s, over 88.9 connection events/s at 11.25 ms). Same lever,
 different default.
+
+What the reservation costs the rest of the radio — **INFERRED, not measured.**
+5.0-7.5 ms of CE against an 11.25 ms interval is nominally 44-67 % of the
+interval budget, on a BCM43436 where Bluetooth and WiFi share one antenna by
+time-division coexistence, and JTS also runs A2DP and the voice websocket over
+that radio. This is believed benign because Min/Max_CE_Length are *scheduler
+hints*, not a fixed allocation: a connection event ends as soon as either side
+sends More Data = 0, so the reservation is only genuinely consumed while the
+remote is streaming — during push-to-talk holds, which is exactly when the mic
+should win the radio. The jts4 end-to-end (owner spoke, speaker answered over
+WiFi across several turns) is functional evidence the concurrent path survived,
+but no coexistence measurement was taken. If A2DP or the websocket is ever seen
+to stutter *only* while the remote's button is held, this is the first place to
+look.
 
 What it does
 ------------
@@ -155,7 +169,7 @@ CONN_LATENCY = 0x0000           # measured NOT to be the lever; keep it at 0
 # do not change this number until that measurement lands.
 SUPERVISION_TIMEOUT = 0x0258
 # The whole point of this helper. 0x0000/0x0000 is the BlueZ default that
-# starves the link to ~26 % of realtime (see the table in the module
+# starves the link to ~24 % of realtime (see the table in the module
 # docstring). Reverting these two to zero re-breaks the microphone.
 CE_LENGTH_MIN = 0x0008          # 5.0 ms (units of 0.625 ms)
 CE_LENGTH_MAX = 0x000C          # 7.5 ms
