@@ -28,6 +28,7 @@ from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
     build_driver_safety_profile,
+    driver_protection_policy_view,
     driver_research_targets,
     evaluate_driver_safety_profile,
     finalise_research_result,
@@ -1191,6 +1192,7 @@ def build_design_draft(
         "driver_research": research,
         "driver_safety_profile": safety_profile,
         "driver_safety_profile_evaluation": safety_evaluation,
+        "driver_protection_policy": driver_protection_policy_view(topology),
         "manual_settings": manual,
         "summary": summary,
         "permissions": {
@@ -1372,6 +1374,10 @@ def load_design_draft(
         raw.get("driver_safety_profile"),
         topology,
     ).to_dict()
+    # Re-stamped, never trusted from disk: the saved copy was correct for the
+    # policy and topology in force when it was written, and both can move
+    # underneath it. Same reason the evaluation above is recomputed here.
+    out["driver_protection_policy"] = driver_protection_policy_view(topology)
     return out
 
 

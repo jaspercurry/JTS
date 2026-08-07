@@ -658,11 +658,17 @@ function setupHarness(fetchHandler, options = {}) {
   const viewBody = elements.get("view-body");
   const driverProposal = makeEl("driver-proposal-control");
   const driverResearchFooter = makeEl("driver-research-footer-control");
+  // The #2195 echo-back panel's targeted-refresh container. Same shape as the
+  // two above: a manual driver edit repaints it without a full render, so the
+  // panel cannot go on describing a value the operator has already changed.
+  const driverEcho = makeEl("driver-echo-control");
   elements.set(driverProposal.id, driverProposal);
   elements.set(driverResearchFooter.id, driverResearchFooter);
+  elements.set(driverEcho.id, driverEcho);
   viewBody.querySelector = (selector) => {
     if (selector === "[data-driver-proposal]") return driverProposal;
     if (selector === "[data-driver-research-footer]") return driverResearchFooter;
+    if (selector === "[data-driver-echo]") return driverEcho;
     return null;
   };
   const dispatchClick = (attrs) => {
@@ -4556,35 +4562,95 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
   return { rejectedPasteAndReasonSurviveDraftIngest: true };
 }
 
-// The other half of the #2186 contract: an ESTIMATED value is storable, and the
-// operator is told how many of the limits they are about to freeze arrived as
-// estimates rather than published figures.
-async function testConfirmCalloutCountsResearchEstimates() {
-  const draft = designDraftWithSafety({
-    status: "unconfirmed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_not_confirmed"],
-  });
-  draft.driver_research = {
+// --- #2195: the best-estimate provenance echo-back --------------------------
+//
+// The ask now wants the researcher's BEST number rather than a timid one, so
+// the operator has to be able to arbitrate. That is this panel: every consumed
+// value, its published/estimated badge, and its one citation. It REPLACED a
+// bare tally ("2 of these limits came from the research reply as estimates"),
+// which named a number to distrust without naming which one.
+//
+// `hf_measurement_abs_ceiling_dbfs` is deliberately NOT -35 in these fixtures:
+// a page that hardcoded the real constant instead of reading the server's
+// value would pass a -35 fixture and fail this one.
+const ECHO_HF_ABS_CEILING_DBFS = -42.5;
+const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
+
+function echoProtectionPolicy(overrides = {}) {
+  return {
+    policy_version: "driver_protection_auto_level_v1",
+    hf_measurement_abs_ceiling_dbfs: ECHO_HF_ABS_CEILING_DBFS,
+    targets: [
+      {
+        target_id: "main:woofer",
+        role: "woofer",
+        role_class: "low_frequency",
+        max_auto_level_dbfs: 0,
+        min_highpass_hz: null,
+      },
+      {
+        target_id: "main:tweeter",
+        role: "tweeter",
+        role_class: "high_frequency",
+        max_auto_level_dbfs: ECHO_TWEETER_CLASS_CEILING_DBFS,
+        min_highpass_hz: 3000,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+// One reply, four provenance shapes on purpose: a URL citation, a plain-text
+// citation (a datasheet is usually a NAME), an entry with no citation, and a
+// consumed value with no provenance entry at all.
+function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
+  return {
     artifact_schema_version: 2,
     kind: "jts_active_crossover_driver_research",
     request_fingerprint: "b".repeat(64),
     drivers: [
       {
         target_id: "main:woofer",
+        target_fingerprint: "c".repeat(64),
         role: "woofer",
         model: "Manual Woofer",
+        hard_excitation_band_hz: [30, 5000],
         field_provenance: {
           hard_excitation_band_hz: {
-            confidence: "high", basis: "datasheet usable range", sources: [],
+            confidence: "high",
+            basis: "datasheet usable range",
+            source: "https://example.test/w6-datasheet.pdf",
+            sources: ["https://example.test/w6-datasheet.pdf"],
           },
         },
       },
       {
         target_id: "main:tweeter",
+        target_fingerprint: "d".repeat(64),
         role: "tweeter",
         model: "Dayton CX120-8",
+        hard_excitation_band_hz: [2500, 20000],
+        required_protection_filters: [{
+          kind: "highpass",
+          cutoff_hz: 3000,
+          minimum_slope_db_per_octave: 24,
+          family_or_equivalent: "equivalent_or_steeper",
+        }],
+        level_duration_limits: {
+          max_effective_peak_dbfs: tweeterPeakDbfs,
+          max_sweep_duration_s: 4,
+          max_repeat_count: 3,
+          minimum_cooldown_s: 2,
+        },
+        // Consumed, but the reply asserted nothing about it.
+        sensitivity_db_2v83_1m: 89.2,
         field_provenance: {
+          hard_excitation_band_hz: {
+            confidence: "medium",
+            basis: "independent measurement",
+            source: "Dayton CX120-8 datasheet, p.2",
+            sources: [],
+          },
           required_protection_filters: {
             confidence: "low",
             basis: "estimated: 25 mm soft dome, Fs unpublished",
@@ -4593,14 +4659,7 @@ async function testConfirmCalloutCountsResearchEstimates() {
           level_duration_limits: {
             confidence: "low",
             basis: "estimated: protocol default, no published limit",
-            sources: [],
-          },
-          // NOT a limit: sensitivity is a gain trim. A low-confidence entry
-          // here must not inflate a count the operator reads as "limits I am
-          // about to freeze" -- so this key is what pins the scoping.
-          sensitivity_db_2v83_1m: {
-            confidence: "low",
-            basis: "estimated: no published sensitivity",
+            source: "measurement protocol, no published limit",
             sources: [],
           },
         },
@@ -4608,36 +4667,293 @@ async function testConfirmCalloutCountsResearchEstimates() {
     ],
     crossover_candidates: [],
   };
+}
+
+function echoManualSettings(research) {
+  return {
+    drivers: research.drivers.map((driver) => ({
+      target_id: driver.target_id,
+      role: driver.role,
+      model: driver.model,
+      hard_excitation_band_hz: driver.hard_excitation_band_hz,
+      required_protection_filters: driver.required_protection_filters,
+      level_duration_limits: driver.level_duration_limits,
+      sensitivity_db_2v83_1m: driver.sensitivity_db_2v83_1m,
+    })),
+    crossover_candidates: [],
+  };
+}
+
+function echoDraft({ research, policy } = {}) {
+  const packet = research || echoResearchPacket();
+  const draft = designDraftWithSafety({
+    status: "unconfirmed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_not_confirmed"],
+  });
+  draft.driver_research_request = {
+    request_fingerprint: packet.request_fingerprint,
+    targets: [],
+  };
+  draft.driver_research = packet;
+  draft.manual_settings = echoManualSettings(packet);
+  if (policy !== null) draft.driver_protection_policy = policy || echoProtectionPolicy();
+  return draft;
+}
+
+async function echoHarness(draft) {
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
   }));
   await loadAndSetActiveState(harness);
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  if (calloutAt < 0) fail("expected the confirm callout to render", { html });
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  // Two low-confidence LIMIT keys across both drivers. The tweeter's
-  // low-confidence sensitivity is a gain trim, not a limit, and must not be
-  // counted here -- reverting the key scoping makes this read "3".
-  if (!callout.includes("2 of these limits came from the research reply as estimates")) {
-    fail("the confirm callout must count only the estimated LIMITS", { callout });
-  }
-  if (!callout.includes("not published figures. Check them before confirming")) {
-    fail("the estimate note must agree in number and name the action", { callout });
+  return harness.elements.get("view-body").innerHTML;
+}
+
+function echoPanel(html) {
+  const at = html.indexOf("driver-research__panel driver-echo");
+  if (at < 0) fail("expected the echo-back panel to render", { html });
+  return html.slice(at, html.indexOf("driver-research__proposal"));
+}
+
+async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
+  const panel = echoPanel(await echoHarness(echoDraft()));
+
+  // The superseded tally must be gone, not merely moved.
+  if (panel.includes("came from the research reply as estimate")) {
+    fail("the estimate tally must not survive alongside the panel", { panel });
   }
 
-  // No research packet at all means nothing was estimated — no sentence.
-  const bare = await harnessWithSafetyEvaluation({
-    status: "unconfirmed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_not_confirmed"],
-  });
-  const bareHtml = bare.elements.get("view-body").innerHTML;
-  if (bareHtml.includes("came from the research reply as estimate")) {
-    fail("hand-typed limits must not be reported as research estimates", { bareHtml });
+  // What we're RUNNING WITH, per value, read out of the working setting.
+  for (const expected of [
+    "Never test outside",
+    "30 Hz to 5.0 kHz",
+    "2.5 kHz to 20 kHz",
+    "Protection filter",
+    "high-pass 3.0 kHz, 24 dB/oct or steeper",
+    "Test level and duration",
+    "-65.0 dBFS peak, sweeps up to 4 s, 3 repeats, 2 s cooldown",
+    "Sensitivity",
+    "+89.2 dB",
+  ]) {
+    if (!panel.includes(expected)) {
+      fail("the echo-back must name the value JTS is running with", {
+        expected, panel,
+      });
+    }
   }
-  return { confirmCalloutCountsResearchEstimates: true };
+
+  // Badges are DERIVED from confidence: high and medium assert a published
+  // figure, low does not, and neither does silence.
+  const confirmed = (panel.match(/>confirmed</g) || []).length;
+  const estimated = (panel.match(/>estimated</g) || []).length;
+  if (confirmed !== 2 || estimated !== 3) {
+    fail("badge derivation must follow confidence (high/medium -> confirmed)", {
+      confirmed, estimated, panel,
+    });
+  }
+
+  // A URL citation is a link; a datasheet NAME is not, and neither is absent.
+  if (!panel.includes(
+    '<a class="driver-echo__source" href="https://example.test/w6-datasheet.pdf"' +
+    ' rel="noreferrer noopener">https://example.test/w6-datasheet.pdf</a>'
+  )) {
+    fail("an http(s) source must linkify", { panel });
+  }
+  if (!panel.includes(
+    '<span class="driver-echo__source">Dayton CX120-8 datasheet, p.2</span>'
+  )) {
+    fail("a non-URL source must render as plain escaped text", { panel });
+  }
+  if (!panel.includes("no source given")) {
+    fail("a citation-less assertion must say so rather than look sourced", {
+      panel,
+    });
+  }
+  return { researchEchoBackNamesEveryValueWithBadgeAndSource: true };
+}
+
+async function testResearchEchoBackDisclosesTheDelegationSentinel() {
+  // A tweeter left exactly on its class ceiling has DELEGATED the level, and
+  // protection may lawfully raise it. Confirming that number without this line
+  // would tell the household they had capped something they had not (#2192).
+  const onSentinel = echoPanel(await echoHarness(echoDraft()));
+  if (!onSentinel.includes("Test level here is left to JTS")) {
+    fail("a declared peak on the class ceiling must disclose the delegation", {
+      onSentinel,
+    });
+  }
+  // The bound comes from the server, so the fixture's own number is what shows.
+  if (!onSentinel.includes("never goes above -42.5 dBFS")) {
+    fail("the sentinel bound must be read from the server, never hardcoded", {
+      onSentinel,
+    });
+  }
+
+  // One decibel off the ceiling is a deliberate quieter choice, honoured
+  // literally -- no delegation, so no sentence.
+  const deliberate = echoPanel(await echoHarness(
+    echoDraft({ research: echoResearchPacket(ECHO_TWEETER_CLASS_CEILING_DBFS - 1) })
+  ));
+  if (deliberate.includes("Test level here is left to JTS")) {
+    fail("a deliberate quieter peak must not claim delegation", { deliberate });
+  }
+
+  // No policy from the server means no bound to state. Say nothing rather than
+  // invent a number.
+  const noPolicy = echoPanel(await echoHarness(echoDraft({ policy: null })));
+  if (noPolicy.includes("Test level here is left to JTS")) {
+    fail("without a server policy the sentinel must stay silent", { noPolicy });
+  }
+  if (!noPolicy.includes("Test level and duration")) {
+    fail("a missing policy must not take the rest of the panel with it", {
+      noPolicy,
+    });
+  }
+
+  // And the narrower case the `policy: null` fixture cannot reach: per-target
+  // policy present, absolute ceiling absent. Dropping the bound check alone
+  // would render "+0.0 dBFS" here -- a number nothing supplied.
+  const noBound = echoPanel(await echoHarness(echoDraft({
+    policy: echoProtectionPolicy({ hf_measurement_abs_ceiling_dbfs: null }),
+  })));
+  if (noBound.includes("Test level here is left to JTS") ||
+      noBound.includes("dBFS.")) {
+    fail("a missing bound must produce no sentence, not a fabricated 0", {
+      noBound,
+    });
+  }
+  return { researchEchoBackDisclosesTheDelegationSentinel: true };
+}
+
+async function testResearchEchoBackEscapesUntrustedSources() {
+  // `source` is free text pasted from an LLM reply: untrusted input reaching
+  // innerHTML. Neither branch may emit live markup, and a javascript: URL must
+  // not satisfy the linkify test.
+  const research = echoResearchPacket();
+  research.drivers[0].field_provenance.hard_excitation_band_hz.source =
+    "javascript:alert(1)";
+  research.drivers[0].field_provenance.hard_excitation_band_hz.sources = [];
+  research.drivers[1].field_provenance.level_duration_limits.source =
+    '<img src=x onerror="alert(1)">';
+  const panel = echoPanel(await echoHarness(echoDraft({ research })));
+
+  if (panel.includes("<img src=x") || panel.includes("href=\"javascript:")) {
+    fail("an untrusted source must never reach innerHTML as markup", { panel });
+  }
+  if (!panel.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;")) {
+    fail("a markup-shaped source must render escaped, not dropped", { panel });
+  }
+  if (!panel.includes(
+    '<span class="driver-echo__source">javascript:alert(1)</span>'
+  )) {
+    fail("a non-http(s) scheme must render as text, never as a link", { panel });
+  }
+  return { researchEchoBackEscapesUntrustedSources: true };
+}
+
+async function testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence() {
+  // Two rules already govern the Advanced evidence block, and the panel must
+  // not become a second surface that keeps showing stale authority:
+  //   * a v2 packet with no bound request is describing some other request;
+  //   * an edited target's values are no longer the reply's.
+  const unbound = echoDraft();
+  delete unbound.driver_research_request;
+  const unboundHtml = await echoHarness(unbound);
+  if (unboundHtml.includes("driver-research__panel driver-echo")) {
+    fail("an unbound v2 packet must not render an echo-back", {
+      unboundHtml: unboundHtml.slice(0, 600),
+    });
+  }
+
+  // A manual driver edit invalidates the v2 binding (setManualDriverField ->
+  // invalidateDriverResearchBinding), so the whole panel goes with it. Typing
+  // in a number input deliberately does NOT full-render (focus loss), so this
+  // only holds because the panel has its own targeted refresh.
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(echoDraft())),
+  }));
+  await loadAndSetActiveState(harness);
+  if (!harness.elements.get("view-body").innerHTML.includes("driver-echo__rows")) {
+    fail("expected the bound packet to echo before the edit", {});
+  }
+  harness.dispatchInput({
+    "data-manual-driver": "main:tweeter",
+    "data-manual-field": "hard_excitation_min_hz",
+  }, "2600");
+  const afterEdit = harness.elements.get("driver-echo-control").innerHTML;
+  if (afterEdit !== "") {
+    fail("an edit that unbinds the packet must clear the echo, not go stale", {
+      afterEdit,
+    });
+  }
+
+  // A legacy v1 packet has no binding to invalidate, so the per-target rule is
+  // what stops its badges from outliving an edit.
+  const legacy = echoResearchPacket();
+  legacy.artifact_schema_version = 1;
+  delete legacy.request_fingerprint;
+  const legacyDraft = echoDraft({ research: legacy });
+  delete legacyDraft.driver_research_request;
+  const legacyHarness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(legacyDraft)),
+  }));
+  await loadAndSetActiveState(legacyHarness);
+  legacyHarness.dispatchInput({
+    "data-manual-driver": "main:tweeter",
+    "data-manual-field": "hard_excitation_min_hz",
+  }, "2600");
+  const edited = legacyHarness.elements.get("driver-echo-control").innerHTML;
+  if (!edited.includes("You changed these values, so the research reply no longer describes them.")) {
+    fail("an edited target must say the badges no longer apply", { edited });
+  }
+  if (edited.includes("Dayton CX120-8 datasheet, p.2")) {
+    fail("an edited target must not keep showing the reply's citations", {
+      edited,
+    });
+  }
+  // The untouched woofer keeps its evidence.
+  if (!edited.includes("https://example.test/w6-datasheet.pdf")) {
+    fail("editing one target must not blank the others", { edited });
+  }
+  return { researchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence: true };
+}
+
+async function testResearchEchoBackRendersRightAfterAPaste() {
+  // The ingest path above is the reload half. This is the one the ruling names:
+  // the operator pastes, and the answer to "what did we just take from that?"
+  // is on screen without saving anything.
+  const draft = echoDraft();
+  const packet = draft.driver_research;
+  delete draft.driver_research;
+  delete draft.manual_settings;
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+  }));
+  await loadAndSetActiveState(harness);
+  if (harness.elements.get("view-body").innerHTML.includes("driver-echo__rows")) {
+    fail("nothing pasted yet means nothing to echo back", {});
+  }
+
+  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(packet));
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
+
+  const panel = echoPanel(harness.elements.get("view-body").innerHTML);
+  for (const expected of [
+    "3. What JTS is running with",
+    "high-pass 3.0 kHz, 24 dB/oct or steeper",
+    "Dayton CX120-8 datasheet, p.2",
+    "Test level here is left to JTS",
+  ]) {
+    if (!panel.includes(expected)) {
+      fail("a fresh paste must echo straight back", { expected, panel });
+    }
+  }
+  return { researchEchoBackRendersRightAfterAPaste: true };
 }
 
 async function testDriverResearchPromptCopyUsesHttpFallback() {
@@ -7281,7 +7597,11 @@ results.push(await testLoadedResearchHidesStalePreparedPreview());
 results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
 results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
-results.push(await testConfirmCalloutCountsResearchEstimates());
+results.push(await testResearchEchoBackNamesEveryValueWithBadgeAndSource());
+results.push(await testResearchEchoBackDisclosesTheDelegationSentinel());
+results.push(await testResearchEchoBackEscapesUntrustedSources());
+results.push(await testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence());
+results.push(await testResearchEchoBackRendersRightAfterAPaste());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());

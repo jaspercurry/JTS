@@ -630,6 +630,30 @@
   .driver-research__actions {
     display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px;
   }
+  /* Issue #2195: "here's what we got — here's what we're running with". One
+     block per driver, one row per consumed value, each row carrying its
+     published/estimated badge and its single citation. Sits below the
+     copy/paste grid because it only exists once a reply has landed. */
+  .driver-echo { margin-top: 12px; gap: 12px; }
+  .driver-echo__driver { display: grid; gap: 6px; }
+  .driver-echo__driver + .driver-echo__driver {
+    padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  .driver-echo__rows { margin: 0; display: grid; gap: 6px; }
+  .driver-echo__row {
+    display: grid; gap: 2px;
+    font-size: 12px; color: var(--muted-foreground);
+  }
+  .driver-echo__row dt { font-weight: 700; }
+  .driver-echo__row dd {
+    margin: 0;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  }
+  .driver-echo__value {
+    color: var(--foreground); font-variant-numeric: tabular-nums;
+  }
+  .driver-echo__source { min-width: 0; overflow-wrap: anywhere; }
+  .driver-echo__source--empty { font-style: italic; }
   /* Issue #1820: the hoisted "Confirm safety limits" callout. It reads as an
      attention panel (same shape as __notes) rather than another plain section,
      because it is the one blocking action between the household and any
