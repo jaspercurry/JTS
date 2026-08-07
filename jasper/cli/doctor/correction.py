@@ -192,13 +192,28 @@ def check_correction_web_start_limited() -> CheckResult:
     :func:`jasper.cli.doctor.resilience.check_service_runtime_state` already
     applies to the core daemons — reused rather than re-invented — and the
     gate confirmed it catches this state. ``Result`` is *reported*, never
-    gated on, so a systemd rename of the marker string cannot silently turn
-    this check green again; that narrowing is what produced the original
-    blind spot. The socket is also the unambiguous unit to read: it carries
-    no ``Restart=``, so unlike the service it has no
-    ``failed-before-auto-restart`` window in which ``failed`` actually means
-    "retrying shortly" (systemd ≥ v254 state table — inferred from systemd
-    semantics, not measured).
+    gated on: besides surviving a rename of the marker string, ``ActiveState``
+    is strictly *broader* — a socket killed by ``trigger-limit-hit`` is just
+    as unbound, and a ``Result``-gated check would print ``ok`` over that
+    whole class. That narrowing is what produced the original blind spot.
+
+    **Why the socket and not the service — measured**, by the #2216 delta
+    re-review on jts4, capturing systemd's D-Bus ``PropertiesChanged`` signals
+    (polling misses this: a first attempt at 190 samples over 22 restarts saw
+    ``activating`` only, and that null was a sampling artefact). Across 17
+    ordinary ``Restart=on-failure`` retries::
+
+        service ActiveState: 99 "activating"  34 "failed"  2 "inactive"
+        service SubState:    34 "failed-before-auto-restart"
+        socket:              ActiveState=active  ActiveExitTimestampMonotonic=0
+
+    So the service passes through ``ActiveState=failed`` **34 times in 20
+    seconds** of routine retrying — reading it with ``ActiveState == "failed"``
+    would false-``fail`` on every one. The socket has no such window:
+    ``ActiveExitTimestampMonotonic=0`` means systemd never recorded it leaving
+    ``active`` at any duration (confirmed twice). Restarts and idle-exits are
+    the service's business; the socket only changes state when the listener
+    genuinely goes away.
 
     Deliberately ``ok``: the socket listening while the service idles between
     sessions (the normal socket-activated lifecycle); a service crash-looping

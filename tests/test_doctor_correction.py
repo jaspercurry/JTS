@@ -76,12 +76,33 @@ _CURRENTLY_SERVING = {
     _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
 }
 
-# A crash still INSIDE the Restart=on-failure budget. INFERRED from systemd's
-# state table (SERVICE_AUTO_RESTART maps to ActiveState=activating), not
-# measured: the gate measured only the terminal state above. The socket stays
-# bound throughout, which is what this check reads.
+# A crash still INSIDE the Restart=on-failure budget. MEASURED on jts4 by the
+# #2216 delta re-review, capturing systemd's D-Bus PropertiesChanged signals
+# (polling misses these: 190 samples over 22 restarts saw `activating` only —
+# a sampling artefact). Across 17 ordinary retries the service reported:
+#
+#     ActiveState: 99 "activating"  34 "failed"  2 "inactive"
+#     SubState:    34 "failed-before-auto-restart"
+#     socket:      ActiveState=active  ActiveExitTimestampMonotonic=0
+#
+# Both service ActiveStates therefore occur during routine retrying, and both
+# are modelled below. The socket never left `active` at any duration
+# (ActiveExitTimestampMonotonic=0, confirmed twice) — which is the whole
+# reason this check reads the socket.
 _CRASH_INSIDE_RESTART_BUDGET = {
     _CORRECTION_WEB_SERVICE: "ActiveState=activating\nResult=exit-code\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
+}
+
+# The same routine retry, sampled inside its `failed-before-auto-restart`
+# window — the state that makes the SERVICE unreadable for this purpose. A
+# check reading the service with `ActiveState == "failed"` would false-fail
+# here 34 times in 20 seconds; reading the socket, it is correctly `ok`.
+_CRASH_MID_RESTART_FAILED_WINDOW = {
+    _CORRECTION_WEB_SERVICE: (
+        "ActiveState=failed\nSubState=failed-before-auto-restart\n"
+        "Result=exit-code\n"
+    ),
     _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
 }
 
@@ -165,6 +186,10 @@ def test_check_correction_web_start_limited_fails_on_any_failed_socket(monkeypat
         (_IDLE_BETWEEN_SESSIONS, "service idle-exited between sessions"),
         (_CURRENTLY_SERVING, "a household has /correction/ open"),
         (_CRASH_INSIDE_RESTART_BUDGET, "crash still inside the Restart budget"),
+        (
+            _CRASH_MID_RESTART_FAILED_WINDOW,
+            "routine retry, sampled in failed-before-auto-restart",
+        ),
         (_UNIT_NOT_INSTALLED, "unit not installed on this profile"),
     ],
 )
@@ -173,12 +198,18 @@ def test_check_correction_web_start_limited_ok_on_healthy_states(
 ):
     """Every state that is NOT a wedged socket stays ``ok``.
 
-    The crash-inside-budget row is the PR's original scoping intent, kept
+    The crash-inside-budget rows are the PR's original scoping intent, kept
     because it survives contact with the measurement: the socket rides that
     window out still bound. What did NOT survive was the fixture the first
     revision used for it — service ``ActiveState=failed`` / ``Result=exit-code``
     is the measured TERMINAL state (NRestarts=20, listener unbound), not a
     unit that "will retry on its own" (#2216 blocker 2).
+
+    The ``failed-before-auto-restart`` row is why this check reads the socket
+    at all, and it is the guard against "just apply the generic
+    ``ActiveState == 'failed'`` predicate to the service": measured, the
+    service enters that state 34 times in 20 seconds of ordinary retrying, so
+    a service-side read would false-fail on every one of them.
     """
     monkeypatch.setattr(doctor.correction, "_run", _systemctl_show_pair(states))
     r = doctor.check_correction_web_start_limited()
