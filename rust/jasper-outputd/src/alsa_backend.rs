@@ -291,6 +291,13 @@ pub struct AlsaBackend {
     /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
     /// width stays `CHANNELS=2` (the published reference is always stereo).
     channels: u16,
+    /// The format the CONTENT capture PCM negotiated — requested from
+    /// `Config::content_format` and checked against the installed `hw_params`
+    /// by `configure_pcm`'s content readback. `None` means no ALSA content PCM
+    /// was opened at all, which is the (PROTOTYPE) SHM-ring source: there is no
+    /// lane to have negotiated anything, so `/state` keeps reporting the
+    /// declaration rather than claiming a readback that never ran.
+    content_format: Option<SampleFormat>,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
     /// `configure_pcm`'s dac readback, so this is what outputd is running, not
@@ -327,11 +334,26 @@ pub struct PairedCompositeSink {
     max_delay_delta_frames: i64,
     period_a: Vec<i16>,
     period_b: Vec<i16>,
+    /// The format the ACTIVE content capture PCM negotiated — same contract as
+    /// [`AlsaBackend::content_format`], never `Option` here because the
+    /// composite sink always opens its content lane (the SHM-ring source is
+    /// single-ALSA only).
+    content_format: SampleFormat,
 }
 
-/// Marker for a final sink that could not be opened or negotiate the required
-/// outputd geometry during initial startup. This is configuration-class: a
-/// restart cannot change the PCM alias or its hardware capabilities.
+/// Marker for a startup fault that a restart cannot repair, attached via
+/// `anyhow::Context` and downcast by `main` into the EX_CONFIG 78 park.
+///
+/// Named for its first user — a final sink that could not be opened or
+/// negotiate outputd's geometry, where a restart cannot change the PCM alias or
+/// its hardware capabilities. The content lane's format readback carries it for
+/// the same reason: a device that installs a format other than the one outputd
+/// requested will install exactly that format again on the next start, so the
+/// unit must park where an operator can see it instead of restart-looping into
+/// `StartLimitAction=reboot`. It is deliberately NOT attached to ordinary
+/// content-lane open failures, which ARE transient — those mean CamillaDSP has
+/// not yet opened its half of the snd-aloop pair, and restarting is how outputd
+/// waits that out.
 #[derive(Debug)]
 pub struct FinalSinkStartupConfigError;
 
@@ -383,9 +405,11 @@ impl AlsaBackend {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: config.content_channels,
-                // Camilla's post-DSP loopback lane is outputd's INTERNAL
-                // program, not the hardware edge — it stays i16.
-                format: SampleFormat::S16Le,
+                // Camilla's post-DSP loopback lane — its own declared hop, NOT
+                // the hardware edge and not outputd's internal program width.
+                // Defaults to S16_LE (every box today); `configure_pcm`'s
+                // content readback proves what the lane installed.
+                format: config.content_format,
                 buffer_frames: config.content_buffer_frames,
                 manual_start: false,
             })
@@ -429,14 +453,21 @@ impl AlsaBackend {
         // raw `hw:` device, not through a `plug` — see the dac readback's
         // comment. outputd's internal program is i16 whatever it says; a wider
         // edge is served by widening at the final write.
+        //
+        // `format=` is the DAC edge and keeps its bare name (a rename is a wire
+        // break for every reader of this line); the content lane rides the
+        // explicitly-named `content_format=` beside it, so one line names both
+        // hops and a half-flipped box is visible at open rather than only in
+        // STATUS.
         eprintln!(
-            "event=outputd.alsa.opened content_pcm={} content_source={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
+            "event=outputd.alsa.opened content_pcm={} content_source={} content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_pcm,
             if config.content_bridge_mode == crate::config::ContentBridgeMode::ShmRing {
                 "shm_ring"
             } else {
                 "alsa"
             },
+            config.content_format.as_str(),
             config.dac_pcm,
             config.content_channels,
             dac_negotiated.sample_rate,
@@ -457,6 +488,14 @@ impl AlsaBackend {
             counters: IoCounters::default(),
             fill_log: FillLogGate::default(),
             channels: config.content_channels,
+            // `Some` only when an ALSA content lane was actually opened and its
+            // readback passed. Under the SHM-ring source `skip_content_pcm`
+            // short-circuits the open, so there is nothing to report.
+            content_format: if skip_content_pcm {
+                None
+            } else {
+                Some(config.content_format)
+            },
             // `configure_pcm`'s dac readback checked the installed client-side
             // format against this requested one, so storing the request stores
             // what outputd is running — it never reached here otherwise.
@@ -479,6 +518,12 @@ impl AlsaBackend {
     /// `plug`).
     pub fn dac_format(&self) -> SampleFormat {
         self.dac_format
+    }
+
+    /// The format the content lane negotiated, or `None` when no ALSA content
+    /// PCM was opened (the SHM-ring source). See the field's doc.
+    pub fn content_format(&self) -> Option<SampleFormat> {
+        self.content_format
     }
 
     pub fn counters(&self) -> IoCounters {
@@ -629,7 +674,10 @@ impl PairedCompositeSink {
             sample_rate: config.sample_rate,
             period_frames: config.period_frames,
             channels: config.content_channels,
-            format: SampleFormat::S16Le,
+            // The active lane's own declared hop — same axis the single-ALSA
+            // content role reads, and independent of what the composite's
+            // children run at their edges (those stay S16-pinned below).
+            format: config.content_format,
             buffer_frames: config.content_buffer_frames,
             manual_start: false,
         })
@@ -741,11 +789,18 @@ impl PairedCompositeSink {
             max_delay_delta_frames: config.dual_max_delay_delta_frames,
             period_a: vec![0i16; period_samples],
             period_b: vec![0i16; period_samples],
+            content_format: config.content_format,
         })
     }
 
     pub fn counters(&self) -> IoCounters {
         self.counters
+    }
+
+    /// The format the active content lane negotiated (readback-checked at open
+    /// by `configure_pcm`'s content readback).
+    pub fn content_format(&self) -> SampleFormat {
+        self.content_format
     }
 
     pub fn dual_status(&self) -> CompositeStatus {
@@ -933,10 +988,13 @@ struct PcmConfig<'a> {
     sample_rate: u32,
     period_frames: u32,
     channels: u16,
-    /// The format to REQUEST from ALSA for this PCM. Only the coherent
-    /// single-DAC `dac` role varies it (from the registry-declared final edge);
-    /// every other role passes `S16Le` explicitly, which is byte-identical to
-    /// the retired module-level `FORMAT` const they used to inherit.
+    /// The format to REQUEST from ALSA for this PCM. Two roles vary it, from
+    /// two independent declarations: `dac` takes the registry-declared final
+    /// edge (`Config::declared_dac_format`), and the `content` /
+    /// `active_content` lanes take `Config::content_format`. Both default to
+    /// `S16Le`. Every remaining role (`chip_ref`, the composite children) passes
+    /// `S16Le` explicitly by contract, which is byte-identical to the retired
+    /// module-level `FORMAT` const they used to inherit.
     format: SampleFormat,
     buffer_frames: u32,
     manual_start: bool,
@@ -1018,6 +1076,41 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             .context("get installed outputd DAC format")?;
         verify_dac_format(pcm_name, format, installed)?;
     }
+    if role == "content" || role == "active_content" {
+        // outputd's INGEST is i16-only: `read_content_available` /
+        // `read_content_period` fetch an `io_i16()` handle every period, and
+        // alsa-rs verifies the installed format on that call. So a wide content
+        // lane would open cleanly here and then fail on the FIRST period read —
+        // deep on the audio path, as an ordinary error, which on this unit means
+        // restart-loop and eventually `StartLimitAction=reboot`. Refuse it at
+        // startup instead, where it parks visibly. The wide ingest (io_i16 vs
+        // io_i32 chosen off this declaration) is the next step of the
+        // wide-output-path program; this guard is what it deletes.
+        final_sink_startup(require_readable_content_format(role, pcm_name, format))?;
+        // Prove what outputd's own client edge ended up at, exactly as the dac
+        // role does — and read the scope of THIS claim just as honestly, because
+        // the content lane's plumbing differs per build:
+        //
+        // The ACTIVE lane (`outputd_active_content_*`) is a raw `type hw`
+        // snd-aloop pair, so the client edge IS the lane: a format the lane
+        // cannot serve fails at `hw_params` install above, and this readback is
+        // a genuine second proof of what got installed.
+        //
+        // The PASSIVE lane (`outputd_content_*`) is `type plug` over a slave
+        // that pins `format S16_LE` today, so this readback proves the CLIENT
+        // EDGE ONLY: a plug installs the client's own request client-side and
+        // converts on the slave side, so it agrees BY CONSTRUCTION and cannot
+        // see the slave's width. Re-pinning those slaves is a later step of the
+        // wide-output-path program; the slave-edge proof is the asound wiring
+        // test over there, not this Rust check.
+        let current = pcm
+            .hw_params_current()
+            .with_context(|| format!("reading installed outputd {role} HwParams"))?;
+        let installed = current
+            .get_format()
+            .with_context(|| format!("get installed outputd {role} format"))?;
+        final_sink_startup(verify_content_format(role, pcm_name, format, installed))?;
+    }
     if role == "chip_ref" {
         let current = pcm
             .hw_params_current()
@@ -1081,16 +1174,71 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
 /// `unsupported io_xx`; this runs once, at startup, names both formats, and
 /// reaches the operator as a park rather than as a restart loop.
 fn verify_dac_format(pcm_name: &str, requested: SampleFormat, installed: Format) -> Result<()> {
+    verify_installed_format("dac", pcm_name, requested, installed)
+}
+
+/// Fail closed unless the format ALSA installed on the CONTENT lane's client
+/// edge is exactly the one requested.
+///
+/// The content sibling of `verify_dac_format`, and the scope of what it proves
+/// depends on the lane — raw `hw` on the active lane (a real second proof),
+/// client-edge-only through the passive lane's `plug`. `configure_pcm`'s content
+/// readback comment carries the full argument; the failure is handled the same
+/// way (parked at EX_CONFIG 78, never restart-looped) because a device that
+/// substituted a format once will substitute it again.
+fn verify_content_format(
+    role: &str,
+    pcm_name: &str,
+    requested: SampleFormat,
+    installed: Format,
+) -> Result<()> {
+    verify_installed_format(role, pcm_name, requested, installed)
+}
+
+/// The one request-vs-installed comparison, shared by both readbacks so the two
+/// lanes can never drift into disagreeing about what a mismatch is or how it
+/// reads. Names BOTH formats: the operator has to know which end moved.
+fn verify_installed_format(
+    role: &str,
+    pcm_name: &str,
+    requested: SampleFormat,
+    installed: Format,
+) -> Result<()> {
     let want = alsa_format(requested);
     if installed != want {
         anyhow::bail!(
-            "outputd dac PCM {pcm_name} installed format {:?} but outputd requested {} ({:?})",
+            "outputd {role} PCM {pcm_name} installed format {:?} but outputd requested {} ({:?})",
             installed,
             requested.as_str(),
             want
         );
     }
     Ok(())
+}
+
+/// Refuse a content lane outputd's i16-only ingest cannot read.
+///
+/// TEMPORARY, and deliberately narrow: the declaration axis exists before the
+/// wide read path does, so this is the tripwire that keeps the gap from
+/// presenting as a period-read failure on the audio path (which on this unit
+/// escalates to a reboot loop). It goes away in the same change that teaches
+/// ingest to pick `io_i32` off `Config::content_format` — at which point every
+/// value the config parser accepts is a value outputd can actually read.
+fn require_readable_content_format(
+    role: &str,
+    pcm_name: &str,
+    requested: SampleFormat,
+) -> Result<()> {
+    match requested {
+        SampleFormat::S16Le => Ok(()),
+        wide => anyhow::bail!(
+            "outputd {role} PCM {pcm_name} was declared {} \
+             (JASPER_OUTPUTD_CONTENT_FORMAT), but outputd's content ingest reads \
+             S16_LE only — it would open this lane and then fail on the first \
+             period read. Declare S16_LE until the wide content read path ships.",
+            wide.as_str()
+        ),
+    }
 }
 
 /// The i16 -> i32 widening staging for one period at `format`.
@@ -1705,6 +1853,181 @@ mod tests {
         assert!(error
             .downcast_ref::<FinalSinkStartupConfigError>()
             .is_some());
+    }
+
+    #[test]
+    fn content_format_readback_accepts_the_installed_format_it_requested() {
+        // Both content roles, both vocabulary values. The passive lane's `plug`
+        // makes this agree by construction today (see `configure_pcm`'s content
+        // readback comment); the active lane's raw `hw` makes it a real proof.
+        verify_content_format(
+            "content",
+            "outputd_content_capture",
+            SampleFormat::S16Le,
+            Format::S16LE,
+        )
+        .unwrap();
+        verify_content_format(
+            "active_content",
+            "outputd_active_content_capture",
+            SampleFormat::S32Le,
+            Format::S32LE,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn content_format_readback_rejects_an_honestly_reported_mismatch() {
+        // The lane installed something other than the request and reported it.
+        // Both formats and the ROLE must be named: with two content roles and
+        // two hops in play, "which end moved" is only answerable if the message
+        // says which lane it was.
+        let err = verify_content_format(
+            "active_content",
+            "outputd_active_content_capture",
+            SampleFormat::S32Le,
+            Format::S16LE,
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("active_content"), "{text}");
+        assert!(text.contains("outputd_active_content_capture"), "{text}");
+        assert!(text.contains("S16LE"), "{text}");
+        assert!(text.contains("S32_LE"), "{text}");
+    }
+
+    #[test]
+    fn content_format_readback_rejects_an_edge_outside_the_vocabulary() {
+        let err = verify_content_format(
+            "content",
+            "outputd_content_capture",
+            SampleFormat::S16Le,
+            Format::S24LE,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("S24LE"), "{err}");
+    }
+
+    #[test]
+    fn content_format_mismatch_parks_the_unit_instead_of_restart_looping() {
+        // `configure_pcm` wraps the content readback in `final_sink_startup`, so
+        // a mismatch must carry the marker main() turns into EX_CONFIG 78 — a
+        // lane that substituted a format once will substitute it again, and this
+        // unit's restart loop escalates to StartLimitAction=reboot.
+        let error = final_sink_startup(verify_content_format(
+            "content",
+            "outputd_content_capture",
+            SampleFormat::S32Le,
+            Format::S16LE,
+        ))
+        .unwrap_err();
+
+        assert!(error
+            .downcast_ref::<FinalSinkStartupConfigError>()
+            .is_some());
+    }
+
+    #[test]
+    fn a_content_park_survives_the_callers_own_context_layer() {
+        // The dac marker is attached OUTERMOST (`final_sink_startup(configure_pcm
+        // (..).with_context(..))`); the content markers are attached INSIDE
+        // `configure_pcm` and the caller then wraps them in its own
+        // `.with_context("configuring outputd content capture PCM ...")`. So the
+        // park only works if `main`'s downcast walks the whole context chain
+        // rather than inspecting the outermost layer — pin that, because the
+        // alternative is a mismatch that silently restart-loops instead of
+        // parking. Mirrors both call sites' wrapping exactly.
+        for inner in [
+            final_sink_startup(verify_content_format(
+                "content",
+                "outputd_content_capture",
+                SampleFormat::S32Le,
+                Format::S16LE,
+            )),
+            final_sink_startup(require_readable_content_format(
+                "content",
+                "outputd_content_capture",
+                SampleFormat::S32Le,
+            )),
+        ] {
+            let wrapped = inner
+                .with_context(|| {
+                    "configuring outputd content capture PCM outputd_content_capture".to_string()
+                })
+                .unwrap_err();
+
+            assert!(
+                wrapped
+                    .downcast_ref::<FinalSinkStartupConfigError>()
+                    .is_some(),
+                "marker lost under the caller's context: {wrapped:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_readbacks_report_a_mismatch_in_one_shape() {
+        // One comparison behind both entry points: the dac and content lanes
+        // cannot drift into disagreeing about what a mismatch is or how it
+        // reads. Same requested/installed pair, same message but for the role.
+        let dac = verify_dac_format("some_pcm", SampleFormat::S32Le, Format::S16LE)
+            .unwrap_err()
+            .to_string();
+        let content =
+            verify_content_format("content", "some_pcm", SampleFormat::S32Le, Format::S16LE)
+                .unwrap_err()
+                .to_string();
+
+        assert_eq!(
+            dac.replacen("dac", "content", 1),
+            content,
+            "{dac} vs {content}"
+        );
+    }
+
+    #[test]
+    fn a_content_lane_wider_than_the_i16_ingest_is_refused_at_startup() {
+        // TEMPORARY guard (see `require_readable_content_format`): the ingest
+        // fetches an `io_i16()` handle every period, so an S32 lane would open
+        // and then fail on the first read — an audio-path error, which on this
+        // unit means restart-loop into StartLimitAction=reboot. It must fail at
+        // startup, name the env var, and park.
+        for (role, pcm) in [
+            ("content", "outputd_content_capture"),
+            ("active_content", "outputd_active_content_capture"),
+        ] {
+            let err = require_readable_content_format(role, pcm, SampleFormat::S32Le).unwrap_err();
+            let text = err.to_string();
+            assert!(text.contains("JASPER_OUTPUTD_CONTENT_FORMAT"), "{text}");
+            assert!(text.contains("S32_LE"), "{text}");
+            assert!(text.contains(role), "{text}");
+            assert!(text.contains(pcm), "{text}");
+
+            let parked = final_sink_startup(require_readable_content_format(
+                role,
+                pcm,
+                SampleFormat::S32Le,
+            ))
+            .unwrap_err();
+            assert!(parked
+                .downcast_ref::<FinalSinkStartupConfigError>()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn the_default_s16_content_lane_passes_the_ingest_guard() {
+        // The whole axis is byte-identical on every live box, and this is the
+        // assertion that says so: the default declaration reaches the ingest
+        // guard and passes it untouched.
+        require_readable_content_format("content", "outputd_content_capture", SampleFormat::S16Le)
+            .unwrap();
+        require_readable_content_format(
+            "active_content",
+            "outputd_active_content_capture",
+            SampleFormat::S16Le,
+        )
+        .unwrap();
     }
 
     #[test]

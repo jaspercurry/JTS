@@ -11,6 +11,10 @@ venv/
 .env.local
 .pytest_cache/
 .ruff_cache/
+# scripts/test-merge runs mypy, which writes this cache into the repo root —
+# the sibling of the two above, and the one that was missing (a `git add -A`
+# after a merge-lane run otherwise stages ~48 cache files).
+.mypy_cache/
 # Local multi-agent worktrees are disposable orchestration state, not source.
 .worktrees/
 build/

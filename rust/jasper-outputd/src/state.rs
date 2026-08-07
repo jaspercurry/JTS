@@ -60,6 +60,19 @@ pub struct OutputdState {
     backend: String,
     sink_mode: String,
     content_pcm: String,
+    /// The DECLARED format of the post-DSP content lane — what the box says
+    /// outputd should ask CamillaDSP's snd-aloop lane for (`Config::
+    /// content_format`; today always its `S16_LE` default, since no writer
+    /// emits the name yet). It is what `content.format` reports only UNTIL
+    /// outputd opens that lane; the fake backend and the SHM-ring source never
+    /// do, so there it is the whole answer.
+    declared_content_format: String,
+    /// The format the content lane actually NEGOTIATED, read back from the
+    /// installed `hw_params` (`SampleFormat::as_str`, hence `&'static str`).
+    /// Written exactly once, at open, and it is what `content.format` reports
+    /// from then on — a half-flipped box (lane re-pinned on one side only) has
+    /// to be visible as what is RUNNING, not as what someone declared.
+    negotiated_content_format: OnceLock<&'static str>,
     dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge — what the
     /// reconciler says the DAC's `hw:` device is at. It is what `dac.format`
@@ -253,6 +266,8 @@ impl OutputdState {
             backend: config.backend.as_str().to_string(),
             sink_mode: config.sink_mode.as_str().to_string(),
             content_pcm: config.content_pcm.clone(),
+            declared_content_format: config.content_format.as_str().to_string(),
+            negotiated_content_format: OnceLock::new(),
             dac_pcm: config.dac_pcm.clone(),
             declared_dac_format: config.declared_dac_format.as_str().to_string(),
             negotiated_dac_format: OnceLock::new(),
@@ -434,6 +449,16 @@ impl OutputdState {
     /// a value that could change under a reader is worse than a stale one.
     pub fn set_dac_format(&self, format: SampleFormat) {
         let _ = self.negotiated_dac_format.set(format.as_str());
+    }
+
+    /// Record the sample format the content lane negotiated at open.
+    ///
+    /// Set-once for the same reason as [`Self::set_dac_format`]: the ALSA run
+    /// loop calls it once, right after the lane opens, and there is no second
+    /// negotiation to report. A repeat call is ignored rather than allowed to
+    /// move the answer under a reader.
+    pub fn set_content_format(&self, format: SampleFormat) {
+        let _ = self.negotiated_content_format.set(format.as_str());
     }
 
     pub fn mark_period(&self, counters: IoCounters, reference_sequence: u64, clipped_samples: u32) {
@@ -808,6 +833,25 @@ impl OutputdState {
         );
         buf.push(',');
         push_kv_str(&mut buf, "pcm", &self.content_pcm);
+        buf.push(',');
+        // NEGOTIATED once outputd has opened the content lane: the format read
+        // back off the installed hw_params, not the declaration that asked for
+        // it. Mirrors `dac.format` one hop upstream, and for the same reason —
+        // the two hops are independent, so a reader needs each lane's OWN truth
+        // to tell a coherent box from a half-flipped one.
+        //
+        // Falls back to the declaration whenever no lane is open: the fake
+        // backend for its whole life, the SHM-ring source (which reads no ALSA
+        // content PCM at all), and the ALSA backend's pre-open window, since the
+        // state socket binds before the lane opens.
+        push_kv_str(
+            &mut buf,
+            "format",
+            self.negotiated_content_format
+                .get()
+                .copied()
+                .unwrap_or(self.declared_content_format.as_str()),
+        );
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -2121,6 +2165,7 @@ mod tests {
             sink_mode: SinkMode::SingleAlsa,
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
+            content_format: SampleFormat::S16Le,
             dac_pcm: "outputd_dac".to_string(),
             declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,
@@ -2351,7 +2396,12 @@ mod tests {
         let _ = parse_snapshot_json(&j);
         for needle in [
             r#""backend":"alsa""#,
-            r#""content":{"source":"alsa","pcm":"outputd_content_capture""#,
+            // The content lane's own declared/negotiated hop sits right after
+            // its pcm, mirroring `dac`. Updated deliberately when
+            // `content.format` was added: the block's prefix is the contract
+            // consumers read, so a new field belongs IN this needle, not around
+            // it.
+            r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S16_LE""#,
             r#""content_bridge":{"mode":"direct""#,
             r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
@@ -2458,6 +2508,94 @@ mod tests {
         assert!(
             state.snapshot_json().contains(r#""format":"S32_LE""#),
             "first negotiated value must stand"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_echoes_the_declared_content_lane_format_before_the_lane_opens() {
+        // The content hop is declared independently of the DAC edge, so STATUS
+        // must carry it verbatim — including the mixed shape this fixture pins
+        // (wide content lane, S16 hardware edge), which is exactly what an
+        // S16-only USB dongle build looks like once the lane goes wide. No lane
+        // is open here (the fake backend never opens one).
+        let state = OutputdState::new(&Config {
+            content_format: SampleFormat::S32Le,
+            declared_dac_format: SampleFormat::S16Le,
+            ..test_config()
+        });
+
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(
+                r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S32_LE""#
+            ),
+            "declared S32_LE content lane missing from {j}"
+        );
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#),
+            "the DAC edge must not inherit the content lane's width in {j}"
+        );
+    }
+
+    #[test]
+    fn snapshot_json_reports_the_negotiated_content_format_once_the_lane_opens() {
+        // What is RUNNING wins over what was declared. This is the half-flipped
+        // box: the reconciler declared a wide lane, the lane came up S16 anyway
+        // (a stale asound slave, an unconverted peer), and STATUS has to say so
+        // rather than repeat the declaration.
+        let state = OutputdState::new(&Config {
+            content_format: SampleFormat::S32Le,
+            ..test_config()
+        });
+
+        state.set_content_format(SampleFormat::S16Le);
+
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(
+                r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S16_LE""#
+            ),
+            "negotiated S16_LE content lane missing from {j}"
+        );
+    }
+
+    #[test]
+    fn negotiated_content_format_is_recorded_once_and_never_moves_under_a_reader() {
+        // Set-once, same as the DAC edge: there is one negotiation per open, so
+        // a later call must not change the answer a reader already took.
+        let state = OutputdState::new(&test_config());
+
+        state.set_content_format(SampleFormat::S32Le);
+        state.set_content_format(SampleFormat::S16Le);
+
+        assert!(
+            state
+                .snapshot_json()
+                .contains(r#""pcm":"outputd_content_capture","format":"S32_LE""#),
+            "first negotiated content value must stand"
+        );
+    }
+
+    #[test]
+    fn content_and_dac_format_are_reported_as_two_independent_fields() {
+        // One `set_` must never move the other: they are separate hops with
+        // separate declarations, and a consumer diffing them is how a
+        // half-flipped box gets caught.
+        let state = OutputdState::new(&test_config());
+
+        state.set_content_format(SampleFormat::S32Le);
+
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""pcm":"outputd_content_capture","format":"S32_LE""#),
+            "content hop must report its own negotiated format in {j}"
+        );
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#),
+            "dac hop must keep its own declaration in {j}"
         );
     }
 
