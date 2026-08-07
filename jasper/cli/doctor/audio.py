@@ -174,14 +174,19 @@ def _check_arecord_l_card_device(card: int, device: int) -> bool:
 def _soften_for_push_to_talk(
     result: CheckResult, presence: MicPresence,
 ) -> CheckResult:
-    """Downgrade a *local* mic failure to an advisory when an accessory runs the box.
+    """Downgrade a *local* mic failure to an advisory when an accessory is paired.
 
-    A speaker with no local microphone but a paired mic-bearing remote is a
-    working push-to-talk box (issue #2205), not a broken one — the voice-input
-    gate is open and jasper-voice is running on the accessory source. These
-    checks probe the local device, so they are the surface that can actually
-    tell "no local mic" from "local mic present"; the `microphone` headline
-    cannot, because it reads the OR verdict.
+    A speaker with no local microphone but a paired mic-bearing remote has its
+    voice-input gate legitimately open (issue #2205), so a red "your microphone
+    is missing" is the wrong register. These checks probe the local device, so
+    they are the surface that can actually tell "no local mic" from "local mic
+    present"; the `microphone` headline cannot, because it reads the OR verdict.
+
+    The detail reports GATE state, never runtime state. Opening the gate is
+    necessary for accessory-only input but not sufficient — the daemon-side
+    support that makes such a box actually answer is tracked in issue #2205 and
+    is not in this code path. Saying "voice runs push-to-talk only" here would
+    be a present-tense claim about a daemon this check never looks at.
 
     The local finding stays visible (``warn``, original detail appended) so an
     operator can still see the local mic is gone. Only the register changes:
@@ -196,8 +201,9 @@ def _soften_for_push_to_talk(
     return CheckResult(
         result.name,
         "warn",
-        "no local microphone — voice runs push-to-talk only "
-        f"({presence.accessory_summary}). Local probe: {result.detail}",
+        f"no local microphone; {presence.accessory_summary} — the voice-input "
+        "gate is open for it (daemon support for accessory-only input: see "
+        f"issue #2205). Local probe: {result.detail}",
     )
 
 
@@ -214,7 +220,23 @@ def check_microphone() -> CheckResult:
     not a scatter of contradicting red failures. Absent is ``warn`` (never
     ``fail``): the reconciler parked voice and it auto-starts when a mic is
     reconnected or an actionable profile condition is resolved, so it's
-    noteworthy, not broken."""
+    noteworthy, not broken.
+
+    **What ``ok`` claims, precisely: the voice-input start gate is open.** Not
+    that jasper-voice is running, and not that a *local* microphone exists —
+    the record this reads is the OR of the local and accessory halves and
+    carries no local probe (see ``jasper.mic_presence``). So the status
+    deliberately does NOT drop to ``warn`` merely because an accessory
+    satisfied the gate: the identical record shape also covers a box with a
+    healthy non-XVF local mic (a custom ``JASPER_MIC_DEVICE``, a plain USB mic)
+    that happens to have a remote paired, and warning there would be a
+    permanent false yellow on a working speaker — the contradicting-checks
+    scatter this single-reader design exists to prevent. The surfaces that CAN
+    tell those apart are ``mic ALSA card`` and ``mic capture``: they probe the
+    device and downgrade to ``warn`` naming issue #2205 when the local mic is
+    genuinely missing. The detail line here reads "voice-input gate open"
+    rather than "present", so an operator can tell the two apart at a glance
+    without this check pretending to knowledge it does not have."""
     mp = read_mic_presence()
     status = "warn" if mp.absent_confirmed else "ok"
     return CheckResult("microphone", status, mp.summary)

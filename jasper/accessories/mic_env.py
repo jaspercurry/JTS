@@ -119,31 +119,51 @@ def read_accessory_mic_sources(path: str | None = None) -> tuple[str, ...]:
     at start and are not restarted when a remote is paired or forgotten, so a
     cached value goes stale exactly when it matters.
 
-    Fail-safe to ``()``: a missing, unreadable, or malformed file must never
-    *invent* an accessory microphone, because that would hold the voice-input
-    gate open on a box with no usable input at all.
+    Two outcomes, deliberately NOT collapsed into one:
+
+    * **No file, or a file that publishes nothing** → ``()``. This is a real
+      answer: no accessory microphone is paired.
+    * **A file that exists but cannot be read** (``EACCES``, ``EIO``, undecodable
+      bytes) → the ``OSError``/``UnicodeDecodeError`` **propagates**. "I could
+      not look" is a different fact from "I looked and there is nothing", and a
+      caller that writes the gate marker states one of them out loud in the
+      operator-visible reason. Collapsing them made the reconciler assert
+      confidently that no remote was paired when it simply could not tell.
+
+    Malformed *content* still resolves to ``()`` — see ``parse_manual_mic_sources``;
+    that is a read that succeeded and found nothing usable.
+
+    Display surfaces that must never raise (``jasper.mic_presence``) catch the
+    unreadable case themselves and degrade to ``()``.
     """
+    target = path or accessory_mic_env_path()
     try:
-        with open(path or accessory_mic_env_path(), encoding="utf-8") as handle:
+        with open(target, encoding="utf-8") as handle:
             body = handle.read()
-    except (OSError, UnicodeDecodeError, ValueError):
+    except FileNotFoundError:
         return ()
     return parse_manual_mic_sources(body)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Print published source ids; exit 0 when at least one is published.
+    """Print published source ids, one comma-separated line; exit 0 when read.
 
-    The shell contract for ``deploy/bin/jasper-aec-reconcile``: exit status is
-    the answer, stdout is the detail for its log line. Non-zero on *any*
-    problem, so a broken interpreter or a corrupt file reads as "no accessory
-    microphone" — which is exactly the pre-existing behaviour.
+    The shell contract for ``deploy/bin/jasper-aec-reconcile``:
+
+    * **exit 0, non-empty stdout** — read succeeded, these sources are published.
+    * **exit 0, empty stdout** — read succeeded, nothing is published.
+    * **non-zero exit** — the probe could not answer (module unimportable,
+      unreadable file, killed). Never let this look like "nothing is published":
+      the caller must be able to say "I could not tell" in the marker reason.
+
+    Exit status is deliberately *not* overloaded to carry the answer, because
+    Python already spends non-zero on its own failures — a missing module and
+    "no remote paired" both exited 1 under the previous contract, and the
+    reconciler reported the second when the first was true. Stack traces are
+    left on stderr for the journal.
     """
     del argv
-    sources = read_accessory_mic_sources()
-    if not sources:
-        return 1
-    sys.stdout.write(",".join(sources) + "\n")
+    sys.stdout.write(",".join(read_accessory_mic_sources()) + "\n")
     return 0
 
 

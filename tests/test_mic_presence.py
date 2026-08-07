@@ -153,9 +153,17 @@ def test_accessory_only_box_does_not_claim_a_present_microphone(
     assert mp.absent_confirmed is False
     assert mp.accessory_present is True
     assert mp.accessory_sources == ("wiim_remote_2",)
+    # Gate state, never runtime state: this record cannot see whether
+    # jasper-voice is up, and a no-local-mic box does NOT yet answer (the
+    # daemon-side half is issue #2205). "voice input available" / "runs" would
+    # be a present-tense claim about a daemon nothing here looks at.
     assert mp.summary == (
-        "voice input available — push-to-talk accessory: wiim_remote_2"
+        "voice-input gate open — push-to-talk accessory paired: wiim_remote_2; "
+        "this record cannot see the local mic — the doctor's "
+        "`mic ALSA card` / `mic capture` checks own that half"
     )
+    assert "runs" not in mp.summary
+    assert "available" not in mp.summary
     assert mp.as_dict()["accessory_sources"] == ["wiim_remote_2"]
 
 
@@ -169,7 +177,7 @@ def test_local_xvf_and_accessory_report_both(
     )
     mp = read_mic_presence()
     assert "present (Array, 6ch" in mp.summary
-    assert "push-to-talk accessory: wiim_remote_2" in mp.summary
+    assert "push-to-talk accessory paired: wiim_remote_2" in mp.summary
 
 
 def test_no_accessory_file_leaves_summary_untouched(
@@ -180,6 +188,42 @@ def test_no_accessory_file_leaves_summary_untouched(
     assert mp.accessory_present is False
     assert mp.accessory_sources == ()
     assert mp.summary == "present"
+
+
+def test_unreadable_accessory_file_never_raises_from_the_display_reader(
+    paths: tuple[Path, Path], tmp_path: Path, monkeypatch,
+) -> None:
+    """read_accessory_mic_sources propagates an unreadable file so the GATE
+    writer can say "I could not tell". This reader is a display surface and
+    must still never raise — pin both halves of that split."""
+    from jasper.accessories import mic_env
+
+    def _boom(_path=None):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(
+        "jasper.mic_presence.read_accessory_mic_sources", _boom,
+    )
+    mp = read_mic_presence()
+    assert mp.accessory_sources == ()
+    assert mp.present is True
+
+    # And the underlying reader really does propagate, rather than this being
+    # a test of a mock: a missing file is (), an unreadable one raises.
+    missing = tmp_path / "absent.env"
+    assert mic_env.read_accessory_mic_sources(str(missing)) == ()
+    unreadable = tmp_path / "unreadable.env"
+    unreadable.write_text("JASPER_MANUAL_MIC_SOURCES=a=udp:1\n")
+    unreadable.chmod(0o000)
+    import os as _os
+    if _os.access(unreadable, _os.R_OK):
+        unreadable.chmod(0o644)
+        pytest.skip("cannot make a file unreadable as this user")
+    try:
+        with pytest.raises(OSError):
+            mic_env.read_accessory_mic_sources(str(unreadable))
+    finally:
+        unreadable.chmod(0o644)
 
 
 def test_malformed_accessory_file_publishes_nothing(

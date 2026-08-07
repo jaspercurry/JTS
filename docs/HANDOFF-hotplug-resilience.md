@@ -118,7 +118,7 @@ voice). It now also expresses that verdict as the marker:
 #### The gate is an OR over two owners (issue #2205)
 
 "Usable voice input" is not only a local microphone. A paired mic-bearing
-accessory (today: the WiiM Remote 2) is a working push-to-talk input on its
+accessory (today: the WiiM Remote 2) is a usable push-to-talk input on its
 own, and the two facts have two legitimate owners:
 
 | fact | owner | published as |
@@ -146,16 +146,53 @@ Three boundaries keep this from becoming two owners of one fact:
   reject would crash-loop it into `StartLimitAction=reboot`; parking is the safe
   answer.
 - The accessory reconciler never writes the marker. When its half moves it
-  calls `refresh_voice_input`, which restarts a *running* voice (the gate is
-  already open) or — when voice is not running, i.e. possibly gated —
-  starts `jasper-aec-reconcile` so the marker's owner re-derives the AND. On a
-  box that installs no AEC reconciler (the streambox profile) the start answers
-  "not installed", which is the correct and complete answer there: nothing
-  writes the marker, so voice is never gated off for a missing local mic.
+  calls `refresh_voice_input`, which asks systemd for the gate owner's
+  `LoadState`/`UnitFileState` and then does exactly one of two things:
+  **owner enabled** → `systemctl start jasper-aec-reconcile`, so the marker's
+  single writer re-derives the AND and takes the matching action; **owner
+  absent or disabled** → `try-restart jasper-voice`, which restarts it *only if
+  it is already running* and can never start a stopped one.
+  See "Which boxes reach `refresh_voice_input`" below for why the second branch
+  reads unit state instead of starting and hoping.
 - `stop_voice`'s accessory restart is **deferred** to the end of the pass. The
   restart is queued with `--no-block`, and the calling paths still rewrite a
   stale `JASPER_MIC_DEVICE=udp:PORT` to a real candidate; restarting at the
   decision point would race voice into reading the device being replaced.
+
+**Which boxes reach `refresh_voice_input`.** Three shapes. The second is why
+the second branch reads unit state instead of starting the owner and hoping.
+
+- **Full speaker.** `install_systemd_units` installs *and* enables both
+  reconcilers, so the gate owner is `LoadState=loaded UnitFileState=enabled` →
+  start it. This is the path the fix exists for.
+- **Fresh streambox.** `install_streambox_systemd_units` installs **neither**
+  reconciler — both `install` lines live in `install_systemd_units` — so
+  nothing calls `refresh_voice_input` there at all. (An earlier revision of
+  this section claimed the call happened and answered "not installed". It does
+  not happen; the case was unreachable as written.)
+- **Converted full → streambox.** `park_streambox_brain_units` runs
+  `systemctl disable --now` on `jasper-aec-reconcile` and names the accessory
+  reconciler nowhere, and no install path removes either unit *file*. So both
+  files survive the conversion: the accessory reconciler keeps running (and
+  `jasper.source_intent` starts it on every Bluetooth transaction, gated only
+  on `unit_available`) while the gate owner sits **installed and disabled**.
+  `systemctl start` on a disabled-but-installed unit **succeeds** — `disable`
+  only drops the `WantedBy` symlink — and the gate owner's `restart_voice`
+  runs `systemctl enable jasper-voice.service`. Starting it here would
+  persistently re-arm the voice brain on a Zero-class box whose whole profile
+  exists to keep it off. Hence `enabled` — not "the start returned 0" — is the
+  permission to start.
+
+The two shapes that do not start the owner fall back to `try-restart
+jasper-voice`, which is a no-op unless voice is already running, so a live
+push-to-talk session picks up the new source and a deliberately-stopped voice
+brain stays stopped. Verified on jts4 (2026-08-07): `try-restart` on a loaded
+unit that is `inactive`, and on one that is `failed`, returns rc=0 and leaves
+`ExecMainStartTimestamp` untouched, while a plain `start` on the same unit
+does re-run it. The converted-box shape above is read from
+`deploy/lib/install/systemd-units.sh`, not observed on a box — jts4 is a spike
+box whose accessory unit was placed by hand, so it is evidence for the
+*absent* branch (`LoadState=not-found`), not for the parked one.
 
 `park_managed_xvf` is deliberately **not** accessory-aware. It parks a mic that
 *is* attached but is not safely usable (wrong firmware, unapproved output DAC,
@@ -164,6 +201,16 @@ alignment not commissioned) and leaves `JASPER_MIC_DEVICE` on the AEC bridge's
 bind an unfed UDP socket and watchdog-restart into `StartLimitAction=reboot`.
 Un-parking that path needs the mic device normalised away from `udp:` first;
 that is its own change.
+
+**What this does not do.** Opening the gate does not by itself make a
+no-local-mic box answer. `jasper/voice_daemon.py`'s `_configured_wake_legs`
+builds the primary (`"on"`) leg unconditionally — its docstring says so — and
+`daemon_main` re-raises `InputDeviceUnavailable` for that leg, exiting 66 before
+the manual-mic loop below it ever runs. So such a box currently opens the gate,
+starts, and clean-parks. That is bounded (`RestartPreventExitStatus=66`, no
+loop) and is the state the daemon-side change converts into a running
+push-to-talk daemon; it is why every status string here reports **gate** state
+and not runtime state.
 
 **Cold boot still fails closed where it matters.** A box with *no* input at all
 carries the marker from its last reconcile and is gated at instant zero, exactly
@@ -531,7 +578,9 @@ session):**
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 - [`deploy/systemd/jasper-wiim-remote-ce.service`](../deploy/systemd/jasper-wiim-remote-ce.service) + [`jasper/cli/wiim_remote_ce.py`](../jasper/cli/wiim_remote_ce.py) — per-connection BLE connection-event reservation, re-requested on every reconnect
 
-Last verified: 2026-08-06 (Layer 1 re-derived against the reconcilers and units
-for the voice-input-gate OR, issue #2205; accessory/grouping timeout
-relationship retains its 2026-07-14 verification, and other subsystem claims
-their 2026-07-10 verification.)
+Last verified: 2026-08-07 (Layer 1 re-derived against the reconcilers and units
+for the voice-input-gate OR, issue #2205, including which install profiles
+reach `refresh_voice_input` — read from `deploy/lib/install/systemd-units.sh`
+— and `try-restart`'s no-op behaviour measured on jts4; accessory/grouping
+timeout relationship retains its 2026-07-14 verification, and other subsystem
+claims their 2026-07-10 verification.)

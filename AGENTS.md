@@ -2277,9 +2277,19 @@ software-AEC3/direct resolution.
 
 **No-mic park is gated, not just stopped.** The reconciler is also the
 single writer of a persistent **negative** marker
-(`/var/lib/jasper/voice-input-absent`): created on every no-usable-mic
-path, removed whenever a mic is present (including the custom-mic path,
-which is never gated). `jasper-voice.service` carries
+(`/var/lib/jasper/voice-input-absent`): created on every no-usable-**input**
+path, removed whenever input is available (including the custom-mic path,
+which is never gated). "Usable input" is an OR over a local microphone
+(this reconciler) and a paired accessory microphone
+(`jasper-accessory-reconcile`, published as `JASPER_MANUAL_MIC_SOURCES`),
+so the marker is the AND of their absences — the reconciler consults the
+accessory owner's *published file*, never BlueZ, before it writes. It
+remains the single writer; the accessory owner asks it to re-derive rather
+than writing here. Opening the gate is not the same as the daemon *using*
+an accessory-only input — that half is issue #2205, and every status
+string on this path says **gate**, not runtime. Canonical:
+[docs/HANDOFF-hotplug-resilience.md](docs/HANDOFF-hotplug-resilience.md)
+"Layer 1". `jasper-voice.service` carries
 `ConditionPathExists=!/var/lib/jasper/voice-input-absent`, so a no-mic
 box never start-crash-loops into `StartLimitAction=reboot` — PID 1 skips
 the start cleanly (the same clean-skip the output owner gets from its

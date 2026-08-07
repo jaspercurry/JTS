@@ -659,6 +659,54 @@ def test_malformed_accessory_env_parks_voice(tmp_path: Path) -> None:
     assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
 
 
+def test_failed_accessory_probe_parks_with_an_honest_reason(tmp_path: Path) -> None:
+    """The partial-/opt/jasper-deploy shape: the interpreter serves
+    jasper.cli.xvf_profile normally but cannot answer jasper.accessories.mic_env.
+
+    A remote IS paired and published. The reconciler must still park (fail
+    closed) but must NOT assert that no accessory is paired — that reason string
+    is surfaced verbatim through /state.microphone.reason and the doctor
+    headline, and an operator debugging "my remote does nothing" would be handed
+    a confident wrong answer. "I could not tell" and "I checked and there is
+    nothing" are different facts."""
+    _write_env(tmp_path, "udp:9876")
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\nJASPER_AUDIO_INPUT_PROFILE=custom\n",
+    )
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+    partial = tmp_path / "partial-deploy-python"
+    partial.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *'jasper.accessories.mic_env'* ]]; then\n"
+        "  echo 'ModuleNotFoundError: jasper.accessories.mic_env' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n",
+    )
+    partial.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(partial)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    reason = marker.read_text()
+    assert "could not be determined" in reason
+    assert "probe failed" in reason
+    # The confident-wrong-answer string must NOT appear.
+    assert "no accessory microphone paired" not in reason
+    assert "accessory mic probe failed" in result.stderr
+    # The module's own stderr reaches the journal rather than /dev/null.
+    assert "ModuleNotFoundError" in result.stderr
+
+
 def test_accessory_probe_without_interpreter_parks_voice(tmp_path: Path) -> None:
     """A missing interpreter must degrade to the pre-#2205 behaviour, not to an
     open gate: no accessory verdict means park.
@@ -686,7 +734,10 @@ def test_accessory_probe_without_interpreter_parks_voice(tmp_path: Path) -> None
     )
 
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "voice-input-absent").exists()
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    assert "could not be determined" in marker.read_text()
+    assert "no accessory microphone paired" not in marker.read_text()
     assert "accessory mic probe unavailable" in result.stderr
     assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
 

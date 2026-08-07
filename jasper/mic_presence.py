@@ -13,7 +13,9 @@ usable input exists, including a managed XVF parked for commissioning; see
 ``jasper.voice.input_presence`` and ``deploy/bin/jasper-aec-reconcile``).
 
 The verdict is an OR over two independently-owned inputs, because a paired
-mic-bearing accessory is a working push-to-talk microphone on its own:
+mic-bearing accessory is a usable push-to-talk microphone on its own. Note the
+scope: this record answers *is the start gate satisfied*, never *is jasper-voice
+running* — see ``jasper.voice.input_presence``.
 
 * a **local** microphone, owned by ``jasper-aec-reconcile``;
 * an **accessory** microphone, owned by ``jasper-accessory-reconcile`` and
@@ -117,16 +119,25 @@ class MicPresence:
         """A paired accessory microphone is published for push-to-talk.
 
         The doctor's local-device checks read this to tell "this box has no
-        local mic and runs push-to-talk only" (expected) from "this box's
-        configured mic is missing and nothing replaces it" (a failure)."""
+        local mic, but a push-to-talk accessory is paired" (expected) from
+        "this box's configured mic is missing and nothing replaces it"
+        (a failure). *Paired*, not in use: nothing here observes the daemon."""
         return bool(self.accessory_sources)
 
     @property
     def accessory_summary(self) -> str:
-        """``"push-to-talk accessory: a, b"``, or ``""`` when none is paired."""
+        """``"push-to-talk accessory paired: a, b"``, or ``""`` when none is.
+
+        Deliberately says *paired*, not *running*/*in use*. This record is
+        derived from the gate marker and the accessory owner's published file;
+        neither says anything about whether jasper-voice is up, so a
+        present-tense claim about the daemon would be one this module cannot
+        support."""
         if not self.accessory_sources:
             return ""
-        return "push-to-talk accessory: " + ", ".join(self.accessory_sources)
+        return "push-to-talk accessory paired: " + ", ".join(
+            self.accessory_sources
+        )
 
     @property
     def summary(self) -> str:
@@ -149,10 +160,23 @@ class MicPresence:
                 self.accessory_sources
             ) else local
         if self.accessory_sources:
-            # No XVF enrichment. Deliberately does NOT say "present" — this
-            # module cannot see the local mic, and on a push-to-talk-only box
-            # claiming a present microphone is the lie an operator would act on.
-            return f"voice input available — {self.accessory_summary}"
+            # No XVF enrichment, so — unlike the branch above — there is no
+            # local evidence to compose with. Two shapes land here and this
+            # record cannot tell them apart: a box with NO local mic and a
+            # paired remote, and a box with a healthy non-XVF local mic (a
+            # custom JASPER_MIC_DEVICE, a plain USB mic) that also has one.
+            #
+            # So two things this must NOT say. Not "present": on the first
+            # shape that is the lie an operator would act on. And not that
+            # voice is *running* on the accessory: the marker reports the start
+            # gate only, and on the first shape the daemon still exits 66
+            # (issue #2205). State the gate, and hand the local half to the
+            # checks that actually probe the device.
+            return (
+                f"voice-input gate open — {self.accessory_summary}; "
+                "this record cannot see the local mic — the doctor's "
+                "`mic ALSA card` / `mic capture` checks own that half"
+            )
         # Present non-XVF mic: the per-device mic checks report its specifics.
         return "present"
 
@@ -204,7 +228,14 @@ def read_mic_presence(state_path: str | None = None) -> MicPresence:
     missing/corrupt enrichment JSON just means "present, no XVF detail", and an
     unreadable accessory file just means "no accessory".
     """
-    accessory_sources = read_accessory_mic_sources()
+    # This function is a display surface and must never raise, so the
+    # unreadable-file case that read_accessory_mic_sources deliberately
+    # propagates (see its docstring) degrades to "no accessory" here. The gate
+    # writer, which needs that distinction, does NOT catch it.
+    try:
+        accessory_sources = read_accessory_mic_sources()
+    except (OSError, UnicodeDecodeError, ValueError):
+        accessory_sources = ()
     if voice_parked_no_mic():
         # The reconciler positively determined there is no safe, usable input
         # of any kind. One generic unavailable verdict. accessory_sources is

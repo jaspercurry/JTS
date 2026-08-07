@@ -111,8 +111,8 @@ def test_push_to_talk_box_reads_as_advisory_not_failure(
 ) -> None:
     """The regression this PR must not ship: opening the gate for an accessory
     makes the local-device checks actually probe, and on a box with no local mic
-    they would find nothing and go RED. A working push-to-talk speaker must not
-    look broken."""
+    they would find nothing and go RED. A box whose only microphone is a paired
+    remote must not look broken."""
     monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
     monkeypatch.setattr(
         audio, "check_alsa_card",
@@ -120,8 +120,13 @@ def test_push_to_talk_box_reads_as_advisory_not_failure(
     )
     card = audio.check_mic_card_matches_config(_CFG)
     assert card.status == "warn"
-    assert "push-to-talk only" in card.detail
     assert "wiim_remote_2" in card.detail
+    # GATE state, not runtime state. Opening the gate is necessary but not
+    # sufficient — the daemon still exits 66 with no local mic (issue #2205) —
+    # so this must not claim voice is running on the accessory.
+    assert "the voice-input gate is open for it" in card.detail
+    assert "#2205" in card.detail
+    assert "runs push-to-talk" not in card.detail
     # The local finding is preserved, not swallowed.
     assert "absent" in card.detail
 
@@ -135,8 +140,10 @@ def test_push_to_talk_box_is_distinguishable_from_a_working_local_mic(
     monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
     headline = audio.check_microphone()
     assert headline.status == "ok"
-    assert "push-to-talk accessory: wiim_remote_2" in headline.detail
+    assert "push-to-talk accessory paired: wiim_remote_2" in headline.detail
     assert not headline.detail.startswith("present")
+    # Never a present-tense claim about a daemon this check does not look at.
+    assert "runs" not in headline.detail
 
     monkeypatch.setattr(audio, "read_mic_presence", _present)
     assert "push-to-talk" not in audio.check_microphone().detail
@@ -182,3 +189,48 @@ def test_soften_leaves_failures_alone_without_an_accessory() -> None:
     existing red failure must survive untouched."""
     original = audio.CheckResult("mic capture", "fail", "Array: no such device")
     assert audio._soften_for_push_to_talk(original, _present_non_xvf()) is original
+
+
+def _local_mic_and_accessory() -> MicPresence:
+    """A healthy non-XVF local mic on a box that ALSO has a remote paired."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
+def test_headline_stays_ok_when_a_working_local_mic_also_has_a_remote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why ``check_microphone`` must NOT warn just because an accessory is
+    paired.
+
+    ``MicPresence`` has no local probe, so this record — present, no XVF
+    enrichment, one accessory source — is byte-identical for two boxes: the
+    push-to-talk-only one above, and a perfectly healthy speaker whose custom
+    ``JASPER_MIC_DEVICE`` (a UMIK-2 corpus rig, a plain USB mic) resolves fine
+    and happens to have a remote paired too. Warning on the record alone would
+    put a permanent false yellow on the second box while its own ``mic ALSA
+    card`` check reports green — the contradicting-checks scatter
+    ``jasper.mic_presence`` exists to prevent.
+
+    The distinguishing evidence lives in the checks that probe the device, and
+    this test pins that they behave differently on the two boxes."""
+    assert _local_mic_and_accessory() == _push_to_talk_only()
+
+    monkeypatch.setattr(audio, "read_mic_presence", _local_mic_and_accessory)
+    monkeypatch.setattr(
+        audio, "check_alsa_card",
+        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "ok", "found"),
+    )
+    assert audio.check_microphone().status == "ok"
+    # The local half is present, so the probing check says so — green, and NOT
+    # softened into a push-to-talk advisory.
+    card = audio.check_mic_card_matches_config(_CFG)
+    assert card.status == "ok"
+    assert "push-to-talk" not in card.detail
+
+    # Same record, absent local device: only the probing check changes.
+    monkeypatch.setattr(
+        audio, "check_alsa_card",
+        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
+    )
+    assert audio.check_microphone().status == "ok"
+    assert audio.check_mic_card_matches_config(_CFG).status == "warn"

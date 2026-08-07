@@ -62,8 +62,8 @@ _ADAPTER_SYSTEMCTL_CALLS = 3
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
-# is-active on voice, then exactly one of: restart voice, or start the gate
-# owner. See refresh_voice_input — both branches cost two calls.
+# show the gate owner's state, then exactly one of: start it, or try-restart
+# voice. See refresh_voice_input — both branches cost two calls.
 _VOICE_REFRESH_SYSTEMCTL_CALLS = 2
 _VOICE_REFRESH_TIMEOUT_BUDGET_SEC = (
     _VOICE_REFRESH_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
@@ -382,73 +382,110 @@ def apply_adapter_services(
     return tuple(failure for result in results for failure in result)
 
 
-# systemctl's LSB "program is not installed" status. `systemctl start` on a
-# unit with no unit file exits 5 (verified on jts4, which does not install the
-# gate owner). Only the log level depends on getting this exactly right — the
-# action is identical either way.
-_SYSTEMCTL_UNIT_NOT_INSTALLED_RC = 5
+def _gate_owner_state(*, systemctl: Systemctl) -> str:
+    """``enabled`` / ``parked`` / ``absent`` for the voice-input gate owner.
+
+    ``enabled`` means this box's profile actually runs ``jasper-aec-reconcile``,
+    and only then may we start it. The distinction is load-bearing rather than
+    cosmetic, because all three states exist in the field:
+
+    * **enabled** — full speaker profile; ``install_systemd_units`` installs and
+      enables the unit.
+    * **absent** — ``LoadState=not-found``. ``install_streambox_systemd_units``
+      installs neither reconciler (both ``install`` lines live in
+      ``install_systemd_units``). ``not-found`` observed on jts4 2026-08-07.
+    * **parked** — the unit file is installed but ``UnitFileState`` is not
+      enabled. ``park_streambox_brain_units`` runs ``systemctl disable --now``
+      on ``jasper-aec-reconcile`` and names *this* reconciler nowhere, and no
+      install path removes either unit file, so a full speaker converted to a
+      streambox keeps a disabled gate owner while we keep running.
+      ``systemctl start`` on a disabled-but-installed unit *succeeds* —
+      ``disable`` only drops the ``WantedBy`` symlink — and the gate owner's
+      ``restart_voice`` runs ``systemctl enable jasper-voice.service``, which
+      would persistently re-arm the voice brain on a Zero-class box whose whole
+      profile exists to keep it off. Never start a parked owner. (Read from
+      ``deploy/lib/install/systemd-units.sh``; not yet observed on a box.)
+
+    Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
+    matching ``jasper/source_intent.py``. Any unexpected failure answers
+    ``absent``, which is the conservative direction: we do not start anything.
+    """
+    try:
+        result = systemctl(
+            ("show", VOICE_INPUT_GATE_UNIT,
+             "--property=LoadState", "--property=UnitFileState"),
+        )
+    except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
+        return "absent"
+    if result.returncode != 0:
+        return "absent"
+    properties: dict[str, str] = {}
+    for line in str(getattr(result, "stdout", "") or "").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key.strip()] = value.strip().lower()
+    if properties.get("LoadState") != "loaded":
+        return "absent"
+    if properties.get("UnitFileState") in ("enabled", "enabled-runtime"):
+        return "enabled"
+    return "parked"
 
 
 def refresh_voice_input(*, systemctl: Systemctl = _systemctl) -> str:
     """Converge jasper-voice after the accessory half of the voice-input gate moved.
 
-    Two cases, and exactly one systemd action each — the second is why this
-    function exists.
+    Restarting voice is not enough on its own. ``jasper-voice.service`` carries
+    ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``, and on a box
+    with no local microphone that marker is present — so the unit is *gated
+    off*, a restart can never converge it, and a freshly-paired remote is never
+    read (issue #2205).
 
-    **Voice is running.** The gate is already open. Restart it so it re-reads
-    ``accessory-mics.env`` and opens (or drops) the source. This is the historic
-    behaviour, unchanged.
+    **The gate owner is enabled** → start it. It is the marker's single writer:
+    it re-derives "is there usable voice input?" across BOTH halves and takes
+    the matching action (clear the marker and start voice, or write it and
+    park). Deciding here would give this reconciler a second job and put two
+    writers on one fact. ``--no-block`` because the owner may restart outputd
+    and the AEC bridge, and this oneshot is ordered
+    ``Before=jasper-voice.service`` — it must queue the work, not wait on it.
 
-    **Voice is not running.** It may be *gated off*: ``jasper-voice.service``
-    carries ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``, and on a
-    box with no local microphone that marker is present — so a restart can never
-    converge it, and a freshly-paired remote is never read (issue #2205). Hand
-    the decision to the marker's single writer instead: starting
-    ``jasper-aec-reconcile`` makes it re-derive "is there usable voice input?"
-    across BOTH halves and take the matching action (clear the marker and start
-    voice, or write it and park). Deciding here would give this reconciler a
-    second job and put two writers on one fact.
+    **Otherwise** (absent or deliberately parked — see ``_gate_owner_state``) →
+    ``try-restart`` jasper-voice. That restarts it **iff it is already running**,
+    so a live push-to-talk session picks up the new source, and a box whose
+    profile parked the voice brain is never started by us. On such a box nothing
+    writes the marker, so voice is never gated off for a missing local mic and
+    there is nothing for a gate owner to re-derive.
 
-    ``--no-block``: the gate owner may restart outputd and the AEC bridge, and
-    this oneshot is ordered ``Before=jasper-voice.service`` — it must queue the
-    work, not wait on it.
+    ``try-restart``'s no-op property was measured, not assumed: on jts4
+    (2026-08-07) it returned rc=0 and left ``ExecMainStartTimestamp`` unchanged
+    against both a loaded-``inactive`` unit and a deliberately-``failed`` one,
+    while a plain ``start`` on the same unit did re-run it.
 
-    A box that does not install the gate owner (the streambox profile) has
-    nothing writing the marker, so voice is never gated off for a missing local
-    mic there; the start reports "not installed" and that is the whole, correct
-    answer — logged, not warned.
-
-    Bounded at two ``systemctl`` calls on every path, which is what
+    Bounded at two ``systemctl`` calls on every path — the budget
     ``_VOICE_REFRESH_SYSTEMCTL_CALLS`` claims and
     ``tests/test_systemd_hardening.py`` holds against the unit's
     ``TimeoutStartSec``.
 
     Returns the action taken, for the reconcile log line.
     """
-    if systemctl(("is-active", "--quiet", VOICE_UNIT)).returncode == 0:
-        restarted = _invoke_systemctl(
-            ("--no-block", "restart", VOICE_UNIT),
+    owner = _gate_owner_state(systemctl=systemctl)
+    if owner == "enabled":
+        started = _invoke_systemctl(
+            ("--no-block", "start", VOICE_INPUT_GATE_UNIT),
             systemctl=systemctl,
         )
-        return "voice_restart" if restarted.returncode == 0 else "none"
-    result = systemctl(("--no-block", "start", VOICE_INPUT_GATE_UNIT))
-    if result.returncode == 0:
-        return "gate_reconcile"
-    if result.returncode == _SYSTEMCTL_UNIT_NOT_INSTALLED_RC:
-        log_event(
-            logger,
-            "accessory_mic.gate_owner_absent",
-            unit=VOICE_INPUT_GATE_UNIT,
-        )
-        return "no_gate_owner"
+        return "gate_reconcile" if started.returncode == 0 else "none"
     log_event(
         logger,
-        "accessory_mic.systemctl_failed",
-        command=f"systemctl --no-block start {VOICE_INPUT_GATE_UNIT}",
-        returncode=result.returncode,
-        level=logging.WARNING,
+        "accessory_mic.gate_owner_unavailable",
+        unit=VOICE_INPUT_GATE_UNIT,
+        state=owner,
     )
-    return "none"
+    # try-restart, not restart: never start a unit that is not already running.
+    restarted = _invoke_systemctl(
+        ("--no-block", "try-restart", VOICE_UNIT),
+        systemctl=systemctl,
+    )
+    return "voice_try_restart" if restarted.returncode == 0 else "none"
 
 
 async def bluez_managed_objects() -> Mapping[str, Mapping[str, Mapping[str, object]]]:

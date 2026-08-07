@@ -1014,26 +1014,46 @@ enable_start_aec() {
 # free to disagree with the daemon's. We shell out instead, the way
 # observe_mic_profile_state already does for the mic-profile resolver.
 #
-# Fail-closed on EVERY error, including a missing interpreter: "no accessory"
-# means the marker gets written, which is exactly the pre-change behaviour.
+# Every failure is fail-CLOSED (the marker gets written, exactly the pre-change
+# behaviour) but NOT silent, and not reported as the same fact. "I could not
+# tell" and "I checked and there is nothing" are different, and the difference
+# reaches the operator: the marker's reason line is surfaced verbatim through
+# /state.microphone.reason and the doctor's `microphone` headline. Somebody
+# debugging "my remote does nothing" must not be handed a confident wrong
+# answer when a partial /opt/jasper deploy left the probe module unimportable.
+#
+# Three states, mirroring observe_mic_profile_state's unavailable/failed/resolved:
+#   unavailable — no interpreter to ask
+#   failed      — asked, and it could not answer (stderr goes to the journal)
+#   resolved    — asked and got an answer; ACCESSORY_MIC_SOURCES may be empty
 ACCESSORY_MIC_SOURCES=""
+ACCESSORY_MIC_PROBE_STATUS="unavailable"
 
-accessory_mic_present() {
+probe_accessory_mics() {
     local payload
     ACCESSORY_MIC_SOURCES=""
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        log "accessory mic probe unavailable at ${MIC_PROFILE_PYTHON}; treating accessory microphones as absent"
-        return 1
+        ACCESSORY_MIC_PROBE_STATUS="unavailable"
+        log "accessory mic probe unavailable at ${MIC_PROFILE_PYTHON}; accessory microphone state is UNKNOWN, not absent"
+        return 0
     fi
-    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.accessories.mic_env 2>/dev/null)"; then
+    # stderr is deliberately NOT redirected: a traceback from a partial deploy
+    # is the whole diagnostic, and observe_mic_profile_state does the same.
+    if payload="$("$MIC_PROFILE_PYTHON" -m jasper.accessories.mic_env)"; then
+        ACCESSORY_MIC_PROBE_STATUS="resolved"
         # Source ids never contain whitespace (the parser rejects any that do),
         # so this only strips the trailing newline.
         ACCESSORY_MIC_SOURCES="${payload//[[:space:]]/}"
-        if [[ -n "$ACCESSORY_MIC_SOURCES" ]]; then
-            return 0
-        fi
+    else
+        ACCESSORY_MIC_PROBE_STATUS="failed"
+        log "accessory mic probe failed (see the traceback above); accessory microphone state is UNKNOWN, not absent"
     fi
-    return 1
+    return 0
+}
+
+accessory_mic_present() {
+    probe_accessory_mics
+    [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" && -n "$ACCESSORY_MIC_SOURCES" ]]
 }
 
 # Mic-presence gate marker writers (docs/HANDOFF-hotplug-resilience.md
@@ -1216,10 +1236,12 @@ restart_outputd_if_needed() {
 
 stop_voice() {
     # Only ever reached when no candidate LOCAL mic is present. That is only
-    # half the voice-input question: a paired accessory microphone is a working
-    # push-to-talk input on its own, and parking voice would make the remote's
-    # button do nothing (issue #2205). So consult the accessory half first, and
-    # park only when BOTH are absent — which is what the marker claims.
+    # half the voice-input question: a paired accessory microphone is a usable
+    # push-to-talk input on its own, and parking voice would gate the remote's
+    # button shut (issue #2205). So consult the accessory half first, and park
+    # only when BOTH are absent — which is what the marker claims. Note the
+    # scope: this opens the START GATE. Whether the daemon can then serve an
+    # accessory-only box is the other half of #2205 and is not decided here.
     if accessory_mic_present; then
         log "no candidate local microphone, but accessory microphone(s) present (${ACCESSORY_MIC_SOURCES}); keeping jasper-voice up for push-to-talk"
         # DEFERRED, not immediate: restart_voice queues the systemd job with
@@ -1229,13 +1251,27 @@ stop_voice() {
         ACCESSORY_VOICE_RESTART_NEEDED=1
         return
     fi
-    mark_voice_input_absent "no candidate microphone present and no accessory microphone paired"
+    # Say which of the two we know. Either way voice parks (fail-closed), but
+    # the reason reaches /state.microphone.reason and the doctor headline, so it
+    # must not claim a check that did not happen.
+    if [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" ]]; then
+        mark_voice_input_absent "no candidate microphone present and no accessory microphone paired"
+    else
+        mark_voice_input_absent "no candidate microphone present; accessory microphone state could not be determined (probe ${ACCESSORY_MIC_PROBE_STATUS}) — check the journal for jasper-aec-reconcile"
+    fi
     run_systemctl stop jasper-voice.service
     reset_failed_units jasper-voice.service
 }
 
 # Flush the deferred accessory-mic voice restart. Called at the end of every
 # path that can reach stop_voice, AFTER that path's env writes have landed.
+#
+# Abort behaviour, since deferring is one step weaker than the immediate write
+# it replaced: if the pass dies between the decision and this flush, nothing has
+# been written, so the marker keeps whatever the previous pass left. Present =>
+# voice stays gated (fail-closed, the safe direction). Absent => voice may start
+# and, with no openable device, exit 66 into a clean park. Both are bounded and
+# the next pass converges; neither can crash-loop.
 restart_voice_for_accessory_mic() {
     if [[ "$ACCESSORY_VOICE_RESTART_NEEDED" == "1" ]]; then
         ACCESSORY_VOICE_RESTART_NEEDED=0

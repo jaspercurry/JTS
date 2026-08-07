@@ -17,11 +17,18 @@ marker is the AND of their absences:
 
 The AEC reconciler consults the accessory owner's *published file* — never
 BlueZ — before it writes the marker, so a box with no local mic but a paired
-mic-bearing remote stays a working push-to-talk speaker (issue #2205). It
-remains the single writer; when the accessory half moves,
-`jasper-accessory-reconcile` starts it rather than writing here itself.
+mic-bearing remote is no longer gated shut (issue #2205). It remains the single
+writer; when the accessory half moves, `jasper-accessory-reconcile` starts it
+(when that unit is enabled on this profile) rather than writing here itself.
 `ConditionPathExists` cannot express an AND, which is exactly why the AND is
 computed before the single write instead of split across two markers.
+
+**This is a start gate, not a runtime guarantee.** An open gate means the
+daemon is allowed to start; on a box with *no* local microphone it then still
+builds its primary wake leg unconditionally and exits 66, so it clean-parks
+rather than answering. Daemon-side accessory-only input is the other half of
+issue #2205. Nothing derived from this marker may phrase itself as "voice is
+running on the accessory".
 
 Several read-only surfaces need to consult it:
 

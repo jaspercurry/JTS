@@ -18,6 +18,8 @@ jasper-voice's clean-park exits: it crash-loops into StartLimitAction=reboot.
 """
 from __future__ import annotations
 
+import os
+import pathlib
 import subprocess
 import sys
 
@@ -119,23 +121,57 @@ def test_missing_file_publishes_nothing(tmp_path, monkeypatch) -> None:
     assert read_accessory_mic_sources() == ()
 
 
-def test_cli_exit_status_is_the_shell_contract(tmp_path) -> None:
-    """deploy/bin/jasper-aec-reconcile branches on this exit status, so pin it:
-    0 + ids on stdout when published, non-zero otherwise."""
-    path = tmp_path / "accessory-mics.env"
-    env = {
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _cli_env(path: pathlib.Path) -> dict[str, str]:
+    return {
         "JASPER_ACCESSORY_MIC_ENV_FILE": str(path),
         "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        "PYTHONPATH": str(ROOT),
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+
+
+def test_cli_exit_status_separates_answer_from_failure(tmp_path) -> None:
+    """deploy/bin/jasper-aec-reconcile branches on this, so pin the contract:
+    exit status says whether the probe COULD answer; stdout carries the answer.
+
+    Overloading exit status to carry the answer is what made a partial
+    /opt/jasper deploy (module unimportable, Python exits 1) indistinguishable
+    from "no remote paired" — and the reconciler then asserted the second."""
+    path = tmp_path / "accessory-mics.env"
     argv = [sys.executable, "-m", "jasper.accessories.mic_env"]
 
-    absent = subprocess.run(argv, env=env, capture_output=True, text=True)
-    assert absent.returncode != 0
+    # Read succeeded, nothing published -> exit 0, empty stdout.
+    absent = subprocess.run(argv, env=_cli_env(path), capture_output=True, text=True)
+    assert absent.returncode == 0, absent.stderr
     assert absent.stdout.strip() == ""
 
+    # Read succeeded, sources published -> exit 0, ids on stdout.
     path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892\n")
-    present = subprocess.run(argv, env=env, capture_output=True, text=True)
-    assert present.returncode == 0
+    present = subprocess.run(argv, env=_cli_env(path), capture_output=True, text=True)
+    assert present.returncode == 0, present.stderr
     assert present.stdout.strip() == "wiim_remote_2"
+
+
+def test_cli_reports_an_unreadable_file_as_failure_not_as_absence(
+    tmp_path,
+) -> None:
+    """The partial-deploy / broken-permissions shape must NOT read as "no
+    accessory paired" — that is a confident wrong answer to the operator."""
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892\n")
+    path.chmod(0o000)
+    if os.access(path, os.R_OK):  # running as root: chmod cannot deny us
+        pytest.skip("cannot make a file unreadable as this user")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "jasper.accessories.mic_env"],
+            env=_cli_env(path), capture_output=True, text=True,
+        )
+    finally:
+        path.chmod(0o644)
+    assert result.returncode != 0
+    assert result.stdout.strip() == ""
+    assert "PermissionError" in result.stderr

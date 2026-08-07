@@ -43,7 +43,8 @@ StartLimitAction=reboot
 # is no usable voice input — neither a local microphone nor an accessory
 # microphone paired via jasper-accessory-reconcile (issue #2205). The marker is
 # the AND of both absences, computed before the single write because
-# ConditionPathExists cannot express an AND. The `!` makes this "run UNLESS the marker exists", so
+# ConditionPathExists cannot express an AND. The `!` makes this
+# "run UNLESS the marker exists", so
 # it FAILS OPEN — a fresh box, or one where the reconciler never ran,
 # starts voice exactly as before. When the marker IS present, PID 1 skips
 # the start cleanly (ActiveState=inactive, NOT counted as a start, NOT

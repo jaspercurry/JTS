@@ -144,6 +144,28 @@ def test_reconciler_asks_python_for_the_accessory_half() -> None:
     assert "JASPER_MANUAL_MIC_SOURCES" not in code
 
 
+def test_gate_owner_can_actually_report_enabled() -> None:
+    """``refresh_voice_input`` starts the gate owner ONLY when systemd reports
+    ``UnitFileState=enabled``. That permission is unreachable for a unit with no
+    ``[Install]`` section — systemd reports such a unit ``static`` — and it is
+    only ever granted because ``install.sh`` enables it.
+
+    Drop either and the accessory half of the gate goes dead on every full
+    speaker with **no other test failing**: the reconciler would classify a
+    perfectly healthy owner as ``parked``, fall through to ``try-restart``, and
+    a freshly-paired remote would never re-derive the marker. Observed
+    ``LoadState=loaded UnitFileState=enabled`` on jts3 (2026-08-07)."""
+    owner_unit = ROOT / "deploy" / "systemd" / "jasper-aec-reconcile.service"
+    assert "[Install]" in owner_unit.read_text(), owner_unit
+    installer = (ROOT / "deploy" / "install.sh").read_text()
+    enable_lines = [
+        line.strip() for line in installer.splitlines()
+        if "systemctl enable" in line and "jasper-aec-reconcile.service" in line
+        and not line.lstrip().startswith("#")
+    ]
+    assert enable_lines, "install.sh must enable the voice-input gate owner"
+
+
 def test_voice_parked_no_mic_reads_marker(tmp_path, monkeypatch) -> None:
     marker = tmp_path / "voice-input-absent"
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
