@@ -14,7 +14,8 @@
 >
 > **Kinds wired today:** room correction (`POST /relay/level-match` then
 > `/relay/capture`), active crossover (`POST /crossover/level-match` then
-> `/crossover/relay-capture`), and **sync**
+> `/crossover/v2/session` — W5b/#1688 retired `/crossover/relay-capture` on
+> 2026-07-24; see the stale-flow banner in "Host orchestrator" below), and **sync**
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
 > (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
@@ -94,12 +95,20 @@
 > plays a failure cue. Timeout, phone abort, integrity failure, and failed
 > cleanup remain failures under §12.
 >
-> **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
-> /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
-> plays the driver/summed capture sweep on `armed` — reading the play payload's
+> **Crossover relay kind — LANDED (P7, 2026-07-03); route + analysis replaced
+> by W5b (#1688, 2026-07-24).** The `crossover_sweep` kind is still the third
+> `RelayCaptureKind` caller and still rides `_run_relay_capture`, but its entry
+> point is now `POST /crossover/v2/session` — `/correction/crossover/relay-capture`
+> was deleted from the POST allowlist and 404s today — and the verified WAV is
+> analysed by `audio_measurement/program_analysis.analyze_program_capture`, not
+> the `record_*_capture` seam (`record_driver_capture` has no production caller
+> left). `summed` is a `driver_role` on that one kind, not a capture kind of its
+> own. The flow is owned by
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> The rest of this paragraph still holds: the capture sweep plays on `armed`,
+> reading the play payload's
 > REAL shape (top-level `status` + nested `playback.audio_emitted`, top-level
-> `test_level_dbfs`/`sweep_meta`, the same read as the same-origin JS) — and
-> feeds the verified WAV into the same `record_*_capture` analysis. Measurement mutual-exclusion is
+> `test_level_dbfs`/`sweep_meta`, the same read as the same-origin JS). Measurement mutual-exclusion is
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
 > recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
@@ -578,8 +587,12 @@ since the earlier PR in this series.
 > `record_driver_capture` / `driver_acoustics`. That deletion is why
 > `record_driver_capture` has no production caller today (see §9). Left in place
 > rather than rewritten because deriving the replacement narrative is a larger
-> scan than this doc-truth pass; tracked with the four sibling docs carrying the
-> same claim in #1882.
+> scan than this doc-truth pass. The sibling docs that carried the same claim
+> have since been trued up: `HANDOFF-audio-measurement-core.md` by #2065,
+> and `HANDOFF-correction.md` / `HANDOFF-active-speaker-dsp.md` alongside this
+> doc's own orientation section. The flow is owned by
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+> remaining alignment work stays tracked in #1882.
 
 `jasper/web/correction_crossover_flow.py`'s
 `build_crossover_relay_plan_run_and_consume` drives a driver's whole
