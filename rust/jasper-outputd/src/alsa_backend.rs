@@ -302,11 +302,17 @@ pub struct AlsaBackend {
     /// value STATUS reports can disagree with the ring's real width, because
     /// nothing here reads or verifies the ring (the ring wire is S16 by
     /// contract, and `jasper_ring::Geometry::validate_self` hard-rejects
-    /// anything else). What keeps the pair coherent is upstream, not here: the
-    /// Python coupling reconciler refuses to arm `shm_ring` on a box whose
-    /// emitted lane format is wider than the ring wire. `content.source` sits
-    /// immediately before `content.format` in STATUS so a reader can always see
-    /// which source the format describes.
+    /// anything else). What WILL keep the pair coherent is upstream, not here:
+    /// wide-output-path PR-1 (#2226) adds a coupling-reconciler gate that refuses
+    /// to arm `shm_ring` when the emitted lane format is wider than the ring
+    /// wire. Until that lands, NOTHING refuses the pairing —
+    /// `default_ring_gates()` has no format axis and `RING_WIRE_FORMAT` is never
+    /// compared against anything — and the unattended auto path can arm the ring
+    /// on an eligible stereo box by itself, so reaching the disagreement takes
+    /// one hand-set `JASPER_OUTPUTD_CONTENT_FORMAT` rather than a fully
+    /// hand-built lab config. `content.source` sits immediately before
+    /// `content.format` in STATUS so a reader can always see which source the
+    /// format describes.
     content_format: Option<SampleFormat>,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
