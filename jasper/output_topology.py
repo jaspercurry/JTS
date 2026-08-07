@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
@@ -1967,20 +1969,79 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
         ) from exc
 
 
+# A corrupt or unreadable topology is a persistent *state*, not a per-call
+# event, and `load_output_topology` is called on a steady cadence inside
+# long-lived daemons (jasper-control's audio_health route sampler, every 60 s).
+# Unguarded that is ~1,440 identical WARN lines/day drowning the journal in an
+# already-degraded state (#2140). So log the transitions — into failure, and
+# back out — plus a reminder slow enough to stay readable and frequent enough
+# that a persistent failure is never silent. A short-lived process (doctor, a
+# wizard request) starts with empty state and therefore always logs its first
+# failure.
+LOAD_FAILURE_REMINDER_SEC = 3600.0
+# Bounded because this lives for the process's lifetime. Production resolves
+# one path; the cap only matters for callers that pass explicit paths.
+_LOAD_FAILURE_STATE_MAX = 8
+_load_failure_lock = threading.Lock()
+# path -> (failure signature, monotonic time of the WARN it was logged with),
+# ordered least-recently-logged first.
+_load_failure_state: dict[str, tuple[str, float]] = {}
+
+
+def _now() -> float:
+    """Wrapped `time.monotonic` so tests can drive the reminder window."""
+    return time.monotonic()
+
+
+def _load_failure_is_loggable(target: Path, signature: str) -> bool:
+    """Whether this failure is a transition or a due reminder, not a repeat."""
+
+    now = _now()
+    key = str(target)
+    with _load_failure_lock:
+        previous = _load_failure_state.get(key)
+        if (
+            previous is not None
+            and previous[0] == signature
+            and now - previous[1] < LOAD_FAILURE_REMINDER_SEC
+        ):
+            return False
+        # Re-insert rather than assign so dict order stays recency order and
+        # the eviction below drops the stalest entry, never this one.
+        _load_failure_state.pop(key, None)
+        _load_failure_state[key] = (signature, now)
+        while len(_load_failure_state) > _LOAD_FAILURE_STATE_MAX:
+            _load_failure_state.pop(next(iter(_load_failure_state)))
+        return True
+
+
+def _load_failure_cleared(target: Path) -> bool:
+    """Whether ``target`` just recovered from a failure that was logged."""
+
+    with _load_failure_lock:
+        return _load_failure_state.pop(str(target), None) is not None
+
+
 def load_output_topology(path: str | Path | None = None) -> OutputTopology:
     """Load persisted topology, failing soft to a detected empty draft."""
 
     target = topology_path(path)
     try:
-        return load_output_topology_strict(target)
+        topology = load_output_topology_strict(target)
     except OutputTopologyError as exc:
-        logger.warning(
-            "event=output_topology.load_failed path=%s error=%s detail=%s",
-            target,
-            type(exc).__name__,
-            exc,
-        )
+        if _load_failure_is_loggable(target, f"{type(exc).__name__}:{exc}"):
+            logger.warning(
+                "event=output_topology.load_failed path=%s error=%s detail=%s "
+                "repeat_suppression_sec=%d",
+                target,
+                type(exc).__name__,
+                exc,
+                int(LOAD_FAILURE_REMINDER_SEC),
+            )
         return new_topology_draft()
+    if _load_failure_cleared(target):
+        logger.info("event=output_topology.load_recovered path=%s", target)
+    return topology
 
 
 def save_output_topology(
