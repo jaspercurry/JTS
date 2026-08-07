@@ -197,6 +197,13 @@ def test_parked_null_sink_is_a_noop_and_matches_the_python_constant(tmp_path):
     """
     from jasper.active_speaker.camilla_yaml import PARKED_SINK_PATH
 
+    # `_pipe_config` takes a Path, and Path() NORMALIZES; the emitter does not
+    # (camilla_yaml.py interpolates the raw constant: `filename:
+    # "{PARKED_SINK_PATH}"`). Without this line a drift to e.g. "/dev//null"
+    # would keep this test green while production wrote bytes the guard's
+    # branch no longer matches — measured, and the one gap in the pin (#2164).
+    assert str(Path(PARKED_SINK_PATH)) == PARKED_SINK_PATH
+
     configured_snapfifo = tmp_path / SNAPFIFO_NAME
     cfg = _pipe_config(tmp_path, Path(PARKED_SINK_PATH))
     statefile = _write_statefile(tmp_path, cfg)

@@ -846,6 +846,35 @@ def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
     assert 'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750' in text
 
 
+def test_reconcile_script_never_reselects_the_camilla_graph() -> None:
+    """This script converges outputd, NOT the CamillaDSP graph.
+
+    Load-bearing for a claim made in another file: ``jasper/cli/output_topology_reset.py``
+    tells an operator that a failed reset leaves a SAFE residual graph, and that
+    "the reconcile kick converges outputd, not CamillaDSP". This script's own
+    comment says the same thing — "This script never restarts jasper-camilla
+    (it bounces outputd only) … so re-rendering here does NOT make the new
+    graph run" — but a comment is not a guard, and #2164 shipped two operator
+    strings built on exactly this fact.
+
+    So pin the fact where a change would break it: the executable body names
+    neither ``runtime-safe-graph`` nor ``jasper-camilla`` at all. Comment lines
+    are stripped first, and that strip is load-bearing rather than tidiness —
+    the sentence quoted above is the file's only ``jasper-camilla`` occurrence,
+    so without it this assert would fail on the very prose it exists to pin. If
+    this ever must change, the reset's module docstring and both
+    ``_print_summary`` remediation strings change with it.
+    """
+    code = "\n".join(
+        line
+        for line in SCRIPT.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "runtime-safe-graph" not in code
+    assert "safe_graph_for_current_topology" not in code
+    assert "jasper-camilla" not in code
+
+
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
     """render_asound_if_needed must NOT re-chmod the existing /etc/jasper.
 

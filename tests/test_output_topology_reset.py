@@ -17,6 +17,7 @@ idempotent.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -639,3 +640,87 @@ def test_cli_json_output_is_machine_readable(
     payload = json.loads(capsys.readouterr().out)
     assert payload["after"]["speaker_groups"] == []
     assert payload["reconcile"]["skipped"] is True
+
+
+# --- #2164: the operator transcript may not promise what the reconcile can't --
+# `jasper-audio-hardware-reconcile` converges outputd. It never calls
+# `runtime-safe-graph` / `safe_graph_for_current_topology` and never restarts
+# jasper-camilla (pinned by `test_reconcile_script_never_reselects_the_camilla_graph`
+# in tests/test_audio_hardware_reconcile.py), so it cannot re-select the
+# CamillaDSP graph — and neither can a reboot, from either residual state the
+# module docstring names. #2164 retracted that claim from two docstrings but
+# left it in TWO of `_print_summary`'s three convergence strings, which had
+# never been covered by any test. The both-steps-failed transcript therefore
+# handed the operator two contradictory sentences: "until the next deploy" and
+# "on the next reconcile or reboot".
+
+# "the running graph" is this module's own term of art for the CamillaDSP graph
+# (every use in output_topology_reset.py means the graph `_converge_camilla_graph`
+# loads). Forbid it as the object of a convergence promise, in either word order,
+# within one sentence. Deliberately keyed on that phrase rather than a bare
+# "graph": the honest lines legitimately say "camilla graph: NOT converged" and
+# "it does not re-select the CamillaDSP graph".
+_GRAPH_PROMISED_CONVERGED = re.compile(
+    r"\bconverg\w*[^.]*\brunning graph\b|\brunning graph\b[^.]*\bconverg\w*",
+    re.IGNORECASE,
+)
+
+
+def _assert_no_graph_convergence_promise(out: str) -> None:
+    for line in out.splitlines():
+        assert not _GRAPH_PROMISED_CONVERGED.search(line), (
+            "operator guidance promises the RUNNING graph converges; only a "
+            f"deploy (or re-running this command) re-seeds it: {line!r}"
+        )
+
+
+def test_reconcile_failure_guidance_never_promises_the_running_graph_converges(
+    topo_path: Path,
+    flat_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both convergence steps fail — this command's habitat. The remediation
+    line must scope its promise to outputd (what the reconcile unit owns) and
+    must not contradict the camilla line printed just above it.
+    """
+
+    class _UnreachableController:
+        async def set_config_file_path(self, path: str, *, best_effort: bool = False):
+            # What best_effort=True actually returns for an unreachable daemon.
+            return False
+
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller", lambda: _UnreachableController()
+    )
+    monkeypatch.setattr(
+        reset_cli,
+        "_trigger_reconcile",
+        lambda: {"ok": False, "error": "broker refused: unit start timed out"},
+    )
+
+    rc = reset_cli.main(["--yes"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    _assert_no_graph_convergence_promise(out)
+    # The claim #2164 kept, and the one the retracted sentence contradicted.
+    assert "the box stays on its previous safe graph until the next deploy" in out
+    # The remediation names what starting the unit actually delivers.
+    assert "to converge outputd" in out
+
+
+def test_no_reconcile_guidance_points_at_the_reset_for_the_graph(
+    topo_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--no-reconcile`` skips BOTH steps, so the graph was never loaded at
+    all. Offering only ``systemctl start <reconcile unit>`` sent the operator
+    to the one unit that provably cannot load it; the real remedy is re-running
+    without the flag.
+    """
+    rc = reset_cli.main(["--yes", "--no-reconcile"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    _assert_no_graph_convergence_promise(out)
+    assert "re-run without --no-reconcile to load the graph" in out

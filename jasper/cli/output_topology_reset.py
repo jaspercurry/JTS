@@ -50,9 +50,15 @@ convergence steps fail the worst residual state is passive-topology + a
 still-roleful (or parked) graph, which is safe — the active graph's crossover
 keeps protecting drivers, a parked graph emits nothing — and self-heals on
 the next deploy, the only path that re-seeds this graph (the reconcile kick
-converges outputd, not CamillaDSP, and nothing re-selects the graph at
-boot). It never produces the dangerous roleful-topology + flat-graph
+converges outputd, not CamillaDSP, and nothing re-selects a roleful or parked
+graph at boot). It never produces the dangerous roleful-topology + flat-graph
 combination.
+
+That "at boot" clause is scoped on purpose (#2164): ``jasper-camilla-pipe-guard``
+(``ExecStartPre=`` on jasper-camilla.service) *does* call ``runtime-safe-graph
+--write-statefile``, but only down its dead-BONDED-pipe branch — and both
+residual states above leave that guard first, a roleful ALSA config at
+``reason=solo_config`` and a parked one at ``reason=parked_null_sink``.
 """
 
 from __future__ import annotations
@@ -446,9 +452,17 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
             "the box stays on its previous safe graph until the next deploy"
         )
     reconcile = result["reconcile"]
+    # Both remediation strings below name only what the reconcile unit can
+    # actually deliver — outputd. It never calls `runtime-safe-graph` and never
+    # restarts jasper-camilla (its own comment says so; pinned by
+    # `test_reconcile_script_never_reselects_the_camilla_graph`), so offering it
+    # — or a reboot — as the thing that converges the RUNNING graph is the exact
+    # overclaim #2164 retracted from the docstrings above, and it contradicted
+    # the camilla line printed a few lines up ("until the next deploy").
     if reconcile.get("skipped"):
         print(f"  reconcile: skipped (--no-reconcile); start "
-              f"{RECONCILE_UNIT} to converge the running graph")
+              f"{RECONCILE_UNIT} to converge outputd, and re-run without "
+              "--no-reconcile to load the graph")
     elif reconcile.get("ok"):
         print(f"  reconcile: kicked {RECONCILE_UNIT}")
     else:
@@ -457,9 +471,10 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
             f"{reconcile.get('error') or 'unknown error'}"
         )
         print(
-            "  The topology is now passive and SAFE; the running graph will "
-            "converge on the next reconcile or reboot. Re-run "
-            f"`sudo systemctl start {RECONCILE_UNIT}` to converge now."
+            "  The topology is now passive and SAFE, but outputd has NOT "
+            f"converged. Re-run `sudo systemctl start {RECONCILE_UNIT}` to "
+            "converge outputd; that unit does not re-select the CamillaDSP "
+            "graph (see the camilla line above)."
         )
 
 
