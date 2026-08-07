@@ -557,8 +557,11 @@ def run(
         }
         if outcome.detail:
             fields["err"] = outcome.detail
+        # fields=, not **fields: log_event reserves `level`, and a dict that
+        # ever gained a "level" key would blow up the splat with a duplicate
+        # keyword argument. The explicit parameter exists for exactly this.
         log_event(
-            logger, "wiim_remote_ce.skipped", level=logging.WARNING, **fields,
+            logger, "wiim_remote_ce.skipped", level=logging.WARNING, fields=fields,
         )
         return 0
 

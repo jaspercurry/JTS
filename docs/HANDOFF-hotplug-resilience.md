@@ -343,15 +343,28 @@ The new mode is **degraded but working**, and every step fails soft:
   74 s idle gap — so it survived ~4 minutes and multiple idle→active cycles
   on this remote.
 
-  **Re-arm machinery was deliberately declined**, not overlooked. Detecting
-  the revert means either polling connection parameters (HCI has no read
-  path, so it would mean a btmon-style event subscription) or watching packet
-  rate and re-requesting — a resident cost on a 415 MB Pi Zero 2 W, to defend
+  **Re-arm machinery was deliberately declined**, not overlooked. The two
+  implementations cost different things, and they are priced separately here
+  so a future reader re-opens the decision on the real numbers:
+
+  - *Watch the HCI event stream* for the parameter update. HCI has no read
+    path for live connection parameters, so this means a btmon-style monitor
+    subscription — **a new resident process** on a 415 MB Pi Zero 2 W, which
+    is the expensive option.
+  - *Watch the packet rate* in the adapter and re-request when it collapses.
+    This one is **not** a residency cost: the adapter is already resident and
+    already counts packets (`WiimVoicePacketStream.packets`), and the
+    discriminator is clean — ~62.5/s holding, ~16/s starved, 0 idle. Its real
+    cost is **complexity**: a rate window, starved-versus-idle logic, and
+    debounce that has to interact correctly with the helper's start path.
+
+  Both were declined for the same reason — neither is worth carrying to defend
   against something this remote was measured not to do. If a slow-mic report
   ever survives all the checks above with an `applied` event in the journal,
   **this is the remaining explanation**: capture `btmon` during an idle→active
   cycle, look for a peripheral-initiated parameter update, and reopen with
-  that evidence.
+  that evidence. The packet-rate watcher is the cheaper of the two to build if
+  it comes to that.
 
 Two symptoms to keep apart: `bad_packets=0` with a low `packets` count in
 `event=wiim_remote_mic.disconnected` is a *delivery* problem and points here;
