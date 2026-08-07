@@ -964,15 +964,35 @@ _unpark_one_low_memory_unit() {
     # when the park stopped it (the branch above sends a newly-masked one down
     # the deliberate-off skip). systemd refuses to start it, so handing the
     # operator a bare `systemctl start` hands them the command that just
-    # failed — it has to be unmasked first. `case` rather than a `[[ ]] &&`
-    # one-liner because this runs inside the EXIT trap, where a command
-    # yielding non-zero aborts the remaining recovery under `set -e`.
+    # failed — it has to be unmasked first, and re-masked afterwards. Stopping
+    # at `unmask && start` leaves the unit unmasked + running, which is NOT the
+    # state the install found: it silently drops a mask the operator set on
+    # purpose. A mask is the only thing that makes a unit un-startable
+    # whatever its enablement says, so dropping it hands back a unit that
+    # anything can start again — a boot, a reconciler, another unit's `Wants=`.
+    # Same rule the skip branch above follows: a recovery path must not undo a
+    # deliberate decision. Masking does not stop a running unit, so the re-mask
+    # chains safely, and `--runtime` is carried through so a /run-scoped mask is
+    # not promoted to a permanent /etc one.
+    #
+    # `case` rather than a `[[ ]] &&` one-liner because a `case` with no
+    # matching branch returns 0 while a false `[[ ]] &&` list returns 1, so
+    # these lines stay safe even if the trap's guard is ever dropped. That is
+    # defence in depth, NOT what keeps the recovery alive: the trap calls this
+    # via `unpark_low_memory_build_units || true`, and a caller's guard
+    # suspends `set -e` for the whole call tree beneath it — which is also why
+    # the unguarded `_build_sandbox_log` below cannot abort the loop.
     local recover="systemctl start ${unit}"
     local recover_sudo="sudo systemctl start ${unit}"
+    local remask=""
     case "${enablement}" in
-        masked|masked-runtime)
-            recover="systemctl unmask ${unit} && systemctl start ${unit}"
-            recover_sudo="sudo systemctl unmask ${unit} && sudo systemctl start ${unit}"
+        masked)         remask="systemctl mask ${unit}" ;;
+        masked-runtime) remask="systemctl mask --runtime ${unit}" ;;
+    esac
+    case "${remask}" in
+        ?*)
+            recover="systemctl unmask ${unit} && ${recover} && ${remask}"
+            recover_sudo="sudo systemctl unmask ${unit} && ${recover_sudo} && sudo ${remask}"
             ;;
     esac
     _build_sandbox_log "low_memory_build_unpark_failed" \

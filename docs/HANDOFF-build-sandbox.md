@@ -113,10 +113,11 @@ plane it stops itself — and the trap restarts exactly that set, in the units'
 own `After=` order (output owner and graph, then mux, then renderers and the
 control plane). Two categories are deliberately *not* restored: units that were
 already stopped before the install began (a source the household turned off at
-`/sources/`), and units *this install* turned off — `disabled`/`masked` at
-restore time but not at the snapshot, which is how a `full` → `streambox`
-conversion's deliberate brain park survives the trap. That second test is a
-**change** in enablement, not a state: `jasper-snapclient`/`-snapserver` run
+`/sources/`), and units *this install* turned off — `disabled`, `masked` or
+`masked-runtime` at restore time but not at the snapshot, which is how a
+`full` → `streambox` conversion's deliberate brain park survives the trap.
+That second test is a **change** in enablement, not a state:
+`jasper-snapclient`/`-snapserver` run
 while permanently disabled on a bonded speaker (the grouping reconciler starts
 them; systemd never does), so skipping every unit that is merely off *now*
 would strand them with nothing to re-run the reconciler before the next boot.
@@ -149,7 +150,7 @@ journalctl -t jasper-install | grep event=build_sandbox
 # event=build_sandbox.low_memory_build_park stopping runtime units before constrained Rust builds
 # event=build_sandbox.low_memory_build_unpark parked=9 restored=9 failed=0
 # event=build_sandbox.low_memory_build_unpark_failed unit=jasper-mux.service recover=systemctl start jasper-mux.service
-# event=build_sandbox.low_memory_build_unpark_failed unit=bt-agent.service recover=systemctl unmask bt-agent.service && systemctl start bt-agent.service
+# event=build_sandbox.low_memory_build_unpark_failed unit=bt-agent.service recover=systemctl unmask bt-agent.service && systemctl start bt-agent.service && systemctl mask bt-agent.service
 # event=build_sandbox.low_memory_build_unpark_skip unit=jasper-input.service state=disabled left off on purpose
 ```
 
@@ -157,10 +158,15 @@ The unpark summary is emitted on every exit path, so `restored=0` ("the trap
 ran and found the install had already restarted everything") is
 distinguishable from the trap never running. `..._failed` is the line to grep
 for after a household reports the speaker missing from their output list. Its
-`recover=` is a command the operator can actually run: a unit that was masked
-while running (masking does not stop one) refuses `start` until it is
-unmasked, so that case names `unmask` first rather than repeating the command
-that just failed.
+`recover=` is a command the operator can actually run *and* one that lands back
+on the pre-install state: a unit that was masked while running (masking does
+not stop one) refuses `start` until it is unmasked, so that case names `unmask`
+first rather than repeating the command that just failed — and closes with
+`mask` again, because stopping at `unmask && start` would silently delete a
+mask the operator set on purpose, handing back a unit that a boot, a reconciler
+or another unit's `Wants=` can start again. The mask's scope is carried through
+(`mask --runtime` for a `masked-runtime` unit), so a /run-scoped mask is not
+promoted to a permanent /etc one.
 
 journald is persistent (PR #160), so the decision survives the watchdog
 reboot a real build-OOM can trigger — which is exactly when you need to
@@ -298,9 +304,11 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-08-06 (re-verified the low-memory park/unpark section
-against `park_low_memory_build_units` / `unpark_low_memory_build_units` and
-`install_exit_cleanup` after #2178 made the park recoverable on abort; the
+Last verified: 2026-08-07 (re-verified the low-memory park/unpark section
+against `park_low_memory_build_units` / `_unpark_one_low_memory_unit` /
+`unpark_low_memory_build_units` and `install_exit_cleanup` after #2178 made the
+park recoverable on abort — including the three-token off-state vocabulary and
+the mask-restoring `recover=` hint; the
 containment, job-budget, and build-inventory sections were last re-verified
 2026-07-27, when enhanced WebRTC AEC3 v2 moved out of the core deploy into the
 bounded opt-in oneshot)

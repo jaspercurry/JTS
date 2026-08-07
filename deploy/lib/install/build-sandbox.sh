@@ -230,9 +230,21 @@ install_exit_cleanup() {
     # configuration instead of onto a temporary swap about to be yanked.
     local rc=$?
     cleanup_build_swap || true
-    # Defined in systemd-units.sh, which install.sh always sources. Guarded so
-    # a partial source (a stray test context) degrades to skipping the unpark
-    # rather than erroring inside the trap.
+    # Two guards, two different jobs — do not read either as cruft.
+    #
+    # `declare -F`: defined in systemd-units.sh, which install.sh always
+    # sources, so a partial source (a stray test context) degrades to skipping
+    # the unpark rather than erroring inside the trap.
+    #
+    # `|| true`: a caller's guard suspends `set -e` for the callee's ENTIRE
+    # body, not just for the call itself. That is what lets the unpark's three
+    # `_build_sandbox_log` calls stay bare — one that failed would otherwise
+    # abort the restore loop mid-pass, stranding every unit after it AND
+    # clobbering the status this trap just captured. Measured (bash 3.2.57),
+    # six parked units with one refusing to start: guarded -> exit 5, 5 of 6
+    # restored, summary line emitted; bare -> exit 1, 1 of 6 restored, summary
+    # never reached. Pinned by
+    # test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
     if declare -F unpark_low_memory_build_units >/dev/null 2>&1; then
         unpark_low_memory_build_units || true
     fi

@@ -2615,8 +2615,16 @@ def test_unpark_restores_a_running_unit_that_was_always_disabled(tmp_path):
     assert "jasper-control.service" in run.active
 
 
-@pytest.mark.parametrize("mask_state", ["masked", "masked-runtime"])
-def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path, mask_state):
+@pytest.mark.parametrize(
+    ("mask_state", "remask"),
+    [
+        ("masked", "systemctl mask jasper-voice.service"),
+        ("masked-runtime", "systemctl mask --runtime jasper-voice.service"),
+    ],
+)
+def test_unpark_reports_a_masked_unit_it_cannot_put_back(
+    tmp_path, mask_state, remask
+):
     """Stopping a running-but-masked unit is not something to hide.
 
     Masking does not stop a unit, so an operator can mask one and leave it
@@ -2628,14 +2636,19 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path, mask_state):
 
     The recovery the operator is handed must also be one that can work:
     `systemctl start` on a masked unit fails exactly as the trap's attempt
-    just did, so the hint has to unmask first.
+    just did, so the hint has to unmask first — and re-mask afterwards, or it
+    hands back a unit whose mask this recovery quietly deleted and which a
+    boot, a reconciler or another unit's `Wants=` can then start. The mask's
+    scope has to survive too: re-masking a `masked-runtime` unit without
+    `--runtime` would promote a /run-scoped mask to a permanent /etc one.
 
     `masked-runtime` is systemd's documented /run-scoped mask and is exercised
     here only through this fake — no in-repo path produces the state and it was
-    NOT reproduced on hardware. What the parameter pins is that both enablement
-    case sites (park-time record and restore-time skip) share one vocabulary:
-    drop `masked-runtime` from either and this unit reads as "left off on
-    purpose" instead of being reported.
+    NOT reproduced on hardware. What the parameter pins is that all three
+    enablement case sites (park-time record, restore-time skip, and the
+    recovery hint's scope) share one vocabulary: drop `masked-runtime` from the
+    first two and this unit reads as "left off on purpose" instead of being
+    reported; drop it from the third and the recovery over-masks.
     """
     run = _run_park_cycle(
         tmp_path,
@@ -2649,13 +2662,14 @@ def test_unpark_reports_a_masked_unit_it_cannot_put_back(tmp_path, mask_state):
     assert (
         "event=build_sandbox.low_memory_build_unpark_failed "
         "unit=jasper-voice.service recover=systemctl unmask "
-        "jasper-voice.service && systemctl start jasper-voice.service"
-        in run.syslog
+        "jasper-voice.service && systemctl start jasper-voice.service "
+        f"&& {remask}" in run.syslog
     ), run.syslog
     assert "could not restart jasper-voice.service" in run.stderr
     assert (
         "recover with: sudo systemctl unmask jasper-voice.service "
-        "&& sudo systemctl start jasper-voice.service" in run.stderr
+        "&& sudo systemctl start jasper-voice.service "
+        f"&& sudo {remask}" in run.stderr
     ), run.stderr
     # The rest of the recovery still happened.
     assert "jasper-control.service" in run.active
@@ -2806,6 +2820,85 @@ def test_exit_trap_still_unparks_when_swap_cleanup_fails(tmp_path):
             f"{unit} was left dead: a failing cleanup step aborted the trap "
             f"before the unpark could run. stderr={run.stderr!r}"
         )
+
+
+def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
+    """The trap's *second* `|| true` is what keeps the restore loop running.
+
+    The two guards in `install_exit_cleanup` do different jobs. The one on
+    `cleanup_build_swap` keeps the unpark REACHABLE (pinned above). The one on
+    `unpark_low_memory_build_units` keeps it COMPLETABLE: a caller's `|| true`
+    suspends `set -e` for the callee's entire body, and that is the only reason
+    the unpark's three bare `_build_sandbox_log` calls — the deliberate-off
+    skip, the failed-restart report, and the closing summary — cannot abort the
+    loop. Remove it and the first failing log strands every unit after it.
+
+    The failed-restart log is the worst place for that to happen: it fires from
+    inside the per-unit helper, so the one unit that would not come back also
+    takes the whole remaining restore down with it, which is the #2178 failure
+    with extra steps. A `_build_sandbox_log` that logs and then returns
+    non-zero is the smallest faithful stand-in — as shipped it ends in
+    `logger ... || true` and cannot fail, so nothing else in the suite reaches
+    this path.
+
+    Measured on the harness's own shell (bash 3.2.57), six parked units with
+    `jasper-fanin.service` refusing to start: with the guard, exit 5, five of
+    six back and the summary emitted; with `unpark_low_memory_build_units`
+    bare, exit 1, ONE of six back and no summary at all. Deliberately NOT
+    measured on the bash 5.2.x the installer runs under (no 5.x available on
+    the authoring host) — 3.2's `set -e` is the looser of the two, so an abort
+    seen here is expected to hold there, but that step is inference.
+    """
+    # Restore order is the JASPER_LOW_MEMORY_UNPARK_FIRST entries that were
+    # parked — here jasper-outputd, jasper-fanin, jasper-camilla, jasper-mux
+    # (jasper-camilla-crossover is in that list but not running) — then the
+    # rest in park order. Failing the SECOND one restored puts four units
+    # behind the abort point.
+    units = [
+        "jasper-outputd.service",
+        "jasper-fanin.service",
+        "jasper-camilla.service",
+        "jasper-mux.service",
+        "jasper-control.service",
+        "shairport-sync.service",
+    ]
+    run = _run_park_cycle(
+        tmp_path,
+        active=units,
+        failstart=["jasper-fanin.service"],
+        scenario=(
+            "_build_sandbox_log() { "
+            'echo "  build-sandbox: $2"; '
+            'logger -t jasper-install -- "event=build_sandbox.$1 $2"; '
+            "return 1; }; "
+            "mark_trap; exit 5"
+        ),
+    )
+
+    # The failing branch really was exercised — otherwise the log stub never
+    # runs from inside the loop and this test proves nothing.
+    assert (
+        "event=build_sandbox.low_memory_build_unpark_failed "
+        "unit=jasper-fanin.service" in run.syslog
+    ), run.syslog
+    # Every unit ordered AFTER the failure still came back.
+    for unit in units:
+        if unit == "jasper-fanin.service":
+            continue
+        assert unit in run.active, (
+            f"{unit} was left dead: a failing log inside the unpark aborted "
+            f"the restore loop before reaching it. stderr={run.stderr!r}"
+        )
+    # The summary is the last statement in the unpark, so its presence proves
+    # the loop ran to the end rather than unwinding.
+    assert "restored=5 failed=1" in run.syslog, run.syslog
+    # The operator still gets a hint for the unit that would not come back. An
+    # abort lands BETWEEN that log line and this warning, so the unguarded
+    # shape returns an entirely empty stderr — the one unit that needed a
+    # recovery command is the one whose recovery command is lost.
+    assert "could not restart jasper-fanin.service" in run.stderr, run.stderr
+    # ...and the abort did not clobber the installer's status either.
+    assert run.returncode == 5, run.stderr
 
 
 def test_both_install_paths_trap_the_unparking_handler():
