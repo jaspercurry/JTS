@@ -281,6 +281,26 @@ class FanInDucker:
 # still a margin, but won't swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
 
+# Head-room a push-to-talk turn must leave the model to start answering
+# after the button closes the user's input.
+#
+# `_idle_watchdog`'s pre-response timer is anchored at TURN OPEN, not at
+# end-of-input, so the hold and the model's first-chunk latency share one
+# `JASPER_IDLE_TIMEOUT_SEC` envelope. Its own docstring puts that latency
+# at "3-5 s, sometimes longer" for Live API providers; 6 s covers the
+# documented range with margin. Whatever the hold cap ends up being, it
+# must fire this far below `idle_timeout_sec` or the watchdog reaps the
+# turn before the model can speak — and the teardown cancels
+# `_play_responses` BEFORE calling `end_input`, so the user gets no
+# answer at all rather than a short one.
+PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC = 6.0
+
+# Floor for the derived push-to-talk hold cap, so an operator who sets a
+# very low JASPER_IDLE_TIMEOUT_SEC still gets a usable button rather than
+# a turn that closes before they finish a sentence. Below this the
+# watchdog may win; `_ptt_input_cap_sec` says so once, loudly.
+PTT_MIN_INPUT_CAP_SEC = 5.0
+
 # Per-leg score-freshness window. When a leg fires, another leg's most-
 # recent score counts toward `fired_legs` (and the per-leg log line) only
 # if it landed within this window — so a stream that stopped feeding (e.g.
@@ -1058,6 +1078,16 @@ class WakeLoop:
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
         self._server_vad_this_turn: bool = False
+        # Per-turn endpointer selection, decided ONCE at the top of
+        # _begin_turn. True when this turn's session audio comes from a
+        # push-to-talk source, i.e. the button owns both boundaries:
+        # press -> manual_session_start, release -> manual_session_end
+        # (which sets _input_ended and calls end_input() — exactly what
+        # the Silero end-of-utterance detector does). Running local VAD
+        # on such a turn makes it a SECOND writer of the same fact, and
+        # the faster of the two wins: 0.8 s of detected silence mid-hold
+        # closed the user's input while they were still holding.
+        self._manual_endpoint_this_turn: bool = False
         self._max_silero_raw_in_turn: float = 0.0
         self._silero_raw_armed_at_ms: int | None = None
         self._silero_aec_armed_at_ms: int | None = None
@@ -1075,6 +1105,9 @@ class WakeLoop:
             cfg.mic_device,
         )
         self._barge_in_no_ref_warned: bool = False
+        self._barge_in_ptt_warned: bool = False
+        self._ptt_cap_warned: bool = False
+        self._server_vad_ptt_warned: bool = False
         self._barge_in_active: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
@@ -3469,11 +3502,38 @@ class WakeLoop:
         Self-interrupt-loop guard: when barge-in is requested but the
         primary mic leg has no AEC reference (the ``direct_mic`` profile),
         hard-disable it for the turn and WARN once per daemon, rather than
-        let un-cancelled TTS bleed self-trip the gate every turn."""
+        let un-cancelled TTS bleed self-trip the gate every turn.
+
+        Push-to-talk turns refuse it for a related reason, and refuse
+        LOUDLY rather than going quietly inert. The frames
+        ``_handle_playback_frame`` would score on such a turn come from
+        the accessory's mic, but ``_barge_in_reference_available`` was
+        computed from ``cfg.mic_device`` — a different stream. So the
+        self-interrupt guard has not actually cleared the audio that
+        barge-in would run on."""
         self._barge_in_run_started_at = 0.0
         self._barge_in_run_peak = 0.0
         self._barge_in_signalled_this_run = False
         want = read_barge_in_enabled(self._cfg.voice_provider)
+        if want and self._manual_endpoint_this_turn:
+            # Its own one-shot latch, NOT `_barge_in_no_ref_warned`: on a
+            # speaker with both a room mic and a remote, sharing one latch
+            # would let a push-to-talk turn swallow the (different)
+            # no-reference warning a later wake turn owes the operator.
+            if not self._barge_in_ptt_warned:
+                self._barge_in_ptt_warned = True
+                log_event(
+                    logger,
+                    "barge.disabled_push_to_talk",
+                    provider=self._cfg.voice_provider,
+                    source=self._active_manual_source or "primary",
+                    detail=(
+                        "barge-in scores the primary mic leg, which a "
+                        "push-to-talk turn does not use"
+                    ),
+                    level=logging.WARNING,
+                )
+            want = False
         if want and not self._barge_in_reference_available:
             if not self._barge_in_no_ref_warned:
                 self._barge_in_no_ref_warned = True
@@ -3553,6 +3613,220 @@ class WakeLoop:
         if callable(trigger):
             trigger()
 
+    async def _send_session_audio(self, frame) -> None:
+        """Forward one frame to the live turn; end the turn if it refuses.
+
+        One implementation for all three endpointer paths (server VAD,
+        local Silero, push-to-talk) — they had byte-identical copies of
+        this block, and a fourth copy is how the handling drifts.
+        """
+        try:
+            await self._turn.send_audio(frame.tobytes())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("send_audio failed (will end turn): %s", e)
+            await self._end_turn()
+
+    async def _end_session_input(self, where: str) -> None:
+        """Close the user's input side: mark it ended and tell the turn.
+
+        ``where`` names the caller in the failure log so a stuck
+        ``end_input`` is attributable to end-of-utterance, the hard cap,
+        or the push-to-talk cap without a stack trace.
+        """
+        self._input_ended = True
+        try:
+            await self._turn.end_input()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "end_input failed at %s (will end turn): %s", where, e,
+            )
+            await self._end_turn()
+
+    def _endpointer_label(self) -> str:
+        """Which mechanism closes the current turn's user input.
+
+        One vocabulary, two readers: ``/state.voice.endpointer`` (live)
+        and the wake-events ``endpointer`` column (at turn end). Kept in
+        one place so a new endpointer can't be named two things.
+
+        ``push_to_talk`` is only observable on the ``/state`` side today.
+        The corpus row is created by ``begin_event`` on the wake path, and
+        a button turn never takes that path, so it has no row to label —
+        see ``_corpus_endpointer_label``.
+        """
+        if self._manual_endpoint_this_turn:
+            return "push_to_talk"
+        if self._server_vad_this_turn:
+            return "server_vad"
+        return "silero_aec"
+
+    def _corpus_endpointer_label(self, *, user_speech_seen: bool) -> str:
+        """The wake-events ``endpointer`` value for the finished turn.
+
+        Same vocabulary as ``_endpointer_label`` plus ``no_speech_abort``,
+        which is a verdict about *listening* and so only meaningful when
+        something was listening for speech. Keyed on the resolved label
+        rather than on ``not _server_vad_this_turn`` so that if button
+        turns ever gain corpus rows, one cannot be recorded as a
+        no-speech abort it never performed.
+
+        Split out of ``_end_turn`` so it is directly testable; inline, its
+        push-to-talk arm sat behind a wake-event id that a button turn
+        never has.
+        """
+        label = self._endpointer_label()
+        if label == "silero_aec" and not user_speech_seen:
+            return "no_speech_abort"
+        return label
+
+    def _ptt_input_cap_sec(self) -> float:
+        """How long a held button may hold the user's input open.
+
+        NOT simply ``HARD_RECORDING_CAP_SEC``. ``_idle_watchdog``'s
+        pre-response timer is anchored at turn OPEN and fires at
+        ``JASPER_IDLE_TIMEOUT_SEC`` (default 20 s) when no model chunk has
+        arrived — and none can while input is still open, because
+        ``last_activity_at()`` tracks *model* activity and stays at the
+        turn-start value. So the 30 s cap is unreachable at the shipped
+        default: the watchdog wins by ~10 s, and because ``_end_turn``
+        cancels ``_play_responses`` before it calls ``end_input``, the
+        user gets no answer at all rather than a truncated one.
+
+        Deriving the cap from the same ``idle_timeout_sec`` the watchdog
+        uses keeps the two in step when an operator retunes either, and
+        aims to leave the model ``PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC``
+        to start speaking after the cap closes input.
+
+        ``PTT_MIN_INPUT_CAP_SEC`` can defeat that aim, because the floor
+        is a constant while the watchdog is not: a low enough
+        ``idle_timeout_sec`` walks the watchdog down *through* the floor
+        (that constant's own comment is the canonical statement of this).
+        Two degraded bands result, each warned once per daemon:
+
+        * ``cap < idle_timeout < cap + allowance`` — the cap still fires
+          first, but leaves the model less than the allowance, so a *slow*
+          first chunk loses the answer.
+          ``event=manual_mic.idle_timeout_too_low``.
+        * ``idle_timeout <= cap`` — the watchdog fires first and the cap
+          is unreachable, so **every** long hold loses its answer whatever
+          the chunk speed. This is the original defect's shape surviving
+          in a narrow band, and it says so louder:
+          ``event=manual_mic.hold_cap_unreachable``.
+
+        The floor stands in both — a usable button beats one that closes
+        mid-sentence — because the real remedy is the operator's timeout,
+        which both events name in ``needs_sec``.
+
+        ``idle_timeout_sec`` is guaranteed > 0 — ``Config._validate``
+        rejects anything else at daemon start (pinned by ``test_config``'s
+        rejected-value table) — so there is no "watchdog disabled" case
+        for this to reason about.
+        """
+        headroom = (
+            self._cfg.idle_timeout_sec
+            - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
+        )
+        cap = min(HARD_RECORDING_CAP_SEC, max(PTT_MIN_INPUT_CAP_SEC, headroom))
+        needs = cap + PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
+        # One latch for both: the two bands are mutually exclusive by
+        # construction, and `idle_timeout_sec` is fixed for the daemon's
+        # life, so at most one can ever apply.
+        if not self._ptt_cap_warned:
+            common = {
+                "cap_sec": f"{cap:.1f}",
+                "idle_timeout_sec": f"{float(self._cfg.idle_timeout_sec):.1f}",
+                "needs_sec": f"{needs:.1f}",
+            }
+            if cap >= self._cfg.idle_timeout_sec:
+                self._ptt_cap_warned = True
+                log_event(
+                    logger,
+                    "manual_mic.hold_cap_unreachable",
+                    **common,
+                    detail=(
+                        "the idle watchdog reaps a held button BEFORE the "
+                        "hold cap can close input, so every long hold ends "
+                        "with no answer at all; raise "
+                        "JASPER_IDLE_TIMEOUT_SEC to at least needs_sec"
+                    ),
+                    level=logging.WARNING,
+                )
+            elif needs > self._cfg.idle_timeout_sec:
+                self._ptt_cap_warned = True
+                log_event(
+                    logger,
+                    "manual_mic.idle_timeout_too_low",
+                    **common,
+                    detail=(
+                        "raise JASPER_IDLE_TIMEOUT_SEC to at least "
+                        "needs_sec; a long hold may end with no answer"
+                    ),
+                    level=logging.WARNING,
+                )
+        return cap
+
+    async def _handle_manual_session_frame(self, frame) -> None:
+        """Forward one push-to-talk frame. The button owns end-of-input.
+
+        Reached from ``_handle_session_frame`` when
+        ``_manual_endpoint_this_turn`` is set. Deliberately does NOT run
+        local Silero:
+
+        * ``END_OF_UTTERANCE_SILENCE_SEC`` would call ``end_input()``
+          after 0.8 s of detected silence — while the user is still
+          holding the button. Release already does exactly that, so
+          Silero here is a second writer of "input is over" and the
+          faster of the two wins.
+        * ``NO_SPEECH_ABORT_SEC`` would end the turn outright 5 s into a
+          held button. A user who presses and then gathers their thought
+          is not a false wake; there was no wake to be false.
+
+        What replaces them is ``_ptt_input_cap_sec``, and something must:
+        a button held but never released (wedged under a cushion, a
+        release event the accessory never sends) would otherwise hold the
+        duck, the LLM session, and the mic open until ``_idle_watchdog``
+        reaps the turn — and that teardown cancels ``_play_responses``
+        before asking the model anything, so the user hears nothing.
+        Closing input at the cap turns that into an answer to what was
+        said so far.
+
+        **The cap only covers a button whose frames keep arriving.** This
+        method is the sole evaluator of it and runs per frame, so if the
+        frames *stop* instead — BLE drop mid-hold, adapter killed — the
+        cap never runs: the source's ``frames()`` is an untimed queue read
+        (``UdpMicCapture.frames``), and the primary mic loop deliberately
+        does not feed a button turn. That turn is reaped by
+        ``_idle_watchdog``; ``_end_turn`` still finalises it through the
+        ``_manual_endpoint_this_turn`` term in its ``end_input()`` gate,
+        and the operator gets the ``HOLD TIMEOUT`` line rather than the
+        wake-turn text. Both of those are pinned
+        (``test_teardown_still_calls_end_input_on_a_button_turn``,
+        ``test_no_answer_on_a_held_button_is_diagnosed_as_a_hold_timeout``).
+        This is not a regression — the pre-bypass code had the identical
+        skip — but the cap is not what saves that case, and an earlier
+        version of this docstring claimed it was.
+        """
+        now = asyncio.get_event_loop().time()
+        elapsed = now - self._turn_started_at_loop
+        cap = self._ptt_input_cap_sec()
+        if elapsed >= cap:
+            # `_input_ended` gates re-entry: once set, subsequent
+            # held-button frames are dropped by `_handle_session_frame`'s
+            # input-closed branch and never reach here, so this fires at
+            # most once per turn.
+            log_event(
+                logger,
+                "manual_mic.hold_cap",
+                source=self._active_manual_source or "primary",
+                cap_sec=f"{cap:.1f}",
+                idle_timeout_sec=f"{float(self._cfg.idle_timeout_sec):.1f}",
+                level=logging.WARNING,
+            )
+            await self._end_session_input("push-to-talk hold cap")
+            return
+
+        await self._send_session_audio(frame)
+
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
         # this frame is silently consumed (no double-dispatch into detector).
@@ -3569,6 +3843,15 @@ class WakeLoop:
             # playback).
             if self._barge_in_active:
                 await self._handle_playback_frame(frame)
+            return
+
+        # ---- Push-to-talk branch ----
+        # The button already carries both turn boundaries, so nothing
+        # here may close the user's input early. Must come BEFORE the
+        # server-VAD and Silero branches — both of those end input on
+        # their own schedule, which is the bug.
+        if self._manual_endpoint_this_turn:
+            await self._handle_manual_session_frame(frame)
             return
 
         # ---- Server-side VAD branch ----
@@ -3622,11 +3905,7 @@ class WakeLoop:
             if eou_check is not None and callable(eou_check) and eou_check():
                 self._input_ended = True
 
-            try:
-                await self._turn.send_audio(frame.tobytes())
-            except Exception as e:  # noqa: BLE001
-                logger.warning("send_audio failed (will end turn): %s", e)
-                await self._end_turn()
+            await self._send_session_audio(frame)
             return
 
         # ---- Local Silero VAD path (manual VAD) ----
@@ -3672,14 +3951,7 @@ class WakeLoop:
                 "hard recording cap reached (%.1fs); ending input",
                 HARD_RECORDING_CAP_SEC,
             )
-            self._input_ended = True
-            try:
-                await self._turn.end_input()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "end_input failed at cap (will end turn): %s", e,
-                )
-                await self._end_turn()
+            await self._end_session_input("cap")
             return
 
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
@@ -3724,28 +3996,32 @@ class WakeLoop:
                         "end-of-utterance: %.0fms user silence; sending activity_end",
                         silence_ms,
                     )
-                    self._input_ended = True
-                    try:
-                        await self._turn.end_input()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "end_input failed (will end turn): %s", e,
-                        )
-                        await self._end_turn()
+                    await self._end_session_input("end-of-utterance")
                     return
 
-        try:
-            await self._turn.send_audio(frame.tobytes())
-        except Exception as e:  # noqa: BLE001
-            logger.warning("send_audio failed (will end turn): %s", e)
-            await self._end_turn()
+        await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
-        """Forward buffered wake/acquire frames into the newly opened turn."""
+        """Forward buffered wake/acquire frames into the newly opened turn.
+
+        The VAD pass exists for one purpose: pre-arm ``_user_speech_seen``
+        so the live end-of-utterance detector doesn't abort a fast-talker
+        turn whose whole question landed in the acquire window. A
+        push-to-talk turn runs neither the detector nor the abort, so
+        scoring those frames would buy nothing and cost a Silero pass per
+        frame on the exact class of box (Pi Zero 2 W) that can least
+        afford it. ``drain_acquire_buffer`` already contracts
+        ``vad_predict=None`` -> ``sustained_speech_detected=False``.
+        """
+        vad_predict = (
+            None
+            if self._manual_endpoint_this_turn
+            else self._vad.predict
+        )
         return await drain_acquire_buffer(
             self._acquire_buffer,
             self._turn,  # type: ignore[arg-type]
-            vad_predict=self._vad.predict,
+            vad_predict=vad_predict,
             speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
             peak_min=SPEECH_RUN_PEAK_MIN,
         )
@@ -3887,6 +4163,18 @@ class WakeLoop:
             },
             "manual_mic_sources": sorted(self._manual_mics),
             "active_manual_mic_source": self._active_manual_source,
+            # Who closes the in-flight turn's input. The decision itself,
+            # not a re-derivation of it — "the remote cut me off" and "the
+            # remote never cut me off" are the two bug reports this
+            # answers, and they need the daemon's own answer.
+            #
+            # Set at turn start and NOT cleared at turn end, so while
+            # `state` is WAKE this reports the previous turn's mechanism.
+            # Left that way deliberately: `input_ended` above has the same
+            # shape (it too survives the turn that set it), and making one
+            # of the two behave differently would be a worse trap than
+            # both being stale. Read either one alongside `state`.
+            "endpointer": self._endpointer_label(),
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
@@ -3966,16 +4254,27 @@ class WakeLoop:
         # that bypass _handle_wake_frame.
         t_wake = self._wake_event_at_monotonic or _time.monotonic()
         t_begin = _time.monotonic()
+        # ---- Endpointer selection: ONE decision, made once per turn ----
+        # Who closes the user's input on this turn? A turn whose audio
+        # comes from a push-to-talk source is closed by the button
+        # release (`manual_session_end`), so local Silero must not also
+        # try. `_active_manual_source` is set by `manual_session_start`
+        # before it calls us, and is the same flag `_manual_mic_loop`
+        # gates on, so "the button owns this turn" and "manual-source
+        # frames are the session audio" are one fact, not two.
+        self._manual_endpoint_this_turn = self._active_manual_source is not None
         # Reset Silero VAD's internal LSTM state at turn start so
         # state from a previous turn doesn't leak into this one.
+        # Unconditional: `self._vad` is always constructed (see __init__).
         self._vad.reset()
         # Reset end-of-utterance tracking. _input_ended must be False
         # so we resume forwarding mic frames; _user_speech_seen,
         # _silence_started_at, and _speech_run_started_at must be
         # cleared so the silence detector doesn't fire on prior-turn
-        # state. _turn_started_at_loop anchors NO_SPEECH_ABORT_SEC and
-        # HARD_RECORDING_CAP_SEC — measured here on the asyncio loop
-        # clock to match what the silence detector reads.
+        # state. _turn_started_at_loop anchors NO_SPEECH_ABORT_SEC,
+        # HARD_RECORDING_CAP_SEC, and the push-to-talk hold cap —
+        # measured here on the asyncio loop clock to match what the
+        # silence detector reads.
         self._user_speech_seen = False
         self._silence_started_at = 0.0
         self._speech_run_started_at = 0.0
@@ -4021,11 +4320,38 @@ class WakeLoop:
                 raise RuntimeError("live turn lost while sending text context")
 
         self._server_vad_this_turn = False
-        if (
+        # Computed once, then either refused or armed — the same `want`
+        # shape `_resolve_barge_in_for_turn` uses, so the refusal below
+        # can only claim to have blocked something that would otherwise
+        # have been negotiated on THIS turn. (`music_is_playing()` is a
+        # per-turn condition, so a button turn in silence never had server
+        # VAD to refuse and must not say it did.)
+        want_server_vad = (
             self._cfg.server_vad_enabled
             and self._connection.supports_server_vad()
             and self._content_activity.music_is_playing()
-        ):
+        )
+        if want_server_vad and self._manual_endpoint_this_turn:
+            # Server VAD is another endpointer, and on a button turn it is
+            # the same bug as local Silero by a different writer: at
+            # `server_vad_silence_ms` (500 ms default) the server declares
+            # end-of-utterance and answers while the button is still held.
+            # Refuse it for the same reason, and as loudly — barge-in gets
+            # a latched WARN here and this deserves no less. Its own latch,
+            # not `_barge_in_ptt_warned`: two different subsystems, and
+            # sharing one would let whichever fires first swallow the
+            # other's only WARN.
+            if not self._server_vad_ptt_warned:
+                self._server_vad_ptt_warned = True
+                log_event(
+                    logger,
+                    "server_vad.disabled_push_to_talk",
+                    silence_ms=self._cfg.server_vad_silence_ms,
+                    source=self._active_manual_source or "primary",
+                    detail="the button already closes input on release",
+                    level=logging.WARNING,
+                )
+        elif want_server_vad:
             set_td = getattr(self._connection, "set_turn_detection", None)
             if set_td is not None and callable(set_td):
                 try:
@@ -4212,9 +4538,9 @@ class WakeLoop:
         store = session_vad_store
         eid = session_vad_eid
         if store is not None and eid is not None:
-            endpointer_label = "server_vad" if self._server_vad_this_turn else "silero_aec"
-            if not self._user_speech_seen and not self._server_vad_this_turn:
-                endpointer_label = "no_speech_abort"
+            endpointer_label = self._corpus_endpointer_label(
+                user_speech_seen=self._user_speech_seen,
+            )
             try:
                 await store.update_session_vad(
                     eid,
@@ -4262,7 +4588,14 @@ class WakeLoop:
             logger.warning("teardown end_segment failed: %s", e)
 
         if self._turn is not None:
-            if self._input_ended or self._user_speech_seen:
+            # `_manual_endpoint_this_turn` is the third term because on a
+            # push-to-talk turn `_user_speech_seen` never flips (nothing
+            # scores those frames any more). Without it, a turn torn down
+            # mid-hold — idle watchdog, stop event, the release that never
+            # came — would stop calling end_input(), which it did before
+            # local VAD was taken off this path.
+            if (self._input_ended or self._user_speech_seen
+                    or self._manual_endpoint_this_turn):
                 try:
                     await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
                 except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
@@ -4332,6 +4665,23 @@ class WakeLoop:
                         "quota bucket). Switch providers with "
                         "switch-voice-provider.sh if this keeps happening.",
                         bytes_sent, model, model,
+                    )
+                elif self._manual_endpoint_this_turn:
+                    # Same shape as RECORDING TIMEOUT below, but that text
+                    # names a silence detector and a wake fire, neither of
+                    # which exists on a button turn — it would send an
+                    # operator hunting a wake-threshold problem that isn't
+                    # there. The button was held past the point where the
+                    # idle watchdog gave up waiting for the model.
+                    logger.warning(
+                        "HOLD TIMEOUT: sent %d bytes of audio to %s but the "
+                        "button was never released and the hold cap did not "
+                        "close input first — the idle watchdog "
+                        "(JASPER_IDLE_TIMEOUT_SEC=%.0fs) ended the turn "
+                        "before the model was asked to answer. Check the "
+                        "accessory's release event, and that the hold cap "
+                        "sits below the idle timeout.",
+                        bytes_sent, model, float(self._cfg.idle_timeout_sec),
                     )
                 else:
                     logger.warning(

@@ -568,6 +568,66 @@ equivalent) and call it on every tool-round server event, or document
 why they don't need one (e.g. the wire format streams a heartbeat
 that satisfies the anchor naturally).
 
+**The anchor is turn-open, so the user's input phase spends the same
+budget as the model's first response.** `last_activity_at()` tracks
+*model* activity and returns the turn-start time until the model speaks
+— and the model cannot speak until `end_input()`. So the whole window
+from "turn opened" to "model's first chunk" must fit inside
+`JASPER_IDLE_TIMEOUT_SEC`, input included. Two consequences worth
+knowing before touching either timer:
+
+- `HARD_RECORDING_CAP_SEC` (30 s, `jasper/voice_daemon.py`) sits *above*
+  the 20 s default and so cannot fire on a stock box — for any
+  endpointer. A long single utterance loses its answer to the watchdog
+  first, and because `_end_turn` cancels `_play_responses` *before* it
+  calls `end_input()`, the user hears nothing rather than a short reply.
+- Push-to-talk turns therefore do **not** rely on that constant. They
+  derive their own bound from the same `idle_timeout_sec` the watchdog
+  uses (`WakeLoop._ptt_input_cap_sec`), leaving
+  `PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC` for the model to start
+  speaking, and log `event=manual_mic.hold_cap` when it fires. The
+  `PTT_MIN_INPUT_CAP_SEC` floor is a constant while the watchdog is not,
+  so a low enough `JASPER_IDLE_TIMEOUT_SEC` walks the watchdog down
+  through it. Two degraded bands, each warned once per daemon, both
+  naming the timeout that clears them in `needs_sec=`:
+
+  | `JASPER_IDLE_TIMEOUT_SEC` | what happens | event |
+  |---|---|---|
+  | ≥ 11 (incl. the shipped 20) | cap fires with the full allowance | — |
+  | 6–10 | cap fires first, but the model gets less than the allowance, so a **slow** first chunk loses the answer | `manual_mic.idle_timeout_too_low` |
+  | ≤ 5 | watchdog fires first; the cap is unreachable and **every** long hold loses its answer | `manual_mic.hold_cap_unreachable` |
+
+  The floor stands in both degraded bands — a usable button beats one
+  that closes mid-sentence — because the remedy is the operator's
+  timeout, not a shorter cap.
+
+  **The cap only bounds a button whose frames keep arriving.** It is
+  evaluated per frame in `_handle_manual_session_frame`, and a manual
+  source's `frames()` is an untimed queue read, so a BLE drop mid-hold
+  never reaches it. That turn is reaped by `_idle_watchdog` instead;
+  `_end_turn` still calls `end_input()` via its
+  `_manual_endpoint_this_turn` gate term, and the journal shows
+  `HOLD TIMEOUT`. Unchanged from before the bypass — noted because the
+  cap is easy to mistake for the net that catches it.
+
+Re-anchoring the pre-response timer on end-of-input (rather than
+turn-open) would make `HARD_RECORDING_CAP_SEC` meaningful again for
+every endpointer. That is a shared-machinery change across all three
+adapters and is **not** done; the push-to-talk derivation above is a
+local bound, not a fix for the anchor.
+
+**Push-to-talk turns refuse server VAD.** Server VAD is an *endpointer*:
+at `server_vad_silence_ms` (500 ms) the server declares end-of-utterance
+and the model answers. On a button turn that is the same defect local
+Silero had — a second writer of a boundary the button already owns —
+reached through a different writer, so `_begin_turn` refuses it and logs
+`event=server_vad.disabled_push_to_talk` (WARN, one-shot per daemon)
+rather than going quietly inert. The refusal is evaluated against the
+same three-part `want_server_vad` condition that would otherwise arm it
+(flag **and** provider support **and** music playing), so it can only
+claim to have blocked something that was genuinely on the table. Only
+reachable with `JASPER_SERVER_VAD_ENABLED=1`, which is off by default.
+
 ### End-of-turn timing
 
 End-of-turn (the moment the daemon un-ducks music, fires the
