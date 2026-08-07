@@ -2478,13 +2478,22 @@ def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itsel
             [3000, 18000],
             "tweeter:measurement_band_outside_hard_band",
         ),
-        # Nesting, inner half: a crossover-search band escaping the measurement
-        # band. Deleting this clamp left every test in the suite green before
+        # Nesting, inner half: a crossover-search band escaping its declared
+        # bounds. Deleting this clamp left every test in the suite green before
         # #2186, so it is pinned here rather than assumed.
+        #
+        # WHICH bound this mutation escapes changed with #2194 (the #1654/#2191
+        # HF-floor asymmetry), and the expected code moved with it. A tweeter's
+        # two search-band edges now answer to different authorities: the LOWER
+        # edge to ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])`` -- here
+        # 4500 Hz -- and the UPPER edge still to ``measurement_band[1]``. So
+        # 4000 Hz is refused for reaching under the declared hard floor, while
+        # 6000 Hz sits legally inside the 18000 Hz analysis ceiling. The clamp
+        # is intact; only the name it is refused by moved.
         (
             "crossover_search_band_hz",
             [4000, 6000],
-            "tweeter:search_band_outside_measurement_band",
+            "tweeter:search_band_below_hard_band",
         ),
     ],
 )
@@ -2543,3 +2552,63 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
             confirm=True,
             confirmed_at="2026-08-06T12:00:00Z",
         )
+
+
+def test_both_search_band_edges_are_reported_when_both_are_bad() -> None:
+    """The two search-band checks are INDEPENDENT: neither may suppress the other.
+
+    Since #2194 (the #1654 / #2191 HF-floor asymmetry) a high-frequency role's
+    two search-band edges answer to DIFFERENT authorities -- the LOWER edge to
+    ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``, the UPPER edge still to
+    ``measurement_band[1]``. ``_search_band_issues`` therefore evaluates them as
+    two unconditional ``append``s into one list rather than as a chain, so a
+    declaration that breaks both bounds is told about both.
+
+    Pinned because the property was doubted rather than measured. #2199 and
+    #2194 landed within a day of each other and ``main`` went red on one stale
+    assertion; the circulating diagnosis was that #2194's new floor check "fires
+    first and shadows" the older ceiling check. It does not, and it never did --
+    but nothing in the suite would have caught it if it had. Rewriting the second
+    ``if`` as an ``elif`` is precisely the regression this test exists to fail
+    on, and the cost of that regression is paid by the operator: they would fix
+    the one edge they were told about, re-save, and be refused a second time by
+    the edge that had been hidden.
+
+    ``[4000, 19000]`` breaks both bounds of the CX120 dome tweeter at once --
+    4000 Hz reaches under its declared hard floor of 4500 Hz, and 19000 Hz
+    escapes its 18000 Hz analysis ceiling. Each edge alone is already covered
+    (``test_the_relaxation_never_reaches_the_upper_edge`` for the ceiling, the
+    ``crossover_search_band_hz`` case above for the floor); the conjunction is
+    what was untested.
+    """
+
+    topology = _topology_with_tweeter_style("dome_tweeter")
+    raw_drivers = [
+        {
+            "target_id": f"mono:{role}",
+            "role": role,
+            "model": _CX120_MODELS[role],
+            **_cx120_safety(role),
+        }
+        for role in ("woofer", "tweeter")
+    ]
+    tweeter_raw = next(d for d in raw_drivers if d["role"] == "tweeter")
+    tweeter_raw["crossover_search_band_hz"] = [4000, 19000]
+    manual = normalise_manual_settings(
+        {"drivers": raw_drivers, "crossover_candidates": []}
+    )
+    assert manual is not None
+
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        confirm=False,
+    )
+
+    codes = _issue_codes(profile)
+    # Ordered so an ``elif`` regression -- which suppresses the floor code,
+    # because the ceiling check runs first -- fails on the edge it hid.
+    assert "tweeter:search_band_below_hard_band" in codes, codes
+    assert "tweeter:search_band_outside_measurement_band" in codes, codes
+    assert profile["status"] == "incomplete"
