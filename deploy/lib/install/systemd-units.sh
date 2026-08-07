@@ -401,6 +401,12 @@ install_usbsink_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.path" \
         "${SYSTEMD_DIR}/jasper-usbgadget-forensics.path"
+    # Kick-only (no [Install]): jasper-usbgadget's name-patch ExecStartPre
+    # starts it with `systemctl --no-block` so the 10.3 s depmod runs in its
+    # own cgroup instead of the gadget's 5 s start budget (#2176).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink-name-index.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink-name-index.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"

@@ -18,6 +18,9 @@ from tests.systemd_unit_helpers import (
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
 GADGET_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget.service"
+NAME_INDEX_UNIT_PATH = (
+    REPO / "deploy" / "systemd" / "jasper-usbsink-name-index.service"
+)
 FORENSICS_SERVICE_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.service"
 FORENSICS_PATH_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.path"
 HARDWARE_RECONCILE_UNIT_PATH = (
@@ -180,3 +183,59 @@ def test_only_volume_observer_keeps_a_usb_console_script():
     assert scripts.get("jasper-usbsink-volume") == (
         "jasper.cli.usbsink_volume_main:main"
     )
+
+
+def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
+    """#2176: `depmod` measured 10.3 s on a Pi Zero 2 W, over 2x the gadget
+    unit's TimeoutStartSec=5s — and that 5 s is mirrored into
+    jasper/source_intent.py as the single source of truth for a derived
+    timeout budget that reaches install.sh and three nginx
+    proxy_read_timeout values, so it must not move to accommodate depmod.
+
+    The structural invariant that replaces a timeout bump: the gadget's
+    ExecStartPre is the fast publish half only, and the slow half lives in
+    its own unit with its own generous, bounded start timeout. Own unit =
+    own cgroup, so the `systemctl restart jasper-usbgadget` install.sh
+    issues right after `enable --now` cannot SIGTERM the rebuild."""
+    gadget = GADGET_UNIT_PATH.read_text()
+    index_unit = NAME_INDEX_UNIT_PATH.read_text()
+
+    # The gadget still runs only the fast publish half, with no argument that
+    # would drag the index phase back onto its start path.
+    assert (
+        "-/usr/local/sbin/jasper-usbsink-name-patch"
+        in _assignments_for(gadget, "ExecStartPre")
+    )
+    assert "jasper-usbsink-name-patch --index" not in gadget
+    assert _value_for(gadget, "TimeoutStartSec") == "5s"
+
+    assert _value_for(index_unit, "Type") == "oneshot"
+    assert _assignments_for(index_unit, "ExecStart") == (
+        "/usr/local/sbin/jasper-usbsink-name-patch --index",
+    )
+    # RemainAfterExit must stay unset. `systemctl start` on an already-active
+    # oneshot is a no-op, so RemainAfterExit=yes would make the first rebuild
+    # succeed and every later kick silently do nothing — a rename or kernel
+    # update would never re-index and the marker would never promote, which
+    # is #2176 wearing a different hat.
+    assert _value_for(index_unit, "RemainAfterExit") is None
+    # Bounded (a wedged depmod must not sit forever) but far above the
+    # 10.3 s measurement, and — unlike the gadget's — not part of any
+    # client budget chain, because nothing waits on this unit.
+    timeout = _value_for(index_unit, "TimeoutStartSec")
+    assert timeout.endswith("s")
+    assert 60 <= int(timeout[:-1]) <= 600, timeout
+
+    # Ordering it Before= the gadget would put depmod straight back on the
+    # start path this unit exists to keep it off. (Directive-aware: the unit's
+    # own comments explain the choice and must not satisfy this.)
+    assert _values_for(index_unit, "Before") == ()
+    # Kick-only: started on demand by the publish half, never boot-enabled.
+    sections = [
+        line.strip() for line in index_unit.splitlines()
+        if line.strip().startswith("[")
+    ]
+    assert "[Install]" not in sections, sections
+
+    install = INSTALL_HELPER_PATH.read_text()
+    assert 'deploy/systemd/jasper-usbsink-name-index.service"' in install

@@ -54,8 +54,15 @@ ExecStartPre=/sbin/modprobe libcomposite
 # Make output track Speaker Name and input track "<Speaker Name> Mic" by
 # patching the kernel's hardcoded UAC2 AudioStreaming strings. Best-effort
 # (leading `-`): a failure only means the host shows default labels — it must
-# never block the gadget. Runs before gadget-up so the patched module autoloads
-# when the uac2 function is created. See docs/HANDOFF-usbsink.md "Device name".
+# never block the gadget. This is the PUBLISH half only: it writes the patched
+# override before gadget-up, so on a box whose updates/ dir is already in the
+# module index (the rename case) the patched module autoloads on this very
+# bring-up. The 10.3 s depmod that first puts updates/ INTO that index does
+# not fit in TimeoutStartSec above, so it is handed to
+# jasper-usbsink-name-index.service; until it lands, gadget-up autoloads the
+# stock module and jasper-doctor reports `usbsink name` as a warn rather than
+# claiming a label the host is not showing. See #2176 and
+# docs/HANDOFF-usbsink.md "Device name".
 ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
 ExecStart=/usr/local/sbin/jasper-usbgadget-up
 # Preserve the healthy post-bind signature and, most importantly, the wedged

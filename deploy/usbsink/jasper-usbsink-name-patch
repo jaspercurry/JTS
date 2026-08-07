@@ -23,17 +23,39 @@
 # speaker name + mic name + stock-module hash) lets an unchanged boot exit in
 # milliseconds without touching the module tree, running depmod, or reloading.
 #
-# depmod alone measures 10+ s on a Pi Zero 2 W -- far past this unit's 5 s
-# TimeoutStartSec (#2176). Every depmod call below runs in a backgrounded
-# subshell so this script always returns in a fraction of a second no
-# matter how long the kernel module index rebuild takes; systemd's start
-# timeout never sees it. The completion marker is written only once depmod
-# actually finishes, so a boot that kicks off a rebuild converges on the
-# very next start instead of discarding the finished work and repeating
-# the rebuild forever. In the meantime the gadget composes against
-# whichever module is already loaded (stock, until the rebuild catches
-# up) -- purely cosmetic, matching this hook's existing best-effort
-# contract.
+# TWO PHASES, because depmod alone measures 10.3 s on a Pi Zero 2 W -- over
+# 2x jasper-usbgadget.service's 5 s TimeoutStartSec (#2176), whose value is
+# the single source of truth for the source-intent reconciler's derived
+# timeout budget (jasper/source_intent.py) and must not move:
+#
+#   publish (default, runs as jasper-usbgadget's ExecStartPre)
+#     Everything cheap and everything ordering-sensitive: read the name,
+#     build + integrity-gate the override, install it, then hand the slow
+#     half to jasper-usbsink-name-index.service via `systemctl --no-block
+#     start` and return. depmod is NEVER invoked on this path. Publishing
+#     synchronously is load-bearing: on an already-indexed box (the rename
+#     case) the bytes written here are exactly what the gadget-up milli-
+#     seconds later autoloads, so a rename applies on that same restart.
+#
+#   --index (runs as jasper-usbsink-name-index.service)
+#     depmod, drop a stale in-memory module, and promote the pending
+#     marker. Its own unit means its own cgroup and its own generous
+#     TimeoutStartSec: `( ... ) &` would leave the rebuild inside the
+#     gadget's cgroup, where the `systemctl restart jasper-usbgadget` that
+#     install.sh issues right after `enable --now` SIGTERMs it on every
+#     deploy. It also matches the house "don't block on this" idiom
+#     (deploy/bin/jasper-*-reconcile all use `systemctl --no-block`).
+#
+# The completion marker is promoted ONLY when depmod succeeded AND the
+# published override is what the running/next bring-up actually loads --
+# never merely because bytes reached the disk. modprobe follows
+# modules.dep, not the filesystem, so on a bring-up where updates/ is not
+# yet indexed (first enable, post-kernel-update) gadget-up loads the STOCK
+# module for that session; withholding the marker keeps jasper-doctor's
+# `usbsink name` check on an honest `warn` with its existing "restart
+# jasper-usbgadget to re-apply" remediation, which then converges in one
+# restart. Claiming `ok` while the host shows "Playback Inactive" would be
+# a silent failure, which this project does not ship.
 #
 # Mirrors the deploy/bin/jasper-wifi-guardian self-heal idiom: oneshot,
 # structured event= logs, no-op steady state, degrade-don't-break.
@@ -45,11 +67,18 @@ SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}
 SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
 MODULES_ROOT="${JASPER_MODULES_ROOT:-/lib/modules}"
 
+INDEX_UNIT="jasper-usbsink-name-index.service"
+
 KVER="$(uname -r)"
 MODDIR="${MODULES_ROOT}/${KVER}"
 UPDATES_DIR="${MODDIR}/updates"
 OVERRIDE="${UPDATES_DIR}/usb_f_uac2.ko"
 MARKER="${UPDATES_DIR}/.jasper-usbsink-name.marker"
+# The marker the index phase will promote once depmod has actually made the
+# override reachable. Written by publish only when promoting it would be a
+# true statement; see the header.
+PENDING="${UPDATES_DIR}/.jasper-usbsink-name.pending"
+MODULES_DEP="${MODDIR}/modules.dep"
 # Bump whenever the byte-transform contract changes. Schema 3 gives the
 # Capture alt-setting strings their derived "<Speaker Name> Mic" label; an
 # older marker must rebuild even when the kernel/name/hash are unchanged.
@@ -58,6 +87,60 @@ PATCH_SCHEMA=3
 emit() {  # emit <outcome> [k=v ...]
     local outcome="$1"; shift || true
     printf 'event=usbsink_name.%s %s\n' "${outcome}" "$*" >&2
+}
+
+# --- phase 2: the slow half, owned by jasper-usbsink-name-index.service ---
+run_index() {
+    if ! depmod "${KVER}" 2>/dev/null; then
+        # modules.dep was NOT rebuilt, so modprobe still cannot reach the
+        # override. Promoting the marker here would claim a label the host
+        # will never show. Leave it absent: doctor warns, next start rebuilds.
+        emit "index_failed" "kver=${KVER}"
+        return 0
+    fi
+
+    # Drop a stale in-memory module so a later function-create autoloads the
+    # current override. Best-effort by design: gadget-up normally holds the
+    # module by now, so this is usually a no-op. It is NOT what decides
+    # whether the marker may be promoted -- publish already decided that
+    # (the .pending contract), because rmmod cannot distinguish a loaded
+    # stock module from a loaded override.
+    if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then
+        if rmmod usb_f_uac2 2>/dev/null; then
+            emit "reloaded" "detail=stale_module_unloaded"
+        else
+            emit "reload_skipped" "detail=usb_f_uac2_busy"
+        fi
+    fi
+
+    if [[ -f "${PENDING}" ]]; then
+        mv -f "${PENDING}" "${MARKER}"
+        emit "applied" "kver=${KVER}"
+    else
+        # Re-index only: either a failure path cleaning up a removed
+        # override, or a publish that declined to promise convergence.
+        emit "indexed" "kver=${KVER} detail=no_pending_marker"
+    fi
+    return 0
+}
+
+if [[ "${1:-}" == "--index" ]]; then
+    run_index
+    exit 0
+fi
+
+kick_index() {
+    # --no-block: the caller is jasper-usbgadget's ExecStartPre and must
+    # return well inside its 5 s budget. systemd coalesces repeat start jobs
+    # for the same unit, so back-to-back gadget restarts never fork two
+    # concurrent depmods.
+    if systemctl --no-block start "${INDEX_UNIT}" 2>/dev/null; then
+        emit "index_queued" "unit=${INDEX_UNIT}"
+    else
+        # Non-fatal: the marker simply stays absent, doctor warns, and the
+        # next gadget start rebuilds. Never fail the gadget over this.
+        emit "index_kick_failed" "unit=${INDEX_UNIT}"
+    fi
 }
 
 # --- desired name -----------------------------------------------------
@@ -97,6 +180,25 @@ if [[ -f "${OVERRIDE}" && -f "${MARKER}" ]] \
 fi
 
 # --- (re)build the override ------------------------------------------
+# Does the module index currently resolve usb_f_uac2 to OUR override? depmod
+# records exactly one file per module name in modules.dep (updates/ wins over
+# kernel/), and the request_module() that gadget-up's function-create triggers
+# follows THAT record -- not the presence of a .ko on disk. So this one file
+# read, taken BEFORE the override is (re)written, is what tells us whether the
+# bytes published below are what the very next bring-up actually loads.
+#
+# Matched loosely on purpose: accept the relative form kmod writes today and
+# the absolute form, with or without a compression suffix. This is also why
+# the check is phrased as "prove indexed", not "prove not indexed" -- an
+# unrecognised modules.dep dialect leaves override_indexed=0, which withholds
+# the completion marker and leaves doctor on a warn. Failing that way costs a
+# rebuild on the next start; failing the other way would report a host label
+# that isn't there.
+override_indexed=0
+if grep -qE '^(/.*/)?updates/usb_f_uac2\.ko' "${MODULES_DEP}" 2>/dev/null; then
+    override_indexed=1
+fi
+
 mkdir -p "${UPDATES_DIR}"
 TMP="$(mktemp -d /tmp/usbsink-name.XXXXXX)" || { emit "mktemp_failed"; exit 0; }
 trap 'rm -rf "${TMP}"' EXIT
@@ -128,10 +230,17 @@ if [[ ${rc} -ne 0 ]]; then
     # Drop any stale override so the unpatched module autoloads and the
     # host shows the default label rather than a wrong/old name.
     emit "patch_failed" "rc=${rc} ${summary}"
-    if [[ -f "${OVERRIDE}" ]]; then
-        rm -f "${OVERRIDE}" "${MARKER}"
-        ( depmod "${KVER}" 2>/dev/null || true
-          emit "override_removed" "kver=${KVER}" ) &
+    # Re-index whenever there is stale state to clear: the override file
+    # itself, OR an index that still names an override already deleted by a
+    # previous pass whose re-index was lost. The second case is the one with
+    # teeth -- modules.dep naming a missing file makes modprobe fail, and
+    # gadget-up (set -euo pipefail) then takes the USB management network
+    # down with it. Repairing it on a later pass costs nothing on a healthy
+    # box, where both conditions are false after the first failed pass.
+    if [[ -f "${OVERRIDE}" || "${override_indexed}" == "1" ]]; then
+        rm -f "${OVERRIDE}" "${MARKER}" "${PENDING}"
+        emit "override_removed" "kver=${KVER}"
+        kick_index
     fi
     exit 0
 fi
@@ -148,42 +257,36 @@ out_size=$(stat -c%s "${OUT_TMP}" 2>/dev/null || echo 0)
 magic=$(head -c4 "${OUT_TMP}" 2>/dev/null | od -An -tx1 | tr -d ' \n')
 if [[ "${out_size}" != "${raw_size}" || "${magic}" != "7f454c46" ]]; then
     emit "override_invalid" "out_size=${out_size} stock_size=${raw_size} magic=${magic}"
-    if [[ -f "${OVERRIDE}" ]]; then
-        rm -f "${OVERRIDE}" "${MARKER}"
-        ( depmod "${KVER}" 2>/dev/null || true
-          emit "override_removed" "kver=${KVER}" ) &
+    if [[ -f "${OVERRIDE}" || "${override_indexed}" == "1" ]]; then
+        rm -f "${OVERRIDE}" "${MARKER}" "${PENDING}"
+        emit "override_removed" "kver=${KVER}"
+        kick_index
     fi
     exit 0
 fi
 
+# Drop the old marker BEFORE publishing new bytes, so a kill at any point
+# from here leaves "override present, marker absent" -- the state doctor
+# reports as a warn and the next start rebuilds from. The inverse (marker
+# describing bytes that are no longer there) would report a false ok.
+rm -f "${MARKER}" "${PENDING}"
 install -m 0644 "${OUT_TMP}" "${OVERRIDE}"
-emit "queued" "name=\"${NAME}\" kver=${KVER} ${summary}"
 
-# depmod (module-index rebuild), the completion marker, and the forced
-# reload below all happen together in the background: a kill/exit here
-# can never leave the override published without the marker that says
-# so -- the exact "expensive work discarded on every run" failure this
-# hook had while depmod ran synchronously against a 5 s budget (#2176).
-(
-    depmod "${KVER}" 2>/dev/null || true
-    printf '%s' "${DESIRED_MARKER}" > "${MARKER}"
-    emit "applied" "name=\"${NAME}\" kver=${KVER} ${summary}"
+if [[ "${override_indexed}" == "1" ]]; then
+    # modules.dep already names updates/usb_f_uac2.ko, so the gadget-up that
+    # runs milliseconds after this ExecStartPre autoloads exactly the bytes
+    # written above. Convergence is genuine -- arm the marker for promotion.
+    printf '%s' "${DESIRED_MARKER}" > "${PENDING}"
+    emit "queued" "name=\"${NAME}\" kver=${KVER} loads=override ${summary}"
+else
+    # First enable, or the first boot after a kernel update: updates/ is not
+    # in the index yet, so gadget-up will autoload the STOCK module and the
+    # host shows the default label for this session. Deliberately arm NO
+    # marker -- doctor's `usbsink name` stays a truthful warn ("restart
+    # jasper-usbgadget to re-apply"), and that restart converges, because
+    # the index rebuild below is what makes the override reachable.
+    emit "queued" "name=\"${NAME}\" kver=${KVER} loads=stock_until_restart ${summary}"
+fi
 
-    # --- force the freshly-patched module to load ---------------------
-    # We only get here when the marker was stale (enable, rename, or
-    # kernel change), so any loaded usb_f_uac2 carries a stale string.
-    # Unload it so a future function-create autoloads the new override.
-    # Best-effort: gadget-up may already be using the module by the time
-    # depmod finishes, in which case rmmod fails (busy) and the host just
-    # shows the old name until the next bring-up -- cosmetic, matching
-    # this hook's existing degrade-don't-break contract.
-    if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then
-        if rmmod usb_f_uac2 2>/dev/null; then
-            emit "reloaded" "detail=stale_module_unloaded"
-        else
-            emit "reload_skipped" "detail=usb_f_uac2_busy"
-        fi
-    fi
-) &
-
+kick_index
 exit 0

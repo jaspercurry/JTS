@@ -1,0 +1,57 @@
+[Unit]
+Description=Jasper USB gadget name-patch module index rebuild (depmod)
+# The slow half of jasper-usbsink-name-patch (#2176). jasper-usbgadget's
+# ExecStartPre runs the publish half — read the Speaker Name, build and
+# integrity-gate the name-patched usb_f_uac2 override, install it — and then
+# kicks this unit with `systemctl --no-block start` before returning.
+#
+# Why the split: depmod alone measures 10.3 s on a Pi Zero 2 W, over 2x
+# jasper-usbgadget.service's TimeoutStartSec=5s. That 5 s is mirrored into
+# jasper/source_intent.py's _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC as the single
+# source of truth for the source-intent reconciler's derived timeout budget,
+# which feeds install.sh's broker kill-after and three nginx
+# proxy_read_timeout values across two config files — so raising it to cover
+# depmod would ripple into unrelated Bluetooth/Sources/Speaker-rename wizard
+# timeouts. Moving the slow work out is the change with the smaller blast
+# radius.
+#
+# Why a unit rather than a backgrounded subshell: a `&` child stays in
+# jasper-usbgadget's own cgroup, so the `systemctl restart
+# jasper-usbgadget.service` that install.sh issues moments after `enable
+# --now` SIGTERMs it — the rebuild would be killed on every deploy to a
+# USB-audio box, which is exactly the path #2176 is about. Its own unit means
+# its own cgroup, its own generous start timeout, and a journal to read.
+# systemd also coalesces repeat start jobs for one unit, so back-to-back
+# gadget restarts can never fork two concurrent depmods.
+#
+# Deliberately NOT ordered Before=/After= jasper-usbgadget.service: Before=
+# would put depmod straight back on the gadget's start path (the bug), and no
+# ordering is needed for safety because depmod publishes its index files by
+# temp+rename, so a concurrent request_module() during gadget-up reads a
+# consistent old-or-new modules.dep either way.
+#
+# Started on demand by the publish half, never enabled — hence no [Install]
+# section.
+
+[Service]
+Type=oneshot
+# NO RemainAfterExit. This unit must go back to inactive after each run,
+# because `systemctl start` on an already-active oneshot is a no-op: with
+# RemainAfterExit=yes the FIRST rebuild would succeed and every later kick
+# would silently do nothing, so a rename or kernel update would never
+# re-index and the marker would never promote -- #2176 in a new costume.
+# Pinned by tests/test_usbsink_systemd.py. Do not "tidy" this in.
+# depmod measured 10.3 s on the slowest supported hardware (Pi Zero 2 W,
+# #2176). Bounded far above that so a loaded box still converges, and bounded
+# at all so a wedged depmod cannot sit forever. Nothing waits on this unit, so
+# unlike jasper-usbgadget's own timeout this value is not part of any client
+# budget chain.
+TimeoutStartSec=180s
+ExecStart=/usr/local/sbin/jasper-usbsink-name-patch --index
+# Same posture as jasper-usbgadget.service: a fixed PATH for the root helper,
+# and the script's test-only path seams stripped from the production
+# environment so they can never be injected here.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER
+StandardOutput=journal
+StandardError=journal
