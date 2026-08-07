@@ -713,11 +713,18 @@ never redirected.
   and
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
-  so relay state and the one next action cannot disagree. `POST
-  /crossover/relay-capture` carries driver sweeps (and retains the summed
-  transport shape, currently fail-closed before playback) over the **same**
-  phone-mic relay transport + `record_*_capture` analysis seam the room/sync
-  flows use. The consume path
+  so relay state and the one next action cannot disagree. Driver sweeps ride
+  the **v2 conductor** (`POST /crossover/v2/session`) over the **same**
+  phone-mic relay transport the room/sync flows use; that flow is owned by
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  and not restated here. **`POST /crossover/relay-capture` no longer exists** —
+  W5b (#1688, 2026-07-24) retired the legacy per-driver flow, removing the
+  route from `correction_setup`'s POST allowlist along with the
+  `record_*_capture` analysis seam on the crossover side.
+  (`record_driver_capture` still exists but has no production caller; only
+  `tests/test_correction_crossover_backend_level_solve.py` reaches it. Nor is
+  `summed` a capture kind — it survives only as a `driver_role` value.) Tracked
+  with the sibling docs in #1882. The consume path
   reads the play payload's REAL shape (top-level `status` + nested
   `playback.audio_emitted`, top-level `test_level_dbfs`/`sweep_meta`/
   `playback_id`), and measurement mutual-exclusion is
@@ -793,6 +800,25 @@ never redirected.
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
+
+  > **Stale as of 2026-07-24 — the runner named in this paragraph is deleted.**
+  > W5b (#1688) removed
+  > `correction_crossover_flow.build_crossover_relay_plan_run_and_consume` and
+  > `correction_setup._handle_crossover_relay_capture`, and dropped `POST
+  > /crossover/relay-capture` from the hard-enforced POST allowlist
+  > (`correction_crossover_flow.py` itself survives — page-render, status,
+  > envelope, reset and level-target helpers — but it no longer hosts a capture
+  > runner). The shipped driver path is the **v2 conductor**, owned by
+  > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+  > the `record_driver_capture` analysis/record path described below is reached
+  > by no production caller. **The protocol-v3 substrate itself is NOT stale:**
+  > capture plans, `run_capture_plan`, and the audible/infra budget split all
+  > still hold — v2 builds its plans through
+  > `crossover_v2_flow.build_v2_capture_plan` / `build_v2_verify_capture_plan`.
+  > Left as a banner rather than rewritten because restating which per-capture
+  > solve/correction guarantees survive under v2's analysis path is a larger
+  > scan than this doc-truth pass; tracked with the sibling docs in #1882.
+
   **Session-spanning capture protocol v3 (SPEC W2.3, Wave-2 Pi finale,
   2026-07-17):** driver-sweep relay captures now build their spec with a
   `capture_plan` (`capture_target=3`, `max_attempts=`

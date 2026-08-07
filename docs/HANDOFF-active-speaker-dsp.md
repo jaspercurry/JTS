@@ -427,6 +427,26 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > selection, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
+>
+> > **Stale as of 2026-07-24 — the driver-capture chain named below is
+> > deleted.** W5b (#1688) retired the legacy per-driver flow: `POST
+> > /correction/crossover/relay-capture` is gone from `correction_setup`'s
+> > POST allowlist (the surviving crossover POSTs are
+> > `/crossover/{level-match,relay-cancel,reset,recover-volume}` plus
+> > `/crossover/v2/{session,verify,apply,restore}`), and
+> > `_handle_crossover_relay_capture` was deleted with it. The allowlist is
+> > hard-enforced, so that path 404s today.
+> > `correction_crossover_backend.record_driver_capture` still exists but has
+> > **no production caller** — only
+> > `tests/test_correction_crossover_backend_level_solve.py` reaches it. The
+> > shipped crossover measurement is the **v2 conductor**, owned by
+> > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> > Left as a banner rather than rewritten because the replacement's
+> > persistence narrative (v2 stores through `persist_conductor_state`, not
+> > `active_speaker.measurement.record_driver_measurement`) is a larger scan
+> > than this doc-truth pass; tracked with the sibling docs in #1882. The
+> > `/sound/` by-ear routes named below are unaffected and still live.
+>
 > `/sound/active-speaker/driver-measurement` and
 > `/sound/active-speaker/summed-validation` (by-ear confirmations), plus the
 > HTTPS browser mic-capture path `/correction/crossover/` driver-capture
@@ -1361,7 +1381,16 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    return the bounded WAV through `/correction/crossover/relay-capture`, analyze with
    `active_speaker.driver_acoustics.analyze_driver_capture`, and record via
    `commissioning_capture.record_driver_acoustic_capture` →
-   `measurement.record_driver_measurement`. Advance per driver; then run the
+   `measurement.record_driver_measurement`.
+   **Transport + analysis caveat (2026-07-24):** this remains the *target*
+   sequence, but W5b (#1688) deleted both the route and the chain it names —
+   `/correction/crossover/relay-capture` 404s today, and
+   `record_driver_capture` has no production caller. The shipped v2 conductor
+   takes a different analysis path, so this target is not merely un-wired: it
+   diverges from what runs. See the banner earlier in this doc,
+   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+   and #1882.
+   Advance per driver; then run the
    combined-driver test, submit the summed relay leg
    (`analyze_summed_crossover`), and freeze the commissioned config as the
    durable profile (`baseline_profile.*`) when the measurement gates are
