@@ -286,8 +286,8 @@ inherits it from the repo instead of being told.
   2026-08-06 eleven PRs were reviewed in subagents whose dispositions
   were never posted, and when those sessions ended the verdicts were
   recoverable only by mining `~/.claude/projects/` transcripts. Not one
-  of those eleven had merged — which is why the trigger is the review
-  returning rather than the merge.
+  of those eleven had merged when those sessions ended — which is why the
+  trigger is the review returning rather than the merge.
   Safety-critical changes — audio/hearing safety, the CamillaDSP graph,
   DSP math, or secrets — escalate from one reviewer to a
   perspective-diverse panel (correctness, hearing-safety, and resilience
