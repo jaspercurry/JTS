@@ -29,6 +29,7 @@ import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
+from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 
@@ -611,6 +612,64 @@ def test_reconcile_camilla_failed_still_logs_without_exc_info() -> None:
         assert "exc_info" not in supplied
 
 
+def test_every_chained_grouping_error_interpolates_its_cause() -> None:
+    """Every `raise Active*Error(...) from exc` must put `exc` IN the message.
+
+    The adjacency guard. The interpolation fix was applied at THREE raise sites
+    and originally only one was pinned — so stripping it from the leader-bake
+    site (the 2026-08-06 outage site) or the restore site left the suite fully
+    green. Per-site assertions close those two; this closes the *class*, so a
+    fourth site cannot be added unguarded.
+
+    Why the rule is safe to state absolutely: `reconcile` logs these as
+    `error=<exception>`, which `log_event` renders as `str(e)` and which never
+    walks `__cause__` — and it must stay that way, because `exc_info=True`
+    would attach a full traceback to all seven `camilla_failed` sites, which is
+    the journal spam AGENTS.md warns against. So for a chained grouping error,
+    `from exc` alone is decoration: if the cause is not in the message, it does
+    not exist as far as an operator is concerned. All 8 such sites across the
+    two modules satisfy this today.
+    """
+
+    modules = [
+        Path(fc.__file__).resolve(),
+        Path(alc.__file__).resolve(),
+    ]
+    checked = 0
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise):
+                continue
+            if not isinstance(node.cause, ast.Name):
+                continue
+            raised = node.exc
+            if not (
+                isinstance(raised, ast.Call)
+                and getattr(raised.func, "id", "")
+                in {"ActiveFollowerError", "ActiveLeaderError"}
+            ):
+                continue
+            cause = node.cause.id
+            assert len(raised.args) >= 2, (
+                f"{path.name}:{node.lineno} raises without a message argument"
+            )
+            message = ast.unparse(raised.args[1])
+            assert cause in message, (
+                f"{path.name}:{node.lineno} chains `from {cause}` but does not "
+                f"interpolate it into the message ({message!r}). The cause "
+                "would live only on __cause__, which reconcile never renders — "
+                "the operator would see a generic line for every distinct "
+                "failure, which is what cost the 2026-08-06 debugging session."
+            )
+            checked += 1
+
+    assert checked >= 8, (
+        f"expected at least the 8 known chained grouping raises, found {checked}"
+        " — the discovery walk has probably stopped matching"
+    )
+
+
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
@@ -674,6 +733,12 @@ def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
         asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
 
     assert exc.value.reason == "restore_graph_unprovable"
+    # The reason TOKEN alone is not enough: reconcile logs `error=e`, which
+    # renders str(e) and never walks __cause__, so a cause that lives only on
+    # `from exc` is invisible to an operator. Asserted here as well as at the
+    # apply site because the identical edit was made at three raise sites and
+    # only one was pinned — this is that adjacency gap closed.
+    assert "restore proof refused" in str(exc.value)
     assert cam.loaded == [str(solo), fc.FOLLOWER_CONFIG_PATH]
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == str(solo)
     assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None
