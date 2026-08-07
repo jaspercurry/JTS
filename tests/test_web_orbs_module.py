@@ -128,14 +128,29 @@ def test_app_css_defines_the_orb_ink_ramp() -> None:
     and stops tracking the palette."""
     css = APP_CSS.read_text()
     root = css[css.index(":root {"): css.index("/* ---------------- base reset")]
-    for prop in ("--orb-ink:", "--orb-paper:"):
-        assert prop in root, (
-            f"app.css :root must define {prop.rstrip(':')} — it is the single "
-            "source of truth for orb colour (see orbs.js)"
-        )
-    assert "var(--primary)" in root[root.index("--orb-ink:"):][:120], (
+    # Strip comments first. The explanatory block above these tokens mentions
+    # `--orb-paper: var(--card)` as an override example, and a substring search
+    # matched THAT instead of the declaration — deleting the real declaration
+    # left this test green. Assert against code, never against prose.
+    code = re.sub(r"/\*.*?\*/", "", root, flags=re.DOTALL)
+
+    ink = re.search(r"^\s*--orb-ink:\s*(.+?);", code, re.MULTILINE)
+    paper = re.search(r"^\s*--orb-paper:\s*(.+?);", code, re.MULTILINE)
+    assert ink, (
+        "app.css :root must declare --orb-ink — it is the single source of "
+        "truth for orb colour (see orbs.js)"
+    )
+    assert paper, (
+        "app.css :root must declare --orb-paper — it is the single source of "
+        "truth for orb colour (see orbs.js)"
+    )
+    assert "var(--primary)" in ink.group(1), (
         "--orb-ink must derive from --primary so orbs re-skin with the "
-        "palette instead of pinning their own green"
+        f"palette instead of pinning their own green; got {ink.group(1)!r}"
+    )
+    assert "var(--background)" in paper.group(1), (
+        "--orb-paper must derive from --background so an orb dissolves into "
+        f"the page it sits on; got {paper.group(1)!r}"
     )
 
 
@@ -144,13 +159,25 @@ def test_orbs_module_reads_the_tokens_rather_than_hardcoding_them(orbs_src: str)
         "orbs.js must resolve its colours from the CSS custom properties"
     )
     # Exactly one hardcoded pair is allowed: the fallback used when the module
-    # runs on a page that does not link app.css. Anything more is a fork of
-    # the palette.
+    # runs on a page that does not link app.css. It is declared once, as RGB,
+    # and the CSS var() chains are built from it — so pin the declaration.
+    # A hex literal in the source would mean that single writer had been
+    # forked back into two.
+    for name, expected in (
+        ("FALLBACK_INK", "[30, 45, 32]"),
+        ("FALLBACK_PAPER", "[247, 241, 232]"),
+    ):
+        assert f"const {name} = {expected};" in orbs_src, (
+            f"{name} changed or moved. It is the colour an orb falls back to "
+            "on a page that does not link app.css; changing it silently "
+            "changes that page's rendering."
+        )
     hexes = set(re.findall(r"#[0-9a-fA-F]{6}\b", orbs_src))
-    hexes -= {"#1e2d20", "#f7f1e8", "#ff00ff"}  # ink fallback, paper fallback, parse sentinel
+    hexes -= {"#ff00ff"}  # the colour-parse sentinel in rasterize()
     assert hexes == set(), (
-        "orbs.js grew hardcoded colours beyond its documented fallback pair: "
-        f"{sorted(hexes)}. Colour belongs in app.css tokens."
+        "orbs.js grew hardcoded colours: "
+        f"{sorted(hexes)}. Colour belongs in app.css tokens, and the fallback "
+        "pair is declared once as RGB with the var() chains built from it."
     )
 
 
@@ -169,8 +196,8 @@ def test_orbs_module_does_not_reimplement_dark_mode(orbs_src: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def _js_object_keys(src: str, decl: str) -> list[str]:
-    """Top-level keys of a `<decl> = { ... }` object literal."""
+def _js_object_body(src: str, decl: str) -> str:
+    """The body of a `<decl> = { ... }` object literal."""
     start = src.index(decl)
     brace = src.index("{", start)
     depth = 0
@@ -180,11 +207,20 @@ def _js_object_keys(src: str, decl: str) -> list[str]:
         elif src[i] == "}":
             depth -= 1
             if depth == 0:
-                body = src[brace + 1: i]
-                break
-    else:  # pragma: no cover - malformed source
-        pytest.fail(f"could not find the end of {decl}")
-    return re.findall(r"^\s{2}(\w+):", body, re.MULTILINE)
+                return src[brace + 1: i]
+    pytest.fail(f"could not find the end of {decl}")  # pragma: no cover
+
+
+def _js_object_keys(src: str, decl: str) -> list[str]:
+    """Top-level keys of a `<decl> = { ... }` object literal."""
+    return re.findall(r"^\s{2}(\w+):", _js_object_body(src, decl), re.MULTILINE)
+
+
+def _js_string_map(src: str, decl: str) -> dict[str, str]:
+    """Top-level `key: 'value'` pairs of a `<decl> = { ... }` object literal."""
+    return dict(
+        re.findall(r"^\s{2}(\w+):\s*'(\w+)'", _js_object_body(src, decl), re.MULTILINE)
+    )
 
 
 def test_every_advertised_state_has_a_mode_painter(orbs_src: str) -> None:
@@ -194,9 +230,14 @@ def test_every_advertised_state_has_a_mode_painter(orbs_src: str) -> None:
         f"ORB_STATES drifted from the nine upstream states: {listed}"
     )
 
-    mapping = _js_object_keys(orbs_src, "const STATE_TO_MODE")
-    assert mapping == list(EXPECTED_STATES), (
-        f"STATE_TO_MODE keys drifted from ORB_STATES: {mapping}"
+    # Compare the VALUES too, not just the keys. An earlier version of this
+    # test spelled out the full state -> mode mapping and then only ever used
+    # its keys, so rewiring all nine states to the same painter left the whole
+    # suite green while every orb rendered the same animation.
+    mapping = _js_string_map(orbs_src, "const STATE_TO_MODE")
+    assert mapping == EXPECTED_STATES, (
+        "STATE_TO_MODE drifted from the upstream state -> mode mapping.\n"
+        f"  expected: {EXPECTED_STATES}\n  actual:   {mapping}"
     )
 
     painters = set(_js_object_keys(orbs_src, "export const MODE_DRAWS"))

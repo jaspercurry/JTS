@@ -16,10 +16,18 @@
 // minimal stub below, because the token plumbing it owns (--orb-ink /
 // --orb-paper -> rgb) is the JTS-specific part most worth pinning.
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { runTestFunctions } from "./run_test_functions.mjs";
 
-const modulePath = process.argv[2] || "../../deploy/assets/shared/js/orbs.js";
+// Resolve against the CWD, not this file's directory. Every sibling harness is
+// invoked with a repo-root-relative path (`deploy/assets/...`); a bare import()
+// specifier would instead resolve relative to tests/js/ and crash on exactly
+// that convention.
+const modulePath = pathToFileURL(
+  resolve(process.argv[2] || "deploy/assets/shared/js/orbs.js")
+).href;
 
 let passed = 0;
 const tests = [];
@@ -166,15 +174,54 @@ test("every painted colour comes from the supplied ramp", () => {
         const [r, g, b, a] = parseRGBA(style);
         assert.ok(allowed.has(`${r},${g},${b}`),
           `${state} painted ${style}, which is not on the supplied ink ramp`);
-        // Alpha is only floored, not ceilinged: the radially-breathing modes
-        // (braid, wave) push a dot's depth just past 1 when the surface swells
-        // outside R, so upstream's `0.45 + 0.55 * depth` can reach ~1.02.
-        // Canvas clamps that to 1. Asserting a <= 1 here would be asserting a
-        // fork of upstream's math, so only the floor is checked.
+        // Alpha is only floored, not ceilinged: braid's radial breathing pushes
+        // a dot's depth just past 1 when the strand swells outside R, so
+        // upstream's `0.45 + 0.55 * depth` reaches up to ~1.021 (about 0.6% of
+        // its fills, at both sizes). That is a measured bound, not an exact
+        // value: a handful of samples understates it (this test's own
+        // SAMPLE_TIMES only reaches 1.015) and it keeps creeping up as the
+        // sweep gets finer — 1.0199 at step 0.1, 1.0206 at step 0.001 over
+        // [0, 40) — so treat ~1.021 as "at least this high", not a ceiling.
+        // Braid is the only state that does this — the other radially-
+        // deformed mode, wave, emits no alpha at all. CSS Color 4 clamps
+        // out-of-range alpha, so this renders correctly; asserting a <= 1
+        // would be asserting a fork of upstream's math.
         assert.ok(a > 0 && Number.isFinite(a), `${state} painted alpha ${a}`);
       }
     }
   }
+  passed++;
+});
+
+test("the ink ramp keeps its full resolution", () => {
+  // The ramp is quantised into LUT_STEPS levels so ~2,000 dots a frame don't
+  // each rebuild a colour string. Coarsen that and the orbs band visibly while
+  // every other assertion here still passes: the colours all remain ON the
+  // supplied ramp, there are just far fewer of them.
+  //
+  // A Proxy records which lut indices the renderer actually reaches, swept over
+  // all nine states at both sizes. Measured: shipped touches 0..49; dropping to
+  // 16 levels touches 0..12. (The top of the range is 49 rather than 63 because
+  // the palest dot any mode asks for is white 0.78, in the braid and ribbon
+  // ghost spheres.) 40 sits well clear of both.
+  let maxIndex = -1;
+  const probe = new Proxy(RAMP.lut, {
+    get(target, prop) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) {
+        maxIndex = Math.max(maxIndex, Number(prop));
+      }
+      return Reflect.get(target, prop);
+    }
+  });
+  const probeRamp = { ink: RAMP.ink, paper: RAMP.paper, lut: probe };
+  for (const state of ORB_STATES) {
+    for (const [key, size] of [[64, 96], [20, 20]]) {
+      for (let t = 0; t < 12; t += 0.25) renderState(state, key, size, probeRamp, [t]);
+    }
+  }
+  assert.ok(maxIndex >= 40,
+    `ink ramp resolution collapsed: highest lut index reached was ${maxIndex}, ` +
+    "expected ~49. LUT_STEPS was probably lowered.");
   passed++;
 });
 
@@ -224,23 +271,117 @@ test("breathing stays face-on — the ring is a circle, not a tilted ellipse", (
   // breathing and composing share drawRibbon; only the faceOn profile flag
   // separates them, by cancelling the camera tilt so the band reads as a true
   // circle. Drop that flag and the ring silhouette squashes vertically.
-  // Measured on the shipped code the aspect ratio stays within 0.027 of 1
-  // across the cycle; with faceOn removed it never comes closer than 0.084.
-  // 0.05 sits between the two with margin on both sides.
+  //
+  // Bounds swept at 0.002 over t in [0, 20) — one full beat period of the two
+  // undulation frequencies (1.7 and 1.1, scaled by the 3.24 preset speed), so
+  // these are the real extremes rather than the luckiest of a few samples:
+  //
+  //             shipped worst    faceOn removed, closest
+  //   size 64      0.0394               0.1083
+  //   size 20      0.0666               0.1238
+  //
+  // The margin is NOT symmetric: shipped worst sits only 0.0106 below the
+  // 0.05 threshold, while the mutant's closest approach still clears it by
+  // 0.058. Nearly all the risk is on the shipped side — a future change
+  // that nudges wobMul (0.368) or the two beat frequencies should re-check
+  // the shipped-worst number specifically, since that is the number with no
+  // room to spare. The threshold is SIZE-64-SPECIFIC regardless: the
+  // shipped 20px ring legitimately reaches 0.0666 and would fail it, which
+  // is why this samples only the 64 tuning.
   //
   // Only breathing is measurable this way: composing keeps a 150-dot ghost
   // sphere whose bounding box hides the band's own shape.
-  for (const t of [0.6, 1.4, 2.2, 3.7, 5.1]) {
+  //
+  // 200 samples across the period, not a handful: a sparse sample can miss the
+  // worst case and would let a partial regression through.
+  let worst = 0;
+  let worstT = 0;
+  for (let i = 0; i < 200; i++) {
+    const t = (i / 200) * 20;
     const [frame] = renderState("breathing", 64, 96, RAMP, [t]);
     const xs = frame.dots.map((d) => d[0]);
     const ys = frame.dots.map((d) => d[1]);
-    const ratio =
-      (Math.max(...xs) - Math.min(...xs)) / (Math.max(...ys) - Math.min(...ys));
-    assert.ok(Math.abs(ratio - 1) <= 0.05,
-      `breathing is not face-on at t=${t}: aspect ratio ${ratio.toFixed(3)}`);
+    const dev = Math.abs(
+      (Math.max(...xs) - Math.min(...xs)) / (Math.max(...ys) - Math.min(...ys)) - 1
+    );
+    if (dev > worst) { worst = dev; worstT = t; }
+  }
+  assert.ok(worst <= 0.05,
+    `breathing is not face-on: worst aspect deviation ${worst.toFixed(4)} at t=${worstT.toFixed(2)}`);
+  passed++;
+});
+
+// Signatures captured from the shipped port, which was verified frame-for-frame
+// against upstream at commit e94f207e. Pinning them turns "the port still draws
+// what upstream draws" into something a test can check: a dropped profile flag,
+// a transposed constant, or a re-sync that silently changes geometry all move
+// these numbers. Recompute deliberately (and say why) if upstream is re-synced.
+const SIGNATURES = {
+  working:    { dots: 516, strokes: 0,  w: 71.7, h: 71.3, cx: 48,    cy: 48,    rsum: 254.4, order: -647886155 },
+  searching:  { dots: 204, strokes: 0,  w: 77.8, h: 78,   cx: 48,    cy: 48,    rsum: 172.9, order: -442994526 },
+  solving:    { dots: 138, strokes: 0,  w: 78.6, h: 78.5, cx: 46.76, cy: 47.66, rsum: 111,   order: 1746532862 },
+  listening:  { dots: 134, strokes: 0,  w: 75.6, h: 74.8, cx: 48,    cy: 47.52, rsum: 110.2, order: -1076943972 },
+  connecting: { dots: 48,  strokes: 84, w: 76.1, h: 74.6, cx: 52.72, cy: 50.75, rsum: 55.3,  order: 850901439 },
+  weaving:    { dots: 153, strokes: 0,  w: 73.4, h: 72.6, cx: 48.03, cy: 47.66, rsum: 113.2, order: -567446713 },
+  composing:  { dots: 566, strokes: 0,  w: 74.8, h: 73.2, cx: 48.01, cy: 48,    rsum: 396.8, order: -1870940383 },
+  breathing:  { dots: 484, strokes: 0,  w: 70.8, h: 70.9, cx: 48,    cy: 48,    rsum: 393.3, order: 1491625137 },
+  shaping:    { dots: 24,  strokes: 0,  w: 54.6, h: 54.6, cx: 48,    cy: 48,    rsum: 37.4,  order: 1368395520 }
+};
+const SIGNATURE_T = 2.5;
+
+function signatureOf(state) {
+  const [frame] = renderState(state, 64, 96, RAMP, [SIGNATURE_T]);
+  const xs = frame.dots.map((d) => d[0]);
+  const ys = frame.dots.map((d) => d[1]);
+  const round = (v, n) => Number(v.toFixed(n));
+  // Order-sensitive on purpose. paint() z-sorts far-to-near before filling, and
+  // with no depth buffer that ORDER is the whole depth illusion: a near dot
+  // drawn before a far one is simply overpainted. Reversing or dropping the
+  // sort leaves every aggregate below untouched, so the checksum is what pins
+  // the painter's algorithm.
+  let order = 0;
+  for (const [x, y, r] of frame.dots) {
+    order = (Math.imul(order, 31) +
+      Math.round(x * 100) + Math.round(y * 100) * 7 + Math.round(r * 100) * 13) | 0;
+  }
+  return {
+    dots: frame.dots.length,
+    strokes: frame.lines.length,
+    w: round(Math.max(...xs) - Math.min(...xs), 1),
+    h: round(Math.max(...ys) - Math.min(...ys), 1),
+    cx: round(xs.reduce((a, b) => a + b, 0) / xs.length, 2),
+    cy: round(ys.reduce((a, b) => a + b, 0) / ys.length, 2),
+    rsum: round(frame.dots.reduce((a, d) => a + d[2], 0), 1),
+    order
+  };
+}
+
+test("each state still draws its own shape", () => {
+  for (const state of ORB_STATES) {
+    assert.deepEqual(signatureOf(state), SIGNATURES[state],
+      `${state}'s rendering changed. If this was an intentional upstream ` +
+      "re-sync, re-derive SIGNATURES and say so in the commit; otherwise the " +
+      "port has drifted from upstream.");
   }
   passed++;
 });
+
+test("no two states render the same animation", () => {
+  // Nine distinct states is the module's headline promise, and it is carried
+  // entirely by STATE_TO_MODE plus each mode's profile. Collapsing several
+  // states onto one painter breaks nothing loudly — every orb just renders the
+  // same thing — so it needs its own assertion.
+  const seen = new Map();
+  for (const state of ORB_STATES) {
+    const key = JSON.stringify(signatureOf(state));
+    assert.ok(!seen.has(key),
+      `${state} renders identically to ${seen.get(key)} — the state -> mode ` +
+      "mapping or a mode profile has collapsed");
+    seen.set(key, state);
+  }
+  passed++;
+});
+
 
 // --- createOrb + the CSS token plumbing ------------------------------------
 

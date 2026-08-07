@@ -19,7 +19,7 @@
 //   1. TypeScript annotations stripped; the ES module graph flattened into
 //      this one file. No draw math was altered — a future upstream diff
 //      still applies almost verbatim.
-//   2. React removed. Upstream ships a 164-line <ThinkingOrb> wrapper (a
+//   2. React removed. Upstream ships a 117-line <ThinkingOrb> wrapper (a
 //      canvas ref + a rAF loop + theme detection); JTS has no build step and
 //      no npm in the web layer, so createOrb() below replaces it. The
 //      engine itself never imported React.
@@ -38,6 +38,22 @@
 // are only arc() and fill(): no ctx.filter, no SVG filters, no WebGL. That is
 // upstream's deliberate constraint and it is why this renders identically in
 // Chrome, Safari and Firefox — and why it costs the Pi nothing but the bytes.
+//
+// COST VARIES 24x BY STATE, so choose deliberately. Dots filled per frame at
+// size 64: composing 566, working 516, breathing 484, searching 204,
+// weaving 153, solving 138, listening 134, connecting 48 (+84 strokes),
+// shaping 24. Connecting's stroke count is the one figure here that moves
+// frame to frame — edges wire and unwire as nodes drift, measured 71-94
+// across a dense sweep, mean ~82. 84 is quoted because it is the exact
+// count at t=2.5, the instant tests/js/orbs_test.mjs's SIGNATURES table
+// pins as connecting.strokes; the two are meant to be the same number, not
+// two independent guesses. Each dot is a separate fill with its own colour
+// string, so the heavy states also parse ~500 distinct CSS colours per
+// frame. Measured geometry-only cost on a developer laptop is ~1.0 ms/frame
+// for composing; budget several times that on a phone, on top of
+// rasterising the circles.
+// For a decorative one-off, prefer a light state (shaping, connecting) or a
+// small size; the heavy ones are for a single focal orb.
 //
 // USAGE
 //
@@ -66,11 +82,18 @@ const INK_PROP = '--orb-ink';
 const PAPER_PROP = '--orb-paper';
 // Fallbacks matter: this module must still render if it is used on a page
 // that does not link app.css.
-const INK_EXPR = `var(${INK_PROP}, var(--foreground, #1e2d20))`;
-const PAPER_EXPR = `var(${PAPER_PROP}, var(--background, #f7f1e8))`;
+// One writer for the fallback pair: the CSS var chains below are BUILT from
+// these, so the hex in the stylesheet expression and the numbers the renderer
+// falls back to cannot drift apart.
+const FALLBACK_INK = [30, 45, 32];
+const FALLBACK_PAPER = [247, 241, 232];
+const asHex = (rgb) => '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
+
+const INK_EXPR = `var(${INK_PROP}, var(--foreground, ${asHex(FALLBACK_INK)}))`;
+const PAPER_EXPR = `var(${PAPER_PROP}, var(--background, ${asHex(FALLBACK_PAPER)}))`;
 
 const LUT_STEPS = 64;
-const DEFAULT_RAMP = makeRamp([30, 45, 32], [247, 241, 232]);
+const DEFAULT_RAMP = makeRamp(FALLBACK_INK, FALLBACK_PAPER);
 
 let probeEl = null;
 let probeCtx = null;
@@ -141,6 +164,14 @@ function inkAt(ramp, white) {
   let w = white;
   if (!(w >= 0)) w = 0;
   else if (w > 1) w = 1;
+  // The +0.5 rounds to the nearest LUT step instead of flooring. Deliberately
+  // untested: measured over the shipped ramp, dropping it shifts a dot's
+  // colour by at most one LUT step (ΔRGB 6.4, ~1.8% of the full ink->paper
+  // span) and by ΔRGB 2.8 (~0.8%) on average — the same order of magnitude
+  // as the ramp's own 64-level quantisation grain, on individual alpha-
+  // blended dots inside a many-dot animated composite. A test would pin a
+  // sub-perceptual bias against any future change to LUT_STEPS or the ramp
+  // endpoints, which is a brittle contract for no visible benefit.
   return ramp.lut[(w * (LUT_STEPS - 1) + 0.5) | 0];
 }
 
@@ -914,8 +945,11 @@ function scaleRadii(opts, scale) {
   for (const k of RADIUS_KEYS) {
     if (out[k] != null) out[k] = out[k] * scale;
   }
-  // remember the multiplier itself — spacing-derived radii (the morph
-  // outline) use it, since they aren't based on any single radius key
+  // Kept for fidelity with upstream, which writes this and never reads it.
+  // Its upstream comment claims the morph outline uses it; that is false in
+  // both codebases — drawMorph derives its radius from rDot and spread. Left
+  // in place so an upstream diff still applies cleanly, not because it does
+  // anything.
   out.rSizeMul = (out.rSizeMul == null ? 1 : out.rSizeMul) * scale;
   return out;
 }
@@ -1099,12 +1133,11 @@ if (typeof window !== 'undefined' && window.matchMedia) {
     schedule();
   };
   if (motionQuery.addEventListener) motionQuery.addEventListener('change', onMotion);
-  // A theme flip changes what --orb-ink/--orb-paper resolve to; re-read them.
-  const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-  const onScheme = () => {
-    for (const orb of live) orb.refresh();
-  };
-  if (darkQuery.addEventListener) darkQuery.addEventListener('change', onScheme);
+  // Deliberately NO prefers-color-scheme listener. The management UI is
+  // light-only by ratified decision (app.css sets `color-scheme: light` and
+  // docs/design-language.md says no dark mode is planned), so nothing can flip
+  // the theme underneath an orb and such a listener would be dead code. A page
+  // that changes --orb-ink / --orb-paper at runtime calls handle.refresh().
 }
 
 /**
@@ -1118,8 +1151,9 @@ if (typeof window !== 'undefined' && window.matchMedia) {
  * @param {number} [options.speed=1]   multiplier on the preset's baked speed
  * @param {boolean} [options.paused=false]
  * @param {string} [options.label]     aria-label; defaults per state
- * @returns {{setState:Function, setSpeed:Function, pause:Function,
- *            resume:Function, refresh:Function, destroy:Function}}
+ * @returns {{state:string, setState:Function, setSize:Function,
+ *            setSpeed:Function, pause:Function, resume:Function,
+ *            refresh:Function, destroy:Function}}
  */
 export function createOrb(canvas, options = {}) {
   if (!canvas || canvas.tagName !== 'CANVAS') {
