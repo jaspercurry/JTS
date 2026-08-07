@@ -42,7 +42,12 @@ Three layers, kept strictly separate so the next microphone needs no change here
   mic, because this module has no local probe. The doctor's ``mic ALSA card`` /
   ``mic capture`` checks own that half: they probe the device and use
   ``accessory_present`` to decide whether a missing local mic is a *failure* or
-  an expected push-to-talk-only box.
+  an expected push-to-talk-only box. **``/state.microphone`` has no such
+  sibling**: it is this record and nothing else, so it cannot separate "no
+  local mic + remote paired" from "healthy non-XVF local mic + remote paired"
+  either. ``summary`` says so in place rather than implying a distinction the
+  data does not carry; a consumer that needs the local half must read the
+  doctor.
 * **XVF detail is enrichment** — the reconciler also publishes an XVF-specific
   runtime profile to ``/run/jasper-mic-profile/xvf3800.json`` (schema:
   ``xvf3800.RuntimeProfile``). When the present mic is a detected XVF, that
@@ -228,10 +233,11 @@ def read_mic_presence(state_path: str | None = None) -> MicPresence:
     missing/corrupt enrichment JSON just means "present, no XVF detail", and an
     unreadable accessory file just means "no accessory".
     """
-    # This function is a display surface and must never raise, so the
-    # unreadable-file case that read_accessory_mic_sources deliberately
-    # propagates (see its docstring) degrades to "no accessory" here. The gate
-    # writer, which needs that distinction, does NOT catch it.
+    # This function is a display surface and must never raise, so the two cases
+    # read_accessory_mic_sources deliberately propagates — an unreadable file
+    # (OSError/UnicodeDecodeError) and an unparsable one (ManualMicSourcesError,
+    # a ValueError subclass) — both degrade to "no accessory" here. The gate
+    # writer, which must tell all three facts apart, does NOT catch them.
     try:
         accessory_sources = read_accessory_mic_sources()
     except (OSError, UnicodeDecodeError, ValueError):

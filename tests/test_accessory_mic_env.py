@@ -27,6 +27,7 @@ import pytest
 
 from jasper.accessories.mic_env import (
     MANUAL_MIC_SOURCES_KEY,
+    ManualMicSourcesError,
     parse_manual_mic_sources,
     read_accessory_mic_sources,
     render_manual_mic_env,
@@ -59,8 +60,19 @@ def test_empty_sources_render_to_no_file_body() -> None:
         f"{MANUAL_MIC_SOURCES_KEY}=bad,good=udp:9892\n",
     ],
 )
-def test_unparsable_bodies_publish_nothing(body: str) -> None:
-    assert parse_manual_mic_sources(body) == ()
+def test_unparsable_bodies_raise_rather_than_reading_as_no_accessory(
+    body: str,
+) -> None:
+    """Both outcomes park voice, so this is not about the verdict — it is about
+    which fact the operator is told.
+
+    Returning ``()`` here made a corrupt file byte-identical to no file at all:
+    same marker, same journal line, same
+    ``reason=no candidate microphone present and no accessory microphone
+    paired``. Somebody debugging "my remote does nothing" was told no remote was
+    paired while a file naming that remote sat on disk."""
+    with pytest.raises(ManualMicSourcesError):
+        parse_manual_mic_sources(body)
 
 
 @pytest.mark.parametrize(
@@ -83,14 +95,20 @@ def test_every_body_this_parser_rejects_is_one_config_also_rejects(
     A body this parser accepts must be one ``Config`` can load; the reverse
     direction (we reject something Config would accept) is safe, so this only
     pins the dangerous direction.
+
+    The two now agree on the *message* as well as the verdict, which is the
+    point of mirroring a parser instead of writing a second one: whatever the
+    daemon would have complained about is what the operator reads.
     """
     from jasper.config import _env_mapping
 
-    assert parse_manual_mic_sources(body) == ()
     raw = body.split("=", 1)[1].strip()
     monkeypatch.setenv(MANUAL_MIC_SOURCES_KEY, raw)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as config_error:
         _env_mapping(MANUAL_MIC_SOURCES_KEY, "")
+    with pytest.raises(ManualMicSourcesError) as our_error:
+        parse_manual_mic_sources(body)
+    assert str(our_error.value) == str(config_error.value)
 
 
 def test_accepted_bodies_load_into_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,6 +171,29 @@ def test_cli_exit_status_separates_answer_from_failure(tmp_path) -> None:
     present = subprocess.run(argv, env=_cli_env(path), capture_output=True, text=True)
     assert present.returncode == 0, present.stderr
     assert present.stdout.strip() == "wiim_remote_2"
+
+
+def test_cli_reports_an_unparsable_file_as_failure_not_as_absence(
+    tmp_path,
+) -> None:
+    """A corrupt file must not exit like an empty one.
+
+    Exit 0 + empty stdout is the shell's "resolved, nothing published", which
+    becomes ``reason=no candidate microphone present and no accessory
+    microphone paired`` — a confident wrong answer while a file naming the
+    remote is on disk. It gets a one-line message, not a traceback: the parser
+    already knows which rule broke, and that sentence is the remediation."""
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892,bad\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "jasper.accessories.mic_env"],
+        env=_cli_env(path), capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == ""
+    assert "refusing to publish accessory mic sources" in result.stderr
+    assert "must be source_id=device" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_reports_an_unreadable_file_as_failure_not_as_absence(

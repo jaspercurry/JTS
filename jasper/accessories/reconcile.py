@@ -383,17 +383,21 @@ def apply_adapter_services(
 
 
 def _gate_owner_state(*, systemctl: Systemctl) -> str:
-    """``enabled`` / ``parked`` / ``absent`` for the voice-input gate owner.
+    """``enabled`` / ``parked`` / ``absent`` / ``masked`` for the gate owner.
 
-    ``enabled`` means this box's profile actually runs ``jasper-aec-reconcile``,
-    and only then may we start it. The distinction is load-bearing rather than
-    cosmetic, because all three states exist in the field:
+    ``enabled`` is the only one that may be started. The distinctions are
+    load-bearing rather than cosmetic: the first three all exist in the field,
+    and each not-enabled state sends an operator somewhere different.
 
     * **enabled** — full speaker profile; ``install_systemd_units`` installs and
       enables the unit.
     * **absent** — ``LoadState=not-found``. ``install_streambox_systemd_units``
       installs neither reconciler (both ``install`` lines live in
       ``install_systemd_units``). ``not-found`` observed on jts4 2026-08-07.
+    * **masked** — ``LoadState=masked``. Same action as ``absent`` (never
+      start), separate state because the remediation is not: masking is a
+      deliberate operator act, and telling them "not installed" sends them to
+      re-run the installer instead of to ``systemctl unmask``.
     * **parked** — the unit file is installed but ``UnitFileState`` is not
       enabled. ``park_streambox_brain_units`` runs ``systemctl disable --now``
       on ``jasper-aec-reconcile`` and names *this* reconciler nowhere, and no
@@ -424,7 +428,10 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
         key, separator, value = line.partition("=")
         if separator:
             properties[key.strip()] = value.strip().lower()
-    if properties.get("LoadState") != "loaded":
+    load_state = properties.get("LoadState")
+    if load_state == "masked":
+        return "masked"
+    if load_state != "loaded":
         return "absent"
     if properties.get("UnitFileState") in ("enabled", "enabled-runtime"):
         return "enabled"

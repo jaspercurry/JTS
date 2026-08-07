@@ -1024,8 +1024,13 @@ enable_start_aec() {
 #
 # Three states, mirroring observe_mic_profile_state's unavailable/failed/resolved:
 #   unavailable — no interpreter to ask
-#   failed      — asked, and it could not answer (stderr goes to the journal)
+#   failed      — asked, and it could not answer (stderr goes to the journal).
+#                 Covers an unimportable module, an unreadable file, AND a file
+#                 that reads but does not parse: a corrupt file naming a remote
+#                 is not evidence that no remote is paired, and reporting it as
+#                 such is what sent an operator looking in the wrong place.
 #   resolved    — asked and got an answer; ACCESSORY_MIC_SOURCES may be empty
+#                 (no key, or an empty value — those are answers, not failures)
 ACCESSORY_MIC_SOURCES=""
 ACCESSORY_MIC_PROBE_STATUS="unavailable"
 
@@ -1046,8 +1051,14 @@ probe_accessory_mics() {
         ACCESSORY_MIC_SOURCES="${payload//[[:space:]]/}"
     else
         ACCESSORY_MIC_PROBE_STATUS="failed"
-        log "accessory mic probe failed (see the traceback above); accessory microphone state is UNKNOWN, not absent"
+        log "accessory mic probe failed (see the message above); accessory microphone state is UNKNOWN, not absent"
     fi
+    # Defensive only, and currently unobservable: the sole caller is
+    # accessory_mic_present, whose own [[ ]] supplies the exit status, and
+    # `set -e` does not act on a function called in a condition context. Kept
+    # so a future direct caller cannot inherit the last command's status by
+    # accident — no test can pin it today, which is why it is called out
+    # rather than silently trusted.
     return 0
 }
 

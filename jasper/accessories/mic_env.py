@@ -35,8 +35,17 @@ Readers must not re-derive it from D-Bus.
 malformed ``JASPER_MANUAL_MIC_SOURCES`` entry, and that exception is not one of
 the clean-park exits — a hand-corrupted file would crash-loop ``jasper-voice``
 into ``StartLimitAction=reboot``. So a file this reader cannot parse *exactly*
-publishes nothing: the gate marker gets written and PID 1 skips the start
-cleanly instead. Partial acceptance would be the dangerous answer.
+never opens the gate: the marker gets written and PID 1 skips the start cleanly
+instead. Partial acceptance would be the dangerous answer.
+
+It raises rather than returning ``()``, and that is the whole point. Both
+outcomes park, so the *verdict* was never in question — but they are different
+*facts*, and the fact is what an operator reads. Collapsing "I read it and it
+is corrupt" into "no accessory is paired" told somebody debugging "my remote
+does nothing" that no remote was paired while a file naming that remote sat on
+disk. Raising also completes the mirror this module exists for: the daemon's
+parser raises on exactly these three conditions with exactly these messages, so
+the two now agree about *why* a file is unusable and not merely that it is.
 """
 from __future__ import annotations
 
@@ -52,6 +61,18 @@ DEFAULT_ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 
 # Must match the key jasper/config.py parses into Config.manual_mic_sources.
 MANUAL_MIC_SOURCES_KEY = "JASPER_MANUAL_MIC_SOURCES"
+
+
+class ManualMicSourcesError(ValueError):
+    """The published file exists and was read, but its content is not parsable.
+
+    A ``ValueError`` subclass on purpose: display surfaces
+    (``jasper.mic_presence``) already degrade the whole "I could not determine
+    the accessory half" family to "no accessory" behind one
+    ``except (OSError, UnicodeDecodeError, ValueError)``, so they need no edit
+    to keep never raising. The gate writer, which must tell the two apart, does
+    not catch it.
+    """
 
 
 def accessory_mic_env_path() -> str:
@@ -78,12 +99,17 @@ def render_manual_mic_env(sources: Mapping[str, str]) -> str:
 
 
 def parse_manual_mic_sources(body: str) -> tuple[str, ...]:
-    """Source ids in ``body``, or ``()`` when it publishes none *or is unparsable*.
+    """Source ids in ``body``, or ``()`` when it publishes none.
 
-    Mirrors ``jasper.config._env_mapping``'s validation so this reader and the
-    daemon's own parser can never disagree about whether a file is usable. See
-    the module docstring for why anything short of an exact parse must resolve
-    to "publishes nothing".
+    Raises ``ManualMicSourcesError`` when the key IS present with a value that
+    does not parse exactly. That is a different fact from "publishes none", and
+    the caller that writes the gate marker says which one it saw out loud.
+
+    Mirrors ``jasper.config._env_mapping``'s validation — same three
+    conditions, same three messages — so this reader and the daemon's own
+    parser can never disagree about whether a file is usable *or about why*.
+    An absent key, an empty value, and a value of only separators all publish
+    nothing without raising: those are answers, not failures.
     """
     raw: str | None = None
     for line in body.splitlines():
@@ -104,9 +130,18 @@ def parse_manual_mic_sources(body: str) -> tuple[str, ...]:
         key = key.strip()
         value = value.strip()
         if not separator or not key or not value:
-            return ()
-        if any(ch.isspace() for ch in key) or key in ids:
-            return ()
+            raise ManualMicSourcesError(
+                f"{MANUAL_MIC_SOURCES_KEY} entries must be source_id=device, "
+                "separated by commas"
+            )
+        if any(ch.isspace() for ch in key):
+            raise ManualMicSourcesError(
+                f"{MANUAL_MIC_SOURCES_KEY} source ids must not contain whitespace"
+            )
+        if key in ids:
+            raise ManualMicSourcesError(
+                f"{MANUAL_MIC_SOURCES_KEY} contains duplicate source id {key!r}"
+            )
         ids.append(key)
     return tuple(ids)
 
@@ -119,22 +154,24 @@ def read_accessory_mic_sources(path: str | None = None) -> tuple[str, ...]:
     at start and are not restarted when a remote is paired or forgotten, so a
     cached value goes stale exactly when it matters.
 
-    Two outcomes, deliberately NOT collapsed into one:
+    Three outcomes, deliberately NOT collapsed into one. Every one of them
+    parks voice, so the *verdict* is the same; the *fact* is not, and the fact
+    is what reaches an operator through ``/state.microphone.reason`` and the
+    doctor headline:
 
-    * **No file, or a file that publishes nothing** → ``()``. This is a real
-      answer: no accessory microphone is paired.
-    * **A file that exists but cannot be read** (``EACCES``, ``EIO``, undecodable
-      bytes) → the ``OSError``/``UnicodeDecodeError`` **propagates**. "I could
-      not look" is a different fact from "I looked and there is nothing", and a
-      caller that writes the gate marker states one of them out loud in the
-      operator-visible reason. Collapsing them made the reconciler assert
-      confidently that no remote was paired when it simply could not tell.
+    * **No file, or a file that publishes nothing** → ``()``. A real answer: no
+      accessory microphone is paired.
+    * **A file that exists but cannot be read** (``EACCES``, ``EIO``,
+      undecodable bytes) → the ``OSError``/``UnicodeDecodeError``
+      **propagates**. "I could not look" is not "I looked and there is
+      nothing".
+    * **A file that reads but does not parse** → ``ManualMicSourcesError``.
+      "I read it and it is corrupt" is not "no remote is paired" either — and
+      that collapse is the one that told an operator no remote was paired while
+      a file naming their remote sat on disk.
 
-    Malformed *content* still resolves to ``()`` — see ``parse_manual_mic_sources``;
-    that is a read that succeeded and found nothing usable.
-
-    Display surfaces that must never raise (``jasper.mic_presence``) catch the
-    unreadable case themselves and degrade to ``()``.
+    Display surfaces that must never raise (``jasper.mic_presence``) catch all
+    three themselves and degrade to ``()``.
     """
     target = path or accessory_mic_env_path()
     try:
@@ -153,17 +190,28 @@ def main(argv: list[str] | None = None) -> int:
     * **exit 0, non-empty stdout** — read succeeded, these sources are published.
     * **exit 0, empty stdout** — read succeeded, nothing is published.
     * **non-zero exit** — the probe could not answer (module unimportable,
-      unreadable file, killed). Never let this look like "nothing is published":
-      the caller must be able to say "I could not tell" in the marker reason.
+      unreadable file, **unparsable file**, killed). Never let this look like
+      "nothing is published": the caller must be able to say "I could not tell"
+      in the marker reason.
 
     Exit status is deliberately *not* overloaded to carry the answer, because
     Python already spends non-zero on its own failures — a missing module and
     "no remote paired" both exited 1 under the previous contract, and the
     reconciler reported the second when the first was true. Stack traces are
     left on stderr for the journal.
+
+    A corrupt file gets a one-line message instead of a traceback: the parser
+    already knows exactly which of the three rules the content broke, and that
+    sentence is the remediation. Everything else keeps its traceback, where the
+    stack IS the diagnostic.
     """
     del argv
-    sys.stdout.write(",".join(read_accessory_mic_sources()) + "\n")
+    try:
+        sources = read_accessory_mic_sources()
+    except ManualMicSourcesError as exc:
+        sys.stderr.write(f"refusing to publish accessory mic sources: {exc}\n")
+        return 1
+    sys.stdout.write(",".join(sources) + "\n")
     return 0
 
 

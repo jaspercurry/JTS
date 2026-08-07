@@ -832,6 +832,25 @@ def test_refresh_voice_input_never_starts_a_parked_gate_owner(caplog):
     assert "state=parked" in caplog.text
 
 
+def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
+    """Masking is a deliberate operator act. The ACTION is the same as absent —
+    never start it — but the remediation is `systemctl unmask`, not "re-run the
+    installer", so the log must not call it "not installed"."""
+    calls = []
+    systemctl = _gate_owner_systemctl(
+        calls, load_state="masked", unit_file_state="masked",
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert (
+            reconcile.refresh_voice_input(systemctl=systemctl)
+            == "voice_try_restart"
+        )
+    assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
+    assert "state=masked" in caplog.text
+    assert "state=absent" not in caplog.text
+
+
 def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
     """A streambox never installs jasper-aec-reconcile (LoadState=not-found,
     verified on jts4). Nothing writes the marker there, so voice is never gated
@@ -876,6 +895,7 @@ def test_refresh_voice_input_stays_within_its_declared_systemctl_budget():
     TimeoutStartSec is a claim about this function; measure it, don't assume."""
     for load_state, unit_file_state in (
         ("loaded", "enabled"), ("loaded", "disabled"), ("not-found", ""),
+        ("masked", "masked"),
     ):
         calls = []
         systemctl = _gate_owner_systemctl(

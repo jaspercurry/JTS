@@ -636,12 +636,18 @@ def test_no_local_mic_and_no_accessory_still_parks_voice(tmp_path: Path) -> None
 
 
 def test_malformed_accessory_env_parks_voice(tmp_path: Path) -> None:
-    """Fail closed on an unparsable accessory file.
+    """Fail closed on an unparsable accessory file — and say *that*, not
+    "no remote is paired".
 
     ``Config.from_env`` *raises* on a malformed JASPER_MANUAL_MIC_SOURCES entry,
     and that is not one of jasper-voice's clean-park exits — opening the gate on
     a file the daemon will reject would crash-loop it into
     StartLimitAction=reboot. Parking is the safe answer.
+
+    Parking was never the question. The reason was: this file NAMES
+    wiim_remote_2, and the marker used to answer "no accessory microphone
+    paired" — byte-identical to the no-file case, and read verbatim by an
+    operator through /state.microphone.reason and the doctor headline.
     """
     _write_env(tmp_path, "udp:9876")
     _write_mode(tmp_path)
@@ -655,7 +661,15 @@ def test_malformed_accessory_env_parks_voice(tmp_path: Path) -> None:
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "voice-input-absent").exists()
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    reason = marker.read_text()
+    assert "could not be determined" in reason
+    assert "no accessory microphone paired" not in reason
+    # The parser's own sentence — which rule the content broke — reaches the
+    # journal, because that sentence IS the remediation.
+    assert "refusing to publish accessory mic sources" in result.stderr
+    assert "must be source_id=device" in result.stderr
     assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
 
 
