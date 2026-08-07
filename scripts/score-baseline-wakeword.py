@@ -39,8 +39,6 @@ from pathlib import Path
 
 import numpy as np
 
-from jasper.openwakeword_guard import ensure_openwakeword_import_safe
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_DIR = REPO_ROOT / "reference-conditions"
 
@@ -168,6 +166,13 @@ def main() -> int:
         out_path = Path(args.out)
 
     # Lazy import so the script can be syntax-checked without openwakeword.
+    #
+    # The guard import is function-local, not module-top, so `--help` still
+    # works on an interpreter without the project installed — argparse exits
+    # above this line. Pinned by test_script_help_does_not_require_jasper in
+    # tests/test_wake_audio_metrics.py.
+    from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+
     # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
     ensure_openwakeword_import_safe()
     from openwakeword.model import Model

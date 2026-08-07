@@ -74,10 +74,15 @@ def test_guard_warns_when_openwakeword_was_already_imported(
     openWakeWord first, so the real custom_verifier_model (and scikit-learn
     behind it) is already resident.
     """
-    sys.modules[_VERIFIER] = types.ModuleType(_VERIFIER)  # the *real* module's slot
+    real = types.ModuleType(_VERIFIER)  # stands in for the *real* module
+    sys.modules[_VERIFIER] = real
 
     with caplog.at_level(logging.WARNING, logger=openwakeword_guard.__name__):
         ensure_openwakeword_import_safe()
 
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
     assert "event=openwakeword.guard_late" in caplog.records[0].getMessage()
+    # And it must leave the real module alone. Overwriting a live module with
+    # the stub would break `openwakeword.custom_verifier_model` for anything
+    # that imports it later, to buy back memory that is already spent.
+    assert sys.modules[_VERIFIER] is real

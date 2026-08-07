@@ -53,8 +53,9 @@ jasper-doctor and a standalone ``jasper.vad`` import pay the full
 scikit-learn cost while looking protected.
 
 ``tests/test_lazy_imports.py`` discovers openWakeWord import sites
-under ``jasper/`` and ``scripts/`` and fails on any that is not
-guarded, so a new entry point cannot quietly reintroduce the cost.
+across the tree — every directory except a short, self-checking
+exclusion list — and fails on any that is not guarded, so a new entry
+point cannot quietly reintroduce the cost.
 """
 from __future__ import annotations
 
@@ -81,8 +82,9 @@ def ensure_openwakeword_import_safe() -> None:
     Idempotent and cheap. Call it before the first ``import
     openwakeword``; see the module docstring for what the stub costs
     openWakeWord (speaker-verification training only) and what it
-    saves. Two threads racing here can both build a stub and the last
-    write wins, which is harmless — the stubs are equivalent.
+    saves. Installation goes through ``sys.modules.setdefault``, so
+    concurrent callers cannot clobber each other or a real module —
+    the first entry wins and later stubs are discarded.
 
     If openWakeWord was already imported by the time this runs, the
     saving is gone and the call cannot recover it. That case logs
@@ -90,27 +92,31 @@ def ensure_openwakeword_import_safe() -> None:
     a silent no-op — a silently-lost guard is exactly the failure this
     module exists to make impossible.
     """
-    existing = sys.modules.get(_VERIFIER_MODULE)
-    if existing is not None:
-        if not getattr(existing, _STUB_MARKER, False):
-            log_event(
-                logger,
-                "openwakeword.guard_late",
-                level=logging.WARNING,
-                detail=(
-                    "openwakeword was imported before the guard ran; "
-                    "scikit-learn is already resident in this process"
-                ),
-            )
-        return
-
     stub = types.ModuleType(_VERIFIER_MODULE)
     # Both attributes go on via setattr because mypy rejects attribute
     # assignment on a freshly-constructed ModuleType.
     #   train_custom_verifier — the name openwakeword's __init__ imports and
     #                           re-exports, so the stub must carry it.
-    #   _STUB_MARKER          — lets a later call tell our stub apart from the
+    #   _STUB_MARKER          — lets this function tell our stub apart from the
     #                           real module.
     setattr(stub, "train_custom_verifier", None)
     setattr(stub, _STUB_MARKER, True)
-    sys.modules[_VERIFIER_MODULE] = stub
+
+    # setdefault, not a get-then-set pair: only setdefault is atomic, and it is
+    # what decides correctness when two callers race. A check-then-assign can
+    # see an empty slot, lose the race to a real openwakeword import, and then
+    # overwrite the live module with this stub — replacing a real module *and*
+    # skipping the warning below, which is precisely the silent guard loss this
+    # module exists to prevent. Building a throwaway ModuleType on the common
+    # repeat call is far cheaper than that failure.
+    installed = sys.modules.setdefault(_VERIFIER_MODULE, stub)
+    if installed is not stub and not getattr(installed, _STUB_MARKER, False):
+        log_event(
+            logger,
+            "openwakeword.guard_late",
+            level=logging.WARNING,
+            detail=(
+                "openwakeword was imported before the guard ran; "
+                "scikit-learn is already resident in this process"
+            ),
+        )

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -34,24 +35,44 @@ _DECLARED_LEAF_DEPENDENCIES = {"httpx", "rapidfuzz", "sounddevice"}
 
 _GUARD_FUNCTION = "ensure_openwakeword_import_safe"
 
-# Where openWakeWord import sites must be guarded.
+# The scan covers the whole tree and subtracts named exclusions, rather than
+# listing roots to include. An include-list is fail-open: a new top-level
+# directory that imports openWakeWord is silently unscanned, which is the same
+# "nobody noticed" shape this guard exists to prevent.
 #
-# `tests/` is excluded because test modules install *fake* openwakeword
-# packages in sys.modules and embed `import openwakeword` inside probe
-# source strings — neither is a real import of the real package.
-#
-# `experiments/` is excluded because experiments/aec3-v2-deep-tune-spike
-# documents its prereqs as a standalone laptop venv holding "pybind11,
-# numpy, openwakeword, onnxruntime" (see that directory's README) — it is
-# frozen bench archaeology that does not have `jasper` importable, so
-# adding the guard call there would be a new hard dependency for no
-# runtime benefit. Nothing in it runs on a speaker.
-_OPENWAKEWORD_SCAN_ROOTS = ("jasper", "scripts")
+# Each exclusion must still match a real openWakeWord import, checked by
+# test_openwakeword_scan_exclusions_are_all_live — a stale exclusion that has
+# quietly become a blanket hole fails instead of lingering.
+_OPENWAKEWORD_EXCLUDED_DIRS = {
+    # experiments/aec3-v2-deep-tune-spike documents its prereqs as a standalone
+    # laptop venv holding "pybind11, numpy, openwakeword, onnxruntime" (see that
+    # directory's README) — frozen bench archaeology with no `jasper` importable,
+    # so a guard call there would be a new hard dependency for no runtime
+    # benefit. Nothing in it runs on a speaker.
+    "experiments": "standalone bench venv without `jasper`; never runs on a speaker",
+}
+# `tests/` is deliberately NOT excluded. Test modules mention openwakeword only
+# as fake sys.modules entries and inside probe source strings, neither of which
+# is an import statement — so policing them costs nothing and a test that ever
+# does import the real package should be guarded like anything else.
+
+# Directories that hold no first-party Python. Any dot-prefixed component is
+# skipped, which matters more here than it looks: `.claude/worktrees/` holds a
+# full repo copy per agent session (measured 100,995 of 108,509 candidate files
+# on this machine), so walking them would be slow *and* would fail this repo's
+# guard on another session's in-progress code. `.venv/` matters for the same
+# reason in CI — site-packages ships openWakeWord's own unguarded imports.
+def _is_skipped_dir(name: str) -> bool:
+    return name.startswith(".") or name in {
+        "node_modules", "__pycache__", "site-packages", "build", "dist",
+    }
 
 _OPENWAKEWORD_SKIP_REASON = (
     "openwakeword and scikit-learn are not installed in this environment; "
     "the static guard in test_every_openwakeword_import_site_is_guarded "
-    "still runs. CI installs both (uv --group openwakeword-onnx)."
+    "still runs. CI installs both — scikit-learn from the openwakeword-onnx "
+    "dependency group, openwakeword itself from the separate `uv pip install "
+    "--no-deps openwakeword==0.6.0` step — so these run there."
 )
 
 
@@ -86,18 +107,41 @@ _SKLEARN_PROBE_TAIL = (
 )
 
 
+def _names_openwakeword(module: str) -> bool:
+    return module == "openwakeword" or module.startswith("openwakeword.")
+
+
 def _imports_openwakeword(node: ast.AST) -> bool:
-    """True when `node` imports the real openwakeword package."""
+    """True when `node` imports the real openwakeword package.
+
+    Covers the statement forms (`import openwakeword`, `import openwakeword.x
+    as y`, `from openwakeword.model import Model`) and the two dynamic forms
+    with a literal module name (`importlib.import_module("openwakeword")`,
+    `__import__("openwakeword")`). A dynamic import built from a computed
+    string is not detectable here and none exists in-tree.
+    """
     if isinstance(node, ast.Import):
-        return any(
-            alias.name == "openwakeword" or alias.name.startswith("openwakeword.")
-            for alias in node.names
-        )
+        return any(_names_openwakeword(alias.name) for alias in node.names)
     if isinstance(node, ast.ImportFrom):
         if node.level:  # a relative import can never reach openwakeword
             return False
-        module = node.module or ""
-        return module == "openwakeword" or module.startswith("openwakeword.")
+        return _names_openwakeword(node.module or "")
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            name: str | None = func.attr
+        elif isinstance(func, ast.Name):
+            name = func.id
+        else:
+            name = None
+        if name not in {"import_module", "__import__"}:
+            return False
+        return any(
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and _names_openwakeword(arg.value)
+            for arg in node.args
+        )
     return False
 
 
@@ -157,19 +201,38 @@ def _collect_openwakeword_sites(
     walk(body)
 
 
-def _openwakeword_import_sites(root: Path) -> list[tuple[str, int, bool]]:
-    """Every openwakeword import under the scanned roots, with guard status."""
+def _scanned_python_files(root: Path, *, excluded: bool = False) -> list[Path]:
+    """First-party .py files, either the policed set or the excluded set."""
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune in place rather than filtering afterwards: rglob would still
+        # descend into every agent worktree (~100k files) before discarding it.
+        dirnames[:] = [d for d in dirnames if not _is_skipped_dir(d)]
+        here = Path(dirpath)
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            rel = (here / filename).relative_to(root).parts
+            if (rel[0] in _OPENWAKEWORD_EXCLUDED_DIRS) is excluded:
+                out.append(here / filename)
+    return sorted(out)
+
+
+def _sites_in(root: Path, paths: list[Path]) -> list[tuple[str, int, bool]]:
     sites: list[tuple[str, int, bool]] = []
-    for scan_root in _OPENWAKEWORD_SCAN_ROOTS:
-        for path in sorted((root / scan_root).rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            found: list[tuple[int, bool]] = []
-            _collect_openwakeword_sites(tree.body, found)
-            sites.extend(
-                (str(path.relative_to(root)), line, guarded)
-                for line, guarded in found
-            )
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        found: list[tuple[int, bool]] = []
+        _collect_openwakeword_sites(tree.body, found)
+        sites.extend(
+            (str(path.relative_to(root)), line, guarded) for line, guarded in found
+        )
     return sorted(sites)
+
+
+def _openwakeword_import_sites(root: Path) -> list[tuple[str, int, bool]]:
+    """Every openwakeword import outside the named exclusions, with guard status."""
+    return _sites_in(root, _scanned_python_files(root))
 
 
 def test_openwakeword_scanner_flags_unguarded_sites(tmp_path: Path) -> None:
@@ -194,11 +257,45 @@ def test_openwakeword_scanner_flags_unguarded_sites(tmp_path: Path) -> None:
         "    return openwakeword\n",
         encoding="utf-8",
     )
-    (tmp_path / "scripts").mkdir()
 
     assert _openwakeword_import_sites(tmp_path) == [
         ("jasper/guarded.py", 6, True),
         ("jasper/unguarded.py", 2, False),
+    ]
+
+
+def test_openwakeword_scanner_reaches_new_dirs_and_dynamic_imports(
+    tmp_path: Path,
+) -> None:
+    """Fail-closed: a brand-new top-level directory is policed, not ignored.
+
+    Also covers the two dynamic forms with a literal module name. An
+    include-list of scan roots would have missed every line below.
+    """
+    newdir = tmp_path / "brand_new_service"
+    newdir.mkdir()
+    (newdir / "runtime.py").write_text(
+        "import importlib\n"
+        "\n"
+        "def a():\n"
+        "    return importlib.import_module('openwakeword')\n"
+        "\n"
+        "def b():\n"
+        "    return __import__('openwakeword.model')\n"
+        "\n"
+        "def c():\n"
+        "    import openwakeword.model as m\n"
+        "    return m\n",
+        encoding="utf-8",
+    )
+    excluded = tmp_path / "experiments"
+    excluded.mkdir()
+    (excluded / "spike.py").write_text("import openwakeword\n", encoding="utf-8")
+
+    assert _openwakeword_import_sites(tmp_path) == [
+        ("brand_new_service/runtime.py", 4, False),
+        ("brand_new_service/runtime.py", 7, False),
+        ("brand_new_service/runtime.py", 10, False),
     ]
 
 
@@ -238,6 +335,24 @@ def test_openwakeword_scanner_rejects_wrong_scope_and_conditional_guards(
     ]
 
 
+def test_openwakeword_scan_exclusions_are_all_live() -> None:
+    """Every named exclusion must still be excusing a real import.
+
+    An exclusion that stops matching anything has become a blanket hole in the
+    scan: it keeps a whole top-level directory unpoliced while reading like a
+    narrow, justified carve-out. Fail so it gets deleted or re-argued.
+    """
+    excluded_sites = _sites_in(ROOT, _scanned_python_files(ROOT, excluded=True))
+    covered = {Path(path).parts[0] for path, _, _ in excluded_sites}
+
+    stale = sorted(set(_OPENWAKEWORD_EXCLUDED_DIRS) - covered)
+    assert not stale, (
+        f"these openwakeword scan exclusions no longer match any import: {stale}. "
+        "Delete the entry so the directory is policed again, or say in the "
+        "comment what it is still excusing."
+    )
+
+
 def test_every_openwakeword_import_site_is_guarded() -> None:
     """No openWakeWord import may run without the sklearn guard first.
 
@@ -255,9 +370,8 @@ def test_every_openwakeword_import_site_is_guarded() -> None:
     sites = _openwakeword_import_sites(ROOT)
 
     assert sites, (
-        "found no openwakeword imports at all under "
-        f"{_OPENWAKEWORD_SCAN_ROOTS} — the scanner stopped working, so this "
-        "guard would pass vacuously"
+        "found no openwakeword imports anywhere in the tree — the scanner "
+        "stopped working, so this guard would pass vacuously"
     )
 
     unguarded = [f"{path}:{line}" for path, line, guarded in sites if not guarded]
