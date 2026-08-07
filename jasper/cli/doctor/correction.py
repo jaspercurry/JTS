@@ -149,6 +149,62 @@ def check_correction_idle_exit_holds() -> CheckResult:
     )
 
 
+_CORRECTION_WEB_START_LIMIT_RESULT = "start-limit-hit"
+
+
+@doctor_check(order=25.2, group="correction")
+def check_correction_web_start_limited() -> CheckResult:
+    """A start-limited ``.service`` is not "inactive" — it will not come back.
+
+    ``jasper-correction-web.service`` sets ``StartLimitBurst=20`` over
+    ``StartLimitIntervalSec=600`` with no ``StartLimitAction=`` (systemd's
+    default there: stop retrying and leave the unit ``failed``). Repeated
+    fail-closed startup refusals — e.g. CamillaDSP unreachable during
+    protected-neutral program-graph recovery — can exhaust that burst.
+
+    When they do, ``jasper-correction-web.socket`` stays ``active``: it is
+    a separate unit with its own, much looser ``TriggerLimitBurst`` and
+    keeps listening regardless of what happens to the paired ``.service``.
+    :func:`check_correction_web_service` only asks "is the socket active?",
+    so it sees a live socket and reports ``ok`` while the ``.service`` sits
+    stuck at ``ActiveState=failed`` / ``Result=start-limit-hit``, refusing
+    every new activation until an operator runs ``systemctl reset-failed``
+    (or the 600s window ages out with no new failures). Found by the
+    resilience lens of PR #2126 (nit 5) as exactly this gap; #2134 is this
+    fix.
+
+    This check reads the ``.service`` unit's own ``ActiveState``/``Result``
+    directly so that stuck state is reported honestly instead of folded
+    into the socket's ``ok``. Any other ``Result`` — including a plain
+    crash still eligible for its next ``Restart=on-failure`` attempt — is
+    not this failure mode and stays ``ok`` here; the finding was the
+    specific start-limit-hit gap, not a general "was it ever unhappy"
+    check.
+    """
+    label = "correction web start limit"
+    show = _run(
+        ["systemctl", "show", _CORRECTION_WEB_UNIT,
+         "--property=ActiveState", "--property=Result"]
+    )
+    state: dict[str, str] = {}
+    for line in show.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            state[key] = value.strip()
+    active = state.get("ActiveState", "")
+    result = state.get("Result", "")
+    if active == "failed" and result == _CORRECTION_WEB_START_LIMIT_RESULT:
+        return CheckResult(
+            label, "fail",
+            f"{_CORRECTION_WEB_UNIT} is start-limited (ActiveState=failed, "
+            f"Result={result}) and will not restart on its own — the "
+            "socket stays active so this can otherwise look fine. Run "
+            f"`sudo systemctl reset-failed {_CORRECTION_WEB_UNIT} && "
+            f"sudo systemctl start {_CORRECTION_WEB_UNIT}`.",
+        )
+    return CheckResult(label, "ok", f"ActiveState={active or 'unknown'}")
+
+
 def _probe_https_status(
     host: str, port: int, path: str, *, timeout: float = 4.0
 ) -> "tuple[int, str]":

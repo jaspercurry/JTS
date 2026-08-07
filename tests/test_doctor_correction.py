@@ -33,6 +33,84 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     assert "socket active" in r.detail
 
 
+# ---------- #2134: a start-limited jasper-correction-web must not read as ok
+
+
+def test_check_correction_web_start_limited_registered_in_sync_checks():
+    assert "check_correction_web_start_limited" in _registered_check_names()
+
+
+def test_check_correction_web_start_limited_fails_on_start_limit_hit(monkeypatch):
+    """The exact PR #2126 nit-5 gap: ``check_correction_web_service`` only
+    reads the socket, so a start-limited ``.service`` still reads ``ok``
+    there — this dedicated check is what must catch it."""
+
+    def fake_run(cmd, timeout=5.0):
+        assert cmd == [
+            "systemctl", "show", "jasper-correction-web.service",
+            "--property=ActiveState", "--property=Result",
+        ]
+        return subprocess.CompletedProcess(
+            cmd, 0,
+            stdout="ActiveState=failed\nResult=start-limit-hit\n", stderr="",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "fail"
+    assert "start-limited" in r.detail
+    assert "Result=start-limit-hit" in r.detail
+    assert (
+        "systemctl reset-failed jasper-correction-web.service && "
+        "sudo systemctl start jasper-correction-web.service" in r.detail
+    )
+
+
+def test_check_correction_web_start_limited_ok_when_idle_between_sessions(
+    monkeypatch,
+):
+    """Normal socket-activated lifecycle: the service idle-exits and goes
+    inactive between sessions — not a finding."""
+
+    def fake_run(cmd, timeout=5.0):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="ActiveState=inactive\nResult=success\n", stderr="",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "ok"
+
+
+def test_check_correction_web_start_limited_ok_when_currently_serving(monkeypatch):
+    def fake_run(cmd, timeout=5.0):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="ActiveState=active\nResult=success\n", stderr="",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "ok"
+
+
+def test_check_correction_web_start_limited_ok_on_plain_crash_not_yet_limited(
+    monkeypatch,
+):
+    """A ``failed`` unit whose ``Result`` is NOT ``start-limit-hit`` is still
+    inside its ``Restart=on-failure`` budget and will retry on its own —
+    the scoped finding is specifically the start-limit-hit gap, not every
+    failure shape (mirrors the "scope to the observed-broken path" rule)."""
+
+    def fake_run(cmd, timeout=5.0):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="ActiveState=failed\nResult=exit-code\n", stderr="",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "ok"
+
+
 # ---------- #1860: jasper-doctor check for long-outstanding idle-exit holds
 
 
