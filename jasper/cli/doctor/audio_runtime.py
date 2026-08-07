@@ -766,6 +766,54 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     )
 
 
+@doctor_check(order=51.1, group="audio")
+def check_camilla_service() -> CheckResult:
+    """The jasper-camilla systemd unit must never stay stopped.
+
+    Every source's audio runs through CamillaDSP, so a stopped unit is a
+    silent speaker. The peer checks miss a CLEAN stop (#2163):
+    `check_service_runtime_state` flags only `failed`, and
+    `check_camilla_websocket` reports the same state as "can't reach
+    127.0.0.1:1234", which reads as a websocket problem rather than a
+    stopped unit. That state is reachable — `jasper-camilla-recover` parks
+    the unit stopped after an exhausted start-limit burst, and
+    `OnFailure=jasper-camilla-recover` does not fire on a clean exit.
+
+    "Enabled but not active" is unambiguous here because CamillaDSP has no
+    gate that makes `inactive` legitimate, unlike jasper-outputd (missing-DAC
+    `ExecCondition`) or jasper-voice (`voice-input-absent` marker).
+
+    Returns:
+      - ok when enabled and active.
+      - fail when the unit is missing, disabled, or enabled and not active.
+    """
+    label = "jasper-camilla service"
+    unit = "jasper-camilla.service"
+    enabled = _run(["systemctl", "is-enabled", unit]).stdout.strip()
+    active = _run(["systemctl", "is-active", unit]).stdout.strip()
+
+    if enabled == "not-found":
+        return CheckResult(
+            label, "fail", "systemd unit not installed. Re-run install.sh."
+        )
+    if enabled in ("disabled", "static", "indirect"):
+        return CheckResult(
+            label,
+            "fail",
+            f"state={enabled}. CamillaDSP is mandatory; run: "
+            f"sudo systemctl enable --now {unit}",
+        )
+    if active != "active":
+        return CheckResult(
+            label,
+            "fail",
+            f"enabled but state={active}. Every source's audio runs through "
+            f"CamillaDSP, so nothing will play until it starts. Check: "
+            f"journalctl -u jasper-camilla -u jasper-camilla-recover",
+        )
+    return CheckResult(label, "ok", "enabled and active")
+
+
 @doctor_check(order=51.52, group="audio")
 def check_fanin_host_clock() -> CheckResult:
     """Report persistent USB host-clock recovery/fallback with exact cause."""

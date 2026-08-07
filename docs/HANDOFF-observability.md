@@ -328,8 +328,27 @@ healthy each daemon looks — is read on the slow cadence from the same
 (both statefiles, plus outputd's live capture PCM), and reported as a parked
 signal path rather than "Audio is ready". When the cause is a saved layout the
 DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
-because no reconcile or restart can clear that one. Audio health does not spawn
-a second `systemctl` cadence.
+because no reconcile or restart can clear that one. A CamillaDSP that is simply
+*stopped* is read off the same cached systemd snapshot and reported the same
+way — as a signal-path issue that reaches `overall`, not merely an incident
+beside an otherwise green card. It has to be, because the signal path cannot
+see it any other way: that detector reads only fan-in and outputd, and both are
+built to keep looping when the stage between them disappears (fan-in's default
+`loopback` coupling is timer-paced, `shm_ring` free-run-drops an absent reader,
+outputd zero-fills its content lane), while both `last_progress_age_ms` counters
+time the work loop rather than audio moving. Left alone, one response would
+assert "Signal path clean" / "Audio is ready" beside its own "DSP engine is not
+running" — and an affirmative wrong answer is worse than the silence the gap was
+found as. `jasper-camilla.service` has no `Condition*` gate and no legitimate
+parked state, so a clean `inactive` — which `check_service_runtime_state` passes
+and the services table hides — is an issue rather than silence. A unit that is
+not installed at all gets doctor's remedy instead, so the two surfaces do not
+tell one operator two stories. Its neighbours are
+deliberately excluded, because `jasper-outputd` (missing-DAC `ExecCondition`)
+and `jasper-voice` (`voice-input-absent` marker) do park themselves `inactive`
+by design. A live fan-in or outputd failure still outranks the override, the
+same way it outranks a parked path. Audio health does not spawn a second
+`systemctl` cadence.
 
 The contract separates playback continuity from timing. A USB `l2_fallback`
 is a latency warning while playback remains protected; `l0_locked` is runtime

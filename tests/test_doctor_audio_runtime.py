@@ -195,6 +195,61 @@ class _FakeSocket:
         self.closed = True
 
 
+def _patch_camilla_systemctl(monkeypatch, *, enabled="enabled", active="active"):
+    def fake_run(cmd, *args, **kwargs):
+        stdout = ""
+        if cmd[:2] == ["systemctl", "is-enabled"]:
+            stdout = enabled + "\n"
+        elif cmd[:2] == ["systemctl", "is-active"]:
+            stdout = active + "\n"
+        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
+
+
+def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
+    _patch_camilla_systemctl(monkeypatch)
+
+    result = doctor.check_camilla_service()
+
+    assert result.status == "ok"
+    assert result.detail == "enabled and active"
+
+
+def test_check_camilla_service_fails_on_a_clean_stop(monkeypatch):
+    """The #2163 state: enabled, cleanly inactive, never `failed`.
+
+    `check_service_runtime_state` returns ok for this, and
+    `check_camilla_websocket` reports it as an unreachable websocket.
+    """
+    _patch_camilla_systemctl(monkeypatch, active="inactive")
+
+    result = doctor.check_camilla_service()
+
+    assert result.status == "fail"
+    assert "enabled but state=inactive" in result.detail
+    assert "jasper-camilla-recover" in result.detail
+
+
+def test_check_camilla_service_fails_when_disabled(monkeypatch):
+    _patch_camilla_systemctl(monkeypatch, enabled="disabled", active="inactive")
+
+    result = doctor.check_camilla_service()
+
+    assert result.status == "fail"
+    assert "state=disabled" in result.detail
+    assert "systemctl enable --now jasper-camilla.service" in result.detail
+
+
+def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
+    _patch_camilla_systemctl(monkeypatch, enabled="not-found", active="inactive")
+
+    result = doctor.check_camilla_service()
+
+    assert result.status == "fail"
+    assert "not installed" in result.detail
+
+
 def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
     def fake_run(cmd, *args, **kwargs):
         stdout = ""
