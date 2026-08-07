@@ -441,7 +441,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "jasper-outputd/src/mixer.rs",
         "content.len(), assistant.len()",
     ): (
-        "mix_i16_saturating (module doc: \"the same intentionally boring "
+        "mix_saturating (module doc: \"the same intentionally boring "
         "saturation behavior as jasper-fanin\"): both buffers are "
         "period-sized scratch the daemon allocates once at a fixed period "
         "size."

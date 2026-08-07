@@ -651,6 +651,15 @@ impl TtsBridge {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::ProgramSample;
+
+    /// One S16 sample at the program spine's scale. The TTS WIRE stays S16
+    /// (`TtsCommand::Audio` carries `Vec<i16>` and is shared with jasper-fanin);
+    /// only the CONTENT the core mixes against is spine-width.
+    fn w(sample: i16) -> ProgramSample {
+        jasper_resampler::widen_i16_to_i32(sample)
+    }
+
     use super::*;
 
     fn bridge_with_core() -> (
@@ -703,13 +712,15 @@ mod tests {
         send(&tx, 0, TtsCommand::SegmentEnd);
         bridge.drain(&mut core);
 
-        core.push_content_period(vec![100i16; 8]);
+        // Content pushes are PROGRAM (spine-width) samples; the TTS wire above
+        // stays S16. `w()` writes the S16 value at the spine's scale.
+        core.push_content_period(vec![w(100); 8]);
         let report = core.step();
         assert_eq!(report.clipped_samples, 0);
         // Content + gain-scaled assistant — the DAC got a real mix.
         let written = &core.dac().periods[0];
         assert!(
-            written.iter().all(|&s| s > 100),
+            written.iter().all(|&s| s > w(100)),
             "assistant missing: {written:?}"
         );
     }
@@ -761,7 +772,7 @@ mod tests {
         bridge.drain(&mut core);
         assert_eq!(core.current_volume_context(), None);
 
-        core.push_content_period(vec![0i16; 8]);
+        core.push_content_period(vec![0 as ProgramSample; 8]);
         core.step();
         assert!(
             core.dac().periods[0].iter().all(|&sample| sample == 0),
@@ -899,7 +910,7 @@ mod tests {
         // 3 periods queued; play ONE before the flush.
         send(&tx, 0, TtsCommand::Audio(vec![3000i16; 24]));
         bridge.drain(&mut core);
-        core.push_content_period(vec![0i16; 8]);
+        core.push_content_period(vec![0 as ProgramSample; 8]);
         core.step();
 
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);

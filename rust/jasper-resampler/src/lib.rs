@@ -185,6 +185,104 @@ pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
     true
 }
 
+/// Widen one S16 sample to S32 by left-justifying it — `i32::from(s) << 16`.
+///
+/// The OUTPUT side's widening primitive, and the exact conversion ALSA's own
+/// S16→S32 `plug` performs, which is why retiring that plug is bit-transparent.
+/// It preserves sign and full scale (`i16::MIN` → `i32::MIN`, `i16::MAX` →
+/// `0x7FFF_0000`), adds no gain, no dither, and no rounding, and is inverted
+/// exactly by [`narrow_i32_to_i16_round`].
+///
+/// `i32::from` FIRST is load-bearing: shifting the i16 and widening afterwards
+/// would shift every significant bit out of a 16-bit value.
+///
+/// Moved here from `jasper-outputd`'s `alsa_backend` (its sign-boundary and
+/// scale-change vectors travelled with it) when outputd's program spine became
+/// i32: the widening stopped being one sink's private staging step and became
+/// the conversion at every S16 ingress into the wide spine — the content lane,
+/// the SHM ring, the round-trip FIFO, and the TTS wire. One tested primitive for
+/// all of them.
+#[inline]
+pub fn widen_i16_to_i32(sample: i16) -> i32 {
+    i32::from(sample) << 16
+}
+
+/// Widen a slice of interleaved S16 samples into an equal-length S32 slice via
+/// [`widen_i16_to_i32`].
+///
+/// `input` and `output` MUST be the same length. A mismatch is a programming
+/// error and returns `false` **without touching `output` at all** — because the
+/// alternative (widening the common prefix) would leave the tail STALE, which at
+/// a speaker is a short or torn period that no counter can see. Both directions
+/// are wrong: output shorter than input truncates the period, output longer
+/// leaves a tail the period never produced.
+///
+/// Returns `true` on success. Allocation-free — the caller owns both slices.
+/// `bool` rather than a `Result` because this crate has exactly one dependency
+/// (`jasper-clock`) and no error type; the ALSA-side callers map `false` onto
+/// their own `anyhow` idiom in ONE place per direction
+/// (`jasper_outputd::types::widen_period`).
+pub fn widen_i16_to_i32_slice(input: &[i16], output: &mut [i32]) -> bool {
+    if input.len() != output.len() {
+        return false;
+    }
+    for (src, dst) in input.iter().zip(output.iter_mut()) {
+        *dst = widen_i16_to_i32(*src);
+    }
+    true
+}
+
+/// Narrow one S32 sample to S16 by **rounding to nearest** and saturating —
+/// full-scale S32 maps onto full-scale S16.
+///
+/// **This is the speaker-edge quantizer. [`s32_high_word_to_s16`] is not.** That
+/// sibling truncates by design because it implements UAC2-gadget *capture*
+/// semantics (keep the high word, drop the rest); truncation is a half-LSB DC
+/// step toward −∞ on every sample, and at a speaker edge under 18–21 dB of
+/// digital attenuation that error is the granular decay-tail crackle this
+/// primitive exists to remove. Do NOT reach for `s32_high_word_to_s16` on any
+/// output path; the only callers of it are the USB capture path, and the only
+/// i32→i16 conversions on the output side are this function and its slice
+/// sibling.
+///
+/// Semantics (pinned, and the vectors below are the contract):
+///
+/// * Round-half-**up** (toward +∞), computed in i64 as `(s + 32768) >> 16` — an
+///   arithmetic shift, so it floors, and adding half the step first makes that
+///   floor a round-to-nearest. i64 because `i32::MAX + 32768` overflows i32.
+/// * Saturating: `i32::MAX` rounds up past `i16::MAX` and is clamped to it.
+///   `i32::MIN` maps to `i16::MIN` with no clamp needed.
+/// * Zeros round to zeros — the reason no idle hiss appears at the S16 edge.
+/// * It inverts [`widen_i16_to_i32`] EXACTLY: a widened sample is a multiple of
+///   65536, never a half-step, so the round is a no-op and the round trip is
+///   bit-identical. That identity is what makes an i32 spine byte-transparent
+///   for S16 content into an S16 edge.
+/// * Halves go toward +∞, which differs from [`clamp_i16`]'s `f64::round`
+///   (half away from zero) at exactly `−0.5` steps: this returns `0` where
+///   `clamp_i16` returns `−1`. Named rather than hidden — the integer form is
+///   branchless and exact, the divergence is one LSB on inputs a widened S16
+///   period cannot contain, and both behaviours are pinned by tests.
+#[inline]
+pub fn narrow_i32_to_i16_round(sample: i32) -> i16 {
+    let rounded = ((sample as i64) + 32_768) >> 16;
+    rounded.clamp(i16::MIN as i64, i16::MAX as i64) as i16
+}
+
+/// Narrow a slice of interleaved S32 samples into an equal-length S16 slice via
+/// [`narrow_i32_to_i16_round`].
+///
+/// Same length contract, same all-or-nothing refusal, and the same `bool` return
+/// as [`widen_i16_to_i32_slice`] — see that function for why.
+pub fn narrow_i32_to_i16_round_slice(input: &[i32], output: &mut [i16]) -> bool {
+    if input.len() != output.len() {
+        return false;
+    }
+    for (src, dst) in input.iter().zip(output.iter_mut()) {
+        *dst = narrow_i32_to_i16_round(*src);
+    }
+    true
+}
+
 /// The dBFS floor an empty / digitally-silent i16 slice reports. Lives in this
 /// pure crate so fan-in's telemetry and its tests share one sentinel.
 pub const RMS_DBFS_FLOOR: f64 = -120.0;
@@ -1262,6 +1360,185 @@ mod tests {
         // Length mismatch is a programming error: return false, don't panic.
         let mut short = [0i16; 3];
         assert!(!convert_s32_to_s16(&input, &mut short));
+    }
+
+    // ---- The output spine's width conversions ----------------------------
+    // These four tests came over from jasper-outputd's `alsa_backend` with
+    // `widen_i16_to_i32` and gained the narrowing direction. They are the
+    // primitive-level half of the wide-path transparency argument; the
+    // pipeline-level half lives in `jasper_outputd::core`.
+
+    #[test]
+    fn widening_preserves_sign_full_scale_and_silence() {
+        // Left-justified widening: the same mapping ALSA's own S16->S32 plug
+        // performs, which is why retiring that plug is bit-transparent.
+        let samples = [i16::MAX, i16::MIN, 0, 1, -1, 256, -256];
+        let mut out = vec![0i32; samples.len()];
+
+        assert!(widen_i16_to_i32_slice(&samples, &mut out));
+
+        assert_eq!(
+            out,
+            vec![
+                0x7FFF_0000,
+                i32::MIN,
+                0,
+                0x0001_0000,
+                -0x0001_0000,
+                0x0100_0000,
+                -0x0100_0000,
+            ]
+        );
+    }
+
+    #[test]
+    fn widening_the_i16_min_edge_neither_wraps_nor_saturates() {
+        // `i16::MIN << 16` is the one input that could overflow if the shift
+        // happened before the widen. Widened first it is exactly `i32::MIN` —
+        // still full-scale negative, still monotonic against `i16::MIN + 1`.
+        let mut out = [0i32; 2];
+        assert!(widen_i16_to_i32_slice(&[i16::MIN, i16::MIN + 1], &mut out));
+
+        assert_eq!(out[0], i32::MIN);
+        assert_eq!(out[0], (i16::MIN as i32) * 65_536);
+        assert!(out[0] < out[1], "widening must stay monotonic at the floor");
+    }
+
+    #[test]
+    fn widening_is_exactly_a_scale_change_not_a_gain_change() {
+        // Every sample must land on `value * 65536` — no dither, no rounding,
+        // no headroom trim. A gain change here would be inaudible in a unit
+        // test and very audible in a room.
+        let samples: Vec<i16> = (-32_768..=32_767).step_by(97).map(|v| v as i16).collect();
+        let mut out = vec![0i32; samples.len()];
+
+        assert!(widen_i16_to_i32_slice(&samples, &mut out));
+
+        for (i, &sample) in samples.iter().enumerate() {
+            assert_eq!(out[i], i32::from(sample) * 65_536, "sample {sample}");
+        }
+    }
+
+    #[test]
+    fn widening_rejects_a_staging_length_that_does_not_match_the_period() {
+        // Without the check the `zip` would quietly widen 2 of 4 samples and
+        // leave the rest stale — a short/torn period at the speaker with
+        // nothing in any counter to show for it. Both directions are wrong:
+        // staging shorter than the period truncates it, staging longer writes
+        // a tail the period never produced. And the refusal must leave the
+        // output UNTOUCHED, not half-written.
+        let mut short = [9i32; 2];
+        assert!(!widen_i16_to_i32_slice(&[1, 2, 3, 4], &mut short));
+        assert_eq!(short, [9, 9], "a refused widen must not write anything");
+
+        let mut long = [9i32; 8];
+        assert!(!widen_i16_to_i32_slice(&[1, 2], &mut long));
+        assert_eq!(long, [9i32; 8], "a refused widen must not write anything");
+    }
+
+    #[test]
+    fn narrowing_rounds_to_nearest_and_saturates_at_the_rails() {
+        // The speaker-edge quantizer's pinned contract. Full scale both signs,
+        // the i32 rail that has to clamp, and the half-step boundaries.
+        assert_eq!(narrow_i32_to_i16_round(0), 0, "zeros round to zeros");
+        assert_eq!(narrow_i32_to_i16_round(0x7FFF_0000), i16::MAX);
+        assert_eq!(narrow_i32_to_i16_round(i32::MIN), i16::MIN);
+        // `i32::MAX` is half an LSB ABOVE widened `i16::MAX`, so the round
+        // pushes it past the rail and the clamp is what keeps it in range.
+        // Without the clamp this wraps to `i16::MIN` — full-scale positive
+        // becoming full-scale negative, the loudest possible defect.
+        assert_eq!(narrow_i32_to_i16_round(i32::MAX), i16::MAX);
+        // Just under / just over half a step: the rounding decision itself.
+        assert_eq!(narrow_i32_to_i16_round(32_767), 0);
+        assert_eq!(narrow_i32_to_i16_round(32_768), 1);
+        assert_eq!(narrow_i32_to_i16_round(98_303), 1); // 1.49999 steps
+        assert_eq!(narrow_i32_to_i16_round(98_304), 2); // exactly 1.5 steps
+                                                        //
+                                                        // Halves go toward +inf, so `-0.5` steps land on 0, NOT on -1. This is
+                                                        // where the integer form diverges from `clamp_i16`'s f64::round.
+        assert_eq!(narrow_i32_to_i16_round(-32_768), 0);
+        assert_eq!(clamp_i16(-0.5), -1);
+        assert_eq!(narrow_i32_to_i16_round(-32_769), -1);
+    }
+
+    #[test]
+    fn narrowing_is_not_the_truncating_uac2_capture_conversion() {
+        // The whole point of adding a second i32->i16 primitive. On a sample
+        // half an LSB below zero the capture conversion steps DOWN and this one
+        // rounds to silence; that per-sample downward bias, applied to a decay
+        // tail, is the audible defect the wide path removes. If these two ever
+        // agree on this vector, one of them has been changed into the other.
+        assert_eq!(s32_high_word_to_s16(-65_537), -2);
+        assert_eq!(narrow_i32_to_i16_round(-65_537), -1);
+        assert_eq!(s32_high_word_to_s16(-1), -1);
+        assert_eq!(narrow_i32_to_i16_round(-1), 0);
+        assert_eq!(s32_high_word_to_s16(32_768), 0);
+        assert_eq!(narrow_i32_to_i16_round(32_768), 1);
+    }
+
+    #[test]
+    fn narrowing_rejects_a_staging_length_that_does_not_match_the_period() {
+        let mut short = [9i16; 2];
+        assert!(!narrow_i32_to_i16_round_slice(&[1, 2, 3, 4], &mut short));
+        assert_eq!(short, [9, 9], "a refused narrow must not write anything");
+
+        let mut long = [9i16; 8];
+        assert!(!narrow_i32_to_i16_round_slice(&[1, 2], &mut long));
+        assert_eq!(long, [9i16; 8], "a refused narrow must not write anything");
+    }
+
+    /// **The transparency proof, primitive level.** S16 in → widen → narrow is
+    /// bit-identical, sample for sample, over full scale both signs, ±1 LSB, a
+    /// ramp, and silence.
+    ///
+    /// This is what makes an i32 program spine safe to ship on the S16-edge
+    /// fleet: every live box today reads S16 content and writes an S16 edge, so
+    /// at unity gain the whole wide path collapses to exactly this round trip.
+    /// It holds because a widened sample is a multiple of 65536 and therefore
+    /// never sits on a half-step for the round to move.
+    #[test]
+    fn s16_widened_then_narrowed_is_bit_identical() {
+        let mut fixture: Vec<i16> = vec![
+            i16::MAX,
+            i16::MIN,
+            i16::MAX - 1,
+            i16::MIN + 1,
+            0,
+            1,
+            -1,
+            32_766,
+            -32_767,
+        ];
+        // A ramp across the whole range, plus a run of silence.
+        fixture.extend((-32_768..=32_767).step_by(37).map(|v| v as i16));
+        fixture.extend(std::iter::repeat_n(0i16, 64));
+
+        let mut wide = vec![0i32; fixture.len()];
+        assert!(widen_i16_to_i32_slice(&fixture, &mut wide));
+        let mut back = vec![0i16; fixture.len()];
+        assert!(narrow_i32_to_i16_round_slice(&wide, &mut back));
+
+        assert_eq!(back, fixture, "the S16 round trip must be bit-identical");
+        // And the intermediate really was wide — a round trip through a
+        // no-op pair of functions would also pass the assertion above.
+        for (i, &sample) in fixture.iter().enumerate() {
+            assert_eq!(wide[i], i32::from(sample) * 65_536, "sample {i}");
+        }
+    }
+
+    /// Exhaustive companion to the fixture above: EVERY i16 value round-trips.
+    /// Cheap (65536 iterations) and it removes "the fixture missed a case" as a
+    /// possible reading of the transparency claim.
+    #[test]
+    fn every_i16_value_survives_the_widen_narrow_round_trip() {
+        for value in i16::MIN..=i16::MAX {
+            let wide = widen_i16_to_i32(value);
+            assert_eq!(
+                narrow_i32_to_i16_round(wide),
+                value,
+                "round trip failed at {value}"
+            );
+        }
     }
 
     // ---- Per-lane RMS level (USB combo silence gate) ---------------------

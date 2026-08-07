@@ -615,6 +615,31 @@ impl Config {
                 content_bridge_mode.as_str()
             );
         }
+        // The rate-match bridge is the shared windowed-sinc resampler, and that
+        // algorithm is i16 (`jasper_resampler`'s ring and block resampler are i16
+        // throughout; widening them is out of scope for the wide output path). So
+        // outputd's i32 program has to step DOWN into it and back up
+        // (`main::read_content_bridge_period`). On an S16 lane that round trip is
+        // EXACT — the samples were widened from S16 in the first place — but on a
+        // wide lane it would be a real requantization, a SECOND quantization on a
+        // path whose whole contract is that there is exactly one, at the DAC edge.
+        // Refuse the pairing at startup rather than lose bits quietly. (Not a
+        // reachable production combination: `rate_match` is opt-in and no writer
+        // emits a wide content format yet. It is refused anyway because the
+        // alternative is a silent quality regression whose only symptom would be
+        // sound.)
+        if content_bridge_mode == ContentBridgeMode::RateMatch
+            && content_format != SampleFormat::S16Le
+        {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires \
+                 JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE (got {}): the rate-match \
+                 resampler is an i16 algorithm, so a wider lane would be \
+                 requantized into it — a second quantization ahead of the DAC \
+                 edge, which owns the only one",
+                content_format.as_str()
+            );
+        }
         if tts_socket_path.is_some() && !is_full_range_stereo_lr_sink {
             anyhow::bail!(
                 "JASPER_OUTPUTD_TTS_SOCKET requires a full-range stereo L/R sink: \
@@ -1200,6 +1225,85 @@ mod tests {
                 assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET"), "{err}");
                 assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
                 assert!(err.contains("full-range stereo L/R sink"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn a_wide_content_lane_rejects_the_i16_rate_match_resampler() {
+        // The rate-match bridge is the shared windowed-sinc resampler, an i16
+        // algorithm, so outputd's i32 program has to narrow into it and widen
+        // back. On the default S16 lane that round trip is exact; on a wide lane
+        // it would be a SECOND quantization ahead of the DAC edge, which owns the
+        // only one. Refuse it loudly instead of losing bits quietly.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("rate_match requires"), "{err}");
+                assert!(
+                    err.contains("JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE"),
+                    "{err}"
+                );
+                assert!(err.contains("S32_LE"), "{err}");
+                assert!(err.contains("second quantization"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn the_default_s16_content_lane_still_arms_the_rate_match_bridge() {
+        // The other direction of the guard above: it must refuse ONLY the wide
+        // pairing. An unset content format is the S16 default and has to keep
+        // working, or the guard would have silently retired a shipped mode.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", None),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
+                assert_eq!(cfg.content_format, SampleFormat::S16Le);
+            },
+        );
+        // And an EXPLICIT S16_LE is accepted too, not just an absent value.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S16_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
+            },
+        );
+    }
+
+    #[test]
+    fn a_wide_content_lane_is_accepted_on_the_direct_default_path() {
+        // The guard must be scoped to `rate_match` alone. The wide lane's whole
+        // purpose is the DIRECT path, so declaring S32 there stays legal — this is
+        // what PR-6 will actually emit.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_format, SampleFormat::S32Le);
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
             },
         );
     }

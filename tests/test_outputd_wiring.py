@@ -506,8 +506,13 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
 
 def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    # Anchored on the NAME plus its opening generic bracket, not the full
+    # parameter list: the reader gained a leading sample-type parameter when
+    # outputd's program spine widened to i32 (`<S, Read, Recover>`), and pinning
+    # the exact generic list made this test a tripwire on the type parameters
+    # rather than on the silence contract it is actually about.
     classifier = alsa_rs.split(
-        "fn read_content_pcm<Read, Recover>(", 1,
+        "fn read_content_pcm<", 1,
     )[1].split("fn zero_fill_content_period", 1)[0]
     zero_fill = alsa_rs.split(
         "fn zero_fill_content_period", 1,
@@ -522,7 +527,10 @@ def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     assert "read: ContentRead::NoData" in classifier
     # The shared silence helper maps that outcome to a full-period zero fill.
     assert "ContentRead::NoData | ContentRead::XrunRecovered => 0" in zero_fill
-    assert "out[(frames_read * channels)..].fill(0);" in zero_fill
+    # `S::default()` rather than a literal `0`: the helper is generic over the
+    # lane's sample width now, and digital silence is the type's zero at every
+    # width (widening zero is zero, so a zero-filled tail is unchanged audio).
+    assert "out[(frames_read * channels)..].fill(S::default());" in zero_fill
     # The paired-composite path must use the same helper rather than drift.
     assert "zero_fill_content_period(out, 4, classified.read)" in paired_sink
 

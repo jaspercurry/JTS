@@ -16,8 +16,10 @@
 
 use std::collections::VecDeque;
 
+use crate::types::ProgramSample;
+
 pub struct FakeContentSource {
-    periods: VecDeque<Vec<i16>>,
+    periods: VecDeque<Vec<ProgramSample>>,
 }
 
 impl FakeContentSource {
@@ -27,11 +29,11 @@ impl FakeContentSource {
         }
     }
 
-    pub fn push_period(&mut self, samples: Vec<i16>) {
+    pub fn push_period(&mut self, samples: Vec<ProgramSample>) {
         self.periods.push_back(samples);
     }
 
-    pub fn read_period(&mut self, out: &mut [i16]) {
+    pub fn read_period(&mut self, out: &mut [ProgramSample]) {
         out.fill(0);
         if let Some(samples) = self.periods.pop_front() {
             let copied = samples.len().min(out.len());
