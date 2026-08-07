@@ -1066,6 +1066,13 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
         "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
+    # Root oneshot the adapter kicks (through jasper-control's restart broker)
+    # on every reconnect: it reserves BLE connection-event length on the live
+    # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
+    # realtime on a Pi Zero 2 W. Never enabled; started on demand only.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-ce.service" \
+        "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
     # AEC bridge + boot-time chip init + reconciler. The reconciler is
     # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
     # the currently attached mic hardware in sync.

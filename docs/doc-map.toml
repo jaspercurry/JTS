@@ -969,16 +969,34 @@ code = [
   "jasper/peering/**",
   "jasper/web/rooms_setup.py",
   "jasper/accessories/**",
+  # The per-connection BLE connection-event reservation the WiiM mic adapter
+  # requests on every reconnect. It lives in jasper/cli/ because it is a
+  # console-script entry point, but it is accessory code and belongs with the
+  # adapter it serves.
+  "jasper/cli/wiim_remote_ce.py",
+  "deploy/systemd/jasper-wiim-remote-ce.service",
+  # The adapter unit is ALSO in local-source-lifecycle (source enable/disable
+  # owns its unit state). Multi-membership is the convention, not a conflict —
+  # editing this unit needs both the source-lifecycle contract and the
+  # hot-plug/convergence doc below, and listing it in one subsystem meant a
+  # change to the adapter never routed to the doc describing its lifecycle.
+  "deploy/systemd/jasper-wiim-remote-mic.service",
   "deploy/avahi/jasper-peer.service.template",
 ]
 docs = [
   "docs/HANDOFF-peering.md",
+  # Canonical operational doc for the WiiM Remote 2 mic lifecycle: adapter
+  # gating, the per-connection CE reservation, and the degraded-but-working
+  # modes. Nothing routed accessory changes here before, so the doc silently
+  # aged behind the code.
+  "docs/HANDOFF-hotplug-resilience.md",
 ]
 requires_docs_when = [
   "Wake arbitration, peer discovery, supported accessory roles, or accessory microphone profiles change.",
+  "The WiiM remote mic's convergence path changes — adapter gating, the BLE connection-event reservation, or what happens when either fails.",
 ]
 verification = [
-  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py",
+  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
 ]
 
 [[subsystem]]

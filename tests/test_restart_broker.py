@@ -120,6 +120,7 @@ def test_start_only_units_are_not_general_managed_units():
         "jasper-fanin-coupling-auto.service",
         "jasper-source-intent-reconcile.service",
         "jasper-wifi-scan-repair.service",
+        "jasper-wiim-remote-ce.service",
         "jasper-xvf-firmware-update.service",
         "jasper-enhanced-aec-install.service",
     })

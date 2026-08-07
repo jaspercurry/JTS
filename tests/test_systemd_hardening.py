@@ -612,6 +612,11 @@ DEFERRED_PRIVILEGED_SUPPORT_UNITS = {
     "jasper-wifi-scan-repair": (
         ROOT / "deploy/systemd/jasper-wifi-scan-repair.service"
     ),
+    # The BLE connection-event reservation for the WiiM remote mic writes a
+    # raw HCI command, which the kernel gates on CAP_NET_RAW. It stays root
+    # (with a CAP_NET_RAW-only bounding set) until a validated WS1 slice moves
+    # it; see test_wiim_remote_ce_unit_grants_only_raw_hci below.
+    "jasper-wiim-remote-ce": ROOT / "deploy/systemd/jasper-wiim-remote-ce.service",
     "jasper-grouping-reconcile": (
         ROOT / "deploy/systemd/jasper-grouping-reconcile.service"
     ),
@@ -647,6 +652,77 @@ def test_privileged_support_units_stay_root_until_validated(unit, path):
         "validation guard. Drop these units one vertical slice at a time; see "
         "docs/HANDOFF-privilege-separation.md Remaining WS1 scope."
     )
+
+
+WIIM_REMOTE_CE_UNIT = ROOT / "deploy/systemd/jasper-wiim-remote-ce.service"
+
+
+def test_wiim_remote_ce_unit_grants_only_raw_hci():
+    """The BLE connection-event helper is root, but narrowly.
+
+    It exists to write ONE raw HCI command (HCI_LE_Connection_Update), which
+    the kernel gates on CAP_NET_RAW, and to ask BlueZ over the system bus
+    which live LE link is the remote. So the whole privileged surface is
+    CAP_NET_RAW + AF_BLUETOOTH + AF_UNIX. A future edit that copies a broader
+    capability or address-family set from another root unit fails here.
+
+    Also pinned: no [Install]. The reservation is per-connection, requested on
+    demand by the adapter on every reconnect; enabling it at boot would run it
+    when there is no link to tune.
+    """
+    assert WIIM_REMOTE_CE_UNIT.is_file(), f"missing {WIIM_REMOTE_CE_UNIT}"
+    pairs = set(_directives(WIIM_REMOTE_CE_UNIT))
+    keys = {k for k, _ in pairs}
+
+    boundings = [v for k, v in pairs if k == "CapabilityBoundingSet"]
+    assert boundings, "jasper-wiim-remote-ce must set CapabilityBoundingSet="
+    assert boundings[-1].split() == ["CAP_NET_RAW"], (
+        "the HCI connection update needs CAP_NET_RAW and nothing else; "
+        f"got {boundings[-1]!r}"
+    )
+
+    families = [v for k, v in pairs if k == "RestrictAddressFamilies"]
+    assert families, "jasper-wiim-remote-ce must set RestrictAddressFamilies="
+    assert set(families[-1].split()) == {"AF_BLUETOOTH", "AF_UNIX"}, (
+        "AF_BLUETOOTH is the raw HCI socket, AF_UNIX is the D-Bus system bus; "
+        f"nothing else is used. got {families[-1]!r}"
+    )
+
+    assert ("Type", "oneshot") in pairs
+    assert ("ProtectSystem", "strict") in pairs
+    assert ("NoNewPrivileges", "true") in pairs
+    assert ("ProtectKernelModules", "true") in pairs
+    assert ("ProtectKernelTunables", "true") in pairs
+    # Valued, not just present. The unit's own comment justifies 64M against a
+    # measured 18.9/21.3/22.2 MB peak — the bound is only meaningful if a leak
+    # or runaway import is actually killed rather than left to compete with the
+    # audio daemons for the Zero 2 W's ~139 MB of free memory, and `MemoryMax=64G`
+    # would satisfy a presence-only assertion while bounding nothing.
+    assert ("MemoryMax", "64M") in pairs, (
+        "the helper must stay bounded at the measured-and-justified 64M; "
+        "changing it means re-doing the measurement in the unit's comment"
+    )
+    # TimeoutStartSec, not RuntimeMaxSec: the latter has no effect on oneshot.
+    assert "TimeoutStartSec" in keys
+    assert "WantedBy" not in keys, (
+        "jasper-wiim-remote-ce is started on demand, never enabled — it must "
+        "not carry an [Install] section."
+    )
+
+    # A flapping BLE link makes the adapter re-request on every reconnect, and
+    # its retry floor is 2 s. Without this, systemd's default 5-starts/10 s
+    # limit parks the unit `failed` and that connection stays at ~24% of
+    # realtime — the exact failure this helper exists to fix. Both sibling
+    # on-demand oneshots set it for the same reason.
+    assert ("StartLimitIntervalSec", "0") in pairs, (
+        "jasper-wiim-remote-ce must disable start-rate limiting (mirrors "
+        "jasper-fanin-coupling-auto / jasper-source-intent-reconcile)"
+    )
+    # A request landing mid-deploy must skip cleanly, not fail 203/EXEC into
+    # `failed` — nothing in this repo ever reset-failed's this unit.
+    assert (
+        "ConditionPathExists", "/opt/jasper/.venv/bin/jasper-wiim-remote-ce",
+    ) in pairs
 
 
 USBNET_DHCP_UNIT = ROOT / "deploy/systemd/jasper-usbnet-dhcp.service"

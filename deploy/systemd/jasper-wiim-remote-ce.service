@@ -1,0 +1,69 @@
+[Unit]
+Description=Reserve BLE connection-event time for the WiiM Remote 2 microphone
+Documentation=file:/opt/jasper/docs/HANDOFF-privilege-separation.md
+# Started on demand by jasper-wiim-remote-mic (through jasper-control's restart
+# broker) every time the remote's voice notifications start — the reservation
+# lives on the connection, so it is lost on every disconnect and cannot be
+# expressed as unit ordering. Never enabled: no [Install] section.
+After=bluetooth.service
+# This oneshot has no automatic Restart= loop. A flapping BLE link makes the
+# adapter re-request on every reconnect, and its retry floor is 2 s — so the
+# default 5-starts-per-10 s limit would park this unit `failed` and leave that
+# connection at ~24% of realtime, which is the exact failure being fixed here.
+StartLimitIntervalSec=0
+# A start request landing mid-deploy (the venv is being rebuilt) would fail
+# 203/EXEC into `failed`, and nothing in this repo ever reset-failed's this
+# unit. Skip cleanly instead; the adapter re-requests on the next reconnect.
+ConditionPathExists=/opt/jasper/.venv/bin/jasper-wiim-remote-ce
+
+[Service]
+Type=oneshot
+# root (no User=): issuing HCI_LE_Connection_Update means writing a raw HCI
+# command, which the kernel gates on CAP_NET_RAW (the LE OGF is outside the
+# HCI socket security filter). CAP_NET_RAW is the ONLY capability this needs —
+# the connection list is an unprivileged ioctl and nothing else is written.
+CapabilityBoundingSet=CAP_NET_RAW
+# AF_BLUETOOTH for the raw HCI socket; AF_UNIX for the D-Bus system bus, which
+# is how the helper asks BlueZ whether a live LE link really is the WiiM.
+RestrictAddressFamilies=AF_BLUETOOTH AF_UNIX
+ExecStart=/opt/jasper/.venv/bin/jasper-wiim-remote-ce
+# Bounded work: one BlueZ read (5 s cap) plus one connection update whose
+# confirmation is waited for with a 5 s cap. TimeoutStartSec is the right knob
+# here — RuntimeMaxSec has no effect on Type=oneshot.
+TimeoutStartSec=20
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+IPAddressDeny=any
+UMask=0077
+# (No RemoveIPC=: systemd only implements it for non-root services, and this
+# one is root by necessity. Listing it would imply a protection it has not.)
+
+# One short-lived Python process: the interpreter, dbus-next, and a couple of
+# sockets. Measured on jts4, 2026-08-06: three runs of the same code path with
+# the same outcome peaked at 18.9 / 21.3 / 22.2 MB, so run-to-run variance is
+# ~2.4 MB on its own and any single sample is a poor baseline. 64M is ~3x the
+# top of that range — enough headroom for the variance, tight enough that a
+# leak or a runaway import is killed rather than competing with the audio
+# daemons for the box's ~139 MB of free memory.
+MemoryMax=64M
