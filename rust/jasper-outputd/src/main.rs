@@ -235,6 +235,17 @@ impl RuntimeAlsaSink {
         }
     }
 
+    /// The sample format this sink's CONTENT lane negotiated, or `None` when it
+    /// opened no ALSA content PCM at all (the single-ALSA SHM-ring source) — the
+    /// one case where STATUS keeps echoing the declaration because there is no
+    /// negotiation to report.
+    fn content_format(&self) -> Option<SampleFormat> {
+        match self {
+            Self::Single(sink) => sink.content_format(),
+            Self::Composite(sink) => Some(sink.content_format()),
+        }
+    }
+
     fn counters(&self) -> IoCounters {
         match self {
             Self::Single(sink) => sink.counters(),
@@ -332,6 +343,12 @@ fn run_alsa(
     // The final edge is open and its format is readback-verified: STATUS
     // `dac.format` stops echoing the declaration and reports what is running.
     state.set_dac_format(sink.dac_format());
+    // Same contract one hop upstream. `None` = no ALSA content lane was opened
+    // (SHM-ring source), so `content.format` stays on the declaration rather
+    // than reporting a negotiation that never happened.
+    if let Some(content_format) = sink.content_format() {
+        state.set_content_format(content_format);
+    }
     sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
     // the published reference is always stereo (a wide sink folds to L == R).
@@ -1702,6 +1719,7 @@ mod tests {
             sink_mode: SinkMode::SingleAlsa,
             content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
+            content_format: SampleFormat::S16Le,
             dac_pcm: "outputd_dac".to_string(),
             declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,

@@ -133,6 +133,25 @@ pub struct Config {
     pub sink_mode: SinkMode,
     pub content_pcm: String,
     pub content_channels: u16,
+    /// The DECLARED format of the post-DSP CONTENT lane — the format the ALSA
+    /// backend REQUESTS for the content capture PCM (`content_pcm`, and the
+    /// composite sink's active equivalent) and then proves it got, by reading
+    /// the installed `hw_params` back.
+    ///
+    /// A SEPARATE HOP from [`Self::declared_dac_format`], deliberately not a
+    /// copy of it: the content lane is the snd-aloop pair between CamillaDSP
+    /// and outputd, the DAC format is the hardware edge, and a box can
+    /// legitimately run one wide and the other narrow — a wide content lane
+    /// into a USB dongle that only offers S16 is a real configuration. Reading
+    /// one axis off the other would silently mis-declare whichever hop the box
+    /// did not name.
+    ///
+    /// Unset or blank == the historical `S16_LE` lane, which is EVERY box
+    /// today: nothing writes `JASPER_OUTPUTD_CONTENT_FORMAT` yet (the
+    /// reconciler emit and the asound slave re-pin land together, later in the
+    /// wide-output-path program), so absence is the byte-identical default and
+    /// the only value any live speaker resolves.
+    pub content_format: SampleFormat,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind
     /// `dac_pcm` — the format the coherent single-DAC ALSA backend REQUESTS
@@ -416,6 +435,28 @@ impl Config {
                 )
             }
         };
+        // The CONTENT lane's declared format — the OTHER hop, parsed with the
+        // same exact-match/park-on-garbage semantics as the DAC edge above and
+        // deliberately from its OWN name. Two hops, two declarations: reusing
+        // the DAC value here would tie the snd-aloop lane's width to the
+        // hardware edge's, and the two are independent by design (an S32
+        // content lane into an S16-only dongle edge is a supported shape).
+        //
+        // Unset or blank == the historical S16_LE lane. That is every live box
+        // today: no writer emits this name yet, so the default is what every
+        // speaker resolves and this whole axis is byte-identical until the
+        // reconciler starts declaring it.
+        let content_format = match env_str("JASPER_OUTPUTD_CONTENT_FORMAT", "").trim() {
+            "" | "S16_LE" => SampleFormat::S16Le,
+            "S32_LE" => SampleFormat::S32Le,
+            other => {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_CONTENT_FORMAT must be one of S16_LE, S32_LE \
+                     (or empty for the S16_LE default); got {:?}",
+                    other
+                )
+            }
+        };
         let dual_dac_a_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_A_PCM");
         let dual_dac_b_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_B_PCM");
         if sink_mode == SinkMode::Composite
@@ -630,6 +671,7 @@ impl Config {
             sink_mode,
             content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", default_content_pcm),
             content_channels,
+            content_format,
             dac_pcm: env_str("JASPER_OUTPUTD_DAC_PCM", default_dac_pcm),
             declared_dac_format,
             dual_dac_a_pcm,
@@ -1405,6 +1447,80 @@ mod tests {
                 assert!(err.contains(bad), "{err}");
             });
         }
+    }
+
+    #[test]
+    fn content_format_defaults_to_s16_when_unset_or_blank() {
+        // Unset is EVERY live box: no writer emits this name yet. Explicit-empty
+        // is the shape a future writer uses when it has nothing to declare, so
+        // both resolve to the historical S16_LE content lane — this default is
+        // what makes the whole axis byte-identical on deploy.
+        for value in [None, Some(""), Some("   ")] {
+            with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", value)], || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_format, SampleFormat::S16Le);
+                assert_eq!(cfg.content_format.as_str(), "S16_LE");
+            });
+        }
+    }
+
+    #[test]
+    fn content_format_parses_both_lane_values() {
+        for (raw, want) in [
+            ("S16_LE", SampleFormat::S16Le),
+            ("S32_LE", SampleFormat::S32Le),
+        ] {
+            with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", Some(raw))], || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_format, want);
+                assert_eq!(cfg.content_format.as_str(), raw);
+            });
+        }
+    }
+
+    #[test]
+    fn content_format_rejects_anything_else_loudly() {
+        // Same reasoning as the DAC axis: a value outside the vocabulary can
+        // only be writer drift, and guessing a lane format would silently
+        // mis-declare what outputd asks snd-aloop for. Case variants are drift
+        // too — the only writer emits the uppercase ALSA literal.
+        for bad in ["S24_LE", "s32_le", "S32_BE", "float32"] {
+            with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", Some(bad))], || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_CONTENT_FORMAT"), "{err}");
+                assert!(err.contains(bad), "{err}");
+            });
+        }
+    }
+
+    #[test]
+    fn content_and_dac_formats_are_independent_axes() {
+        // The two hops must never be read off each other: a wide content lane
+        // into an S16-only hardware edge (the Apple-dongle build) and the
+        // reverse are both legitimate, so each axis has to survive the other
+        // being different.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
+                ("JASPER_OUTPUTD_DAC_FORMAT", Some("S16_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_format, SampleFormat::S32Le);
+                assert_eq!(cfg.declared_dac_format, SampleFormat::S16Le);
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S16_LE")),
+                ("JASPER_OUTPUTD_DAC_FORMAT", Some("S32_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_format, SampleFormat::S16Le);
+                assert_eq!(cfg.declared_dac_format, SampleFormat::S32Le);
+            },
+        );
     }
 
     #[test]
