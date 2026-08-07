@@ -149,12 +149,18 @@ def check_correction_idle_exit_holds() -> CheckResult:
     )
 
 
-_CORRECTION_WEB_START_LIMIT_RESULT = "start-limit-hit"
+_CORRECTION_WEB_SOCKET_UNIT = "jasper-correction-web.socket"
+
+# systemd's own name for "I gave up starting the service this socket triggers",
+# as it appears in `systemctl show <socket> --property=Result`. This check
+# REPORTS it and does not gate on it — see the docstring for why that
+# distinction is load-bearing.
+_CORRECTION_WEB_START_LIMIT_RESULT = "service-start-limit-hit"
 
 
 @doctor_check(order=25.2, group="correction")
 def check_correction_web_start_limited() -> CheckResult:
-    """A start-limited ``.service`` is not "inactive" — it will not come back.
+    """A failed ``.socket`` is what a start-limited /correction/ looks like.
 
     ``jasper-correction-web.service`` sets ``StartLimitBurst=20`` over
     ``StartLimitIntervalSec=600`` with no ``StartLimitAction=`` (systemd's
@@ -162,47 +168,102 @@ def check_correction_web_start_limited() -> CheckResult:
     fail-closed startup refusals — e.g. CamillaDSP unreachable during
     protected-neutral program-graph recovery — can exhaust that burst.
 
-    When they do, ``jasper-correction-web.socket`` stays ``active``: it is
-    a separate unit with its own, much looser ``TriggerLimitBurst`` and
-    keeps listening regardless of what happens to the paired ``.service``.
-    :func:`check_correction_web_service` only asks "is the socket active?",
-    so it sees a live socket and reports ``ok`` while the ``.service`` sits
-    stuck at ``ActiveState=failed`` / ``Result=start-limit-hit``, refusing
-    every new activation until an operator runs ``systemctl reset-failed``
-    (or the 600s window ages out with no new failures). Found by the
-    resilience lens of PR #2126 (nit 5) as exactly this gap; #2134 is this
-    fix.
+    **What systemd does when they do — measured**, on lab Pi jts4
+    (systemd 257 / Debian Trixie) with transient units mirroring
+    ``deploy/jasper-correction-web.service`` / ``.socket``, by the PR #2216
+    adversarial gate (cited, not re-measured here)::
 
-    This check reads the ``.service`` unit's own ``ActiveState``/``Result``
-    directly so that stuck state is reported honestly instead of folded
-    into the socket's ``ok``. Any other ``Result`` — including a plain
-    crash still eligible for its next ``Restart=on-failure`` attempt — is
-    not this failure mode and stays ``ok`` here; the finding was the
-    specific start-limit-hit gap, not a general "was it ever unhappy"
-    check.
+        <unit>.service: Start request repeated too quickly.
+        <unit>.service: Failed with result 'exit-code'.
+        <unit>.socket:  Failed with result 'service-start-limit-hit'.
+
+    The start-limit marker lands on the **socket**, which goes
+    ``ActiveState=failed`` and unbinds its listener — nginx then gets
+    ECONNREFUSED and ``/correction/`` is dead until an operator runs
+    ``reset-failed``. The **service** keeps its last real failure cause
+    (``exit-code``) and never reports ``start-limit-hit`` at all: the gate
+    sampled it at ~3 Hz across the whole transition, for 30 s after, and via
+    direct rapid ``systemctl start``, and saw that value zero times. An
+    earlier revision of this check gated on the *service* being
+    ``ActiveState=failed`` **and** ``Result=start-limit-hit``, so it printed
+    ``ok`` over exactly the outage it was added for (#2134 → #2216 blocker 1).
+
+    Predicate: the socket's ``ActiveState == "failed"``. That is the rule
+    :func:`jasper.cli.doctor.resilience.check_service_runtime_state` already
+    applies to the core daemons — reused rather than re-invented — and the
+    gate confirmed it catches this state. ``Result`` is *reported*, never
+    gated on, so a systemd rename of the marker string cannot silently turn
+    this check green again; that narrowing is what produced the original
+    blind spot. The socket is also the unambiguous unit to read: it carries
+    no ``Restart=``, so unlike the service it has no
+    ``failed-before-auto-restart`` window in which ``failed`` actually means
+    "retrying shortly" (systemd ≥ v254 state table — inferred from systemd
+    semantics, not measured).
+
+    Deliberately ``ok``: the socket listening while the service idles between
+    sessions (the normal socket-activated lifecycle); a service crash-looping
+    *inside* its ``Restart=on-failure`` budget, which the socket rides out
+    still bound; and an absent/uninstalled unit, for which ``systemctl show``
+    answers ``ActiveState=inactive`` / ``Result=success`` at rc=0 (measured by
+    the gate on jts4) rather than erroring.
+
+    Known boundary, stated rather than papered over: a service start-limited
+    by direct ``systemctl start`` calls, before any connection has triggered
+    the socket, leaves the socket still bound and this check ``ok``. The first
+    inbound request propagates the marker to the socket, so the state
+    converges after one connection.
+
+    A read that fails — non-zero ``systemctl``, or output carrying no
+    ``ActiveState`` — is a ``fail``, never an ``ok``: "systemd says healthy"
+    and "I could not ask systemd" must not render identically (#2216
+    should-fix 2). ``systemctl`` missing outright is a dev host rather than a
+    speaker, and skips like every sibling.
     """
     label = "correction web start limit"
-    show = _run(
-        ["systemctl", "show", _CORRECTION_WEB_UNIT,
-         "--property=ActiveState", "--property=Result"]
-    )
+    try:
+        show = _run(
+            ["systemctl", "show", _CORRECTION_WEB_SOCKET_UNIT,
+             "--property=ActiveState", "--property=Result"]
+        )
+    except FileNotFoundError:
+        return CheckResult(
+            label, "ok", "systemctl unavailable — skipped (not Linux?)"
+        )
     state: dict[str, str] = {}
     for line in show.stdout.splitlines():
         key, sep, value = line.partition("=")
         if sep:
             state[key] = value.strip()
     active = state.get("ActiveState", "")
-    result = state.get("Result", "")
-    if active == "failed" and result == _CORRECTION_WEB_START_LIMIT_RESULT:
+    if show.returncode != 0 or not active:
         return CheckResult(
             label, "fail",
-            f"{_CORRECTION_WEB_UNIT} is start-limited (ActiveState=failed, "
-            f"Result={result}) and will not restart on its own — the "
-            "socket stays active so this can otherwise look fine. Run "
-            f"`sudo systemctl reset-failed {_CORRECTION_WEB_UNIT} && "
-            f"sudo systemctl start {_CORRECTION_WEB_UNIT}`.",
+            f"could not read {_CORRECTION_WEB_SOCKET_UNIT} state from "
+            f"systemctl (rc={show.returncode}, "
+            f"stdout={show.stdout.strip()[:120]!r}, "
+            f"stderr={show.stderr.strip()[:120]!r}) — a start-limited "
+            "/correction/ is indistinguishable from a healthy one until "
+            "this reads",
         )
-    return CheckResult(label, "ok", f"ActiveState={active or 'unknown'}")
+    result = state.get("Result", "") or "unknown"
+    if active == "failed":
+        cause = (
+            "its paired service exhausted StartLimitBurst"
+            if result == _CORRECTION_WEB_START_LIMIT_RESULT
+            else "systemd reported the socket failed"
+        )
+        return CheckResult(
+            label, "fail",
+            f"{_CORRECTION_WEB_SOCKET_UNIT} is failed (ActiveState=failed, "
+            f"Result={result}) — {cause}. Its listener is unbound, so "
+            "/correction/ refuses connections and nothing brings it back on "
+            "its own. Run `sudo systemctl reset-failed "
+            f"{_CORRECTION_WEB_SOCKET_UNIT} {_CORRECTION_WEB_UNIT} && "
+            f"sudo systemctl start {_CORRECTION_WEB_SOCKET_UNIT}`.",
+        )
+    return CheckResult(
+        label, "ok", f"{_CORRECTION_WEB_SOCKET_UNIT} ActiveState={active}"
+    )
 
 
 def _probe_https_status(

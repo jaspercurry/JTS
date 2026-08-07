@@ -34,81 +34,220 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
 
 
 # ---------- #2134: a start-limited jasper-correction-web must not read as ok
+#
+# Every fixture below is a two-unit snapshot, because the .service and the
+# .socket disagree in the failure mode and an earlier revision of this check
+# read the wrong one. `_systemctl_show_pair` serves whichever unit the check
+# asks for and refuses to invent an answer for a unit the fixture does not
+# model, so a check that queries something unmodelled fails loudly here
+# instead of silently reading "".
+
+_CORRECTION_WEB_SERVICE = "jasper-correction-web.service"
+_CORRECTION_WEB_SOCKET = "jasper-correction-web.socket"
+
+# MEASURED on lab Pi jts4 (systemd 257 / Debian Trixie) by the PR #2216
+# adversarial gate, driving transient units that mirror
+# deploy/jasper-correction-web.{service,socket}. At the instant the start
+# limit is hit systemd's journal reads:
+#
+#     <unit>.service: Start request repeated too quickly.
+#     <unit>.service: Failed with result 'exit-code'.
+#     <unit>.socket:  Failed with result 'service-start-limit-hit'.
+#
+# and `ss -ltn` shows the listener UNBOUND (NRestarts=20, /correction/ dead).
+# These are the `systemctl show` bodies for that one real state — not
+# hand-written states chosen to match an assumption, which is precisely how
+# the first revision of this check shipped blind to its own failure mode.
+_JTS4_MEASURED_START_LIMITED = {
+    _CORRECTION_WEB_SERVICE: "ActiveState=failed\nResult=exit-code\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=failed\nResult=service-start-limit-hit\n",
+}
+
+# The normal socket-activated lifecycle: socket bound and listening, service
+# idle-exited between sessions.
+_IDLE_BETWEEN_SESSIONS = {
+    _CORRECTION_WEB_SERVICE: "ActiveState=inactive\nResult=success\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
+}
+
+# A household has /correction/ open right now.
+_CURRENTLY_SERVING = {
+    _CORRECTION_WEB_SERVICE: "ActiveState=active\nResult=success\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
+}
+
+# A crash still INSIDE the Restart=on-failure budget. INFERRED from systemd's
+# state table (SERVICE_AUTO_RESTART maps to ActiveState=activating), not
+# measured: the gate measured only the terminal state above. The socket stays
+# bound throughout, which is what this check reads.
+_CRASH_INSIDE_RESTART_BUDGET = {
+    _CORRECTION_WEB_SERVICE: "ActiveState=activating\nResult=exit-code\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n",
+}
+
+# MEASURED by the gate on jts4: `systemctl show` on a unit that does not exist
+# answers rc=0 with these values rather than erroring.
+_UNIT_NOT_INSTALLED = {
+    _CORRECTION_WEB_SERVICE: "ActiveState=inactive\nResult=success\n",
+    _CORRECTION_WEB_SOCKET: "ActiveState=inactive\nResult=success\n",
+}
+
+
+def _systemctl_show_pair(states, returncode=0, stderr=""):
+    """Fake ``_run`` serving a ``systemctl show`` per-unit state snapshot."""
+
+    def fake_run(cmd, timeout=5.0):
+        assert cmd[:2] == ["systemctl", "show"], cmd
+        unit = cmd[2]
+        assert unit in states, f"check queried an unmodelled unit: {unit}"
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout=states[unit], stderr=stderr,
+        )
+
+    return fake_run
 
 
 def test_check_correction_web_start_limited_registered_in_sync_checks():
     assert "check_correction_web_start_limited" in _registered_check_names()
 
 
-def test_check_correction_web_start_limited_fails_on_start_limit_hit(monkeypatch):
-    """The exact PR #2126 nit-5 gap: ``check_correction_web_service`` only
-    reads the socket, so a start-limited ``.service`` still reads ``ok``
-    there — this dedicated check is what must catch it."""
+def test_check_correction_web_start_limited_fails_on_measured_start_limited_state(
+    monkeypatch,
+):
+    """The state a real start-limited speaker is actually in.
 
-    def fake_run(cmd, timeout=5.0):
-        assert cmd == [
-            "systemctl", "show", "jasper-correction-web.service",
-            "--property=ActiveState", "--property=Result",
-        ]
-        return subprocess.CompletedProcess(
-            cmd, 0,
-            stdout="ActiveState=failed\nResult=start-limit-hit\n", stderr="",
-        )
-
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    #2216 blocker 1: the first revision gated on the SERVICE reporting
+    ``Result=start-limit-hit``, a combination the gate could not produce in
+    four probes — systemd stamps ``service-start-limit-hit`` on the SOCKET and
+    leaves the service holding ``exit-code``. Fed the measured pair, that
+    revision returned ``ok`` while ``/correction/`` was refusing connections.
+    """
+    monkeypatch.setattr(
+        doctor.correction, "_run",
+        _systemctl_show_pair(_JTS4_MEASURED_START_LIMITED),
+    )
     r = doctor.check_correction_web_start_limited()
     assert r.status == "fail"
-    assert "start-limited" in r.detail
-    assert "Result=start-limit-hit" in r.detail
+    assert "Result=service-start-limit-hit" in r.detail
+    assert "StartLimitBurst" in r.detail
+    # reset-failed clears BOTH units' state; start rebinds the listener.
     assert (
-        "systemctl reset-failed jasper-correction-web.service && "
-        "sudo systemctl start jasper-correction-web.service" in r.detail
+        "sudo systemctl reset-failed jasper-correction-web.socket "
+        "jasper-correction-web.service && "
+        "sudo systemctl start jasper-correction-web.socket" in r.detail
     )
 
 
-def test_check_correction_web_start_limited_ok_when_idle_between_sessions(
+def test_check_correction_web_start_limited_fails_on_any_failed_socket(monkeypatch):
+    """``Result`` is reported, never gated on.
+
+    #2216 nit 2: the first revision cited ``check_service_runtime_state`` as
+    prior art, then swapped its ``ActiveState == "failed"`` predicate for a
+    narrower match on one systemd ``Result`` string — and that narrowing is
+    what created blocker 1. A socket that failed for some other reason (here
+    ``trigger-limit-hit``, systemd's other way to kill a socket) is just as
+    unbound, so it must still fail rather than depend on one literal.
+    """
+    monkeypatch.setattr(
+        doctor.correction, "_run",
+        _systemctl_show_pair({
+            _CORRECTION_WEB_SOCKET: "ActiveState=failed\nResult=trigger-limit-hit\n",
+        }),
+    )
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "fail"
+    assert "Result=trigger-limit-hit" in r.detail
+
+
+@pytest.mark.parametrize(
+    "states, why",
+    [
+        (_IDLE_BETWEEN_SESSIONS, "service idle-exited between sessions"),
+        (_CURRENTLY_SERVING, "a household has /correction/ open"),
+        (_CRASH_INSIDE_RESTART_BUDGET, "crash still inside the Restart budget"),
+        (_UNIT_NOT_INSTALLED, "unit not installed on this profile"),
+    ],
+)
+def test_check_correction_web_start_limited_ok_on_healthy_states(
+    monkeypatch, states, why,
+):
+    """Every state that is NOT a wedged socket stays ``ok``.
+
+    The crash-inside-budget row is the PR's original scoping intent, kept
+    because it survives contact with the measurement: the socket rides that
+    window out still bound. What did NOT survive was the fixture the first
+    revision used for it — service ``ActiveState=failed`` / ``Result=exit-code``
+    is the measured TERMINAL state (NRestarts=20, listener unbound), not a
+    unit that "will retry on its own" (#2216 blocker 2).
+    """
+    monkeypatch.setattr(doctor.correction, "_run", _systemctl_show_pair(states))
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "ok", why
+    assert "ActiveState=failed" not in r.detail  # #2216 nit 1
+
+
+def test_check_correction_web_start_limited_fails_when_systemctl_errors(monkeypatch):
+    """#2216 should-fix 2: an unreadable probe must not render as healthy."""
+    monkeypatch.setattr(
+        doctor.correction, "_run",
+        _systemctl_show_pair(
+            {_CORRECTION_WEB_SOCKET: ""},
+            returncode=1,
+            stderr="Failed to connect to bus: No such file or directory",
+        ),
+    )
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "fail"
+    assert "rc=1" in r.detail
+    assert "Failed to connect to bus" in r.detail
+
+
+def test_check_correction_web_start_limited_fails_when_systemctl_errors_yet_parses(
     monkeypatch,
 ):
-    """Normal socket-activated lifecycle: the service idle-exits and goes
-    inactive between sessions — not a finding."""
+    """A non-zero ``systemctl`` is a failed read even when its body parses.
+
+    Without this the ``rc != 0`` clause is dead weight: the sibling test above
+    happens to also trip the empty-``ActiveState`` clause, so it would stay
+    green with the return-code check deleted. systemctl telling us it failed
+    is reason enough to distrust whatever it printed.
+    """
+    monkeypatch.setattr(
+        doctor.correction, "_run",
+        _systemctl_show_pair(
+            {_CORRECTION_WEB_SOCKET: "ActiveState=active\nResult=success\n"},
+            returncode=1,
+            stderr="Failed to get properties: Connection timed out",
+        ),
+    )
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "fail"
+    assert "rc=1" in r.detail
+
+
+def test_check_correction_web_start_limited_fails_on_unparseable_output(monkeypatch):
+    """rc=0 with a body that carries no ``ActiveState`` is still a failed read."""
+    monkeypatch.setattr(
+        doctor.correction, "_run",
+        _systemctl_show_pair({
+            _CORRECTION_WEB_SOCKET: "Failed to get properties: Access denied\n",
+        }),
+    )
+    r = doctor.check_correction_web_start_limited()
+    assert r.status == "fail"
+    assert "Access denied" in r.detail
+
+
+def test_check_correction_web_start_limited_skips_without_systemctl(monkeypatch):
+    """Dev host: no systemd to be unhealthy. Matches every sibling's wording."""
 
     def fake_run(cmd, timeout=5.0):
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="ActiveState=inactive\nResult=success\n", stderr="",
-        )
+        raise FileNotFoundError("systemctl not found")
 
     monkeypatch.setattr(doctor.correction, "_run", fake_run)
     r = doctor.check_correction_web_start_limited()
     assert r.status == "ok"
-
-
-def test_check_correction_web_start_limited_ok_when_currently_serving(monkeypatch):
-    def fake_run(cmd, timeout=5.0):
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="ActiveState=active\nResult=success\n", stderr="",
-        )
-
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
-    r = doctor.check_correction_web_start_limited()
-    assert r.status == "ok"
-
-
-def test_check_correction_web_start_limited_ok_on_plain_crash_not_yet_limited(
-    monkeypatch,
-):
-    """A ``failed`` unit whose ``Result`` is NOT ``start-limit-hit`` is still
-    inside its ``Restart=on-failure`` budget and will retry on its own —
-    the scoped finding is specifically the start-limit-hit gap, not every
-    failure shape (mirrors the "scope to the observed-broken path" rule)."""
-
-    def fake_run(cmd, timeout=5.0):
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="ActiveState=failed\nResult=exit-code\n", stderr="",
-        )
-
-    monkeypatch.setattr(doctor.correction, "_run", fake_run)
-    r = doctor.check_correction_web_start_limited()
-    assert r.status == "ok"
+    assert "skipped" in r.detail
 
 
 # ---------- #1860: jasper-doctor check for long-outstanding idle-exit holds
