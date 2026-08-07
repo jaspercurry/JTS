@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from jasper.audio_profile_state import profile_env_updates
+from jasper.cli import aec_init
 from jasper.control import aec_endpoints
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
@@ -356,6 +357,58 @@ def test_reconcile_keeps_native_writer_and_parks_when_commissioning_is_required(
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-aec-bridge.service" not in commands
     assert VOICE_RESTART_CMD not in commands
+
+
+def test_reconcile_defers_without_commissioning_when_outputd_predates_its_env(
+    tmp_path: Path,
+) -> None:
+    # aec-init's OUTPUTD_ENV_STALE_EXIT: the live outputd has not loaded
+    # /var/lib/jasper/outputd.env, so its STATUS describes an edge nobody is
+    # running. That is an ordering race, not a moved artifact — it must NOT send
+    # the household to the two-minute commissioner.
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = tmp_path / "outputd-stale-systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
+        "[[ \"$*\" == 'restart jasper-aec-init.service' ]] && exit 1\n"
+        f"[[ \"$1\" == 'show' ]] && {{ printf '{aec_init.OUTPUTD_ENV_STALE_EXIT}\\n'; exit 0; }}\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=deferred" in body
+    assert "jasper-aec-commission" not in body
+    assert (
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Wait for jasper-outputd to "
+        "restart, then run the reconciler'"
+    ) in body
+    # Native reference writer stays configured so the next pass can sample it.
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
+    assert _marker(tmp_path).exists()
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-bridge.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
+
+
+def test_reconcile_branches_on_the_exit_codes_aec_init_actually_returns() -> None:
+    # Two cross-language literals: the shell compares ExecMainStatus against
+    # integers owned by jasper/cli/aec_init.py. Nothing else pins that pairing,
+    # and a silent drift would map "wait for outputd" onto the commissioner park
+    # (or onto a generic fault).
+    body = _shell_function_body(
+        SCRIPT.read_text(encoding="utf-8"), "activate_managed_chip_aec"
+    )
+    assert f'"$init_status" == "{aec_init.COMMISSION_REQUIRED_EXIT}"' in body
+    assert f'"$init_status" == "{aec_init.OUTPUTD_ENV_STALE_EXIT}"' in body
 
 
 def test_reconcile_parks_if_bridge_fails_after_alignment_reapply(

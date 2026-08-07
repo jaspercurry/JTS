@@ -36,6 +36,20 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
+# Kept in step with the `init_status` branch in jasper-aec-reconcile's
+# activate_managed_chip_aec by tests/test_aec_reconcile.py.
+OUTPUTD_ENV_STALE_EXIT = 3
+OUTPUTD_UNIT = "jasper-outputd.service"
+# The declaration jasper-outputd loads through `EnvironmentFile=` — the runtime
+# output contract (sink, backend, active width, final-edge format).
+# jasper-audio-hardware-reconcile is its writer; the override name is the same
+# JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
+OUTPUTD_ENV_FILE = "/var/lib/jasper/outputd.env"
+# How long to let a queued outputd restart land before refusing to commission.
+# Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open)
+# and still well inside this oneshot's 90 s default start timeout once
+# _find_device (<=10 s) and collect_reference_queue (<=30 s) are added.
+OUTPUTD_ENV_SETTLE_SEC = 15.0
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
@@ -60,6 +74,10 @@ class CommissionRequired(ChipInitError):
 
 class ChipProfileError(ChipInitError):
     pass
+
+
+class OutputdEnvStale(ChipInitError):
+    """The live outputd predates its own declaration, so STATUS is not current."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +155,110 @@ def validate_reference_status(
     )
 
 
+def outputd_main_start_monotonic(
+    *, env: Mapping[str, str] | None = None
+) -> float | None:
+    """Return when the live outputd main process started, or None if there is none.
+
+    ``ExecMainStartTimestampMonotonic`` is microseconds on CLOCK_MONOTONIC — the
+    same clock ``time.monotonic()`` reads on Linux — so the two are directly
+    comparable.  Zero (systemd's "no main process") and anything unparseable both
+    read as None: a stopped or mid-restart outputd cannot be the stale process
+    this guard is about, because whichever process answers the STATUS socket next
+    is necessarily a newer one.
+    """
+
+    source = os.environ if env is None else env
+    systemctl = source.get("JASPER_SYSTEMCTL") or "systemctl"
+    try:
+        result = subprocess.run(
+            [
+                systemctl,
+                "show",
+                "-p",
+                "ExecMainStartTimestampMonotonic",
+                "--value",
+                OUTPUTD_UNIT,
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    raw = result.stdout.strip()
+    if result.returncode or not raw.isdigit():
+        return None
+    micros = int(raw)
+    return micros / 1_000_000 if micros else None
+
+
+def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
+    """Return why the live outputd predates its declaration, or "" when it does not.
+
+    Compares AGES rather than absolute instants so no boot-realtime offset is
+    needed: the file mtime is CLOCK_REALTIME and the process start is
+    CLOCK_MONOTONIC, but both are measured back from now.  An env at most as old
+    as the process fails closed — systemd reads ``EnvironmentFile=`` just BEFORE
+    forking the main process, so a write that ties the recorded fork instant was
+    not loaded, and a tie is in any case not proof that it was.  That
+    sub-millisecond gap between the env read and the recorded fork is this
+    guard's resolution limit; it is orders of magnitude smaller than the
+    seconds-wide job-scheduling window it exists to catch.
+    """
+
+    source = os.environ if env is None else env
+    path = source.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_FILE
+    try:
+        env_mtime = os.stat(path).st_mtime
+    except OSError:
+        # No declaration on this box, so there is nothing to be stale against.
+        return ""
+    started = outputd_main_start_monotonic(env=source)
+    if started is None:
+        return ""
+    process_age = time.monotonic() - started
+    env_age = time.time() - env_mtime
+    if env_age > process_age:
+        return ""
+    return (
+        f"{OUTPUTD_UNIT} started {process_age - env_age:.1f}s before {path} was "
+        "written, so it has not loaded the current output declaration"
+    )
+
+
+def require_outputd_env_loaded(
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float = OUTPUTD_ENV_SETTLE_SEC,
+    interval: float = 0.5,
+) -> None:
+    """Refuse to certify outputd STATUS that predates outputd's own declaration.
+
+    jasper-audio-hardware-reconcile writes ``outputd.env`` and then kicks
+    jasper-outputd and jasper-aec-reconcile as two SEPARATE ``--no-block``
+    systemd transactions (``restart_audio_if_needed``), and udev's
+    99-jasper-aec-reconcile.rules starts the reconciler in a transaction of its
+    own; jasper-aec-init.service's ``After=jasper-outputd.service`` only orders
+    jobs that already share one transaction, and the reconciler starts this
+    oneshot by itself.  So nothing guarantees the outputd answering STATUS has
+    loaded the declaration on disk — the old process stays up, healthy, and
+    answering with the PREVIOUS geometry and final-edge format.
+
+    Binding (or rejecting) a commissioning identity against that is the debt the
+    2026-08-05 final-edge-format PR-2 panel named.  Wait a bounded while for the
+    queued restart to land, then fail rather than commission.
+    """
+
+    deadline = time.monotonic() + timeout
+    while True:
+        reason = outputd_env_staleness(env)
+        if not reason:
+            return
+        if time.monotonic() >= deadline:
+            raise OutputdEnvStale(reason)
+        time.sleep(interval)
+
+
 def collect_reference_queue(
     expected_pcm: str,
     *,
@@ -145,6 +267,14 @@ def collect_reference_queue(
     timeout: float = 30.0,
 ) -> tuple[dict[str, Any], tuple[int, ...]]:
     """Collect eight progressing samples with stable counters and queue."""
+
+    # Both consumers of a live STATUS — this oneshot and jasper-aec-commission —
+    # funnel through here, and the queue positions returned below are as
+    # identity-critical as the dac.format build_identity reads out of the same
+    # snapshot, so the ordering guard belongs on this one path.  It runs before
+    # the poll so a stale verdict propagates as itself instead of being folded
+    # into last_error by the loop's own ChipInitError handler.
+    require_outputd_env_loaded()
 
     deadline = time.monotonic() + timeout
     accepted: list[ReferenceSample] = []
@@ -420,6 +550,20 @@ def main() -> int:
             apply_bypass_profile(dev, card=card)
             log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
         return 0
+    except OutputdEnvStale as exc:
+        # Distinct from a fault: nothing is broken, the output declaration just
+        # has not reached the running daemon yet. Keep it a separate exit code so
+        # the reconciler's disposition (and /state) names the ordering problem
+        # instead of sending a household at the commissioner.
+        if dev is not None:
+            _safe_bypass(dev)
+        log_event(
+            logger, "chip_aec_init", outcome="deferred",
+            reason=str(exc),
+            action=f"wait for {OUTPUTD_UNIT} to restart, then run jasper-aec-reconcile",
+            level=logging.ERROR,
+        )
+        return OUTPUTD_ENV_STALE_EXIT
     except CommissionRequired as exc:
         if dev is not None:
             _safe_bypass(dev)

@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import time
 import types
 from dataclasses import replace
 
@@ -362,6 +364,287 @@ def test_build_identity_refuses_status_without_a_final_edge_format() -> None:
         )
 
     assert "dac.format" in str(excinfo.value)
+
+
+def _outputd_env(tmp_path, monkeypatch, *, age_seconds: float):
+    """Point the guard at a declaration written ``age_seconds`` ago."""
+    path = tmp_path / "outputd.env"
+    path.write_text("JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n", encoding="utf-8")
+    written = time.time() - age_seconds
+    os.utime(path, (written, written))
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(path))
+    return path
+
+
+def _stub_systemctl_show(monkeypatch, stdout: str, *, returncode: int = 0):
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args, returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+    return calls
+
+
+def test_outputd_start_timestamp_is_read_from_the_monotonic_systemd_property(
+    monkeypatch,
+) -> None:
+    # The property name is load-bearing: the realtime sibling is a formatted
+    # locale string, and only the monotonic one shares a clock with
+    # time.monotonic(). Pin the argv so a rename cannot pass silently.
+    calls = _stub_systemctl_show(monkeypatch, "12345678\n")
+    monkeypatch.setenv("JASPER_SYSTEMCTL", "/fake/systemctl")
+
+    assert aec_init.outputd_main_start_monotonic() == pytest.approx(12.345678)
+    assert calls == [
+        [
+            "/fake/systemctl",
+            "show",
+            "-p",
+            "ExecMainStartTimestampMonotonic",
+            "--value",
+            "jasper-outputd.service",
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "stdout,returncode",
+    [
+        ("0\n", 0),          # systemd's "no main process"
+        ("[not set]\n", 0),  # unparseable
+        ("", 0),             # unknown unit
+        ("12345678\n", 1),   # systemctl itself failed
+    ],
+)
+def test_outputd_start_timestamp_is_unknown_rather_than_guessed(
+    monkeypatch, stdout: str, returncode: int
+) -> None:
+    _stub_systemctl_show(monkeypatch, stdout, returncode=returncode)
+
+    assert aec_init.outputd_main_start_monotonic() is None
+
+
+def test_outputd_start_timestamp_survives_a_host_without_systemctl(
+    monkeypatch,
+) -> None:
+    def fake_run(_args, **_kwargs):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+
+    assert aec_init.outputd_main_start_monotonic() is None
+
+
+def test_staleness_reports_an_outputd_older_than_its_own_declaration(
+    tmp_path, monkeypatch
+) -> None:
+    path = _outputd_env(tmp_path, monkeypatch, age_seconds=2.0)
+    monkeypatch.setattr(
+        aec_init,
+        "outputd_main_start_monotonic",
+        lambda **_kwargs: time.monotonic() - 12.0,
+    )
+
+    reason = aec_init.outputd_env_staleness()
+
+    assert str(path) in reason
+    assert "has not loaded the current output declaration" in reason
+    assert "jasper-outputd.service started 10.0s before" in reason
+
+
+def test_staleness_accepts_an_outputd_started_after_its_declaration(
+    tmp_path, monkeypatch
+) -> None:
+    _outputd_env(tmp_path, monkeypatch, age_seconds=12.0)
+    monkeypatch.setattr(
+        aec_init,
+        "outputd_main_start_monotonic",
+        lambda **_kwargs: time.monotonic() - 2.0,
+    )
+
+    assert aec_init.outputd_env_staleness() == ""
+
+
+def test_staleness_fails_closed_when_the_two_timestamps_tie(monkeypatch) -> None:
+    # Direction of the boundary, chosen deliberately: an env file exactly as old
+    # as the process reads as STALE. systemd reads EnvironmentFile= just before
+    # forking the main process, so a write that ties the recorded fork instant
+    # landed after the read — and a tie is not proof of loading either way.
+    # Both clocks are frozen because a real tie is decided by microseconds of
+    # clock-read skew, which would make this assertion a coin flip.
+    monkeypatch.setattr(
+        aec_init,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: 1_000.0, time=lambda: 5_000.0),
+    )
+    monkeypatch.setattr(aec_init, "outputd_main_start_monotonic", lambda **_k: 900.0)
+    monkeypatch.setattr(aec_init.os, "stat", lambda _p: os.stat_result(
+        (0o100640, 0, 0, 1, 0, 0, 0, 0, 4_900, 0)
+    ))
+
+    # process_age = 1000 - 900 = 100; env_age = 5000 - 4900 = 100.
+    assert "has not loaded the current output declaration" in (
+        aec_init.outputd_env_staleness()
+    )
+
+
+def test_staleness_is_inert_without_a_declaration_on_this_box(
+    tmp_path, monkeypatch
+) -> None:
+    # A box with no outputd.env has nothing to be stale against, and the check
+    # must cost nothing there — no subprocess at all.
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(tmp_path / "absent.env"))
+    calls = _stub_systemctl_show(monkeypatch, "12345678\n")
+
+    assert aec_init.outputd_env_staleness() == ""
+    assert calls == []
+
+
+def test_staleness_ignores_an_outputd_with_no_running_main_process(
+    tmp_path, monkeypatch
+) -> None:
+    # A stopped or mid-restart outputd is not the stale process this guard is
+    # about: whichever process answers the STATUS socket next is a newer one,
+    # and collect_reference_queue already waits for it.
+    _outputd_env(tmp_path, monkeypatch, age_seconds=0.0)
+    monkeypatch.setattr(aec_init, "outputd_main_start_monotonic", lambda **_k: None)
+
+    assert aec_init.outputd_env_staleness() == ""
+
+
+def test_require_outputd_env_loaded_hands_the_staleness_reason_to_the_caller(
+    monkeypatch,
+) -> None:
+    # main() logs str(exc) as the park reason and the reconciler surfaces it on
+    # /state, so the diagnosis must survive the raise rather than be replaced by
+    # a generic message.
+    monkeypatch.setattr(
+        aec_init,
+        "outputd_env_staleness",
+        lambda _env=None: "jasper-outputd.service started 4.0s before /x.env",
+    )
+
+    with pytest.raises(aec_init.OutputdEnvStale) as excinfo:
+        aec_init.require_outputd_env_loaded(timeout=0.0)
+
+    assert str(excinfo.value) == (
+        "jasper-outputd.service started 4.0s before /x.env"
+    )
+
+
+def test_require_outputd_env_loaded_returns_when_the_restart_lands(
+    monkeypatch,
+) -> None:
+    # The bounded wait exists so the ordinary race — a queued outputd restart
+    # that has not run yet — resolves itself instead of parking the speaker.
+    verdicts = ["outputd is stale", "outputd is stale", ""]
+    monkeypatch.setattr(
+        aec_init, "outputd_env_staleness", lambda _env=None: verdicts.pop(0)
+    )
+
+    aec_init.require_outputd_env_loaded(timeout=30.0, interval=0.0)
+
+    assert verdicts == []
+
+
+def test_require_outputd_env_loaded_is_bounded_and_does_not_spin_forever(
+    monkeypatch,
+) -> None:
+    polls = 0
+
+    def always_stale(_env=None):
+        nonlocal polls
+        polls += 1
+        return "outputd is stale"
+
+    monkeypatch.setattr(aec_init, "outputd_env_staleness", always_stale)
+
+    with pytest.raises(aec_init.OutputdEnvStale):
+        aec_init.require_outputd_env_loaded(timeout=0.05, interval=0.01)
+
+    assert 0 < polls < 100
+
+
+def test_collect_reference_queue_checks_ordering_before_reading_status(
+    monkeypatch,
+) -> None:
+    # The guard has to run before the poll: raised from inside it, an
+    # OutputdEnvStale would be swallowed into last_error by the loop's own
+    # ChipInitError handler and surface as a generic fault.
+    reads: list[str] = []
+    monkeypatch.setattr(
+        aec_init, "read_status_socket", lambda path: reads.append(path) or {}
+    )
+    monkeypatch.setattr(
+        aec_init,
+        "require_outputd_env_loaded",
+        lambda **_kwargs: (_ for _ in ()).throw(aec_init.OutputdEnvStale("stale")),
+    )
+
+    with pytest.raises(aec_init.OutputdEnvStale):
+        aec_init.collect_reference_queue("hw:CARD=Array,DEV=0")
+
+    assert reads == []
+
+
+def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    # End to end through main() with the REAL guard: stat, comparison, raise,
+    # propagation out of collect_reference_queue, exit code, and event line.
+    dev = _FakeXvfDevice()
+    _install_fake_xvf(monkeypatch, dev)
+    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
+    identity = AlignmentIdentity(
+        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
+        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
+        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
+        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
+    )
+    monkeypatch.setattr(
+        aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245)
+    )
+    _outputd_env(tmp_path, monkeypatch, age_seconds=1.0)
+    monkeypatch.setattr(
+        aec_init,
+        "outputd_main_start_monotonic",
+        lambda **_kwargs: time.monotonic() - 20.0,
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        aec_init, "read_status_socket", lambda path: reads.append(path) or {}
+    )
+    real_guard = aec_init.require_outputd_env_loaded
+    monkeypatch.setattr(
+        aec_init,
+        "require_outputd_env_loaded",
+        lambda **kwargs: real_guard(timeout=0.0, **kwargs),
+    )
+    caplog.set_level("ERROR", logger="jasper.aec_init")
+
+    assert aec_init.main() == aec_init.OUTPUTD_ENV_STALE_EXIT
+
+    # Chip left bypassed, no profile armed, and STATUS never consulted.
+    assert _write_map(dev) == {"SHF_BYPASS": [1]}
+    assert reads == []
+    assert "outcome=deferred" in caplog.text
+    assert "has not loaded the current output declaration" in caplog.text
+    assert "action=" in caplog.text
+    assert "jasper-aec-commission" not in caplog.text
+
+
+def test_deferred_and_commission_required_exits_stay_distinct() -> None:
+    # The reconciler branches on these two integers to pick between "wait for
+    # outputd" and "send a human to the commissioner"; collapsing them would
+    # send households at a two-minute sweep session for a scheduling race.
+    assert aec_init.OUTPUTD_ENV_STALE_EXIT != aec_init.COMMISSION_REQUIRED_EXIT
+    assert aec_init.OUTPUTD_ENV_STALE_EXIT not in (0, 1)
 
 
 def test_output_hardware_key_uses_deterministic_i2s_profile_and_card() -> None:
