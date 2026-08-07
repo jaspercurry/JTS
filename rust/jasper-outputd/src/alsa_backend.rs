@@ -297,6 +297,16 @@ pub struct AlsaBackend {
     /// was opened at all, which is the (PROTOTYPE) SHM-ring source: there is no
     /// lane to have negotiated anything, so `/state` keeps reporting the
     /// declaration rather than claiming a readback that never ran.
+    ///
+    /// Read the `None` case honestly: under the SHM-ring source the declared
+    /// value STATUS reports can disagree with the ring's real width, because
+    /// nothing here reads or verifies the ring (the ring wire is S16 by
+    /// contract, and `jasper_ring::Geometry::validate_self` hard-rejects
+    /// anything else). What keeps the pair coherent is upstream, not here: the
+    /// Python coupling reconciler refuses to arm `shm_ring` on a box whose
+    /// emitted lane format is wider than the ring wire. `content.source` sits
+    /// immediately before `content.format` in STATUS so a reader can always see
+    /// which source the format describes.
     content_format: Option<SampleFormat>,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
@@ -454,8 +464,12 @@ impl AlsaBackend {
         // comment. outputd's internal program is i16 whatever it says; a wider
         // edge is served by widening at the final write.
         //
-        // `format=` is the DAC edge and keeps its bare name (a rename is a wire
-        // break for every reader of this line); the content lane rides the
+        // `format=` is the DAC edge and keeps its bare name. Not because
+        // anything would break: no machine consumer parses this line today (the
+        // only references are prose — docs/AEC-DIAG-01-baseline.md,
+        // docs/CHIP-AEC-EXPERIMENT.md, scripts/ring-proto/README.md). It stays
+        // by convention, because operators and journal-grep recipes read it and
+        // a stable key costs nothing. The content lane rides the
         // explicitly-named `content_format=` beside it, so one line names both
         // hops and a half-flipped box is visible at open rather than only in
         // STATUS.
@@ -1103,13 +1117,24 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // see the slave's width. Re-pinning those slaves is a later step of the
         // wide-output-path program; the slave-edge proof is the asound wiring
         // test over there, not this Rust check.
-        let current = pcm
-            .hw_params_current()
-            .with_context(|| format!("reading installed outputd {role} HwParams"))?;
-        let installed = current
-            .get_format()
-            .with_context(|| format!("get installed outputd {role} format"))?;
-        final_sink_startup(verify_content_format(role, pcm_name, format, installed))?;
+        //
+        // ONE `final_sink_startup` covers the WHOLE readback — the hw_params and
+        // format reads as well as the comparison. Marking only the comparison
+        // would leave a failed `hw_params_current()` exiting 1 into the very
+        // restart-loop-to-reboot class the guard above exists to prevent.
+        final_sink_startup(read_back_content_format(
+            || {
+                let current = pcm
+                    .hw_params_current()
+                    .with_context(|| format!("reading installed outputd {role} HwParams"))?;
+                current
+                    .get_format()
+                    .with_context(|| format!("get installed outputd {role} format"))
+            },
+            role,
+            pcm_name,
+            format,
+        ))?;
     }
     if role == "chip_ref" {
         let current = pcm
@@ -1195,6 +1220,30 @@ fn verify_content_format(
     verify_installed_format(role, pcm_name, requested, installed)
 }
 
+/// The CONTENT lane's whole readback: read the installed format, then compare.
+///
+/// One function so ONE `final_sink_startup` at the call site marks EVERY error
+/// the readback can produce, not just the comparison. The `dac` role gets that
+/// for free — its caller wraps the entire `configure_pcm` call — but the content
+/// call sites deliberately do NOT wrap the whole call, because an ordinary
+/// content-lane OPEN failure is transient (CamillaDSP has not opened its half of
+/// the snd-aloop pair yet) and restart-looping is how outputd waits that out.
+/// Without this single mark point, a failed `hw_params_current()` would exit 1
+/// into that restart loop instead of parking.
+///
+/// `read_installed` is injected rather than read here so the failure path is
+/// testable without a live PCM — the same shape as `read_content_pcm`'s injected
+/// reader/recover closures.
+fn read_back_content_format(
+    read_installed: impl FnOnce() -> Result<Format>,
+    role: &str,
+    pcm_name: &str,
+    requested: SampleFormat,
+) -> Result<()> {
+    let installed = read_installed()?;
+    verify_content_format(role, pcm_name, requested, installed)
+}
+
 /// The one request-vs-installed comparison, shared by both readbacks so the two
 /// lanes can never drift into disagreeing about what a mismatch is or how it
 /// reads. Names BOTH formats: the operator has to know which end moved.
@@ -1224,6 +1273,13 @@ fn verify_installed_format(
 /// escalates to a reboot loop). It goes away in the same change that teaches
 /// ingest to pick `io_i32` off `Config::content_format` — at which point every
 /// value the config parser accepts is a value outputd can actually read.
+///
+/// Deletion checklist for whoever lands the wide ingest: 1 call site (in
+/// `configure_pcm`'s content branch), this definition, its 2 dedicated tests
+/// (`a_content_lane_wider_than_the_i16_ingest_is_refused_at_startup`,
+/// `the_default_s16_content_lane_passes_the_ingest_guard`), AND the second loop
+/// element inside `a_content_park_survives_the_callers_own_context_layer` —
+/// that last one is easy to miss because the test is not named for this guard.
 fn require_readable_content_format(
     role: &str,
     pcm_name: &str,
@@ -1882,6 +1938,13 @@ mod tests {
         // Both formats and the ROLE must be named: with two content roles and
         // two hops in play, "which end moved" is only answerable if the message
         // says which lane it was.
+        //
+        // The role assertion must match the SENTENCE POSITION, not the bare
+        // substring: `outputd_active_content_capture` contains both "content"
+        // and "active_content", so `text.contains(role)` was satisfied by the
+        // PCM name alone and stayed green even with the role hardcoded to the
+        // wrong lane. `"outputd <role> PCM"` can only come from the message's
+        // own role slot.
         let err = verify_content_format(
             "active_content",
             "outputd_active_content_capture",
@@ -1890,7 +1953,7 @@ mod tests {
         )
         .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("active_content"), "{text}");
+        assert!(text.contains("outputd active_content PCM"), "{text}");
         assert!(text.contains("outputd_active_content_capture"), "{text}");
         assert!(text.contains("S16LE"), "{text}");
         assert!(text.contains("S32_LE"), "{text}");
@@ -1906,6 +1969,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("S24LE"), "{err}");
+    }
+
+    #[test]
+    fn the_content_readback_compares_the_format_it_read_not_the_one_requested() {
+        // Wiring guard against a self-satisfying readback: the comparison must
+        // consume what the READ returned. If it compared the request against
+        // itself it would agree always — green, and blind.
+        read_back_content_format(
+            || Ok(Format::S32LE),
+            "content",
+            "outputd_content_capture",
+            SampleFormat::S32Le,
+        )
+        .unwrap();
+
+        let err = read_back_content_format(
+            || Ok(Format::S16LE),
+            "content",
+            "outputd_content_capture",
+            SampleFormat::S32Le,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("S16LE"), "{err}");
+        assert!(err.to_string().contains("S32_LE"), "{err}");
     }
 
     #[test]
@@ -1937,6 +2024,12 @@ mod tests {
         // rather than inspecting the outermost layer — pin that, because the
         // alternative is a mismatch that silently restart-loops instead of
         // parking. Mirrors both call sites' wrapping exactly.
+        //
+        // Third element covers the readback's INFRASTRUCTURE error — a failed
+        // `hw_params_current()` / `get_format()`. That path reaches the marker
+        // only because `read_back_content_format` owns the reads, so one
+        // `final_sink_startup` covers them; marking the comparison alone would
+        // let it exit 1 into the restart loop.
         for inner in [
             final_sink_startup(verify_content_format(
                 "content",
@@ -1948,6 +2041,12 @@ mod tests {
                 "content",
                 "outputd_content_capture",
                 SampleFormat::S32Le,
+            )),
+            final_sink_startup(read_back_content_format(
+                || anyhow::bail!("reading installed outputd content HwParams failed"),
+                "content",
+                "outputd_content_capture",
+                SampleFormat::S16Le,
             )),
         ] {
             let wrapped = inner
@@ -1992,6 +2091,11 @@ mod tests {
         // and then fail on the first read — an audio-path error, which on this
         // unit means restart-loop into StartLimitAction=reboot. It must fail at
         // startup, name the env var, and park.
+        //
+        // The role assertion matches the message's role SLOT (`outputd <role>
+        // PCM`), not the bare substring: both PCM names contain their own role
+        // token, so `text.contains(role)` passed on the PCM name alone and could
+        // not see a message naming the wrong lane.
         for (role, pcm) in [
             ("content", "outputd_content_capture"),
             ("active_content", "outputd_active_content_capture"),
@@ -2000,7 +2104,7 @@ mod tests {
             let text = err.to_string();
             assert!(text.contains("JASPER_OUTPUTD_CONTENT_FORMAT"), "{text}");
             assert!(text.contains("S32_LE"), "{text}");
-            assert!(text.contains(role), "{text}");
+            assert!(text.contains(&format!("outputd {role} PCM")), "{text}");
             assert!(text.contains(pcm), "{text}");
 
             let parked = final_sink_startup(require_readable_content_format(
