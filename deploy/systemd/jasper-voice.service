@@ -37,10 +37,14 @@ StartLimitIntervalSec=300
 # can leave the next boot in EXT4 "orphan cleanup" state.
 StartLimitAction=reboot
 
-# Microphone-presence gate (docs/HANDOFF-hotplug-resilience.md "Layer 1").
+# Voice-input presence gate (docs/HANDOFF-hotplug-resilience.md "Layer 1").
 # jasper-aec-reconcile is the single writer of this PERSISTENT NEGATIVE
 # marker: it exists only when the reconciler positively determined there
-# is no usable mic. The `!` makes this "run UNLESS the marker exists", so
+# is no usable voice input — neither a local microphone nor an accessory
+# microphone paired via jasper-accessory-reconcile (issue #2205). The marker is
+# the AND of both absences, computed before the single write because
+# ConditionPathExists cannot express an AND. The `!` makes this
+# "run UNLESS the marker exists", so
 # it FAILS OPEN — a fresh box, or one where the reconciler never ran,
 # starts voice exactly as before. When the marker IS present, PID 1 skips
 # the start cleanly (ActiveState=inactive, NOT counted as a start, NOT

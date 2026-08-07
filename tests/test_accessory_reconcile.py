@@ -267,8 +267,11 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
                 stdout="UnitFileState=disabled\nActiveState=inactive\n",
                 stderr="",
             )
-        if command == ("is-active", "--quiet", "jasper-voice.service"):
-            return SimpleNamespace(returncode=3, stdout="", stderr="")
+        if command == ("--no-block", "try-restart", "jasper-voice.service"):
+            # This fake's `show` reports no LoadState, so refresh_voice_input
+            # sees no loadable gate owner and falls back to try-restart, which
+            # never starts a stopped voice daemon (issue #2205).
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(command)
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
@@ -734,7 +737,7 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
             )
         if command == ("is-active", "--quiet", "jasper-voice.service"):
             return SimpleNamespace(returncode=0)
-        if command == ("--no-block", "restart", "jasper-voice.service"):
+        if command == ("--no-block", "try-restart", "jasper-voice.service"):
             return SimpleNamespace(returncode=0)
         raise AssertionError(command)
 
@@ -760,7 +763,9 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
             )
 
     assert not env_file.exists()
-    assert ("--no-block", "restart", "jasper-voice.service") in calls
+    # try-restart, not restart: these fakes present no loadable gate owner,
+    # and refresh_voice_input must never START a stopped voice daemon.
+    assert ("--no-block", "try-restart", "jasper-voice.service") in calls
     assert "event=accessory_mic.teardown_failed" in caplog.text
     assert "stop failed" in caplog.text
     assert "observed enabled" in caplog.text
@@ -769,27 +774,135 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
         assert "event=accessory_mic.intent_invalid" in caplog.text
 
 
-def test_restart_voice_if_active_restarts_only_active_voice():
-    calls = []
+def _gate_owner_systemctl(calls, *, load_state: str, unit_file_state: str):
+    """Fake whose `systemctl show` answers for the voice-input gate owner."""
 
     def fake_systemctl(args):
-        calls.append(tuple(args))
-        return SimpleNamespace(returncode=0)
+        command = tuple(args)
+        calls.append(command)
+        if command[0] == "show":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"LoadState={load_state}\nUnitFileState={unit_file_state}\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    assert reconcile.restart_voice_if_active(systemctl=fake_systemctl) is True
+    return fake_systemctl
+
+
+def test_refresh_voice_input_starts_an_enabled_gate_owner():
+    """Issue #2205: a stopped jasper-voice may be GATED off, and no restart can
+    open ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``. Only the
+    marker's single writer can, so start it and let it re-derive."""
+    calls = []
+    systemctl = _gate_owner_systemctl(
+        calls, load_state="loaded", unit_file_state="enabled",
+    )
+
+    assert reconcile.refresh_voice_input(systemctl=systemctl) == "gate_reconcile"
     assert calls == [
-        ("is-active", "--quiet", "jasper-voice.service"),
-        ("--no-block", "restart", "jasper-voice.service"),
+        ("show", "jasper-aec-reconcile.service",
+         "--property=LoadState", "--property=UnitFileState"),
+        ("--no-block", "start", "jasper-aec-reconcile.service"),
     ]
 
-    calls.clear()
 
-    def inactive_systemctl(args):
-        calls.append(tuple(args))
-        return SimpleNamespace(returncode=3)
+def test_refresh_voice_input_never_starts_a_parked_gate_owner(caplog):
+    """The un-park hazard. ``park_streambox_brain_units`` runs
+    ``disable --now`` on jasper-aec-reconcile but does NOT touch this
+    reconciler, so a converted full->streambox box keeps the unit FILE while we
+    keep running. ``systemctl start`` on a disabled-but-installed unit
+    SUCCEEDS, and the gate owner's ``restart_voice`` runs
+    ``systemctl enable jasper-voice.service`` — persistently re-arming the voice
+    brain on a Zero-class box whose profile exists to keep it off."""
+    calls = []
+    systemctl = _gate_owner_systemctl(
+        calls, load_state="loaded", unit_file_state="disabled",
+    )
 
-    assert reconcile.restart_voice_if_active(systemctl=inactive_systemctl) is False
-    assert calls == [("is-active", "--quiet", "jasper-voice.service")]
+    with caplog.at_level(logging.INFO):
+        assert (
+            reconcile.refresh_voice_input(systemctl=systemctl)
+            == "voice_try_restart"
+        )
+    assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
+    assert calls[-1] == ("--no-block", "try-restart", "jasper-voice.service")
+    assert "event=accessory_mic.gate_owner_unavailable" in caplog.text
+    assert "state=parked" in caplog.text
+
+
+def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
+    """Masking is a deliberate operator act. The ACTION is the same as absent —
+    never start it — but the remediation is `systemctl unmask`, not "re-run the
+    installer", so the log must not call it "not installed"."""
+    calls = []
+    systemctl = _gate_owner_systemctl(
+        calls, load_state="masked", unit_file_state="masked",
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert (
+            reconcile.refresh_voice_input(systemctl=systemctl)
+            == "voice_try_restart"
+        )
+    assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
+    assert "state=masked" in caplog.text
+    assert "state=absent" not in caplog.text
+
+
+def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
+    """A streambox never installs jasper-aec-reconcile (LoadState=not-found,
+    verified on jts4). Nothing writes the marker there, so voice is never gated
+    off for a missing local mic and try-restart is the whole story."""
+    calls = []
+    systemctl = _gate_owner_systemctl(
+        calls, load_state="not-found", unit_file_state="",
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert (
+            reconcile.refresh_voice_input(systemctl=systemctl)
+            == "voice_try_restart"
+        )
+    assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
+    assert "state=absent" in caplog.text
+
+
+def test_refresh_voice_input_uses_try_restart_so_it_never_starts_stopped_voice():
+    """Plain `restart` would START a voice daemon the household or the
+    streambox profile deliberately stopped; `try-restart` cannot.
+
+    The no-op property is systemd's, measured on jts4 2026-08-07: rc=0 with
+    `ExecMainStartTimestamp` unchanged against a loaded-`inactive` unit AND a
+    deliberately-`failed` one, while a plain `start` on the same unit re-ran
+    it. What this test pins is the half that lives here — that we spend the
+    `try-restart` verb and never `restart`."""
+    for load_state, unit_file_state in (("not-found", ""), ("loaded", "disabled")):
+        calls = []
+        systemctl = _gate_owner_systemctl(
+            calls, load_state=load_state, unit_file_state=unit_file_state,
+        )
+        reconcile.refresh_voice_input(systemctl=systemctl)
+        voice_calls = [c for c in calls if "jasper-voice.service" in c]
+        assert voice_calls == [
+            ("--no-block", "try-restart", "jasper-voice.service"),
+        ], (load_state, unit_file_state, calls)
+
+
+def test_refresh_voice_input_stays_within_its_declared_systemctl_budget():
+    """The bound tests/test_systemd_hardening.py holds against the unit's
+    TimeoutStartSec is a claim about this function; measure it, don't assume."""
+    for load_state, unit_file_state in (
+        ("loaded", "enabled"), ("loaded", "disabled"), ("not-found", ""),
+        ("masked", "masked"),
+    ):
+        calls = []
+        systemctl = _gate_owner_systemctl(
+            calls, load_state=load_state, unit_file_state=unit_file_state,
+        )
+        reconcile.refresh_voice_input(systemctl=systemctl)
+        assert len(calls) <= reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS, calls
 
 
 def test_adapter_service_systemctl_failures_are_observable(caplog):

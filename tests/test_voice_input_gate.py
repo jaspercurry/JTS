@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Microphone-presence gate for jasper-voice.
+"""Voice-input gate for jasper-voice.
 
-Pins the three pieces of docs/HANDOFF-hotplug-resilience.md that keep a
-no-mic box from crash-looping into StartLimitAction=reboot:
+Pins the pieces of docs/HANDOFF-hotplug-resilience.md that keep a
+no-input box from crash-looping into StartLimitAction=reboot:
 
 1. jasper-voice.service gates ExecStart on the reconciler-written marker
    (ConditionPathExists), and parks (not crash-loops) on the
@@ -14,6 +14,10 @@ no-mic box from crash-looping into StartLimitAction=reboot:
    and the Python reader — a drift here silently breaks the gate.
 3. The daemon exits VOICE_MIC_UNAVAILABLE_EXIT on a primary mic-open
    failure, and the doctor reports the parked state as expected-idle.
+4. The gate is an OR over a local mic and a paired accessory mic
+   (issue #2205): the accessory env path agrees across its owner, the unit,
+   and env_load, and the bash reconciler carries no copy of it because it
+   asks jasper.accessories.mic_env instead.
 """
 from __future__ import annotations
 
@@ -23,7 +27,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.audio_io import InputDeviceUnavailable
+from jasper.env_load import ENV_FILES
 from jasper.voice.input_presence import (
     DEFAULT_VOICE_INPUT_ABSENT_MARKER,
     voice_input_absent_marker_path,
@@ -110,6 +116,54 @@ def test_marker_path_agreement() -> None:
     )
     assert m, "reconciler must define VOICE_INPUT_ABSENT_MARKER with a default"
     assert m.group(1) == DEFAULT_VOICE_INPUT_ABSENT_MARKER, m.group(1)
+
+
+def test_accessory_mic_env_path_agreement() -> None:
+    """The accessory half of the gate is one file with one writer. Its path is
+    duplicated in the unit's EnvironmentFile= and env_load's list; pin both
+    against the owning module, the same treatment the marker path gets."""
+    unit_text = _unit_text()
+    assert (
+        f"EnvironmentFile=-{DEFAULT_ACCESSORY_MIC_ENV_FILE}" in unit_text
+    ), DEFAULT_ACCESSORY_MIC_ENV_FILE
+    assert DEFAULT_ACCESSORY_MIC_ENV_FILE in ENV_FILES, ENV_FILES
+
+
+def test_reconciler_asks_python_for_the_accessory_half() -> None:
+    """The bash reconciler must NOT carry a copy of the accessory env path or
+    re-derive the entry format in shell — a second parser is how the gate and
+    the daemon come to disagree about whether a source is published. It shells
+    to the owning module instead (same posture as the mic-profile resolver)."""
+    script = RECONCILE.read_text()
+    assert "jasper.accessories.mic_env" in script
+    # Prose may name the path and the key; executable shell may not.
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert DEFAULT_ACCESSORY_MIC_ENV_FILE not in code
+    assert "JASPER_MANUAL_MIC_SOURCES" not in code
+
+
+def test_gate_owner_can_actually_report_enabled() -> None:
+    """``refresh_voice_input`` starts the gate owner ONLY when systemd reports
+    ``UnitFileState=enabled``. That permission is unreachable for a unit with no
+    ``[Install]`` section — systemd reports such a unit ``static`` — and it is
+    only ever granted because ``install.sh`` enables it.
+
+    Drop either and the accessory half of the gate goes dead on every full
+    speaker with **no other test failing**: the reconciler would classify a
+    perfectly healthy owner as ``parked``, fall through to ``try-restart``, and
+    a freshly-paired remote would never re-derive the marker. Observed
+    ``LoadState=loaded UnitFileState=enabled`` on jts3 (2026-08-07)."""
+    owner_unit = ROOT / "deploy" / "systemd" / "jasper-aec-reconcile.service"
+    assert "[Install]" in owner_unit.read_text(), owner_unit
+    installer = (ROOT / "deploy" / "install.sh").read_text()
+    enable_lines = [
+        line.strip() for line in installer.splitlines()
+        if "systemctl enable" in line and "jasper-aec-reconcile.service" in line
+        and not line.lstrip().startswith("#")
+    ]
+    assert enable_lines, "install.sh must enable the voice-input gate owner"
 
 
 def test_voice_parked_no_mic_reads_marker(tmp_path, monkeypatch) -> None:

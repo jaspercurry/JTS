@@ -9,6 +9,13 @@ the runtime decision: if BlueZ says an adapter-backed remote profile is paired,
 publish the matching ``JASPER_MANUAL_MIC_SOURCES`` entry and run that adapter
 unit; otherwise keep both voice and the adapter idle. That keeps rare hardware
 from imposing resident cost on every speaker.
+
+It owns the *accessory* fact and nothing else. It does NOT write the
+voice-input gate marker (``jasper-aec-reconcile`` is that marker's single
+writer, and the marker is the AND of "no local mic" and "no accessory mic").
+When this half moves, ``refresh_voice_input`` hands the decision back to that
+owner rather than deciding here — see its docstring and
+``docs/HANDOFF-hotplug-resilience.md`` "Layer 1".
 """
 from __future__ import annotations
 
@@ -33,20 +40,30 @@ from jasper.music_sources import Source
 from jasper.source_intent import source_intent_enabled
 
 from ._dbus import variant_value
+from .mic_env import (
+    DEFAULT_ACCESSORY_MIC_ENV_FILE,
+    render_manual_mic_env,
+)
 from .registry import KNOWN_PROFILES, RemoteProfile, lookup_by_name
 
 logger = logging.getLogger(__name__)
 
 BLUEZ_BUS = "org.bluez"
 DEVICE_IFACE = "org.bluez.Device1"
-DEFAULT_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 VOICE_UNIT = "jasper-voice.service"
+# jasper-aec-reconcile owns the voice-input gate marker and the voice
+# start/park decision. Publishing or withdrawing an accessory mic moves one
+# half of that decision, so we hand it back to its owner rather than deciding
+# here — see refresh_voice_input.
+VOICE_INPUT_GATE_UNIT = "jasper-aec-reconcile.service"
 SYSTEMCTL_TIMEOUT_SEC = 10.0
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
 _ADAPTER_SYSTEMCTL_CALLS = 3
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
+# show the gate owner's state, then exactly one of: start it, or try-restart
+# voice. See refresh_voice_input — both branches cost two calls.
 _VOICE_REFRESH_SYSTEMCTL_CALLS = 2
 _VOICE_REFRESH_TIMEOUT_BUDGET_SEC = (
     _VOICE_REFRESH_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
@@ -168,19 +185,10 @@ def plan_from_bluez_objects(
     )
 
 
-def render_manual_mic_env(sources: Mapping[str, str]) -> str:
-    if not sources:
-        return ""
-    value = ",".join(
-        f"{source}={device}" for source, device in sorted(sources.items())
-    )
-    return f"JASPER_MANUAL_MIC_SOURCES={value}\n"
-
-
 def write_manual_mic_env(
     sources: Mapping[str, str],
     *,
-    path: str = DEFAULT_ENV_FILE,
+    path: str = DEFAULT_ACCESSORY_MIC_ENV_FILE,
 ) -> bool:
     """Publish the voice env file. Returns True when on-disk state changed."""
 
@@ -374,15 +382,117 @@ def apply_adapter_services(
     return tuple(failure for result in results for failure in result)
 
 
-def restart_voice_if_active(*, systemctl: Systemctl = _systemctl) -> bool:
-    state = systemctl(("is-active", "--quiet", VOICE_UNIT))
-    if state.returncode != 0:
-        return False
+def _gate_owner_state(*, systemctl: Systemctl) -> str:
+    """``enabled`` / ``parked`` / ``absent`` / ``masked`` for the gate owner.
+
+    ``enabled`` is the only one that may be started. The distinctions are
+    load-bearing rather than cosmetic: the first three all exist in the field,
+    and each not-enabled state sends an operator somewhere different.
+
+    * **enabled** — full speaker profile; ``install_systemd_units`` installs and
+      enables the unit.
+    * **absent** — ``LoadState=not-found``. ``install_streambox_systemd_units``
+      installs neither reconciler (both ``install`` lines live in
+      ``install_systemd_units``). ``not-found`` observed on jts4 2026-08-07.
+    * **masked** — ``LoadState=masked``. Same action as ``absent`` (never
+      start), separate state because the remediation is not: masking is a
+      deliberate operator act, and telling them "not installed" sends them to
+      re-run the installer instead of to ``systemctl unmask``.
+    * **parked** — the unit file is installed but ``UnitFileState`` is not
+      enabled. ``park_streambox_brain_units`` runs ``systemctl disable --now``
+      on ``jasper-aec-reconcile`` and names *this* reconciler nowhere, and no
+      install path removes either unit file, so a full speaker converted to a
+      streambox keeps a disabled gate owner while we keep running.
+      ``systemctl start`` on a disabled-but-installed unit *succeeds* —
+      ``disable`` only drops the ``WantedBy`` symlink — and the gate owner's
+      ``restart_voice`` runs ``systemctl enable jasper-voice.service``, which
+      would persistently re-arm the voice brain on a Zero-class box whose whole
+      profile exists to keep it off. Never start a parked owner. (Read from
+      ``deploy/lib/install/systemd-units.sh``; not yet observed on a box.)
+
+    Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
+    matching ``jasper/source_intent.py``. Any unexpected failure answers
+    ``absent``, which is the conservative direction: we do not start anything.
+    """
+    try:
+        result = systemctl(
+            ("show", VOICE_INPUT_GATE_UNIT,
+             "--property=LoadState", "--property=UnitFileState"),
+        )
+    except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
+        return "absent"
+    if result.returncode != 0:
+        return "absent"
+    properties: dict[str, str] = {}
+    for line in str(getattr(result, "stdout", "") or "").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key.strip()] = value.strip().lower()
+    load_state = properties.get("LoadState")
+    if load_state == "masked":
+        return "masked"
+    if load_state != "loaded":
+        return "absent"
+    if properties.get("UnitFileState") in ("enabled", "enabled-runtime"):
+        return "enabled"
+    return "parked"
+
+
+def refresh_voice_input(*, systemctl: Systemctl = _systemctl) -> str:
+    """Converge jasper-voice after the accessory half of the voice-input gate moved.
+
+    Restarting voice is not enough on its own. ``jasper-voice.service`` carries
+    ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``, and on a box
+    with no local microphone that marker is present — so the unit is *gated
+    off*, a restart can never converge it, and a freshly-paired remote is never
+    read (issue #2205).
+
+    **The gate owner is enabled** → start it. It is the marker's single writer:
+    it re-derives "is there usable voice input?" across BOTH halves and takes
+    the matching action (clear the marker and start voice, or write it and
+    park). Deciding here would give this reconciler a second job and put two
+    writers on one fact. ``--no-block`` because the owner may restart outputd
+    and the AEC bridge, and this oneshot is ordered
+    ``Before=jasper-voice.service`` — it must queue the work, not wait on it.
+
+    **Otherwise** (absent or deliberately parked — see ``_gate_owner_state``) →
+    ``try-restart`` jasper-voice. That restarts it **iff it is already running**,
+    so a live push-to-talk session picks up the new source, and a box whose
+    profile parked the voice brain is never started by us. On such a box nothing
+    writes the marker, so voice is never gated off for a missing local mic and
+    there is nothing for a gate owner to re-derive.
+
+    ``try-restart``'s no-op property was measured, not assumed: on jts4
+    (2026-08-07) it returned rc=0 and left ``ExecMainStartTimestamp`` unchanged
+    against both a loaded-``inactive`` unit and a deliberately-``failed`` one,
+    while a plain ``start`` on the same unit did re-run it.
+
+    Bounded at two ``systemctl`` calls on every path — the budget
+    ``_VOICE_REFRESH_SYSTEMCTL_CALLS`` claims and
+    ``tests/test_systemd_hardening.py`` holds against the unit's
+    ``TimeoutStartSec``.
+
+    Returns the action taken, for the reconcile log line.
+    """
+    owner = _gate_owner_state(systemctl=systemctl)
+    if owner == "enabled":
+        started = _invoke_systemctl(
+            ("--no-block", "start", VOICE_INPUT_GATE_UNIT),
+            systemctl=systemctl,
+        )
+        return "gate_reconcile" if started.returncode == 0 else "none"
+    log_event(
+        logger,
+        "accessory_mic.gate_owner_unavailable",
+        unit=VOICE_INPUT_GATE_UNIT,
+        state=owner,
+    )
+    # try-restart, not restart: never start a unit that is not already running.
     restarted = _invoke_systemctl(
-        ("--no-block", "restart", VOICE_UNIT),
+        ("--no-block", "try-restart", VOICE_UNIT),
         systemctl=systemctl,
     )
-    return restarted.returncode == 0
+    return "voice_try_restart" if restarted.returncode == 0 else "none"
 
 
 async def bluez_managed_objects() -> Mapping[str, Mapping[str, Mapping[str, object]]]:
@@ -403,7 +513,7 @@ async def bluez_managed_objects() -> Mapping[str, Mapping[str, Mapping[str, obje
 
 async def reconcile_once(
     *,
-    env_file: str = DEFAULT_ENV_FILE,
+    env_file: str = DEFAULT_ACCESSORY_MIC_ENV_FILE,
     systemctl: Systemctl = _systemctl,
     reason: str = "manual",
 ) -> AccessoryMicPlan:
@@ -466,8 +576,8 @@ async def reconcile_once(
         # the adapter even if cleaning up the env file subsequently fails.
         adapter_failures = apply_adapter_services((), systemctl=systemctl)
         env_changed = write_manual_mic_env({}, path=env_file)
-    voice_restarted = (
-        restart_voice_if_active(systemctl=systemctl) if env_changed else False
+    voice_refresh = (
+        refresh_voice_input(systemctl=systemctl) if env_changed else "none"
     )
     if intent_error is not None:
         log_event(
@@ -476,7 +586,7 @@ async def reconcile_once(
             reason=reason,
             action="parked",
             env_changed=int(env_changed),
-            voice_restarted=int(voice_restarted),
+            voice_refresh=voice_refresh,
             err=str(intent_error),
             level=logging.ERROR,
         )
@@ -491,7 +601,7 @@ async def reconcile_once(
             reason=reason,
             failures=" | ".join(adapter_failures),
             env_changed=int(env_changed),
-            voice_restarted=int(voice_restarted),
+            voice_refresh=voice_refresh,
             level=logging.ERROR,
         )
     if intent_error is not None:
@@ -518,14 +628,14 @@ async def reconcile_once(
         sources=",".join(plan.sources) or "(none)",
         services=",".join(plan.adapter_services) or "(none)",
         env_changed=int(env_changed),
-        voice_restarted=int(voice_restarted),
+        voice_refresh=voice_refresh,
     )
     return plan
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--env-file", default=DEFAULT_ENV_FILE)
+    parser.add_argument("--env-file", default=DEFAULT_ACCESSORY_MIC_ENV_FILE)
     parser.add_argument("--reason", default="manual")
     return parser.parse_args(argv)
 

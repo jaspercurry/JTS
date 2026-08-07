@@ -1,0 +1,218 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The accessory-mic env file's format owner.
+
+``jasper.accessories.mic_env`` renders the file that
+``jasper-accessory-reconcile`` writes and parses it for the two readers that
+appeared with issue #2205: the voice-input gate (via
+``deploy/bin/jasper-aec-reconcile``) and ``jasper.mic_presence``.
+
+The load-bearing property is that its parser agrees with
+``jasper.config._env_mapping`` about which files are USABLE. They are different
+functions with different jobs — one answers "which sources?", the other builds
+``Config`` — but if the gate accepts a file the daemon rejects, the gate opens
+for a daemon that then raises at startup, and ``RuntimeError`` is not one of
+jasper-voice's clean-park exits: it crash-loops into StartLimitAction=reboot.
+"""
+from __future__ import annotations
+
+import os
+import pathlib
+import subprocess
+import sys
+
+import pytest
+
+from jasper.accessories.mic_env import (
+    MANUAL_MIC_SOURCES_KEY,
+    ManualMicSourcesError,
+    parse_manual_mic_sources,
+    read_accessory_mic_sources,
+    render_manual_mic_env,
+)
+
+
+def test_render_and_parse_round_trip() -> None:
+    body = render_manual_mic_env({"b_remote": "udp:9893", "a_remote": "udp:9892"})
+    assert body == f"{MANUAL_MIC_SOURCES_KEY}=a_remote=udp:9892,b_remote=udp:9893\n"
+    assert parse_manual_mic_sources(body) == ("a_remote", "b_remote")
+
+
+def test_empty_sources_render_to_no_file_body() -> None:
+    """Never a published key with no value — the writer unlinks instead."""
+    assert render_manual_mic_env({}) == ""
+    assert parse_manual_mic_sources("") == ()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2\n",          # no '='
+        f"{MANUAL_MIC_SOURCES_KEY}==udp:9892\n",              # empty id
+        f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=\n",         # empty device
+        f"{MANUAL_MIC_SOURCES_KEY}=a b=udp:9892\n",           # whitespace in id
+        f"{MANUAL_MIC_SOURCES_KEY}=a=udp:1,a=udp:2\n",        # duplicate id
+        # The dangerous one: one usable entry beside one broken entry. Partial
+        # acceptance would open the gate for a Config that then RAISES.
+        f"{MANUAL_MIC_SOURCES_KEY}=good=udp:9892,bad\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=bad,good=udp:9892\n",
+    ],
+)
+def test_unparsable_bodies_raise_rather_than_reading_as_no_accessory(
+    body: str,
+) -> None:
+    """Both outcomes park voice, so this is not about the verdict — it is about
+    which fact the operator is told.
+
+    Returning ``()`` here made a corrupt file byte-identical to no file at all:
+    same marker, same journal line, same
+    ``reason=no candidate microphone present and no accessory microphone
+    paired``. Somebody debugging "my remote does nothing" was told no remote was
+    paired while a file naming that remote sat on disk."""
+    with pytest.raises(ManualMicSourcesError):
+        parse_manual_mic_sources(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2\n",
+        f"{MANUAL_MIC_SOURCES_KEY}==udp:9892\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=a b=udp:9892\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=a=udp:1,a=udp:2\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=good=udp:9892,bad\n",
+        f"{MANUAL_MIC_SOURCES_KEY}=bad,good=udp:9892\n",
+    ],
+)
+def test_every_body_this_parser_rejects_is_one_config_also_rejects(
+    body: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The contract in the module docstring, asserted rather than asserted-in-prose.
+
+    A body this parser accepts must be one ``Config`` can load; the reverse
+    direction (we reject something Config would accept) is safe, so this only
+    pins the dangerous direction.
+
+    The two now agree on the *message* as well as the verdict, which is the
+    point of mirroring a parser instead of writing a second one: whatever the
+    daemon would have complained about is what the operator reads.
+    """
+    from jasper.config import _env_mapping
+
+    raw = body.split("=", 1)[1].strip()
+    monkeypatch.setenv(MANUAL_MIC_SOURCES_KEY, raw)
+    with pytest.raises(RuntimeError) as config_error:
+        _env_mapping(MANUAL_MIC_SOURCES_KEY, "")
+    with pytest.raises(ManualMicSourcesError) as our_error:
+        parse_manual_mic_sources(body)
+    assert str(our_error.value) == str(config_error.value)
+
+
+def test_accepted_bodies_load_into_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jasper.config import _env_mapping
+
+    body = render_manual_mic_env({"wiim_remote_2": "udp:9892"})
+    assert parse_manual_mic_sources(body) == ("wiim_remote_2",)
+    monkeypatch.setenv(MANUAL_MIC_SOURCES_KEY, body.split("=", 1)[1].strip())
+    assert dict(_env_mapping(MANUAL_MIC_SOURCES_KEY, "")) == {
+        "wiim_remote_2": "udp:9892",
+    }
+
+
+def test_last_assignment_wins_like_systemd(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(
+        f"{MANUAL_MIC_SOURCES_KEY}=old=udp:1\n"
+        f"{MANUAL_MIC_SOURCES_KEY}=new=udp:2\n",
+    )
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(path))
+    assert read_accessory_mic_sources() == ("new",)
+
+
+def test_missing_file_publishes_nothing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JASPER_ACCESSORY_MIC_ENV_FILE", str(tmp_path / "absent.env"),
+    )
+    assert read_accessory_mic_sources() == ()
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _cli_env(path: pathlib.Path) -> dict[str, str]:
+    return {
+        "JASPER_ACCESSORY_MIC_ENV_FILE": str(path),
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": str(ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def test_cli_exit_status_separates_answer_from_failure(tmp_path) -> None:
+    """deploy/bin/jasper-aec-reconcile branches on this, so pin the contract:
+    exit status says whether the probe COULD answer; stdout carries the answer.
+
+    Overloading exit status to carry the answer is what made a partial
+    /opt/jasper deploy (module unimportable, Python exits 1) indistinguishable
+    from "no remote paired" — and the reconciler then asserted the second."""
+    path = tmp_path / "accessory-mics.env"
+    argv = [sys.executable, "-m", "jasper.accessories.mic_env"]
+
+    # Read succeeded, nothing published -> exit 0, empty stdout.
+    absent = subprocess.run(argv, env=_cli_env(path), capture_output=True, text=True)
+    assert absent.returncode == 0, absent.stderr
+    assert absent.stdout.strip() == ""
+
+    # Read succeeded, sources published -> exit 0, ids on stdout.
+    path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892\n")
+    present = subprocess.run(argv, env=_cli_env(path), capture_output=True, text=True)
+    assert present.returncode == 0, present.stderr
+    assert present.stdout.strip() == "wiim_remote_2"
+
+
+def test_cli_reports_an_unparsable_file_as_failure_not_as_absence(
+    tmp_path,
+) -> None:
+    """A corrupt file must not exit like an empty one.
+
+    Exit 0 + empty stdout is the shell's "resolved, nothing published", which
+    becomes ``reason=no candidate microphone present and no accessory
+    microphone paired`` — a confident wrong answer while a file naming the
+    remote is on disk. It gets a one-line message, not a traceback: the parser
+    already knows which rule broke, and that sentence is the remediation."""
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892,bad\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "jasper.accessories.mic_env"],
+        env=_cli_env(path), capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == ""
+    assert "refusing to publish accessory mic sources" in result.stderr
+    assert "must be source_id=device" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_reports_an_unreadable_file_as_failure_not_as_absence(
+    tmp_path,
+) -> None:
+    """The partial-deploy / broken-permissions shape must NOT read as "no
+    accessory paired" — that is a confident wrong answer to the operator."""
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(f"{MANUAL_MIC_SOURCES_KEY}=wiim_remote_2=udp:9892\n")
+    path.chmod(0o000)
+    if os.access(path, os.R_OK):  # running as root: chmod cannot deny us
+        pytest.skip("cannot make a file unreadable as this user")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "jasper.accessories.mic_env"],
+            env=_cli_env(path), capture_output=True, text=True,
+        )
+    finally:
+        path.chmod(0o644)
+    assert result.returncode != 0
+    assert result.stdout.strip() == ""
+    assert "PermissionError" in result.stderr

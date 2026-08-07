@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import profile_env_updates
 from jasper.control import aec_endpoints
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
@@ -123,6 +124,14 @@ def _run_reconcile(
             # extra_env still win (the marker cases assert on this path).
             "JASPER_VOICE_INPUT_ABSENT_MARKER": str(
                 tmp_path / "voice-input-absent"
+            ),
+            # Same reason: accessory_mic_present shells to
+            # `jasper.accessories.mic_env`, which reads the REAL
+            # /var/lib/jasper/accessory-mics.env unless redirected. Point it at
+            # a tmp path that does not exist by default, so every test starts
+            # from "no accessory microphone" regardless of the host.
+            "JASPER_ACCESSORY_MIC_ENV_FILE": str(
+                tmp_path / "accessory-mics.env"
             ),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
@@ -527,6 +536,246 @@ def test_reconcile_respects_custom_mic_device(tmp_path: Path) -> None:
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
     assert "stop jasper-voice.service" not in commands
     assert VOICE_RESTART_CMD not in commands
+
+
+def _write_accessory_mics(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "accessory-mics.env"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_no_local_mic_with_accessory_keeps_voice_up(tmp_path: Path) -> None:
+    """Issue #2205: a paired accessory mic satisfies the voice-input gate.
+
+    A box with no local microphone but a published push-to-talk source is a
+    working speaker. The reconciler must NOT stamp the gate marker (which would
+    make PID 1 skip the start and leave the remote's button dead), and must
+    (re)start voice so the source is actually read.
+    """
+    env_file = _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "voice-input-absent").exists()
+    commands = _systemctl_log(tmp_path)
+    assert "stop jasper-voice.service" not in commands
+    assert VOICE_RESTART_CMD in commands
+    assert "wiim_remote_2" in result.stderr
+    # The stale UDP device is still normalised to a real candidate, and the
+    # restart is deferred until AFTER that write — otherwise systemd could
+    # start voice against the device the reconciler is about to replace.
+    assert "JASPER_MIC_DEVICE=Array" in env_file.read_text()
+
+
+def test_accessory_voice_restart_is_deferred_past_the_mic_device_write(
+    tmp_path: Path,
+) -> None:
+    """The restart must be queued only AFTER the stale mic device is rewritten.
+
+    ``restart_voice`` uses ``systemctl --no-block``, so systemd can start voice
+    while this oneshot is still running. If the restart were issued at the
+    stop_voice decision point, voice could read JASPER_MIC_DEVICE=udp:9876 —
+    the device the reconciler is in the middle of replacing — bind an unfed UDP
+    socket and watchdog-restart. Command ORDER in the systemctl log cannot see
+    this, so snapshot the env file at the moment the restart is issued.
+    """
+    env_file = _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+    snapshotting_systemctl = tmp_path / "systemctl-snapshot"
+    snapshotting_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$JASPER_SYSTEMCTL_LOG"\n'
+        'if [[ "$*" == *"restart jasper-voice.service"* ]]; then\n'
+        '  cp "$JASPER_ENV_FILE" "$JASPER_ENV_SNAPSHOT"\n'
+        "fi\n"
+        "exit 0\n",
+    )
+    snapshotting_systemctl.chmod(0o755)
+    snapshot = tmp_path / "jasper.env.at-restart"
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYSTEMCTL": str(snapshotting_systemctl),
+            "JASPER_ENV_SNAPSHOT": str(snapshot),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.exists(), "voice was never restarted"
+    assert "JASPER_MIC_DEVICE=Array" in snapshot.read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" not in snapshot.read_text()
+    assert "JASPER_MIC_DEVICE=Array" in env_file.read_text()
+
+
+def test_no_local_mic_and_no_accessory_still_parks_voice(tmp_path: Path) -> None:
+    """The other half of #2205: absence of BOTH is what the marker claims."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    # No accessory-mics.env written at all.
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    assert "no accessory microphone paired" in marker.read_text()
+    commands = _systemctl_log(tmp_path)
+    assert "stop jasper-voice.service" in commands
+    assert VOICE_RESTART_CMD not in commands
+
+
+def test_malformed_accessory_env_parks_voice(tmp_path: Path) -> None:
+    """Fail closed on an unparsable accessory file — and say *that*, not
+    "no remote is paired".
+
+    ``Config.from_env`` *raises* on a malformed JASPER_MANUAL_MIC_SOURCES entry,
+    and that is not one of jasper-voice's clean-park exits — opening the gate on
+    a file the daemon will reject would crash-loop it into
+    StartLimitAction=reboot. Parking is the safe answer.
+
+    Parking was never the question. The reason was: this file NAMES
+    wiim_remote_2, and the marker used to answer "no accessory microphone
+    paired" — byte-identical to the no-file case, and read verbatim by an
+    operator through /state.microphone.reason and the doctor headline.
+    """
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    # One usable entry beside a broken one: the case where a lenient parser
+    # would open the gate for a Config that raises at daemon startup.
+    _write_accessory_mics(
+        tmp_path,
+        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE},bad\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    reason = marker.read_text()
+    assert "could not be determined" in reason
+    assert "no accessory microphone paired" not in reason
+    # The parser's own sentence — which rule the content broke — reaches the
+    # journal, because that sentence IS the remediation.
+    assert "refusing to publish accessory mic sources" in result.stderr
+    assert "must be source_id=device" in result.stderr
+    assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_failed_accessory_probe_parks_with_an_honest_reason(tmp_path: Path) -> None:
+    """The partial-/opt/jasper-deploy shape: the interpreter serves
+    jasper.cli.xvf_profile normally but cannot answer jasper.accessories.mic_env.
+
+    A remote IS paired and published. The reconciler must still park (fail
+    closed) but must NOT assert that no accessory is paired — that reason string
+    is surfaced verbatim through /state.microphone.reason and the doctor
+    headline, and an operator debugging "my remote does nothing" would be handed
+    a confident wrong answer. "I could not tell" and "I checked and there is
+    nothing" are different facts."""
+    _write_env(tmp_path, "udp:9876")
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\nJASPER_AUDIO_INPUT_PROFILE=custom\n",
+    )
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+    partial = tmp_path / "partial-deploy-python"
+    partial.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *'jasper.accessories.mic_env'* ]]; then\n"
+        "  echo 'ModuleNotFoundError: jasper.accessories.mic_env' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n",
+    )
+    partial.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(partial)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    reason = marker.read_text()
+    assert "could not be determined" in reason
+    assert "probe failed" in reason
+    # The confident-wrong-answer string must NOT appear.
+    assert "no accessory microphone paired" not in reason
+    assert "accessory mic probe failed" in result.stderr
+    # The module's own stderr reaches the journal rather than /dev/null.
+    assert "ModuleNotFoundError" in result.stderr
+
+
+def test_accessory_probe_without_interpreter_parks_voice(tmp_path: Path) -> None:
+    """A missing interpreter must degrade to the pre-#2205 behaviour, not to an
+    open gate: no accessory verdict means park.
+
+    Pinned on the ``custom`` profile because that is the only shape that
+    *reaches* stop_voice without an interpreter — a managed profile parks
+    earlier, on the mic-profile resolver being unavailable. Both are fail-closed;
+    this asserts the accessory probe adds no third, open-gate outcome.
+    """
+    _write_env(tmp_path, "udp:9876")
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\nJASPER_AUDIO_INPUT_PROFILE=custom\n",
+    )
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "no-such-interpreter"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "voice-input-absent"
+    assert marker.exists()
+    assert "could not be determined" in marker.read_text()
+    assert "no accessory microphone paired" not in marker.read_text()
+    assert "accessory mic probe unavailable" in result.stderr
+    assert "stop jasper-voice.service" in _systemctl_log(tmp_path)
+
+
+def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
+    """Scope guard: park_managed_xvf stays accessory-blind on purpose.
+
+    That path leaves JASPER_MIC_DEVICE on the AEC bridge's udp: transport while
+    stop_disable_aec has just stopped the bridge. Starting voice there binds an
+    unfed UDP socket and watchdog-restarts into StartLimitAction=reboot, so it
+    needs the mic device normalised first — a separate change.
+    """
+    _write_env(tmp_path, "udp:9876")
+    _write_profile_mode(tmp_path, "xvf_chip_aec")
+    _write_card(tmp_path, channels=2)
+    _write_accessory_mics(
+        tmp_path, f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "voice-input-absent").exists()
+    assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
 def test_check_aec_ready_reflects_mode_and_firmware(tmp_path: Path) -> None:

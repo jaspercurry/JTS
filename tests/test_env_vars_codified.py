@@ -94,6 +94,15 @@ _UNCODIFIED = {
     # Product intent has a fixed canonical path; this override only lets the
     # AEC bridge's environment parser use a hermetic temp file in tests.
     "JASPER_USB_MIC_INTENT_PATH",
+    # Accessory-mic env path. The canonical /var/lib/jasper location is written
+    # by jasper-accessory-reconcile and named in jasper-voice.service's
+    # EnvironmentFile=; this override redirects the voice-input gate's readers
+    # at a temp file so tests never touch the real one. Deliberately absent
+    # from deploy/bin/jasper-aec-reconcile — that script asks
+    # jasper.accessories.mic_env rather than carrying a copy of the path
+    # (pinned by tests/test_voice_input_gate.py), which is why the guard's
+    # deploy/ scan cannot see it.
+    "JASPER_ACCESSORY_MIC_ENV_FILE",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",
