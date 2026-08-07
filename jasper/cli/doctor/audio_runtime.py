@@ -1004,6 +1004,74 @@ def _loaded_playback_filename(config_path: Path) -> str | None:
     return _loaded_device_field(config_path, "playback", "filename")
 
 
+def _loaded_playback_format(config_path: Path) -> str | None:
+    """The ``devices.playback.format`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "playback", "format")
+
+
+@doctor_check(order=51.75, group="audio")
+def check_camilla_playback_format() -> CheckResult:
+    """The loaded CamillaDSP config's declared playback format must match its
+    LANE's expected format (wide-output-path program, D-list survey finding
+    1): today NOTHING read the emitted playback format back off a live
+    config, so a half-flip — an emitter regenerating a config against one
+    value of the expected constant while the running process (or an
+    un-reconciled stale file) reflects another — was silent rather than a red
+    doctor line.
+
+    Lane-aware via the sibling ``_loaded_playback_type`` helper: a ``File``
+    sink (the bonded-leader pipe, or the active-speaker parked graph's
+    ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT`` — pinned narrow
+    (D4) regardless of the general program lane; every other sink (the ALSA
+    loopback lane, the SHM ring, every real active-speaker DAC graph)
+    expects ``DEFAULT_PLAYBACK_FORMAT``. Without this split, the check would
+    red-line every healthy pipe-sink leader and parked box the day
+    ``DEFAULT_PLAYBACK_FORMAT`` widens (PR-6) — the exact lanes the
+    wide-output-path program pins narrow — with a remediation string that
+    tells the operator to regenerate a config that is already correct. Green
+    fleet-wide today: every JTS-generated format is still ``S16_LE``
+    regardless of lane, so this only starts discriminating once PR-6 lands.
+    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
+
+    label = "camilla playback format"
+    _, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(label, "ok", "no loaded config to compare")
+    path = Path(config_path)
+    loaded_format = _loaded_playback_format(path)
+    if loaded_format is None:
+        return CheckResult(
+            label, "ok", f"{path} has no devices.playback.format field"
+        )
+    playback_type = _loaded_playback_type(path)
+    expected_format = (
+        DEFAULT_PIPE_SINK_FORMAT if playback_type == "File" else DEFAULT_PLAYBACK_FORMAT
+    )
+    expected_name = (
+        "DEFAULT_PIPE_SINK_FORMAT" if playback_type == "File" else "DEFAULT_PLAYBACK_FORMAT"
+    )
+    if loaded_format == expected_format:
+        return CheckResult(
+            label, "ok", f"playback format={loaded_format} (type={playback_type})"
+        )
+    return CheckResult(
+        label,
+        "fail",
+        f"loaded CamillaDSP playback format={loaded_format!r} for playback "
+        f"type={playback_type!r}, expected {expected_format!r} "
+        f"({expected_name}) — a half-flipped box: {path} was generated "
+        f"against a different {expected_name} than the one currently in "
+        "force. Regenerate the config (sudo /opt/jasper/.venv/bin/jasper-sound "
+        "reconcile-current-dsp) or investigate why the constant and the "
+        "loaded config disagree.",
+    )
+
+
 @doctor_check(order=51.6, group="audio")
 def check_audio_runtime_plan() -> CheckResult:
     """Explainable SSOT check for audio latency/coupling knobs."""

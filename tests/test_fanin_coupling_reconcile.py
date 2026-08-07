@@ -16,9 +16,11 @@ from jasper.fanin.coupling_reconcile import (
     OUTPUTD_ENV_PATH,
     _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
     _outputd_actions,
+    default_ring_gates,
     read_persisted_coupling,
     reconcile_auto,
     reconcile_coupling,
+    ring_edge_width_ready,
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -909,6 +911,79 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
     assert result.direction == "arm"
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+# --- D5 (wide-output-path program): ring wire-width preflight ----------------
+
+
+def test_ring_edge_width_ready_passes_today_with_no_monkeypatch():
+    """The width gate is a pure constant comparison. RING_WIRE_FORMAT and
+    DEFAULT_PLAYBACK_FORMAT are both S16_LE today, so the gate passes with NO
+    monkeypatching — the byte-identical-release contract PR-1 exists to
+    prove."""
+    import jasper.camilla_config_contract as contract
+    from jasper.fanin_coupling import RING_WIRE_FORMAT
+
+    assert contract.DEFAULT_PLAYBACK_FORMAT == RING_WIRE_FORMAT == "S16_LE"
+    ok, detail = ring_edge_width_ready()
+    assert ok is True
+    assert "S16_LE" in detail
+
+
+def test_ring_edge_width_ready_refuses_when_program_lane_widens(monkeypatch):
+    """Simulates the future PR-6 world: DEFAULT_PLAYBACK_FORMAT wider than the
+    ring's fixed S16 wire. Refuses with an actionable reason naming both
+    formats — written against the constant, so this is what flips
+    automatically once PR-6 lands (no code change here needed)."""
+    import jasper.camilla_config_contract as contract
+
+    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    ok, detail = ring_edge_width_ready()
+    assert ok is False
+    assert "S32_LE" in detail
+    assert "S16_LE" in detail
+    assert "keeping loopback" in detail
+
+
+def test_default_ring_gates_registers_edge_width_gate_first():
+    gates = default_ring_gates()
+    names = [name for name, _ in gates]
+    assert names[0] == "ring_edge_width"
+    assert dict(gates)["ring_edge_width"] is ring_edge_width_ready
+
+
+def test_arm_shm_ring_refused_on_wide_program_lane_recovers_to_loopback(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """The manual-arm chain wiring: a wide DEFAULT_PLAYBACK_FORMAT refuses the
+    arm BEFORE any daemon is bounced and recovers to loopback — the belt to
+    the coupling_auto default-resolution suspender covered above."""
+    import jasper.camilla_config_contract as contract
+
+    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+
+    assert result.ok is False
+    assert result.recovered is True
+    assert "S32_LE" in result.detail and "S16_LE" in result.detail
+    # The ring was NEVER armed — camilla was only reconciled to loopback (the
+    # recovery), never to shm_ring. (The recovery itself does restart
+    # fanin/outputd, same as every other preflight-refusal test above.)
+    assert "camilla:shm_ring" not in calls
+    assert "camilla:loopback" in calls
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
 
 
 # --- defect A: Ring-A slot-count coherence + stale-file guard + migration -----

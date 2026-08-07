@@ -23,6 +23,7 @@ from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -1958,7 +1959,7 @@ def emit_active_speaker_parked_config(
     topology_id: str | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
-    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    playback_format: str | None = None,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
@@ -1981,7 +1982,16 @@ def emit_active_speaker_parked_config(
       the same safe-by-construction argument the camilla#1 program bake rests
       on — no DAC attached, so no driver can be over-driven regardless of the
       saved topology. It also makes parking DAC-agnostic: a board that declares
-      no active outputd lane at all can still park.
+      no active outputd lane at all can still park. Its emitted ``format`` is
+      ALWAYS ``DEFAULT_PIPE_SINK_FORMAT`` (D4, wide-output-path program),
+      decoupled from ``playback_format``/``DEFAULT_PLAYBACK_FORMAT`` the same
+      way the bonded-leader pipe sink is in
+      :func:`jasper.sound.camilla_yaml.emit_sound_config`. ``playback_format``
+      (default ``None``) is not applicable to this ``/dev/null`` File sink at
+      all — passing it EXPLICITLY (a caller-supplied value, ``is not None``)
+      is refused rather than silently ignored; this is a pure presence check
+      on the argument, never a value comparison against a mutable default, so
+      the only production caller (which never passes it) can never trip it.
     * **Every physical output is hard muted** by the repo's one mute idiom — a
       ``Gain`` filter at :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true``, the
       same primitive the staged all-muted startup graph's crash-recovery
@@ -1998,7 +2008,27 @@ def emit_active_speaker_parked_config(
 
     capture_device = _yaml_string(capture_device, "capture_device")
     capture_format = _yaml_string(capture_format, "capture_format")
-    playback_format = _yaml_string(playback_format, "playback_format")
+    # D4 (wide-output-path program): the parked graph's /dev/null File sink is
+    # pinned to DEFAULT_PIPE_SINK_FORMAT below, independently of
+    # playback_format — mirrors the bonded-leader pipe-sink guard in
+    # jasper.sound.camilla_yaml.emit_sound_config. GENUINELY explicit: a bare
+    # ``is not None`` presence check on the CALLER-SUPPLIED argument, not a
+    # value comparison against DEFAULT_PLAYBACK_FORMAT (a module global read
+    # fresh at call time would silently diverge from this parameter's
+    # def-time-bound default the moment the two constants are no longer
+    # assigned in lockstep — SF1 from the PR-1 gate review). This function's
+    # only production caller never passes playback_format, so it can never
+    # trip this — the box must always be able to park. playback_format is
+    # not otherwise used (no ``_yaml_string`` validation either): the emitted
+    # format is always the pinned constant below, never this parameter.
+    if playback_format is not None:
+        raise ActiveSpeakerConfigError(
+            "the parked graph's /dev/null File sink is pinned to "
+            f"DEFAULT_PIPE_SINK_FORMAT={DEFAULT_PIPE_SINK_FORMAT!r} — "
+            "playback_format is not applicable to this sink at all; passing "
+            f"one explicitly (got {playback_format!r}) is a caller bug, not "
+            "a wire-format request; they are different axes"
+        )
     sample_rate = _positive_int(sample_rate, "sample_rate")
     output_count = _positive_int(output_count, "output_count")
     # Same env-at-call-time resolution as the startup emitter, so a parked box
@@ -2077,7 +2107,7 @@ devices:
     type: File
     channels: {output_count}
     filename: "{PARKED_SINK_PATH}"
-    format: {playback_format}
+    format: {DEFAULT_PIPE_SINK_FORMAT}
 
 filters:
 {filter_yaml}

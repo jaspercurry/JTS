@@ -254,3 +254,148 @@ def test_loopback_ok_when_loaded_graph_is_plain_alsa(monkeypatch, tmp_path):
         outputd_env_text="",
     )
     assert res.status == "ok"
+
+
+# --- D-list survey finding 1 / wide-output-path PR-1: playback format check --
+# Before this check, nothing read the CamillaDSP playback format back off a
+# live config — a half-flip (emitter regenerated against one
+# DEFAULT_PLAYBACK_FORMAT while the loaded file reflects another) was silent.
+
+_S16_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "outputd_content_playback"
+    format: S16_LE
+filters:
+"""
+
+_S32_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "outputd_content_playback"
+    format: S32_LE
+filters:
+"""
+
+
+def _run_format_check(monkeypatch, tmp_path, cfg_text):
+    cfg = tmp_path / "sound_current.yml"
+    cfg.write_text(cfg_text)
+    monkeypatch.setattr(
+        audio, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+    )
+    return audio.check_camilla_playback_format()
+
+
+def test_playback_format_ok_when_config_matches_default_constant(
+    monkeypatch, tmp_path
+):
+    # Green today on every live box: DEFAULT_PLAYBACK_FORMAT is S16_LE and
+    # every JTS emitter is pinned to it (byte-identical release).
+    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S16_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_deliberately_wide_config(monkeypatch, tmp_path):
+    # Prove the check CAN fail (mutation rule): a config declaring S32_LE
+    # while DEFAULT_PLAYBACK_FORMAT is still S16_LE is a half-flipped box —
+    # a red doctor line instead of silence.
+    res = _run_format_check(monkeypatch, tmp_path, _S32_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S32_LE" in res.detail
+    assert "S16_LE" in res.detail
+
+
+def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        audio, "_active_camilla_config_path", lambda: (tmp_path, None)
+    )
+    res = audio.check_camilla_playback_format()
+    assert res.status == "ok"
+
+
+def test_playback_format_ok_when_config_has_no_format_field(monkeypatch, tmp_path):
+    res = _run_format_check(monkeypatch, tmp_path, "filters:\n")
+    assert res.status == "ok"
+
+
+# --- NIT1 (PR-1 gate review): the check is lane-aware, keyed on playback type -
+
+_S16_FILE_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S16_LE
+filters:
+"""
+
+_S32_FILE_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S32_LE
+filters:
+"""
+
+
+def test_playback_format_ok_for_file_sink_pinned_narrow_even_when_lane_widens(
+    monkeypatch, tmp_path
+):
+    # The bonded-leader pipe sink (and the active-speaker parked graph's
+    # /dev/null sink) are pinned to DEFAULT_PIPE_SINK_FORMAT independently of
+    # the general program lane (D4) — so a File-type S16 config must stay
+    # green even after DEFAULT_PLAYBACK_FORMAT is monkeypatched wide (the
+    # future PR-6 world). Without the lane split this would red-line a
+    # perfectly healthy box.
+    import jasper.camilla_config_contract as contract
+
+    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S16_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
+    monkeypatch, tmp_path
+):
+    # The lane split must not become "any File type auto-passes": a File
+    # sink whose format has genuinely drifted off DEFAULT_PIPE_SINK_FORMAT
+    # (S32 today, no monkeypatch needed) still fails.
+    res = _run_format_check(monkeypatch, tmp_path, _S32_FILE_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S32_LE" in res.detail
+    assert "S16_LE" in res.detail
+    assert "DEFAULT_PIPE_SINK_FORMAT" in res.detail

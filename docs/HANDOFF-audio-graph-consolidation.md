@@ -271,7 +271,12 @@ Verified missing on main (2026-07-03):
    `--coupling`/`--ring-flat-config` to the seeder.
 4. **Ordered-transition ownership**: ~~`shm_ring` has no ordered arm/disarm.~~
    **CLOSED by P2**: `jasper-fanin-coupling-reconcile shm_ring` is a first-class
-   mode. `_arm_ring` PREFLIGHTs P1 ring assets (`ring_assets_ready`), topology
+   mode. `_arm_ring` PREFLIGHTs wire WIDTH (`ring_edge_width_ready` — D5 of the
+   wide-output-path program, `captures/PLAN-wide-output-path-2026-08-07.md`: the
+   ring's fixed S16 wire must match the box's emitted program lane's format
+   (an equality check, not a width ranking — no such primitive exists in-repo);
+   a pure constant comparison, so it runs first and passes everywhere today), P1
+   ring assets (`ring_assets_ready`), topology
    eligibility (`ring_topology_ready`), and BOTH geometry axes — the period
    (`ring_geometry_ready`: conf.d period == outputd period) AND the Ring-A slot
    count (`ring_slot_geometry_ready`: `JASPER_FANIN_RING_SLOTS` == conf.d
@@ -306,8 +311,16 @@ Verified missing on main (2026-07-03):
    or a finding-5 revert; `check_ring_geometry_coherence` verifies the Ring-A
    `n_slots` agrees across all three axes (env ↔ conf.d ↔ on-disk ring header) when
    armed and skips cleanly when not (the 2026-07-05 geometry-hole surface);
-   `check_fanin_service` recognizes the `shm_ring` transport. The E-list
-   loopback-check rewrites remain a later-phase (P7/P9) task.
+   `check_fanin_service` recognizes the `shm_ring` transport. **Playback-format
+   drift check added by the wide-output-path program's PR-1**:
+   `check_camilla_playback_format` reads the loaded config's
+   `devices.playback.format` back (nothing did before) and compares it
+   against its lane's expected constant — `DEFAULT_PIPE_SINK_FORMAT` for a
+   `File` sink (the bonded-leader pipe, the parked `/dev/null` graph —
+   pinned narrow by D4), `DEFAULT_PLAYBACK_FORMAT` for every other sink —
+   so a half-flip is a red doctor line instead of silence — see
+   `captures/PLAN-wide-output-path-2026-08-07.md`. The E-list loopback-check
+   rewrites remain a later-phase (P7/P9) task.
 7. **/state observability**: ~~`/state.audio_graph` needs the resolved transport.~~
    **CLOSED by P2**: `/state.audio_graph.coupling` surfaces the persisted coupling,
    the outputd content bridge, whether the pair is coherent, and the live fan-in
@@ -368,8 +381,9 @@ zombie-handle reopen are prerequisites). What it does:
   It runs on deploy (`install.sh` → `resolve_fanin_coupling_default`) and boot
   (`jasper-fanin-coupling-auto.service`).
 - **Coupling default (P4).** On a full-profile, solo, ring-eligible box the
-  default coupling is `shm_ring`, resolved first by an install-profile gate and
-  then the SAME #1169 arm preflights a manual arm
+  default coupling is `shm_ring`, resolved first by the wire-width gate
+  (`ring_edge_width_ready` — D5, wide-output-path program) and an install-profile
+  gate, then the SAME #1169 arm preflights a manual arm
   uses (`ring_assets_ready` + topology + `ring_geometry_ready` +
   `ring_slot_geometry_ready`) PLUS two auto-only gates: a ROUTE-support gate
   (`ring_route_ready` — a grouped box resolves `loopback`, so the boot unit does
@@ -573,7 +587,14 @@ renderers,aec}.py`, `jasper/cli/{aec_tune,aec_bridge}.py`,
 measured floors: [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md)
 "Final state — 2026-07-03".
 
-Last verified: 2026-07-15 (USB combo intent ownership rechecked against
+Last verified: 2026-08-07 (wide-output-path program PR-1 added the
+`ring_edge_width_ready` D5 wire-width preflight to `_arm_ring` and
+`default_ring_gates` — items 4 and 6's gate/doctor enumerations updated —
+and the `check_camilla_playback_format` doctor check named in item 6;
+`captures/PLAN-wide-output-path-2026-08-07.md` is the canonical program plan.
+Only the `_arm_ring`/`default_ring_gates`/doctor passages were re-verified
+this pass; every other phase row unchanged from the prior pass below.
+Prior 2026-07-15: USB combo intent ownership rechecked against
 `jasper.source_intent`; the retired periodic capture-health entry no longer
 shares the reconcile lock or mutates composition; streambox keeps automatic P4 coupling on loopback while
 the independent USB DIRECT decision still runs; unit enablement is documented only as the derived
@@ -581,5 +602,5 @@ gadget-composition mirror. Prior 2026-07-12 cross-language ring open/reclaim tra
 role-qualified event vocabulary checked;
 A2/P5a marked DONE — the Rust solo/aloop USB capture path and its later
 standby-only compatibility process/state file are deleted; the process-free
-readiness marker remains. Only the USB-ingress rows were re-verified this pass; other
+readiness marker remains. Only the USB-ingress rows were re-verified that pass; other
 phase rows unchanged.)

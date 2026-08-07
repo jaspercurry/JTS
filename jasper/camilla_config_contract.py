@@ -30,6 +30,16 @@ DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
+# The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
+# axis) and the active-speaker parked graph's /dev/null File sink are pinned
+# to THIS format, independently of DEFAULT_PLAYBACK_FORMAT: snapserver's pipe
+# source is a fixed-format wire contract —
+# jasper.multiroom.reconcile.snapserver_argv hardcodes `sampleformat=
+# 48000:16:2` — so a future DEFAULT_PLAYBACK_FORMAT widening (the
+# wide-output-path program) must not also widen the bytes snapserver reads
+# off the FIFO. Pipe/File sinks are a different axis from the ALSA loopback
+# lane's format.
+DEFAULT_PIPE_SINK_FORMAT = "S16_LE"
 # Canonical live pair-balance Gain identity for the active driver-domain graph.
 # The emitter and runtime patcher share this lightweight vocabulary; the safety
 # verifier deliberately retains an independent private literal and re-proves

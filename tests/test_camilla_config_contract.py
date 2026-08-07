@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from jasper.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
+    DEFAULT_PIPE_SINK_FORMAT,
+    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
@@ -14,6 +16,51 @@ from jasper.camilla_config_contract import (
     snd_aloop_rate_adjust_oscillation_reason,
     total_positive_boost_db,
 )
+
+
+def test_pipe_sink_format_is_pinned_and_independent_of_playback_format_today():
+    """D4 (wide-output-path program): the pipe/File-sink format is its own
+    constant, separate from the ALSA loopback lane's DEFAULT_PLAYBACK_FORMAT
+    — the two happen to agree today (byte-identical release), but that must
+    be a coincidence of value, not a shared name, or a future
+    DEFAULT_PLAYBACK_FORMAT widening would silently corrupt the snapserver
+    pipe wire (`sampleformat=48000:16:2`,
+    jasper.multiroom.reconcile.snapserver_argv)."""
+    assert DEFAULT_PIPE_SINK_FORMAT == "S16_LE"
+    assert DEFAULT_PIPE_SINK_FORMAT == DEFAULT_PLAYBACK_FORMAT  # true only today
+
+
+def test_pipe_sink_format_matches_snapserver_wire_contract():
+    """NIT2 (PR-1 gate review): pin the promise between the two owners of the
+    snapserver pipe wire format — DEFAULT_PIPE_SINK_FORMAT (this module) and
+    the ``sampleformat=`` literal baked into
+    jasper.multiroom.reconcile.snapserver_argv. They can't share code (one is
+    a Python constant the CamillaDSP emitters read, the other is a literal
+    inside a DIFFERENT daemon's argv builder), so this test pins them
+    together the same way tests/test_wifi_profile_hardening_contract.py pins
+    its three writers to one canonical contract: widening either side alone,
+    without the other, fails a test naming the other.
+
+    "16:2" is snapserver's own ``<bits>:<channels>`` syntax for its pipe
+    source, not a JTS format literal — it can only mean ``S16_LE`` (no other
+    live format has a 16-bit depth), so the assertion below is a genuine
+    "iff": the argv carries ``48000:16:2`` iff the constant is ``S16_LE``.
+    """
+    from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
+    from jasper.multiroom.reconcile import snapserver_argv
+
+    cfg = GroupingConfig(
+        enabled=True,
+        role="leader",
+        channel="left",
+        bond_id="contract-test",
+        leader_addr="",
+        buffer_ms=DEFAULT_BUFFER_MS,
+        codec=DEFAULT_CODEC,
+        error=None,
+    )
+    argv_carries_16_2 = "sampleformat=48000:16:2" in " ".join(snapserver_argv(cfg))
+    assert argv_carries_16_2 == (DEFAULT_PIPE_SINK_FORMAT == "S16_LE")
 
 
 def test_camilla_latency_knobs_default_to_literals_when_unset():
