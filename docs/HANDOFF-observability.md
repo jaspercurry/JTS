@@ -328,8 +328,14 @@ healthy each daemon looks — is read on the slow cadence from the same
 (both statefiles, plus outputd's live capture PCM), and reported as a parked
 signal path rather than "Audio is ready". When the cause is a saved layout the
 DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
-because no reconcile or restart can clear that one. Audio health does not spawn
-a second `systemctl` cadence.
+because no reconcile or restart can clear that one. A CamillaDSP that is simply
+*stopped* is read off the same cached systemd snapshot and reported the same
+way: `jasper-camilla.service` has no `Condition*` gate and no legitimate parked
+state, so a clean `inactive` — which `check_service_runtime_state` passes and
+the services table hides — is an issue rather than silence. Its neighbours are
+deliberately excluded, because `jasper-outputd` (missing-DAC `ExecCondition`)
+and `jasper-voice` (`voice-input-absent` marker) do park themselves `inactive`
+by design. Audio health does not spawn a second `systemctl` cadence.
 
 The contract separates playback continuity from timing. A USB `l2_fallback`
 is a latency warning while playback remains protected; `l0_locked` is runtime
