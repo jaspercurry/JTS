@@ -24,6 +24,16 @@ from typing import Any
 
 from jasper import output_hardware
 from jasper.audio_hardware import dac as dac_registry
+
+# The declaration outputd loads through `EnvironmentFile=` (its runtime output
+# contract: sink, backend, active width, final-edge format). Imported, never
+# restated as a literal here: an unreadable path leaves the ordering guard below
+# fail-OPEN, so a drifted copy would silently disable it with every test still
+# green. jasper-audio-hardware-reconcile is the writer; the per-box override is
+# the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
+# tests/test_aec_init.py pins this against jasper-outputd.service's own
+# EnvironmentFile= line.
+from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
     AlignmentIdentity,
     load_artifact,
@@ -36,6 +46,30 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
+# Kept in step with the `init_status` branch in jasper-aec-reconcile's
+# activate_managed_chip_aec by tests/test_aec_reconcile.py.
+OUTPUTD_ENV_STALE_EXIT = 3
+OUTPUTD_UNIT = "jasper-outputd.service"
+# How long to let a queued outputd restart land before refusing to commission.
+# Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open).
+#
+# The binding budget is the CALLER's, not this oneshot's own
+# DefaultTimeoutStartSec: jasper-aec-reconcile's activate_managed_chip_aec runs
+# `systemctl restart jasper-aec-init.service` BLOCKING, so aec-init's whole
+# runtime is spent inside jasper-aec-reconcile.service's TimeoutStartSec. A
+# SIGTERM there is not a clean park — the reconciler has no trap, so the box is
+# left deaf with the alignment status stuck at `checking` and the persistent
+# voice-input-absent marker in place. Worst case inside aec-init:
+#   _find_device            <= 10 s
+#   this settle wait        <= 10 s + one SYSTEMCTL_QUERY_TIMEOUT_SEC overrun
+#   collect_reference_queue <= 30 s
+# = <= 55 s, against the 120 s the reconciler unit now allows. Move either
+# number and re-derive both; tests/test_aec_init.py pins the relationship.
+OUTPUTD_ENV_SETTLE_SEC = 10.0
+# Per-call bound on the `systemctl show` probe so a wedged systemd cannot hold
+# the settle wait open past its own deadline. A timeout is treated as STALE, not
+# as unknown: an unanswerable systemctl is not evidence that outputd is current.
+SYSTEMCTL_QUERY_TIMEOUT_SEC = 5.0
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
@@ -60,6 +94,14 @@ class CommissionRequired(ChipInitError):
 
 class ChipProfileError(ChipInitError):
     pass
+
+
+class OutputdEnvStale(ChipInitError):
+    """The live outputd predates its own declaration, so STATUS is not current."""
+
+
+class _SystemctlTimeout(RuntimeError):
+    """`systemctl show` did not answer inside its own per-call budget."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +179,209 @@ def validate_reference_status(
     )
 
 
+def _log_ordering_probe_anomaly(
+    outcome: str, *, returncode: int, value: str
+) -> None:
+    """WARN that the ordering guard has gone inert for a reason that is not a state.
+
+    Without this the guard fails silent: it returns "not stale", commissioning
+    proceeds, and nothing anywhere says the check did not actually run. Only the
+    anomalous paths land here — a unit that has simply never started this boot is
+    a legitimate quiet case.
+    """
+
+    log_event(
+        logger,
+        "chip_aec_init.ordering_probe",
+        outcome=outcome,
+        unit=OUTPUTD_UNIT,
+        returncode=returncode,
+        # Truncated: systemctl's stderr/stdout is not a trusted length.
+        value=value[:120],
+        action="ordering guard is inert; inspect systemctl and jasper-outputd",
+        level=logging.WARNING,
+    )
+
+
+def outputd_main_start_realtime(
+    *, env: Mapping[str, str] | None = None
+) -> float | None:
+    """Return the epoch instant outputd's main process started, or None if unknown.
+
+    ``ExecMainStartTimestamp`` is the CLOCK_REALTIME sibling of the monotonic
+    property, which is what lets the caller compare it against a file mtime
+    without mixing clock domains.  ``--timestamp=unix`` renders it as
+    ``@<seconds>`` instead of a locale-formatted string; the exact rendering is
+    load-bearing, so it is pinned against hardware in tests/test_aec_init.py.
+
+    None means three things, all of which leave the guard inert:
+
+    * The unit has never started this boot.  systemd prints an EMPTY value for
+      that (probed on jts3/jts4, systemd 257) — quiet, because it is legitimate.
+    * ``systemctl`` exited non-zero.  That is the unsupported-``--timestamp=unix``
+      class (added in 247; Trixie ships 257, so it is theoretical).  WARN-logged.
+    * The value was non-empty but did not parse.  WARN-logged.
+
+    The last two are anomalies rather than states, so they are logged: an inert
+    guard is otherwise invisible, and silence would look exactly like success.
+
+    The asymmetry against `_SystemctlTimeout` is deliberate.  A timeout means
+    systemctl is unanswerable *while the flag is known-supported*, so there is no
+    reason to believe outputd is current — fail closed.  A non-zero exit is the
+    unsupported-flag class, where failing closed would park every speaker on an
+    older systemd for a guard it cannot run — fail open to the pre-guard
+    behaviour, and say so in the journal.
+
+    None does NOT mean "outputd is stopped".  systemd RETAINS this timestamp after
+    a unit stops, so a stopped outputd that ran this boot still reports its old
+    start instant, and a declaration newer than it reads as stale.  That is
+    stricter than passing the case through, and it is the safe direction.
+
+    Raises:
+        _SystemctlTimeout: the query did not answer inside its own budget.
+    """
+
+    source = os.environ if env is None else env
+    systemctl = source.get("JASPER_SYSTEMCTL") or "systemctl"
+    try:
+        result = subprocess.run(
+            [
+                systemctl,
+                "show",
+                "--timestamp=unix",
+                "-p",
+                "ExecMainStartTimestamp",
+                "--value",
+                OUTPUTD_UNIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_QUERY_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _SystemctlTimeout(str(exc)) from exc
+    except OSError:
+        # No systemctl at all: not a systemd host (tests, dev shells). Not an
+        # anomaly worth a WARN on a box where the daemon could never run anyway.
+        return None
+    raw = result.stdout.strip()
+    if result.returncode:
+        _log_ordering_probe_anomaly(
+            "systemctl_failed", returncode=result.returncode, value=raw
+        )
+        return None
+    if not raw:
+        # Never started this boot — systemd's empty value. Legitimate, so quiet.
+        return None
+    digits = raw.removeprefix("@")
+    if not digits.isdigit():
+        _log_ordering_probe_anomaly("unparseable", returncode=0, value=raw)
+        return None
+    seconds = int(digits)
+    # A literal zero is not what systemd 257 prints for never-run (it prints
+    # empty, probed) — kept as defence against another version rendering it that
+    # way, and treated as the same "nothing has run" case.
+    return float(seconds) if seconds else None
+
+
+def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
+    """Return why the live outputd predates its declaration, or "" when it does not.
+
+    Compares two CLOCK_REALTIME INSTANTS — the env file's mtime against outputd's
+    recorded start.  Both move together under an NTP step, so a step cannot flip
+    the verdict; comparing a realtime age against a monotonic one could, and did
+    (a forward step made the guard certify exactly the stale outputd the
+    invariant forbids, which is routine on an RTC-less Pi at boot).
+
+    An env at most as old as the start fails closed.  systemd reads
+    ``EnvironmentFile=`` just BEFORE forking the main process, so a write that
+    ties the recorded fork instant was not loaded — and a tie is not proof that
+    it was.  ``--timestamp=unix`` reports whole seconds, so a start instant
+    truncates DOWN; within one second of an env write that can only over-report
+    staleness (a bounded false defer), never certify a stale edge.
+
+    Honest residual, inherent to comparing recorded stamps: only a BACKWARD clock
+    step can invert their order, and only when it lands between the two stamps AND
+    exceeds their separation.  Forward steps are non-decreasing, so they cannot
+    invert anything — both stamps stay in the order they were recorded.  A
+    qualifying backward step goes either way depending on which stamp it lands
+    after: it can hide a genuinely stale outputd, or falsely defer a fresh one.
+
+    This is not closable by ordering the readers.  The verdict is a pure function
+    of two stamps already written by OTHER processes (systemd for the start,
+    jasper-audio-hardware-reconcile for the mtime), so no `After=` on this unit or
+    on jasper-aec-reconcile can change it — an earlier revision carried
+    `After=time-sync.target` for exactly that and it was a belt attached to
+    nothing.  It is also vanishingly rare on this fleet: fake-hwclock restores a
+    PAST time at boot, so NTP's first correction is a FORWARD step, which is the
+    harmless direction.
+    """
+
+    source = os.environ if env is None else env
+    path = source.get("JASPER_OUTPUTD_ENV_FILE") or DEFAULT_OUTPUTD_ENV_PATH
+    try:
+        env_mtime = os.stat(path).st_mtime
+    except OSError:
+        # No declaration on this box, so there is nothing to be stale against.
+        return ""
+    try:
+        started = outputd_main_start_realtime(env=source)
+    except _SystemctlTimeout:
+        return (
+            f"systemctl show {OUTPUTD_UNIT} did not answer within "
+            f"{SYSTEMCTL_QUERY_TIMEOUT_SEC:.0f}s, so the output declaration "
+            "outputd is running cannot be confirmed"
+        )
+    if started is None:
+        return ""
+    if env_mtime < started:
+        return ""
+    return (
+        f"{OUTPUTD_UNIT} started {env_mtime - started:.1f}s before {path} was "
+        "written, so it has not loaded the current output declaration"
+    )
+
+
+def require_outputd_env_loaded(
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float = OUTPUTD_ENV_SETTLE_SEC,
+    interval: float = 0.5,
+) -> None:
+    """Refuse to certify outputd STATUS that predates outputd's own declaration.
+
+    jasper-audio-hardware-reconcile writes ``outputd.env`` and then kicks
+    jasper-outputd and jasper-aec-reconcile as two SEPARATE ``--no-block``
+    systemd transactions (``restart_audio_if_needed``), and udev's
+    99-jasper-aec-reconcile.rules starts the reconciler in a transaction of its
+    own; jasper-aec-init.service's ``After=jasper-outputd.service`` only orders
+    jobs that already share one transaction, and the reconciler starts this
+    oneshot by itself.  So nothing guarantees the outputd answering STATUS has
+    loaded the declaration on disk — the old process stays up, healthy, and
+    answering with the PREVIOUS geometry and final-edge format.
+
+    Binding (or rejecting) a commissioning identity against that is the debt the
+    2026-08-05 final-edge-format PR-2 panel named.  Wait a bounded while for the
+    queued restart to land, then fail rather than commission.
+
+    The deadline is monotonic on purpose: it is a DURATION, so it wants the clock
+    that cannot step.  The staleness verdict itself compares realtime instants —
+    see ``outputd_env_staleness``.  Worst case here is ``timeout`` plus one
+    ``SYSTEMCTL_QUERY_TIMEOUT_SEC`` probe, because the deadline is checked after
+    a poll rather than during one; that overrun is inside the caller budget
+    derived at ``OUTPUTD_ENV_SETTLE_SEC``.
+    """
+
+    deadline = time.monotonic() + timeout
+    while True:
+        reason = outputd_env_staleness(env)
+        if not reason:
+            return
+        if time.monotonic() >= deadline:
+            raise OutputdEnvStale(reason)
+        time.sleep(interval)
+
+
 def collect_reference_queue(
     expected_pcm: str,
     *,
@@ -145,6 +390,14 @@ def collect_reference_queue(
     timeout: float = 30.0,
 ) -> tuple[dict[str, Any], tuple[int, ...]]:
     """Collect eight progressing samples with stable counters and queue."""
+
+    # Both consumers of a live STATUS — this oneshot and jasper-aec-commission —
+    # funnel through here, and the queue positions returned below are as
+    # identity-critical as the dac.format build_identity reads out of the same
+    # snapshot, so the ordering guard belongs on this one path.  It runs before
+    # the poll so a stale verdict propagates as itself instead of being folded
+    # into last_error by the loop's own ChipInitError handler.
+    require_outputd_env_loaded()
 
     deadline = time.monotonic() + timeout
     accepted: list[ReferenceSample] = []
@@ -420,6 +673,20 @@ def main() -> int:
             apply_bypass_profile(dev, card=card)
             log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
         return 0
+    except OutputdEnvStale as exc:
+        # Distinct from a fault: nothing is broken, the output declaration just
+        # has not reached the running daemon yet. Keep it a separate exit code so
+        # the reconciler's disposition (and /state) names the ordering problem
+        # instead of sending a household at the commissioner.
+        if dev is not None:
+            _safe_bypass(dev)
+        log_event(
+            logger, "chip_aec_init", outcome="deferred",
+            reason=str(exc),
+            action=f"wait for {OUTPUTD_UNIT} to restart, then run jasper-aec-reconcile",
+            level=logging.ERROR,
+        )
+        return OUTPUTD_ENV_STALE_EXIT
     except CommissionRequired as exc:
         if dev is not None:
             _safe_bypass(dev)

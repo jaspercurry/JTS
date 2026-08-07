@@ -1185,6 +1185,19 @@ activate_managed_chip_aec() {
             "alignment is absent or does not match this hardware/output identity" \
             "Run sudo jasper-aec-commission"
         park_managed_xvf "chip-AEC commissioning required; run sudo jasper-aec-commission"
+    elif [[ "$init_status" == "3" ]]; then
+        # aec-init's OUTPUTD_ENV_STALE_EXIT: the live jasper-outputd predates
+        # /var/lib/jasper/outputd.env, so its STATUS describes an output edge
+        # nobody is running and no identity may be bound against it. Nothing is
+        # broken and the artifact is not suspect — do NOT send the household to
+        # the commissioner. jasper-audio-hardware-reconcile kicks outputd and
+        # this reconciler as two separate --no-block transactions, so the fix is
+        # simply a later reconcile once outputd has restarted.
+        write_alignment_env \
+            "deferred" \
+            "jasper-outputd has not loaded the current output declaration" \
+            "Wait for jasper-outputd to restart, then run the reconciler"
+        park_managed_xvf "chip-AEC deferred; jasper-outputd predates its own output declaration"
     else
         write_alignment_env \
             "fault" \

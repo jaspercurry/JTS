@@ -157,12 +157,50 @@ native reference writer active but parks the bridge and voice. Once silent
 reapply/readback succeeds it starts the bridge and voice. Ordinary lifecycle
 handling never plays audio, resets the chip, searches parameters, rewrites the
 artifact, starts a timer, or runs a servo. `/aec`, `/state`, and
-`jasper-doctor` expose `ready`, `commission_required`, `unavailable`, or
-`fault` with the reconciler-provided reason/action.
+`jasper-doctor` expose `ready`, `commission_required`, `deferred`,
+`unavailable`, or `fault` with the reconciler-provided reason/action.
 Specifically, reconcile installs outputd's final native-plus-UDP configuration
 while bridge/voice stay parked, requires that critical outputd restart to
 succeed, then init samples that same live writer before unpark; outputd is not
 restarted again after init.
+
+That ordering holds only *within* a reconcile pass. Across passes it does not:
+`jasper-audio-hardware-reconcile` writes `/var/lib/jasper/outputd.env` and then
+kicks `jasper-outputd` and `jasper-aec-reconcile` as two separate `--no-block`
+systemd transactions, and udev starts the reconciler in a transaction of its
+own, so `jasper-aec-init.service`'s `After=jasper-outputd.service` orders
+nothing here (it only orders jobs that already share one transaction). The live
+outputd can therefore still be answering STATUS with the *previous* geometry and
+final-edge format. `require_outputd_env_loaded`
+(`jasper/cli/aec_init.py`) closes that: before sampling any STATUS it compares
+outputd's `ExecMainStartTimestamp` against the env file's mtime, waits a bounded
+10 s for a queued restart, and then exits `3` rather than certify a stale edge.
+That is the `deferred` disposition above — an ordering race, not a moved
+artifact, so it deliberately does **not** ask for a recommission, and
+`jasper-doctor` reports it as an intentional park on the `AEC bridge service` row
+rather than a bridge failure.
+
+Three details of that comparison are easy to get wrong. **Both sides must be the
+same clock.** An earlier revision compared a CLOCK_REALTIME age against a
+CLOCK_MONOTONIC age, which fails *open* under a forward NTP step — routine on an
+RTC-less Pi at boot — and certifies exactly the stale outputd the guard exists to
+catch. Comparing recorded realtime *instants* makes "now" not an input at all.
+The residual is inherent and not closable by unit ordering: only a **backward**
+step can invert the two stamps, and only when it lands between them and exceeds
+their separation (forward steps are non-decreasing). Both stamps are written by
+other processes — systemd for the start, `jasper-audio-hardware-reconcile` for the
+mtime — so no `After=` on the reading units can affect the verdict; an earlier
+revision carried `After=time-sync.target` for exactly this and it was a belt
+attached to nothing. fake-hwclock restores a *past* time at boot, so NTP's first
+correction is a forward step, the harmless direction. **A stopped outputd is
+caught, not ignored.** systemd retains `ExecMainStartTimestamp` after a unit
+stops, so a stopped outputd that ran this boot still reports its old instant and a
+newer declaration reads as stale; only a unit that never started this boot reports
+an empty value and leaves the guard inert, where `collect_reference_queue`'s
+writer-not-ready path owns the diagnosis. **An inert guard is logged.** The two
+anomalous inert paths — `systemctl` exiting non-zero, or a non-empty value that
+does not parse — emit `event=chip_aec_init.ordering_probe` at WARN, because a
+guard that silently does not run looks identical to one that passed.
 
 The `jasper-aec-bridge` remains a shared mic-to-voice carrier, not synonymous
 with WebRTC AEC3. With commissioned chip AEC it forwards the selected hardware

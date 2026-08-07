@@ -51,6 +51,13 @@ ACCESSORY_RECONCILERS = {
 
 # Per-unit TimeoutStartSec overrides; anything absent expects the 60s default.
 RECONCILE_ONESHOT_TIMEOUTS = {
+    # activate_managed_chip_aec starts jasper-aec-init BLOCKING, so aec-init's
+    # whole runtime is spent inside this budget: <=10s _find_device, <=10s+5s
+    # outputd env-ordering settle, <=30s reference-queue collection. A kill
+    # mid-pass leaves the box deaf with the alignment status stuck at `checking`
+    # (no trap, persistent voice-input-absent marker). The derivation itself is
+    # pinned by tests/test_aec_init.py against the aec_init constants.
+    "jasper-aec-reconcile": "120",
     "jasper-fanin-coupling-auto": "120",
     "jasper-grouping-reconcile": str(
         int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
@@ -240,8 +247,9 @@ def test_reconcile_oneshots_have_bounded_start_timeout(unit, path):
     # outlast the pass (review #1252 SF-1). Grouping may wait for one prior
     # source activation before it queues a guaranteed-fresh role pass, and
     # source intent owns its own complete multi-source transaction.
-    # Their finite outer bounds cover those declared child budgets. The other
-    # reconcilers keep 60.
+    # jasper-aec-reconcile starts jasper-aec-init blocking and inherits its whole
+    # bounded runtime. Their finite outer bounds cover those declared child
+    # budgets. The other reconcilers keep 60.
     expected_timeout = RECONCILE_ONESHOT_TIMEOUTS.get(unit, "60")
     assert ("TimeoutStartSec", expected_timeout) in pairs, (
         f"{unit}: reconcile oneshots need a finite start timeout so startup "
