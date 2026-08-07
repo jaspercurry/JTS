@@ -31,12 +31,11 @@
 #   compgen -G guards each glob (files-exist, not just the dir), so
 #   an empty dir can't leave a literal *.css/*.js to fail `install`
 #   and abort the deploy under `set -euo pipefail`.
-#   `shared` carries the cross-page ES modules (the <dialog>
-#   confirm/alert helper at shared/js/dialog.js, the HTML escaper at
-#   shared/js/escape.js, the CSRF fetch helpers at shared/js/http.js,
-#   and the browser mic/AudioWorklet helpers at
-#   shared/js/measurement-audio.js) — same copy shape as a page,
-#   no .css.
+#   `shared` carries the cross-page ES modules — same copy shape as a
+#   page, no .css. Deliberately not enumerated here: this comment listed
+#   four of them and had silently fallen behind to eight. The directory
+#   listing of deploy/assets/shared/js/ is the answer, and the loop below
+#   already copies whatever is in it.
 #
 # Page dirs are discovered dynamically: every directory under
 # deploy/assets/ (each canonical page's slug, plus `shared`) is
