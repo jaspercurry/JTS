@@ -62,6 +62,11 @@ OUTPUTD_STALE_MS = 3000
 # operator remedy; this is the only writer of the /state wording.
 PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
 
+# The one household-facing sentence for a stopped CamillaDSP (#2163). Written
+# once and read by both surfaces it has to agree on: the `path.camilla_stopped`
+# incident title and the signal-path headline that carries it into `overall`.
+STOPPED_DSP_HEADLINE = "DSP engine is not running"
+
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
@@ -470,6 +475,40 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
 
 
+def _stopped_dsp_signal(
+    airplay: Mapping[str, Any],
+    service_states: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the stopped-CamillaDSP signal path, or None when it is running.
+
+    :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
+    and outputd, and both are built to keep looping when the stage between
+    them disappears: fan-in's default `loopback` coupling is timer-paced
+    (`docs/HANDOFF-fan-in-daemon.md` — "structurally immune"), `shm_ring`
+    free-run-drops on an absent reader rather than blocking, outputd reads its
+    content lane nonblocking and zero-fills ("absent content becomes silence.
+    This keeps the final output loop alive"), and BOTH `last_progress_age_ms`
+    counters time the work loop's iteration, not audio actually moving.  So a
+    dead CamillaDSP leaves every input to `_signal_path` healthy while the
+    speaker emits nothing — `overall` would otherwise read "Audio is playing ·
+    signal path clean" next to its own "DSP engine is not running" incident.
+
+    Presentation only, exactly like :func:`_parked_signal`:
+    :class:`AudioHealthSampler` feeds :func:`_state_issues` the raw signal
+    path, so `path.camilla_stopped` keeps its own incident row rather than
+    being swallowed by the headline it produces here.
+
+    Shares the boot-warmup gate with that issue, so a deploy's coordinated
+    restart does not flicker the card.
+    """
+    if bool(airplay.get("warmup_active")):
+        return None
+    detail = _camilla_stopped(_mapping(service_states).get(CAMILLA_UNIT_FULL))
+    if detail is None:
+        return None
+    return {"status": "issue", "headline": STOPPED_DSP_HEADLINE, "detail": detail}
+
+
 def _signal_path(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
@@ -808,7 +847,7 @@ def _state_issues(
                 scope="path",
                 impact="continuity",
                 severity="issue",
-                title="DSP engine is not running",
+                title=STOPPED_DSP_HEADLINE,
                 detail=camilla_stopped,
             ))
     if not warmup and outputd is None:
@@ -975,6 +1014,13 @@ def _camilla_stopped(raw_state: Any) -> str | None:
     `failed` (which is why `OnFailure=jasper-camilla-recover` does not catch
     it).
 
+    Nor does a stopped unit necessarily carry a restart count that some OTHER
+    surface could have caught: the recover script's `camilla_start_failed`
+    exit runs `systemctl reset-failed jasper-camilla.service` immediately
+    before the start it then fails, so it parks the unit with the counter
+    already cleared. This detector reads neither `result` nor `n_restarts`
+    for exactly that reason — not running is the fact.
+
     Scoped to CamillaDSP rather than generalised over the core units, because
     the two neighbours have a legitimate parked state and it would be a false
     alarm to treat them the same way: `jasper-outputd` parks itself `inactive`
@@ -984,9 +1030,19 @@ def _camilla_stopped(raw_state: Any) -> str | None:
 
     Silent when systemd truth is unavailable (no `systemctl`, or before the
     first service-state probe): unknown is not stopped.
+
+    A NEVER-INSTALLED unit gets doctor's remedy rather than this one, because
+    `journalctl -u jasper-camilla` on a box that has no such unit is an empty
+    screen. Whole point of #2163 is one fact reading the same way on every
+    surface, so the two must not disagree about the same box.
     """
     state = _mapping(raw_state)
     active_state = str(state.get("active_state") or "")
+    if str(state.get("load_state") or "") in {"error", "not-found"}:
+        return (
+            f"{CAMILLA_UNIT_FULL} is not installed, and every source's audio "
+            f"runs through CamillaDSP. Re-run install.sh."
+        )
     if not active_state or active_state in _UNIT_RUNNING_ACTIVE_STATES:
         return None
     sub_state = str(state.get("sub_state") or "")
@@ -1533,6 +1589,14 @@ def compose_audio_health(
     signal_path = _signal_path(ap, outputd, active_source)
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
+    stopped_dsp = _stopped_dsp_signal(ap, service_states)
+    if stopped_dsp is not None and signal_path.get("status") != "issue":
+        # Ahead of `parked` on the same principle parked states below: a
+        # daemon that is not running is happening NOW and is fixed by starting
+        # it, while parked is persistent and fixed by changing the layout.
+        # Same `!= "issue"` guard, so a concrete live fan-in / outputd failure
+        # still wins — this only claims the ground where the path looks clean.
+        signal_path = stopped_dsp
     parked = _parked_signal(route_state)
     if parked is not None and signal_path.get("status") != "issue":
         # A verified structural fault outranks ok / warn / idle / unknown: the
