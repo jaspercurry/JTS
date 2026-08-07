@@ -4,7 +4,12 @@ Description=Silently restore commissioned XVF3800 chip-AEC alignment
 # oneshot samples that live queue, resolves K-minus-median SYS_DELAY, and
 # applies the fixed volatile profile before the bridge/voice path can start.
 # It never plays a tone, resets the chip, or writes XVF flash.
-After=sound.target dev-snd-controlC4.device jasper-outputd.service
+# time-sync.target is After= ONLY, never Wants=/Requires=: an offline speaker
+# must still restore its chip-AEC profile. The ordering exists because the
+# ordering guard below compares outputd's recorded start instant against a file
+# mtime (outputd_env_staleness), and a Pi has no battery-backed RTC — a
+# first-boot clock step landing between those two instants inverts their order.
+After=sound.target dev-snd-controlC4.device jasper-outputd.service time-sync.target
 Before=jasper-aec-bridge.service jasper-camilla.service
 Requires=sound.target
 Wants=jasper-outputd.service

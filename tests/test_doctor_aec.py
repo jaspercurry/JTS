@@ -508,6 +508,73 @@ def test_aec_bridge_reports_expected_commissioning_park(monkeypatch):
     assert "Run sudo jasper-aec-commission" in result.detail
 
 
+def test_aec_bridge_reports_deferred_outputd_park_without_blaming_the_bridge(
+    monkeypatch,
+):
+    # `deferred` is aec-init's ordering-guard park: the live outputd has not
+    # loaded /var/lib/jasper/outputd.env. Reporting it as `fail` would name
+    # jasper-aec-bridge and recommend `journalctl -u jasper-aec-bridge` plus a
+    # reconciler restart — the first is empty of anything relevant and the second
+    # just re-defers. It must be a warn carrying the reconciler's own words.
+    from jasper.mics import xvf3800
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda *, bridge_active=None: {
+            "audio_profile": {
+                "state": "deferred",
+                "reason": "jasper-outputd has not loaded the current output declaration",
+                "action": "Wait for jasper-outputd to restart, then run the reconciler",
+            },
+        },
+    )
+
+    result = doctor.aec.check_aec_bridge_running()
+
+    assert result.status == "warn"
+    assert "intentionally parked" in result.detail
+    # The reconciler's reason and action, verbatim.
+    assert (
+        "jasper-outputd has not loaded the current output declaration"
+        in result.detail
+    )
+    assert (
+        "Wait for jasper-outputd to restart, then run the reconciler"
+        in result.detail
+    )
+    # None of the bridge-failure remedy leaks through.
+    assert "journalctl -u jasper-aec-bridge" not in result.detail
+    assert "jasper-aec-commission" not in result.detail
+
+
+def test_intentional_bridge_parks_match_the_reconciler_dispositions():
+    # Both members are load-bearing: dropping either turns a deliberate park into
+    # a hard FAIL naming the wrong subsystem.
+    assert doctor.aec._INTENTIONAL_PARKS == frozenset(
+        {"commission_required", "deferred"}
+    )
+    reconciler = (
+        Path(doctor.aec.__file__).resolve().parents[3]
+        / "deploy"
+        / "bin"
+        / "jasper-aec-reconcile"
+    ).read_text(encoding="utf-8")
+    for disposition in doctor.aec._INTENTIONAL_PARKS:
+        assert f'write_alignment_env \\\n            "{disposition}"' in reconciler
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {

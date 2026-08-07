@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 import types
 from dataclasses import replace
 from pathlib import Path
@@ -370,14 +369,25 @@ def test_build_identity_refuses_status_without_a_final_edge_format() -> None:
     assert "dac.format" in str(excinfo.value)
 
 
-def _outputd_env(tmp_path, monkeypatch, *, age_seconds: float):
-    """Point the guard at a declaration written ``age_seconds`` ago."""
+# A fixed epoch instant for the declaration's mtime. Absolute instants on ONE
+# clock is the whole point of the guard's comparison, so the tests use literal
+# instants rather than "N seconds ago" — nothing here reads a live clock.
+_ENV_WRITTEN_AT = 1_786_127_844.0
+
+
+def _outputd_env(tmp_path, monkeypatch, *, mtime: float = _ENV_WRITTEN_AT):
+    """Point the guard at a declaration whose mtime is a fixed epoch instant."""
     path = tmp_path / "outputd.env"
     path.write_text("JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n", encoding="utf-8")
-    written = time.time() - age_seconds
-    os.utime(path, (written, written))
+    os.utime(path, (mtime, mtime))
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(path))
     return path
+
+
+def _stub_start_instant(monkeypatch, instant: float | None) -> None:
+    monkeypatch.setattr(
+        aec_init, "outputd_main_start_realtime", lambda **_kwargs: instant
+    )
 
 
 def _stub_systemctl_show(monkeypatch, stdout: str, *, returncode: int = 0):
@@ -393,46 +403,65 @@ def _stub_systemctl_show(monkeypatch, stdout: str, *, returncode: int = 0):
     return calls
 
 
-def test_outputd_start_timestamp_is_read_from_the_monotonic_systemd_property(
+def test_outputd_start_instant_is_read_from_the_realtime_systemd_property(
     monkeypatch,
 ) -> None:
-    # The property name is load-bearing: the realtime sibling is a formatted
-    # locale string, and only the monotonic one shares a clock with
-    # time.monotonic(). Pin the argv so a rename cannot pass silently.
-    calls = _stub_systemctl_show(monkeypatch, "12345678\n")
+    # The property and the --timestamp=unix rendering are both load-bearing: the
+    # REALTIME sibling is what shares a clock with the env file's mtime (the
+    # monotonic one does not, and mixing them fails open under an NTP step), and
+    # without --timestamp=unix systemd emits a locale-formatted string. Pin the
+    # argv so either change cannot pass silently.
+    calls = _stub_systemctl_show(monkeypatch, "@1786127844\n")
     monkeypatch.setenv("JASPER_SYSTEMCTL", "/fake/systemctl")
 
-    assert aec_init.outputd_main_start_monotonic() == pytest.approx(12.345678)
+    assert aec_init.outputd_main_start_realtime() == pytest.approx(1_786_127_844.0)
     assert calls == [
         [
             "/fake/systemctl",
             "show",
+            "--timestamp=unix",
             "-p",
-            "ExecMainStartTimestampMonotonic",
+            "ExecMainStartTimestamp",
             "--value",
             "jasper-outputd.service",
         ]
     ]
 
 
+def test_outputd_start_instant_probe_is_bounded_per_call(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="@1786127844\n", stderr=""
+        )
+
+    monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+    aec_init.outputd_main_start_realtime()
+
+    assert seen["timeout"] == aec_init.SYSTEMCTL_QUERY_TIMEOUT_SEC
+
+
 @pytest.mark.parametrize(
     "stdout,returncode",
     [
-        ("0\n", 0),          # systemd's "no main process"
+        ("@0\n", 0),         # never started this boot
+        ("0\n", 0),          # same, without the unix-render prefix
         ("[not set]\n", 0),  # unparseable
         ("", 0),             # unknown unit
-        ("12345678\n", 1),   # systemctl itself failed
+        ("@1786127844\n", 1),  # systemctl itself failed
     ],
 )
-def test_outputd_start_timestamp_is_unknown_rather_than_guessed(
+def test_outputd_start_instant_is_unknown_rather_than_guessed(
     monkeypatch, stdout: str, returncode: int
 ) -> None:
     _stub_systemctl_show(monkeypatch, stdout, returncode=returncode)
 
-    assert aec_init.outputd_main_start_monotonic() is None
+    assert aec_init.outputd_main_start_realtime() is None
 
 
-def test_outputd_start_timestamp_survives_a_host_without_systemctl(
+def test_outputd_start_instant_survives_a_host_without_systemctl(
     monkeypatch,
 ) -> None:
     def fake_run(_args, **_kwargs):
@@ -440,18 +469,34 @@ def test_outputd_start_timestamp_survives_a_host_without_systemctl(
 
     monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
 
-    assert aec_init.outputd_main_start_monotonic() is None
+    assert aec_init.outputd_main_start_realtime() is None
+
+
+def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
+    tmp_path, monkeypatch
+) -> None:
+    # A wedged systemd is not evidence that outputd is current, so the verdict is
+    # stale — with its own reason naming the timeout rather than pretending to
+    # know the process instant.
+    _outputd_env(tmp_path, monkeypatch)
+
+    def fake_run(args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=5.0)
+
+    monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+
+    reason = aec_init.outputd_env_staleness()
+
+    assert "did not answer within" in reason
+    assert "cannot be confirmed" in reason
+    assert "has not loaded the current output declaration" not in reason
 
 
 def test_staleness_reports_an_outputd_older_than_its_own_declaration(
     tmp_path, monkeypatch
 ) -> None:
-    path = _outputd_env(tmp_path, monkeypatch, age_seconds=2.0)
-    monkeypatch.setattr(
-        aec_init,
-        "outputd_main_start_monotonic",
-        lambda **_kwargs: time.monotonic() - 12.0,
-    )
+    path = _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 10.0)
 
     reason = aec_init.outputd_env_staleness()
 
@@ -463,42 +508,85 @@ def test_staleness_reports_an_outputd_older_than_its_own_declaration(
 def test_staleness_accepts_an_outputd_started_after_its_declaration(
     tmp_path, monkeypatch
 ) -> None:
-    _outputd_env(tmp_path, monkeypatch, age_seconds=12.0)
-    monkeypatch.setattr(
-        aec_init,
-        "outputd_main_start_monotonic",
-        lambda **_kwargs: time.monotonic() - 2.0,
-    )
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT + 2.0)
 
     assert aec_init.outputd_env_staleness() == ""
 
 
-def test_staleness_fails_closed_when_the_two_timestamps_tie(
+def test_staleness_fails_closed_when_the_two_instants_tie(
     tmp_path, monkeypatch
 ) -> None:
-    # Direction of the boundary, chosen deliberately: an env file exactly as old
-    # as the process reads as STALE. systemd reads EnvironmentFile= just before
-    # forking the main process, so a write that ties the recorded fork instant
-    # landed after the read — and a tie is not proof of loading either way.
-    # Both clocks are frozen because a real tie is decided by microseconds of
-    # clock-read skew, which would make this assertion a coin flip. Only
-    # aec_init's own `time` name is rebound; patching the shared os/time module
-    # objects would leak the fakes into pytest itself.
-    path = tmp_path / "outputd.env"
-    path.write_text("JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n", encoding="utf-8")
-    os.utime(path, (4_900.0, 4_900.0))
-    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(path))
-    monkeypatch.setattr(
-        aec_init,
-        "time",
-        types.SimpleNamespace(monotonic=lambda: 1_000.0, time=lambda: 5_000.0),
-    )
-    monkeypatch.setattr(aec_init, "outputd_main_start_monotonic", lambda **_k: 900.0)
+    # Direction of the boundary, chosen deliberately: a declaration stamped at
+    # exactly the recorded start instant reads as STALE. systemd reads
+    # EnvironmentFile= just before forking the main process, so a write that ties
+    # the fork instant landed after the read — and a tie is not proof of loading
+    # either way. --timestamp=unix also truncates the start to whole seconds, so
+    # ties are reachable in the field, not just here.
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT)
 
-    # process_age = 1000 - 900 = 100; env_age = 5000 - 4900 = 100.
     assert "has not loaded the current output declaration" in (
         aec_init.outputd_env_staleness()
     )
+
+
+@pytest.mark.parametrize(
+    "now_realtime,now_monotonic",
+    [
+        (_ENV_WRITTEN_AT + 1.0, 1_000.0),        # moments later
+        (_ENV_WRITTEN_AT + 86_400.0, 2_000.0),   # a day of uptime
+        (_ENV_WRITTEN_AT + 3_600.0, 5.0),        # forward NTP step: realtime
+        (1_000.0, 900.0),                        # jumped ahead of monotonic
+        (_ENV_WRITTEN_AT - 3_600.0, 900.0),      # backward step
+    ],
+)
+def test_staleness_verdict_never_depends_on_the_current_clock(
+    tmp_path, monkeypatch, now_realtime: float, now_monotonic: float
+) -> None:
+    # The SF2 regression. The first implementation compared a CLOCK_REALTIME age
+    # against a CLOCK_MONOTONIC age, so a forward realtime step — routine on an
+    # RTC-less Pi at boot — made the guard FAIL OPEN and certify exactly the
+    # stale outputd the invariant forbids. Comparing recorded INSTANTS on one
+    # clock means "now" is not an input at all: the same (start, mtime) pair must
+    # yield the same verdict no matter what either clock currently says.
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 10.0)
+    monkeypatch.setattr(
+        aec_init,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: now_monotonic,
+            time=lambda: now_realtime,
+            sleep=lambda _s: None,
+        ),
+    )
+
+    assert "has not loaded the current output declaration" in (
+        aec_init.outputd_env_staleness()
+    )
+
+
+def test_staleness_survives_a_forward_step_landing_after_the_env_write(
+    tmp_path, monkeypatch
+) -> None:
+    # The gate's concrete scenario, recast for instants: outputd starts, the
+    # declaration is written after it (so outputd is genuinely stale), and only
+    # THEN does NTP step the clock forward. Neither recorded instant moves — the
+    # start is already stamped by systemd and the mtime is already on the file —
+    # so the stale verdict has to survive the step.
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 30.0)
+    stepped = _ENV_WRITTEN_AT + 30 * 86_400.0
+    monkeypatch.setattr(
+        aec_init,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: 12.0, time=lambda: stepped, sleep=lambda _s: None
+        ),
+    )
+
+    assert aec_init.outputd_env_staleness() != ""
 
 
 def test_staleness_is_inert_without_a_declaration_on_this_box(
@@ -507,22 +595,42 @@ def test_staleness_is_inert_without_a_declaration_on_this_box(
     # A box with no outputd.env has nothing to be stale against, and the check
     # must cost nothing there — no subprocess at all.
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(tmp_path / "absent.env"))
-    calls = _stub_systemctl_show(monkeypatch, "12345678\n")
+    calls = _stub_systemctl_show(monkeypatch, "@1786127844\n")
 
     assert aec_init.outputd_env_staleness() == ""
     assert calls == []
 
 
-def test_staleness_ignores_an_outputd_with_no_running_main_process(
+def test_staleness_is_inert_when_outputd_never_started_this_boot(
     tmp_path, monkeypatch
 ) -> None:
-    # A stopped or mid-restart outputd is not the stale process this guard is
-    # about: whichever process answers the STATUS socket next is a newer one,
-    # and collect_reference_queue already waits for it.
-    _outputd_env(tmp_path, monkeypatch, age_seconds=0.0)
-    monkeypatch.setattr(aec_init, "outputd_main_start_monotonic", lambda **_k: None)
+    # An absent start instant means only: never started this boot, unparseable,
+    # or systemctl failed. It does NOT mean "stopped" — systemd RETAINS
+    # ExecMainStartTimestamp after a unit stops, so a stopped outputd that ran
+    # this boot still reports its old instant and is caught by the stale branch
+    # (see the test below). Nothing has run, so there is nothing to be stale
+    # against, and collect_reference_queue's writer-not-ready path owns the
+    # diagnosis.
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, None)
 
     assert aec_init.outputd_env_staleness() == ""
+
+
+def test_staleness_catches_a_stopped_outputd_that_ran_before_the_env_write(
+    tmp_path, monkeypatch
+) -> None:
+    # NIT4 from the gate, probed on jts3: systemd keeps ExecMainStartTimestamp
+    # after a unit stops (an inactive oneshot that ran this boot still reports a
+    # non-zero instant; only a never-run unit reports zero). So a stopped outputd
+    # whose last run predates the declaration reads as STALE, not as unknown.
+    # That is stricter than passing it through, and it is the safe direction.
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 600.0)
+
+    assert "has not loaded the current output declaration" in (
+        aec_init.outputd_env_staleness()
+    )
 
 
 def test_require_outputd_env_loaded_hands_the_staleness_reason_to_the_caller(
@@ -619,12 +727,8 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     monkeypatch.setattr(
         aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245)
     )
-    _outputd_env(tmp_path, monkeypatch, age_seconds=1.0)
-    monkeypatch.setattr(
-        aec_init,
-        "outputd_main_start_monotonic",
-        lambda **_kwargs: time.monotonic() - 20.0,
-    )
+    _outputd_env(tmp_path, monkeypatch)
+    _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 20.0)
     reads: list[str] = []
     monkeypatch.setattr(
         aec_init, "read_status_socket", lambda path: reads.append(path) or {}
@@ -648,6 +752,26 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     assert "jasper-aec-commission" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "unit_name",
+    ["jasper-aec-reconcile.service", "jasper-aec-init.service"],
+)
+def test_aec_units_order_after_time_sync_without_requiring_it(
+    unit_name: str,
+) -> None:
+    # The guard compares recorded realtime instants, and a Pi has no
+    # battery-backed RTC, so a first-boot clock step landing between outputd's
+    # start and the env write would invert their order. After= makes the boot case
+    # impossible. It must NOT become Wants=/Requires=: an offline speaker with no
+    # reachable NTP still has to reconcile its mic and restore its chip profile.
+    unit = (ROOT / "deploy" / "systemd" / unit_name).read_text(encoding="utf-8")
+    after = [ln for ln in unit.splitlines() if ln.startswith("After=")]
+    wants = [ln for ln in unit.splitlines() if ln.startswith(("Wants=", "Requires="))]
+
+    assert any("time-sync.target" in line for line in after), unit_name
+    assert not any("time-sync.target" in line for line in wants), unit_name
+
+
 def test_guard_watches_the_same_env_file_the_outputd_unit_loads() -> None:
     # The guard fails OPEN on an unreadable path (a box with no declaration has
     # nothing to be stale against), so a drift between the path it stats and the
@@ -658,6 +782,36 @@ def test_guard_watches_the_same_env_file_the_outputd_unit_loads() -> None:
     ).read_text(encoding="utf-8")
 
     assert f"EnvironmentFile=-{aec_init.DEFAULT_OUTPUTD_ENV_PATH}\n" in unit
+
+
+def test_settle_wait_fits_inside_the_calling_reconcilers_start_budget() -> None:
+    # SF3 from the gate. aec-init's own DefaultTimeoutStartSec is NOT the
+    # operative limit: activate_managed_chip_aec runs `systemctl restart
+    # jasper-aec-init.service` blocking, so everything aec-init does is spent
+    # inside jasper-aec-reconcile.service's TimeoutStartSec. A SIGTERM there is
+    # not a clean park — the script has no trap, so the box is left deaf with the
+    # alignment status stuck at `checking`. Pin the derivation, not just the
+    # numbers, so raising either bound forces a re-derivation.
+    unit = (
+        ROOT / "deploy" / "systemd" / "jasper-aec-reconcile.service"
+    ).read_text(encoding="utf-8")
+    budget = next(
+        float(line.split("=", 1)[1])
+        for line in unit.splitlines()
+        if line.startswith("TimeoutStartSec=")
+    )
+
+    find_device_worst = 10.0        # _find_device: 10 attempts, 1 s apart
+    queue_worst = 30.0              # collect_reference_queue's default timeout
+    # The settle deadline is checked after a poll, so one systemctl probe can
+    # overrun it.
+    settle_worst = aec_init.OUTPUTD_ENV_SETTLE_SEC + aec_init.SYSTEMCTL_QUERY_TIMEOUT_SEC
+    inner_worst = find_device_worst + settle_worst + queue_worst
+
+    assert inner_worst == 55.0, "re-derive the budget comment if this moves"
+    # Real headroom for the rest of the reconciler (mic-profile and chip-AEC
+    # policy subprocesses, env writes, three service restarts).
+    assert budget - inner_worst >= 60.0
 
 
 def test_deferred_and_commission_required_exits_stay_distinct() -> None:

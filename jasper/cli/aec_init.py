@@ -49,10 +49,25 @@ OUTPUTD_UNIT = "jasper-outputd.service"
 # tests/test_aec_init.py pins the constant against the unit's EnvironmentFile=.
 #
 # How long to let a queued outputd restart land before refusing to commission.
-# Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open)
-# and still well inside this oneshot's 90 s default start timeout once
-# _find_device (<=10 s) and collect_reference_queue (<=30 s) are added.
-OUTPUTD_ENV_SETTLE_SEC = 15.0
+# Generous next to a Type=notify restart (TimeoutStopSec=5s plus one ALSA open).
+#
+# The binding budget is the CALLER's, not this oneshot's own
+# DefaultTimeoutStartSec: jasper-aec-reconcile's activate_managed_chip_aec runs
+# `systemctl restart jasper-aec-init.service` BLOCKING, so aec-init's whole
+# runtime is spent inside jasper-aec-reconcile.service's TimeoutStartSec. A
+# SIGTERM there is not a clean park — the reconciler has no trap, so the box is
+# left deaf with the alignment status stuck at `checking` and the persistent
+# voice-input-absent marker in place. Worst case inside aec-init:
+#   _find_device            <= 10 s
+#   this settle wait        <= 10 s + one SYSTEMCTL_QUERY_TIMEOUT_SEC overrun
+#   collect_reference_queue <= 30 s
+# = <= 55 s, against the 120 s the reconciler unit now allows. Move either
+# number and re-derive both; tests/test_aec_init.py pins the relationship.
+OUTPUTD_ENV_SETTLE_SEC = 10.0
+# Per-call bound on the `systemctl show` probe so a wedged systemd cannot hold
+# the settle wait open past its own deadline. A timeout is treated as STALE, not
+# as unknown: an unanswerable systemctl is not evidence that outputd is current.
+SYSTEMCTL_QUERY_TIMEOUT_SEC = 5.0
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
@@ -81,6 +96,10 @@ class ChipProfileError(ChipInitError):
 
 class OutputdEnvStale(ChipInitError):
     """The live outputd predates its own declaration, so STATUS is not current."""
+
+
+class _SystemctlTimeout(RuntimeError):
+    """`systemctl show` did not answer inside its own per-call budget."""
 
 
 @dataclass(frozen=True)
@@ -158,17 +177,28 @@ def validate_reference_status(
     )
 
 
-def outputd_main_start_monotonic(
+def outputd_main_start_realtime(
     *, env: Mapping[str, str] | None = None
 ) -> float | None:
-    """Return when the live outputd main process started, or None if there is none.
+    """Return the epoch instant outputd's main process started, or None if unknown.
 
-    ``ExecMainStartTimestampMonotonic`` is microseconds on CLOCK_MONOTONIC — the
-    same clock ``time.monotonic()`` reads on Linux — so the two are directly
-    comparable.  Zero (systemd's "no main process") and anything unparseable both
-    read as None: a stopped or mid-restart outputd cannot be the stale process
-    this guard is about, because whichever process answers the STATUS socket next
-    is necessarily a newer one.
+    ``ExecMainStartTimestamp`` is the CLOCK_REALTIME sibling of the monotonic
+    property, which is what lets the caller compare it against a file mtime
+    without mixing clock domains.  ``--timestamp=unix`` renders it as
+    ``@<seconds>`` instead of a locale-formatted string.
+
+    None means exactly three things, all of which leave the guard inert: the unit
+    has never started this boot (systemd reports ``@0``), the value did not
+    parse, or ``systemctl`` failed.  It does NOT mean "outputd is stopped" —
+    systemd RETAINS this timestamp after a unit stops, so a stopped outputd that
+    ran this boot still reports its old start instant and a newer declaration
+    reads as stale.  That is stricter than passing the case through, and it is
+    the safe direction.
+
+    Raises:
+        _SystemctlTimeout: the query did not answer inside its own budget.  The
+            caller treats that as stale rather than inert — an unanswerable
+            systemctl is not evidence that outputd is current.
     """
 
     source = os.environ if env is None else env
@@ -178,35 +208,49 @@ def outputd_main_start_monotonic(
             [
                 systemctl,
                 "show",
+                "--timestamp=unix",
                 "-p",
-                "ExecMainStartTimestampMonotonic",
+                "ExecMainStartTimestamp",
                 "--value",
                 OUTPUTD_UNIT,
             ],
             capture_output=True,
             text=True,
+            timeout=SYSTEMCTL_QUERY_TIMEOUT_SEC,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise _SystemctlTimeout(str(exc)) from exc
     except OSError:
         return None
-    raw = result.stdout.strip()
+    raw = result.stdout.strip().removeprefix("@")
     if result.returncode or not raw.isdigit():
         return None
-    micros = int(raw)
-    return micros / 1_000_000 if micros else None
+    seconds = int(raw)
+    return float(seconds) if seconds else None
 
 
 def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
     """Return why the live outputd predates its declaration, or "" when it does not.
 
-    Compares AGES rather than absolute instants so no boot-realtime offset is
-    needed: the file mtime is CLOCK_REALTIME and the process start is
-    CLOCK_MONOTONIC, but both are measured back from now.  An env at most as old
-    as the process fails closed — systemd reads ``EnvironmentFile=`` just BEFORE
-    forking the main process, so a write that ties the recorded fork instant was
-    not loaded, and a tie is in any case not proof that it was.  That
-    sub-millisecond gap between the env read and the recorded fork is this
-    guard's resolution limit; it is orders of magnitude smaller than the
-    seconds-wide job-scheduling window it exists to catch.
+    Compares two CLOCK_REALTIME INSTANTS — the env file's mtime against outputd's
+    recorded start.  Both move together under an NTP step, so a step cannot flip
+    the verdict; comparing a realtime age against a monotonic one could, and did
+    (a forward step made the guard certify exactly the stale outputd the
+    invariant forbids, which is routine on an RTC-less Pi at boot).
+
+    An env at most as old as the start fails closed.  systemd reads
+    ``EnvironmentFile=`` just BEFORE forking the main process, so a write that
+    ties the recorded fork instant was not loaded — and a tie is not proof that
+    it was.  ``--timestamp=unix`` reports whole seconds, so a start instant
+    truncates DOWN; within one second of an env write that can only over-report
+    staleness (a bounded false defer), never certify a stale edge.
+
+    Honest residual: a clock step landing BETWEEN the process start and the env
+    write inverts their recorded order — a backward step can hide a stale
+    outputd, a forward step can defer a fresh one — bounded to the step's own
+    window.  ``After=time-sync.target`` on jasper-aec-reconcile.service and
+    jasper-aec-init.service closes the first-boot case, which is the only one
+    that happens routinely.
     """
 
     source = os.environ if env is None else env
@@ -216,15 +260,20 @@ def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
     except OSError:
         # No declaration on this box, so there is nothing to be stale against.
         return ""
-    started = outputd_main_start_monotonic(env=source)
+    try:
+        started = outputd_main_start_realtime(env=source)
+    except _SystemctlTimeout:
+        return (
+            f"systemctl show {OUTPUTD_UNIT} did not answer within "
+            f"{SYSTEMCTL_QUERY_TIMEOUT_SEC:.0f}s, so the output declaration "
+            "outputd is running cannot be confirmed"
+        )
     if started is None:
         return ""
-    process_age = time.monotonic() - started
-    env_age = time.time() - env_mtime
-    if env_age > process_age:
+    if env_mtime < started:
         return ""
     return (
-        f"{OUTPUTD_UNIT} started {process_age - env_age:.1f}s before {path} was "
+        f"{OUTPUTD_UNIT} started {env_mtime - started:.1f}s before {path} was "
         "written, so it has not loaded the current output declaration"
     )
 
@@ -250,6 +299,13 @@ def require_outputd_env_loaded(
     Binding (or rejecting) a commissioning identity against that is the debt the
     2026-08-05 final-edge-format PR-2 panel named.  Wait a bounded while for the
     queued restart to land, then fail rather than commission.
+
+    The deadline is monotonic on purpose: it is a DURATION, so it wants the clock
+    that cannot step.  The staleness verdict itself compares realtime instants —
+    see ``outputd_env_staleness``.  Worst case here is ``timeout`` plus one
+    ``SYSTEMCTL_QUERY_TIMEOUT_SEC`` probe, because the deadline is checked after
+    a poll rather than during one; that overrun is inside the caller budget
+    derived at ``OUTPUTD_ENV_SETTLE_SEC``.
     """
 
     deadline = time.monotonic() + timeout

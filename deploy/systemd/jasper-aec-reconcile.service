@@ -1,12 +1,26 @@
 [Unit]
 Description=Reconcile microphone and AEC input-profile state
 Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
-After=sound.target jasper-camilla.service
+# time-sync.target is After= ONLY, never Wants=/Requires=: an offline speaker
+# with no NTP reachable must still reconcile its microphone. The ordering exists
+# because aec-init's ordering guard compares outputd's recorded start instant
+# against a file mtime (jasper/cli/aec_init.py outputd_env_staleness), and a Pi
+# has no battery-backed RTC — a first-boot clock step landing between those two
+# instants inverts their order. Same no-RTC rationale as jasper-web.service,
+# different consequence.
+After=sound.target jasper-camilla.service time-sync.target
 Wants=sound.target jasper-camilla.service
 
 [Service]
 Type=oneshot
-TimeoutStartSec=60
+# activate_managed_chip_aec runs `systemctl restart jasper-aec-init.service`
+# BLOCKING, so aec-init's whole runtime is spent inside this budget. Worst case
+# there is ~55 s (see the derivation at jasper/cli/aec_init.py's
+# OUTPUTD_ENV_SETTLE_SEC), and a SIGTERM here is not a clean park: this script
+# has no trap, so the box would be left deaf with the alignment status stuck at
+# `checking` and the persistent voice-input-absent marker in place.
+# tests/test_aec_init.py pins this against the inner bounds.
+TimeoutStartSec=120
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/aec_mode.env
 ExecStart=/usr/local/sbin/jasper-aec-reconcile --reason systemd
