@@ -539,6 +539,20 @@ impl AlsaBackend {
                 },
             )
         } else {
+            // This whole content-lane open (through the plain `.with_context`
+            // calls below, deliberately NOT `final_sink_startup`) is exit-1 /
+            // restart-loop class, never the EX_CONFIG 78 park — see
+            // `FinalSinkStartupConfigError`'s doc above for why an ordinary
+            // content-lane open failure is a routine transient (CamillaDSP has
+            // not yet opened its half of the snd-aloop pair) on every boot and
+            // every deploy, not a fault a restart cannot fix. Marking it
+            // park-class would convert that routine wait into a no-retry
+            // silent speaker. The one case this open actually races a WIDTH
+            // change, not just ordering, is guarded on the deploy side
+            // instead: `release_camilla_content_lane_for_format_flip` in
+            // `deploy/lib/install/systemd-units.sh` stops the old CamillaDSP
+            // before outputd restarts, exactly when the content lane's format
+            // is about to move under it.
             let content =
                 PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
                     format!("opening outputd content capture PCM {}", config.content_pcm)
@@ -552,8 +566,11 @@ impl AlsaBackend {
                 channels: config.content_channels,
                 // Camilla's post-DSP loopback lane — its own declared hop, NOT
                 // the hardware edge and not outputd's internal program width.
-                // Defaults to S16_LE (every box today); `configure_pcm`'s
-                // content readback proves what the lane installed.
+                // Every box now declares S32_LE here unless its fan-in
+                // coupling is shm_ring (jasper-audio-hardware-reconcile emits
+                // this per coupling); unset/blank still falls back to S16_LE.
+                // `configure_pcm`'s content readback proves what the lane
+                // installed.
                 format: config.content_format,
                 buffer_frames: config.content_buffer_frames,
                 manual_start: false,
@@ -1477,12 +1494,14 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // a genuine second proof of what got installed.
         //
         // The PASSIVE lane (`outputd_content_*`) is `type plug` over a slave
-        // that pins `format S16_LE` today, so this readback proves the CLIENT
+        // that pins `format S32_LE` now, so this readback proves the CLIENT
         // EDGE ONLY: a plug installs the client's own request client-side and
         // converts on the slave side, so it agrees BY CONSTRUCTION and cannot
-        // see the slave's width. Re-pinning those slaves is a later step of the
-        // wide-output-path program; the slave-edge proof is the asound wiring
-        // test over there, not this Rust check.
+        // see the slave's width. The slaves ARE re-pinned (the earlier "later
+        // step of the wide-output-path program" is done); the slave-edge proof
+        // is `tests/test_outputd_wiring.py::
+        // test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop`, not
+        // this Rust check.
         //
         // ONE `final_sink_startup` covers the WHOLE readback — the hw_params and
         // format reads as well as the comparison. Marking only the comparison
