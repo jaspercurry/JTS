@@ -995,8 +995,16 @@ def test_reads_use_a_bounded_file_handle_not_stat_then_read_bytes(
 def test_in_process_lock_contention_has_a_typed_bounded_timeout(
     tmp_path: Path,
 ) -> None:
-    store = CommissioningRunStore(
-        path=tmp_path / "run.json",
+    # Only the contended call gets the 25 ms budget, because that call is the
+    # one the bound exists for. ``_locked`` spends one deadline on the whole
+    # acquisition -- thread lock, mkdir, lock-file open, chmod -- so on a
+    # loaded runner an uncontended call can exhaust the budget on that
+    # filesystem work alone and raise the file-lock timeout with nothing
+    # contending. The setup and readback therefore use the production default.
+    path = tmp_path / "run.json"
+    store = CommissioningRunStore(path=path, owner_id="3" * 32)
+    contended = CommissioningRunStore(
+        path=path,
         owner_id="3" * 32,
         lock_timeout_s=0.025,
     )
@@ -1017,7 +1025,7 @@ def test_in_process_lock_contention_has_a_typed_bounded_timeout(
     assert acquired.wait(timeout=5)
     try:
         with pytest.raises(CommissioningRunLockTimeout, match="in-process"):
-            store.snapshot()
+            contended.snapshot()
     finally:
         release.set()
         holder.join(timeout=5)
