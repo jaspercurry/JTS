@@ -473,18 +473,19 @@ decides.
 The operator is the arbiter, so `/sound/` echoes the reply back before anything
 is confirmed: "What JTS is running with" names every value the ask required a
 source for **and** every value `_profile_core` freezes into the safety profile
-— the union, eight keys — badges each `confirmed` or `estimated`, and shows its
-single source, linkified only when it really is a URL. The panel says exactly
-that much and no more: a completeness claim on the one screen whose job is
-accuracy has to be literally true, so the rendered set and the sentence above
-it are pinned together in
+— the union of the two sets — badges each `confirmed` or `estimated`, and shows
+its single source, linkified only when it really is a URL. The panel says
+exactly that much and no more: a completeness claim on the one screen whose
+job is accuracy has to be literally true, so the rendered set and the
+sentence above it are pinned together in
 `tests/test_sound_profile_echo_back_contract.py`. That per-value truth replaced
 a bare tally of how many limits arrived as estimates — a count told the
-operator how many numbers to distrust without saying which. The badge is derived from `confidence`, which stays the
-single stored writer of published-versus-estimated; there is deliberately no
-second `state` key on the wire that could disagree with it. Owner rulings,
-2026-08-06 (issues #2186 and #2195, the latter superseding the former's
-conservative-estimate half and absorbing #2192).
+operator how many numbers to distrust without saying which. The badge is
+derived from `confidence`, which stays the single stored writer of
+published-versus-estimated; there is deliberately no second `state` key on
+the wire that could disagree with it. Owner rulings, 2026-08-06 (issues
+#2186 and #2195, the latter superseding the former's conservative-estimate
+half and absorbing #2192).
 
 One of those bounds is also a **sentinel**, and the ask lands on it deliberately.
 For a high-frequency role on the proven-high-pass path,
