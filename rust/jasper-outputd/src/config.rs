@@ -147,9 +147,9 @@ pub struct Config {
     /// did not name.
     ///
     /// Unset or blank falls back to `S16_LE` — the pre-flip default, not the
-    /// live value on a reconciled box. `deploy/bin/jasper-audio-hardware-
-    /// reconcile` emits this key on every box, ahead of the per-hardware
-    /// branches, resolved per coupling by
+    /// live value on a reconciled box.
+    /// `deploy/bin/jasper-audio-hardware-reconcile` emits this key on every
+    /// box, ahead of the per-hardware branches, resolved per coupling by
     /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` on
     /// the `loopback` coupling (the passive lane's slaves are re-pinned to
     /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring` or
@@ -637,15 +637,20 @@ impl Config {
         // EXACT — the samples were widened from S16 in the first place — but on a
         // wide lane it would be a real requantization, a SECOND quantization on a
         // path whose whole contract is that there is exactly one, at the DAC edge.
-        // Refuse the pairing at startup rather than lose bits quietly. (Still
-        // not a reachable production combination, but not for the old reason —
-        // a writer DOES emit a wide content format now
-        // (jasper-audio-hardware-reconcile) and narrows the pair to S16_LE
-        // itself whenever it finds `rate_match` armed
-        // (`event=...content_format_narrowed`), so this bail is the belt to
-        // that suspender rather than dead code. It stays anyway because the
-        // alternative to refusing is a silent quality regression whose only
-        // symptom would be sound.)
+        // Refuse the pairing at startup rather than lose bits quietly. No
+        // AUTOMATED writer constructs this pair: jasper-audio-hardware-
+        // reconcile narrows the content format to S16_LE itself whenever it
+        // finds `rate_match` armed, any of its four accepted spellings
+        // (`event=...content_format_narrowed`). But jasper-outputd.service has
+        // no ExecStartPre reconcile, so an operator who hand-sets
+        // JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match on a box still holding a
+        // wide JASPER_OUTPUTD_CONTENT_FORMAT and runs a direct `systemctl
+        // restart jasper-outputd` DOES construct the pair. This bail is what
+        // catches that (exit 78, EX_CONFIG); jasper-outputd-failure-reconcile's
+        // ExecStopPost matches status 78, runs one rate-limited reconcile that
+        // narrows the format for all four rate_match spellings, and restarts —
+        // so this bail guards a real hand-edit path, not dead code, and the
+        // exit-78 path is what heals it.
         if content_bridge_mode == ContentBridgeMode::RateMatch
             && content_format != SampleFormat::S16Le
         {
