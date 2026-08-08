@@ -200,6 +200,22 @@ def _require_usable_input(
     )
 
 
+def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
+    """The startup line's ``wake=`` field.
+
+    Keyed on the RESOLVED leg plan, never on ``cfg.wake_model`` alone: on a
+    speaker with no room mic the plan is empty and no detector is built, and
+    naming the model there would tell an operator wake detection is live on a
+    box that will never wake.
+
+    Extracted for the same reason as ``_tts_ready_detail`` — the string is
+    the operator's evidence (the #2205 hardware verification greps for it in
+    the journal), so it gets a test rather than living unreachable inside a
+    ~350-line ``run()``.
+    """
+    return cfg.wake_model if planned_wake_legs else "disabled(no wake leg)"
+
+
 def _tts_ready_detail(cfg: Config) -> str:
     """Return the startup-log fields for the selected TTS transport."""
     if cfg.tts_transport == "outputd":
@@ -902,15 +918,13 @@ async def run() -> None:
         loop.add_signal_handler(sig, _shutdown)
 
     # `wake=` must report what this daemon actually DOES, not what the config
-    # happens to name. Keyed on the resolved leg plan (the same list the
-    # AsyncExitStack below opens mics from) rather than on `cfg.wake_model`,
-    # which would tell an operator wake detection is live on a speaker that
-    # built no detector at all.
+    # happens to name — see `_wake_ready_detail`. Resolved once here because
+    # the AsyncExitStack below opens its mics from this same list.
     planned_wake_legs = _configured_wake_legs(cfg)
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
         cfg.voice_provider, _active_model(cfg),
-        cfg.wake_model if planned_wake_legs else "disabled(no wake leg)",
+        _wake_ready_detail(cfg, planned_wake_legs),
         cfg.mic_device or "(none)", _tts_ready_detail(cfg),
     )
 

@@ -305,8 +305,12 @@ write_mic_profile_env() {
 #            custom-mic speaker to push-to-talk. Unknown reads as "plan the
 #            leg", i.e. exactly today's behaviour.
 #
-# Written ONCE per pass, before the branch tree, so no path can exit leaving a
-# stale value behind, and every restart_voice below picks up the fresh one.
+# Written ONCE per pass, before the branch tree, so no RECONCILING path can
+# exit leaving a stale value behind, and every restart_voice below picks up the
+# fresh one. Two exits precede it, both deliberate no-op modes that mutate
+# nothing at all: `--check-aec-ready` (a read-only ExecCondition probe) and the
+# live-commissioning-marker hand-off, where the foreground commissioner owns
+# every lifecycle mutation. Same shape as write_mic_profile_env above.
 write_local_mic_presence_env() {
     local value="unknown"
     if is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then

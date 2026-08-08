@@ -220,8 +220,11 @@ JASPER_LOCAL_MIC_PRESENT=1|0|unknown   # /etc/jasper/jasper.env
 ```
 
 - `write_local_mic_presence_env` in `jasper-aec-reconcile` writes it **once
-  per pass, before the branch tree**, so no exit path can leave a stale value,
-  and every `restart_voice` below picks up the fresh one.
+  per pass, before the branch tree**, so no *reconciling* path can exit
+  leaving a stale value, and every `restart_voice` below picks up the fresh
+  one. Two exits precede it and both are deliberate no-op modes that mutate
+  nothing: `--check-aec-ready` (the read-only `ExecCondition` probe) and the
+  live-commissioning-marker hand-off.
 - `1` / `0` are the same `PRESENT_MIC` (`first_present_candidate`) probe every
   mic-selecting branch already trusts. `unknown` is a custom
   `JASPER_MIC_DEVICE` — an operator device the reconciler deliberately does
@@ -240,9 +243,32 @@ not evidence of absence on any real box.
 
 The tri-state is what keeps **"this speaker has no room mic"** separable from
 **"the room mic should be here and isn't."** Only an explicit `0` drops the
-leg; `unknown` and an absent key keep the pre-existing behaviour, so a broken
-or busy mic still plans its leg, still raises, and still parks loudly (Layer 2)
-instead of quietly downgrading a mic-bearing speaker to push-to-talk.
+leg; `unknown` and an absent key keep the pre-existing behaviour, so a mic that
+is *attached but unusable* — wrong firmware, busy, failing to open — still
+plans its leg, still raises, and still parks loudly (Layer 2) instead of
+quietly downgrading a mic-bearing speaker to push-to-talk.
+
+**Where that protection stops, stated plainly.** The probe behind `1`/`0` is
+`first_present_candidate` — enumeration, not health. A mic that is simply
+**unplugged** enumerates as nothing and publishes `0`, exactly like a speaker
+that never had one; with a remote paired, that box silently becomes
+push-to-talk instead of parking. That is the intended trade, not an oversight:
+a household that unplugs the mic and keeps using the remote should keep being
+answered, and the alternative — parking a speaker that has working input — is
+worse. What the tri-state buys is the *attached-but-broken* case above, which
+is the one where silence would be a lie. The visible signal for the unplugged
+case is the doctor's `microphone` line and `/state.voice.push_to_talk_only`,
+not a park.
+
+The daemon derives the resulting mode ONCE — `WakeLoop._push_to_talk_only`,
+from what it actually opened (zero wake legs plus at least one manual source) —
+and every site that acts on it reads that: the keepalive branch below, the
+`NO_ROOM_MIC` refusal, and `session_status()` →
+**`/state.voice.push_to_talk_only`**. The `/state` field is why the mode is
+visible rather than inferred: an empty `wake_legs` list on its own reads
+identically to a daemon whose legs all failed to open, which is the opposite
+diagnosis. `jasper-doctor`'s `Wake legs` check reads the same two published
+facts and reports `n/a` on this box instead of a permanent yellow.
 
 On the zero-leg box the daemon then substitutes a keepalive tick
 (`PTT_KEEPALIVE_INTERVAL_SEC`, 2 s) for the primary mic's frame stream, because
@@ -251,6 +277,14 @@ honestly weaker claim — a frame proves capture *and* the loop, a tick only the
 loop — which is why `_require_usable_input` refuses to run a daemon that
 opened neither a wake leg nor a manual mic: otherwise it would pat its
 watchdog forever while deaf.
+
+**Startup only.** Nothing watches the accessory's liveness at *runtime*:
+`UdpMicCapture.frames()` has no timeout, so a dead remote blocks its task
+rather than ending it, and the tick keeps patting `WatchdogSec` — a dead
+remote reads as a healthy speaker to systemd, `/state`, and the doctor alike.
+Tracked as issue #2243. The detector cannot be a frame timeout (silence is a
+push-to-talk device's steady state); it is Bluetooth connection state, which
+the accessory reconciler owns.
 
 Runtime, not gate: `manual_session_start` with **no source** on such a speaker
 is refused (`NO_ROOM_MIC`) with a WARN and the `no_room_microphone` cue.

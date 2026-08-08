@@ -167,6 +167,7 @@ from .wake import (
     check_openwakeword_model,
     _voice_wake_legs_runtime,
     _assess_wake_legs,
+    _push_to_talk_only_speaker,
     check_wake_legs_configured,
 )
 from . import renderers as renderers
@@ -510,6 +511,7 @@ __all__ = [
     "check_openwakeword_model",
     "_voice_wake_legs_runtime",
     "_assess_wake_legs",
+    "_push_to_talk_only_speaker",
     "check_wake_legs_configured",
     "check_librespot_running",
     "check_shairport_sync_ap2",

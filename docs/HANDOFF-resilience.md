@@ -1222,10 +1222,15 @@ For anyone touching the resilience code:
   specific PortAudio-dead case faster than `WatchdogSec` and with
   a clearer log line.
 - `jasper/voice_daemon.py` — `WakeLoop` accepts `heartbeat:
-  Heartbeat | None` and bumps it at the top of each mic-frame
-  iteration in `run()`. The mic source is constructed via
+  Heartbeat | None` and bumps it at the top of each iteration of
+  `run()`'s main loop. The mic source is constructed via
   `make_mic_capture(cfg.mic_device, ...)` which dispatches to
-  `UdpMicCapture` for `udp:PORT` device strings.
+  `UdpMicCapture` for `udp:PORT` device strings. On a speaker with
+  no room mic (issue #2205) that loop iterates a fixed keepalive
+  tick instead of mic frames, so there the bump proves the loop is
+  alive but says nothing about input — see
+  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md)
+  "Which half satisfied the gate" and issue #2243.
 - `jasper/audio_io.py` — `UdpMicCapture`, `parse_udp_device`,
   `make_mic_capture` factory. Queue init is deferred to
   `__aenter__` so the classes are construct-safe from sync code.

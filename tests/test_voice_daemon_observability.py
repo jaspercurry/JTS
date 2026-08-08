@@ -25,6 +25,28 @@ def test_tts_ready_detail_reports_outputd_socket() -> None:
     assert "jasper_out" not in detail
 
 
+def test_wake_ready_detail_names_the_model_when_legs_are_planned() -> None:
+    from jasper.voice.daemon_main import _wake_ready_detail
+
+    cfg = SimpleNamespace(wake_model="jarvis_v2")
+    assert _wake_ready_detail(cfg, [("on", "Array")]) == "jarvis_v2"
+
+
+def test_wake_ready_detail_says_disabled_when_no_leg_is_planned() -> None:
+    """The startup line must not name a wake model on a speaker that built
+    no detector at all — an operator reading `wake=jarvis_v2` on a
+    push-to-talk-only box would chase a wake problem that does not exist.
+
+    The exact string is the operator's evidence: the owed #2205 hardware run
+    greps the journal for it, so it is pinned here rather than left to drift
+    inside run()'s log call.
+    """
+    from jasper.voice.daemon_main import _wake_ready_detail
+
+    cfg = SimpleNamespace(wake_model="jarvis_v2")
+    assert _wake_ready_detail(cfg, []) == "disabled(no wake leg)"
+
+
 def test_require_usable_input_raises_when_nothing_opened() -> None:
     """A daemon with no wake leg AND no manual mic is permanently deaf.
 

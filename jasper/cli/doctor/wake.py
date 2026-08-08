@@ -15,7 +15,7 @@ from ...audio_profile_state import (
     AecIntent,
     resolve_audio_input_intent,
 )
-from ...config import Config
+from ...config import Config, local_mic_present_from_env
 from ...openwakeword_guard import ensure_openwakeword_import_safe
 from ._registry import doctor_check
 from ._shared import CheckResult, _sha256_file
@@ -140,10 +140,33 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
         return None
     return {str(t) for t in legs}
 
+def _push_to_talk_only_speaker() -> bool:
+    """This box has no microphone of its own but a push-to-talk accessory —
+    the one shape where jasper-voice arms ZERO wake legs deliberately.
+
+    Reads the SAME two published facts ``_configured_wake_legs``
+    (jasper/voice_daemon.py) reads, through the same readers, so the doctor
+    cannot disagree with the daemon about the speaker's shape: the AEC
+    reconciler's ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory
+    owner's published source file. Neither is re-derived here.
+
+    Only an explicit "no local mic" counts. ``unknown`` (a custom
+    ``JASPER_MIC_DEVICE`` the reconciler declines to resolve) and an absent
+    key mean the daemon still plans its primary leg, so an empty armed set
+    there is a real fault and must still warn.
+    """
+    if local_mic_present_from_env() is not False:
+        return False
+    # The accessory half comes from its owner's published file, read fresh —
+    # never os.environ, per jasper.mic_presence. read_mic_presence() is the
+    # documented status-surface reader and never raises.
+    from ...mic_presence import read_mic_presence
+    return read_mic_presence().accessory_present
+
 def _assess_wake_legs(
     aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",
     *, chip_aec: bool = False, chip_aec_150: bool = False,
-    chip_aec_210: bool = False,
+    chip_aec_210: bool = False, push_to_talk_only: bool = False,
 ) -> CheckResult:
     """Compare configured wake-leg intent against what jasper-voice
     actually opened. Pure (the runtime set is passed in) so it's
@@ -162,8 +185,23 @@ def _assess_wake_legs(
     leg set is the primary "on" carrier plus only the chip beams explicitly
     enabled in advanced settings. We must NOT expect "off"/"dtln" in that
     mode, or this check would false-warn that they're "not running" when
-    they are intentionally off."""
+    they are intentionally off.
+
+    `push_to_talk_only` is that shape one step further: a speaker with no
+    room mic and a paired remote arms NO legs at all, so an empty armed set
+    there is the design and not a fault. Reported n/a ahead of the AEC-mode
+    skip because it describes the speaker's permanent shape rather than a
+    mode setting — and because the alternative is a permanent yellow naming
+    three causes (bridge down, wrong firmware, a leg skip) that cannot exist
+    on that box: `wake.leg_skipped` never fires for a leg never planned."""
     hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
+    if push_to_talk_only:
+        return CheckResult(
+            "Wake legs", "ok",
+            "n/a — no local microphone and a push-to-talk accessory is "
+            "paired; jasper-voice arms no wake legs on this speaker and "
+            "every turn is opened by the remote's button",
+        )
     if aec_mode != "auto":
         return CheckResult(
             "Wake legs", "ok",
@@ -227,7 +265,8 @@ def check_wake_legs_configured() -> CheckResult:
     startup leg-skip surfaces here rather than only in the journal.
     Fail-soft: if jasper-control is unreachable, reports intent alone.
     Skips cleanly if AEC is disabled — leg booleans are meaningless
-    without the bridge emitting on the UDP ports they consume."""
+    without the bridge emitting on the UDP ports they consume — and on a
+    push-to-talk-only speaker, where the daemon arms no legs by design."""
     aec_mode = _aec_mode_setting()
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
@@ -259,4 +298,5 @@ def check_wake_legs_configured() -> CheckResult:
         chip_aec=effective.chip_aec_enabled,
         chip_aec_150=effective.chip_aec_150_enabled,
         chip_aec_210=effective.chip_aec_210_enabled,
+        push_to_talk_only=_push_to_talk_only_speaker(),
     )

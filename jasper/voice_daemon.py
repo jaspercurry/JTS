@@ -310,9 +310,20 @@ PTT_MIN_INPUT_CAP_SEC = 5.0
 #
 # Narrower than a mic frame, and honestly so: a frame proves capture AND
 # the loop; a tick proves only the loop. That is the strongest claim
-# available without an always-listening mic, and it is why the manual-mic
-# loops (which carry the actual audio) are separate tasks whose death is
-# visible in the journal rather than folded into this liveness signal.
+# available without an always-listening mic.
+#
+# What this does NOT prove, stated plainly because the gap is real: that the
+# accessory is still delivering audio. `UdpMicCapture.frames()` has no
+# timeout, so a dead sender (remote battery, out of range, adapter stall)
+# blocks its manual-mic task forever rather than ending it; and if that task
+# DID raise, `run()`'s finally holds a strong reference while swallowing the
+# exception, so asyncio's unretrieved-exception warning never fires either.
+# Nothing in this daemon notices, and the tick keeps patting the watchdog —
+# so on a push-to-talk-only box a dead remote reads as a healthy speaker.
+# Tracked as issue #2243. The fix is NOT a frame timeout here: silence is a
+# push-to-talk device's steady state (a remote legitimately sends nothing for
+# hours), so frame flow cannot tell idle from dead. Connection state can, and
+# that is the accessory reconciler's to publish.
 PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 
 # Cue for "you asked for a room-mic turn and this speaker has no room mic."
@@ -786,12 +797,6 @@ _LEG_DB: dict[str, dict[str, str]] = {
 # string means the leg is not configured. A new leg adds an entry here.
 # The chip-AEC beam legs map their token straight to the matching cfg
 # field (no token/field skew, unlike "off"->mic_device_raw).
-# Sentinel for `WakeLoop.for_tests` constructor-time knobs, so a test can
-# pass an explicit empty list (no legs) and have it mean "none" rather than
-# "use the default".
-_UNSET = object()
-
-
 _LEG_DEVICE_ATTR: dict[str, str] = {
     "on": "mic_device",
     "off": "mic_device_raw",
@@ -799,6 +804,11 @@ _LEG_DEVICE_ATTR: dict[str, str] = {
     "chip_aec_150": "mic_device_chip_aec_150",
     "chip_aec_210": "mic_device_chip_aec_210",
 }
+
+# Sentinel for `WakeLoop.for_tests` constructor-time knobs, so a test can
+# pass an explicit empty list (no legs) and have it mean "none" rather than
+# "use the default".
+_UNSET = object()
 
 
 def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
@@ -812,15 +822,23 @@ def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
     "off"/"dtln" legs are built only when their device var is non-empty,
     so voice never opens a UDP listener nobody feeds.
 
-    **The one exception is a speaker with no microphone of its own.** A
-    Zero-class streambox paired with a mic-bearing remote has real voice
-    input — every turn is opened by the button — but no always-listening
-    stream to run wake detection on. Building the primary leg there opens
-    a card that is not present, `run()` re-raises
-    `InputDeviceUnavailable`, and the daemon parks before it ever reaches
-    the accessory sources (issue #2205). So it plans NO legs at all: an
-    empty plan and "no primary mic" then agree by construction rather
-    than by two derivations that can disagree.
+    **The one exception is a speaker with no microphone of its own.** Such
+    a box paired with a mic-bearing remote has real voice input — every
+    turn is opened by the button — but no always-listening stream to run
+    wake detection on. Building the primary leg there opens a card that is
+    not present, `run()` re-raises `InputDeviceUnavailable`, and the daemon
+    parks before it ever reaches the accessory sources (issue #2205). So it
+    plans NO legs at all: an empty plan and "no primary mic" then agree by
+    construction rather than by two derivations that can disagree.
+
+    The configuration this serves TODAY is a **full-profile** speaker with
+    no local mic — one unplugged, or never fitted. Not a Zero-class
+    streambox: that profile parks the voice brain outright
+    (`park_streambox_brain_units` runs `systemctl disable --now` on
+    jasper-voice, and a fresh streambox install never installs the AEC
+    reconciler that publishes the verdict below), so this code cannot run
+    there at all. A streambox serving a remote is later work — #2205's
+    smart-remote sequence on top of #2232's capability axis.
 
     Both facts in that decision are READ, never guessed:
 
@@ -2303,9 +2321,16 @@ class WakeLoop:
         # claim that stays true without an always-listening mic. Audio arrives
         # on the manual-mic loops instead. Ticks yield None so the frame body
         # below skips them.
-        if self._mic is not None:
-            _frames = self._mic.frames()
-        else:
+        #
+        # Branches on `_push_to_talk_only`, not on `_mic is None`, so the mode
+        # has ONE derivation and every site that acts on it reads that one.
+        # The two agree on any daemon that started: `_require_usable_input`
+        # (jasper/voice/daemon_main.py) refuses to run with neither a wake leg
+        # nor a manual mic, so "no primary mic and not push-to-talk-only"
+        # cannot reach here. If it ever did, raising beats keepalive-ing: a
+        # daemon patting its watchdog with no input at all is the deaf-but-
+        # healthy-looking speaker that guard exists to prevent.
+        if self._push_to_talk_only:
             _frames = self._push_to_talk_keepalive_ticks()
             log_event(
                 logger,
@@ -2313,6 +2338,8 @@ class WakeLoop:
                 sources=",".join(sorted(self._manual_mics)),
                 keepalive_sec=PTT_KEEPALIVE_INTERVAL_SEC,
             )
+        else:
+            _frames = self._mic.frames()
         try:
             async for frame in _frames:
                 if self._heartbeat is not None:
@@ -2401,8 +2428,17 @@ class WakeLoop:
         progress sentinel is younger than its stale threshold, so the
         interval must stay comfortably under that or `WatchdogSec=30s`
         would reap a perfectly healthy daemon.
+
+        Ticks UNCONDITIONALLY, exactly like a mic's `frames()`. Shutdown is
+        the consumer's job: `run()`'s loop checks `_stop_event` on every
+        iteration and, if a turn is in flight, awaits `_end_turn()` before
+        returning — duck restore, `end_input`, turn telemetry, the
+        done-listening chirp. A stop check HERE would end the iteration
+        first, so `run()`'s stop branch never runs and a SIGTERM mid-hold
+        would leave the music ducked and the turn unfinished. The generator
+        is then finalized by the loop's async-generator shutdown.
         """
-        while not self._stop_event.is_set():
+        while True:
             yield None
             await asyncio.sleep(PTT_KEEPALIVE_INTERVAL_SEC)
 
@@ -4164,9 +4200,11 @@ class WakeLoop:
                 source=source,
             )
             return "UNKNOWN_SOURCE"
-        if source is None and self._mic is None:
+        if source is None and self._push_to_talk_only:
             # No source named, and this speaker has no always-listening mic to
-            # be the implied one — a push-to-talk-only streambox (issue #2205).
+            # be the implied one — the push-to-talk-only shape (issue #2205).
+            # Reads the one derivation of that mode (`_push_to_talk_only`),
+            # the same fact run()'s keepalive branch and session_status() read.
             # Accepting would open a turn nothing can ever feed: `_pre_roll` is
             # empty because no primary loop fills it, `_manual_mic_loop` drops
             # every frame while `_active_manual_source` is None, and the turn
@@ -4317,6 +4355,14 @@ class WakeLoop:
             },
             "manual_mic_sources": sorted(self._manual_mics),
             "active_manual_mic_source": self._active_manual_source,
+            # This speaker has no room mic of its own: zero wake legs, and
+            # every turn is opened by an accessory button. Surfaced because
+            # it is a MODE, not an absence — inferring it from an empty
+            # `wake_legs` would read identically to a daemon whose legs all
+            # failed to open, which is the opposite diagnosis. The daemon's
+            # own derivation, so /state and jasper-doctor cannot disagree
+            # with it.
+            "push_to_talk_only": self._push_to_talk_only,
             # Who closes the in-flight turn's input. The decision itself,
             # not a re-derivation of it — "the remote cut me off" and "the
             # remote never cut me off" are the two bug reports this

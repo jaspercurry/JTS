@@ -2289,11 +2289,15 @@ than writing here. The marker is the AND, so it can never say *which* half
 answered — the reconciler publishes its own half separately as
 `JASPER_LOCAL_MIC_PRESENT` (`1` / `0` / `unknown`), and that is what lets
 `_configured_wake_legs` plan **zero** wake legs on a no-room-mic box and serve
-the remote's button instead of parking. Only an explicit `0` does so; `unknown`
-(a custom device the reconciler declines to resolve) and an absent key keep the
-old behaviour, which is what keeps "no room mic" separable from "the room mic
-should be here and isn't". Status strings on the *marker* path still say
-**gate**, not runtime. Canonical:
+the remote's button instead of parking. It takes **both** facts: an explicit
+`0` **and** a non-empty `JASPER_MANUAL_MIC_SOURCES`. `0` alone is a speaker
+with no input at all, which must still park loudly; and `unknown` (a custom
+device the reconciler declines to resolve) or an absent key keeps the old
+behaviour whatever the accessory half says. That pairing is what keeps "no room
+mic" separable from "the room mic should be here and isn't". The daemon
+publishes the resulting mode at `/state.voice.push_to_talk_only`, so an empty
+`wake_legs` list is never read as "every leg failed to open". Status strings on
+the *marker* path still say **gate**, not runtime. Canonical:
 [docs/HANDOFF-hotplug-resilience.md](docs/HANDOFF-hotplug-resilience.md)
 "Layer 1". `jasper-voice.service` carries
 `ConditionPathExists=!/var/lib/jasper/voice-input-absent`, so a no-mic

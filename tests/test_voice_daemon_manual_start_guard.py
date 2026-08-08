@@ -240,9 +240,11 @@ class _SpyCues:
 def _ptt_only_wake_loop():
     """A speaker with NO microphone of its own and one push-to-talk source.
 
-    The shape a Zero-class streambox has once `_configured_wake_legs`
-    reads the reconciler's published "no local mic" verdict: zero wake
-    legs, so `_mic` is None and the only audio path is the remote's loop.
+    The shape a full-profile box with no local mic (unplugged, or never
+    fitted) has once `_configured_wake_legs` reads the reconciler's
+    published "no local mic" verdict: zero wake legs, so `_mic` is None,
+    `_push_to_talk_only` derives True, and the only audio path is the
+    remote's loop.
     """
     from jasper.voice_daemon import State, WakeLoop, _ManualMicRuntime
 
@@ -333,6 +335,30 @@ async def test_ptt_only_speaker_still_serves_a_named_source():
     assert wl._begin_turn.called is True
     assert wl._begin_turn.kwargs == {"pre_roll": False}
     assert wl._active_manual_source == "wiim_remote_2"
+
+
+async def test_source_less_refusal_reads_the_single_derivation():
+    """The refusal consults `_push_to_talk_only`, not its own `_mic is None`.
+
+    Push-to-talk-only is ONE derived fact with one owner; a site that
+    re-derives it can drift from run()'s keepalive branch and from
+    /state.voice. Forcing the field is therefore enough to move this site:
+    with it cleared, the same source-less call falls through to the ordinary
+    gates below (here BUSY) instead of refusing — even though `_mic` is still
+    None. Nothing else about the speaker changed.
+    """
+    from jasper.voice_daemon import State
+
+    wl = _ptt_only_wake_loop()
+    wl._state = State.SESSION
+    assert await wl.manual_session_start() == "NO_ROOM_MIC"
+
+    wl2 = _ptt_only_wake_loop()
+    wl2._state = State.SESSION
+    wl2._push_to_talk_only = False
+    assert wl2._mic is None  # unchanged: only the derived fact moved
+    assert await wl2.manual_session_start() == "BUSY"
+    assert wl2._cues.played == []
 
 
 async def test_no_room_mic_outranks_the_transient_gates():

@@ -105,6 +105,23 @@ def _env_optional_bool(name: str) -> bool | None:
     return None
 
 
+def local_mic_present_from_env() -> bool | None:
+    """``jasper-aec-reconcile``'s published local-microphone verdict.
+
+    Public because the verdict has more than one reader and they must not
+    disagree about the shape of the speaker: ``Config.local_mic_present``
+    below is this call, and so is ``jasper-doctor``'s wake-leg check, which
+    has to know a no-room-mic box arms zero wake legs *on purpose* before it
+    can tell that apart from a bridge that died. One parse, two readers.
+
+    ``None`` means the writer published no answer (unset, or the literal
+    ``unknown`` it writes for a custom ``JASPER_MIC_DEVICE`` it deliberately
+    does not manage) — never "absent". Only an explicit ``False`` may change
+    behaviour anywhere.
+    """
+    return _env_optional_bool("JASPER_LOCAL_MIC_PRESENT")
+
+
 def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
     raw = os.environ.get(name, default)
     result: dict[str, str] = {}
@@ -560,7 +577,7 @@ class Config:
             # to clear a stale udp:PORT. Never guess this locally; a wrong
             # `0` would make a speaker with a broken mic look like a
             # push-to-talk-only one and go quietly deaf.
-            local_mic_present=_env_optional_bool("JASPER_LOCAL_MIC_PRESENT"),
+            local_mic_present=local_mic_present_from_env(),
             # JASPER_MANUAL_MIC_SOURCES declares active push-to-talk audio
             # sources that bypass wake detection. The key is an internal source
             # id carried by /session/start; the value is any make_mic_capture()
