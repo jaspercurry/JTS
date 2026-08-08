@@ -155,6 +155,29 @@ dtoverlay=hifiberry-dac8x
     assert configured_i2s_overlays(content) == ("hifiberry-dac8x",)
 
 
+def test_studio_dac8x_overlay_is_recognized_as_a_registered_i2s_hat() -> None:
+    """A Studio-configured box must not read as "no I2S HAT present" (#2250).
+
+    This parser intersects config.txt against the `dtoverlay` each registered
+    profile declares, and USB port-role resolution consumes the result. While
+    the Studio profile declared the BASE board's `hifiberry-dac8x`, a box
+    correctly running the Studio's own overlay matched nothing here and looked
+    like a speaker with no audio HAT at all.
+    """
+    content = "[all]\ndtoverlay=hifiberry-studio-dac8x\n"
+
+    assert configured_i2s_overlays(content) == ("hifiberry-studio-dac8x",)
+    # The two boards' overlays are distinct entries, not one shared string.
+    assert configured_i2s_overlays(
+        "[all]\ndtoverlay=hifiberry-dac8x\ndtoverlay=hifiberry-studio-dac8x\n"
+    ) == ("hifiberry-dac8x", "hifiberry-studio-dac8x")
+    # The PRO's overlay is deliberately NOT registered: no Pro profile exists,
+    # and inventing one for hardware nobody owns is what #2250 warns against.
+    assert configured_i2s_overlays(
+        "[all]\ndtoverlay=hifiberry-studio-dac8x-pro\n"
+    ) == ()
+
+
 def test_i2s_hat_intent_round_trip_and_rejects_other_profiles(tmp_path: Path) -> None:
     intent = tmp_path / "i2s_hat.env"
 

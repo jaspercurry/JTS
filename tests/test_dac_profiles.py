@@ -118,11 +118,13 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X.active_outputd_lane_channels == 8
     # No explicit channel map => the transport builds an identity map.
     assert HIFIBERRY_DAC8X.dac_channel_map is None
-    assert (
-        "snd_rpi_hifiberry_dac8x(?!.*studio)"
-        in HIFIBERRY_DAC8X.supported_card_matches
+    # Exactly the literal `rpi-simple-soundcard.c` emits as this board's
+    # `.card_name`, and nothing fuzzier — the family patterns it replaced
+    # matched labels no driver produces while swallowing Studio silicon
+    # (#2250).
+    assert HIFIBERRY_DAC8X.supported_card_matches == (
+        r"\bsnd_rpi_hifiberry_dac8x\b",
     )
-    assert "hifiberry.*dac8x(?!.*studio)" in HIFIBERRY_DAC8X.supported_card_matches
     assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
     assert HIFIBERRY_DAC8X.supports_active_crossover_commissioning is True
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
@@ -138,44 +140,190 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
         "hifiberry_dac8x_outputd_stability"
     )
+    # The Studio's own overlay, not the base board's. `configured_i2s_overlays()`
+    # intersects config.txt against these declarations, so the previous
+    # `hifiberry-dac8x` here made a correctly-configured Studio box read as
+    # having no I2S HAT at all.
+    assert HIFIBERRY_DAC8X_STUDIO.dtoverlay == "hifiberry-studio-dac8x"
+    assert HIFIBERRY_DAC8X.dtoverlay != HIFIBERRY_DAC8X_STUDIO.dtoverlay
 
 
 def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
-    # All three labels below put "dac8x" before "studio" — the one ordering
-    # HIFIBERRY_DAC8X's negative-lookahead regexes correctly exclude. The
-    # realistic driver-derived label (see HIFIBERRY_DAC8X_STUDIO's own
-    # profile comment: output_hardware.py's `product or proc_description or
-    # card_id`, an I2S HAT with no USB `product`, both profiles sharing
-    # `dtoverlay="hifiberry-dac8x"`) carries no "studio" token in the
-    # observed proc/card description at all, in EITHER order — that case is
-    # unrepresented here and routes to the base profile instead, per the
-    # wide-output-path panel record. This test intentionally does not
-    # change to cover it: the fix is a detection-regex change tracked as a
-    # follow-up, not a same-PR test-and-fix.
-    base_label = "snd_rpi_hifiberry_dac8x, HiFiBerry DAC8x"
-    studio_label = "HiFiBerry DAC8x Studio, USB Audio"
-    studio_kernel_label = "snd_rpi_hifiberry_dac8x_studio"
+    """A real Studio board must never be classified as the base DAC8x (#2250).
 
-    assert any(
-        re.search(pattern, base_label, re.IGNORECASE)
-        for pattern in HIFIBERRY_DAC8X.supported_card_matches
+    The labels here are the ones the kernel actually emits, not plausible ones.
+    Base: `rpi-simple-soundcard.c` sets `.card_name =
+    "snd_rpi_hifiberry_dac8x"`. Studio: `hifiberry_studio_dac8x.c` sets
+    `.name = "Hifiberry Studio DAC8x"` and its probe renames to "HiFiBerry
+    Studio DAC8x" / "... Pro". Both put "Studio" BEFORE "DAC8x", which is
+    exactly the ordering the old trailing `(?!.*studio)` lookaheads failed to
+    exclude — every one of these Studio labels used to resolve to the base
+    profile and inherit its `chip_aec_qualification="approved"` and S32_LE
+    edge.
+
+    `label` is `product or proc_description or card_id`
+    (`output_hardware.probe_system_cards`); an I2S HAT has no USB `product`,
+    so the realistic value is the joined /proc/asound/cards description. Both
+    the bare card name and that joined line are covered below.
+    """
+    base_labels = (
+        "snd_rpi_hifiberry_dac8x",
+        " 2 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dac8x"
+        " snd_rpi_hifiberry_dac8x",
     )
-    assert not any(
-        re.search(pattern, studio_label, re.IGNORECASE)
-        for pattern in HIFIBERRY_DAC8X.supported_card_matches
+    studio_labels = (
+        # Kernel card names, both capitalizations the driver ships.
+        "HiFiBerry Studio DAC8x",
+        "Hifiberry Studio DAC8x",
+        # The realistic driver-derived proc description — the case the
+        # pre-#2250 version of this test explicitly declined to cover.
+        " 2 [HiFiBerryStudio]: HifiberryStudio - HiFiBerry Studio DAC8x"
+        " HiFiBerry Studio DAC8x",
+        # HiFiBerry's own product-naming order, and both run-together slug
+        # forms an alphanumeric-stripped ALSA card id can present.
+        "HiFiBerry DAC8x Studio, USB Audio",
+        "StudioDAC8x",
+        "DAC8XStudio",
     )
-    assert not any(
-        re.search(pattern, studio_kernel_label, re.IGNORECASE)
-        for pattern in HIFIBERRY_DAC8X.supported_card_matches
-    )
-    assert any(
-        re.search(pattern, studio_label, re.IGNORECASE)
-        for pattern in HIFIBERRY_DAC8X_STUDIO.supported_card_matches
-    )
-    assert dac.profile_for_card_label(base_label) is HIFIBERRY_DAC8X
-    assert dac.profile_for_card_label(studio_label) is HIFIBERRY_DAC8X_STUDIO
-    assert dac.profile_for_card_label(studio_kernel_label) is HIFIBERRY_DAC8X_STUDIO
+
+    for label in base_labels:
+        assert dac.profile_for_card_label(label) is HIFIBERRY_DAC8X, label
+        assert not any(
+            re.search(pattern, label, re.IGNORECASE)
+            for pattern in HIFIBERRY_DAC8X_STUDIO.supported_card_matches
+        ), label
+    for label in studio_labels:
+        assert dac.profile_for_card_label(label) is HIFIBERRY_DAC8X_STUDIO, label
+        assert not any(
+            re.search(pattern, label, re.IGNORECASE)
+            for pattern in HIFIBERRY_DAC8X.supported_card_matches
+        ), label
+
     assert dac.profile_for_card_label("Mystery USB DAC") is None
+
+
+def test_studio_dac8x_pro_parks_rather_than_borrowing_the_studio_profile() -> None:
+    """The PRO is a different board and must not inherit this row (#2250).
+
+    `hifiberry-studio-dac8x-pro-overlay.dts` targets `i2s_clk_consumer` and
+    sets `clk-provider`, so the CARD drives the I2S clocks — the opposite of
+    the non-Pro Studio's `i2s_clk_producer`. Silently handing it the non-Pro
+    row's clock-domain contract and overlay is the same defect class #2250
+    fixed one board over. No Pro exists in the fleet, so "unknown" (which
+    parks the output owner loudly) is the honest answer.
+
+    The run-together slug forms are covered too, not just the spaced kernel
+    label: a `\\b`-bounded exclusion (`(?!.*\\bpro\\b)`) cannot see "pro" in
+    "StudioDAC8xPro" — "x" and "P" are both word characters, so no boundary
+    exists between them — and would silently fail to exclude exactly the
+    slug shape this profile deliberately matches for the non-Pro board.
+    """
+    for label in (
+        "HiFiBerry Studio DAC8x Pro",
+        " 3 [HiFiBerryStudio]: HifiberryStudio - HiFiBerry Studio DAC8x Pro"
+        " HiFiBerry Studio DAC8x Pro",
+        "StudioDAC8xPro",
+        "DAC8XStudioPro",
+    ):
+        assert dac.profile_for_card_label(label) is None, label
+
+
+def test_unified_studio_soundcard_name_parks_rather_than_guessing_width() -> None:
+    """rpi-6.18.y's shared Studio card name is not claimable (#2258).
+
+    raspberrypi/linux 99c9dcd72 (2026-07-13) renamed the Studio driver to
+    `hifiberry_studio.c` and 8905174a9 gave it multi-card support, after which
+    the 8-channel Studio DAC8x and the 2-channel Studio Digi/AES BOTH present
+    `.name = "Hifiberry Studio Soundcard"` — no DAC8x token, no width, and the
+    UUID that separates them never reaches the label. Claiming that name here
+    would let a 2-channel Digi be driven as this 8-channel profile.
+
+    So this asserts a KNOWN LIMITATION, not a success: on those kernels a real
+    Studio DAC8x resolves to "unknown" and parks. #2258 tracks the non-label
+    discriminator that would close it. If a future change makes this name
+    routable via EEPROM/DT evidence, this test should be replaced, not deleted
+    quietly.
+    """
+    for label in (
+        "Hifiberry Studio Soundcard",
+        " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
+        " Hifiberry Studio Soundcard",
+        # The sibling this ambiguity is dangerous for: 2 channels, not 8.
+        "Hifiberry Studio Digi",
+    ):
+        assert dac.profile_for_card_label(label) is None, label
+
+
+# One or more realistic ALSA labels per single-kind profile. The walking guard
+# below asserts this covers the registry exactly, so a new single profile fails
+# here until its labels are declared and shown not to collide with any other
+# profile's patterns.
+_PROFILE_LABEL_SAMPLES: dict[str, tuple[str, ...]] = {
+    "apple_usb_c_dongle": ("Apple USB-C to 3.5mm Headphone Jack, USB Audio",),
+    "hifiberry_dac8x": (
+        "snd_rpi_hifiberry_dac8x",
+        " 2 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dac8x"
+        " snd_rpi_hifiberry_dac8x",
+    ),
+    "hifiberry_dac8x_studio": (
+        "HiFiBerry Studio DAC8x",
+        "HiFiBerry DAC8x Studio, USB Audio",
+        "StudioDAC8x",
+    ),
+    "innomaker_hifi_amp_pro": (
+        "snd_rpi_merus_amp",
+        "Merus Audio AMP ma120x0p-amp-0",
+    ),
+}
+
+
+def test_every_single_profile_label_matches_exactly_one_profile() -> None:
+    """No ALSA label may be claimed by two single-kind profiles.
+
+    `profile_for_card_label` returns the FIRST registry match, so an overlap is
+    invisible at runtime — the losing profile just silently never applies, and
+    its hardware inherits the winner's whole declaration set. That is #2250
+    exactly: the base DAC8x's family regexes claimed every Studio label, so the
+    Studio row's `chip_aec_qualification="needs_calibration"` never reached the
+    board it describes.
+
+    This walks the registry rather than pinning the one pair that broke, so the
+    next profile added with an over-broad pattern fails here instead of shipping
+    a second silent inheritance.
+    """
+    single_ids = {
+        profile.id for profile in dac.all_profiles() if profile.kind == "single"
+    }
+    assert set(_PROFILE_LABEL_SAMPLES) == single_ids, (
+        "every single-kind profile needs label samples; missing "
+        f"{sorted(single_ids - set(_PROFILE_LABEL_SAMPLES))}, unknown "
+        f"{sorted(set(_PROFILE_LABEL_SAMPLES) - single_ids)}"
+    )
+
+    checked = 0
+    for owner_id, labels in _PROFILE_LABEL_SAMPLES.items():
+        # Per-profile non-vacuity: the global `checked >= len(single_ids)`
+        # check below is satisfied even if ONE profile's tuple is emptied,
+        # as long as every other profile still contributes >=2 labels — it
+        # cannot catch a single profile silently losing its coverage.
+        assert labels, f"{owner_id} needs at least one sample label"
+        for label in labels:
+            matching = [
+                profile.id
+                for profile in dac.all_profiles()
+                if profile.kind == "single"
+                and any(
+                    re.search(pattern, label, re.IGNORECASE)
+                    for pattern in profile.supported_card_matches
+                )
+            ]
+            assert matching == [owner_id], (
+                f"{label!r} should match only {owner_id!r}, matched {matching}"
+            )
+            checked += 1
+    # Non-vacuity: an empty sample map would satisfy every assertion above by
+    # never running one.
+    assert checked >= len(single_ids), f"expected >= {len(single_ids)}, saw {checked}"
 
 
 def test_innomaker_hifi_amp_pro_declares_the_width_two_active_i2s_shape() -> None:
@@ -758,11 +906,12 @@ def test_final_edge_format_matches_known_hardware() -> None:
     # `aplay --dump-hw-params` open test, 2026-08-07) — declaring it moves
     # outputd's i32 program spine straight through with zero narrowing.
     assert HIFIBERRY_DAC8X.final_edge_format == "S32_LE"
-    # DAC8x Studio stays at the safe default: same DAC-chip family and
-    # dtoverlay as the base DAC8x above, but no lab unit exists to run the
-    # same hardware open-test, so this program does not flip it on inference
-    # alone. See the profile's own comment in jasper/audio_hardware/dac.py
-    # for exactly what evidence would flip it.
+    # DAC8x Studio stays at the safe default: same DAC-chip family as the base
+    # DAC8x above, but a DIFFERENT overlay and driver (#2250 —
+    # `hifiberry-studio-dac8x`, `hifiberry_studio_dac8x.c`), and no lab unit
+    # exists to run the same hardware open-test, so this program does not flip
+    # it on inference alone. See the profile's own comment in
+    # jasper/audio_hardware/dac.py for exactly what evidence would flip it.
     assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
     assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
     # The composite's declaration became load-bearing when outputd started
