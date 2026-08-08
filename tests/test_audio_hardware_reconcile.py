@@ -2836,7 +2836,16 @@ def test_rate_match_alias_set_is_a_superset_of_outputds_parse_arms():
     """
     rust_arms = _rust_rate_match_bridge_arms()
     bash_aliases = _bash_rate_match_bridge_aliases()
-    assert rust_arms == {"rate_match", "ratematch", "rate-matched", "rate_matched"}
+    assert rust_arms == {"rate_match", "ratematch", "rate-matched", "rate_matched"}, (
+        "outputd's ContentBridgeMode::RateMatch parse arm changed — add the new "
+        "spelling to RATE_MATCH_BRIDGE_ALIASES in "
+        "deploy/bin/jasper-audio-hardware-reconcile AND to this literal set. "
+        "The literal stays as the non-vacuity proof that the regex above found a "
+        "real arm rather than nothing. Skipping the bash side leaves a soak box "
+        "hand-set to that spelling with a wide content lane, which parks "
+        f"jasper-outputd at exit 78 and silences the speaker. Parsed: "
+        f"{sorted(rust_arms)}"
+    )
     assert rust_arms <= bash_aliases, (
         "spellings outputd accepts as rate_match but the reconciler would not "
         f"narrow for: {sorted(rust_arms - bash_aliases)}"
