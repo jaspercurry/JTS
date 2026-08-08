@@ -6,6 +6,7 @@
 
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,12 +78,14 @@ def test_assess_aec_output_silent_ref_with_no_healthy_window_fails():
 
 
 def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
-    """Same mic-loud + ref-silent shape as the rate-lock fail, but the
-    music chain isn't active (no renderer writing the loopback). In
-    that case ref MUST be silent — snd-aloop produces zeros without a
-    producer — and the mic-loud bursts are TTS or voice (both bypass
-    the loopback). Downgrade to OK with the diagnosis so a pure-voice
-    session doesn't show as a degraded AEC bridge."""
+    """Same mic-loud + ref-silent shape as the rate-lock fail, but no
+    renderer is writing the loopback. A silent ref is then expected
+    rather than suspicious, and the mic-loud bursts are most likely
+    room voice or ambient noise. Downgrade to OK with the diagnosis so
+    a pure-voice session doesn't show as a degraded AEC bridge. The
+    message must also disclose the gate's coverage limit: it sees only
+    the loopback renderer lanes, so a USB Audio Input stream is
+    invisible to it."""
     lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
     r = doctor._assess_aec_bridge_output(
         "\n".join(lines),
@@ -90,7 +93,7 @@ def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
     )
     assert r.status == "ok"
     assert "loopback playback is closed" in r.detail
-    assert "jasper_out bypasses the loopback" in r.detail
+    assert "USB Audio Input is invisible here" in r.detail
     # Counterpart: when music chain IS active, same input still fails —
     # the guard only relaxes the FAIL when we have positive evidence
     # the loopback is idle, not on uncertainty.
@@ -102,7 +105,7 @@ def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
 
 
 def test_assess_aec_output_silent_ref_with_healthy_window_is_ok():
-    """The 2026-05-16 false-positive: TTS / wake cues / loud ambient
+    """The 2026-05-16 false-positive: loud room voice / ambient noise
     push silent_ref over threshold, but at least one window in the
     assessment period has ref signal (proving the chain works). The
     check must NOT fail — silent-ref windows have benign explanations
@@ -120,8 +123,43 @@ def test_assess_aec_output_silent_ref_with_healthy_window_is_ok():
     ]
     r = doctor._assess_aec_bridge_output("\n".join(lines))
     assert r.status == "ok"
-    assert "likely TTS or ambient" in r.detail
+    assert "likely room voice or ambient noise" in r.detail
     assert "ref path proven healthy" in r.detail
+
+
+# The retired pre-outputd TTS bypass (``pcm.jasper_out`` → the raw physical
+# card, removed from the ALSA template by issue #2240). Assistant TTS now rides
+# the fan-in → CamillaDSP → outputd path and lands in the AEC reference like
+# any other program audio, so naming it as the reason a window is ref-silent is
+# a wrong diagnosis. Matched at a word boundary so it never collides with the
+# ``jasper-outputd`` unit name or the ``JASPER_OUTPUTD_`` env prefix.
+RETIRED_TTS_BYPASS_RE = re.compile(r"\bjasper_out\b")
+
+
+def test_doctor_never_explains_ref_silence_with_the_retired_tts_bypass():
+    """No module under `jasper/cli/doctor/` may name ``jasper_out`` — the
+    pre-outputd dmix that genuinely bypassed the reference. It was retired in
+    #2240; citing it in a diagnosis sends an operator chasing a path that no
+    longer exists, and hides the real explanation (sound the speaker never
+    played)."""
+    # Positive/negative control: a typo'd pattern would otherwise pass
+    # forever by matching nothing.
+    assert RETIRED_TTS_BYPASS_RE.search("pcm.jasper_out")
+    assert not RETIRED_TTS_BYPASS_RE.search("jasper-outputd")
+    assert not RETIRED_TTS_BYPASS_RE.search("jasper_outputd")
+    assert not RETIRED_TTS_BYPASS_RE.search("JASPER_OUTPUTD_TTS_SOCKET")
+    doctor_dir = Path(doctor.aec.__file__).resolve().parent
+    modules = sorted(doctor_dir.glob("*.py"))
+    assert modules, "no doctor modules found to scan"
+    offenders = {
+        path.name
+        for path in modules
+        if RETIRED_TTS_BYPASS_RE.search(path.read_text(encoding="utf-8"))
+    }
+    assert not offenders, (
+        "retired 'jasper_out' TTS bypass must not appear in doctor "
+        f"diagnostics; found in: {sorted(offenders)}"
+    )
 
 
 def test_assess_aec_output_healthy_aec_work_is_ok():

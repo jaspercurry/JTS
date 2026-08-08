@@ -1993,12 +1993,22 @@ Captured here so future sessions don't repeat the mistakes.
 10. **Doctor's `check_aec_bridge_output_health` had a false-positive
     failure mode.** Same investigation date. The check flagged
     `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
-    mic-loud signal can also come from sources that **bypass the
-    loopback by design**: TTS / wake cues enter `jasper-outputd`
-    directly on current main (or `pcm.jasper_out` on pre-outputd
-    rollbacks), and loud ambient voice gets pumped by the chip's ASR-beam AGC. In both
-    cases `ref = 0` is correct —
-    nothing was supposed to be in the loopback. **Fix**: count
+    mic-loud signal can also come from **sound the speaker never
+    played**: room voice and ambient noise, pumped by the chip's
+    ASR-beam AGC. There `ref = 0` is correct — nothing was supposed
+    to be in the reference. Assistant TTS is *not* such a source on
+    current main: it rides the same fan-in → CamillaDSP → outputd
+    path as music, so it reaches outputd's final-speaker UDP monitor
+    — the production `JASPER_AEC_REF_SOURCE` — like any other program
+    audio. On a solo speaker it reaches the `jasper_ref` ALSA fallback
+    too, since fan-in mixes TTS into the same sum it writes to lane 7.
+    The one exception is a passive bonded multiroom member, whose
+    local TTS enters at outputd downstream of fan-in: absent from
+    `jasper_ref`, still present in the outputd tap.
+    Prose here used to cite the pre-outputd dmix that genuinely did
+    bypass the reference; that alias was retired in issue #2240, and
+    naming TTS as the reason for a ref-silent window is now a wrong
+    diagnosis. **Fix**: count
     `healthy_ref_windows` (any window where `ref ≥ 50`) and only
     fail when zero healthy windows exist in the assessment period
     AND the silent-ref pattern persists. PR #75's failure was
@@ -2018,13 +2028,17 @@ Captured here so future sessions don't repeat the mistakes.
     where the entire assessment window has no music at all (a
     pure-voice session). Even with `healthy_ref_windows = 0`, the
     silent-ref + mic-loud pattern proves nothing when no renderer
-    is writing the loopback — every ref sample is correctly silent
-    and the mic-loud bursts come from the TTS path. Added a
-    `music_chain_active` gate that reads
-    `/proc/asound/Loopback/pcm0p/sub*/status`; when every sub is
-    `closed`, the FAIL demotes to OK with a "re-run doctor while
-    music is playing" hint. The rate-lock catch from PR #75 still
-    fires when a renderer is actively writing the loopback.
+    is writing the loopback — a silent ref is expected rather than
+    suspicious there, and the mic-loud bursts are most likely room
+    voice or ambient noise (not from TTS, which rides the
+    reference; see above). Added a `music_chain_active` gate that
+    reads `/proc/asound/Loopback/pcm0p/sub*/status`; when every
+    sub is `closed`, the FAIL demotes to OK with a "Re-run doctor
+    with loopback music playing" hint. That gate sees only the
+    loopback renderer lanes, so it cannot prove the speaker is
+    silent — USB Audio Input plays without opening one. The
+    rate-lock catch from PR #75 still fires when a renderer is
+    actively writing the loopback.
 
 A smart speaker that **plays music** and **listens for a wake word**
 in the same physical box has a fundamental signal-processing

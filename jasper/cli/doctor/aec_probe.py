@@ -176,14 +176,14 @@ def probe_aec_ref_path() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — ref signal observed", "ok",
             f"max ref={max_ref} across {window_count} windows (threshold "
-            f"≥{_PROBE_REF_PASS_THRESHOLD}); dsnoop/plug ref chain healthy",
+            f"≥{_PROBE_REF_PASS_THRESHOLD}); reference chain healthy",
         ))
     elif max_mic >= _AEC_MIC_MUSIC_THRESHOLD:
         results.append(CheckResult(
             "probe — ref signal observed", "fail",
             f"max ref={max_ref} (need ≥{_PROBE_REF_PASS_THRESHOLD}) but max "
             f"mic={max_mic} — speaker is reproducing the test tone (mic hears "
-            "it) yet ref path is silent. dsnoop/plug ref chain is broken. "
+            "it) yet ref path is silent. Reference chain is broken. "
             "See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
         ))
     else:

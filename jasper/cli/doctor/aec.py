@@ -584,20 +584,26 @@ def _assess_aec_bridge_output(
       - healthy_windows: windows with mic-loud + meaningful attenuation
 
     `healthy_ref_windows` is the key signal: as long as the ref path
-    delivered signal in at least ONE recent window, the dsnoop/plug
+    delivered signal in at least ONE recent window, the reference
     chain demonstrably works. silent_ref windows in that case are
-    explained by non-loopback acoustic sources (TTS via jasper_out,
-    room voice picked up by the ASR-beam AGC) and are not a bug.
+    explained by acoustic sources the speaker never played (room
+    voice and ambient noise, pumped by the ASR-beam AGC) and are not
+    a bug. Assistant TTS is not one of them: it rides the same
+    fan-in → CamillaDSP → outputd path as music, so it reaches the
+    reference like any other program audio (the pre-outputd dmix that
+    genuinely bypassed the reference was retired in #2240).
 
     `music_chain_active` short-circuits the FAIL for pure-voice
-    sessions: when no renderer is writing the loopback, every ref
-    sample is correctly silent (snd-aloop produces zeros with no
-    upstream producer) so the ref-silent + mic-loud pattern proves
-    nothing about the dsnoop. Pass False when a check upstream has
-    verified the loopback playback side is closed; the FAIL branch
-    will then return OK with an explanatory message instead. Default
-    None preserves the old behavior (used by tests that want to
-    exercise the journal parser in isolation).
+    sessions: when no loopback renderer is writing, the reference is
+    correctly silent (there is no program audio to reference) so the
+    ref-silent + mic-loud pattern proves nothing about the reference
+    chain. The gate observes only the loopback renderer lanes — USB
+    Audio Input reaches the DAC without opening one — so False means
+    "no loopback renderer", NOT "the speaker is silent". Pass False
+    when a check upstream has verified the loopback playback side is
+    closed; the FAIL branch will then return OK with an explanatory
+    message instead. Default None preserves the old behavior (used by
+    tests that want to exercise the journal parser in isolation).
     """
     drift_count = 0
     silent_ref_count = 0
@@ -616,7 +622,7 @@ def _assess_aec_bridge_output(
         mic = int(m.group(2))
         attn_db = float(m.group(4))
         total_windows += 1
-        # ref ≥ silent-threshold = the dsnoop/plug ref chain delivered
+        # ref ≥ silent-threshold = the reference chain delivered
         # real samples in this window. Any single occurrence proves the
         # chain works end-to-end.
         if ref >= _AEC_REF_SILENT_THRESHOLD:
@@ -637,23 +643,28 @@ def _assess_aec_bridge_output(
     # every window for four days because the dsnoop's 48 kHz declared
     # rate mismatched shairport's locked 44.1 kHz. We only fail the
     # check when NO window has ref signal at all; otherwise the silent-
-    # ref windows are mic-only artifacts (TTS via jasper_out, room
-    # voice) which is the 2026-05-16 false-positive mode.
+    # ref windows are mic-only artifacts (room voice, ambient noise)
+    # which is the 2026-05-16 false-positive mode.
     if silent_ref_count >= 5 and healthy_ref_windows == 0:
         # Second false-positive guard: if the music chain isn't
-        # currently active (no renderer writing the loopback), every
-        # ref sample is correctly silent. The mic-loud bursts must be
-        # from a non-loopback source (TTS via jasper_out, voice in the
-        # room), so ref-silent proves nothing about the dsnoop.
+        # currently active (no renderer writing the loopback), a
+        # silent ref is expected rather than suspicious. The mic-loud
+        # bursts are most likely room voice or ambient noise — though
+        # this gate only sees loopback renderer lanes, so it cannot
+        # prove the speaker was silent. Either way ref-silent proves
+        # nothing about the reference chain here.
         if music_chain_active is False:
             return CheckResult(
                 "AEC bridge output", "ok",
                 f"{silent_ref_count} mic-loud windows have "
                 f"ref<{_AEC_REF_SILENT_THRESHOLD} but loopback playback is "
-                f"closed (no renderer writing music) — mic-loud bursts are "
-                f"TTS (jasper_out bypasses the loopback) or ambient. "
-                f"Re-run doctor while music is playing to exercise the ref "
-                f"path; drift={drift_count}",
+                f"closed (no loopback renderer writing music) — mic-loud "
+                f"bursts are most likely room voice or ambient noise. This "
+                f"gate sees only the loopback renderer lanes. If the "
+                f"speaker WAS playing — USB Audio Input is invisible "
+                f"here — the silent ref is unexplained; check outputd's "
+                f"reference publisher. Re-run doctor with loopback music "
+                f"playing to exercise the ref path; drift={drift_count}",
             )
         return CheckResult(
             "AEC bridge output", "fail",
@@ -694,18 +705,19 @@ def _assess_aec_bridge_output(
         )
 
     # silent_ref bursts with a healthy ref path = the false-positive
-    # mode from 2026-05-16: TTS / wake cues / loud voice raise mic above
-    # the music threshold while the loopback (correctly) carries no
-    # producer audio. Surface the diagnosis so an operator who runs
+    # mode from 2026-05-16: loud room voice or ambient noise raises mic
+    # above the music threshold while the reference (correctly) carries
+    # no program audio. Surface the diagnosis so an operator who runs
     # `jasper-doctor` after seeing the old fail can confirm the path
     # is fine.
     if silent_ref_count >= 5 and healthy_ref_windows > 0:
         return CheckResult(
             "AEC bridge output", "ok",
             f"{silent_ref_count} mic-loud windows have ref<{_AEC_REF_SILENT_THRESHOLD} "
-            f"(likely TTS or ambient — TTS routes through jasper_out which "
-            f"bypasses the loopback by design); ref path proven healthy in "
-            f"{healthy_ref_windows}/{total_windows} windows; drift={drift_count}",
+            f"(likely room voice or ambient noise — sound the speaker never "
+            f"played is absent from the reference by design); ref path proven "
+            f"healthy in {healthy_ref_windows}/{total_windows} windows; "
+            f"drift={drift_count}",
         )
 
     # All windows quiet — speaker has been idle, nothing to assess.
