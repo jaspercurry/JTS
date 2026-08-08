@@ -464,20 +464,30 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # driver emits "HiFiBerry Studio DAC8x" (studio first) while HiFiBerry's
     # own product naming is "DAC8x Studio". Deliberately NOT `\b`-bounded
     # around the tokens, so the run-together slug forms both match
-    # ("StudioDAC8x", "DAC8XStudio") — an ALSA card id is stripped to
-    # alphanumerics, so a slug is a shape this really can present in.
+    # ("StudioDAC8x", "DAC8XStudio") — #2250's own scope bullet called out
+    # covering the "StudioDAC8x" slug form explicitly. (The ALSA card-id's
+    # own alphanumeric-stripped, length-capped shorthand — "HiFiBerryStudio"
+    # in this file's own test fixture — is a DIFFERENT, shorter string that
+    # matches neither pattern; it needs no accommodation here because the
+    # joined `/proc/asound/cards` line carries the full "HiFiBerry Studio
+    # DAC8x" long name alongside it, which these patterns already catch.)
     #
-    # `(?!.*\bpro\b)` excludes the Studio DAC8x PRO on purpose. The Pro is a
-    # different board with its own overlay (`hifiberry-studio-dac8x-pro`) and
-    # the OPPOSITE clock role — its overlay targets `i2s_clk_consumer` and
-    # sets `clk-provider`, so the CARD drives the I2S clocks rather than the
-    # Pi. Matching it here would hand it this row's clock-domain contract and
-    # overlay, which is the same silent-inheritance defect as #2250 one board
-    # over. No Pro exists in the fleet, so it routes to "unknown" and parks
-    # loudly instead of being quietly approximated.
+    # `(?!.*pro)` excludes the Studio DAC8x PRO on purpose, and is
+    # deliberately NOT `\b`-bounded either: a `\b`-bounded `(?!.*\bpro\b)`
+    # cannot see "pro" in the run-together slug form "StudioDAC8xPro" — "x"
+    # and "P" are both word characters, so no boundary exists between them,
+    # and the exclusion silently failed to fire for exactly the slug shape
+    # this profile deliberately matches. The Pro is a different board with
+    # its own overlay (`hifiberry-studio-dac8x-pro`) and the OPPOSITE clock
+    # role — its overlay targets `i2s_clk_consumer` and sets `clk-provider`,
+    # so the CARD drives the I2S clocks rather than the Pi. Matching it here
+    # would hand it this row's clock-domain contract and overlay, which is
+    # the same silent-inheritance defect as #2250 one board over. No Pro
+    # exists in the fleet, so it routes to "unknown" and parks loudly
+    # instead of being quietly approximated.
     supported_card_matches=(
-        r"^(?!.*\bpro\b).*studio.*dac8x",
-        r"^(?!.*\bpro\b).*dac8x.*studio",
+        r"^(?!.*pro).*studio.*dac8x",
+        r"^(?!.*pro).*dac8x.*studio",
     ),
     # Same active-lane shape as the base DAC8x: a coherent 8-channel single
     # device on the DAC-agnostic transport (Stage 1). dac_channel_map None =>

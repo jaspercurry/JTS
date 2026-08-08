@@ -1762,7 +1762,8 @@ path — wide-output-path PR-8 — with the edge-conversion paragraph and the
 composite-egress sentence re-stated against the code, including that NO
 profile declares that width and that a composite refuses it; no live box
 resolves it, so it is vocabulary rather than a fleet change, and its hardware
-open-proof is owed. (3) DAC8x Studio ROUTING corrected against the kernel: the
+open-proof is owed. Separately — a DAC8x Studio ROUTING fix, not a third
+FINAL-EDGE-hop change — the registry was corrected against the kernel: the
 Studio board has its own `hifiberry-studio-dac8x` overlay and machine driver
 rather than the base board's, so the base profile's card-label regexes were
 narrowed to the single name its own driver emits and Studio silicon no longer

@@ -211,11 +211,19 @@ def test_studio_dac8x_pro_parks_rather_than_borrowing_the_studio_profile() -> No
     row's clock-domain contract and overlay is the same defect class #2250
     fixed one board over. No Pro exists in the fleet, so "unknown" (which
     parks the output owner loudly) is the honest answer.
+
+    The run-together slug forms are covered too, not just the spaced kernel
+    label: a `\\b`-bounded exclusion (`(?!.*\\bpro\\b)`) cannot see "pro" in
+    "StudioDAC8xPro" — "x" and "P" are both word characters, so no boundary
+    exists between them — and would silently fail to exclude exactly the
+    slug shape this profile deliberately matches for the non-Pro board.
     """
     for label in (
         "HiFiBerry Studio DAC8x Pro",
         " 3 [HiFiBerryStudio]: HifiberryStudio - HiFiBerry Studio DAC8x Pro"
         " HiFiBerry Studio DAC8x Pro",
+        "StudioDAC8xPro",
+        "DAC8XStudioPro",
     ):
         assert dac.profile_for_card_label(label) is None, label
 
@@ -294,6 +302,11 @@ def test_every_single_profile_label_matches_exactly_one_profile() -> None:
 
     checked = 0
     for owner_id, labels in _PROFILE_LABEL_SAMPLES.items():
+        # Per-profile non-vacuity: the global `checked >= len(single_ids)`
+        # check below is satisfied even if ONE profile's tuple is emptied,
+        # as long as every other profile still contributes >=2 labels — it
+        # cannot catch a single profile silently losing its coverage.
+        assert labels, f"{owner_id} needs at least one sample label"
         for label in labels:
             matching = [
                 profile.id
