@@ -426,9 +426,16 @@ def _loopback_playback_active() -> bool:
 
     Used to gate the AEC bridge FAIL: ref-silent windows are only
     diagnostic of a broken reference chain when music IS being routed
-    through the loopback. When no renderer is writing, ref-silent is the
-    expected state and mic-loud bursts come from sound the speaker never
-    played (voice in the room, ambient noise).
+    through the loopback. When no renderer is writing, ref-silent is
+    the expected state and mic-loud bursts are most likely room voice
+    or ambient noise.
+
+    Note the blind spot before using this as "the speaker is silent":
+    it observes only the loopback renderer lanes. USB Audio Input is
+    DIRECT-captured by jasper-fanin from hw:UAC2Gadget and opens no
+    playback lane here, so False means "no loopback renderer", not
+    "nothing is playing". A caller that needs true output silence
+    must consult fan-in's DIRECT lane as well.
     """
     import glob
     for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):
