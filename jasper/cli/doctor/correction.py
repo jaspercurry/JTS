@@ -782,6 +782,26 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     the second-owner-of-one-decision shape this PR's own docstrings spend
     paragraphs forbidding elsewhere. ``crossover_v2_status_block`` computes the
     grade once; every surface — `/state`, the wizard, this check — reads that.
+
+    **A grade that EXISTS is not a grade that PASSED, and a grade at the mark
+    is not the grade a Full session promised** (R19; #2160, #2098). Both were
+    printing as one green tick, because ``state`` answers only "was it
+    checked" and ``GRADE_GRADED``/``GRADE_MARK_VERIFIED`` are honest answers
+    to that question in every case above. Keying ``ok`` on ``state`` alone
+    therefore reported a closed-and-FAILED spatial grade, and a Full session
+    that never closed one, as the same clean result — measured on jts3
+    2026-08-07, where this line printed ``applied and graded (state=graded,
+    verify=pass)`` beside a cloud line reading ``spec=fail worst=-4.63dB``.
+    The producer now carries the two facts that separate them (``spatial``,
+    ``complete``, plus the failing gauge's own number); this reads them and
+    still re-derives nothing.
+
+    Still WARN, never FAIL, and never a revert: a failed spatial grade is a
+    COMPLETED grade the household acts on at ``/correction/`` (#2160's ruling
+    — grade and disclose, do not gate). An unknown ``spatial`` word from a
+    later build falls through to a WARN that names the unreadable word, never
+    the passing wording — the same direction ``state`` already takes on a
+    word this build has never heard of, never a guess at what it means.
     """
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
@@ -789,6 +809,10 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_INCONCLUSIVE,
         GRADE_MARK_VERIFIED,
         GRADE_NOT_APPLIED,
+        GRADE_SPATIAL_ABSENT,
+        GRADE_SPATIAL_FAILED,
+        GRADE_SPATIAL_PASSED,
+        GRADE_SPATIAL_UNMEASURABLE,
         crossover_v2_status_block,
     )
 
@@ -803,10 +827,64 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
+        spatial = str(grade.get("spatial") or "")
+        verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
+        # A non-empty word this build does not recognize — a later build's
+        # vocabulary. Never the empty string, which means a durable state
+        # written before ``spatial`` existed at all and keeps its pre-R19
+        # fallthrough below. S1 (#2242 gate): this used to fall through to
+        # the passing wording; now it WARNS and names the word, the same
+        # direction ``state``'s own unrecognised-value fallback already
+        # takes.
+        if spatial and spatial not in {
+            GRADE_SPATIAL_ABSENT,
+            GRADE_SPATIAL_PASSED,
+            GRADE_SPATIAL_FAILED,
+            GRADE_SPATIAL_UNMEASURABLE,
+        }:
+            return CheckResult(
+                label, "warn",
+                f"applied and graded, but the spatial grade word {spatial!r} "
+                "is not one this build recognizes — treating it as unproven "
+                f"rather than guessing ({verify_text}); check for a "
+                "jasper-doctor update, or re-measure at /correction/",
+            )
+        if spatial == GRADE_SPATIAL_FAILED:
+            worst = grade.get("spatial_worst_db")
+            at = grade.get("spatial_worst_hz")
+            # The number rides the verdict from the same gauge the cloud line
+            # prints, so "the grade failed" and "by how much" cannot drift.
+            # Absent when the gauge recorded none — never a fabricated 0.
+            worst_text = ""
+            if isinstance(worst, (int, float)):
+                where = f" @ {at:.0f}Hz" if isinstance(at, (int, float)) else ""
+                worst_text = f" ({worst:+.2f}dB{where})"
+            return CheckResult(
+                label, "warn",
+                f"applied and graded, and the spatial grade FAILED{worst_text} "
+                f"— the tune stays on the speaker ({verify_text}); re-measure "
+                "at /correction/ or undo to restore the previous sound",
+            )
+        if spatial == GRADE_SPATIAL_UNMEASURABLE:
+            return CheckResult(
+                label, "warn",
+                f"applied; the post-apply group closed but its spatial grade "
+                f"could not be measured ({verify_text}) — re-measure at "
+                "/correction/ in a quieter room, or undo",
+            )
+        if grade.get("complete") is False:
+            return CheckResult(
+                label, "warn",
+                f"applied and verified at the mark, but no "
+                f"{block.get('tier') or 'this'}-tier spatial grade exists "
+                f"for this session, so it is unproven away from the mark "
+                f"({verify_text}) — finish the measurement at /correction/, "
+                "or undo",
+            )
         return CheckResult(
             label, "ok",
-            f"applied and graded (state={state}, "
-            f"verify={grade.get('verify_outcome') or 'n/a'})",
+            f"applied and graded (state={state}, scope="
+            f"{grade.get('scope') or 'n/a'}, {verify_text})",
         )
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         return CheckResult(

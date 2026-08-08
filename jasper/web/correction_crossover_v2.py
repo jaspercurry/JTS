@@ -1656,6 +1656,66 @@ GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
 
+# --------------------------------------------------------------------------- #
+# #2098's scope/completeness fact, and #2160's failed-gauge consumption.
+#
+# ``state`` above answers "was it checked". These answer the two questions a
+# surface needed and had to guess at: how WIDE is the evidence behind that
+# answer, and does that width meet what the commission tier promised.
+# --------------------------------------------------------------------------- #
+
+#: How far the evidence behind ``state`` reaches. Never a tier — a tier is what
+#: was PROMISED, this is what was DELIVERED, and conflating them is the #2098
+#: defect (a Full session's mark-only pass rendered as the full claim).
+GRADE_SCOPE_NONE = "none"
+GRADE_SCOPE_MARK = "mark"
+GRADE_SCOPE_SPATIAL = "spatial"
+
+#: The post-apply SPATIAL grade's own state (#2160). ``overall_passed`` is a
+#: bool and therefore cannot distinguish "graded and failed" from "could not be
+#: graded at all" — :attr:`~jasper.active_speaker.flat_spec.SpecFlatness.passed`
+#: is ``False`` for an unmeasurable spectrum too, by its own "will not report a
+#: clean bill of health for a spectrum it could not fully measure" rule. This
+#: field carries the distinction the verdict key structurally cannot.
+GRADE_SPATIAL_ABSENT = "absent"
+GRADE_SPATIAL_PASSED = "passed"
+GRADE_SPATIAL_FAILED = "failed"
+GRADE_SPATIAL_UNMEASURABLE = "unmeasurable"
+
+
+def _spatial_grade(post_apply: Any) -> str:
+    """One post-apply cloud entry reduced to its SPATIAL grade state.
+
+    ``overall_passed`` — projected by :func:`_compact_cloud_status` from the
+    spec report — stays THE consumed verdict key: every existing verdict path
+    reads it, and ``flatness.passed`` is the same value under another name, so
+    this deliberately does not become a second reader of it.
+    ``flatness.evaluable`` is consulted for exactly one thing, the distinction
+    ``overall_passed`` cannot carry: a spectrum where no band survived to be
+    measured reports ``passed=False`` and is NOT a failure.
+
+    Unmeasurable is claimed only on POSITIVE evidence (``evaluable`` present
+    and ``False``). A durable state whose entry carries no ``flatness`` at all
+    — an available pipeline written before the gauge shipped — leaves the only
+    verdict that exists standing, because downgrading a recorded failure to
+    "could not be measured" on the ABSENCE of a gauge would be the fabricated
+    reading this program forbids, pointed the other way.
+    """
+    if not isinstance(post_apply, Mapping):
+        return GRADE_SPATIAL_ABSENT
+    passed = post_apply.get("overall_passed")
+    if not isinstance(passed, bool):
+        # No verdict — the group never closed, or its pipeline never became
+        # available. Never a failing grade; see ``_spec_verdict``'s own
+        # "absence of a verdict is not a failing one" rule.
+        return GRADE_SPATIAL_ABSENT
+    if passed:
+        return GRADE_SPATIAL_PASSED
+    flatness = post_apply.get("flatness")
+    if isinstance(flatness, Mapping) and flatness.get("evaluable") is False:
+        return GRADE_SPATIAL_UNMEASURABLE
+    return GRADE_SPATIAL_FAILED
+
 
 def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     """Was the correction now ON the speaker ever checked after it landed?
@@ -1680,15 +1740,78 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     done screen, and is the household's call. What was missing is being told.
 
     The returned ``state`` is one of the ``GRADE_*`` constants above;
-    ``graded`` is the single boolean a caller can key on without knowing the
-    vocabulary. Both a passing VERIFY outcome and a graded post-apply cloud
-    count — either instrument is a real check, and the tiers differ in which
-    one they run.
+    ``graded`` answers only "was it checked" — since R19 it is no longer a
+    boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
+    ``complete`` below carry the verdict it cannot. Both a passing VERIFY
+    outcome and a graded post-apply cloud count — either instrument is a real
+    check, and the tiers differ in which one they run.
+
+    **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
+    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
+    three are why this returns more than a state name. ``state`` alone cannot
+    carry either fact, and both were being guessed at downstream:
+
+    * a Full session whose post-apply group never closed reaches
+      ``mark_verified`` — a true local result, and NOT the claim Full
+      promised. It rendered as "applied and graded".
+    * a post-apply group that closed with ``overall_passed=False`` reaches
+      ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
+      rendered as "applied and graded" — measured on jts3 2026-08-07, a
+      −4.63 dB spatial miss under a green tick.
+
+    ``scope`` is what the evidence DELIVERED; ``tier`` is what the session
+    PROMISED; ``complete`` is the producer's own comparison of the two, so no
+    consumer re-derives it (plan §7: one producer owns the scope/completeness
+    fact for the wizard, ``/state``, and doctor). The ``else`` tier branch
+    catches two different inputs and judges BOTH on delivery alone — but NOT
+    because "the promise cannot be known", which is false of the first input
+    and misdescribes the second:
+
+    * **No ``tier`` line at all.** ``normalize_tier`` documents an absent tier
+      as Full, so this promise IS knowable and the branch declines it BY
+      CHOICE. A state file with no tier came from a build that had no tier
+      concept and therefore never MADE Full's promise; judging it against
+      Full's stricter spatial-scope bar would false-warn a correctly
+      commissioned legacy speaker about delivery it was never asked to
+      produce. Wiring ``normalize_tier`` in here IS that regression.
+    * **A tier word from a later build.** ``normalize_tier`` does not default
+      this one — it RAISES, by its own "fail loudly rather than silently
+      measure something else" rule. That rule is right for a caller opening a
+      session and wrong here: ``_post_apply_grade`` runs unguarded inside
+      ``crossover_v2_status_block`` on every ``/state`` read, wizard poll, and
+      doctor run, so raising would take the whole status block down over a
+      word this build only needed to not grade.
+
+    ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
+    the doctor's cloud-pipeline line prints, never re-derived, so "the grade
+    failed" and "by how much" cannot drift apart. ``None`` whenever the gauge
+    reports no number, including a failed grade whose gauge is absent.
+
+    **Grades and discloses; never gates** (#2160 ruling). A failed spatial
+    grade is a COMPLETED grade: the session completes, the applied tune stays,
+    the failure is loud. Nothing here reverts anything — see the
+    surface-not-auto-restore paragraph above, which this extends rather than
+    revisits.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_CLOUD_VERIFY,
+        TIER_EXPRESS,
+        TIER_FULL,
+    )
 
     if not block.get("applied"):
-        return {"state": GRADE_NOT_APPLIED, "graded": True, "verify_outcome": None}
+        return {
+            "state": GRADE_NOT_APPLIED,
+            "graded": True,
+            "verify_outcome": None,
+            "scope": GRADE_SCOPE_NONE,
+            "spatial": GRADE_SPATIAL_ABSENT,
+            "spatial_worst_db": None,
+            "spatial_worst_hz": None,
+            # Nothing was promised, so nothing is outstanding. `False` here
+            # would warn every speaker that has never been commissioned.
+            "complete": True,
+        }
     verify = block.get("verify")
     outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, Mapping) else ""
     cloud = block.get("cloud")
@@ -1710,11 +1833,46 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         state = GRADE_FAILED
     else:
         state = GRADE_UNVERIFIED
+    spatial = _spatial_grade(post_apply)
+    # Delivered width, derived from the evidence rather than from ``state``:
+    # only a real spatial VERDICT is a spatial claim, so a group that closed
+    # and could not grade anything reaches back to whatever the mark proved.
+    if spatial in {GRADE_SPATIAL_PASSED, GRADE_SPATIAL_FAILED}:
+        scope = GRADE_SCOPE_SPATIAL
+    elif outcome == "pass":
+        scope = GRADE_SCOPE_MARK
+    else:
+        scope = GRADE_SCOPE_NONE
+    tier = str(block.get("tier") or "")
+    if tier == TIER_FULL:
+        complete = scope == GRADE_SCOPE_SPATIAL
+    elif tier == TIER_EXPRESS:
+        # Express promises the mark and structurally never walks a post-apply
+        # group, so the mark IS its whole grade — complete, and explicitly
+        # scoped. A spatial verdict would exceed the promise, never miss it.
+        complete = scope in {GRADE_SCOPE_MARK, GRADE_SCOPE_SPATIAL}
+    else:
+        complete = scope != GRADE_SCOPE_NONE
+    flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
+    flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
         "state": state,
         "graded": state in {GRADE_GRADED, GRADE_MARK_VERIFIED},
         "verify_outcome": outcome or None,
         "post_apply_spec_passed": cloud_verdict if isinstance(cloud_verdict, bool) else None,
+        "scope": scope,
+        "spatial": spatial,
+        # Only alongside a real failing grade: a number without a verdict to
+        # attach it to is the fabricated reading this module forbids.
+        "spatial_worst_db": (
+            _finite(flatness.get("max_db"))
+            if spatial == GRADE_SPATIAL_FAILED else None
+        ),
+        "spatial_worst_hz": (
+            _finite(flatness.get("max_hz"))
+            if spatial == GRADE_SPATIAL_FAILED else None
+        ),
+        "complete": complete,
     }
 
 

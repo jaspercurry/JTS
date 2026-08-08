@@ -1488,19 +1488,13 @@ def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
 
 
-def _spec_verdict(entry: Mapping[str, Any]) -> bool | None:
-    """One compact cloud entry's flat-spec verdict — ``True`` / ``False`` /
-    ``None`` for "no verdict exists".
-
-    The single reader of that key for copy purposes (PR-L4 item 7), so the
-    done screen's headline, its badge, and any future surface cannot drift on
-    what counts as a failing verdict. ``None`` is load-bearing and is never
-    coerced: ``_compact_cloud_status`` leaves ``overall_passed`` ``None`` for a
-    pipeline that never became available, and Express never produces a
-    post-apply entry at all. Absence of a verdict is not a failing one.
-    """
-    passed = entry.get("overall_passed")
-    return passed if isinstance(passed, bool) else None
+# ``_spec_verdict`` lived here until R19 (#2160): one compact cloud entry's
+# ``overall_passed``, read locally for the done screen's headline and badge.
+# It was the SECOND owner of a question the producer now answers —
+# ``_post_apply_grade``'s ``spatial`` — and it could not answer it correctly,
+# because ``overall_passed`` is ``False`` for a spectrum that could not be
+# graded as well as for one that was graded and missed. Deleted rather than
+# repointed: a reader of that key here is exactly the drift §7 forbids.
 
 
 def _done_nudges(
@@ -2991,12 +2985,40 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # could not be graded) leaves the copy alone — express omits the
         # post-apply cloud entirely by design, and manufacturing a caveat out of
         # a missing measurement would be its own dishonesty.
-        spec_passed = _spec_verdict(_cloud_verify_block(status))
+        #
+        # R19 (#2160): read the PRODUCER's spatial grade, not the cloud entry's
+        # `overall_passed` — this screen used to re-derive the verdict through
+        # a local `_spec_verdict`, and that key is `False` for BOTH a graded
+        # miss and a spectrum no band survived to grade (`SpecFlatness.passed`
+        # says so itself: "read it with evaluable"). So a household whose
+        # measurement could not read the room was told its speaker "measures
+        # further from flat than the target" — a number-shaped claim about a
+        # measurement that never happened. `_post_apply_grade` is the one owner
+        # of that distinction now (plan §7: consumers do not infer it).
+        # Literal grade words, matching `grade_state` below and for the same
+        # reason: `jasper.active_speaker` never imports `jasper.web`. Pinned
+        # against the producer's constants by
+        # tests/test_crossover_envelope_v2.py's spatial-grade contract tests.
+        grade = _mapping(v2.get("post_apply_grade"))
+        spatial = str(grade.get("spatial") or "")
+        spec_passed = (
+            True if spatial == "passed" else False if spatial == "failed" else None
+        )
         if spec_passed is False:
             done_verdict = (
                 "Your speaker is tuned, but the result still measures further "
                 "from flat than the target in at least one band. If it sounds "
                 "worse than before, you can undo."
+            )
+        elif spatial == "unmeasurable":
+            # The group closed and the gauge could not grade it. Distinct from
+            # both a miss and a check that never ran: something WAS measured
+            # and it carried no readable answer, which points at the room, not
+            # at a retry of a step that died.
+            done_verdict = (
+                "Your speaker is tuned, but the check that measures how flat "
+                "it is could not read enough of the sound to say either way. "
+                "If it sounds worse than before, you can undo."
             )
         # PR-L4 item 4: applied implies graded, and when it does not, the
         # household is TOLD rather than restored behind their back. See
@@ -3004,15 +3026,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # missing grade says nothing about the correction, and express omits
         # the post-apply group by design). A failing grade already has its own
         # screen; this is the case where no check finished at all.
-        elif not _mapping(v2.get("post_apply_grade")).get("graded", True):
+        elif not grade.get("graded", True):
             # Two different silences, two different sentences. "Never finished"
             # is false for an INCONCLUSIVE check — that one ran to completion
             # and could not decide, which is a different thing to tell someone
             # and points at a different fix (a quieter room, not a retry of a
             # step that died).
-            grade_state = str(
-                _mapping(v2.get("post_apply_grade")).get("state") or ""
-            )
+            grade_state = str(grade.get("state") or "")
             if grade_state == "inconclusive":
                 # WHY it could not tell, from the verdict that produced the
                 # outcome (issue #1974). This sentence used to assert "the room
@@ -3043,6 +3063,21 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     "never finished, so this result is unverified. Re-verify to "
                     "confirm it, or undo to restore the previous sound."
                 )
+        elif grade.get("complete") is False:
+            # #2098: the local check PASSED and it is a real result — it is
+            # just not the result this tier promised. A Full session that
+            # verified at the mark and never closed its post-apply group read
+            # here as an unqualified "Your speaker is tuned", which is the
+            # widest of the three claims on the strength of the narrowest
+            # evidence. Express never reaches this branch: the mark IS its
+            # whole promise, so its scope is complete (and its own copy above
+            # already names both the scope and the upgrade path).
+            done_verdict = (
+                "Your speaker is tuned and confirmed at the mark, but the "
+                "wider check across several spots has not produced a result "
+                "— that part is unproven. Measure again to finish it, or "
+                "undo if it sounds worse than before."
+            )
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
             done_verdict = f"{done_verdict} {attempt_sentence}"

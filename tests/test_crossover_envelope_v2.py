@@ -70,7 +70,15 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.gate_disclosure import describe_gate
-from jasper.web.correction_crossover_v2 import _compact_cloud_status
+from jasper.web.correction_crossover_v2 import (
+    GRADE_SCOPE_MARK,
+    GRADE_SCOPE_SPATIAL,
+    GRADE_SPATIAL_FAILED,
+    GRADE_SPATIAL_PASSED,
+    GRADE_SPATIAL_UNMEASURABLE,
+    _compact_cloud_status,
+    _post_apply_grade,
+)
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
@@ -86,6 +94,17 @@ def _status(**v2) -> dict:
         # The aged and undated (pre-#1942) cases are built inline instead, so
         # a test that means "stale" has to say so out loud.
         v2 = {**v2, "failure": {**failure, "at": time.time()}}
+    if "post_apply_grade" not in v2:
+        # R19: the envelope reads the PRODUCER's grade — scope, spatial state,
+        # completeness — instead of re-deriving any of them from the cloud
+        # block. Running the real producer here rather than hand-building the
+        # dict is what makes these tests a contract between the two modules:
+        # the envelope spells the grade words as literals (jasper.active_speaker
+        # never imports jasper.web), and a rename on the producer side stops
+        # those branches firing, which fails here rather than shipping.
+        # Fixtures that pass their own `post_apply_grade` are describing a
+        # state file some OTHER build wrote, and keep it verbatim.
+        v2 = {**v2, "post_apply_grade": _post_apply_grade(v2)}
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -655,7 +674,8 @@ def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
     disclosure, so a household read "Your speaker is tuned" over it."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"},
-        candidate=_candidate_summary(), cloud=_cloud_verify_spec(False),
+        candidate=_candidate_summary(), applied=True,
+        cloud=_cloud_verify_spec(False),
     ))
     verdict = env["verdict_text"].lower()
     assert "further from flat" in verdict
@@ -672,7 +692,8 @@ def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
 def test_done_headline_is_unchanged_when_the_spec_passed():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"},
-        candidate=_candidate_summary(), cloud=_cloud_verify_spec(True),
+        candidate=_candidate_summary(), applied=True,
+        cloud=_cloud_verify_spec(True),
     ))
     assert "further from flat" not in env["verdict_text"].lower()
     assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
@@ -687,6 +708,93 @@ def test_done_headline_is_unchanged_when_no_spec_verdict_exists():
     ))
     assert "further from flat" not in env["verdict_text"].lower()
     assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
+
+
+def test_done_headline_will_not_call_an_unmeasurable_group_a_miss():
+    """#2160: ``overall_passed`` is ``False`` for a spectrum no band survived
+    to grade as well as for one that was graded and missed, so the screen used
+    to tell a household its speaker "measures further from flat than the
+    target" on the strength of a measurement that never produced a number.
+    The two states now get two sentences."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, applied=True,
+        candidate=_candidate_summary(),
+        cloud={PHASE_CLOUD_VERIFY: {
+            **_cloud_verify_spec(False)[PHASE_CLOUD_VERIFY],
+            "flatness": {
+                "max_db": None, "max_hz": None, "max_band_hz": None,
+                "tolerance_db": None, "rms_db": None, "n_bins": 0,
+                "n_excluded": 900, "evaluable": False, "passed": False,
+            },
+        }},
+    ))
+    verdict = env["verdict_text"].lower()
+    assert "could not read enough of the sound" in verdict
+    assert "further from flat" not in verdict
+    # And the badge stops claiming a miss it cannot support either.
+    assert "crossover_v2_out_of_spec" not in {n["code"] for n in env["nudges"]}
+
+
+def test_done_headline_says_a_full_session_never_closed_its_wider_check():
+    """#2098: a Full session that verified at the mark and never closed its
+    post-apply group read as an unqualified "Your speaker is tuned" — the
+    widest of the three claims on the narrowest evidence. The local pass is
+    still stated; what is added is the part that is unproven."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
+        candidate=_candidate_summary(),
+    ))
+    verdict = env["verdict_text"].lower()
+    assert "confirmed at the mark" in verdict
+    # SF1 (#2242 gate): delivered-evidence wording only — never "never
+    # finished", which asserts a mechanism this branch cannot know (a closed
+    # group whose pipeline failed reaches the same branch and DID close).
+    assert "has not produced a result" in verdict
+    assert "never finished" not in verdict
+    assert "unproven" in verdict
+
+
+def test_done_headline_leaves_a_complete_express_result_alone():
+    """Express's scope IS the mark, so the incomplete branch must not fire —
+    its own copy already names both the scope and the upgrade path."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"}, applied=True,
+        candidate=_candidate_summary(),
+    ))
+    assert "unproven" not in env["verdict_text"].lower()
+    assert "Run a Full measurement" in env["verdict_text"]
+
+
+def test_the_done_screen_spells_the_producers_grade_words():
+    """The envelope branches on grade words as LITERALS — ``jasper.active_speaker``
+    never imports ``jasper.web``, so it cannot spell them through the
+    constants. This is the pin that keeps the two spellings identical: each
+    branch is driven from the producer's own constant, so a rename there
+    leaves the branch unreachable and fails here."""
+    def _verdict(grade):
+        return build_crossover_envelope_v2(_status(
+            phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
+            candidate=_candidate_summary(), post_apply_grade=grade,
+        ))["verdict_text"].lower()
+
+    failed = _verdict({
+        "state": "graded", "graded": True, "complete": True,
+        "scope": GRADE_SCOPE_SPATIAL, "spatial": GRADE_SPATIAL_FAILED,
+    })
+    assert "further from flat" in failed
+
+    unmeasurable = _verdict({
+        "state": "graded", "graded": True, "complete": False,
+        "scope": GRADE_SCOPE_MARK, "spatial": GRADE_SPATIAL_UNMEASURABLE,
+    })
+    assert "could not read enough of the sound" in unmeasurable
+
+    passed = _verdict({
+        "state": "graded", "graded": True, "complete": True,
+        "scope": GRADE_SCOPE_SPATIAL, "spatial": GRADE_SPATIAL_PASSED,
+    })
+    assert "further from flat" not in passed
+    assert "unproven" not in passed
 
 
 def test_a_level_mismatch_caveats_the_pass_screen():
@@ -734,7 +842,8 @@ def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
             "outcome": "pass",
             "delta_probe": {"verdict": "level_mismatch"},
         },
-        candidate=_candidate_summary(), cloud=_cloud_verify_spec(False),
+        candidate=_candidate_summary(), applied=True,
+        cloud=_cloud_verify_spec(False),
     ))
     assert {n["code"] for n in env["nudges"]} == {
         "crossover_v2_out_of_spec", "crossover_v2_level_mismatch",

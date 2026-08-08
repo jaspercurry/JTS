@@ -1397,6 +1397,269 @@ def test_applied_profile_with_inconclusive_verify_warns(monkeypatch):
     assert "never graded" not in r.detail
 
 
+# --- R19 honest grading: the green tick over a failed gauge (#2160/#2098) ---
+
+
+def _r19_cloud_verify(*, passed, flatness):
+    return {
+        "cloud_verify": {
+            "geometry": {"locked": False},
+            "pipeline": {
+                "available": True,
+                "spec": {"overall_passed": passed, "bands": []},
+                "merged_excluded_bands_hz": [
+                    [1400.0, 1900.0], [3000.0, 3200.0],
+                    [5000.0, 5400.0], [9000.0, 9600.0],
+                ],
+                "flatness": flatness,
+            },
+        },
+    }
+
+
+_R19_FAILED_GAUGE = {
+    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
+    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
+    "evaluable": True, "passed": False,
+}
+
+
+def _r19_cloud_verify_pipeline_unavailable(*, reason):
+    """A group that CLOSED but whose pipeline failed to combine/analyze —
+    ``assemble_cloud_group_result``'s own ``combined is None`` shape
+    (``{"available": False, "reason": "combine_failed"}``). Distinct from a
+    group that never closed at all: ``_r19_cloud_verify`` above hardcodes
+    ``available: True``, so this shape had no test coverage (#2242 SF1)."""
+    return {
+        "cloud_verify": {
+            "geometry": {"locked": True},
+            "pipeline": {"available": False, "reason": reason},
+        },
+    }
+
+
+def _r19_doctor_state(monkeypatch, **overrides):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state", lambda: _v2_applied_state(**overrides)
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+
+def test_a_failed_spatial_grade_is_not_a_green_tick(monkeypatch):
+    """#2160, measured on jts3 2026-08-07: this line printed ``applied and
+    graded (state=graded, verify=pass)`` while the cloud line one row up read
+    ``spec=fail worst=-4.63dB excluded_intervals=4 geometry_locked=False``.
+    ``state`` answers "was it checked" and ``graded`` is an honest answer to
+    that, so keying ok on it reported a failure as a pass. Grade and disclose,
+    never gate: still a warn, and the tune stays on the speaker."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=False, flatness=_R19_FAILED_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "spatial grade FAILED" in r.detail
+    # The number rides the verdict, from the same gauge the cloud line prints.
+    assert "-4.63dB" in r.detail
+    assert "@ 1650Hz" in r.detail
+    # The ruling, in the words a household reads: nothing was reverted.
+    assert "stays on the speaker" in r.detail
+
+
+def test_a_full_session_verified_only_at_the_mark_warns(monkeypatch):
+    """#2098's own field evidence — Full, ``verify.outcome=pass``, no cloud.
+    The local pass is real and is preserved in the wording; what changes is
+    that it stops being reported as the claim Full promised.
+
+    SF1 (#2242 gate): the wording is delivered-evidence only — "no full-tier
+    spatial grade exists" — never "never closed", which asserts a mechanism
+    this check cannot know (a closed-but-unavailable pipeline reaches this
+    same branch; see the fixture below)."""
+    _r19_doctor_state(monkeypatch, tier="full", verify={"outcome": "pass"})
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "verified at the mark" in r.detail
+    assert "no full-tier spatial grade exists" in r.detail
+
+
+def test_a_closed_but_unavailable_pipeline_does_not_claim_the_group_never_closed(
+    monkeypatch,
+):
+    """SF1 (#2242 gate): the group DID close — its pipeline just failed to
+    combine (``assemble_cloud_group_result``'s own ``combine_failed`` shape)
+    — the second falsifying case the old "never closed" wording contradicted.
+    That shape renders this line beside ``check_crossover_v2_cloud_pipeline``'s
+    own line describing the same closed-but-unavailable group — the
+    adjacent-contradiction defect this PR exists to remove, reintroduced one
+    branch over. The new wording claims only what THIS check can see."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify_pipeline_unavailable(reason="combine_failed"),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "no full-tier spatial grade exists" in r.detail
+    assert "never closed" not in r.detail
+
+
+def test_an_express_session_verified_at_the_mark_stays_ok(monkeypatch):
+    """The mark IS express's whole promise. Warning here would fire on every
+    express session ever run — the mirror of the defect being fixed."""
+    _r19_doctor_state(monkeypatch, tier="express", verify={"outcome": "pass"})
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "scope=mark" in r.detail
+
+
+def test_a_group_that_could_not_be_graded_is_not_reported_as_a_miss(monkeypatch):
+    """``passed=False, evaluable=False`` means "could not be measured", not
+    "failed" — ``SpecFlatness.passed``'s own read-it-with-evaluable rule."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=False, flatness={
+            **_R19_FAILED_GAUGE,
+            "max_db": None, "max_hz": None, "evaluable": False,
+        }),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "could not be measured" in r.detail
+    assert "FAILED" not in r.detail
+
+
+def test_a_closed_and_passing_spatial_grade_is_ok(monkeypatch):
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=True, flatness={
+            **_R19_FAILED_GAUGE, "max_db": 0.9, "passed": True,
+        }),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "scope=spatial" in r.detail
+
+
+def test_an_unknown_spatial_word_from_a_later_build_warns_and_names_it(
+    monkeypatch,
+):
+    """S1 (#2242 gate): the direction ``state`` already follows for a value
+    this build cannot read is WARN, never the passing wording — this used to
+    fall through to "applied and graded" instead, a real divergence the
+    reviewer proved by measurement (unknown ``state`` warns; unknown
+    ``spatial`` used to tick green). The word is named rather than guessed
+    at. The grade is injected directly because no producer path can emit it
+    — that is the point of the case."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host,
+        "crossover_v2_status_block",
+        lambda: {
+            "tier": "full",
+            "post_apply_grade": {
+                "state": v2host.GRADE_GRADED,
+                "graded": True,
+                "verify_outcome": "pass",
+                "scope": "hemispherical-2027",
+                "spatial": "graded_from_orbit",
+                "complete": True,
+            },
+        },
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "graded_from_orbit" in r.detail
+    assert "not one this build recognizes" in r.detail
+    assert "applied and graded," in r.detail  # still says WHAT it checked
+
+
+def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
+    """Walking-class guard (S1, #2242 gate). ``GRADE_SPATIAL_*`` and
+    ``GRADE_SCOPE_*`` are each consumed by literal membership/equality tests
+    in more than one surface — this doctor check (``spatial ==
+    GRADE_SPATIAL_FAILED`` etc.) and the envelope's done-screen branches
+    (``jasper/active_speaker/crossover_envelope_v2.py``, which spells the
+    same words as raw string LITERALS by design — it never imports
+    ``jasper.web``, so it cannot walk the producer's constants the way this
+    test does). Neither consumer iterates the producer's vocabulary, so a
+    NEW member added to either family is invisible to both until someone
+    teaches each dispatch site the new word by hand — the exact shape of the
+    S1 defect: an unrecognised ``spatial`` word used to fall through to the
+    passing wording, unmentioned by any consumer and uncaught by any test.
+
+    This pins the CURRENT member set by walking the producer module's own
+    namespace (never a hand-copied list that can silently drift from it), so
+    growing either family fails HERE, loudly, rather than surfacing as a
+    branch nobody wrote on a live speaker.
+
+    If this test fails because you added a new ``GRADE_SPATIAL_*`` or
+    ``GRADE_SCOPE_*`` constant: that is the guard working. Review
+    ``jasper/cli/doctor/correction.py``'s ``check_crossover_v2_applied_is_graded``
+    and ``jasper/active_speaker/crossover_envelope_v2.py``'s done-screen
+    branches, teach each one the new word (or confirm its existing
+    fallthrough is the behaviour you want), and only then extend the pinned
+    sets below.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    spatial_members = {
+        value for name, value in vars(v2host).items()
+        if name.startswith("GRADE_SPATIAL_") and isinstance(value, str)
+    }
+    scope_members = {
+        value for name, value in vars(v2host).items()
+        if name.startswith("GRADE_SCOPE_") and isinstance(value, str)
+    }
+
+    assert spatial_members == {
+        v2host.GRADE_SPATIAL_ABSENT,
+        v2host.GRADE_SPATIAL_PASSED,
+        v2host.GRADE_SPATIAL_FAILED,
+        v2host.GRADE_SPATIAL_UNMEASURABLE,
+    }, (
+        "GRADE_SPATIAL_* grew a new member — review "
+        "jasper/cli/doctor/correction.py's check_crossover_v2_applied_is_graded "
+        "and jasper/active_speaker/crossover_envelope_v2.py's done-screen "
+        "spatial branches, then extend this pinned set"
+    )
+    assert scope_members == {
+        v2host.GRADE_SCOPE_NONE,
+        v2host.GRADE_SCOPE_MARK,
+        v2host.GRADE_SCOPE_SPATIAL,
+    }, (
+        "GRADE_SCOPE_* grew a new member — review "
+        "jasper/cli/doctor/correction.py's check_crossover_v2_applied_is_graded "
+        "and jasper/active_speaker/crossover_envelope_v2.py's done-screen "
+        "scope/complete handling, then extend this pinned set"
+    )
+
+
 def test_unapplied_session_is_not_asked_for_a_grade(monkeypatch):
     """Nothing on the speaker, nothing to grade — never a manufactured warn."""
     from jasper.web import correction_crossover_v2 as v2host

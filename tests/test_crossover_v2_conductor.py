@@ -5050,17 +5050,18 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
       so a future "Verified" here would be as unearned as this one was.
     * **Cross-surface** — whatever the phone bakes has to hold under EVERY
       outcome jts.local can report. It does so by being exactly the claim each
-      of jts.local's five done verdicts OPENS with; jts.local owns the
+      of jts.local's seven done verdicts OPENS with; jts.local owns the
       divergence, as the only surface whose component vocabulary can carry it.
-      All five are pinned, not the two this fix reasoned about: the phone bakes
-      one headline for both tiers and all outcomes, so a single unpinned
-      variant is enough to reopen the defect.
+      All seven are pinned, not the two this fix reasoned about: the phone
+      bakes one headline for both tiers and all outcomes, so a single
+      unpinned variant is enough to reopen the defect.
     """
     import inspect
 
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
+    from jasper.web.correction_crossover_v2 import _post_apply_grade
 
     assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
         "fc_hz", "plan_shape",
@@ -5085,25 +5086,48 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     assert express_done["done_title"] == headline
 
     def _verdict(**v2) -> str:
+        # R19: the done screen reads the PRODUCER's grade for the spatial
+        # verdict and the scope/completeness fact, so a fixture that describes
+        # a session has to carry what that session's state would produce.
+        # Deriving it here rather than hand-writing one keeps this a pin on
+        # the real path — a fixture that stops reaching its branch shows up as
+        # a collapsed variant below, which is exactly what this test counts.
+        block = {
+            "phase": "done", "verify": {"outcome": "pass"},
+            "applied": True, **v2,
+        }
+        if "post_apply_grade" not in block:
+            block = {**block, "post_apply_grade": _post_apply_grade(block)}
         return build_crossover_envelope_v2({
             "active": True,
             "setup": {"active": True, "status": "ready"},
-            "crossover_v2": {
-                "phase": "done", "verify": {"outcome": "pass"}, **v2,
-            },
+            "crossover_v2": block,
         })["verdict_text"]
 
     # …so the invariant holds only if EVERY jts.local done verdict opens with
-    # it. There are five, independently authored in three separate branches of
-    # the PHASE_DONE arm, and pinning the two this fix reasoned about would
-    # leave the other three free to drift out from under the phone.
+    # it. There are seven, independently authored across the branches of the
+    # PHASE_DONE arm, and pinning only the ones a given fix reasoned about
+    # would leave the rest free to drift out from under the phone.
     variants = {
         "express": _verdict(tier=TIER_EXPRESS),
-        "generic": _verdict(tier=TIER_FULL),
+        "generic": _verdict(
+            tier=TIER_FULL,
+            cloud={PHASE_CLOUD_VERIFY: {"overall_passed": True}},
+        ),
         "spec_fail": _verdict(
             tier=TIER_FULL,
             cloud={PHASE_CLOUD_VERIFY: {"overall_passed": False}},
         ),
+        # R19/#2160: a group that closed and could not grade anything is a
+        # third thing, and used to render as the miss above.
+        "spec_unmeasurable": _verdict(
+            tier=TIER_FULL,
+            cloud={PHASE_CLOUD_VERIFY: {
+                "overall_passed": False, "flatness": {"evaluable": False},
+            }},
+        ),
+        # R19/#2098: Full verified at the mark and never closed its group.
+        "scope_incomplete": _verdict(tier=TIER_FULL),
         "grade_inconclusive": _verdict(
             tier=TIER_FULL,
             post_apply_grade={"graded": False, "state": "inconclusive"},
@@ -5112,10 +5136,12 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
             tier=TIER_FULL, post_apply_grade={"graded": False, "state": ""},
         ),
     }
-    assert len(set(variants.values())) == 5, (
-        "five DISTINCT verdicts, or a fixture stopped reaching its branch"
+    assert len(set(variants.values())) == 7, (
+        "seven DISTINCT verdicts, or a fixture stopped reaching its branch"
     )
     assert "further from flat than the target" in variants["spec_fail"]
+    assert "could not read enough of the sound" in variants["spec_unmeasurable"]
+    assert "unproven" in variants["scope_incomplete"]
     for name, text in variants.items():
         assert text.startswith(headline), (name, text)
 
