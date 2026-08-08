@@ -70,6 +70,9 @@ async function loadCapturePageIdentity() {
 // same microphone without asking the household to rediscover it each time.
 const DEVICE_STORAGE_KEY = "jts.capture.selected-device";
 const SETUP_IDENTITY_SCHEMA = 1;
+// End-to-end post-upload wait floor. The Pi's one-time serial Fc sweep owns a
+// 70 s compute ceiling; this page owns the larger result/publication window.
+const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;
 // Calibration files are ordinarily a few kilobytes. Keep enough headroom for
 // real vendor files while staying well below the relay's 1 MiB event ceiling:
 // the full text is sent exactly once for Pi validation, never in meter batches.
@@ -3326,11 +3329,11 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   // own run time against its poll deadline (the deadline check only runs
   // BEFORE the next iteration, after consume_capture already returned) — so
   // a slow deconvolution/SNR pass on a loaded Pi has no hard Pi-side ceiling
-  // here. Give this wait real headroom rather than reusing the tight
-  // admission-latency budget above; scales with the recording window
-  // (spec.duration_ms) like waitForSweepComplete's own timeout does, with a
-  // floor comfortably above typical analysis time.
-  const deadline = Date.now() + Math.max(30000, Number(spec.duration_ms) || 30000);
+  // here. Give the bounded computation enough headroom for anchor analysis,
+  // result publication, polling, and loaded-Pi variance.
+  const deadline = Date.now() + Math.max(
+    CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0,
+  );
   // 20-40 s of blind analysis per capture, under one static line, was the
   // owner's "I did not know whether to wait or give up" (work order D9).
   const tick = waitProgress(CAPTURE_CHECKING_MESSAGE, deadline);

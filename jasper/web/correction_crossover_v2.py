@@ -2167,12 +2167,12 @@ def _fc_selection_summary(conductor: Any) -> dict[str, Any] | None:
     conductor double without the surface) — never a fabricated "keep what you
     have", which would read as a verdict the measurement never reached.
 
-    What rides: the verdict and the two frequencies, the k-of-N counts, the
-    derived bounds that explain why nothing else was proposable, and the
+    What rides: the verdict and frequencies; ordered attempted/skipped evidence;
+    the single comparison-completeness fact; the derived bounds; and compact
     per-candidate scores. What does NOT ride: the operators and predicted sums
-    behind them. Those are the working evidence, already released by the time
-    this is written, and a durable copy would be a second answer to "what did
-    this session measure" that nothing reads back.
+    behind them. Those are working evidence, already released by the time this
+    is written, and a durable copy would be a second answer to "what did this
+    session measure" that nothing reads back.
     """
     selection = getattr(conductor, "fc_selection", None)
     if selection is None:
@@ -2193,6 +2193,15 @@ def _fc_selection_summary(conductor: Any) -> dict[str, Any] | None:
         # fewer candidates than it proposed.
         "evaluated": int(selection.evaluated),
         "planned": int(selection.planned),
+        "candidate_order": [
+            round(float(fc), 1) for fc in selection.candidate_order
+        ],
+        "attempted": [round(float(fc), 1) for fc in selection.attempted],
+        "skipped": [
+            {"fc_hz": round(float(fc), 1), "reason": str(reason)}
+            for fc, reason in selection.skipped
+        ],
+        "comparison_complete": bool(selection.comparison_complete),
         # WHY the set was the size it was — each bound traceable to a
         # declaration the household can edit.
         "limits": {k: round(float(v), 1) for k, v in selection.limits.items()},

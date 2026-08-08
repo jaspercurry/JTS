@@ -134,9 +134,11 @@ class FcSelection:
     proposable, when nothing cleared the margin, and — today, on the live jts3
     declaration — when the tweeter's declared band admits no alternative.
 
-    ``evaluated`` / ``planned`` are k-of-N honesty: the accept window is
-    bounded by the phone's own result deadline, so a loaded Pi may score fewer
-    than it proposed. Disclosed, never hidden, never a session failure.
+    ``comparison_complete`` is the one completeness fact: true exactly when
+    every deliberately selected candidate was attempted. Invalid attempted
+    candidates remain refusals but do not make the comparison incomplete;
+    budget-skipped candidates do. An incomplete comparison can keep the safe
+    configured path, but can never recommend an alternative.
     """
 
     verdict: str
@@ -148,10 +150,23 @@ class FcSelection:
     limits: Mapping[str, float]
     evaluated: int
     planned: int
+    candidate_order: tuple[float, ...]
+    attempted: tuple[float, ...]
+    skipped: tuple[tuple[float, str], ...]
+    comparison_complete: bool
 
     @property
     def kept_configured(self) -> bool:
         return self.verdict != SELECTION_RECOMMEND
+
+
+def fc_comparison_complete(
+    evaluations: Sequence[FcCandidateEvaluation], planned: int,
+) -> bool:
+    """Whether every deliberately selected candidate was attempted."""
+    return len(evaluations) == int(planned) and all(
+        e.refusal != EVAL_REFUSED_BUDGET for e in evaluations
+    )
 
 
 def band_flatness(
@@ -297,6 +312,16 @@ def select_fc(
     """
     scores: list[FcCandidateScore] = []
     refusals: list[tuple[float, str]] = []
+    candidate_order = tuple(float(e.fc_hz) for e in evaluations)
+    skipped = tuple(
+        (float(e.fc_hz), e.refusal)
+        for e in evaluations if e.refusal == EVAL_REFUSED_BUDGET
+    )
+    attempted = tuple(
+        float(e.fc_hz)
+        for e in evaluations if e.refusal != EVAL_REFUSED_BUDGET
+    )
+    comparison_complete = fc_comparison_complete(evaluations, planned)
     for evaluation in evaluations:
         if evaluation.refusal is not None:
             refusals.append((float(evaluation.fc_hz), evaluation.refusal))
@@ -319,6 +344,8 @@ def select_fc(
             recommended_hz=recommended_hz, margin_db=margin_db,
             scores=ordered, refusals=tuple(refusals), limits=dict(limits),
             evaluated=len(ordered), planned=int(planned),
+            candidate_order=candidate_order, attempted=attempted,
+            skipped=skipped, comparison_complete=comparison_complete,
         )
 
     if baseline is None or len(ordered) < 2:
@@ -330,6 +357,8 @@ def select_fc(
             else SELECTION_KEEP_CONFIGURED,
             None, None,
         )
+    if not comparison_complete:
+        return _verdict(SELECTION_KEEP_CONFIGURED, None, None)
     best = ordered[0]
     improvement = baseline.score - best.score
     if best.fc_hz == baseline.fc_hz or improvement < float(margin_db):

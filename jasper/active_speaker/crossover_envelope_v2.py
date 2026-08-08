@@ -444,11 +444,9 @@ def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
     selector never ran. The two really are different, so they read differently:
     no sweep prints nothing at all.
 
-    ``planned`` beyond ``evaluated`` is disclosed rather than smoothed — the
-    accept window is bounded by the phone's own result deadline, so a loaded
-    Pi legitimately scores fewer candidates than it proposed, and a household
-    told "we compared six" when four were compared has been told a number
-    nobody measured.
+    An incomplete comparison is named and cannot present an alternative. This
+    remains fail-closed for older durable state without the completeness fact:
+    an old recommendation is not proof that every planned candidate ran.
     """
     fc = _mapping(_v2(status).get("fc_selection"))
     if not fc:
@@ -459,8 +457,15 @@ def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
     recommended = _finite(fc.get("recommended_hz"))
     evaluated = fc.get("evaluated")
     planned = fc.get("planned")
+    attempted = fc.get("attempted")
+    comparison_complete = fc.get("comparison_complete") is True
     lines: list[str] = []
-    if recommended is not None:
+    if not comparison_complete:
+        lines.append(
+            f"crossover comparison incomplete — leave the configured "
+            f"{configured:.0f} Hz crossover as it is; no alternative was selected"
+        )
+    elif recommended is not None:
         margin = _finite(fc.get("margin_db"))
         lines.append(
             f"crossover: {recommended:.0f} Hz measured better than the "
@@ -476,14 +481,15 @@ def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
             f"crossover: {configured:.0f} Hz is the best of what could be "
             "measured — nothing beat it, so leave it as it is"
         )
-    if isinstance(evaluated, int) and isinstance(planned, int):
+    attempted_count = len(attempted) if isinstance(attempted, list) else evaluated
+    if isinstance(attempted_count, int) and isinstance(planned, int):
         # The BOUND edges, named by the declaration that set them, so a
         # household seeing "1 compared" knows which number to widen. The
         # selector's own ``limits`` carry them; the two that bind in practice
         # are the declared search band and the beaming ceiling.
         bound = _finite(_mapping(fc.get("limits")).get("search_lo_hz"))
         lines.append(
-            f"compared {evaluated} of {planned} crossover points"
+            f"attempted {attempted_count} of {planned} crossover points"
             + (
                 f" (nothing below {bound:.0f} Hz — that is what your drivers "
                 "are declared to allow)"
