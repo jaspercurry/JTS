@@ -138,6 +138,17 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
 
 
 def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
+    # All three labels below put "dac8x" before "studio" — the one ordering
+    # HIFIBERRY_DAC8X's negative-lookahead regexes correctly exclude. The
+    # realistic driver-derived label (see HIFIBERRY_DAC8X_STUDIO's own
+    # profile comment: output_hardware.py's `product or proc_description or
+    # card_id`, an I2S HAT with no USB `product`, both profiles sharing
+    # `dtoverlay="hifiberry-dac8x"`) carries no "studio" token in the
+    # observed proc/card description at all, in EITHER order — that case is
+    # unrepresented here and routes to the base profile instead, per the
+    # wide-output-path panel record. This test intentionally does not
+    # change to cover it: the fix is a detection-regex change tracked as a
+    # follow-up, not a same-PR test-and-fix.
     base_label = "snd_rpi_hifiberry_dac8x, HiFiBerry DAC8x"
     studio_label = "HiFiBerry DAC8x Studio, USB Audio"
     studio_kernel_label = "snd_rpi_hifiberry_dac8x_studio"
@@ -582,7 +593,15 @@ def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
 
 def test_final_edge_format_matches_known_hardware() -> None:
     assert APPLE_USB_C_DONGLE.final_edge_format == "S16_LE"
-    assert HIFIBERRY_DAC8X.final_edge_format == "S16_LE"
+    # wide-output-path PR-7: HiFiBerry DAC8x is a measured S32 edge (jts3
+    # `aplay --dump-hw-params` open test, 2026-08-07) — declaring it moves
+    # outputd's i32 program spine straight through with zero narrowing.
+    assert HIFIBERRY_DAC8X.final_edge_format == "S32_LE"
+    # DAC8x Studio stays at the safe default: same DAC-chip family and
+    # dtoverlay as the base DAC8x above, but no lab unit exists to run the
+    # same hardware open-test, so this program does not flip it on inference
+    # alone. See the profile's own comment in jasper/audio_hardware/dac.py
+    # for exactly what evidence would flip it.
     assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
     assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
     # The composite's declaration became load-bearing when outputd started

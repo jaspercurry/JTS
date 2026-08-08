@@ -397,6 +397,37 @@ HIFIBERRY_DAC8X = DacProfile(
     chip_aec_qualification="approved",
     chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",
     dtoverlay="hifiberry-dac8x",
+    # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
+    # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
+    # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
+    # 2026-08-07, wide-output-path plan §2 evidence base — NOT gate G0b,
+    # which is the separate snd-aloop `hw:Loopback` pair test). The DAC8x
+    # uses four 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
+    # datasheet); the S32_LE word's bottom byte beyond that 24-bit
+    # resolution spans <= -138.5 dBFS — sub-analog at any plausible silicon
+    # depth, so this datasheet inference is not load-bearing for safety even
+    # if the chip's real resolution differs from spec. jts3's production
+    # graph is 6-channel active; that (S32_LE, 6ch) combination has not
+    # been separately hardware-probed, so it fails closed rather than being
+    # pre-verified if the pairing turns out not to be jointly satisfiable.
+    # Declaring S32_LE here lets outputd's i32 program spine reach the DAC
+    # edge with zero narrowing (wide-output-path PR-7) — the intended fix
+    # for the horn-lane undithered-16-bit-requantization crackle (acoustic
+    # verdict pending the conductor's post-merge listen); see
+    # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
+    #
+    # Consequence: this field is part of the chip-AEC alignment identity
+    # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
+    # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the
+    # identity force-recommissions the fleet"), so every artifact
+    # commissioned against the old S16_LE edge is now invalid. jts3 — the
+    # only commissioned box on this profile at the time of writing — parks
+    # its managed-XVF stack (voice stopped, wake gated off via
+    # /var/lib/jasper/voice-input-absent) until a human runs
+    # `sudo jasper-aec-commission` in the foreground (~2 minutes of audible
+    # sweeps). See plan captures/PLAN-wide-output-path-2026-08-07.md §6
+    # PR-7 for the recommission drill.
+    final_edge_format="S32_LE",
 )
 
 HIFIBERRY_DAC8X_STUDIO = DacProfile(
@@ -424,6 +455,57 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         "calibration before arming production chip AEC"
     ),
     dtoverlay="hifiberry-dac8x",
+    # NOT flipped to S32_LE alongside the base DAC8x above (wide-output-path
+    # PR-7), deliberately. HiFiBerry's published datasheets describe both
+    # boards as four 192kHz/24-bit Burr-Brown DAC chips on the SAME
+    # `dtoverlay=hifiberry-dac8x` kernel driver — they differ only in the
+    # analog output stage (balanced DB25 vs unbalanced RCA) and an added
+    # hardware volume-control chip, neither of which touches the digital I2S
+    # format this field declares. That makes the flip PLAUSIBLE but not
+    # PROVEN: the base DAC8x's S32 capability was confirmed by an
+    # `aplay --dump-hw-params` open test on real jts3 hardware (2026-08-07,
+    # wide-output-path plan §2 evidence base — NOT gate G0b, which is the
+    # separate snd-aloop `hw:Loopback` pair test); no DAC8x Studio unit
+    # exists in the lab fleet to run that same probe, and this program's own
+    # norm (see PR-8, D9) is a hardware gate before a format declaration,
+    # not inference from a shared overlay name. Flip this once that probe
+    # passes on real Studio hardware.
+    #
+    # This is a stance on DECLARATION, not a guarantee about ROUTING — and
+    # the gap is not hypothetical. `profile_for_card_label` selects by regex
+    # against a DRIVER-DERIVED label (`output_hardware.py`:
+    # `label = product or proc_description or card_id`); an I2S HAT has no
+    # USB `product`, so this falls to the ALSA proc/card description, and
+    # both profiles share `dtoverlay="hifiberry-dac8x"` — nothing in that
+    # path is HiFiBerry's own "Studio DAC8x" naming order. REGISTRY tries
+    # the base profile first, and its regexes only exclude a label with
+    # "studio" AFTER "dac8x". Every label this repo already banks for this
+    # hardware (this file's own `supported_card_matches`,
+    # `docs/CHIP-AEC-EXPERIMENT.md`'s recorded identity,
+    # `tests/test_output_hardware.py`'s fixture) carries no "studio" token
+    # at all — the realistic driver-derived label WILL classify as
+    # `hifiberry_dac8x`, not this profile, and inherit S32_LE. It also
+    # inherits `chip_aec_qualification="approved"` from the base profile,
+    # silently dropping the needs-calibration flag declared below.
+    #
+    # No physical board is needed to resolve this: it is a question about
+    # the `dtoverlay`/label fields already in this file. Either
+    # `supported_card_matches` above is provably unreachable by
+    # auto-detection today (this profile only ever applies via a manual
+    # override), or that is the defect — the conductor is filing the
+    # detection-regex fix as a follow-up (whole-profile scope), not bundled
+    # into this data PR.
+    #
+    # The misroute is not symmetric. Studio hardware classified as the base
+    # profile declares S32_LE: outputd's `final_sink_startup` wrapper
+    # around the DAC PCM open+configure sequence fails closed on that —
+    # ALSA's `hw_params` install inside `configure_pcm` refuses an
+    # unsupported format outright, and the same wrapper's readback
+    # comparison catches a driver that silently negotiated something else —
+    # so a non-S32 Studio board parks (exit 78) rather than playing wrong.
+    # The reverse (base hardware classified as Studio) never parks: S16_LE
+    # is universally supported, so it opens fine and silently declines the
+    # crackle fix, with no error and no signal that it happened.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(
