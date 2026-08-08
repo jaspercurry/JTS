@@ -522,7 +522,7 @@ def test_native_build_backend_is_exact_pinned_and_fingerprinted(capability):
     assert enhanced_aec.desired_fingerprint(capability.source) != before
 
     shipped = Path("jasper_aec3/pyproject.toml").read_text(encoding="utf-8")
-    assert "setuptools==82.0.1" in shipped
+    assert "setuptools==83.0.0" in shipped
     assert "pybind11==2.13.6" in shipped
     assert "setuptools>=" not in shipped
     assert "pybind11>=" not in shipped
