@@ -3290,6 +3290,24 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    branches, or pushes — acting on its recommendations is a
    human-supervised session's job.
 
+10. **Ref-check pushes.** After `git push`, verify the remote ref actually
+    advanced to your local SHA (`git ls-remote origin refs/heads/<branch>`,
+    or `git fetch` then compare `git rev-parse origin/<branch>` against
+    `git rev-parse HEAD`) — a successful push command is not the same as
+    confirming it landed where you think. This is conductor/session
+    discipline: the gate/review agents never push, so it does not belong in
+    their definitions. Recorded alongside the merged-state rule below in the
+    [#2161](https://github.com/jaspercurry/JTS/issues/2161) close-out.
+
+11. **Verify a PR's state is `MERGED` before deleting its branch.** Never
+    chain merge-then-delete on trust — re-check the PR's actual `state`
+    (`gh pr view <n> --json state`) before removing its branch. Same
+    reasoning as item 10: this is conductor/session discipline, not
+    something the gate/review agents do, since their charter forbids
+    merging, pushing, or deleting branches at all. Recorded alongside the
+    ref-check rule in the same
+    [#2161](https://github.com/jaspercurry/JTS/issues/2161) close-out.
+
 
 ## Worktree hygiene — clean up agent worktrees
 

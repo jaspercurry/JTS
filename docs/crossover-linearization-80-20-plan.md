@@ -427,8 +427,10 @@ any line above 400 must map directly to an unmet acceptance requirement. Five
 production files is soft, a sixth requires a named-file conductor/owner
 ratification, and new production modules are zero absent re-ratification. Tests
 are 500 gross, over which the conductor may ratify an honesty-fixture overage
-recorded on the owning issue. Docs 120. R16 350, R17 400, R18 460 (re-ratified
-from 180 — §11), R19 580
+recorded on the owning issue. Docs 120. R16 350, R17 400 (ceiling re-ratified
+400 → 650 → 800 → 1000 across the round; landed 1365 gross production,
+ratified at the measured size — §11), R18 460 (re-ratified from 180 — §11),
+R19 580
 across at most two independent PRs, and R20 zero. These budget a round's
 **implementation** PRs; a conductor-authored campaign-governance docs PR that
 amends this plan rather than implementing a round carries its own ≤120
@@ -449,6 +451,9 @@ the canonical disposition for this revision, not a copy of every issue body.
 | [#1806](https://github.com/jaspercurry/JTS/issues/1806) measure/review/apply/verify split | Apply chassis | R15 preserves the current path; the issue owns any deferred apply integration. |
 | [#1868](https://github.com/jaspercurry/JTS/issues/1868) model-reproduced null passes VERIFY | Verification truth | Owns the deferred absolute crossover-region and branch-realization gap. |
 | [#2098](https://github.com/jaspercurry/JTS/issues/2098) mark-only reported graded | Result scope SSOT | Owns deferred mark-versus-spatial completeness. |
+| [#2191](https://github.com/jaspercurry/JTS/issues/2191) search-band validator vs #1654 | R19 PR-B territory | Closed 2026-08-07 by merged [#2194](https://github.com/jaspercurry/JTS/pull/2194) (`95306c910`): relaxed the HF-role search-band floor to the confirmed #1654 hard band, repaired the two stale test pins, and fixed the misleading `incomplete` copy. |
+| [#2160](https://github.com/jaspercurry/JTS/issues/2160) cloud flatness gauge gates nothing | R19 PR-A territory | Ruled grade-and-disclose, tier-scoped, never gate — [recorded on #2160](https://github.com/jaspercurry/JTS/issues/2160#issuecomment-5208109239) at R19 dispatch; implementation lands in PR-A. |
+| [#2168](https://github.com/jaspercurry/JTS/issues/2168) commissioning peak ~430MB unbudgeted | Deferred platform capacity | Not fixed in R19 — [disposition recorded on #2168](https://github.com/jaspercurry/JTS/issues/2168#issuecomment-5208128454): re-homed to the platform backlog / R20 campaign-close scrutiny; PR-A discloses the known limitation if its budget allows. |
 | [#1784](https://github.com/jaspercurry/JTS/issues/1784) honest before/after | Report reuse | Existing reuse seam for deferred reporting; no new chart framework is authorized. |
 | [#1941](https://github.com/jaspercurry/JTS/issues/1941) guided measurement UX | Prompt/diagram line | Owns deferred pose prompts and diagrams; any reuse waits for fresh Gate 0. |
 | [#1877](https://github.com/jaspercurry/JTS/issues/1877) position-aware clouds | Closed product decision | Keep acoustic timing first and phone sensor fusion parked. No revival for v1. |
@@ -483,8 +488,8 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | **Checkpoint — Prove** *(passed)* | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair — passed 2026-08-05 on jts3 as an instrument proof |
 | **R18 — Verification widening** | Widen VERIFY so the selector has an honest referee: judge the crossover region the current 2000–4000 Hz band misses (#1868, #1654) | verification | lands FIRST; ceiling **≤460** production / ≤5 files / 0 new modules, tests ≤600, docs ≤120 — re-ratified from 180 after a measured STOP at 441, [recorded on #1868](https://github.com/jaspercurry/JTS/issues/1868#issuecomment-5197236195); two lenses (correctness, hearing-safety) |
 | **R16 — Lateral evidence producer** | Produce the lateral walk's evidence, paired in the same vertical with R17 as its current consumer (#2107) | lateral capture | ceiling 350; two lenses (correctness, resilience) |
-| **R17 — Fc selector** | Consume R16's lateral evidence to adjudicate Fc within limits (#1894), taking the declared driver diameter as a beaming/ka prior (#1675, owner ruling) | selector | ceiling 400; three lenses — it decides applied DSP |
-| **R19** | Unchanged by Gate 0 | unassigned | §9 ceilings only (580 across at most two independent PRs) |
+| **R17 — Fc selector** | Consume R16's lateral evidence to adjudicate Fc within limits (#1894), taking the declared driver diameter as a beaming/ka prior (#1675, owner ruling) | selector | ceiling 400, re-ratified 650 → 800 → 1000 as three structural discoveries reshaped the round; landed 678 production in the final PR / **1365** cumulative round production against the 1000 cap, [ratified at the measured size](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5206143077); three lenses — it decides applied DSP |
+| **R19 — Honest grading + validator repair** | Two independent PRs under the §9 ceiling: honest post-apply grading (PR-A, #2098/#2160) and the search-band validator repair (PR-B, #2191) — [scoped on #1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5208109165) | grading/disclosure (PR-A); declaration validation (PR-B) | PR-B landed as [#2194](https://github.com/jaspercurry/JTS/pull/2194) (merged, closes #2191); PR-A dispatched under a 350-line soft cap / 380 hard STOP, [re-ratified 2026-08-08](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5224127404) within the 580 envelope (435 headroom after PR-B's 145); two lenses each — correctness/evidence + resilience/observability (PR-A), correctness/evidence + hearing-safety (PR-B) |
 | **R20 — Audit** | Read-only owner-run campaign audit | hardware/evidence only | reconcile evidence and issues; zero production code |
 
 **R15 outcome — three recorded deviations, all by ruling.** The one-PR exit was
@@ -685,7 +690,10 @@ deterministic equivalence pinned by focused tests.
 Gate 0 ran and ratified the slate in §11: R18 first, then R16 + R17 as one
 co-scoped vertical in two PRs. Each round's mission, ceiling, and panel scope
 live in that table; a round prompt is still the shared contract above plus
-exactly one mission. R19 remains unscoped.
+exactly one mission. R19 was scoped on
+[#1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5208109165)
+(2026-08-06) into PR-A (honest grading, #2098/#2160) and PR-B (#2194,
+merged); current status is recorded in §11's R19 row.
 
 **Original R14 planning/contract verification scope.** On 2026-08-04, before
 the R15 scope reset, this plan was checked against then-current `main`
@@ -734,4 +742,16 @@ and issue sweep beyond those two rows were not re-read. No hardware was read
 by this pass: the checkpoint numbers are the session's, recorded here, not
 re-measured. Docs only.
 
-Last verified: 2026-08-05
+**2026-08-07 R17/R19 spine-close scope.** Re-verified the campaign-progress
+sections against the issue record, re-read from `gh`: §9's per-round ceiling
+list, §11's R17 and R19 rows, §10's existing-ticket sweep, and §13's
+post-checkpoint status line, against #1894, #2160, #2168, #2191, and #2194.
+This corrected R17's stale ceiling entries (the round re-ratified
+400 → 650 → 800 → 1000 and landed 1365 gross production, ratified at the
+measured size) and R19's stale "unscoped" status (R19 was scoped 2026-08-06
+into PR-A and PR-B, PR-B merged as #2194). The measurement contracts, the
+substance of the anti-spiral constraints, and the launch-contract blocks
+beyond §13's status line were not re-read. Docs only; no product code,
+deployment, DSP state, or measurement evidence moved.
+
+Last verified: 2026-08-07
