@@ -164,6 +164,12 @@ mod tests {
         assert!(text.contains("period is 4"), "{text}");
     }
 
+    /// **LOAD-BEARING — do not weaken.** This is the ONLY test in the tree that
+    /// catches `narrow_period` being wired to the truncating slice primitive.
+    /// Every other guard, including both transparency proofs, passes under that
+    /// swap (truncation is exact on multiples of 65536), so weakening this vector
+    /// silently removes the only detection for a half-LSB downward bias on every
+    /// sample at the speaker edge.
     #[test]
     fn narrow_period_is_wired_to_the_rounding_primitive_not_the_truncating_one() {
         // `jasper-resampler` holds TWO i32->i16 conversions: the rounding one

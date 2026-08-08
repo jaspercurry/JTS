@@ -1014,13 +1014,25 @@ impl ReferenceSideOutputs {
             eprintln!("event=outputd.chip_ref.desired pcm={pcm}");
         }
 
+        // Only pay for the tap staging when a tap will actually consume it. Same
+        // reasoning as `run_alsa`'s `s16_lane_scratch`: outputd runs `mlockall`,
+        // so an unconditional allocation is resident forever even on a box with
+        // no AEC consumer and no chip-reference leg. `publish` returns before
+        // touching this when both taps are absent, so the empty vec is never
+        // resized either. Decided BEFORE the struct literal, which moves both.
+        let narrow_staging = if udp_socket.is_some() || chip_tx.is_some() {
+            vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)]
+        } else {
+            Vec::new()
+        };
+
         Self {
             udp_socket,
             udp_target,
             chip_tx,
             chip_downsampler,
             state,
-            narrow_staging: vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)],
+            narrow_staging,
         }
     }
 
@@ -1030,8 +1042,9 @@ impl ReferenceSideOutputs {
     /// A conversion failure here must NOT reach the audio path: the taps are side
     /// outputs, and "a missing AEC consumer degrades that consumer, never the
     /// speaker" is the rule this whole struct is built around (see `run_alsa`'s
-    /// construction comment). So a staging-length mismatch is reported as a
-    /// reference error and the period is skipped, rather than propagated.
+    /// construction comment). So a staging-length mismatch logs and skips the
+    /// period rather than propagating — see the comment at that branch for why it
+    /// is unreachable and why it is kept anyway.
     fn publish(&mut self, stereo_samples: &[ProgramSample], reference_sequence: u64) {
         if self.udp_socket.is_none() && self.chip_tx.is_none() {
             return;
@@ -1042,9 +1055,23 @@ impl ReferenceSideOutputs {
             // width. A geometry that ever differs reallocates once, then stays.
             self.narrow_staging.resize(stereo_samples.len(), 0);
         }
+        // Unreachable by construction: the resize immediately above makes the two
+        // lengths equal, and that is the ONLY thing `narrow_period` rejects. Kept
+        // rather than `expect()`-ed because this runs on outputd's realtime
+        // playout thread — a panic there is a dead speaker, while a skipped
+        // reference period only degrades the AEC consumer.
+        //
+        // It does NOT mark a UDP error. A length mismatch is not a UDP fault: it
+        // would fail both taps identically, so pinning it to `reference_udp` would
+        // point an operator at the wrong leg (and at a socket that is working).
+        // The `event=` line is the whole observable, deliberately.
         if let Err(e) = narrow_period(stereo_samples, &mut self.narrow_staging) {
-            self.state.mark_reference_udp_error();
-            eprintln!("event=outputd.reference.narrow_failed detail={e:#}");
+            eprintln!(
+                "event=outputd.reference.narrow_failed action=skip_reference_period \
+                 samples={} staging={} detail={e:#}",
+                stereo_samples.len(),
+                self.narrow_staging.len(),
+            );
             return;
         }
         // ONE staging slice feeds BOTH taps below — see the field's doc.
@@ -1130,6 +1157,17 @@ impl ChipRefDownsampler {
         })
     }
 
+    /// KNOWN ALLOCATION EXCEPTION on the playout thread — pre-existing, unchanged
+    /// by the i32 spine, and deliberately left alone here.
+    ///
+    /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
+    /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
+    /// no-allocation guard cannot cover. It costs a ~107-sample allocation per
+    /// period, and ONLY on boxes with the chip-reference leg armed
+    /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
+    /// second thread for it. Fixing it means giving the writer a pool or a
+    /// pre-sized ring, which changes the queue's ownership model: out of scope for
+    /// the spine widening, and it must not be silently folded in.
     fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
         let input_frames = stereo_samples.len() / (CHANNELS as usize);
         let output_frames =

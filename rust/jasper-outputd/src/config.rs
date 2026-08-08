@@ -156,9 +156,10 @@ pub struct Config {
     /// The registry-DECLARED format of the final hardware edge behind
     /// `dac_pcm` — the format the coherent single-DAC ALSA backend REQUESTS
     /// (`set_format`) and then proves it got, by reading the installed
-    /// `hw_params` back. outputd's internal program stays i16 whatever this
-    /// says (see [`crate::types::SampleFormat`]); an `S32Le` edge is served by
-    /// widening at the final write only.
+    /// `hw_params` back. It also selects the edge's write path (see
+    /// [`crate::types::ProgramSample`]): the internal program is i32, so an
+    /// `S32Le` edge is already the spine's own width and converts nothing, while
+    /// an `S16Le` edge is where the single output-path quantization happens.
     ///
     /// Declared by the DAC registry (`DacProfile.final_edge_format`) and
     /// emitted by `jasper-audio-hardware-reconcile` as
@@ -414,7 +415,9 @@ impl Config {
         // jasper-audio-hardware-reconcile from the DAC registry's
         // DacProfile.final_edge_format. The coherent single-DAC ALSA backend
         // REQUESTS this format at the edge and verifies the installed
-        // hw_params match; it does not change outputd's internal i16 program.
+        // hw_params match. It does not change the internal program's width —
+        // that is always `ProgramSample` (i32) — it decides whether the edge
+        // converts at all: S32 writes the spine through untouched, S16 narrows.
         //
         // Unset or blank == the historical S16_LE default: the reconciler
         // writes an explicit EMPTY value for an unrecognized DAC (it has no

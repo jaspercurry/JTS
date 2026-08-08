@@ -506,8 +506,10 @@ impl AlsaBackend {
         // `configure_pcm` asked ALSA for (the registry declaration), checked
         // against the installed hw_params. That equals the hardware edge on a
         // raw `hw:` device, not through a `plug` — see the dac readback's
-        // comment. outputd's internal program is i16 whatever it says; a wider
-        // edge is served by widening at the final write.
+        // comment. It also selects the write path: outputd's internal program is
+        // `ProgramSample` (i32), so an `S32Le` edge takes the spine STRAIGHT
+        // THROUGH and converts nothing, while an `S16Le` edge is where the one
+        // output-path quantization happens (`write_dac_period`).
         //
         // `format=` is the DAC edge and keeps its bare name. Not because
         // anything would break: no machine consumer parses this line today (the
@@ -666,10 +668,19 @@ impl AlsaBackend {
         };
         // `content_format` is `Some` here by construction: `new` sets it to `None`
         // only on the path that leaves `content` `None` too, and the `?` above
-        // already returned in that case. `unwrap_or` rather than `expect` so a
-        // future divergence degrades to the S16 arm (which is what every box runs)
-        // instead of panicking a realtime audio thread.
-        match self.content_format.unwrap_or(SampleFormat::S16Le) {
+        // already returned in that case. Bail rather than default, using the same
+        // idiom the line above uses, because the wrong arm is worse than no arm:
+        // silently choosing S16 on a lane that is actually S32 hands `io_i16()` a
+        // buffer of half-samples and the speaker plays loud garbage, whereas this
+        // refusal is one legible startup-class error. There is no width to guess.
+        let Some(lane_format) = self.content_format else {
+            anyhow::bail!(
+                "outputd content PCM {} is open but its negotiated format is \
+                 unknown; refusing to guess the ingest width",
+                self.content_pcm
+            );
+        };
+        match lane_format {
             SampleFormat::S32Le => {
                 let io = content
                     .io_i32()
