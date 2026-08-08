@@ -1047,6 +1047,106 @@ def test_check_fresh_receiver_still_fails_silent_reference_content(
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
+@pytest.mark.parametrize(
+    "updated_epoch_sec",
+    [10**12, -(10**12)],
+    ids=["future-wall-clock", "backward-wall-clock"],
+)
+def test_check_fresh_v4_journal_failure_uses_monotonic_identity(
+    monkeypatch,
+    tmp_path: Path,
+    updated_epoch_sec,
+):
+    silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(5)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(
+            updated_epoch_sec=updated_epoch_sec,
+            last_frame_age_ms=100,
+        ),
+        journal=silent_ref,
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "source=outputd_udp at 127.0.0.1:9891" in result.detail
+    assert "reference_outputs.udp_target='127.0.0.1:9891'" in result.detail
+    assert "provenance is unavailable" not in result.detail
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
+    monkeypatch,
+    tmp_path: Path,
+):
+    stats = _reference_input_stats(last_frame_age_ms=100)
+    stats["active_capture_plan"]["mic_reference_identity"] = {
+        "ref_source": "alsa",
+    }
+    silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(5)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=stats,
+        journal=silent_ref,
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "source=outputd_udp at 127.0.0.1:9891" in result.detail
+    assert "source=alsa" not in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("legacy_source", "expected_detail"),
+    [
+        ("alsa", "source=alsa"),
+        ("future_transport", "cannot safely name the failed hop"),
+    ],
+    ids=["alsa", "unknown"],
+)
+def test_check_legacy_non_outputd_fallback_skips_status(
+    monkeypatch,
+    tmp_path: Path,
+    legacy_source,
+    expected_detail,
+):
+    stats = _reference_input_stats(schema_version=3)
+    stats["active_capture_plan"]["mic_reference_identity"] = {
+        "ref_source": legacy_source,
+    }
+    silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(5)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=stats,
+        journal=silent_ref,
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert expected_detail in result.detail
+    assert not any(command[0] == "outputd-status" for command in calls)
+
+
 def test_check_fresh_receiver_and_one_healthy_rms_window_is_ok(
     monkeypatch,
     tmp_path: Path,

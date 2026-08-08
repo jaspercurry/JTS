@@ -818,6 +818,7 @@ def _assess_aec_bridge_output(
     music_chain_active: bool | None = None,
     *,
     bridge_stats: dict | None = None,
+    trusted_reference_identity: tuple[str, str | None] | None = None,
     outputd_status: dict | None = None,
     now: float | None = None,
 ) -> CheckResult:
@@ -925,6 +926,7 @@ def _assess_aec_bridge_output(
                 bridge_stats=bridge_stats,
                 outputd_status=outputd_status,
                 now=time.time() if now is None else now,
+                trusted_reference_identity=trusted_reference_identity,
             ),
         )
 
@@ -1039,6 +1041,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     now_monotonic = time.monotonic()
 
     stats_assessment: tuple[CheckResult, bool] | None = None
+    trusted_reference_identity: tuple[str, str | None] | None = None
     if isinstance(bridge_stats, dict):
         stats_assessment = _assess_aec_reference_input_from_stats(
             bridge_stats,
@@ -1061,6 +1064,11 @@ def check_aec_bridge_output_health() -> CheckResult:
             return stats_result
         if startup_grace:
             return stats_result
+        # A non-startup OK from the exact-v4 assessor means it already proved
+        # that reference_input source/endpoint match this outputd route. Carry
+        # that identity into journal-content remediation; do not re-rank it
+        # through the legacy epoch-based active_capture_plan fallback.
+        trusted_reference_identity = ("outputd_udp", expected_endpoint)
 
     # Rolling-deploy fallback: use a 90-second window, not 5 minutes.
     # Rationale: install.sh restarts an older bridge, and there's a transient
@@ -1083,23 +1091,37 @@ def check_aec_bridge_output_health() -> CheckResult:
         )
 
     now_epoch = time.time()
-    provenance = _bridge_reference_provenance(bridge_stats, now_epoch)
+    legacy_provenance = (
+        _bridge_reference_provenance(bridge_stats, now_epoch)
+        if trusted_reference_identity is None
+        else None
+    )
     music_chain_active = _loopback_playback_active()
     journal_result = _assess_aec_bridge_output(
         proc.stdout,
         music_chain_active=music_chain_active,
         bridge_stats=bridge_stats,
+        trusted_reference_identity=trusted_reference_identity,
         now=now_epoch,
     )
     if (
         journal_result.status == "fail"
-        and provenance is not None
-        and provenance[0] == "outputd_udp"
+        and (
+            (
+                trusted_reference_identity is not None
+                and trusted_reference_identity[0] == "outputd_udp"
+            )
+            or (
+                legacy_provenance is not None
+                and legacy_provenance[0] == "outputd_udp"
+            )
+        )
     ):
         journal_result = _assess_aec_bridge_output(
             proc.stdout,
             music_chain_active=music_chain_active,
             bridge_stats=bridge_stats,
+            trusted_reference_identity=trusted_reference_identity,
             outputd_status=_read_outputd_status_for_aec_reference(),
             now=now_epoch,
         )
@@ -1171,8 +1193,11 @@ def _aec_reference_failure_remediation(
     bridge_stats: dict | None,
     outputd_status: dict | None,
     now: float,
+    trusted_reference_identity: tuple[str, str | None] | None = None,
 ) -> str:
-    provenance = _bridge_reference_provenance(bridge_stats, now)
+    provenance = trusted_reference_identity or _bridge_reference_provenance(
+        bridge_stats, now,
+    )
     if provenance is None:
         return (
             "Runtime reference provenance is unavailable, malformed, stale, "
