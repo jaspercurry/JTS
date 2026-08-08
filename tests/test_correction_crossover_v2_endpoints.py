@@ -63,6 +63,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     TIER_EXPRESS,
+    TIER_FULL,
     CrossoverV2Conductor,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
@@ -4269,10 +4270,192 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
     assert by_cloud["post_apply_spec_passed"] is False
 
 
+# --- R19 honest grading: scope, the spatial gauge's own state (#2098/#2160) --
+
+
+def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None):
+    """An applied session, optionally with a post-apply cloud group."""
+    state = {
+        "session_id": "cap_r19",
+        "session_phases": [PHASE_VERIFY, PHASE_CLOUD_VERIFY],
+        "applied": True,
+        "verify": {"outcome": verify_outcome},
+    }
+    if tier is not None:
+        state["tier"] = tier
+    if cloud_verify is not None:
+        state["cloud"] = {PHASE_CLOUD_VERIFY: cloud_verify}
+    return state
+
+
+_NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
+
+
+def _closed_cloud_group(*, passed, flatness=_NO_GAUGE):
+    """A closed post-apply group in DURABLE shape, as the conductor writes it."""
+    pipeline = {
+        "available": True,
+        "spec": {"overall_passed": passed, "bands": []},
+        # Four excluded intervals — the jts3 2026-08-07 shape.
+        "merged_excluded_bands_hz": [
+            [1400.0, 1900.0], [3000.0, 3200.0], [5000.0, 5400.0], [9000.0, 9600.0],
+        ],
+    }
+    if flatness is not _NO_GAUGE:
+        pipeline["flatness"] = flatness
+    return {
+        # Never locked — the same checkpoint fact the cloud-pipeline doctor
+        # line prints beside this group.
+        "geometry": {"locked": False},
+        "pipeline": pipeline,
+        "session_id": "cap_r19",
+    }
+
+
+_GRADED_AND_FAILED_FLATNESS = {
+    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
+    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
+    "evaluable": True, "passed": False,
+}
+
+
+def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
+    """#2160 — the jts3 2026-08-07 shape, reproduced.
+
+    ``overall_passed=False`` reaches ``GRADE_GRADED`` because a
+    graded-and-failed group IS graded, and every consuming surface read that
+    state name as a clean result: doctor printed ``applied and graded
+    (state=graded, verify=pass)`` beside a cloud line reading ``spec=fail
+    worst=-4.63dB``. ``state`` cannot carry the difference; ``spatial`` does,
+    and the failing gauge's own number rides with it so no consumer re-derives
+    it. The ruling is grade-and-disclose: the tune stays, the failure is
+    loud."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL,
+        cloud_verify=_closed_cloud_group(
+            passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
+        ),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_GRADED  # unchanged vocabulary
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
+    # A failed grade is a COMPLETED grade — the tier delivered what it
+    # promised, and what it delivered is a miss.
+    assert grade["scope"] == v2host.GRADE_SCOPE_SPATIAL
+    assert grade["complete"] is True
+    assert grade["spatial_worst_db"] == pytest.approx(-4.628)
+    assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
+
+
+def test_a_full_session_that_only_verified_at_the_mark_is_incomplete():
+    """#2098's own field evidence: Full, ``verify.outcome=pass``, ``cloud``
+    absent — a true local result rendered as the wider claim. The local pass
+    is preserved; what is added is that it is not what Full promised."""
+    v2host.save_v2_state(_applied_state(tier=TIER_FULL))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_MARK_VERIFIED  # the local pass stands
+    assert grade["graded"] is True
+    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_ABSENT
+    assert grade["complete"] is False
+
+
+def test_an_express_session_verified_at_the_mark_is_complete_and_scoped():
+    """Express structurally never walks a post-apply group, so the mark IS its
+    whole promise. Judging it against Full's would warn every express session
+    ever run — the mirror of the defect."""
+    v2host.save_v2_state(_applied_state(tier=TIER_EXPRESS))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
+    assert grade["complete"] is True
+
+
+def test_a_closed_and_passing_group_is_a_complete_spatial_grade():
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL,
+        cloud_verify=_closed_cloud_group(passed=True, flatness={
+            **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
+        }),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_PASSED
+    assert grade["scope"] == v2host.GRADE_SCOPE_SPATIAL
+    assert grade["complete"] is True
+    # No number: there is no failure for it to quantify, and printing the
+    # margin of a pass beside a failure verdict is how the two get confused.
+    assert grade["spatial_worst_db"] is None
+    assert grade["spatial_worst_hz"] is None
+
+
+def test_a_group_that_could_not_be_graded_is_not_reported_as_a_failure():
+    """``SpecFlatness.passed`` is ``False`` for a spectrum no band survived to
+    measure, by its own "will not report a clean bill of health for a spectrum
+    it could not fully measure" rule. Reading that as a miss states a
+    measurement that never happened."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL,
+        cloud_verify=_closed_cloud_group(passed=False, flatness={
+            **_GRADED_AND_FAILED_FLATNESS,
+            "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
+        }),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_UNMEASURABLE
+    assert grade["spatial_worst_db"] is None
+    # No spatial CLAIM exists, so the delivered width falls back to whatever
+    # the mark proved — and on Full that is short of the promise.
+    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
+    assert grade["complete"] is False
+
+
+def test_a_failing_group_with_no_gauge_at_all_stays_a_failure():
+    """Unmeasurable is claimed only on POSITIVE evidence. A durable state
+    written before the gauge shipped carries a real ``overall_passed=False``
+    and no ``flatness`` — downgrading that to "could not be measured" on the
+    ABSENCE of an instrument is the fabricated reading, pointed the other
+    way."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, cloud_verify=_closed_cloud_group(passed=False),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_FAILED
+    assert grade["spatial_worst_db"] is None  # no gauge, no number invented
+
+
+def test_an_unreadable_tier_is_judged_on_delivery_not_on_a_guessed_promise():
+    """A pre-tier state file, or one written by a later build. This build
+    cannot know what was promised, and manufacturing an incompleteness warning
+    about a promise it never read would be worse than saying what it said —
+    the same degrade rule the ``state`` vocabulary already follows."""
+    v2host.save_v2_state(_applied_state(tier=None))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["scope"] == v2host.GRADE_SCOPE_MARK
+    assert grade["complete"] is True
+
+    v2host.save_v2_state(_applied_state(tier="tier-from-2027"))
+    later = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert later["complete"] is True
+
+
+def test_a_verify_that_did_not_pass_delivers_no_scope_at_all():
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="inconclusive",
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_INCONCLUSIVE
+    assert grade["scope"] == v2host.GRADE_SCOPE_NONE
+    assert grade["complete"] is False
+
+
 def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     v2host.save_v2_state({"session_id": "cap_none", "applied": False})
     grade = v2host.crossover_v2_status_block()["post_apply_grade"]
     assert grade["state"] == v2host.GRADE_NOT_APPLIED
+    # Nothing promised, so nothing outstanding: `complete=False` here would
+    # warn every speaker that has never been commissioned.
+    assert grade["complete"] is True
+    assert grade["scope"] == v2host.GRADE_SCOPE_NONE
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_ABSENT
     assert grade["graded"] is True
 
 

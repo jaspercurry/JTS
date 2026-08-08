@@ -782,6 +782,26 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     the second-owner-of-one-decision shape this PR's own docstrings spend
     paragraphs forbidding elsewhere. ``crossover_v2_status_block`` computes the
     grade once; every surface — `/state`, the wizard, this check — reads that.
+
+    **A grade that EXISTS is not a grade that PASSED, and a grade at the mark
+    is not the grade a Full session promised** (R19; #2160, #2098). Both were
+    printing as one green tick, because ``state`` answers only "was it
+    checked" and ``GRADE_GRADED``/``GRADE_MARK_VERIFIED`` are honest answers
+    to that question in every case above. Keying ``ok`` on ``state`` alone
+    therefore reported a closed-and-FAILED spatial grade, and a Full session
+    that never closed one, as the same clean result — measured on jts3
+    2026-08-07, where this line printed ``applied and graded (state=graded,
+    verify=pass)`` beside a cloud line reading ``spec=fail worst=-4.63dB``.
+    The producer now carries the two facts that separate them (``spatial``,
+    ``complete``, plus the failing gauge's own number); this reads them and
+    still re-derives nothing.
+
+    Still WARN, never FAIL, and never a revert: a failed spatial grade is a
+    COMPLETED grade the household acts on at ``/correction/`` (#2160's ruling
+    — grade and disclose, do not gate). An unknown ``spatial`` word from a
+    later build falls through to the passing wording rather than inventing a
+    verdict about a value this build cannot read, the same degrade rule
+    ``state`` already follows.
     """
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
@@ -789,6 +809,8 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_INCONCLUSIVE,
         GRADE_MARK_VERIFIED,
         GRADE_NOT_APPLIED,
+        GRADE_SPATIAL_FAILED,
+        GRADE_SPATIAL_UNMEASURABLE,
         crossover_v2_status_block,
     )
 
@@ -803,10 +825,43 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
+        spatial = str(grade.get("spatial") or "")
+        verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
+        if spatial == GRADE_SPATIAL_FAILED:
+            worst = grade.get("spatial_worst_db")
+            at = grade.get("spatial_worst_hz")
+            # The number rides the verdict from the same gauge the cloud line
+            # prints, so "the grade failed" and "by how much" cannot drift.
+            # Absent when the gauge recorded none — never a fabricated 0.
+            worst_text = ""
+            if isinstance(worst, (int, float)):
+                where = f" @ {at:.0f}Hz" if isinstance(at, (int, float)) else ""
+                worst_text = f" ({worst:+.2f}dB{where})"
+            return CheckResult(
+                label, "warn",
+                f"applied and graded, and the spatial grade FAILED{worst_text} "
+                f"— the tune stays on the speaker ({verify_text}); re-measure "
+                "at /correction/ or undo to restore the previous sound",
+            )
+        if spatial == GRADE_SPATIAL_UNMEASURABLE:
+            return CheckResult(
+                label, "warn",
+                f"applied; the post-apply group closed but its spatial grade "
+                f"could not be measured ({verify_text}) — re-measure at "
+                "/correction/ in a quieter room, or undo",
+            )
+        if grade.get("complete") is False:
+            return CheckResult(
+                label, "warn",
+                f"applied and verified at the mark, but the "
+                f"{block.get('tier') or 'this'}-tier spatial grade never "
+                f"closed, so it is unproven away from the mark ({verify_text}) "
+                "— finish the measurement at /correction/, or undo",
+            )
         return CheckResult(
             label, "ok",
-            f"applied and graded (state={state}, "
-            f"verify={grade.get('verify_outcome') or 'n/a'})",
+            f"applied and graded (state={state}, scope="
+            f"{grade.get('scope') or 'n/a'}, {verify_text})",
         )
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         return CheckResult(

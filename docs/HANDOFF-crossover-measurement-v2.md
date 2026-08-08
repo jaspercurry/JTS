@@ -1224,10 +1224,11 @@ gate `_verify_verdict`'s accepted/code logic — that stays a tracking judgement
   predicted sums through the same `evaluate_flat_spec` and refuses the
   auto-apply when the correction does not materially better its own model
   (`correction_not_an_improvement`);
-* `crossover_envelope_v2` reads an explicitly failing `PHASE_CLOUD_VERIFY`
-  verdict into the done screen's PRIMARY copy and swaps the "Verified." badge
-  for one that names which instrument passed — previously the verdict reached
-  only a line inside the collapsed disclosure;
+* `crossover_envelope_v2` reads a failing spatial grade into the done screen's
+  PRIMARY copy and swaps the "Verified." badge for one that names which
+  instrument passed — previously the verdict reached only a line inside the
+  collapsed disclosure. Since R19 it reads that verdict off `post_apply_grade`
+  rather than off the cloud entry's own `overall_passed` (see below);
 * `crossover_v2_status_block` folds it into the new `post_apply_grade` key
   (see below).
 
@@ -1235,13 +1236,39 @@ gate `_verify_verdict`'s accepted/code logic — that stays a tracking judgement
 correction now on the speaker ever checked after it landed?" — `state` is one
 of `not_applied` / `graded` (a walked post-apply position group) /
 `mark_verified` (VERIFY passed at the mark; express's whole grade) /
-`inconclusive` / `failed` / `unverified`, with `graded` as the single boolean a
-caller can key on. Read it, do not re-derive it: `jasper-doctor`'s
-`check_crossover_v2_applied_is_graded` is its second consumer and warns on an
-applied profile that was never graded — the silence
+`inconclusive` / `failed` / `unverified`. Read it, do not re-derive it:
+`jasper-doctor`'s `check_crossover_v2_applied_is_graded` is its second consumer
+and warns on an applied profile that was never graded — the silence
 `check_crossover_v2_cloud_pipeline` structurally cannot see, because that check
 gates on a FAILING `PHASE_CLOUD_VERIFY` verdict and a missing one renders as no
 phase at all.
+
+**Three more keys carry what `state` structurally cannot** (R19; #2098, #2160
+— plan §7's scope/completeness fact). `state` answers *was it checked*, and
+both `graded` and `mark_verified` are honest answers to that in cases that are
+not equivalent, so `graded` is **no longer** a boolean a surface may key "all
+clear" on by itself:
+
+* `scope` — how wide the evidence behind `state` actually reached: `none` /
+  `mark` / `spatial`. Delivered width, never the tier's promise.
+* `spatial` — the post-apply spatial gauge's own state: `absent` / `passed` /
+  `failed` / `unmeasurable`. `overall_passed` is a bool and cannot separate a
+  graded miss from a spectrum no band survived to grade (`SpecFlatness.passed`
+  is `False` for both); `unmeasurable` is claimed only on `flatness.evaluable`
+  being explicitly `False`, never on the gauge merely being absent.
+  `spatial_worst_db` / `spatial_worst_hz` ride a `failed` grade, copied
+  verbatim from that same gauge.
+* `complete` — the producer's own comparison of `scope` against what the tier
+  promised: Full needs `spatial`, Express's promise IS the mark. An
+  unrecognised tier is judged on delivery alone rather than manufacturing a
+  warning about a promise this build never read.
+
+A failed spatial grade **grades and discloses; it never gates** (#2160's
+ruling): the session completes, the applied tune stays, and doctor/`/state`/
+the wizard each say so. On jts3 2026-08-07 the doctor printed `applied and
+graded (state=graded, verify=pass)` one row under a cloud line reading
+`spec=fail worst=-4.63dB excluded_intervals=4 geometry_locked=False` — the
+defect these keys close.
 
 **`/state.crossover_v2.prediction`** (two-stage commission work order D4,
 issue #1806) carries the PREDICTED post-apply response and the spec verdict it
@@ -3468,6 +3495,20 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
 - **Fc/slope re-derivation and driver EQ beyond trims are a v3 door.**
   v2 deliberately measures *as-crossed* branches and cannot recover them
   (dividing out the target filter explodes stopband noise).
+- **Commissioning is a memory-privileged window, and its headroom on a
+  literal 1 GB Pi is unmeasured** (issue #2168; disclosed here by the R19
+  honest-grading round, whose bar is that a known fact is not a silent
+  one). One production-shaped MEASURE-accept analysis peaks **~400–430 MB**
+  and cannot complete under a 384 MB cgroup — measured 2026-08-06 on jts3
+  with the bounded runner: indefinite reclaim-thrash at PSI 92%, 8421
+  `memory.high` breaches, stalls rather than OOMs. That is today's shipped
+  single-Fc behaviour, and the co-residency headroom against the resident
+  daemon set on a 1 GB box has **never been measured or budgeted** — say
+  "unmeasured", not "fine". Commissioning is rare and owner-present, which
+  is why this is disclosed rather than engineered around for now; the three
+  candidate fixes (a declared resource-privileged commissioning window, a
+  leaner analysis pipeline, or an explicit 2 GB+ floor for the
+  active-speaker correction tier) stay open on #2168.
 
 ---
 

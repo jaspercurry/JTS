@@ -1397,6 +1397,161 @@ def test_applied_profile_with_inconclusive_verify_warns(monkeypatch):
     assert "never graded" not in r.detail
 
 
+# --- R19 honest grading: the green tick over a failed gauge (#2160/#2098) ---
+
+
+def _r19_cloud_verify(*, passed, flatness):
+    return {
+        "cloud_verify": {
+            "geometry": {"locked": False},
+            "pipeline": {
+                "available": True,
+                "spec": {"overall_passed": passed, "bands": []},
+                "merged_excluded_bands_hz": [
+                    [1400.0, 1900.0], [3000.0, 3200.0],
+                    [5000.0, 5400.0], [9000.0, 9600.0],
+                ],
+                "flatness": flatness,
+            },
+        },
+    }
+
+
+_R19_FAILED_GAUGE = {
+    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
+    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
+    "evaluable": True, "passed": False,
+}
+
+
+def _r19_doctor_state(monkeypatch, **overrides):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state", lambda: _v2_applied_state(**overrides)
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+
+def test_a_failed_spatial_grade_is_not_a_green_tick(monkeypatch):
+    """#2160, measured on jts3 2026-08-07: this line printed ``applied and
+    graded (state=graded, verify=pass)`` while the cloud line one row up read
+    ``spec=fail worst=-4.63dB excluded_intervals=4 geometry_locked=False``.
+    ``state`` answers "was it checked" and ``graded`` is an honest answer to
+    that, so keying ok on it reported a failure as a pass. Grade and disclose,
+    never gate: still a warn, and the tune stays on the speaker."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=False, flatness=_R19_FAILED_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "spatial grade FAILED" in r.detail
+    # The number rides the verdict, from the same gauge the cloud line prints.
+    assert "-4.63dB" in r.detail
+    assert "@ 1650Hz" in r.detail
+    # The ruling, in the words a household reads: nothing was reverted.
+    assert "stays on the speaker" in r.detail
+
+
+def test_a_full_session_verified_only_at_the_mark_warns(monkeypatch):
+    """#2098's own field evidence — Full, ``verify.outcome=pass``, no cloud.
+    The local pass is real and is preserved in the wording; what changes is
+    that it stops being reported as the claim Full promised."""
+    _r19_doctor_state(monkeypatch, tier="full", verify={"outcome": "pass"})
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "verified at the mark" in r.detail
+    assert "never closed" in r.detail
+    assert "full-tier" in r.detail
+
+
+def test_an_express_session_verified_at_the_mark_stays_ok(monkeypatch):
+    """The mark IS express's whole promise. Warning here would fire on every
+    express session ever run — the mirror of the defect being fixed."""
+    _r19_doctor_state(monkeypatch, tier="express", verify={"outcome": "pass"})
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "scope=mark" in r.detail
+
+
+def test_a_group_that_could_not_be_graded_is_not_reported_as_a_miss(monkeypatch):
+    """``passed=False, evaluable=False`` means "could not be measured", not
+    "failed" — ``SpecFlatness.passed``'s own read-it-with-evaluable rule."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=False, flatness={
+            **_R19_FAILED_GAUGE,
+            "max_db": None, "max_hz": None, "evaluable": False,
+        }),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "could not be measured" in r.detail
+    assert "FAILED" not in r.detail
+
+
+def test_a_closed_and_passing_spatial_grade_is_ok(monkeypatch):
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "pass"},
+        cloud=_r19_cloud_verify(passed=True, flatness={
+            **_R19_FAILED_GAUGE, "max_db": 0.9, "passed": True,
+        }),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "scope=spatial" in r.detail
+
+
+def test_an_unknown_spatial_word_from_a_later_build_does_not_invent_a_verdict(
+    monkeypatch,
+):
+    """The same degrade rule ``state`` already follows: saying what the state
+    said beats inventing a warning about a word this build cannot read. The
+    grade is injected directly because no producer path can emit it — that is
+    the point of the case."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host,
+        "crossover_v2_status_block",
+        lambda: {
+            "tier": "full",
+            "post_apply_grade": {
+                "state": v2host.GRADE_GRADED,
+                "graded": True,
+                "verify_outcome": "pass",
+                "scope": "hemispherical-2027",
+                "spatial": "graded_from_orbit",
+                "complete": True,
+            },
+        },
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "applied and graded" in r.detail
+
+
 def test_unapplied_session_is_not_asked_for_a_grade(monkeypatch):
     """Nothing on the speaker, nothing to grade — never a manufactured warn."""
     from jasper.web import correction_crossover_v2 as v2host

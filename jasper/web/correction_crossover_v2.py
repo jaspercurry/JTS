@@ -1744,11 +1744,58 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     vocabulary. Both a passing VERIFY outcome and a graded post-apply cloud
     count — either instrument is a real check, and the tiers differ in which
     one they run.
+
+    **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
+    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
+    three are why this returns more than a state name. ``state`` alone cannot
+    carry either fact, and both were being guessed at downstream:
+
+    * a Full session whose post-apply group never closed reaches
+      ``mark_verified`` — a true local result, and NOT the claim Full
+      promised. It rendered as "applied and graded".
+    * a post-apply group that closed with ``overall_passed=False`` reaches
+      ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
+      rendered as "applied and graded" — measured on jts3 2026-08-07, a
+      −4.63 dB spatial miss under a green tick.
+
+    ``scope`` is what the evidence DELIVERED; ``tier`` is what the session
+    PROMISED; ``complete`` is the producer's own comparison of the two, so no
+    consumer re-derives it (plan §7: one producer owns the scope/completeness
+    fact for the wizard, ``/state``, and doctor). An unrecognised tier — a
+    pre-tier state file, or one written by a later build — cannot have its
+    promise known, so it is judged on delivery alone rather than manufacturing
+    an incompleteness warning about a promise this build never read.
+
+    ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
+    the doctor's cloud-pipeline line prints, never re-derived, so "the grade
+    failed" and "by how much" cannot drift apart. ``None`` whenever the gauge
+    reports no number, including a failed grade whose gauge is absent.
+
+    **Grades and discloses; never gates** (#2160 ruling). A failed spatial
+    grade is a COMPLETED grade: the session completes, the applied tune stays,
+    the failure is loud. Nothing here reverts anything — see the
+    surface-not-auto-restore paragraph above, which this extends rather than
+    revisits.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_CLOUD_VERIFY,
+        TIER_EXPRESS,
+        TIER_FULL,
+    )
 
     if not block.get("applied"):
-        return {"state": GRADE_NOT_APPLIED, "graded": True, "verify_outcome": None}
+        return {
+            "state": GRADE_NOT_APPLIED,
+            "graded": True,
+            "verify_outcome": None,
+            "scope": GRADE_SCOPE_NONE,
+            "spatial": GRADE_SPATIAL_ABSENT,
+            "spatial_worst_db": None,
+            "spatial_worst_hz": None,
+            # Nothing was promised, so nothing is outstanding. `False` here
+            # would warn every speaker that has never been commissioned.
+            "complete": True,
+        }
     verify = block.get("verify")
     outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, Mapping) else ""
     cloud = block.get("cloud")
@@ -1770,11 +1817,46 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         state = GRADE_FAILED
     else:
         state = GRADE_UNVERIFIED
+    spatial = _spatial_grade(post_apply)
+    # Delivered width, derived from the evidence rather than from ``state``:
+    # only a real spatial VERDICT is a spatial claim, so a group that closed
+    # and could not grade anything reaches back to whatever the mark proved.
+    if spatial in {GRADE_SPATIAL_PASSED, GRADE_SPATIAL_FAILED}:
+        scope = GRADE_SCOPE_SPATIAL
+    elif outcome == "pass":
+        scope = GRADE_SCOPE_MARK
+    else:
+        scope = GRADE_SCOPE_NONE
+    tier = str(block.get("tier") or "")
+    if tier == TIER_FULL:
+        complete = scope == GRADE_SCOPE_SPATIAL
+    elif tier == TIER_EXPRESS:
+        # Express promises the mark and structurally never walks a post-apply
+        # group, so the mark IS its whole grade — complete, and explicitly
+        # scoped. A spatial verdict would exceed the promise, never miss it.
+        complete = scope in {GRADE_SCOPE_MARK, GRADE_SCOPE_SPATIAL}
+    else:
+        complete = scope != GRADE_SCOPE_NONE
+    flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
+    flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
         "state": state,
         "graded": state in {GRADE_GRADED, GRADE_MARK_VERIFIED},
         "verify_outcome": outcome or None,
         "post_apply_spec_passed": cloud_verdict if isinstance(cloud_verdict, bool) else None,
+        "scope": scope,
+        "spatial": spatial,
+        # Only alongside a real failing grade: a number without a verdict to
+        # attach it to is the fabricated reading this module forbids.
+        "spatial_worst_db": (
+            _finite(flatness.get("max_db"))
+            if spatial == GRADE_SPATIAL_FAILED else None
+        ),
+        "spatial_worst_hz": (
+            _finite(flatness.get("max_hz"))
+            if spatial == GRADE_SPATIAL_FAILED else None
+        ),
+        "complete": complete,
     }
 
 
