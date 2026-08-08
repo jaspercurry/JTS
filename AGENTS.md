@@ -569,8 +569,8 @@ right place. Read this before adding or restructuring docs.
    before publishing — enumerating stale sites by hand is a
    hypothesis, never a bound, and the 2026-08 wide-output-path
    program found a nine-site same-shape incident (pre-flip comments
-   describing a not-yet-landed state) exactly this way, with commit
-   `2787623bf` truing up six of them.
+   describing a not-yet-landed state) exactly this way, all trued
+   up in the squash-merged commit `2787623bf` (PR #2246).
 
 ---
 

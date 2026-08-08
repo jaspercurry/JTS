@@ -11,11 +11,10 @@
 # yet wired", "until the reconciler lands", "today X happens", "no
 # writer for Y yet") is a claim about a moment in time. Once a later
 # PR lands the described change, the sentence goes stale silently —
-# nobody's task is "notice this comment quietly became false." The
-# 2026-08 wide-output-path program found a nine-site instance of
-# exactly this shape (pre-flip comments describing a not-yet-landed
-# state); commit 2787623bf trued up six of them. See AGENTS.md
-# "Documentation paradigm" for the rule this script backs.
+# nobody's task is "notice this comment quietly became false." See
+# AGENTS.md "Documentation paradigm" rule 11 for the incident that
+# motivated this script and the rule it backs — the story lives
+# there, not here, so it can't drift out of sync between the two.
 #
 # This is advisory, not a CI gate: it always exits 0, and a match is
 # a hypothesis to check by hand, not a confirmed defect — the pattern
@@ -40,12 +39,16 @@ merge_base="$(git merge-base origin/main HEAD 2>/dev/null)" || {
     exit 0
 }
 
+# core.quotePath=false so a non-ASCII path comes back literal instead of
+# C-quoted — a quoted path wouldn't match `-f "${f}"` below and would
+# silently drop out of scope.
 files=()
 while IFS= read -r f; do
     [[ -n "${f}" && -f "${f}" ]] && files+=("${f}")
-done < <(git diff --name-only --diff-filter=ACMR "${merge_base}" 2>/dev/null)
+done < <(git -c core.quotePath=false diff --name-only --diff-filter=ACMR "${merge_base}" 2>/dev/null)
 
 if (( ${#files[@]} == 0 )); then
+    echo "tense-grep: 0 changed files in scope."
     exit 0
 fi
 
@@ -61,15 +64,20 @@ pattern+='|\bcurrently\b'
 pattern+='|no writer'
 pattern+='|nothing (writes|refuses)'
 
-echo "tense-grep: advisory sweep of ${#files[@]} changed file(s) for roadmap-dated phrasing."
-echo "Comments and docs must state what IS — every match below is a hypothesis that the"
-echo "claim went stale once a later PR landed. Read each one; most will be fine."
-echo
+# `--` guards a dash-leading changed filename from being read as a grep
+# option (silent false negative otherwise: grep exits 2, no output).
+# `-I` skips binary files rather than printing a content-free "Binary
+# file … matches" line.
+matches="$(grep -HinIE "${pattern}" -- "${files[@]}")"
 
-if grep -HinE "${pattern}" "${files[@]}" 2>/dev/null; then
-    :
+if [[ -n "${matches}" ]]; then
+    echo "tense-grep: advisory sweep of ${#files[@]} changed file(s) for roadmap-dated phrasing."
+    echo "Comments and docs must state what IS — every match below is a hypothesis that the"
+    echo "claim went stale once a later PR landed. Read each one; most will be fine."
+    echo
+    echo "${matches}"
 else
-    echo "tense-grep: no matches."
+    echo "tense-grep: no matches in ${#files[@]} changed file(s)."
 fi
 
 exit 0
