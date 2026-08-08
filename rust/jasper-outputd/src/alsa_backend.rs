@@ -322,7 +322,7 @@ pub struct AlsaBackend {
     /// nothing here reads or verifies the ring (the ring wire is S16 by
     /// contract, and `jasper_ring::Geometry::validate_self` hard-rejects
     /// anything else). What keeps the pair coherent is upstream, not here:
-    /// `jasper.fanin_coupling.ring_edge_width_ready` (wide-output-path PR-1,
+    /// `jasper.fanin.coupling_reconcile.ring_edge_width_ready` (wide-output-path PR-1,
     /// #2226) runs FIRST in both the unattended auto-arm gate list
     /// (`default_ring_gates()`) and the manual-arm chain. Reworked by PR-6 when
     /// the box-wide default widened — comparing `RING_WIRE_FORMAT` against that
