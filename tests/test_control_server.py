@@ -3836,13 +3836,14 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     push_to_talk_only: jasper-voice's session_status reports whether this
     box has no room mic of its own (every turn opened by an accessory
     button), and /state.voice must pull the field through — jasper-doctor's
-    `Wake legs` check reads it (alongside its own independent re-derivation)
-    to report `n/a` instead of a permanent yellow on such a box. Pinned here
-    at the aggregator seam specifically: _get_state hand-curates
-    /state.voice field-by-field, so a key silently dropped from that dict
-    literal is invisible to daemon-side coverage of session_status()
-    (tests/test_voice_daemon_wake_triple_stream.py) and to source-level
-    checks that the key is merely present somewhere in the module."""
+    `Wake legs` check does not read it: the doctor re-derives the same fact
+    from the published env + accessory file to report `n/a` instead of a
+    permanent yellow on such a box. Pinned here at the aggregator seam
+    specifically: _get_state hand-curates /state.voice field-by-field, so a
+    key silently dropped from that dict literal is invisible to daemon-side
+    coverage of session_status() (tests/test_voice_daemon_wake_triple_stream.py)
+    and to source-level checks that the key is merely present somewhere in
+    the module."""
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
