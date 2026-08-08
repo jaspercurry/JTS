@@ -427,11 +427,14 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
     )
 
 def _parse_camilla_statefile_config_path(path: Path) -> str | None:
-    """Thin wrapper over the shared statefile read (the SSOT it shares with the
-    installer's deploy-ordering probe)."""
-    from ...camilla_config_contract import read_camilla_statefile_config_path
-
-    return read_camilla_statefile_config_path(path)
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1).strip().strip("'\"") or None
 
 def _active_camilla_config_path() -> tuple[Path, str | None]:
     statefile = Path(

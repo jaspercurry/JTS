@@ -779,30 +779,23 @@ park_audio_clients_for_core_graph_restart() {
 # step is `try-restart` in every other case.
 JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
 
-# Print "<live> -> <emitted> (<config>)" when the CamillaDSP config currently
-# loaded holds an outputd snd-aloop content lane at a width JTS no longer emits;
-# print nothing otherwise. The whole decision lives in
-# jasper.camilla_config_contract.outputd_content_lane_format_delta (which is
-# where the None-means-no-action cases are enumerated and tested); this is just
-# the shell's window onto it.
+# Print "<current> -> <next>" when this build changes the width jasper-outputd
+# requests on its snd-aloop content lane; print nothing otherwise. The whole
+# decision lives in jasper.audio_runtime_plan.outputd_content_format_change
+# (which is where both sides' sources, the no-change cases, and why this reads
+# reconciler-owned env rather than a CamillaDSP config file are documented and
+# tested); this is just the shell's window onto it.
 camilla_content_lane_format_delta() {
     local venv_python="${INSTALL_DIR:-/opt/jasper}/.venv/bin/python"
     if [[ ! -x "${venv_python}" ]]; then
         return 0
     fi
     "${venv_python}" - <<'PY' 2>/dev/null || true
-import os
+from jasper.audio_runtime_plan import outputd_content_format_change
 
-from jasper.camilla_config_contract import outputd_content_lane_format_delta
-
-delta = outputd_content_lane_format_delta(
-    os.environ.get(
-        "JASPER_CAMILLA_STATEFILE", "/var/lib/camilladsp/outputd-statefile.yml"
-    )
-)
-if delta:
-    config_path, live_format, emitted_format = delta
-    print(f"{live_format} -> {emitted_format} ({config_path})")
+change = outputd_content_format_change()
+if change:
+    print("{} -> {}".format(*change))
 PY
 }
 
@@ -825,9 +818,9 @@ release_camilla_content_lane_for_format_flip() {
     # from the same constant the reconciler emits outputd's request from, so
     # whichever opens first locks what the other is going to ask for.
     #
-    # Conditional on a real delta on purpose: an unconditional stop would add a
-    # camilla stop/start to every deploy forever, where today's `try-restart`
-    # keeps one restart at a place chosen for the ring geometry.
+    # Conditional on a real width change on purpose: an unconditional stop would
+    # add a camilla stop/start to every deploy forever, where today's
+    # `try-restart` keeps one restart at a place chosen for the ring geometry.
     JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
     if ! systemctl is-active --quiet jasper-camilla.service; then
         return 0
@@ -837,7 +830,7 @@ release_camilla_content_lane_for_format_flip() {
     if [[ -z "${delta}" ]]; then
         return 0
     fi
-    echo "  Releasing the outputd content lane before outputd starts: CamillaDSP holds it at ${delta}"
+    echo "  Releasing the outputd content lane before outputd starts: content width ${delta}"
     systemctl stop jasper-camilla.service 2>/dev/null || true
     JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=1
 }

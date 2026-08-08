@@ -16,8 +16,8 @@ REBOOT in the middle of an install.
 
 Two halves, tested at their own level:
 
-- ``jasper.camilla_config_contract.outputd_content_lane_format_delta`` — the
-  decision (which states are a delta and which are deliberately not).
+- ``jasper.audio_runtime_plan.outputd_content_format_change`` — the decision
+  (what changes the requested width and what deliberately does not).
 - ``deploy/lib/install/systemd-units.sh``'s
   ``release_camilla_content_lane_for_format_flip`` /
   ``restart_core_camilla_after_dsp_reconcile`` — the shell behaviour, exercised
@@ -36,116 +36,115 @@ from pathlib import Path
 
 import pytest
 
-from jasper.camilla_config_contract import (
-    DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_PLAYBACK_FORMAT,
-    outputd_content_lane_format_delta,
-)
+from jasper.audio_runtime_plan import outputd_content_format_change
+from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+from jasper.fanin_coupling import RING_WIRE_FORMAT
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 
 
-def _config(device: str, fmt: str | None, *, playback_type: str = "Alsa") -> str:
-    lines = [
-        "---",
-        "devices:",
-        "  samplerate: 48000",
-        "  capture:",
-        "    type: Alsa",
-        "    channels: 2",
-        '    device: "plug:jasper_capture"',
-        "    format: S32_LE",
-        "  playback:",
-        f"    type: {playback_type}",
-        "    channels: 2",
-        f'    device: "{device}"',
-    ]
-    if fmt is not None:
-        lines.append(f"    format: {fmt}")
-    lines.append("filters:")
-    return "\n".join(lines) + "\n"
+def _envs(tmp_path: Path, *, outputd: str | None, fanin: str | None) -> dict:
+    """Write the two reconciler-owned env files and return the probe's kwargs.
 
-
-def _statefile(tmp_path: Path, config_text: str | None) -> Path:
-    statefile = tmp_path / "outputd-statefile.yml"
-    if config_text is None:
-        statefile.write_text("volume: [-20.0]\n", encoding="utf-8")
-        return statefile
-    config = tmp_path / "sound_current.yml"
-    config.write_text(config_text, encoding="utf-8")
-    statefile.write_text(f"config_path: {config}\nvolume: [-20.0]\n", encoding="utf-8")
-    return statefile
+    ``None`` means the file is absent, which is the honest shape of a box that
+    has never been reconciled (and of every box before this key existed)."""
+    outputd_path = tmp_path / "outputd.env"
+    fanin_path = tmp_path / "fanin.env"
+    if outputd is not None:
+        outputd_path.write_text(outputd, encoding="utf-8")
+    if fanin is not None:
+        fanin_path.write_text(fanin, encoding="utf-8")
+    return {
+        "outputd_env_path": str(outputd_path),
+        "fanin_env_path": str(fanin_path),
+    }
 
 
 # --- the decision ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "device",
-    ["outputd_content_playback", "outputd_active_content_playback"],
+    "outputd",
+    [None, "", "JASPER_OUTPUTD_CONTENT_FORMAT=\n", "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE\n"],
+    ids=["absent_file", "empty_file", "empty_value", "explicit_s16"],
 )
-def test_delta_reported_for_a_narrow_aloop_lane_on_both_lanes(tmp_path, device):
-    """The state that reboots the Pi: CamillaDSP holding an snd-aloop content
-    lane — passive OR active — at the pre-flip width."""
-    statefile = _statefile(tmp_path, _config(device, "S16_LE"))
-    delta = outputd_content_lane_format_delta(statefile)
-    assert delta is not None
-    config_path, live, emitted = delta
-    assert live == "S16_LE"
-    assert emitted == DEFAULT_PLAYBACK_FORMAT == "S32_LE"
-    assert config_path.endswith("sound_current.yml")
+def test_change_reported_when_a_pre_flip_box_is_about_to_widen(tmp_path, outputd):
+    """The state that reboots the Pi: outputd currently requesting the narrow
+    width — whether the key is absent, empty, or explicitly S16 — while this build
+    is about to ask for the wide one. Absent/empty read as S16 because that is
+    outputd's own documented default for the env, i.e. what the lane is locked
+    at."""
+    change = outputd_content_format_change(**_envs(tmp_path, outputd=outputd, fanin=None))
+    assert change == ("S16_LE", DEFAULT_PLAYBACK_FORMAT)
+    assert DEFAULT_PLAYBACK_FORMAT == "S32_LE"
 
 
-def test_no_delta_once_the_lane_already_carries_the_emitted_width(tmp_path):
+def test_no_change_once_the_box_already_requests_the_wide_width(tmp_path):
     """The second and every later deploy pays no churn — this is what keeps the
     guard from becoming an unconditional camilla stop on every deploy forever."""
-    statefile = _statefile(
-        tmp_path, _config("outputd_content_playback", DEFAULT_PLAYBACK_FORMAT)
+    assert (
+        outputd_content_format_change(
+            **_envs(
+                tmp_path,
+                outputd=f"JASPER_OUTPUTD_CONTENT_FORMAT={DEFAULT_PLAYBACK_FORMAT}\n",
+                fanin=None,
+            )
+        )
+        is None
     )
-    assert outputd_content_lane_format_delta(statefile) is None
-
-
-def test_no_delta_for_a_ring_box(tmp_path):
-    """An armed shm_ring box writes jts_ring_playback, which is not an snd-aloop
-    pair: nobody is holding a lane, so there is nothing to release. Its ring also
-    stays coherently narrow (the PR-6 ring ruling), so the narrow format here is
-    correct and must not read as a delta."""
-    statefile = _statefile(tmp_path, _config("jts_ring_playback", "S16_LE"))
-    assert outputd_content_lane_format_delta(statefile) is None
-
-
-def test_no_delta_for_a_pipe_sink_leader(tmp_path):
-    """A bonded leader's CamillaDSP writes a File/pipe sink pinned to
-    DEFAULT_PIPE_SINK_FORMAT (D4). No snd-aloop lane, and the narrow format is
-    the correct one for that sink."""
-    statefile = _statefile(
-        tmp_path,
-        _config(
-            "/run/jasper-snapserver/snapfifo",
-            DEFAULT_PIPE_SINK_FORMAT,
-            playback_type="File",
-        ),
-    )
-    assert outputd_content_lane_format_delta(statefile) is None
 
 
 @pytest.mark.parametrize(
-    "config_text",
-    [None, _config("outputd_content_playback", None)],
-    ids=["no_config_path", "no_format_field"],
+    "outputd",
+    [None, f"JASPER_OUTPUTD_CONTENT_FORMAT={RING_WIRE_FORMAT}\n"],
+    ids=["pre_flip", "post_flip"],
 )
-def test_no_delta_when_nothing_is_proven(tmp_path, config_text):
-    """Fail direction: an unreadable statefile or a config with no declared
-    format proves no delta, so the guard stays quiet rather than adding a stop to
-    every deploy. In practice neither state can hold an aloop lane at the wrong
-    width, and outputd's own loud failure remains the backstop."""
-    assert outputd_content_lane_format_delta(_statefile(tmp_path, config_text)) is None
+def test_no_change_on_an_armed_ring_box_either_side_of_the_flip(tmp_path, outputd):
+    """An armed shm_ring box keeps the coupling-forced narrow width (the PR-6 ring
+    ruling), so nothing about it changes across the flip and it pays no churn.
+    Such a box's outputd never opens an ALSA content lane at all."""
+    assert (
+        outputd_content_format_change(
+            **_envs(
+                tmp_path,
+                outputd=outputd,
+                fanin="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
+            )
+        )
+        is None
+    )
 
 
-def test_no_delta_for_a_missing_statefile(tmp_path):
-    assert outputd_content_lane_format_delta(tmp_path / "absent.yml") is None
-    assert outputd_content_lane_format_delta(None) is None
+def test_change_reported_when_a_wide_box_arms_the_ring(tmp_path):
+    """The other direction is a change too: a flipped box whose coupling has moved
+    to shm_ring will request the narrow ring width, so the lane's lock has to be
+    released just the same. The check is an equality, never a width ranking."""
+    change = outputd_content_format_change(
+        **_envs(
+            tmp_path,
+            outputd=f"JASPER_OUTPUTD_CONTENT_FORMAT={DEFAULT_PLAYBACK_FORMAT}\n",
+            fanin="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
+        )
+    )
+    assert change == (DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT)
+
+
+def test_the_probe_never_reads_a_camilla_config_file(tmp_path):
+    """Both sides come from reconciler-owned env ON PURPOSE. install re-renders the
+    flat cutover config BEFORE the bounce, so a config-file read at bounce time can
+    already show the NEW width while the running CamillaDSP still holds the lane at
+    the old one — stale in the one direction that matters. Pin it: a config file
+    declaring the wide width right next to a pre-flip outputd.env must NOT suppress
+    the change."""
+    (tmp_path / "outputd-cutover.yml").write_text(
+        "devices:\n  playback:\n    type: Alsa\n"
+        '    device: "outputd_content_playback"\n'
+        f"    format: {DEFAULT_PLAYBACK_FORMAT}\n",
+        encoding="utf-8",
+    )
+    change = outputd_content_format_change(**_envs(tmp_path, outputd=None, fanin=None))
+    assert change == ("S16_LE", DEFAULT_PLAYBACK_FORMAT)
 
 
 # --- the shell behaviour -----------------------------------------------------
@@ -196,7 +195,7 @@ def _log(tmp_path: Path) -> list[str]:
 
 
 def test_shell_stops_then_starts_camilla_on_a_real_delta(tmp_path):
-    result = _run(_harness(tmp_path, camilla_active=True, delta="S16_LE -> S32_LE (x)"))
+    result = _run(_harness(tmp_path, camilla_active=True, delta="S16_LE -> S32_LE"))
     assert result.returncode == 0, result.stderr
     calls = _log(tmp_path)
     assert "stop jasper-camilla.service" in calls
@@ -225,7 +224,7 @@ def test_shell_never_starts_a_camilla_it_did_not_stop(tmp_path):
     consulted, and the late step remains the historical `try-restart` (a no-op on
     an inactive unit)."""
     result = _run(
-        _harness(tmp_path, camilla_active=False, delta="S16_LE -> S32_LE (x)")
+        _harness(tmp_path, camilla_active=False, delta="S16_LE -> S32_LE")
     )
     assert result.returncode == 0, result.stderr
     calls = _log(tmp_path)
@@ -238,7 +237,7 @@ def test_shell_clears_the_release_flag_after_starting(tmp_path):
     """The flag is per-install state, not sticky: a second restart call must not
     re-`start` a camilla the guard is no longer responsible for."""
     script = _harness(
-        tmp_path, camilla_active=True, delta="S16_LE -> S32_LE (x)"
+        tmp_path, camilla_active=True, delta="S16_LE -> S32_LE"
     ) + "\nrestart_core_camilla_after_dsp_reconcile\n"
     result = _run(script)
     assert result.returncode == 0, result.stderr

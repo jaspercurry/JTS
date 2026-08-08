@@ -78,6 +78,14 @@ DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
+# The width outputd REQUESTS on its snd-aloop content lane. Reconciler-owned
+# (jasper-audio-hardware-reconcile is the single writer, from
+# jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
+# outputd's own documented default — the pre-flip S16 lane every box ran before
+# the wide-output-path program — so this pair reads a live box honestly whether
+# or not the key has been emitted yet.
+OUTPUTD_CONTENT_FORMAT_KEY = "JASPER_OUTPUTD_CONTENT_FORMAT"
+OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
@@ -1086,6 +1094,65 @@ def _route_policy_errors(
             f"{COUPLING_ENV_VAR}=shm_ring is a partial flip"
         )
     return tuple(errors)
+
+
+def outputd_content_format_change(
+    *,
+    outputd_env_path: str = DEFAULT_OUTPUTD_ENV_PATH,
+    fanin_env_path: str = DEFAULT_FANIN_ENV_PATH,
+) -> tuple[str, str] | None:
+    """``(current, next)`` when this build changes the width outputd REQUESTS on
+    its snd-aloop content lane — else ``None``.
+
+    THE DEPLOY-ORDERING HAZARD this answers (wide-output-path PR-6, survey
+    finding 12): snd-aloop locks a substream pair's rate/format/channels to its
+    FIRST opener. CamillaDSP owns the playback half of the content lane and holds
+    it for as long as it runs, so a deploy that changes the width has a window
+    where the still-running PREVIOUS CamillaDSP pins the pair at the old width
+    while the freshly-restarted jasper-outputd asks for the new one. That open
+    fails at ``snd_pcm_hw_params``, which is an ordinary error rather than
+    outputd's EX_CONFIG park — so ``Restart=on-failure`` retries it, and
+    ``StartLimitBurst=5`` / ``StartLimitAction=reboot`` on
+    ``jasper-outputd.service`` turns a format flip into a REBOOT in the middle of
+    an install. The installer's core bounce releases the lane first when this
+    returns a change.
+
+    Both sides come from reconciler-owned env, never from a CamillaDSP config
+    file, and that is the point: install re-renders the flat cutover config (and
+    later regenerates the sound graph) BEFORE the bounce, so a config file read at
+    bounce time can already show the NEW width while the running CamillaDSP still
+    holds the lane at the old one — a stale read in the one direction that
+    matters. ``outputd.env`` is only written by the audio-hardware reconciler,
+    which runs AFTER the release, so at probe time it still names the width the
+    RUNNING outputd successfully opened, i.e. the width the lane is actually
+    locked at.
+
+    - *current*: ``JASPER_OUTPUTD_CONTENT_FORMAT`` from ``outputd.env``. Absent,
+      empty, or unreadable reads as ``S16_LE`` — outputd's own documented default
+      for that env (``config.rs``), which is what every pre-flip box ran.
+    - *next*: :func:`jasper.fanin_coupling.content_lane_format_for_coupling` for
+      the persisted coupling — the exact value the reconciler is about to write.
+
+    Deliberately an EQUALITY check, never a width ranking — see
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``. A ring-coupled box
+    answers ``None`` on both sides of the flip (the coupling forces the ring's own
+    narrow width, and such a box's outputd never opens an ALSA content lane at
+    all), so it pays no churn.
+    """
+
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import content_lane_format_for_coupling
+
+    outputd = read_env_file_state(outputd_env_path)
+    current = str(outputd.values.get(OUTPUTD_CONTENT_FORMAT_KEY, "") or "").strip()
+    if not current:
+        current = OUTPUTD_DEFAULT_CONTENT_FORMAT
+    upcoming = content_lane_format_for_coupling(
+        read_persisted_coupling(fanin_env_path)
+    )
+    if current == upcoming:
+        return None
+    return (current, upcoming)
 
 
 def build_audio_runtime_plan_from_system(
