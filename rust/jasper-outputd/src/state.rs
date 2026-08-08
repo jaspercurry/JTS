@@ -2458,7 +2458,10 @@ mod tests {
     fn snapshot_json_echoes_the_declared_dac_edge_format_before_the_sink_opens() {
         // The chip-AEC alignment identity reads dac.format out of STATUS, so a
         // declared S32_LE edge (the InnoMaker HiFi AMP Pro) must reach the wire
-        // verbatim — NOT collapse to outputd's own S16 internal program format.
+        // verbatim — never substituted by some other width outputd happens to
+        // know about. (Its internal program is `ProgramSample`/i32 and has no
+        // ALSA format at all, so there is nothing here for the declaration to
+        // collapse to; this asserts the declaration is echoed, not derived.)
         // No sink has opened here (the fake backend never opens one), so the
         // declaration is all outputd knows.
         let state = OutputdState::new(&Config {

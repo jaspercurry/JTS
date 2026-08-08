@@ -65,6 +65,8 @@ use std::os::fd::RawFd;
 
 use jasper_tts_protocol::loudness::Biquad;
 
+use crate::types::ProgramSample;
+
 /// Sample rate of the round-trip lane. Pinned to the SNAPFIFO stream
 /// format (48000:16:2) — the FIFO never carries any other rate, so the
 /// sub low-pass / mains high-pass coefficients can be precomputed
@@ -265,11 +267,14 @@ impl ChannelPick {
     }
 
     /// Clip-safe mono average of one interleaved-stereo frame: (L+R)/2 in
-    /// i32 then truncate to i16 — the same −6.02 dB sum `Mono` uses, so a
-    /// full-scale-correlated pair stays full scale with no overflow.
+    /// i64 then narrow to the spine width — the same −6.02 dB sum `Mono` uses,
+    /// so a full-scale-correlated pair stays full scale with no overflow.
+    ///
+    /// i64, not i32: two i32 samples sum past the i32 rail, and a wrap there
+    /// would turn a loud correlated pair into full-scale opposite polarity.
     #[inline]
-    fn mono_avg(frame: &[i16]) -> i16 {
-        (((frame[0] as i32) + (frame[1] as i32)) / 2) as i16
+    fn mono_avg(frame: &[ProgramSample]) -> ProgramSample {
+        (((frame[0] as i64) + (frame[1] as i64)) / 2) as ProgramSample
     }
 
     /// Apply the pick in place to one interleaved-stereo period.
@@ -277,7 +282,7 @@ impl ChannelPick {
     /// Test-only wrapper for cases that exercise channel picking without
     /// the optional mains high-pass.
     #[cfg(test)]
-    fn apply(self, period: &mut [i16], sub_filter: Option<&mut Lr4LowPass>) {
+    fn apply(self, period: &mut [ProgramSample], sub_filter: Option<&mut Lr4LowPass>) {
         self.apply_with_main_highpass(period, sub_filter, None);
     }
 
@@ -288,7 +293,7 @@ impl ChannelPick {
     /// mono+LP-or-silence; the HP env is ignored there by construction.
     fn apply_with_main_highpass(
         self,
-        period: &mut [i16],
+        period: &mut [ProgramSample],
         sub_filter: Option<&mut Lr4LowPass>,
         main_highpass: Option<&mut [Lr4HighPass; 2]>,
     ) {
@@ -329,10 +334,13 @@ impl ChannelPick {
                     // Clip-safe mono sum first (unity), then LP it in f64.
                     let mono = Self::mono_avg(frame) as f64;
                     let lp = filter.process(mono);
-                    // Saturate to i16 — the LP passband is unity and the
-                    // input is already ≤ full scale, so this only guards
-                    // the tiny biquad transient ripple at a step edge.
-                    let s = lp.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+                    // Saturate to the spine's rails — the LP passband is unity
+                    // and the input is already ≤ full scale, so this only guards
+                    // the tiny biquad transient ripple at a step edge. f64 was
+                    // already the filter's arithmetic; it now also has to CARRY
+                    // the sample, which is exactly why the spine's float math is
+                    // f64 and not f32 (a 24-bit mantissa cannot hold an i32).
+                    let s = clamp_to_spine(lp);
                     frame[0] = s;
                     frame[1] = s;
                 }
@@ -343,11 +351,24 @@ impl ChannelPick {
             for frame in period.chunks_exact_mut(2) {
                 let left = filters[0].process(frame[0] as f64);
                 let right = filters[1].process(frame[1] as f64);
-                frame[0] = left.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
-                frame[1] = right.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+                frame[0] = clamp_to_spine(left);
+                frame[1] = clamp_to_spine(right);
             }
         }
     }
+}
+
+/// Round and saturate one f64 filter output back to a program sample.
+///
+/// The biquads work in f64 and their outputs can ring a hair past the input's
+/// range at a step edge; this is the one place that lands them back on the
+/// spine. Named rather than inlined three times so the rounding and the rails
+/// have a single author.
+#[inline]
+fn clamp_to_spine(value: f64) -> ProgramSample {
+    value
+        .round()
+        .clamp(ProgramSample::MIN as f64, ProgramSample::MAX as f64) as ProgramSample
 }
 
 /// Pure byte-stream → period assembler with a bounded staging buffer.
@@ -393,9 +414,16 @@ impl PeriodAssembler {
         self.staging.len() / self.period_bytes
     }
 
-    /// Pop one period into `out` (i16 interleaved). Returns false when a
-    /// full period is not staged. `out.len() * 2 == period_bytes`.
-    fn pop_period(&mut self, out: &mut [i16]) -> bool {
+    /// Pop one period into `out`, widening the wire's S16 samples onto the
+    /// program spine. Returns false when a full period is not staged.
+    /// `out.len() * 2 == period_bytes`.
+    ///
+    /// The FIFO itself stays **S16 by contract** (D8): the producer is
+    /// snapclient, an external process on a documented `48000:16:2` wire, so
+    /// `period_bytes` remains 2 bytes per sample and this is an S16 INGRESS into
+    /// the spine — the same widen the ALSA content lane performs, at a different
+    /// door.
+    fn pop_period(&mut self, out: &mut [ProgramSample]) -> bool {
         debug_assert_eq!(out.len() * 2, self.period_bytes);
         if self.staging.len() < self.period_bytes {
             return false;
@@ -404,7 +432,7 @@ impl PeriodAssembler {
             .iter_mut()
             .zip(self.staging[..self.period_bytes].chunks_exact(2))
         {
-            *sample = i16::from_le_bytes([bytes[0], bytes[1]]);
+            *sample = jasper_resampler::widen_i16_to_i32(i16::from_le_bytes([bytes[0], bytes[1]]));
         }
         self.staging.drain(..self.period_bytes);
         true
@@ -575,7 +603,7 @@ impl DacContentSource {
     /// when `out` now holds round-trip audio; false means the caller
     /// must fill `out` from the DIRECT content path for this period
     /// (inv-B — never silence). Never blocks.
-    pub fn try_fill_period(&mut self, out: &mut [i16]) -> bool {
+    pub fn try_fill_period(&mut self, out: &mut [ProgramSample]) -> bool {
         self.open_if_needed();
         self.drain_available();
 
@@ -649,7 +677,7 @@ impl DacContentSource {
     /// mono sum and runs the LR4 low-pass, exactly as the FIFO path does.
     /// The DAC loop calls this on every fallback period; only `Sub`
     /// changes the buffer.
-    pub fn apply_pick_to_fallback_period(&mut self, period: &mut [i16]) {
+    pub fn apply_pick_to_fallback_period(&mut self, period: &mut [ProgramSample]) {
         if matches!(self.channel, ChannelPick::Sub(_)) || self.main_highpass.is_some() {
             self.channel.apply_with_main_highpass(
                 period,
@@ -774,6 +802,17 @@ mod tests {
         samples.iter().flat_map(|s| s.to_le_bytes()).collect()
     }
 
+    /// One S16 wire sample at the program spine's scale — what `pop_period`
+    /// now yields, because the FIFO's S16 wire is an ingress into the spine.
+    fn w(sample: i16) -> ProgramSample {
+        jasper_resampler::widen_i16_to_i32(sample)
+    }
+
+    /// A whole period of wire samples at the spine's scale.
+    fn wv(samples: &[i16]) -> Vec<ProgramSample> {
+        samples.iter().copied().map(w).collect()
+    }
+
     #[test]
     fn assembler_reassembles_periods_across_unaligned_pushes() {
         // 2-frame periods (4 samples, 8 bytes). Push split mid-sample.
@@ -785,12 +824,28 @@ mod tests {
         assert_eq!(a.staged_periods(), 1);
         a.push_bytes(&bytes[9..]);
 
-        let mut out = [0i16; 4];
+        let mut out = [0 as ProgramSample; 4];
         assert!(a.pop_period(&mut out));
-        assert_eq!(out, [100, -100, 2000, -2000]);
+        assert_eq!(out.to_vec(), wv(&[100, -100, 2000, -2000]));
         assert!(a.pop_period(&mut out));
-        assert_eq!(out, [7, 8, 9, 10]);
+        assert_eq!(out.to_vec(), wv(&[7, 8, 9, 10]));
         assert!(!a.pop_period(&mut out)); // drained
+    }
+
+    #[test]
+    fn assembler_widens_the_s16_wire_onto_the_spine_losslessly() {
+        // The FIFO stays a `48000:16:2` snapclient wire (D8): `period_bytes` is
+        // still 2 bytes per sample, and this is where those bytes become spine
+        // samples. Full scale both signs must survive the door.
+        let mut a = PeriodAssembler::new(8);
+        a.push_bytes(&le_bytes(&[i16::MAX, i16::MIN, 0, -1]));
+        let mut out = [0 as ProgramSample; 4];
+        assert!(a.pop_period(&mut out));
+        assert_eq!(out, [0x7FFF_0000, ProgramSample::MIN, 0, -0x0001_0000]);
+        // And it is reversible: the wire's bytes are recoverable exactly.
+        let mut back = [0i16; 4];
+        crate::types::narrow_period(&out, &mut back).unwrap();
+        assert_eq!(back, [i16::MAX, i16::MIN, 0, -1]);
     }
 
     #[test]
@@ -805,9 +860,9 @@ mod tests {
         }
         assert_eq!(a.staged_periods(), MAX_STAGED_PERIODS);
         assert_eq!(a.overflow_dropped_periods, 2);
-        let mut out = [0i16; 4];
+        let mut out = [0 as ProgramSample; 4];
         assert!(a.pop_period(&mut out));
-        assert_eq!(out, [2, 2, 2, 2]); // periods 0 and 1 were dropped
+        assert_eq!(out.to_vec(), wv(&[2, 2, 2, 2])); // periods 0 and 1 dropped
     }
 
     // ---------- pure: FallbackPolicy ----------
@@ -880,25 +935,46 @@ mod tests {
 
     #[test]
     fn channel_pick_left_right_duplicate_and_mono_averages_clip_safe() {
-        let mut p = [100i16, -200, 1000, 2000];
+        let mut p = wv(&[100, -200, 1000, 2000]);
         ChannelPick::Left.apply(&mut p, None);
-        assert_eq!(p, [100, 100, 1000, 1000]);
+        assert_eq!(p, wv(&[100, 100, 1000, 1000]));
 
-        let mut p = [100i16, -200, 1000, 2000];
+        let mut p = wv(&[100, -200, 1000, 2000]);
         ChannelPick::Right.apply(&mut p, None);
-        assert_eq!(p, [-200, -200, 2000, 2000]);
+        assert_eq!(p, wv(&[-200, -200, 2000, 2000]));
 
-        let mut p = [100i16, -200, i16::MAX, i16::MAX];
+        let mut p = wv(&[100, -200, i16::MAX, i16::MAX]);
         ChannelPick::Mono.apply(&mut p, None);
-        assert_eq!(p[0], -50);
-        assert_eq!(p[1], -50);
+        assert_eq!(p[0], w(-50));
+        assert_eq!(p[1], w(-50));
         // Full-scale L==R averages back to full scale, no overflow.
-        assert_eq!(p[2], i16::MAX);
-        assert_eq!(p[3], i16::MAX);
+        assert_eq!(p[2], w(i16::MAX));
+        assert_eq!(p[3], w(i16::MAX));
 
-        let mut p = [1i16, 2, 3, 4];
+        let mut p = wv(&[1, 2, 3, 4]);
         ChannelPick::Stereo.apply(&mut p, None);
-        assert_eq!(p, [1, 2, 3, 4]);
+        assert_eq!(p, wv(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn mono_average_cannot_overflow_at_the_spine_rails() {
+        // The i64 accumulator's reason to exist: two i32 samples sum past the
+        // i32 rail. In i32 this wraps — a correlated full-scale pair would come
+        // out full-scale OPPOSITE polarity, the loudest defect a mono fold can
+        // produce. The old i16 version had the same argument one width down.
+        let mut p = [ProgramSample::MAX, ProgramSample::MAX];
+        ChannelPick::Mono.apply(&mut p, None);
+        assert_eq!(p, [ProgramSample::MAX, ProgramSample::MAX]);
+
+        let mut p = [ProgramSample::MIN, ProgramSample::MIN];
+        ChannelPick::Mono.apply(&mut p, None);
+        assert_eq!(p, [ProgramSample::MIN, ProgramSample::MIN]);
+
+        // And the -6.02 dB sum of an anti-correlated full-scale pair is silence,
+        // not a wrap to a rail.
+        let mut p = [ProgramSample::MAX, ProgramSample::MIN];
+        ChannelPick::Mono.apply(&mut p, None);
+        assert_eq!(p, [0, 0]);
     }
 
     // ---------- pure: LR4 low-pass (the dumb-sub filter) ----------
@@ -1032,15 +1108,27 @@ mod tests {
 
     /// Run a Sub apply over `frames` frames of a steady stereo sine and
     /// return the per-output-channel sample buffers (ch0, ch1).
-    fn sub_apply_run(corner_hz: f64, freq: f64, frames: usize) -> (Vec<i16>, Vec<i16>) {
+    ///
+    /// The signal is the SAME amplitude as before, expressed at the spine's
+    /// scale. Every amplitude threshold in the tests below is likewise written
+    /// `w(x)` — and that is a derivation, not a blind rescale: an LR4 biquad
+    /// cascade is LINEAR, so its attenuation at a given frequency is a ratio,
+    /// independent of the units the samples are counted in. A threshold stated as
+    /// a fraction of the input amplitude therefore transfers exactly, and `w(x)`
+    /// is that same fraction at the new width.
+    fn sub_apply_run(
+        corner_hz: f64,
+        freq: f64,
+        frames: usize,
+    ) -> (Vec<ProgramSample>, Vec<ProgramSample>) {
         let mut filter = Lr4LowPass::new(corner_hz);
         let pick = ChannelPick::Sub(corner_hz);
-        let amp = 10_000.0;
+        let amp = f64::from(w(10_000));
         let mut ch0 = Vec::with_capacity(frames);
         let mut ch1 = Vec::with_capacity(frames);
         for i in 0..frames {
             let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            let s = (amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16;
+            let s = (amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as ProgramSample;
             // L == R so the clip-safe mono sum is the input amplitude.
             let mut period = [s, s];
             pick.apply(&mut period, Some(&mut filter));
@@ -1048,6 +1136,12 @@ mod tests {
             ch1.push(period[1]);
         }
         (ch0, ch1)
+    }
+
+    /// Peak magnitude over a settled tail, in i64 so `abs()` cannot overflow at
+    /// `ProgramSample::MIN` (at i32 that is a real panic, not a theoretical one).
+    fn settled_peak(v: &[ProgramSample], from: usize) -> i64 {
+        v[from..].iter().map(|&s| i64::from(s).abs()).max().unwrap()
     }
 
     #[test]
@@ -1066,30 +1160,33 @@ mod tests {
         // mono sum feeds both — only the LP differs.
         let (hi, _) = sub_apply_run(80.0, 4_000.0, 6_000);
         let (lo, _) = sub_apply_run(80.0, 40.0, 6_000);
-        let peak = |v: &[i16]| v[2_000..].iter().map(|s| s.unsigned_abs()).max().unwrap();
-        assert!(peak(&hi) < 200, "4 kHz leaked: peak {}", peak(&hi));
+        let hi_peak = settled_peak(&hi, 2_000);
+        let lo_peak = settled_peak(&lo, 2_000);
+        assert!(hi_peak < i64::from(w(200)), "4 kHz leaked: peak {hi_peak}");
         assert!(
-            peak(&lo) > 5_000,
-            "40 Hz wrongly attenuated: peak {}",
-            peak(&lo)
+            lo_peak > i64::from(w(5_000)),
+            "40 Hz wrongly attenuated: peak {lo_peak}"
         );
     }
 
     #[test]
-    fn sub_apply_full_scale_input_does_not_overflow_i16() {
+    fn sub_apply_full_scale_input_does_not_overflow_the_spine() {
         // Full-scale DC on both channels (mono sum = full scale). The LP
         // settles to full scale; the saturating cast must not wrap.
         let mut filter = Lr4LowPass::new(80.0);
         let pick = ChannelPick::Sub(80.0);
-        let mut last = [0i16; 2];
+        let mut last = [0 as ProgramSample; 2];
         for _ in 0..48_000 {
-            let mut period = [i16::MAX, i16::MAX];
+            let mut period = [ProgramSample::MAX, ProgramSample::MAX];
             pick.apply(&mut period, Some(&mut filter));
             last = period;
         }
-        // Settled near full scale, never wrapped to a negative value.
+        // Settled near full scale, never wrapped to a negative value. The settle
+        // slack is 4 S16 LSBs — the same FRACTION of full scale the pre-spine
+        // assertion allowed (it read `> i16::MAX - 4`), which is the right form
+        // for a tolerance on a linear filter's settled DC value.
         assert!(
-            last[0] > i16::MAX - 4,
+            last[0] > ProgramSample::MAX - 4 * w(1),
             "DC step did not settle to full scale: {last:?}"
         );
         assert_eq!(last[0], last[1]);
@@ -1101,12 +1198,12 @@ mod tests {
         let mut filter = Lr4LowPass::new(200.0); // higher corner = faster, larger overshoot
         let mut saw_clamp = false;
         for _ in 0..2_000 {
-            let mut period = [i16::MAX, i16::MAX];
+            let mut period = [ProgramSample::MAX, ProgramSample::MAX];
             pick.apply(&mut period, Some(&mut filter));
             // A positive step can never legitimately produce a negative
             // output here; a negative value would be an integer wrap.
             assert!(period[0] >= 0, "full-scale step wrapped to {}", period[0]);
-            if period[0] == i16::MAX {
+            if period[0] == ProgramSample::MAX {
                 saw_clamp = true;
             }
         }
@@ -1125,15 +1222,15 @@ mod tests {
         let freq = 120.0;
         let total = 1_024usize;
         let amp = 12_000.0;
-        let sample = |i: usize| -> i16 {
+        let sample = |i: usize| -> ProgramSample {
             let t = i as f64 / SUB_SAMPLE_RATE_HZ;
-            (amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16
+            w((amp * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16)
         };
 
         // One big buffer.
         let mut big_filter = Lr4LowPass::new(corner);
         let pick = ChannelPick::Sub(corner);
-        let mut big = vec![0i16; total * 2];
+        let mut big = vec![0 as ProgramSample; total * 2];
         for i in 0..total {
             big[2 * i] = sample(i);
             big[2 * i + 1] = sample(i);
@@ -1143,8 +1240,8 @@ mod tests {
         // Two halves through the same persistent filter.
         let mut split_filter = Lr4LowPass::new(corner);
         let half = total / 2;
-        let mut a = vec![0i16; half * 2];
-        let mut b = vec![0i16; half * 2];
+        let mut a = vec![0 as ProgramSample; half * 2];
+        let mut b = vec![0 as ProgramSample; half * 2];
         for i in 0..half {
             a[2 * i] = sample(i);
             a[2 * i + 1] = sample(i);
@@ -1168,7 +1265,7 @@ mod tests {
         // Catch the debug_assert panic so the test asserts the muting
         // behaviour on both debug and release builds.
         let result = std::panic::catch_unwind(|| {
-            let mut p = [i16::MAX, i16::MAX, 1234, 1234];
+            let mut p = [ProgramSample::MAX, ProgramSample::MAX, w(1234), w(1234)];
             pick.apply(&mut p, None);
             p
         });
@@ -1212,14 +1309,14 @@ mod tests {
         // A burst of high-frequency-ish full-scale content on the direct
         // (fallback) lane: alternating +/- full scale ≈ Nyquist content,
         // which the sub LP must crush.
-        let mut total_peak = 0i32;
+        let mut total_peak = 0i64;
         for blk in 0..200 {
-            let mut period = vec![0i16; (TEST_PERIOD_FRAMES as usize) * 2];
+            let mut period = vec![0 as ProgramSample; (TEST_PERIOD_FRAMES as usize) * 2];
             for (i, s) in period.iter_mut().enumerate() {
                 *s = if (blk + i) % 2 == 0 {
-                    i16::MAX
+                    ProgramSample::MAX
                 } else {
-                    i16::MIN
+                    ProgramSample::MIN
                 };
             }
             src.apply_pick_to_fallback_period(&mut period);
@@ -1229,12 +1326,13 @@ mod tests {
             }
             if blk >= 50 {
                 for &s in &period {
-                    total_peak = total_peak.max((s as i32).abs());
+                    // i64: `ProgramSample::MIN.abs()` panics at i32.
+                    total_peak = total_peak.max(i64::from(s).abs());
                 }
             }
         }
         assert!(
-            total_peak < 1_000,
+            total_peak < i64::from(w(1_000)),
             "sub fallback leaked near-Nyquist content: peak {total_peak}"
         );
     }
@@ -1247,7 +1345,7 @@ mod tests {
         let fifo = TempFifo::create("left-fallback");
         let mut src =
             DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
-        let original = vec![10i16, 20, 30, 40, 50, 60, 70, 80];
+        let original = wv(&[10, 20, 30, 40, 50, 60, 70, 80]);
         let mut period = original.clone();
         src.apply_pick_to_fallback_period(&mut period);
         assert_eq!(period, original, "non-Sub fallback must be untouched");
@@ -1286,19 +1384,19 @@ mod tests {
             Some(80.0),
         );
         let settle_blocks = (SUB_SAMPLE_RATE_HZ as usize / TEST_PERIOD_FRAMES as usize).max(1);
-        let mut settled_peak = 0i32;
+        let mut peak = 0i64;
         for blk in 0..(settle_blocks + 200) {
-            let mut period = vec![10_000i16; (TEST_PERIOD_FRAMES as usize) * 2];
+            let mut period = vec![w(10_000); (TEST_PERIOD_FRAMES as usize) * 2];
             src.apply_pick_to_fallback_period(&mut period);
             if blk >= settle_blocks {
                 for &s in &period {
-                    settled_peak = settled_peak.max((s as i32).abs());
+                    peak = peak.max(i64::from(s).abs());
                 }
             }
         }
         assert!(
-            settled_peak < 100,
-            "main HP fallback leaked DC bass: peak {settled_peak}"
+            peak < i64::from(w(100)),
+            "main HP fallback leaked DC bass: peak {peak}"
         );
     }
 
@@ -1351,7 +1449,7 @@ mod tests {
     /// source's open is always non-blocking). This helper enforces the
     /// ordering so no test can reintroduce that deadlock.
     fn connect_producer(src: &mut DacContentSource, fifo: &TempFifo) -> std::fs::File {
-        let mut out = vec![0i16; (TEST_PERIOD_FRAMES as usize) * 2];
+        let mut out = vec![0 as ProgramSample; (TEST_PERIOD_FRAMES as usize) * 2];
         // Prime the source's read end (a fallback period, no writer yet).
         let _ = src.try_fill_period(&mut out);
         debug_assert!(
@@ -1373,7 +1471,7 @@ mod tests {
             TEST_PERIOD_FRAMES,
             None,
         );
-        let mut out = vec![0i16; 8];
+        let mut out = vec![0 as ProgramSample; 8];
 
         // No writer: every period is served direct (inv-B), no panic,
         // no block, metrics honest.
@@ -1402,7 +1500,7 @@ mod tests {
         for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 2) {
             if src.try_fill_period(&mut out) {
                 served += 1;
-                assert_eq!(out, vec![7i16; 8]);
+                assert_eq!(out, vec![w(7); 8]);
             }
         }
         assert!(
@@ -1426,7 +1524,7 @@ mod tests {
             TEST_PERIOD_FRAMES,
             None,
         );
-        let mut out = vec![0i16; 8];
+        let mut out = vec![0 as ProgramSample; 8];
         for _ in 0..3 {
             assert!(!src.try_fill_period(&mut out));
         }
@@ -1440,7 +1538,7 @@ mod tests {
         let fifo = TempFifo::create("outage");
         let mut src =
             DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
-        let mut out = vec![0i16; 8];
+        let mut out = vec![0 as ProgramSample; 8];
         let one_period = le_bytes(&[3i16, -3, 3, -3, 3, -3, 3, -3]);
 
         // Healthy producer long enough to take over.
@@ -1453,7 +1551,7 @@ mod tests {
             if src.try_fill_period(&mut out) {
                 took_over = true;
                 // ChannelPick::Left duplicated ch0 onto both channels.
-                assert_eq!(out, vec![3i16; 8]);
+                assert_eq!(out, vec![w(3); 8]);
             }
         }
         assert!(took_over);
@@ -1517,7 +1615,7 @@ mod tests {
         );
         // Writer connected but silent: reads must be EAGAIN, not a hang.
         let _writer = connect_producer(&mut src, &fifo);
-        let mut out = vec![0i16; 8];
+        let mut out = vec![0 as ProgramSample; 8];
         let start = Instant::now();
         for _ in 0..10 {
             assert!(!src.try_fill_period(&mut out));

@@ -602,7 +602,8 @@ InnoMaker HiFi AMP Pro is still the sole profile-scoped
 S24_LE/S32_LE at continuous 44.1-192 kHz rates (a driver-advertisement
 limit, not a documented silicon one), so its registry profile declares an
 `S32_LE` final edge. outputd requests that format directly on the raw
-`hw:` open and widens its i16 program to i32 at the final write; because
+`hw:` open and writes its i32 program straight through at that edge (its
+internal program spine is i32, so an S32 edge converts nothing); because
 there is no conversion layer in front of the card, outputd's own
 client-edge readback is now the hardware-edge proof — the pinned-slave
 `plug` that used to own that guarantee is gone. That profile now declares a
@@ -729,7 +730,7 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-05 (InnoMaker HiFi AMP Pro's final-edge `plug` deleted
+Last verified: 2026-08-07 (the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
 from `jasper-asound-render.sh`, PR-4 format-foundation — every registered
 single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
 `type hw` alias, and the S32_LE hardware-edge proof moved from the render's

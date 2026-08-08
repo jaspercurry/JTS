@@ -34,7 +34,7 @@ use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
-use jasper_outputd::types::SampleFormat;
+use jasper_outputd::types::{narrow_period, widen_period, ProgramSample, SampleFormat};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -253,14 +253,14 @@ impl RuntimeAlsaSink {
         }
     }
 
-    fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
+    fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
         match self {
             Self::Single(sink) => sink.read_content_period(out),
             Self::Composite(sink) => sink.read_content_period(out),
         }
     }
 
-    fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
+    fn read_content_available(&mut self, out: &mut [ProgramSample]) -> Result<ContentRead> {
         match self {
             Self::Single(sink) => sink.read_content_available(out),
             Self::Composite(_) => {
@@ -271,7 +271,7 @@ impl RuntimeAlsaSink {
         }
     }
 
-    fn write_period(&mut self, samples: &[i16]) -> Result<()> {
+    fn write_period(&mut self, samples: &[ProgramSample]) -> Result<()> {
         match self {
             Self::Single(sink) => sink.write_dac_period(samples),
             Self::Composite(sink) => sink.write_dual_period(samples),
@@ -354,9 +354,27 @@ fn run_alsa(
     // the published reference is always stereo (a wide sink folds to L == R).
     let content_channels = sink.content_channels() as usize;
     let content_period_samples = (config.period_frames as usize) * content_channels;
-    let mut content_buf = vec![0i16; content_period_samples];
-    let mut content_read_buf = vec![0i16; content_period_samples];
-    let mut reference_buf = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
+    // The program spine: one i32 period, ingested wide and written wide, with
+    // the single quantization happening inside the sink at the DAC edge.
+    let mut content_buf = vec![0 as ProgramSample; content_period_samples];
+    let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
+    let mut reference_buf =
+        vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
+    // S16 scratch for the two content sources that are S16-NATIVE rather than
+    // ALSA lanes: the SHM ring (S16 wire by D5) and the rate-match bridge (the
+    // shared windowed-sinc resampler is an i16 algorithm). Both are alternatives
+    // to each other and to `direct`, so ONE buffer serves whichever is armed and
+    // the `direct` default — every live box — allocates nothing.
+    //
+    // Zero bytes on `direct` matters here specifically: outputd runs `mlockall`,
+    // so an unconditional allocation would be resident forever on hardware that
+    // never uses it.
+    let mut s16_lane_scratch: Vec<i16> = match config.content_bridge_mode {
+        ContentBridgeMode::Direct => Vec::new(),
+        ContentBridgeMode::ShmRing | ContentBridgeMode::RateMatch => {
+            vec![0i16; content_period_samples]
+        }
+    };
     let mut content_bridge = match config.content_bridge_mode {
         ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => None,
         ContentBridgeMode::RateMatch => {
@@ -487,7 +505,7 @@ fn run_alsa(
     // content path (FIFO and inv-B fallback periods alike — no level jump on a
     // starvation transition). <= 0 dB is enforced at config/control parse, so
     // this can only attenuate.
-    let zero_period = vec![0i16; content_period_samples];
+    let zero_period = vec![0 as ProgramSample; content_period_samples];
     let dac_negotiated = sink.dac_negotiated();
     let prime_periods = prime_periods(dac_negotiated.buffer_frames, dac_negotiated.period_frames);
     for _ in 0..prime_periods {
@@ -551,13 +569,20 @@ fn run_alsa(
                 // empty -> silence (read_period zero-fills). Never blocks, never
                 // errors at runtime (a ring fault degrades to silence + counters
                 // — StartLimitAction=reboot discipline).
-                src.read_period(&mut content_buf);
+                //
+                // The ring wire stays S16 (D5 — `jasper_ring::Geometry::
+                // validate_self` hard-rejects anything else), so this is another
+                // S16 INGRESS: read the slot at the wire's width, then widen onto
+                // the spine. Exact, like every other S16 door.
+                src.read_period(&mut s16_lane_scratch);
                 state.mark_shm_ring(src.metrics());
+                widen_period(&s16_lane_scratch, &mut content_buf)?;
             } else if let Some(bridge) = content_bridge.as_mut() {
                 read_content_bridge_period(
                     &mut sink,
                     bridge,
                     &mut content_read_buf,
+                    &mut s16_lane_scratch,
                     &mut content_buf,
                 )?;
                 state.mark_content_bridge(bridge.metrics());
@@ -586,7 +611,7 @@ fn run_alsa(
         if trim < 1.0 {
             // Before duck/mix/publish so the AEC reference carries the
             // trimmed program too (inv-A: reference == final DAC content).
-            apply_linear_gain(&mut content_buf, trim);
+            apply_linear_gain(&mut content_buf, f64::from(trim));
         }
         if let Some((core, bridge)) = tts.as_mut() {
             // The TTS-enabled path: voice mixes via the engine. Duck is
@@ -594,7 +619,7 @@ fn run_alsa(
             // carries the ducked program too (inv-A).
             bridge.drain(core);
             if let Some(gain) = bridge.content_duck_gain() {
-                apply_linear_gain(&mut content_buf, gain);
+                apply_linear_gain(&mut content_buf, f64::from(gain));
             }
             core.prepare_period_with_content(&content_buf);
             sink.write_period(core.output_period())?;
@@ -679,7 +704,10 @@ fn run_alsa(
     Ok(())
 }
 
-fn fold_reference_pairwise_composite(samples_4ch: &[i16], out_stereo: &mut [i16]) {
+fn fold_reference_pairwise_composite(
+    samples_4ch: &[ProgramSample],
+    out_stereo: &mut [ProgramSample],
+) {
     assert_eq!(samples_4ch.len() % 4, 0);
     assert_eq!(
         out_stereo.len(),
@@ -689,13 +717,22 @@ fn fold_reference_pairwise_composite(samples_4ch: &[i16], out_stereo: &mut [i16]
         .chunks_exact(4)
         .zip(out_stereo.chunks_exact_mut(2))
     {
-        out[0] = average_i16(frame[0], frame[1]);
-        out[1] = average_i16(frame[2], frame[3]);
+        out[0] = average_pair(frame[0], frame[1]);
+        out[1] = average_pair(frame[2], frame[3]);
     }
 }
 
-fn average_i16(a: i16, b: i16) -> i16 {
-    (((a as i32) + (b as i32)) / 2) as i16
+/// Clip-proof average of two program samples: accumulate in **i64**, halve, back
+/// to the spine.
+///
+/// Renamed from `average_i16` because the width moved. i64 is load-bearing at
+/// this width in a way it was not at i16: two i32 samples sum past the i32 rail,
+/// so an i32 accumulator would WRAP a correlated full-scale pair to the opposite
+/// rail — the loudest defect a fold can produce, and inaudible in a small
+/// fixture. `pairwise_composite_average_cannot_overflow_at_the_spine_rails`
+/// pins it.
+fn average_pair(a: ProgramSample, b: ProgramSample) -> ProgramSample {
+    (((a as i64) + (b as i64)) / 2) as ProgramSample
 }
 
 /// Fold an N-channel coherent-single DAC content period into the published
@@ -708,8 +745,19 @@ fn average_i16(a: i16, b: i16) -> i16 {
 /// clipped reference is uniquely harmful — the linear AEC cannot model the
 /// nonlinearity — so the conservative 1/N is deliberate; band-splitting keeps
 /// the real reference well below the N x worst case, so the conservatism costs
-/// no SNR. Accumulate in i32 to avoid intermediate overflow.
-fn fold_reference(content_nch: &[i16], channels: usize, out_stereo: &mut [i16]) {
+/// no SNR.
+///
+/// Accumulate in **i64** to avoid intermediate overflow. At the i32 program spine
+/// this is not a formality: N full-scale i32 lanes sum to N x the i32 rail, which
+/// overflows i32 for every N >= 2, so an i32 accumulator would wrap the exact
+/// worst case this function's 1/N scaling exists to survive. i64 holds N x i32
+/// for any channel count this daemon can be configured with (the fold is bounded
+/// by `content_channels`, at most 8 today, and i64 tolerates ~4e9 lanes).
+fn fold_reference(
+    content_nch: &[ProgramSample],
+    channels: usize,
+    out_stereo: &mut [ProgramSample],
+) {
     debug_assert!(channels >= 1);
     debug_assert_eq!(content_nch.len() % channels, 0);
     debug_assert_eq!(
@@ -720,30 +768,62 @@ fn fold_reference(content_nch: &[i16], channels: usize, out_stereo: &mut [i16]) 
         .chunks_exact(channels)
         .zip(out_stereo.chunks_exact_mut(CHANNELS as usize))
     {
-        let sum: i32 = frame.iter().map(|&s| s as i32).sum();
-        let mono = (sum / (channels as i32)) as i16;
+        let sum: i64 = frame.iter().map(|&s| s as i64).sum();
+        let mono = (sum / (channels as i64)) as ProgramSample;
         out[0] = mono;
         out[1] = mono;
     }
 }
 
-/// Count samples at digital full-scale (`i16::MIN`/`i16::MAX`) in a written
-/// period. outputd's active path is a passthrough (CamillaDSP owns gain), so a
-/// healthy commissioned config reports ~0; a full-scale sample is a saturation
-/// proxy meaning the content hit the ceiling upstream.
-fn count_full_scale_samples(samples: &[i16]) -> u32 {
+/// One S16 LSB expressed at the program spine's scale — the width of the
+/// full-scale detection band below.
+const SPINE_S16_LSB: ProgramSample = 1 << 16;
+
+/// Count samples at digital full-scale in a written period. outputd's active path
+/// is a passthrough (CamillaDSP owns gain), so a healthy commissioned config
+/// reports ~0; a full-scale sample is a saturation proxy meaning the content hit
+/// the ceiling upstream.
+///
+/// "Full scale" is a band one S16 LSB wide at each rail, NOT equality with the
+/// i32 rails, and that is the whole subtlety of moving this to the spine. A
+/// widened S16 full-scale sample is `0x7FFF_0000` — one S16 LSB BELOW `i32::MAX`
+/// — so an `s == i32::MAX` test would report 0 forever on every S16-content box
+/// and quietly restore the vacuously-green Stage-6 no-clip gate this function was
+/// written to fix. The band is symmetric by construction
+/// (`[i32::MAX - 65535, i32::MAX]` and `[i32::MIN, i32::MIN + 65535]`) and
+/// contains both the widened-S16 rails and the native-S32 rails, so the count is
+/// unchanged on today's fleet and correct once the lane goes wide. The nearest
+/// non-clipping S16 value, widened, is 65536 below the band and is not counted.
+fn count_full_scale_samples(samples: &[ProgramSample]) -> u32 {
     samples
         .iter()
-        .filter(|&&s| s == i16::MAX || s == i16::MIN)
+        .filter(|&&s| {
+            s >= ProgramSample::MAX - (SPINE_S16_LSB - 1)
+                || s <= ProgramSample::MIN + (SPINE_S16_LSB - 1)
+        })
         .count() as u32
 }
 
-/// In-place linear attenuation for the program duck (gain <= 1.0, so
-/// no clipping is possible; the cast truncation is inaudible at duck
-/// depths).
-fn apply_linear_gain(samples: &mut [i16], gain: f32) {
+/// In-place linear attenuation for the program duck and the pair-balance trim
+/// (gain <= 1.0, enforced at config/control parse, so no clipping is possible).
+///
+/// **f64, not f32 — this is not a style choice.** An f32 mantissa is 24 bits, so
+/// `sample as f32` on an i32 sample discards the bottom 7 bits BEFORE the
+/// multiply; every ducked or trimmed period would lose more resolution than the
+/// wide spine was introduced to keep, and it would lose it on the two paths a
+/// grouped member uses constantly. f64 represents every i32 exactly.
+///
+/// Rounds rather than truncating (the old i16 version's `as i16` cast truncated
+/// toward zero). At duck depths either is inaudible; rounding is chosen because
+/// the whole point of this change is that resolution is given up in exactly one
+/// place, and this is not that place. The clamp is belt: with gain <= 1.0 the
+/// product's magnitude cannot exceed the input's.
+fn apply_linear_gain(samples: &mut [ProgramSample], gain: f64) {
     for s in samples.iter_mut() {
-        *s = (*s as f32 * gain) as i16;
+        *s = ((*s as f64) * gain)
+            .round()
+            .clamp(ProgramSample::MIN as f64, ProgramSample::MAX as f64)
+            as ProgramSample;
     }
 }
 
@@ -754,11 +834,29 @@ fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
     ((buffer_frames / period_frames).saturating_sub(1)).max(1)
 }
 
+/// Drain the content lane into the rate-match bridge and render one period.
+///
+/// The bridge is the shared windowed-sinc resampler, an **i16 algorithm**
+/// (`jasper_resampler`'s `AudioRing`/`BlockResampler` are i16 throughout and
+/// widening them is explicitly out of this program's scope). So this helper is
+/// the one place on the content path that steps DOWN out of the spine and back
+/// up, and `s16_scratch` is where it happens.
+///
+/// That round trip is exact for every configuration this daemon will start in,
+/// and it is a config guard — not an argument — that makes it so:
+/// `Config::from_env` refuses `rate_match` on a non-S16 content lane, so the
+/// samples arriving in `read_buf` were themselves widened from S16 and narrow
+/// back to the identical bytes. Without that guard an S32 lane would be silently
+/// requantized here, which would be a SECOND quantization on the output path.
+///
+/// One scratch serves both halves: every `push_input` completes before
+/// `render_period` writes, so the borrows never overlap.
 fn read_content_bridge_period(
     sink: &mut RuntimeAlsaSink,
     bridge: &mut ContentBridge,
-    read_buf: &mut [i16],
-    out: &mut [i16],
+    read_buf: &mut [ProgramSample],
+    s16_scratch: &mut [i16],
+    out: &mut [ProgramSample],
 ) -> Result<()> {
     for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
         match sink.read_content_available(read_buf)? {
@@ -767,7 +865,8 @@ fn read_content_bridge_period(
                     break;
                 }
                 let samples = frames * (CHANNELS as usize);
-                bridge.push_input(&read_buf[..samples]);
+                narrow_period(&read_buf[..samples], &mut s16_scratch[..samples])?;
+                bridge.push_input(&s16_scratch[..samples]);
             }
             ContentRead::NoData => break,
             ContentRead::XrunRecovered => {
@@ -776,8 +875,8 @@ fn read_content_bridge_period(
             }
         }
     }
-    bridge.render_period(out);
-    Ok(())
+    bridge.render_period(s16_scratch);
+    widen_period(s16_scratch, out)
 }
 
 fn notify_ready(config: &Config) -> Result<()> {
@@ -809,6 +908,20 @@ struct ReferenceSideOutputs {
     chip_tx: Option<SyncSender<ChipRefPacket>>,
     chip_downsampler: Option<ChipRefDownsampler>,
     state: Arc<OutputdState>,
+    /// The reference taps' S16 staging — narrowed ONCE per period from the
+    /// program spine and shared by BOTH consumers.
+    ///
+    /// Both taps are **S16 by contract** (D8): the :9891 datagrams are what
+    /// `jasper-aec-bridge` parses as `period_frames * 2ch * 2 bytes`, and the
+    /// chip-reference leg is pinned 16 kHz / 2ch / S16_LE exactly by
+    /// `validate_chip_ref_geometry`. One staging buffer, one narrow, so the UDP
+    /// datagram and the chip-ref downsampler cannot diverge into two different
+    /// quantizations of the same reference — inv-A is that the reference IS the
+    /// final DAC content, and two roundings of it would be two references.
+    ///
+    /// Pre-sized at `new` from the configured period, so the audio path never
+    /// allocates.
+    narrow_staging: Vec<i16>,
 }
 
 impl ReferenceSideOutputs {
@@ -901,18 +1014,69 @@ impl ReferenceSideOutputs {
             eprintln!("event=outputd.chip_ref.desired pcm={pcm}");
         }
 
+        // Only pay for the tap staging when a tap will actually consume it. Same
+        // reasoning as `run_alsa`'s `s16_lane_scratch`: outputd runs `mlockall`,
+        // so an unconditional allocation is resident forever even on a box with
+        // no AEC consumer and no chip-reference leg. `publish` returns before
+        // touching this when both taps are absent, so the empty vec is never
+        // resized either. Decided BEFORE the struct literal, which moves both.
+        let narrow_staging = if udp_socket.is_some() || chip_tx.is_some() {
+            vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)]
+        } else {
+            Vec::new()
+        };
+
         Self {
             udp_socket,
             udp_target,
             chip_tx,
             chip_downsampler,
             state,
+            narrow_staging,
         }
     }
 
-    fn publish(&mut self, stereo_samples: &[i16], reference_sequence: u64) {
+    /// Publish one program period to the reference taps, narrowing to their S16
+    /// contract exactly once.
+    ///
+    /// A conversion failure here must NOT reach the audio path: the taps are side
+    /// outputs, and "a missing AEC consumer degrades that consumer, never the
+    /// speaker" is the rule this whole struct is built around (see `run_alsa`'s
+    /// construction comment). So a staging-length mismatch logs and skips the
+    /// period rather than propagating — see the comment at that branch for why it
+    /// is unreachable and why it is kept anyway.
+    fn publish(&mut self, stereo_samples: &[ProgramSample], reference_sequence: u64) {
+        if self.udp_socket.is_none() && self.chip_tx.is_none() {
+            return;
+        }
+        if self.narrow_staging.len() != stereo_samples.len() {
+            // Steady state never resizes: `new` sized this for the configured
+            // period, and the reference is always stereo whatever the sink's
+            // width. A geometry that ever differs reallocates once, then stays.
+            self.narrow_staging.resize(stereo_samples.len(), 0);
+        }
+        // Unreachable by construction: the resize immediately above makes the two
+        // lengths equal, and that is the ONLY thing `narrow_period` rejects. Kept
+        // rather than `expect()`-ed because this runs on outputd's realtime
+        // playout thread — a panic there is a dead speaker, while a skipped
+        // reference period only degrades the AEC consumer.
+        //
+        // It does NOT mark a UDP error. A length mismatch is not a UDP fault: it
+        // would fail both taps identically, so pinning it to `reference_udp` would
+        // point an operator at the wrong leg (and at a socket that is working).
+        // The `event=` line is the whole observable, deliberately.
+        if let Err(e) = narrow_period(stereo_samples, &mut self.narrow_staging) {
+            eprintln!(
+                "event=outputd.reference.narrow_failed action=skip_reference_period \
+                 samples={} staging={} detail={e:#}",
+                stereo_samples.len(),
+                self.narrow_staging.len(),
+            );
+            return;
+        }
+        // ONE staging slice feeds BOTH taps below — see the field's doc.
         if let (Some(sock), Some(target)) = (&self.udp_socket, self.udp_target) {
-            match sock.send_to(bytemuck_i16(stereo_samples), target) {
+            match sock.send_to(i16_bytes(&self.narrow_staging), target) {
                 Ok(_) => self.state.mark_reference_udp_active(true),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.state.mark_reference_udp_active(true);
@@ -928,7 +1092,7 @@ impl ReferenceSideOutputs {
                 .chip_downsampler
                 .as_mut()
                 .expect("chip ref downsampler is present when chip_tx is present")
-                .process(stereo_samples);
+                .process(&self.narrow_staging);
             if dual_mono.is_empty() {
                 return;
             }
@@ -993,6 +1157,17 @@ impl ChipRefDownsampler {
         })
     }
 
+    /// KNOWN ALLOCATION EXCEPTION on the playout thread — pre-existing, unchanged
+    /// by the i32 spine, and deliberately left alone here.
+    ///
+    /// This allocates one `Vec` per period (and `ChipRefPacket` then moves it to
+    /// the writer thread), so it is the one place `test_outputd_wiring.py`'s
+    /// no-allocation guard cannot cover. It costs a ~107-sample allocation per
+    /// period, and ONLY on boxes with the chip-reference leg armed
+    /// (`chip_ref_pcm` set) — the same boxes that already pay a channel send and a
+    /// second thread for it. Fixing it means giving the writer a pool or a
+    /// pre-sized ring, which changes the queue's ownership model: out of scope for
+    /// the spine widening, and it must not be silently folded in.
     fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
         let input_frames = stereo_samples.len() / (CHANNELS as usize);
         let output_frames =
@@ -1014,7 +1189,18 @@ impl ChipRefDownsampler {
     }
 }
 
-fn bytemuck_i16(samples: &[i16]) -> &[u8] {
+/// Reinterpret an S16 slice as its little-endian wire bytes.
+///
+/// **Deliberately monomorphic in `i16`, and that is the point.** It replaces a
+/// type-adaptive `bytemuck_i16<T>`-shaped helper whose name promised i16 while
+/// its body would happily accept `&[i32]` and emit TWICE the bytes — with the
+/// program spine now i32, calling that helper on a spine slice would have sent
+/// 2x-length datagrams to `jasper-aec-bridge` and written 2x bytes to the
+/// chip-ref tee, silently, with every counter still reporting success. The
+/// signature is the guard: a spine slice does not compile here.
+/// `the_reference_datagram_is_exactly_one_s16_stereo_period` pins the resulting
+/// wire length.
+fn i16_bytes(samples: &[i16]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             samples.as_ptr() as *const u8,
@@ -1414,7 +1600,7 @@ fn write_chip_ref_tee(tee: &mut Option<std::fs::File>, samples: &[i16], state: &
     let Some(file) = tee.as_mut() else {
         return;
     };
-    if let Err(e) = file.write_all(bytemuck_i16(samples)) {
+    if let Err(e) = file.write_all(i16_bytes(samples)) {
         eprintln!("event=outputd.chip_ref.tee.write_failed detail={e}");
         state.mark_chip_ref_tee_write_error();
         *tee = None;
@@ -1713,6 +1899,119 @@ mod tests {
         );
     }
 
+    /// **The wire guard that did not exist before the spine widened.**
+    ///
+    /// The :9891 reference datagram is what `jasper-aec-bridge` parses as one
+    /// stereo S16 period — `period_frames * 2 channels * 2 bytes`. Nothing in this
+    /// repo asserted its length, and the byte helper that produced it used to be
+    /// type-adaptive: handed the (now i32) program period it would have emitted
+    /// silently DOUBLE-length datagrams, with `mark_reference_udp_active(true)` and
+    /// every counter still reporting success. The AEC consumer would have
+    /// mis-framed every period and the only symptom would have been echo
+    /// cancellation quietly getting worse.
+    ///
+    /// Two layers now stop that: `i16_bytes` is monomorphic so a spine slice does
+    /// not compile, and this test binds a real loopback socket and measures what
+    /// `publish` actually put on the wire.
+    #[test]
+    fn the_reference_datagram_is_exactly_one_s16_stereo_period() {
+        const PERIOD_FRAMES: u32 = 128;
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("bind reference receiver");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let target = receiver.local_addr().unwrap();
+
+        let config = Config {
+            period_frames: PERIOD_FRAMES,
+            reference_udp_target: Some(target.to_string()),
+            // Keep this to the UDP tap alone: the chip-ref leg spawns a writer
+            // thread against a PCM that does not exist here.
+            chip_ref_pcm: None,
+            ..chip_ref_test_config()
+        };
+        let state = Arc::new(OutputdState::new(&config));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut refs = ReferenceSideOutputs::new(&config, &shutdown, Arc::clone(&state));
+
+        // A full-scale-ish program period at the SPINE's width.
+        let period: Vec<ProgramSample> = (0..(PERIOD_FRAMES as usize) * (CHANNELS as usize))
+            .map(|i| w((i as i16).wrapping_mul(211)))
+            .collect();
+        refs.publish(&period, 7);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let (len, _) = receiver.recv_from(&mut buf).expect("reference datagram");
+        let expected = (PERIOD_FRAMES as usize) * (CHANNELS as usize) * 2;
+        assert_eq!(
+            len, expected,
+            "the :9891 wire must stay one S16 stereo period: {len} bytes vs {expected}"
+        );
+        // Not merely the right LENGTH — the right SAMPLES. Decode the wire and
+        // compare against the period narrowed to S16, so a datagram that happened
+        // to be the correct size but carried the wrong bytes still fails.
+        let decoded: Vec<i16> = buf[..len]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let mut want = vec![0i16; period.len()];
+        narrow_period(&period, &mut want).unwrap();
+        assert_eq!(decoded, want);
+        // And the spine period the caller handed in is untouched (inv-A: the
+        // published reference and the DAC content are the same audio).
+        let unchanged: Vec<ProgramSample> = (0..(PERIOD_FRAMES as usize) * (CHANNELS as usize))
+            .map(|i| w((i as i16).wrapping_mul(211)))
+            .collect();
+        assert_eq!(period, unchanged);
+    }
+
+    /// The chip-reference tap must consume the SAME S16 staging the UDP tap does,
+    /// not a second narrowing of the spine — two roundings of one period would be
+    /// two different references, and inv-A says there is one.
+    #[test]
+    fn both_reference_taps_consume_one_narrowing_of_the_same_period() {
+        const PERIOD_FRAMES: u32 = 128;
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("bind reference receiver");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let config = Config {
+            period_frames: PERIOD_FRAMES,
+            reference_udp_target: Some(receiver.local_addr().unwrap().to_string()),
+            chip_ref_pcm: None,
+            ..chip_ref_test_config()
+        };
+        let state = Arc::new(OutputdState::new(&config));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut refs = ReferenceSideOutputs::new(&config, &shutdown, Arc::clone(&state));
+
+        // Values deliberately OFF the S16 grid — halfway between two S16 steps —
+        // so a second, differently-rounded narrowing would be visible.
+        let period: Vec<ProgramSample> = (0..(PERIOD_FRAMES as usize) * (CHANNELS as usize))
+            .map(|i| w(((i as i16) % 1000) * 17) + 32_768)
+            .collect();
+        refs.publish(&period, 1);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let (len, _) = receiver.recv_from(&mut buf).unwrap();
+        let decoded: Vec<i16> = buf[..len]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        // Feed the SAME staging through the chip downsampler and confirm its
+        // output is derivable from the wire bytes rather than from the spine.
+        let mut downsampler = ChipRefDownsampler::new(48_000, 16_000).unwrap();
+        let from_wire = downsampler.process(&decoded);
+        let mut fresh = ChipRefDownsampler::new(48_000, 16_000).unwrap();
+        let mut staging = vec![0i16; period.len()];
+        narrow_period(&period, &mut staging).unwrap();
+        assert_eq!(
+            from_wire,
+            fresh.process(&staging),
+            "the two taps must see identical S16 samples"
+        );
+    }
+
     fn chip_ref_test_config() -> Config {
         Config {
             backend: BackendMode::Alsa,
@@ -1838,57 +2137,166 @@ mod tests {
         handle.join().unwrap();
     }
 
+    /// One S16 sample at the program spine's scale.
+    fn w(sample: i16) -> ProgramSample {
+        jasper_resampler::widen_i16_to_i32(sample)
+    }
+
+    /// A slice of S16 values at the spine's scale.
+    fn wv(samples: &[i16]) -> Vec<ProgramSample> {
+        samples.iter().copied().map(w).collect()
+    }
+
     #[test]
     fn fold_reference_pairwise_composite_matches_dual_active_reference_contract() {
-        let mut out = vec![0; 4];
+        let mut out = vec![0 as ProgramSample; 4];
 
         fold_reference_pairwise_composite(
-            &[100, 300, 1000, 3000, -100, -300, -1000, -3000],
+            &wv(&[100, 300, 1000, 3000, -100, -300, -1000, -3000]),
             &mut out,
         );
 
-        assert_eq!(out, vec![200, 2000, -200, -2000]);
+        // Same monitor contract as before the spine widened — the pairwise child
+        // averages, now exact at the spine's resolution instead of rounded onto
+        // the S16 grid (these particular averages are whole numbers either way).
+        assert_eq!(out, wv(&[200, 2000, -200, -2000]));
+    }
+
+    #[test]
+    fn pairwise_composite_average_cannot_overflow_at_the_spine_rails() {
+        // Why `average_pair` accumulates in i64. Two i32 samples sum past the i32
+        // rail, so an i32 accumulator wraps a correlated full-scale pair to the
+        // OPPOSITE rail — a full-scale polarity flip in the AEC reference, which
+        // would both mis-train the canceller and be inaudible in a small fixture.
+        // Untestable at i16, where two samples always fit the i32 accumulator;
+        // this is a guard the widening created the need for.
+        let mut out = vec![0 as ProgramSample; 2];
+        fold_reference_pairwise_composite(
+            &[
+                ProgramSample::MAX,
+                ProgramSample::MAX,
+                ProgramSample::MIN,
+                ProgramSample::MIN,
+            ],
+            &mut out,
+        );
+        assert_eq!(out, vec![ProgramSample::MAX, ProgramSample::MIN]);
+
+        // Anti-correlated full scale folds to silence, not to a rail.
+        fold_reference_pairwise_composite(
+            &[
+                ProgramSample::MAX,
+                ProgramSample::MIN,
+                ProgramSample::MIN,
+                ProgramSample::MAX,
+            ],
+            &mut out,
+        );
+        assert_eq!(out, vec![0, 0]);
     }
 
     #[test]
     fn fold_reference_sums_lanes_to_mono_clip_proof() {
         // 8-channel content -> stereo reference: mono = sum/8, L == R.
-        let mut out = vec![0i16; 2 * 2]; // 2 frames, stereo
+        let mut out = vec![0 as ProgramSample; 2 * 2]; // 2 frames, stereo
         fold_reference(
-            &[
+            &wv(&[
                 800, 1600, 2400, 3200, 4000, 4800, 5600, 6400, // sum 28800 / 8 = 3600
                 -800, -1600, -2400, -3200, -4000, -4800, -5600, -6400, // -3600
-            ],
+            ]),
             8,
             &mut out,
         );
-        assert_eq!(out, vec![3600, 3600, -3600, -3600]);
+        assert_eq!(out, wv(&[3600, 3600, -3600, -3600]));
     }
 
     #[test]
     fn fold_reference_one_over_n_cannot_clip_at_full_scale() {
-        // The clip-proof claim: N full-scale lanes sum to N x, and 1/N keeps
-        // the result exactly at full-scale (never beyond) for any width.
+        // The clip-proof claim, RE-PROVEN at the spine's width: N full-scale
+        // lanes sum to N x, and 1/N keeps the result exactly at full-scale (never
+        // beyond) for any width. This is where the i64 accumulator earns its
+        // keep — at i32 the 8-lane sum is 8 x i32::MAX, which overflows i32 by
+        // three bits, so an i32 accumulator would wrap this exact worst case
+        // instead of surviving it.
         for channels in [2usize, 4, 8] {
-            let mut content = vec![i16::MAX; channels];
-            let mut out = vec![0i16; 2];
+            let mut content = vec![ProgramSample::MAX; channels];
+            let mut out = vec![0 as ProgramSample; 2];
             fold_reference(&content, channels, &mut out);
-            assert_eq!(out, vec![i16::MAX, i16::MAX], "max width {channels}");
+            assert_eq!(
+                out,
+                vec![ProgramSample::MAX, ProgramSample::MAX],
+                "max width {channels}"
+            );
 
-            content.fill(i16::MIN);
+            content.fill(ProgramSample::MIN);
             fold_reference(&content, channels, &mut out);
-            assert_eq!(out, vec![i16::MIN, i16::MIN], "min width {channels}");
+            assert_eq!(
+                out,
+                vec![ProgramSample::MIN, ProgramSample::MIN],
+                "min width {channels}"
+            );
         }
     }
 
     #[test]
     fn count_full_scale_samples_counts_saturation_only() {
-        assert_eq!(count_full_scale_samples(&[0, 100, -100, 32766, -32767]), 0);
+        // The pre-spine vectors, widened. The counts must be IDENTICAL, because
+        // every commissioned box feeds this function widened S16 content and the
+        // clip proxy must not change meaning under it.
         assert_eq!(
-            count_full_scale_samples(&[i16::MAX, 5, i16::MIN, i16::MAX, -3]),
+            count_full_scale_samples(&wv(&[0, 100, -100, 32766, -32767])),
+            0
+        );
+        assert_eq!(
+            count_full_scale_samples(&wv(&[i16::MAX, 5, i16::MIN, i16::MAX, -3])),
             3
         );
         assert_eq!(count_full_scale_samples(&[]), 0);
+    }
+
+    #[test]
+    fn count_full_scale_samples_sees_both_the_widened_s16_and_native_s32_rails() {
+        // The trap this band exists for: a widened S16 full-scale sample is
+        // `0x7FFF_0000`, one S16 LSB BELOW `i32::MAX`. An `s == i32::MAX` test
+        // would score every S16-content box 0 forever and quietly restore the
+        // vacuously-green no-clip gate.
+        assert_ne!(w(i16::MAX), ProgramSample::MAX, "the trap must be real");
+        assert_eq!(count_full_scale_samples(&[w(i16::MAX)]), 1);
+        assert_eq!(count_full_scale_samples(&[w(i16::MIN)]), 1);
+        // A native S32 lane's own rails count too (what PR-6 will feed it).
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MAX]), 1);
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MIN]), 1);
+
+        // And the band is TIGHT: the nearest non-clipping S16 value, widened, is
+        // one S16 LSB below the band and must not be counted. Without this the
+        // "counts saturation ONLY" half of the contract is unpinned.
+        assert_eq!(count_full_scale_samples(&[w(i16::MAX - 1)]), 0);
+        assert_eq!(count_full_scale_samples(&[w(i16::MIN + 1)]), 0);
+        // The band edges themselves, exactly: symmetric, one S16 LSB wide.
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MAX - 65_535]), 1);
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MAX - 65_536]), 0);
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MIN + 65_535]), 1);
+        assert_eq!(count_full_scale_samples(&[ProgramSample::MIN + 65_536]), 0);
+    }
+
+    #[test]
+    fn the_program_duck_gain_carries_the_low_bits_f32_would_have_dropped() {
+        // `apply_linear_gain` is f64 for the same mantissa reason `apply_gain` is:
+        // at unity it must be the exact identity even near full scale, which an
+        // f32 product cannot be.
+        let mut samples = [ProgramSample::MAX - 3, ProgramSample::MIN + 3, 12_345, 0];
+        let before = samples;
+        apply_linear_gain(&mut samples, 1.0);
+        assert_eq!(samples, before, "unity duck must be the identity");
+        // Show f32 would have failed it, so the guard is not vacuous.
+        let via_f32 = ((before[0] as f32) * 1.0f32).round() as i64;
+        assert_ne!(via_f32, i64::from(before[0]));
+
+        // A real duck attenuates and stays in range.
+        let mut samples = [ProgramSample::MAX, ProgramSample::MIN];
+        apply_linear_gain(&mut samples, 0.5);
+        assert_eq!(samples[0], (ProgramSample::MAX as f64 * 0.5).round() as i32);
+        assert_eq!(samples[1], (ProgramSample::MIN as f64 * 0.5).round() as i32);
     }
 
     #[test]

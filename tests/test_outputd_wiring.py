@@ -506,8 +506,13 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
 
 def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    # Anchored on the NAME plus its opening generic bracket, not the full
+    # parameter list: the reader gained a leading sample-type parameter when
+    # outputd's program spine widened to i32 (`<S, Read, Recover>`), and pinning
+    # the exact generic list made this test a tripwire on the type parameters
+    # rather than on the silence contract it is actually about.
     classifier = alsa_rs.split(
-        "fn read_content_pcm<Read, Recover>(", 1,
+        "fn read_content_pcm<", 1,
     )[1].split("fn zero_fill_content_period", 1)[0]
     zero_fill = alsa_rs.split(
         "fn zero_fill_content_period", 1,
@@ -522,7 +527,10 @@ def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     assert "read: ContentRead::NoData" in classifier
     # The shared silence helper maps that outcome to a full-period zero fill.
     assert "ContentRead::NoData | ContentRead::XrunRecovered => 0" in zero_fill
-    assert "out[(frames_read * channels)..].fill(0);" in zero_fill
+    # `S::default()` rather than a literal `0`: the helper is generic over the
+    # lane's sample width now, and digital silence is the type's zero at every
+    # width (widening zero is zero, so a zero-filled tail is unchanged audio).
+    assert "out[(frames_read * channels)..].fill(S::default());" in zero_fill
     # The paired-composite path must use the same helper rather than drift.
     assert "zero_fill_content_period(out, 4, classified.read)" in paired_sink
 
@@ -779,3 +787,173 @@ def test_outputd_tts_runtime_is_bonded_scoped():
         'push_kv_bool(&mut buf, "enabled", false);', tts_block
     )
     assert disabled > tts_block
+
+
+# ---------------------------------------------------------------------------
+# The playout thread's no-allocation contract.
+# ---------------------------------------------------------------------------
+
+# Functions that run once per DAC period on outputd's realtime playout thread,
+# and the tokens that would put an allocator call in one of them.
+#
+# Why this is a static source check and not a runtime one: the claim "the audio
+# path never allocates" is asserted in five separate doc comments in this crate
+# and was guarded by nothing. An adversarial review mutated
+# `prepare_from_buffered_content` to allocate a fresh Vec per period and ALL 199
+# tests still passed — a unit test cannot see an allocation that does not change
+# a value. The consequence is not theoretical: `jasper-outputd.service` runs
+# SCHED_FIFO at priority 35 with `LimitRTTIME=200000`, so a malloc that blocks on
+# another thread's arena lock is a priority inversion, then SIGXCPU, then
+# `StartLimitAction=reboot`.
+#
+# `.resize(` is deliberately NOT in this list: FOUR of these bodies use it
+# (everything except `prepare_from_buffered_content`) behind an `if len != wanted`
+# guard that is a no-op in steady state, which is the crate's documented pattern
+# for a buffer sized once at open. Adding it here would fail the guarded,
+# intended form.
+PERIOD_HOT_FUNCTIONS = [
+    # (source file, enclosing `impl` block or None, function signature prefix)
+    ("alsa_backend.rs", "impl AlsaBackend", "pub fn read_content_available("),
+    ("alsa_backend.rs", "impl AlsaBackend", "pub fn write_dac_period("),
+    ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn read_content_period("),
+    ("main.rs", "impl ReferenceSideOutputs", "fn publish("),
+    ("core.rs", "impl OutputCore", "fn prepare_from_buffered_content("),
+]
+
+ALLOCATING_TOKENS = [
+    "vec![",
+    "mem::take(",
+    ".to_vec()",
+    "Vec::with_capacity(",
+    # None of these appear in the five bodies today, so adding them is zero
+    # churn — they are here because they are the OTHER ways an allocation
+    # reaches this thread, and a guard that only knows the four shapes that
+    # happened to exist when it was written invites the next one in.
+    ".clone()",
+    ".collect()",
+    "format!(",
+    "String::from(",
+    "Box::new(",
+]
+
+
+def _non_comment_rust(text: str) -> str:
+    """Drop `//` line comments so a token NAMED in prose is not a violation."""
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("//")
+    )
+
+
+def _rust_fn_body(text: str, impl_block: str | None, signature: str) -> str:
+    """Return the brace-matched body of `signature`, searched inside `impl_block`.
+
+    Brace-matched rather than "until the next `fn`" so a nested closure or match
+    cannot truncate the body and hide a token past it.
+
+    **String literals are blanked before counting** (`_strip_strings`, shared with
+    `test_rust_runtime_panic_freedom.py`). Without that, one unbalanced brace in a
+    string — `let _brace = "}";` — closes the counter early and everything after it
+    escapes the scan. That is not hypothetical: an adversarial review used exactly
+    that line to smuggle a per-period `vec![` past this guard. Counting on the
+    stripped text and slicing the ORIGINAL keeps the returned body faithful while
+    making the count immune to literals.
+    """
+    start = 0
+    if impl_block is not None:
+        start = text.index(impl_block)
+    sig_at = text.index(signature, start)
+    open_at = text.index("{", sig_at)
+    # Blank string literals for COUNTING only; offsets are preserved because
+    # `_strip_strings` replaces each literal with `""`… which is shorter. So
+    # strip per-character instead, keeping length identical.
+    countable = _blank_string_literals(text)
+    depth = 0
+    for i in range(open_at, len(text)):
+        c = countable[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_at : i + 1]
+    raise AssertionError(f"unbalanced braces after {signature!r}")
+
+
+def _blank_string_literals(text: str) -> str:
+    """Replace every character inside a Rust string literal with a space,
+    preserving the text's LENGTH so offsets stay valid.
+
+    `_strip_strings` in `test_rust_runtime_panic_freedom.py` collapses literals to
+    `""`, which is the right shape for line-by-line scanning but shifts offsets —
+    and this function slices the original text by index. Same intent, offset-safe:
+    escapes are honoured so `"\\"` does not look like an unterminated literal.
+    """
+    out = list(text)
+    in_string = False
+    escaped = False
+    for i, c in enumerate(text):
+        if in_string:
+            out[i] = " "
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                out[i] = '"'
+                in_string = False
+        elif c == '"':
+            in_string = True
+    return "".join(out)
+
+
+def test_outputd_period_hot_functions_do_not_allocate():
+    """No per-period allocation in the functions the playout thread runs.
+
+    Every buffer these functions touch is sized once, at open, and reused. The
+    one known exception on this thread is `ChipRefDownsampler::process`, which
+    allocates a Vec per period on chip-reference-armed boxes only; it is
+    pre-existing, unchanged, annotated as such at its definition, and out of
+    scope here because fixing it changes the chip-ref queue's ownership model.
+    """
+    cache: dict[str, str] = {}
+    for filename, impl_block, signature in PERIOD_HOT_FUNCTIONS:
+        if filename not in cache:
+            cache[filename] = (
+                REPO / "rust" / "jasper-outputd" / "src" / filename
+            ).read_text()
+        body = _rust_fn_body(cache[filename], impl_block, signature)
+        # Guard against a silently-empty extraction: a body that matched nothing
+        # would pass every assertion below.
+        assert len(body) > 120, f"{signature} body looks truncated: {body!r}"
+        stripped = _non_comment_rust(body)
+        for token in ALLOCATING_TOKENS:
+            assert token not in stripped, (
+                f"{filename} {signature} allocates on the playout thread "
+                f"({token!r}). outputd runs SCHED_FIFO with LimitRTTIME; a "
+                f"per-period allocation is a priority-inversion -> SIGXCPU -> "
+                f"reboot path. Size the buffer at open and reuse it."
+            )
+
+
+def test_the_no_allocation_guard_can_actually_fail():
+    """The guard's own tripwire: prove it inspects a real body and would bite.
+
+    Without this, a broken extractor (wrong anchor, empty body) would leave the
+    guard above vacuously green — the exact failure mode it was written to close.
+    """
+    core_rs = (REPO / "rust" / "jasper-outputd" / "src" / "core.rs").read_text()
+    body = _rust_fn_body(core_rs, "impl OutputCore", "fn prepare_from_buffered_content(")
+    # A real body, positively identified by content the function must contain.
+    assert "mix_saturating(" in body
+    assert "observe_content_period(" in body
+    # And the token scan is live: injecting one into a copy trips it.
+    poisoned = _non_comment_rust(body.replace("let mix_stats", "let _x = vec![0i32; 8]; let mix_stats"))
+    assert any(token in poisoned for token in ALLOCATING_TOKENS)
+
+    # The known exception really is outside the guarded set, so the comment
+    # above is not describing a function this test silently also covers.
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    chip = _rust_fn_body(main_rs, "impl ChipRefDownsampler", "fn process(")
+    assert "Vec::with_capacity(" in chip
+    assert "KNOWN ALLOCATION EXCEPTION" in main_rs

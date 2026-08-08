@@ -43,6 +43,27 @@ ASSISTANT AUDIO
     -> DAC(s) / amp(s) / speaker(s)
 ```
 
+**Inside `jasper-outputd` the program is `i32`, and there is exactly one
+quantization on the output path: at the DAC edge.** Ingest widens an `S16_LE`
+content lane onto that spine as it reads (left-justified, `<< 16` — exact and
+reversible); the mixer, the reference folds, the round-trip `ChannelPick`, and
+the TTS gain all work at i32 (float math in **f64**, because f32's 24-bit
+mantissa cannot carry an i32 sample); and the final sink converts once, to
+whatever width the DAC registry declared. An `S32_LE` edge converts nothing at
+all — the spine is already its width. An `S16_LE` edge narrows round-to-nearest,
+which for S16 content at unity gain is bit-identical to the pre-spine path.
+Conversion primitives live in `jasper-resampler`
+(`widen_i16_to_i32` / `narrow_i32_to_i16_round`); the truncating
+`s32_high_word_to_s16` beside them is UAC2 *capture* semantics and must never
+appear on an output path. Every wire that crosses outputd's boundary keeps its own
+declared width, and converts exactly once, at that boundary. **Egress** narrows:
+the :9891 reference datagrams, the chip-reference leg, the composite children.
+**Ingress** widens: the S16 content lane, the SHM ring, the snapclient round-trip
+FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
+TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
+application in `assistant_source::read_period_into` rather than at enqueue, so a
+queued reply does not double its resident bytes under `mlockall`.
+
 The production paths converge inside `jasper-fanin`, pass through
 CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
 to the physical DAC. Active-output profiles keep the same TTS/cue
@@ -316,7 +337,11 @@ What exists:
   active-N-ch paths — there the content buffer env is real.
 - Lab bridge: the opt-in `rate_match` mode keeps the DAC as timing owner, drains
   `outputd_content_capture` into an explicit bounded ring, and renders
-  DAC-sized periods through a ppm-clamped windowed-sinc rate matcher.
+  DAC-sized periods through a ppm-clamped windowed-sinc rate matcher. That
+  resampler is an i16 algorithm, so outputd steps down out of its i32 spine and
+  back up around it; the round trip is exact only for an S16 content lane, and
+  `Config::from_env` refuses `rate_match` on a wider one rather than
+  requantizing silently ahead of the DAC edge.
   Use this for DAC/content-lane clock-slip validation only until it has
   passed long jts3 soaks; it is not a broad DAC abstraction.
   Default lab settings add 4096 frames of content latency (~85 ms at
@@ -367,7 +392,8 @@ What exists:
   S24_LE/S32_LE at continuous 44.1-192 kHz rates — a driver-advertisement
   limit, not a documented silicon one. outputd REQUESTS that declared format
   on the raw `hw:` PCM and fails closed unless the installed `hw_params`
-  report it, widening its i16 program to i32 at the final write only.
+  report it, and writes its i32 program spine straight through at that edge
+  (nothing is converted — an S32 edge is the spine's own width).
   Because there is no conversion layer between outputd and the card, its
   own client-edge readback IS the hardware-edge proof here — the plug that
   used to pin a `format S32_LE` slave (and own that guarantee instead) is
@@ -784,8 +810,10 @@ enum RuntimeAlsaSink {
 
 impl RuntimeAlsaSink {
     fn content_channels(&self) -> u16;
-    fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize>;
-    fn write_period(&mut self, samples_nch: &[i16]) -> Result<()>;
+    // `ProgramSample` = i32 since the wide-path spine landed; these read and
+    // write outputd's internal program, not a wire format.
+    fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize>;
+    fn write_period(&mut self, samples_nch: &[ProgramSample]) -> Result<()>;
     fn start(&self) -> Result<()>;
     fn dac_delay_frames(&self) -> Result<u64>;
     fn mark_runtime_status(&self, state: &OutputdState);
@@ -1384,9 +1412,11 @@ together.
 
 ### Mixer Semantics
 
-- Mix content and assistant audio with saturating i32 accumulation
-  followed by i16 clamp, matching `jasper-fanin`'s simple and
-  testable behavior.
+- Mix content and assistant audio with saturating accumulation one step wider
+  than the samples, then clamp back — matching `jasper-fanin`'s simple and
+  testable behavior. On outputd's i32 program spine that is an **i64**
+  accumulator clamped to the i32 rails (`mixer::mix_saturating`); fan-in's own
+  mixer is still i16 samples in an i32 accumulator.
 - Report clipped samples per period and per segment.
 - TTS/cues must be mixed after content ducking. In current production
   that happens in `jasper-fanin` before CamillaDSP crossover/protection.
@@ -1593,7 +1623,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-05 (InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-08-07 (outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the

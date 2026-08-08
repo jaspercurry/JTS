@@ -18,8 +18,10 @@ use crate::loudness::{
     linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
     HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
 };
-use crate::mixer::{mix_i16_saturating, sanitize_tts_gain_db};
-use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
+use crate::mixer::{mix_saturating, sanitize_tts_gain_db};
+use crate::types::{
+    narrow_period, AssistantProfile, AudioFormat, ProgramSample, SegmentKind, CHANNELS, SAMPLE_RATE,
+};
 use jasper_tts_protocol::VolumeContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +59,18 @@ pub struct OutputCore {
     /// Count of stale/invalid VolumeContext updates the engine rejected,
     /// surfaced in the snapshot like fan-in's `volume_context_rejected`.
     volume_context_rejected: u64,
-    content_buf: Vec<i16>,
-    assistant_buf: Vec<i16>,
-    output_buf: Vec<i16>,
+    content_buf: Vec<ProgramSample>,
+    assistant_buf: Vec<ProgramSample>,
+    output_buf: Vec<ProgramSample>,
+    /// S16 scratch for the loudness meter's content observation, sized once.
+    ///
+    /// `AssistantLoudness::observe_content_period` is shared with jasper-fanin,
+    /// whose mixer is i16, so its signature stays `&[i16]` — outputd narrows into
+    /// this buffer instead of changing a cross-daemon interface. The narrowing is
+    /// only ever read by a loudness METER (an LUFS estimate over ~3 s), never
+    /// written to a speaker, so the half-LSB it costs is far below the
+    /// measurement's own noise floor.
+    content_meter_buf: Vec<i16>,
     segment_writes: Vec<SegmentWrite>,
     pending_clipped_samples: u32,
     prepared_period_ready: bool,
@@ -107,6 +118,7 @@ impl OutputCore {
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
+            content_meter_buf: vec![0i16; period_samples],
             segment_writes: Vec::with_capacity(4),
             pending_clipped_samples: 0,
             prepared_period_ready: false,
@@ -116,7 +128,7 @@ impl OutputCore {
         }
     }
 
-    pub fn push_content_period(&mut self, samples: Vec<i16>) {
+    pub fn push_content_period(&mut self, samples: Vec<ProgramSample>) {
         assert_eq!(samples.len(), self.output_buf.len());
         self.content.push_period(samples);
     }
@@ -233,7 +245,7 @@ impl OutputCore {
         self.commit_prepared_period()
     }
 
-    pub fn step_with_content_period(&mut self, samples: &[i16]) -> PeriodReport {
+    pub fn step_with_content_period(&mut self, samples: &[ProgramSample]) -> PeriodReport {
         self.prepare_period_with_content(samples);
         self.commit_prepared_period()
     }
@@ -244,7 +256,7 @@ impl OutputCore {
         self.prepare_from_buffered_content()
     }
 
-    pub fn prepare_period_with_content(&mut self, samples: &[i16]) -> u32 {
+    pub fn prepare_period_with_content(&mut self, samples: &[ProgramSample]) -> u32 {
         self.assert_no_prepared_period();
         assert_eq!(samples.len(), self.content_buf.len());
         self.content_buf.copy_from_slice(samples);
@@ -260,7 +272,18 @@ impl OutputCore {
 
     fn prepare_from_buffered_content(&mut self) -> u32 {
         if !self.content_meter_paused {
-            self.loudness.observe_content_period(&self.content_buf);
+            // The shared (fan-in + outputd) loudness meter is i16; narrow into the
+            // pre-sized scratch rather than change a cross-daemon signature. See
+            // `content_meter_buf`. A length mismatch here cannot happen without a
+            // resize of `content_buf` that skipped the scratch, and the meter is
+            // observe-only, so degrade by SKIPPING this period's observation
+            // rather than failing the audio path: a missed LUFS sample changes a
+            // future TTS gain decision by a hair, while returning an error here
+            // would silence the speaker.
+            if narrow_period(&self.content_buf, &mut self.content_meter_buf).is_ok() {
+                self.loudness
+                    .observe_content_period(&self.content_meter_buf);
+            }
         }
         // The loudness engine is passed in so the mix applies mute + live
         // re-gain per period (the volume context was drained before this).
@@ -278,7 +301,7 @@ impl OutputCore {
         self.publish_loudness_snapshot();
 
         let mix_stats =
-            mix_i16_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
+            mix_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
         self.pending_clipped_samples = mix_stats.clipped_samples;
         self.prepared_period_ready = true;
         mix_stats.clipped_samples
@@ -341,7 +364,7 @@ impl OutputCore {
         &self.dac
     }
 
-    pub fn output_period(&self) -> &[i16] {
+    pub fn output_period(&self) -> &[ProgramSample] {
         &self.output_buf
     }
 
@@ -531,8 +554,45 @@ fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDe
 mod tests {
     use super::*;
 
-    fn stereo(value: i16, frames: usize) -> Vec<i16> {
+    /// One S16 sample at the program spine's scale.
+    fn w(value: i16) -> ProgramSample {
+        jasper_resampler::widen_i16_to_i32(value)
+    }
+
+    /// A period of PROGRAM (spine-width) samples, written as the S16 value it
+    /// represents so these fixtures read the way they did before the widening.
+    fn stereo(value: i16, frames: usize) -> Vec<ProgramSample> {
+        vec![w(value); frames * (CHANNELS as usize)]
+    }
+
+    /// A period of ASSISTANT/TTS samples — the wire is S16 and stays S16.
+    fn tts(value: i16, frames: usize) -> Vec<i16> {
         vec![value; frames * (CHANNELS as usize)]
+    }
+
+    /// One S16 LSB expressed at the spine's scale — the natural unit for "the
+    /// wide path changed the resolution, not the level".
+    const S16_LSB: ProgramSample = 1 << 16;
+
+    /// Assert every sample of `period` is the spine representation of the value
+    /// the pre-widening S16 path produced here, to within `lsbs` S16 LSBs.
+    ///
+    /// This is how the pre-widening expectations are CARRIED rather than
+    /// replaced: the old literal is the claim, and the tolerance is the honest
+    /// consequence of the change — the S16 path rounded each gained sample onto
+    /// the S16 grid, so it can differ from the wide path by at most half an S16
+    /// LSB per sample. A wrong gain, a wrong mix, or a wrong width all break it.
+    fn assert_period_matches_s16_level(period: &[ProgramSample], old_s16: i16, lsbs: i64) {
+        let want = w(old_s16) as i64;
+        let bound = lsbs * (S16_LSB as i64);
+        for (i, &sample) in period.iter().enumerate() {
+            let delta = (sample as i64) - want;
+            assert!(
+                delta.abs() <= bound,
+                "sample {i} = {sample} is {delta} spine LSBs from the widened \
+                 pre-i32 expectation {old_s16} ({want}); bound is {bound}"
+            );
+        }
     }
 
     fn authorize_unmuted_assistant(core: &mut OutputCore) {
@@ -547,14 +607,16 @@ mod tests {
         core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            stereo(5000, 4),
+            tts(5000, 4),
         );
 
         let report = core.step();
 
         assert_eq!(report.reference_sequence, 0);
         assert_eq!(report.clipped_samples, 0);
-        assert_eq!(core.dac().periods[0], stereo(10_706, 4));
+        // The pre-widening path produced 10_706 here (content 10_000 plus the
+        // assistant's 5000 at the decided -17 dB). Same level, finer grid.
+        assert_period_matches_s16_level(&core.dac().periods[0], 10_706, 1);
     }
 
     #[test]
@@ -562,11 +624,15 @@ mod tests {
         let mut core = OutputCore::new(2);
         authorize_unmuted_assistant(&mut core);
         core.push_content_period(stereo(30_000, 2));
-        core.enqueue_assistant_segment(None, SegmentKind::Cue, stereo(30_000, 2));
+        core.enqueue_assistant_segment(None, SegmentKind::Cue, tts(30_000, 2));
 
         let first = core.step();
         let second = core.step();
 
+        // Still all four samples: 30_000 of content leaves 2_767 S16 LSBs of
+        // headroom and the assistant contributes ~4_238 at the decided -17 dB,
+        // so the sum is past full scale at ANY width — the wide spine adds
+        // resolution below the rail, not headroom above it.
         assert_eq!(first.clipped_samples, 4);
         assert_eq!(first.reference_sequence, 0);
         assert_eq!(second.reference_sequence, 1);
@@ -579,7 +645,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            stereo(10_000, 2),
+            tts(10_000, 2),
         );
 
         core.step();
@@ -590,8 +656,13 @@ mod tests {
         // music-relative +1.5 LU offset does not apply without music. The fixed
         // max-gain ceiling is gone; this helper now scales with the same
         // decided segment gain that the runtime TTS bridge uses.
+        //
+        // The decision itself is width-independent — it is f32 dB arithmetic over
+        // the volume context and the observed content, and the content the meter
+        // observes is the narrowed spine, bit-identical to the old i16 buffer for
+        // widened S16 content. So the ledger gain is UNCHANGED, exactly.
         assert_eq!(core.ledger().segment(segment).gain, -17.0);
-        assert_eq!(core.dac().periods[0], stereo(1413, 2));
+        assert_period_matches_s16_level(&core.dac().periods[0], 1413, 1);
     }
 
     #[test]
@@ -600,15 +671,125 @@ mod tests {
 
         let report = core.step_with_content_period(&stereo(123, 2));
 
+        // No assistant audio: content reaches the sink EXACTLY, bit for bit.
+        // This is the pipeline half of the transparency proof — see
+        // `the_content_path_is_bit_transparent_from_spine_ingress_to_sink`.
         assert_eq!(report.frames_written, 2);
         assert_eq!(core.output_period(), stereo(123, 2).as_slice());
         assert_eq!(core.dac().periods[0], stereo(123, 2));
     }
 
+    /// **The transparency proof, pipeline level.** An S16 content period widened
+    /// at ingest passes observe → mix → output and narrows back to the SAME S16
+    /// bytes, sample for sample, with no assistant audio.
+    ///
+    /// Together with
+    /// `jasper_resampler::s16_widened_then_narrowed_is_bit_identical` (the
+    /// primitive round trip) this is the whole argument that the i32 spine ships
+    /// byte-identically on the S16-edge fleet: every stage between the two
+    /// conversions is exercised here, and the conversions themselves are exact.
+    /// The fixture covers full scale both signs, ±1 LSB, a ramp, and silence.
+    #[test]
+    fn the_content_path_is_bit_transparent_from_spine_ingress_to_sink() {
+        let mut fixture: Vec<i16> = vec![i16::MAX, i16::MIN, 1, -1, 0, 0, 32_766, -32_767];
+        fixture.extend((-32_768..=32_767).step_by(4_099).map(|v| v as i16));
+        // Whole stereo frames only.
+        if fixture.len() % 2 != 0 {
+            fixture.push(0);
+        }
+        let frames = fixture.len() / (CHANNELS as usize);
+
+        let mut core = OutputCore::new(frames as u32);
+        // A volume context is present and unmuted, so nothing about this run is
+        // a special "no assistant configured" shortcut — the mix stage runs.
+        authorize_unmuted_assistant(&mut core);
+
+        let mut wide = vec![0 as ProgramSample; fixture.len()];
+        crate::types::widen_period(&fixture, &mut wide).unwrap();
+        let report = core.step_with_content_period(&wide);
+
+        assert_eq!(report.clipped_samples, 0, "unity content must not clip");
+        let written = &core.dac().periods[0];
+        assert_eq!(
+            written, &wide,
+            "the spine period must reach the sink intact"
+        );
+
+        let mut back = vec![0i16; fixture.len()];
+        crate::types::narrow_period(written, &mut back).unwrap();
+        assert_eq!(
+            back, fixture,
+            "S16 content in -> S16 edge out must be bit-identical"
+        );
+    }
+
+    /// The loudness meter must actually SEE the spine's content, and see it as the
+    /// same samples the pre-spine i16 buffer carried.
+    ///
+    /// This exists because a mutation audit found the gap: deleting the content
+    /// observation from `prepare_from_buffered_content` outright left every other
+    /// test in the crate green. Nothing pinned the wiring — and the wide spine
+    /// added a NEW way for it to break, since the meter is now fed through a
+    /// narrowing scratch rather than the buffer itself. A silently blind meter
+    /// would mis-decide every assistant gain (too loud or too quiet replies) with
+    /// no failing test and no log line.
+    ///
+    /// The assertion is equality against the shared meter fed the SAME audio at
+    /// i16 directly, so it pins not just "the meter ran" but "the narrowing
+    /// delivered the right samples".
+    #[test]
+    fn the_content_meter_observes_the_spine_content_as_its_i16_equivalent() {
+        use crate::loudness::{AssistantLoudness, AssistantLoudnessConfig, MixStage};
+
+        // The short-term window is 3 s; step a 1 kHz tone through enough periods
+        // to fill it, then one more so the window is genuinely complete.
+        const PERIOD: u32 = 4_800; // 100 ms
+        const PERIODS: usize = 31;
+        let tone = |i: usize| -> i16 {
+            let t = (i as f64) / f64::from(SAMPLE_RATE);
+            (8_000.0 * (2.0 * std::f64::consts::PI * 1_000.0 * t).sin()) as i16
+        };
+
+        let mut core = OutputCore::new(PERIOD);
+        let mut reference = AssistantLoudness::new_with_stage(
+            AssistantLoudnessConfig::default(),
+            MixStage::PostDsp,
+        );
+
+        let mut frame = 0usize;
+        for _ in 0..PERIODS {
+            let mut i16_period = Vec::with_capacity((PERIOD as usize) * (CHANNELS as usize));
+            for _ in 0..PERIOD {
+                let s = tone(frame);
+                i16_period.push(s);
+                i16_period.push(s);
+                frame += 1;
+            }
+            let mut spine = vec![0 as ProgramSample; i16_period.len()];
+            crate::types::widen_period(&i16_period, &mut spine).unwrap();
+            // The reference meter gets the ORIGINAL i16; the core gets the spine.
+            reference.observe_content_period(&i16_period);
+            core.step_with_content_period(&spine);
+        }
+
+        let observed = core
+            .content_short_lufs()
+            .expect("the content meter must have observed audible content");
+        assert!(
+            observed.is_finite() && observed < 0.0 && observed > -60.0,
+            "implausible content loudness: {observed}"
+        );
+        assert_eq!(
+            Some(observed),
+            reference.content_short_lufs(),
+            "the narrowed spine must meter identically to the same audio at i16"
+        );
+    }
+
     #[test]
     fn pending_assistant_frames_tracks_queue_depth() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(100, 4));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, tts(100, 4));
 
         assert_eq!(core.pending_assistant_frames(), 4);
 
@@ -624,13 +805,13 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            stereo(5000, 2),
+            tts(5000, 2),
         );
 
         let clipped = core.prepare_period_with_content(&stereo(100, 2));
 
         assert_eq!(clipped, 0);
-        assert_eq!(core.output_period(), stereo(806, 2).as_slice());
+        assert_period_matches_s16_level(core.output_period(), 806, 1);
         assert_eq!(core.frames_written(), 0);
         assert!(core.dac().periods.is_empty());
         assert_eq!(core.ledger().segment(segment).written_frames, 0);
@@ -643,7 +824,7 @@ mod tests {
 
         assert_eq!(report.frames_written, 2);
         assert_eq!(report.reference_sequence, 0);
-        assert_eq!(core.dac().periods[0], stereo(806, 2));
+        assert_period_matches_s16_level(&core.dac().periods[0], 806, 1);
         assert_eq!(core.ledger().segment(segment).written_frames, 2);
         assert_eq!(
             core.ledger().segment(segment).status,
@@ -657,7 +838,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            stereo(1000, 96),
+            tts(1000, 96),
         );
 
         core.prepare_period();
@@ -679,7 +860,7 @@ mod tests {
     #[test]
     fn steady_state_reuses_segment_write_buffer_capacity() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(1000, 8));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, tts(1000, 8));
 
         core.step();
         let capacity = core.segment_write_capacity();
@@ -740,7 +921,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            stereo(1000, 96),
+            tts(1000, 96),
         );
 
         core.step();
@@ -803,13 +984,16 @@ mod tests {
             Some(profile(-41.0, -3.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
-        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 12));
+        core.append_assistant_audio_with_segment_gain(id, tts(8000, 12));
         core.end_assistant_segment(id);
 
         core.push_content_period(stereo(0, 4));
         core.step();
+        // At 0 dB the gain is exactly unity, so the widened wire sample reaches
+        // the sink EXACTLY — no tolerance needed, and the equality is the proof
+        // that the widen-then-gain order does not perturb an unattenuated reply.
         assert!(
-            core.dac().periods[0].iter().all(|&s| s == 8000),
+            core.dac().periods[0].iter().all(|&s| s == w(8000)),
             "unmuted assistant passes at full amplitude: {:?}",
             core.dac().periods[0]
         );
@@ -833,7 +1017,7 @@ mod tests {
         core.step();
         let unmuted = &core.dac().periods[2];
         assert!(
-            unmuted[0] > 0 && unmuted[0] < 8000,
+            unmuted[0] > 0 && unmuted[0] < w(8000),
             "unmute ramps from silence: {}",
             unmuted[0]
         );
@@ -841,7 +1025,7 @@ mod tests {
 
     #[test]
     fn post_dsp_live_volume_change_regains_queued_speech() {
-        use crate::loudness::{apply_gain_i16, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
+        use crate::loudness::{apply_gain, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
 
         const PERIOD: u32 = LIVE_VOLUME_RAMP_FRAMES; // ramp completes in one period
         let mut core = OutputCore::new(PERIOD);
@@ -860,12 +1044,12 @@ mod tests {
             Some(profile(-41.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
-        core.append_assistant_audio_with_segment_gain(id, stereo(8000, (PERIOD as usize) * 2));
+        core.append_assistant_audio_with_segment_gain(id, tts(8000, (PERIOD as usize) * 2));
         core.end_assistant_segment(id);
 
         core.push_content_period(stereo(0, PERIOD as usize));
         core.step();
-        assert!(core.dac().periods[0].iter().all(|&s| s == 8000));
+        assert!(core.dac().periods[0].iter().all(|&s| s == w(8000)));
 
         // Raise the room target +6 dB (envelope -41 → -35) mid-turn. Post-DSP
         // the downstream is ignored, so the mixer carries the full +6 dB.
@@ -873,16 +1057,39 @@ mod tests {
         core.push_content_period(stereo(0, PERIOD as usize));
         core.step();
         let regained = &core.dac().periods[1];
+        // "No step discontinuity at the ramp start" — the bound is RE-DERIVED at
+        // the new width, not the old i16 bound scaled. `GainRamp::retarget` sets
+        // step_linear = (target - current) / LIVE_VOLUME_RAMP_FRAMES, so the
+        // first frame's gain is 1 + (10^(6/20) - 1)/4800 ≈ 1 + 2.074e-4, and the
+        // sample moves by w(8000) * 2.074e-4 ≈ 1.087e5 spine LSBs ≈ 1.66 S16
+        // LSBs. Two S16 LSBs is that derivation plus rounding margin. (The old
+        // i16 assertion's bound of 4 was the same derivation at 1/65536 the
+        // scale: 8000 * 2.074e-4 ≈ 1.66, asserted as <= 4.)
+        let one_ramp_step = (f64::from(gain_db_to_linear(6.0)) - 1.0)
+            / f64::from(crate::loudness::LIVE_VOLUME_RAMP_FRAMES);
+        let derived_first_frame_delta = (f64::from(w(8000)) * one_ramp_step).abs();
         assert!(
-            (regained[0] - 8000).abs() <= 4,
+            derived_first_frame_delta < 2.0 * f64::from(S16_LSB),
+            "the derivation itself must fit the bound: {derived_first_frame_delta}"
+        );
+        assert!(
+            i64::from(regained[0] - w(8000)).abs() <= 2 * i64::from(S16_LSB),
             "ramp starts without a step discontinuity: {}",
             regained[0]
         );
-        let expected = apply_gain_i16(8000, gain_db_to_linear(6.0)) as i32;
-        let last = *regained.last().unwrap() as i32;
+        // The ramp completes on the period's LAST frame (PERIOD ==
+        // LIVE_VOLUME_RAMP_FRAMES, and `next_frame` assigns the exact target when
+        // the countdown hits zero), so the final sample is EXACTLY the target
+        // gain — the old `<= 2` slack is not needed at any width.
+        let expected = apply_gain(w(8000), gain_db_to_linear(6.0));
+        let last = *regained.last().unwrap();
+        assert_eq!(last, expected, "ramp reaches +6 dB louder exactly");
+        // Independent arithmetic on the same claim, so the line above cannot pass
+        // by both sides sharing one wrong gain: +6 dB of 8000 is ~15_962 in S16
+        // terms.
         assert!(
-            (last - expected).abs() <= 2,
-            "ramp reaches +6 dB louder: {last} vs {expected}"
+            last > w(15_900) && last < w(16_020),
+            "+6 dB of 8000 is ~15_962 in S16 terms: {last}"
         );
     }
 
@@ -907,7 +1114,7 @@ mod tests {
             Some(profile(-25.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, -16.0);
-        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 4));
+        core.append_assistant_audio_with_segment_gain(id, tts(8000, 4));
         // END arrives before the audio drains; the reference commits once the
         // audio finishes playing this period.
         core.end_assistant_segment(id);
@@ -941,7 +1148,7 @@ mod tests {
             SegmentKind::Assistant,
             Some(profile(-25.0, -20.0)),
         );
-        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 8));
+        core.append_assistant_audio_with_segment_gain(id, tts(8000, 8));
         core.end_assistant_segment(id);
 
         // First period unmuted, then mute before the reply finishes: a silenced

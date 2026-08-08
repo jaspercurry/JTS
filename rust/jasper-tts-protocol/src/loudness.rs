@@ -643,6 +643,33 @@ pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
     scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
+/// Apply a linear gain to one sample at outputd's i32 program-spine width, in
+/// **f64**.
+///
+/// The wide sibling of [`apply_gain_i16`], added rather than replacing it because
+/// `apply_gain_i16` is also imported by `jasper-fanin`, whose mixer is i16 —
+/// changing its signature would be a cross-daemon break for no benefit.
+///
+/// f64, not f32, and that is the entire reason this function exists separately
+/// instead of the caller reusing `apply_gain_i16`'s math at a wider type: an f32
+/// mantissa is 24 bits, so `sample as f32` on an i32 sample **discards the bottom
+/// 7 bits before the multiply even happens**. Every gain application would quietly
+/// throw away more resolution than the wide spine was introduced to keep. f64's
+/// 53-bit mantissa represents every i32 exactly.
+///
+/// The gain itself arrives as f32 (the loudness engine's `GainRamp` and the dB
+/// helpers are f32 throughout — a gain is a control value, not a sample, and its
+/// own precision was never the problem); it is widened here so the *product* is
+/// computed at f64.
+///
+/// Rounds to nearest and saturates at the spine's rails, matching
+/// [`apply_gain_i16`]'s shape so a reader comparing the two sees only the width
+/// change.
+pub fn apply_gain(sample: i32, gain_linear: f32) -> i32 {
+    let scaled = (sample as f64) * f64::from(gain_linear);
+    scaled.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
 /// The one snapshot of assistant-loudness state both daemons surface under
 /// `tts.assistant_loudness` in STATUS. fan-in derives it from its seqlock'd
 /// atomics; outputd derives it directly from the engine. The struct and its
@@ -1907,6 +1934,34 @@ mod tests {
         assert_eq!(apply_gain_i16(i16::MIN, 2.0), i16::MIN);
         assert_eq!(linear_to_db(0.0), MIN_TTS_GAIN_DB);
         assert!((gain_db_to_linear(-6.0) - 0.5011872).abs() < 0.000001);
+    }
+
+    #[test]
+    fn wide_gain_scales_and_saturates_at_the_i32_rails() {
+        assert_eq!(apply_gain(10_000 << 16, 0.5), 5000 << 16);
+        assert_eq!(apply_gain(i32::MAX, 2.0), i32::MAX);
+        assert_eq!(apply_gain(i32::MIN, 2.0), i32::MIN);
+        assert_eq!(apply_gain(0, 0.5), 0, "silence stays silent");
+        assert_eq!(apply_gain(12_345, 1.0), 12_345, "unity is the identity");
+    }
+
+    #[test]
+    fn wide_gain_carries_the_low_bits_f32_would_have_discarded() {
+        // The whole reason `apply_gain` exists beside `apply_gain_i16` instead of
+        // the caller reusing its math at a wider type. An f32 mantissa is 24
+        // bits, so `sample as f32` rounds an i32 to a 24-bit grid BEFORE the
+        // multiply; at unity gain that alone is a visible error near full scale.
+        // f64 is exact for every i32, so unity gain is the identity.
+        let sample = i32::MAX - 3; // 0x7FFF_FFFC — needs all 31 significant bits
+        assert_eq!(apply_gain(sample, 1.0), sample);
+        // Demonstrate the f32 path really does lose it, so the claim above is
+        // measured rather than asserted: this is what the naive widening of
+        // `apply_gain_i16`'s body would have produced.
+        let via_f32 = ((sample as f32) * 1.0f32).round() as i64;
+        assert_ne!(
+            via_f32, sample as i64,
+            "f32 must be shown to lose the low bits, else this guard is vacuous"
+        );
     }
 
     fn representative_sequence_decisions() -> Vec<AssistantGainDecision> {

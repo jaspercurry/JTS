@@ -30,9 +30,10 @@ use std::sync::Arc;
 
 use crate::ledger::SegmentId;
 use crate::loudness::{
-    apply_gain_i16, gain_db_to_linear, sanitize_tts_gain_db, AssistantGainDecision,
-    AssistantLoudness, GainRamp, MIN_TTS_GAIN_DB,
+    apply_gain, gain_db_to_linear, sanitize_tts_gain_db, AssistantGainDecision, AssistantLoudness,
+    GainRamp, MIN_TTS_GAIN_DB,
 };
+use crate::types::ProgramSample;
 use jasper_tts_protocol::VolumeContext;
 
 /// The playout facts captured when an assistant segment finishes rendering,
@@ -75,6 +76,15 @@ pub struct AssistantSource {
 
 struct AssistantSegment {
     id: SegmentId,
+    /// The TTS wire's own samples, kept at the wire's S16 width.
+    ///
+    /// Deliberately NOT widened at enqueue: the wire protocol
+    /// (`jasper_tts_protocol`) is S16 and shared with jasper-fanin, a queued
+    /// reply can be seconds long, and widening here would double the queue's
+    /// resident bytes under `mlockall` for no resolution gain — nothing between
+    /// the socket and here touches the samples. The widen happens once per
+    /// sample at the gain application in `read_period_into`, which is the first
+    /// stage that produces a spine sample at all.
     samples: Vec<i16>,
     cursor_samples: usize,
     /// Loudness-decided gain for this segment before any live adjustment.
@@ -151,9 +161,14 @@ impl AssistantSource {
     /// this call, so `muted` and the live residual are constant across the
     /// period; only the ramp advances per frame, exactly as fan-in's
     /// `mix_period` does.
+    ///
+    /// `out` is at the program spine's width: each S16 wire sample is widened and
+    /// gained in one step (`apply_gain` on the widened value, in f64), so the
+    /// gained result carries the full spine resolution instead of being rounded
+    /// back to an S16 grid before the mix.
     pub fn read_period_into(
         &mut self,
-        out: &mut [i16],
+        out: &mut [ProgramSample],
         writes: &mut Vec<SegmentWrite>,
         loudness: &AssistantLoudness,
         drained: &mut Vec<DrainedPlayback>,
@@ -218,7 +233,14 @@ impl AssistantSource {
                     return;
                 };
                 for (channel, slot) in frame.iter_mut().enumerate() {
-                    *slot = apply_gain_i16(front.samples[front.cursor_samples + channel], gain);
+                    // Widen the S16 wire sample into the spine, THEN gain it in
+                    // f64. Gaining first at i16 and widening after would round
+                    // every gained sample onto the S16 grid — the requantization
+                    // the wide spine exists to remove.
+                    let wide = jasper_resampler::widen_i16_to_i32(
+                        front.samples[front.cursor_samples + channel],
+                    );
+                    *slot = apply_gain(wide, gain);
                 }
                 front.cursor_samples += channels;
                 // Reference-completion telemetry: remember the effective gain
@@ -302,7 +324,7 @@ impl AssistantSource {
 }
 
 pub struct FakeDacSink {
-    pub periods: VecDeque<Vec<i16>>,
+    pub periods: VecDeque<Vec<ProgramSample>>,
     max_periods: Option<usize>,
 }
 
@@ -321,7 +343,7 @@ impl FakeDacSink {
         }
     }
 
-    pub fn write_period(&mut self, samples: &[i16]) {
+    pub fn write_period(&mut self, samples: &[ProgramSample]) {
         if self.max_periods == Some(0) {
             return;
         }

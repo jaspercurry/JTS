@@ -14,7 +14,9 @@ use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::types::{SampleFormat, CHANNELS, SAMPLE_RATE};
+use crate::types::{
+    narrow_period, widen_period, ProgramSample, SampleFormat, CHANNELS, SAMPLE_RATE,
+};
 
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 
@@ -174,15 +176,22 @@ struct ContentPcmReadSpec<'a> {
 /// content PCM contract. Keep the errno mapping, counters, and xrun recovery
 /// here so a new read outcome cannot drift between the two sinks. The caller
 /// still owns transport-specific zero-fill journaling.
-fn read_content_pcm<Read, Recover>(
-    out: &mut [i16],
+/// Generic over the SAMPLE TYPE because the content lane's width is now
+/// declared config: an `S16Le` lane reads through an `io_i16()` handle into an
+/// i16 staging buffer, an `S32Le` lane reads through `io_i32()` straight into the
+/// program period. Everything this function owns — the errno mapping, the
+/// counters, the xrun recovery, the journal line — is identical either way and
+/// must stay identical, which is exactly what one generic body guarantees.
+fn read_content_pcm<S, Read, Recover>(
+    out: &mut [S],
     spec: ContentPcmReadSpec<'_>,
     counters: &mut IoCounters,
     read: Read,
     recover: Recover,
 ) -> Result<ClassifiedContentRead>
 where
-    Read: FnOnce(&mut [i16]) -> alsa::Result<usize>,
+    S: Copy,
+    Read: FnOnce(&mut [S]) -> alsa::Result<usize>,
     Recover: FnOnce(alsa::Error) -> alsa::Result<()>,
 {
     let requested_frames = out.len() / spec.channels;
@@ -263,7 +272,17 @@ where
 
 /// Apply the content-lane silence contract and return `(frames_read,
 /// frames_short)` for the transport-specific fill journal line.
-fn zero_fill_content_period(out: &mut [i16], channels: usize, read: ContentRead) -> (usize, usize) {
+///
+/// Generic over the sample type for the same reason as `read_content_pcm`: it
+/// zero-fills whichever buffer the lane's declared width read into. Digital
+/// silence is `Default::default()` at every width — and it is worth naming that
+/// the widening of zero is zero, so a zero-filled tail sounds identical on the
+/// spine as it did at i16.
+fn zero_fill_content_period<S: Copy + Default>(
+    out: &mut [S],
+    channels: usize,
+    read: ContentRead,
+) -> (usize, usize) {
     let requested_frames = out.len() / channels;
     let frames_read = match read {
         ContentRead::Frames(frames) => frames,
@@ -271,7 +290,7 @@ fn zero_fill_content_period(out: &mut [i16], channels: usize, read: ContentRead)
     };
     let frames_short = requested_frames.saturating_sub(frames_read);
     if frames_short > 0 {
-        out[(frames_read * channels)..].fill(0);
+        out[(frames_read * channels)..].fill(S::default());
     }
     (frames_read, frames_short)
 }
@@ -322,10 +341,27 @@ pub struct AlsaBackend {
     /// write path in `write_dac_period` and is what `/state` reports as
     /// `dac.format`.
     dac_format: SampleFormat,
-    /// Reused widening staging for an `S32Le` edge — allocated once, at open,
-    /// and never on the audio path. Empty (zero bytes) on an `S16Le` edge,
-    /// which writes `samples` straight through with no staging at all.
-    dac_widen_buf: Vec<i32>,
+    /// Reused NARROWING staging for an `S16Le` edge — allocated once, at open,
+    /// and never on the audio path. Empty (zero bytes) on an `S32Le` edge, which
+    /// takes the program spine straight through with no staging at all.
+    ///
+    /// This is the inverse of what stood here before the i32 spine: the staging
+    /// used to be an `S32Le` edge's WIDENING buffer, because the program was i16
+    /// and the wide edge was the exception. Now the program is wide and the S16
+    /// edge is the one that converts — the same "only the mismatched edge pays"
+    /// rule, with the mismatch on the other side.
+    dac_narrow_buf: Vec<i16>,
+    /// Reused i16 staging for an `S16Le` CONTENT lane — allocated once, at open.
+    /// Empty (zero bytes) on an `S32Le` lane, and empty under the SHM-ring source
+    /// (no ALSA content PCM is opened at all, so nothing ever reads through here).
+    ///
+    /// The ingest twin of `dac_narrow_buf`. alsa-rs's IO handles are typed, so an
+    /// S16 lane physically cannot read into an i32 slice; it reads here and
+    /// `widen_period` lifts the period onto the spine. `read_content_available`
+    /// borrows it as a disjoint field alongside `content` and `counters` — never
+    /// via `mem::take`, so no early return on that path can drop it and leave the
+    /// next period to re-allocate.
+    content_widen_buf: Vec<i16>,
 }
 
 /// Paired-composite transport: two clock-independent child DACs driven as one
@@ -355,6 +391,9 @@ pub struct PairedCompositeSink {
     /// composite sink always opens its content lane (the SHM-ring source is
     /// single-ALSA only).
     content_format: SampleFormat,
+    /// Reused i16 ingest staging for an `S16Le` active content lane. Same
+    /// contract as [`AlsaBackend::content_widen_buf`]; empty on an `S32Le` lane.
+    content_widen_buf: Vec<i16>,
 }
 
 /// Marker for a startup fault that a restart cannot repair, attached via
@@ -467,8 +506,10 @@ impl AlsaBackend {
         // `configure_pcm` asked ALSA for (the registry declaration), checked
         // against the installed hw_params. That equals the hardware edge on a
         // raw `hw:` device, not through a `plug` — see the dac readback's
-        // comment. outputd's internal program is i16 whatever it says; a wider
-        // edge is served by widening at the final write.
+        // comment. It also selects the write path: outputd's internal program is
+        // `ProgramSample` (i32), so an `S32Le` edge takes the spine STRAIGHT
+        // THROUGH and converts nothing, while an `S16Le` edge is where the one
+        // output-path quantization happens (`write_dac_period`).
         //
         // `format=` is the DAC edge and keeps its bare name. Not because
         // anything would break: no machine consumer parses this line today (the
@@ -520,11 +561,24 @@ impl AlsaBackend {
             // format against this requested one, so storing the request stores
             // what outputd is running — it never reached here otherwise.
             dac_format: config.declared_dac_format,
-            dac_widen_buf: widen_staging(
+            dac_narrow_buf: s16_staging(
                 config.declared_dac_format,
                 config.period_frames,
                 config.content_channels,
             ),
+            // No ALSA content lane opened ⇒ no ingest staging, whatever the
+            // declaration says. The SHM-ring source feeds `content_buf` directly
+            // and the ring wire is S16 by contract (D5), so its widening happens
+            // in the run loop, not here.
+            content_widen_buf: if skip_content_pcm {
+                Vec::new()
+            } else {
+                s16_staging(
+                    config.content_format,
+                    config.period_frames,
+                    config.content_channels,
+                )
+            },
         })
     }
 
@@ -557,7 +611,7 @@ impl AlsaBackend {
         Ok(())
     }
 
-    pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
+    pub fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
         let read = self.read_content_available(out)?;
         // Stay EXHAUSTIVE over `ContentRead` — a catch-all here would let a
         // future variant silently inherit the "empty" label on the audio path
@@ -580,44 +634,146 @@ impl AlsaBackend {
         Ok(frames)
     }
 
-    pub fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
+    /// Read one nonblocking content period onto the PROGRAM SPINE, converting
+    /// from the lane's declared width as it reads.
+    ///
+    /// This is the wide path's S16 INGRESS, and it retired the temporary
+    /// i16-only-ingest guard `configure_pcm`'s content branch used to run (now
+    /// deleted, along with its tests). Before this, ingest fetched an `io_i16()`
+    /// handle unconditionally, so a wide declaration opened cleanly and then
+    /// failed on the FIRST period read — deep on the audio path, which on this
+    /// unit escalates to `StartLimitAction=reboot`; the guard refused the
+    /// declaration at startup instead. Every value the config parser accepts is
+    /// now a value ingest can actually read, so there is nothing left to refuse.
+    ///
+    /// The `S16Le` arm widens through the pre-sized `content_widen_buf`; the
+    /// `S32Le` arm reads the lane's native samples straight into `out` with no
+    /// conversion at all.
+    pub fn read_content_available(&mut self, out: &mut [ProgramSample]) -> Result<ContentRead> {
+        // Refuse the no-ALSA-lane case FIRST, before anything touches the staging
+        // buffer. Under the SHM-ring source `content` is `None` and `content_format`
+        // is `None` with it; the old i16-only ingest reached this same refusal on
+        // its first line, and keeping it first is what stops the S16 arm below from
+        // resizing the staging and then bailing — which would allocate and drop a
+        // whole period per call, on the audio path.
         let content = self
             .content
             .as_ref()
             .context("outputd ALSA content PCM is disabled in local-pipe mode")?;
-        let io = content
-            .io_i16()
-            .context("getting i16 IO handle for outputd content input")?;
-        let classified = read_content_pcm(
-            out,
-            ContentPcmReadSpec {
-                channels: self.channels as usize,
-                pcm_name: &self.content_pcm,
-                negotiated: self.content_negotiated,
-                role: ContentPcmRole::Content,
-            },
-            &mut self.counters,
-            |samples| io.readi(samples),
-            |error| content.try_recover(error, true),
-        )?;
-        Ok(classified.read)
+        let spec = ContentPcmReadSpec {
+            channels: self.channels as usize,
+            pcm_name: &self.content_pcm,
+            negotiated: self.content_negotiated,
+            role: ContentPcmRole::Content,
+        };
+        // `content_format` is `Some` here by construction: `new` sets it to `None`
+        // only on the path that leaves `content` `None` too, and the `?` above
+        // already returned in that case. Refuse rather than default, because the
+        // wrong arm is worse than no arm: silently choosing S16 on a lane that is
+        // actually S32 hands `io_i16()` a buffer of half-samples and the speaker
+        // plays loud garbage. There is no width to guess.
+        //
+        // `final_sink_startup` is load-bearing on this line, not decoration. A
+        // bare bail here would be ordinary-error class — exit 1, which on this
+        // unit means restart, and eventually `StartLimitAction=reboot`. That is
+        // the exact chain the retired i16-only ingest guard existed to prevent, so
+        // refusing a format outputd cannot resolve must PARK at EX_CONFIG 78,
+        // where an operator sees it, rather than reboot-loop against a condition
+        // no restart can change.
+        //
+        // Park-class is right even though this is a PER-PERIOD call, not a startup
+        // one, and that is the whole justification for borrowing a marker named
+        // for startup: the condition is a static property of the struct (set once
+        // in `new`, never mutated), so it cannot be transient. If it were ever
+        // true it would be true on every period and on every restart alike —
+        // precisely the case the marker exists to park rather than retry. The
+        // transient content-lane failures on this path stay unmarked, as before.
+        // A `&'static str` context, not a `format!`-ed one naming the PCM. Two
+        // reasons: it matches the idiom of every other error this function
+        // produces (the io-handle contexts are static too), and it keeps the
+        // period-hot body free of allocating tokens —
+        // `test_outputd_period_hot_functions_do_not_allocate` forbids `format!(`
+        // here, and although a `with_context` closure is lazy and would never run
+        // per period, a guard that has to reason about laziness is a guard that
+        // gets argued with. The PCM name is already on the open-time
+        // `event=outputd.alsa.opened` line and in STATUS.
+        let lane_format = final_sink_startup(self.content_format.context(
+            "outputd content PCM is open but its negotiated format is unknown; \
+             refusing to guess the ingest width",
+        ))?;
+        match lane_format {
+            SampleFormat::S32Le => {
+                let io = content
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd content input")?;
+                let classified = read_content_pcm(
+                    out,
+                    spec,
+                    &mut self.counters,
+                    |samples| io.readi(samples),
+                    |error| content.try_recover(error, true),
+                )?;
+                Ok(classified.read)
+            }
+            SampleFormat::S16Le => {
+                if self.content_widen_buf.len() != out.len() {
+                    // Steady state never resizes: `new` sized this for the run
+                    // loop's period. A geometry that ever differs reallocates
+                    // once and then stays put.
+                    self.content_widen_buf.resize(out.len(), 0);
+                }
+                let io = content
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd content input")?;
+                // Disjoint field borrows: `io`/`try_recover` hold `self.content`,
+                // the reader writes `self.content_widen_buf`, the counters are a
+                // third field. No `mem::take` dance, so no path can drop the
+                // staging buffer on the way out.
+                let classified = read_content_pcm(
+                    &mut self.content_widen_buf,
+                    spec,
+                    &mut self.counters,
+                    |samples| io.readi(samples),
+                    |error| content.try_recover(error, true),
+                )?;
+                widen_period(&self.content_widen_buf, out)?;
+                Ok(classified.read)
+            }
+        }
     }
 
-    /// Write one already-mixed i16 period to the final edge.
+    /// Write one already-mixed PROGRAM period to the final edge — **the single
+    /// quantization on outputd's output path.**
     ///
     /// The period arriving here IS the reference the caller publishes to the
-    /// chip/software AEC (inv-A: reference == final DAC content). Widening for
-    /// an S32 edge happens INSIDE this call, on a private staging buffer —
-    /// `samples` is never mutated, so the published i16 reference and the
-    /// widened samples are the same audio at two scales, sample for sample.
-    pub fn write_dac_period(&mut self, samples: &[i16]) -> Result<()> {
+    /// chip/software AEC (inv-A: reference == final DAC content). `samples` is
+    /// never mutated, so the published reference and what the DAC receives are the
+    /// same audio; the taps narrow their own copy to S16 (D8).
+    ///
+    /// An `S32Le` edge takes the spine STRAIGHT THROUGH — this is the payoff of
+    /// the wide spine, and the reason the widening staging that used to live here
+    /// is gone: there is nothing left to convert. An `S16Le` edge narrows once,
+    /// round-to-nearest, into `dac_narrow_buf`.
+    pub fn write_dac_period(&mut self, samples: &[ProgramSample]) -> Result<()> {
         let channels = self.channels as usize;
         let frames_total = samples.len() / channels;
         match self.dac_format {
             // DEFAULT PATH — every S16_LE edge, which is every commissioned
-            // box today. Same `io_i16()` handle, same loop, same samples as
-            // before the native-format write: nothing is staged or converted.
+            // box today. The one place on the output path where resolution is
+            // deliberately given up, and it is given up ONCE: round-to-nearest,
+            // not the truncating capture conversion. For content that arrived as
+            // S16 at unity gain this is bit-identical to the pre-spine path (see
+            // `jasper_resampler::s16_widened_then_narrowed_is_bit_identical` and
+            // `core::the_content_path_is_bit_transparent_from_spine_ingress_to_sink`).
             SampleFormat::S16Le => {
+                if self.dac_narrow_buf.len() != samples.len() {
+                    // Steady state never resizes: `new` sized this for the run
+                    // loop's period. A geometry that ever differs reallocates
+                    // once and then stays put — it must not silently write a
+                    // short or stale period.
+                    self.dac_narrow_buf.resize(samples.len(), 0);
+                }
+                narrow_period(samples, &mut self.dac_narrow_buf)?;
                 let io = self
                     .dac
                     .io_i16()
@@ -626,20 +782,12 @@ impl AlsaBackend {
                     &io,
                     &self.dac,
                     &self.dac_pcm,
-                    samples,
+                    &self.dac_narrow_buf,
                     channels,
                     &mut self.counters.dac_xrun_count,
                 )?;
             }
             SampleFormat::S32Le => {
-                if self.dac_widen_buf.len() != samples.len() {
-                    // Steady state never resizes: `new` sized this for the run
-                    // loop's period. A geometry that ever differs reallocates
-                    // once and then stays put — it must not silently write a
-                    // short or stale period.
-                    self.dac_widen_buf.resize(samples.len(), 0);
-                }
-                widen_i16_to_i32(samples, &mut self.dac_widen_buf)?;
                 let io = self
                     .dac
                     .io_i32()
@@ -648,7 +796,7 @@ impl AlsaBackend {
                     &io,
                     &self.dac,
                     &self.dac_pcm,
-                    &self.dac_widen_buf,
+                    samples,
                     channels,
                     &mut self.counters.dac_xrun_count,
                 )?;
@@ -810,6 +958,13 @@ impl PairedCompositeSink {
             period_a: vec![0i16; period_samples],
             period_b: vec![0i16; period_samples],
             content_format: config.content_format,
+            // The active content lane is 4-channel, so its ingest staging is
+            // wider than the per-child period buffers above.
+            content_widen_buf: s16_staging(
+                config.content_format,
+                config.period_frames,
+                config.content_channels,
+            ),
         })
     }
 
@@ -866,27 +1021,52 @@ impl PairedCompositeSink {
         Ok(())
     }
 
-    pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
+    pub fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
+        // Same declared-width ingest as the single-ALSA lane; see
+        // `AlsaBackend::read_content_available` for why the S16 arm stages.
         // `io` borrows `self.content` and has a Drop impl, so nothing inside
-        // this scope may take `&mut self`. Decide the fill here, journal it
+        // those scopes may take `&mut self`. Decide the fill here, journal it
         // after the borrow ends.
-        let classified = {
-            let io = self
-                .content
-                .io_i16()
-                .context("getting i16 IO handle for outputd active content input")?;
-            read_content_pcm(
-                out,
-                ContentPcmReadSpec {
-                    channels: 4,
-                    pcm_name: &self.content_pcm,
-                    negotiated: self.content_negotiated,
-                    role: ContentPcmRole::ActiveContent,
-                },
-                &mut self.counters,
-                |samples| io.readi(samples),
-                |error| self.content.try_recover(error, true),
-            )?
+        let spec = ContentPcmReadSpec {
+            channels: 4,
+            pcm_name: &self.content_pcm,
+            negotiated: self.content_negotiated,
+            role: ContentPcmRole::ActiveContent,
+        };
+        let classified = match self.content_format {
+            SampleFormat::S32Le => {
+                let io = self
+                    .content
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd active content input")?;
+                read_content_pcm(
+                    out,
+                    spec,
+                    &mut self.counters,
+                    |samples| io.readi(samples),
+                    |error| self.content.try_recover(error, true),
+                )?
+            }
+            SampleFormat::S16Le => {
+                if self.content_widen_buf.len() != out.len() {
+                    self.content_widen_buf.resize(out.len(), 0);
+                }
+                let io = self
+                    .content
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd active content input")?;
+                // Disjoint field borrows, same as the single-ALSA arm — no
+                // `mem::take`, so no early return can drop the staging buffer.
+                let classified = read_content_pcm(
+                    &mut self.content_widen_buf,
+                    spec,
+                    &mut self.counters,
+                    |samples| io.readi(samples),
+                    |error| self.content.try_recover(error, true),
+                )?;
+                widen_period(&self.content_widen_buf, out)?;
+                classified
+            }
         };
         let (frames, frames_short) = zero_fill_content_period(out, 4, classified.read);
         log_content_fill(
@@ -899,7 +1079,7 @@ impl PairedCompositeSink {
         Ok(frames)
     }
 
-    pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
+    pub fn write_dual_period(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
         deinterleave_4ch_to_dual_stereo(samples_4ch, &mut self.period_a, &mut self.period_b)?;
         write_dac_fail_closed(
             &self.dac_a,
@@ -1097,16 +1277,6 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         verify_dac_format(pcm_name, format, installed)?;
     }
     if role == "content" || role == "active_content" {
-        // outputd's INGEST is i16-only: `read_content_available` /
-        // `read_content_period` fetch an `io_i16()` handle every period, and
-        // alsa-rs verifies the installed format on that call. So a wide content
-        // lane would open cleanly here and then fail on the FIRST period read —
-        // deep on the audio path, as an ordinary error, which on this unit means
-        // restart-loop and eventually `StartLimitAction=reboot`. Refuse it at
-        // startup instead, where it parks visibly. The wide ingest (io_i16 vs
-        // io_i32 chosen off this declaration) is the next step of the
-        // wide-output-path program; this guard is what it deletes.
-        final_sink_startup(require_readable_content_format(role, pcm_name, format))?;
         // Prove what outputd's own client edge ended up at, exactly as the dac
         // role does — and read the scope of THIS claim just as honestly, because
         // the content lane's plumbing differs per build:
@@ -1271,48 +1441,20 @@ fn verify_installed_format(
     Ok(())
 }
 
-/// Refuse a content lane outputd's i16-only ingest cannot read.
+/// The i16 staging one period needs at `format` — for BOTH directions.
 ///
-/// TEMPORARY, and deliberately narrow: the declaration axis exists before the
-/// wide read path does, so this is the tripwire that keeps the gap from
-/// presenting as a period-read failure on the audio path (which on this unit
-/// escalates to a reboot loop). It goes away in the same change that teaches
-/// ingest to pick `io_i32` off `Config::content_format` — at which point every
-/// value the config parser accepts is a value outputd can actually read.
+/// The program spine is i32, so only an `S16Le` hop needs a staging buffer at
+/// all: an `S16Le` DAC edge narrows into one before writing, and an `S16Le`
+/// content lane reads into one before widening. An `S32Le` hop moves the spine's
+/// own samples and holds an EMPTY vec — zero bytes.
 ///
-/// Deletion checklist for whoever lands the wide ingest: 1 call site (in
-/// `configure_pcm`'s content branch), this definition, its 2 dedicated tests
-/// (`a_content_lane_wider_than_the_i16_ingest_is_refused_at_startup`,
-/// `the_default_s16_content_lane_passes_the_ingest_guard`), AND the second loop
-/// element inside `a_content_park_survives_the_callers_own_context_layer` —
-/// that last one is easy to miss because the test is not named for this guard.
-fn require_readable_content_format(
-    role: &str,
-    pcm_name: &str,
-    requested: SampleFormat,
-) -> Result<()> {
-    match requested {
-        SampleFormat::S16Le => Ok(()),
-        wide => anyhow::bail!(
-            "outputd {role} PCM {pcm_name} was declared {} \
-             (JASPER_OUTPUTD_CONTENT_FORMAT), but outputd's content ingest reads \
-             S16_LE only — it would open this lane and then fail on the first \
-             period read. Declare S16_LE until the wide content read path ships.",
-            wide.as_str()
-        ),
-    }
-}
-
-/// The i16 -> i32 widening staging for one period at `format`.
-///
-/// An `S16Le` edge writes its caller's slice straight to ALSA and stages
-/// nothing, so it holds an EMPTY vec: zero bytes, exactly the pre-native-format
-/// footprint. Only an `S32Le` edge pays, and it pays once — here, at open,
-/// never on the audio path.
-fn widen_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i32> {
+/// One function for both because the shape is identical (period × channels of
+/// i16) and because a second copy would be a twin that drifts. It is called
+/// once per hop, at open, never on the audio path.
+fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i16> {
     match format {
-        SampleFormat::S16Le => Vec::new(),
-        SampleFormat::S32Le => vec![0i32; (period_frames as usize) * (channels as usize)],
+        SampleFormat::S16Le => vec![0i16; (period_frames as usize) * (channels as usize)],
+        SampleFormat::S32Le => Vec::new(),
     }
 }
 
@@ -1366,8 +1508,18 @@ fn validate_negotiated(
     Ok(())
 }
 
+/// Split one 4-channel program period into the composite's two stereo child
+/// periods, narrowing each sample to the children's S16 edge as it goes.
+///
+/// This is the composite sink's own single quantization, and it is the same
+/// round-to-nearest the coherent sink's S16 edge uses. The children are declared
+/// `S16Le` here (no registered composite profile declares otherwise), so the
+/// narrow is where the wide spine meets their width — one conversion per sample,
+/// at the edge, exactly as `write_dac_period` does for a single DAC. Making the
+/// child width configurable (and this function generic over it) is the
+/// composite-sink step of the wide-output-path program, not this one.
 fn deinterleave_4ch_to_dual_stereo(
-    samples_4ch: &[i16],
+    samples_4ch: &[ProgramSample],
     out_a: &mut [i16],
     out_b: &mut [i16],
 ) -> Result<()> {
@@ -1378,51 +1530,14 @@ fn deinterleave_4ch_to_dual_stereo(
     if out_a.len() < frames * 2 || out_b.len() < frames * 2 {
         anyhow::bail!("dual output scratch buffers are smaller than content period");
     }
+    let narrow = jasper_resampler::narrow_i32_to_i16_round;
     for frame in 0..frames {
         let src = frame * 4;
         let dst = frame * 2;
-        out_a[dst] = samples_4ch[src];
-        out_a[dst + 1] = samples_4ch[src + 1];
-        out_b[dst] = samples_4ch[src + 2];
-        out_b[dst + 1] = samples_4ch[src + 3];
-    }
-    Ok(())
-}
-
-/// Widen one already-mixed i16 period into the `S32_LE` edge's sample width.
-///
-/// `i32::from(sample) << 16` is left-justified widening: the exact conversion
-/// ALSA's own S16->S32 plug performs, and the reason retiring that plug is
-/// bit-transparent. It preserves sign and full scale (`i16::MIN` -> `i32::MIN`,
-/// `i16::MAX` -> `0x7FFF_0000`), adds no gain, no dither, and no rounding.
-///
-/// `i32::from` FIRST is load-bearing: shifting the i16 and widening afterwards
-/// would shift every significant bit out of a 16-bit value.
-///
-/// The `zip` covers only the shorter side, so a length mismatch would silently
-/// emit a SHORT or STALE period — audible, and invisible to every counter. The
-/// only caller resizes to match immediately above the call; this rejects the
-/// mismatch outright so a future caller cannot quietly drop that contract.
-///
-/// A `Result` rather than a `debug_assert!`, for two reasons. It matches the
-/// sibling scratch-buffer check in this file — `deinterleave_4ch_to_dual_stereo`
-/// bails on "scratch buffers are smaller than content period" — so the audio
-/// path keeps ONE failure idiom. And a debug assertion would not run where it
-/// matters: CI builds this crate with `cargo test --release`, where debug
-/// assertions are compiled out, so its regression test would silently never
-/// fire (verified — the `#[should_panic]` form fails there with "test did not
-/// panic as expected").
-fn widen_i16_to_i32(samples: &[i16], out: &mut [i32]) -> Result<()> {
-    if out.len() != samples.len() {
-        anyhow::bail!(
-            "outputd widening staging is {} samples but the period is {}; \
-             writing that would emit a short or stale period",
-            out.len(),
-            samples.len()
-        );
-    }
-    for (dst, &src) in out.iter_mut().zip(samples.iter()) {
-        *dst = i32::from(src) << 16;
+        out_a[dst] = narrow(samples_4ch[src]);
+        out_a[dst + 1] = narrow(samples_4ch[src + 1]);
+        out_b[dst] = narrow(samples_4ch[src + 2]);
+        out_b[dst + 1] = narrow(samples_4ch[src + 3]);
     }
     Ok(())
 }
@@ -1523,6 +1638,17 @@ fn write_dac_fail_closed(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    /// One S16 sample at the program spine's scale.
+    ///
+    /// Fixtures that feed a spine-width parameter MUST go through this. A bare
+    /// integer literal type-infers happily into `[ProgramSample]` and then means
+    /// something ~65536x quieter than the author intended — which is how
+    /// `deinterleaves_active_4ch_to_one_stereo_period_per_dac` compiled green
+    /// locally while asserting the wrong audio.
+    fn w(sample: i16) -> ProgramSample {
+        jasper_resampler::widen_i16_to_i32(sample)
+    }
 
     #[test]
     fn final_sink_startup_attaches_configuration_marker() {
@@ -1789,89 +1915,23 @@ mod tests {
     }
 
     #[test]
-    fn widening_preserves_sign_full_scale_and_silence() {
-        // Left-justified widening: the same mapping ALSA's own S16->S32 plug
-        // performs, which is why retiring that plug is bit-transparent.
-        let samples = [i16::MAX, i16::MIN, 0, 1, -1, 256, -256];
-        let mut out = vec![0i32; samples.len()];
+    fn only_the_s16_hop_stages_and_it_stages_one_whole_period() {
+        // The INVERSE of what this asserted before the i32 program spine, and
+        // that inversion is the payoff: an `S32Le` hop moves the spine's own
+        // samples, so it stages nothing at all, while an `S16Le` hop is the one
+        // that converts and therefore the one that pays. Sized once at open so
+        // the audio path never allocates. Applies to both directions — an S16
+        // DAC edge narrows into this shape, an S16 content lane reads into it.
+        let wide = s16_staging(SampleFormat::S32Le, 1024, 2);
+        assert!(wide.is_empty(), "a wide hop needs no conversion buffer");
+        assert_eq!(wide.capacity(), 0, "and must not reserve bytes for one");
 
-        widen_i16_to_i32(&samples, &mut out).unwrap();
+        let narrow = s16_staging(SampleFormat::S16Le, 1024, 2);
+        assert_eq!(narrow.len(), 2048);
+        assert!(narrow.iter().all(|&s| s == 0));
 
-        assert_eq!(
-            out,
-            vec![
-                0x7FFF_0000,
-                i32::MIN,
-                0,
-                0x0001_0000,
-                -0x0001_0000,
-                0x0100_0000,
-                -0x0100_0000,
-            ]
-        );
-    }
-
-    #[test]
-    fn widening_the_i16_min_edge_neither_wraps_nor_saturates() {
-        // `i16::MIN << 16` is the one input that could overflow if the shift
-        // happened before the widen. Widened first it is exactly `i32::MIN` —
-        // still full-scale negative, still monotonic against `i16::MIN + 1`.
-        let mut out = [0i32; 2];
-        widen_i16_to_i32(&[i16::MIN, i16::MIN + 1], &mut out).unwrap();
-
-        assert_eq!(out[0], i32::MIN);
-        assert_eq!(out[0], (i16::MIN as i32) * 65_536);
-        assert!(out[0] < out[1], "widening must stay monotonic at the floor");
-    }
-
-    #[test]
-    fn widening_is_exactly_a_scale_change_not_a_gain_change() {
-        // Every sample must land on `value * 65536` — no dither, no rounding,
-        // no headroom trim. A gain change here would be inaudible in a unit
-        // test and very audible in a room.
-        let samples: Vec<i16> = (-32_768..=32_767).step_by(97).map(|v| v as i16).collect();
-        let mut out = vec![0i32; samples.len()];
-
-        widen_i16_to_i32(&samples, &mut out).unwrap();
-
-        for (i, &sample) in samples.iter().enumerate() {
-            assert_eq!(out[i], i32::from(sample) * 65_536, "sample {sample}");
-        }
-    }
-
-    #[test]
-    fn widening_rejects_a_staging_length_that_does_not_match_the_period() {
-        // Without the check the `zip` would quietly widen 2 of 4 samples and
-        // leave the rest stale — a short/torn period at the speaker with
-        // nothing in any counter to show for it. Both directions are wrong:
-        // staging shorter than the period truncates it, staging longer writes
-        // a tail the period never produced.
-        let mut short = [0i32; 2];
-        let err = widen_i16_to_i32(&[1, 2, 3, 4], &mut short).unwrap_err();
-        let text = err.to_string();
-        assert!(text.contains("staging is 2 samples"), "{text}");
-        assert!(text.contains("period is 4"), "{text}");
-
-        let mut long = [0i32; 8];
-        widen_i16_to_i32(&[1, 2], &mut long).unwrap_err();
-    }
-
-    #[test]
-    fn an_s16_edge_stages_nothing_at_all() {
-        // The default path writes the caller's slice straight to `io_i16()`,
-        // so it must not carry a widening buffer — an S16 box pays zero bytes
-        // for the native-format write.
-        let staging = widen_staging(SampleFormat::S16Le, 1024, 2);
-        assert!(staging.is_empty());
-        assert_eq!(staging.capacity(), 0);
-    }
-
-    #[test]
-    fn an_s32_edge_preallocates_one_whole_period() {
-        // Sized once at open so the audio path never allocates.
-        let staging = widen_staging(SampleFormat::S32Le, 1024, 2);
-        assert_eq!(staging.len(), 2048);
-        assert!(staging.iter().all(|&s| s == 0));
+        // Width is carried as data: a wide sink's period is channels x frames.
+        assert_eq!(s16_staging(SampleFormat::S16Le, 1024, 8).len(), 8192);
     }
 
     #[test]
@@ -2031,22 +2091,22 @@ mod tests {
         // alternative is a mismatch that silently restart-loops instead of
         // parking. Mirrors both call sites' wrapping exactly.
         //
-        // Third element covers the readback's INFRASTRUCTURE error — a failed
+        // Second element covers the readback's INFRASTRUCTURE error — a failed
         // `hw_params_current()` / `get_format()`. That path reaches the marker
         // only because `read_back_content_format` owns the reads, so one
         // `final_sink_startup` covers them; marking the comparison alone would
         // let it exit 1 into the restart loop.
+        //
+        // There were THREE elements while a temporary i16-only ingest guard also
+        // rode this call site. The wide ingest deleted that guard, and its
+        // element with it — the deleted guard's own checklist named this test
+        // precisely because it is not named for the guard.
         for inner in [
             final_sink_startup(verify_content_format(
                 "content",
                 "outputd_content_capture",
                 SampleFormat::S32Le,
                 Format::S16LE,
-            )),
-            final_sink_startup(require_readable_content_format(
-                "content",
-                "outputd_content_capture",
-                SampleFormat::S32Le,
             )),
             final_sink_startup(read_back_content_format(
                 || anyhow::bail!("reading installed outputd content HwParams failed"),
@@ -2091,56 +2151,6 @@ mod tests {
     }
 
     #[test]
-    fn a_content_lane_wider_than_the_i16_ingest_is_refused_at_startup() {
-        // TEMPORARY guard (see `require_readable_content_format`): the ingest
-        // fetches an `io_i16()` handle every period, so an S32 lane would open
-        // and then fail on the first read — an audio-path error, which on this
-        // unit means restart-loop into StartLimitAction=reboot. It must fail at
-        // startup, name the env var, and park.
-        //
-        // The role assertion matches the message's role SLOT (`outputd <role>
-        // PCM`), not the bare substring: both PCM names contain their own role
-        // token, so `text.contains(role)` passed on the PCM name alone and could
-        // not see a message naming the wrong lane.
-        for (role, pcm) in [
-            ("content", "outputd_content_capture"),
-            ("active_content", "outputd_active_content_capture"),
-        ] {
-            let err = require_readable_content_format(role, pcm, SampleFormat::S32Le).unwrap_err();
-            let text = err.to_string();
-            assert!(text.contains("JASPER_OUTPUTD_CONTENT_FORMAT"), "{text}");
-            assert!(text.contains("S32_LE"), "{text}");
-            assert!(text.contains(&format!("outputd {role} PCM")), "{text}");
-            assert!(text.contains(pcm), "{text}");
-
-            let parked = final_sink_startup(require_readable_content_format(
-                role,
-                pcm,
-                SampleFormat::S32Le,
-            ))
-            .unwrap_err();
-            assert!(parked
-                .downcast_ref::<FinalSinkStartupConfigError>()
-                .is_some());
-        }
-    }
-
-    #[test]
-    fn the_default_s16_content_lane_passes_the_ingest_guard() {
-        // The whole axis is byte-identical on every live box, and this is the
-        // assertion that says so: the default declaration reaches the ingest
-        // guard and passes it untouched.
-        require_readable_content_format("content", "outputd_content_capture", SampleFormat::S16Le)
-            .unwrap();
-        require_readable_content_format(
-            "active_content",
-            "outputd_active_content_capture",
-            SampleFormat::S16Le,
-        )
-        .unwrap();
-    }
-
-    #[test]
     fn chip_ref_geometry_accepts_exact_native_contract() {
         let actual = PcmGeometry {
             sample_rate: 16_000,
@@ -2172,12 +2182,66 @@ mod tests {
 
     #[test]
     fn deinterleaves_active_4ch_to_one_stereo_period_per_dac() {
-        let mut a = vec![0; 4];
-        let mut b = vec![0; 4];
+        // The INPUT is now a program period (i32 spine), so the fixture has to be
+        // written at that scale — bare `10` here is 10/65536 of an S16 LSB and
+        // narrows to silence. CI caught exactly that: type inference accepted the
+        // unwidened literals, so the test compiled and asserted the wrong audio.
+        let mut a = vec![0i16; 4];
+        let mut b = vec![0i16; 4];
 
-        deinterleave_4ch_to_dual_stereo(&[10, 11, 20, 21, 12, 13, 22, 23], &mut a, &mut b).unwrap();
+        deinterleave_4ch_to_dual_stereo(
+            &[w(10), w(11), w(20), w(21), w(12), w(13), w(22), w(23)],
+            &mut a,
+            &mut b,
+        )
+        .unwrap();
 
+        // Child A takes program channels 0/1, child B takes 2/3 — the split is
+        // unchanged; only the input's width moved.
         assert_eq!(a, vec![10, 11, 12, 13]);
         assert_eq!(b, vec![20, 21, 22, 23]);
+    }
+
+    #[test]
+    fn the_composite_edge_quantizes_by_rounding_and_saturates_at_the_rails() {
+        // The composite's own single quantization. It must be the SAME
+        // round-to-nearest the coherent sink's S16 edge uses, not a truncation —
+        // the widened fixture above cannot tell those apart, so this off-grid
+        // vector is what pins it.
+        let mut a = vec![0i16; 2];
+        let mut b = vec![0i16; 2];
+
+        deinterleave_4ch_to_dual_stereo(
+            // ch0: half an S16 LSB up  -> rounds to 1
+            // ch1: half an S16 LSB down -> rounds to 0 (halves go toward +inf)
+            // ch2/ch3: both i32 rails   -> saturate, never wrap
+            &[32_768, -32_768, ProgramSample::MAX, ProgramSample::MIN],
+            &mut a,
+            &mut b,
+        )
+        .unwrap();
+
+        assert_eq!(a, vec![1, 0], "the child edge must round, not truncate");
+        assert_eq!(
+            b,
+            vec![i16::MAX, i16::MIN],
+            "and must saturate at the rails"
+        );
+    }
+
+    #[test]
+    fn the_composite_edge_rejects_scratch_buffers_smaller_than_the_period() {
+        // Unchanged contract, re-asserted at the new input width: a short scratch
+        // would otherwise write a partial period to a live DAC.
+        let mut a = vec![0i16; 2];
+        let mut b = vec![0i16; 2];
+        let err = deinterleave_4ch_to_dual_stereo(&[w(1); 8], &mut a, &mut b).unwrap_err();
+        assert!(
+            err.to_string().contains("smaller than content period"),
+            "{err}"
+        );
+
+        let err = deinterleave_4ch_to_dual_stereo(&[w(1); 7], &mut a, &mut b).unwrap_err();
+        assert!(err.to_string().contains("whole 4-channel frames"), "{err}");
     }
 }
