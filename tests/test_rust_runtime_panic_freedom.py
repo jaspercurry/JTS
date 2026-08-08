@@ -53,8 +53,9 @@ every dev environment and nothing in cargo's gate distinguishes a
 test-only ``unwrap`` from a runtime one. This guard is the
 static-source twin (same technique as ``tests/test_outputd_wiring.py``):
 
-- ``.unwrap()`` and ``panic!`` are banned outright in runtime code
-  (zero current uses — the allowlist for them is intentionally empty).
+- ``.unwrap()``, ``panic!``, ``unreachable!``, ``todo!``, and
+  ``unimplemented!`` are banned outright in runtime code (zero current
+  uses — the allowlist for them is intentionally empty).
 - ``.expect("...")`` is allowed only for the audited invariant sites
   listed in ``ALLOWED_EXPECTS``, keyed by (file, message) so the pin
   survives line-number churn but a *new* expect still fails.
@@ -111,6 +112,14 @@ trusting a name):
   unconditionally at fan-in startup to seed the disabled ``/state`` fragment
   even when the feature itself never arms, so the crate's code still
   executes on every boot.
+- ``jasper-env`` (added per PR #2270's gate SF2) is a ``path`` dependency of
+  BOTH daemons (``jasper-fanin/Cargo.toml``, ``jasper-outputd/Cargo.toml``)
+  and its env-parsing helpers (``env_str``, ``env_parse``) run on every
+  daemon startup to read config -- it was a real gap against this section's
+  own inclusion criterion, not a deliberate exclusion like
+  ``jasper-dual-dac-lab`` above. Its only panic-family constructs are
+  ``assert!``/``assert_eq!`` calls inside ``#[cfg(test)] mod tests``, so
+  adding it needed no new ``ALLOWED_EXPECTS``/``ALLOWED_ASSERTS`` entries.
 """
 from __future__ import annotations
 
@@ -128,6 +137,7 @@ RUNTIME_CRATES = (
     "jasper-resampler",
     "jasper-clock",
     "jasper-host-clock",
+    "jasper-env",
 )
 
 # Audited runtime ``.expect("...")`` sites, keyed by
@@ -737,10 +747,11 @@ def _runtime_findings() -> _Findings:
                 accounted = True
 
                 if _BARE_PANIC_PAT.search(code):
-                    # .unwrap()/panic! -- the allowlist for these is
-                    # intentionally empty (module docstring), so their
-                    # presence alone always disqualifies the line,
-                    # independent of whatever else is on it.
+                    # .unwrap()/panic!/unreachable!/todo!/unimplemented! --
+                    # the allowlist for these is intentionally empty (module
+                    # docstring), so their presence alone always
+                    # disqualifies the line, independent of whatever else is
+                    # on it.
                     accounted = False
 
                 expect_match = _EXPECT_MSG_PAT.search(raw)
@@ -762,6 +773,37 @@ def _runtime_findings() -> _Findings:
                 if not accounted:
                     violations.append(f"{rel}:{n + 1}: {raw.strip()}")
     return _Findings(violations, seen_expects, seen_asserts)
+
+
+def test_bare_panic_pattern_covers_all_five_constructs() -> None:
+    """Issue #2251 gate SF1: RUNTIME_CRATES currently has zero live
+    unreachable!/todo!/unimplemented! occurrences, so
+    test_no_new_panics_in_rust_runtime_code would stay green even if one of
+    the five constructs -- or the whole _BARE_PANIC_PAT category -- were
+    silently dropped. Pin the pattern object directly instead of relying on
+    the corpus to self-detect a regression here."""
+    for construct in (
+        ".unwrap()",
+        'panic!("boom")',
+        "unreachable!()",
+        'todo!("x")',
+        "unimplemented!()",
+        'unreachable!("x={}", x)',
+    ):
+        assert _BARE_PANIC_PAT.search(construct), construct
+
+    # A comment mention and a string-literal mention both match the raw
+    # regex -- proving the strip step below is load-bearing, not a no-op.
+    comment_line = "/// see `unreachable!` for why this arm exists"
+    string_line = 'log::warn!("todo!() called at {}", site);'
+    assert _BARE_PANIC_PAT.search(comment_line)
+    assert _BARE_PANIC_PAT.search(string_line)
+
+    # _strip_comments is what _runtime_findings() calls before matching
+    # (it strips string literals internally, then truncates at `//`); once
+    # run through it, neither line reads as a panic to the scanner.
+    assert not _BARE_PANIC_PAT.search(_strip_comments(comment_line))
+    assert not _BARE_PANIC_PAT.search(_strip_comments(string_line))
 
 
 def test_no_new_panics_in_rust_runtime_code() -> None:
