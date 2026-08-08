@@ -416,7 +416,9 @@ thinks the system is healthy.
   which is a live flapping signal, not just a latch — doctor's
   `check_service_runtime_state` warns while it is non-zero,
   `/system/data.json` carries it (a unit surfaces on that alone),
-  and the dashboard's service tile colours on it. Only CamillaDSP
+  and the dashboard sorts the unit toward the top of its services
+  table on it (after a toggle-driven reset the Restarts column
+  simply reads 0). Only CamillaDSP
   has a compensating "not running" detector
   (`audio_health._camilla_stopped`, deliberately CamillaDSP-scoped
   because outputd and voice have legitimate parked states);

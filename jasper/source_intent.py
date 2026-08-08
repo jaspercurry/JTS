@@ -451,7 +451,9 @@ class _TargetStatus:
     # The per-source outcomes THIS validated read saw, empty when the read
     # never got that far. Handed out so a caller can attribute the pass
     # without re-opening the file (see `_failed_siblings`).
-    sources: Mapping[str, Any] = field(default_factory=dict)
+    # excluded from eq/hash: keeps the frozen dataclass hashable; consumers
+    # only field-access it
+    sources: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
 
 def _read_target_status(
