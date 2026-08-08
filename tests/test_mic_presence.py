@@ -154,9 +154,10 @@ def test_accessory_only_box_does_not_claim_a_present_microphone(
     assert mp.accessory_present is True
     assert mp.accessory_sources == ("wiim_remote_2",)
     # Gate state, never runtime state: this record cannot see whether
-    # jasper-voice is up, and a no-local-mic box does NOT yet answer (the
-    # daemon-side half is issue #2205). "voice input available" / "runs" would
-    # be a present-tense claim about a daemon nothing here looks at.
+    # jasper-voice is up. A no-local-mic box CAN answer since the daemon half
+    # of issue #2205 landed, which makes the runtime phrasing more tempting and
+    # no more true — "voice input available" / "runs" would still be a
+    # present-tense claim about a daemon nothing here looks at.
     assert mp.summary == (
         "voice-input gate open — push-to-talk accessory paired: wiim_remote_2; "
         "this record cannot see the local mic — the doctor's "

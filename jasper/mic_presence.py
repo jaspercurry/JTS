@@ -174,8 +174,10 @@ class MicPresence:
             # So two things this must NOT say. Not "present": on the first
             # shape that is the lie an operator would act on. And not that
             # voice is *running* on the accessory: the marker reports the start
-            # gate only, and on the first shape the daemon still exits 66
-            # (issue #2205). State the gate, and hand the local half to the
+            # gate only. The first shape CAN answer now (issue #2205's daemon
+            # half plans zero wake legs and serves the button), which makes the
+            # runtime claim tempting and no less unfounded — nothing here looks
+            # at the daemon. State the gate, and hand the local half to the
             # checks that actually probe the device.
             return (
                 f"voice-input gate open — {self.accessory_summary}; "

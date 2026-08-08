@@ -182,11 +182,11 @@ def _soften_for_push_to_talk(
     they are the surface that can actually tell "no local mic" from "local mic
     present"; the `microphone` headline cannot, because it reads the OR verdict.
 
-    The detail reports GATE state, never runtime state. Opening the gate is
-    necessary for accessory-only input but not sufficient — the daemon-side
-    support that makes such a box actually answer is tracked in issue #2205 and
-    is not in this code path. Saying "voice runs push-to-talk only" here would
-    be a present-tense claim about a daemon this check never looks at.
+    The detail reports GATE state, never runtime state. The daemon half of
+    issue #2205 has since landed, so such a box CAN answer — which makes the
+    runtime claim tempting and no less unfounded. Saying "voice runs
+    push-to-talk only" here would still be a present-tense claim about a daemon
+    this check never looks at; whether it is actually up is a separate fact.
 
     The local finding stays visible (``warn``, original detail appended) so an
     operator can still see the local mic is gone. Only the register changes:
@@ -202,8 +202,8 @@ def _soften_for_push_to_talk(
         result.name,
         "warn",
         f"no local microphone; {presence.accessory_summary} — the voice-input "
-        "gate is open for it (daemon support for accessory-only input: see "
-        f"issue #2205). Local probe: {result.detail}",
+        "gate is open for it (accessory-only voice input: issue #2205). "
+        f"Local probe: {result.detail}",
     )
 
 
