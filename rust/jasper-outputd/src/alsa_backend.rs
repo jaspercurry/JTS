@@ -34,6 +34,22 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 /// path, because nothing writes such a lane — the reconciler's content axis comes
 /// from `jasper.fanin_coupling`, which answers only `S16_LE` or `S32_LE`. Reaching
 /// this needs a hand-set `JASPER_OUTPUTD_CONTENT_FORMAT`.
+///
+/// **Why the refusal lives at the ingest arms and not in `Config::from_env`.** An
+/// early refusal there would make both of these arms unreachable by construction,
+/// which is a real attraction — it is the shape `Config`'s other cross-field
+/// guards (the `rate_match` pairing, the full-range-stereo sink checks) already
+/// use. It was considered and not taken, for two reasons. The arms are MANDATORY
+/// whatever `Config` does: the match is over `SampleFormat`, so Rust requires an
+/// arm here, and the only alternatives to a loud refusal are a silent wrong arm
+/// (S16 read of a 3-byte lane — loud garbage at the speaker) or an `unreachable!`
+/// panic on the audio path, which this crate bans. Given the arm must exist and
+/// must bail, a second guard upstream would be a second owner of the same rule
+/// rather than a replacement for this one. And keeping the vocabulary's ONE parse
+/// point axis-symmetric is deliberate (see `config.rs`'s content-axis comment);
+/// making `from_env` reject per-axis would put format policy back into the parser
+/// that the enum exists to keep out of it. If a future reader disagrees, the thing
+/// to move is the parse, and the arms stay regardless.
 const PACKED_CONTENT_LANE_UNSUPPORTED: &str =
     "outputd content lane declares S24_3LE, which it has no packed read path for; \
      the lane must be S16_LE or S32_LE (S24_3LE is an output-edge width only)";

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,8 @@ from jasper.audio_hardware.dac import (
     DacProfile,
     LatencyFloor,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_package_reexports_the_complete_dac_registry_surface() -> None:
@@ -591,21 +594,109 @@ def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
         )
 
 
-def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> None:
-    """The accepted SET itself, not just "every profile is inside it".
+def _rust_dac_format_arms() -> set[str]:
+    """The values outputd's own parse accepts for ``JASPER_OUTPUTD_DAC_FORMAT``.
 
-    That distinction is what keeps this non-vacuous: no profile declares
-    ``S24_3LE`` today, so removing it from ``DacProfile.__post_init__``'s tuple
-    would leave every other assertion in this file green while silently making the
-    registry unable to express the width outputd's packed write path exists for.
-    The reverse mistake — the tuple growing a value outputd's config parser
-    rejects — would emit an env value that parks the final-output owner at exit
-    78, which is why the two are asserted as one exact set.
+    Read out of the Rust match arms rather than restated, so the test below
+    compares the two IMPLEMENTATIONS instead of comparing the registry to a copy
+    of itself. Same idiom as
+    ``tests/test_audio_hardware_reconcile.py::_rust_rate_match_bridge_arms``.
 
-    The literal mirror on the Rust side is ``config.rs``'s
-    ``JASPER_OUTPUTD_DAC_FORMAT`` match arms.
+    The unset/blank arm (``"" | "S16_LE"``) contributes ``S16_LE`` only: the empty
+    string is outputd's default-when-absent, and no ``DacProfile`` can carry it
+    (``__post_init__`` rejects it), so it is not part of the shared vocabulary.
+    Its presence IS asserted, though — it is how this parser proves it found the
+    real arm block and not some other match.
     """
+    config_rs = (ROOT / "rust" / "jasper-outputd" / "src" / "config.rs").read_text(
+        encoding="utf-8"
+    )
+    anchor = 'let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {'
+    assert anchor in config_rs, (
+        "could not locate outputd's JASPER_OUTPUTD_DAC_FORMAT parse in "
+        "rust/jasper-outputd/src/config.rs — if the match was reshaped, update "
+        "this parser; do not delete the contract it feeds"
+    )
+    # Everything between the match's `{` and its catch-all `other =>` arm: the
+    # value arms and nothing else.
+    block = config_rs.split(anchor, 1)[1].split("other =>", 1)[0]
+    literals = re.findall(r'"([^"]*)"', block)
+    assert "" in literals, (
+        "outputd's DAC-format parse no longer has an unset/blank arm; this parser "
+        "is probably reading the wrong block"
+    )
+    arms = {literal for literal in literals if literal}
+    assert arms, (
+        "the JASPER_OUTPUTD_DAC_FORMAT arm block parsed to an EMPTY set — the "
+        "regex found nothing, which would make the contract below vacuously true"
+    )
+    return arms
+
+
+def _registry_final_edge_formats() -> set[str]:
+    """The values ``DacProfile.__post_init__`` accepts, read out of its tuple."""
+    src = (ROOT / "jasper" / "audio_hardware" / "dac.py").read_text(encoding="utf-8")
+    match = re.search(r"if self\.final_edge_format not in \(([^)]*)\):", src)
+    assert match is not None, (
+        "could not locate the final_edge_format validation tuple in "
+        "jasper/audio_hardware/dac.py"
+    )
+    values = set(re.findall(r'"([^"]*)"', match.group(1)))
+    assert values, (
+        "the final_edge_format validation tuple parsed to an EMPTY set — the "
+        "regex found nothing, which would make the contract below vacuously true"
+    )
+    return values
+
+
+def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> None:
+    """The accepted SET itself, not just "every profile is inside it" — and it is
+    compared against outputd's ACTUAL parse, not against prose claiming parity.
+
+    The set-vs-membership distinction is what keeps this non-vacuous: no profile
+    declares ``S24_3LE`` today, so removing it from ``DacProfile.__post_init__``'s
+    tuple would leave every other assertion in this file green while silently
+    making the registry unable to express the width outputd's packed write path
+    exists for.
+
+    The cross-owner comparison is what keeps it HONEST. One fact lives in two
+    places — this tuple, and ``config.rs``'s ``JASPER_OUTPUTD_DAC_FORMAT`` match
+    arms — with no shared code between a Python dataclass and a Rust daemon, and
+    until now only a docstring linked them. Both drift directions matter, so this
+    is EQUALITY, not the superset the rate-match alias contract uses:
+
+    * **Registry accepts more than Rust parses** → a profile declares it,
+      ``jasper-audio-hardware-reconcile`` emits it verbatim into
+      ``JASPER_OUTPUTD_DAC_FORMAT``, outputd's parse bails, and the FINAL-OUTPUT
+      OWNER parks at exit 78 — a silent speaker after a routine deploy.
+    * **Rust parses more than the registry validates** → unreachable dead
+      vocabulary. Harmless today, but worth knowing about: it is exactly the state
+      this PR is deliberately in for ``S24_3LE``… on the *profile* axis, not this
+      one. The tuple and the parse move together; only ``final_edge_format=`` on a
+      profile lags, which
+      :func:`test_no_profile_declares_the_packed_24_edge_yet` pins separately.
+    """
+    rust_arms = _rust_dac_format_arms()
+    registry_values = _registry_final_edge_formats()
+
     accepted = ("S16_LE", "S24_3LE", "S32_LE")
+    # The literal is the non-vacuity proof that both parsers above found real
+    # blocks rather than nothing.
+    assert rust_arms == set(accepted), (
+        "outputd's JASPER_OUTPUTD_DAC_FORMAT parse arms changed — update "
+        "DacProfile.__post_init__'s tuple in jasper/audio_hardware/dac.py AND "
+        "this literal set. Both edit sites, every time: the registry emitting a "
+        "value outputd rejects parks jasper-outputd at exit 78 and silences the "
+        f"speaker. Parsed from config.rs: {sorted(rust_arms)}"
+    )
+    assert registry_values == rust_arms, (
+        "the DAC edge-format vocabulary drifted between its two owners. "
+        f"jasper/audio_hardware/dac.py accepts {sorted(registry_values)}; "
+        f"rust/jasper-outputd/src/config.rs parses {sorted(rust_arms)}. "
+        f"Registry-only (emitted but unparseable -> parked final-output owner at "
+        f"exit 78): {sorted(registry_values - rust_arms)}. "
+        f"Rust-only (unreachable dead vocabulary): {sorted(rust_arms - registry_values)}"
+    )
 
     for value in accepted:
         # Constructed, not asserted about: __post_init__ is the gate.
