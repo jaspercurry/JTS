@@ -73,9 +73,13 @@ CONTENT_LANE_WINDOW_SEC="${JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC:-300}"
 #   (90 s) while it brings up its PCMs and STATUS. The honest margin is
 #   therefore fan-in readiness plus CamillaDSP's own device open, and a fan-in
 #   stall past ~20 s parks a box that a category-A transient built. That is a
-#   bounded, recoverable regression and not a new one: the same stall
-#   exhausted outputd's StartLimitBurst before this helper existed, and the
-#   outcome there was a REBOOT. The deploy path is the easy case — it does not
+#   bounded, recoverable regression, and past ~24 s not a new one at all: the
+#   same stall exhausted outputd's StartLimitBurst before this helper existed,
+#   and the outcome there was a REBOOT. That holds exactly only past ~24 s.
+#   Pre-change the box got 5 attempts (~24 s) before the reboot, so a peer
+#   arriving in roughly the 18-24 s band previously RECOVERED and now parks —
+#   a ~6 s conversion band where this trades a recovery for a park; past ~24 s
+#   it trades a park for a reboot. The deploy path is the easy case — it does not
 #   produce the wait at all, since
 #   release_camilla_content_lane_for_format_flip
 #   (deploy/lib/install/systemd-units.sh) stops CamillaDSP only when the width
