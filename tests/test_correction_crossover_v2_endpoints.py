@@ -1081,7 +1081,7 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
     assert (last["phase"], last["accepted"], last["code"]) == (
         "capture_result", False, "verify_crossover_region",
     )
-    assert "event=capture_relay.phone_event_stale_ignored" in caplog.text
+    assert "event=capture_relay.capture_event_stale_ignored" in caplog.text
     assert "event=correction.crossover_v2_terminal_verdict_preserved" in caplog.text
     assert "component=relay_purge" in caplog.text
     if purge_fails:

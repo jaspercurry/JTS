@@ -136,7 +136,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     "phone never uploaded within ": "CaptureTimeout detail prefix",
     "phone never began the next capture within ": "CaptureTimeout detail prefix",
     "their phone ended the walk": "CaptureTimeout detail (same expression)",
-    "authenticated phone event sequence moved backwards": "integrity guard message",
     "phone capture ownership changed during registration": "internal guard message",
     "phone capture ownership changed before evidence commit": "internal guard message",
     "phone capture ownership changed before upload": "internal guard message",

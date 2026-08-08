@@ -215,11 +215,11 @@ so reload and back/forward restoration continue above the last sequence. If
 storage is unavailable, capture continues with the instance counter.
 
 The Pi authenticates every event before sequence handling. A lower authenticated
-sequence is a stale no-op (`event=capture_relay.phone_event_stale_ignored`);
+sequence is a stale no-op (`event=capture_relay.capture_event_stale_ignored`);
 an identical current-sequence replay remains idempotent, while a conflicting
 payload at that sequence or any MAC/session-binding failure remains fatal.
 Accepted transitions are visible at
-`event=capture_relay.phone_event_sequence_accepted`, once per new slot.
+`event=capture_relay.capture_event_sequence_accepted`, once per new slot.
 
 For the same session, a durably persisted VERIFY acoustic outcome is the
 authoritative terminal commissioning result. A later relay timeout, delivery

@@ -590,7 +590,7 @@ class PhoneEventVerifier:
                 self._stale_logged = True
                 log_event(
                     logger,
-                    "capture_relay.phone_event_stale_ignored",
+                    "capture_relay.capture_event_stale_ignored",
                     session_id=self._session.session_id,
                     kind=self._session.spec.kind,
                     stale_sequence=sequence,
@@ -603,12 +603,12 @@ class PhoneEventVerifier:
             and verified != self._event
         ):
             raise CaptureIntegrityError(
-                "authenticated phone event sequence conflicts with accepted payload"
+                "authenticated capture event sequence conflicts with accepted payload"
             )
         if sequence > self._sequence:
             log_event(
                 logger,
-                "capture_relay.phone_event_sequence_accepted",
+                "capture_relay.capture_event_sequence_accepted",
                 session_id=self._session.session_id,
                 kind=self._session.spec.kind,
                 previous_sequence=self._sequence,

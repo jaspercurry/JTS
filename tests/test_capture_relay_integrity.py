@@ -90,12 +90,12 @@ def test_phone_event_verifier_ignores_authenticated_stale_sequence_only(caplog):
 
     assert verifier.sequence == 2
     assert sum(
-        "event=capture_relay.phone_event_sequence_accepted" in record.message
+        "event=capture_relay.capture_event_sequence_accepted" in record.message
         for record in caplog.records
     ) == 1
     stale = [
         record.message for record in caplog.records
-        if "event=capture_relay.phone_event_stale_ignored" in record.message
+        if "event=capture_relay.capture_event_stale_ignored" in record.message
     ]
     assert len(stale) == 1
     assert "accepted_sequence=2" in stale[0]
