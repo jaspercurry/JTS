@@ -5,8 +5,13 @@
 > 2026-08-08 — the plan existed only on that branch, which never merged and
 > is being closed with a pointer to this file. WO-1 (this document's own
 > prescribed "branch correctness pass," deploy-gating findings
-> F-2/F-6/F-7/F-8) never landed, and the branch was 235 commits behind
-> `main` at rescue time. The PR's review record — four independent
+> F-2/F-6/F-7/F-8) never landed on `main`. On the branch, only WO-1 item 10
+> (F-22 — mapping this doc into `docs/doc-map.toml`'s `multiroom-grouping`
+> entry) had landed; that item is OVERRIDDEN by this rescue, which
+> classifies the doc under `document_classes.session_artifacts` instead, so
+> the body's "already done" claim for item 10 does not hold on `main`. The
+> branch was 235 commits behind `main` at rescue time. The PR's review
+> record — four independent
 > reviewers, covering a confirmed release blocker, missing receipt/
 > fingerprint plumbing, four deploy-gating findings, and corrected Snapcast
 > facts — lives on the closed PR, not here. Every fact below reflects the
