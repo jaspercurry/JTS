@@ -1704,9 +1704,8 @@ last capture and can fail while tracking passes. Full's copy therefore states
 "Your speaker is tuned" (the claim all seven of jts.local's done verdicts
 open with) and points at the speaker page, rather than pre-committing
 "Verified and applied." The relay cannot repair this late: its host-event
-slot is last-write-wins, and
-`capture_set_complete` routinely overwrites the final `capture_result` before
-the page's ~250 ms poll reads it.
+slot is last-write-wins, and `capture_set_complete` routinely overwrites the
+final `capture_result` before the page's ~250 ms poll reads it.
 
 ## Recommending an Fc
 

@@ -969,28 +969,35 @@ Update **this block** at the end of every round together with the
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-05 evening (the fixed-2-kHz hardware checkpoint RAN on
-                jts3 and PASSED as an instrument proof; Gate 0 ratified the
-                later slate in the same session)
+date:           2026-08-08 (R20 campaign close-out; the 80/20 crossover +
+                linearization campaign is CODE-COMPLETE R14-R20 and its
+                remaining debt is hardware evidence, not implementation)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
-                20260803.4
-jts3_sha:       79239e0c6 — the build jts3 ran the checkpoint on. Deployed
-                15:19 EDT 2026-08-05, status=ok, read-only verified via
-                /var/lib/jasper/build.txt before the 16:01 walk. It contains
-                R15 (ab548e1f3 is an ancestor), which is what let the checkpoint
-                exercise the protected-neutral flow at all
-compatibility:  20260803.4 + 79239e0c6 is the pair the checkpoint ran on; the
-                capture_page observation above is still the 2026-08-04 one.
-                These establish what was seen, not deployment order or
-                chronology
-active_round:   R18 (verification widening) — dispatched, implementation in
-                flight, no PR open yet. Gate 0 ratified it on 2026-08-05 to
-                land first, ahead of the R16 + R17 vertical. Missions,
-                ceilings, and panel scopes live only in
-                crossover-linearization-80-20-plan.md §11; the Gate 0 record is
-                the #1894 comment
-last_round:     R15 (atomic fixed-Fc proof — #2126 ab548e1f3, #2138 b94790f4f),
-                exercised end-to-end on hardware by the checkpoint below. R14
+                20260803.4. Carried forward unchanged — no round since has
+                touched the capture page's contract
+jts3_sha:       bcc15b8b3 — read-only probed from /var/lib/jasper/build.txt on
+                2026-08-08 (installed 03:46 EDT, status=ok). It carries R15
+                through R17 but NOT R19 PR-A (415b44e96 merged 11:13 UTC the
+                same day, after that install), so jts3's grading surfaces are
+                still the pre-R19 ones. That deploy came from the parallel
+                wide-output-path campaign, not this one
+declaration:    jts3's design profile read-only probed 2026-08-08 as
+                status=confirmed, revision 7, confirmed_and_current=true. The
+                pending Confirm click the 2026-08-06 campaign handoff was
+                blocked on is DONE, so the owner's owed hardware slices below
+                are no longer gated on it
+compatibility:  20260803.4 + bcc15b8b3 is the pair jts3 currently runs; the
+                capture_page observation is still the 2026-08-04 one. These
+                establish what was seen, not deployment order or chronology
+active_round:   none — R20 closed the campaign. R20 was read-only: a
+                promise-to-test walk over plan §7-§13, a records true-up, and
+                the owner's campaign-close brief. Zero production code
+last_round:     R19 (honest grading + validator repair) — PR-B #2194
+                95306c910 (closed #2191), PR-A #2242 415b44e96 (closed #2098),
+                442 of the 580 two-PR envelope. #2160 stays OPEN on its
+                k-of-N/geometry disclosure residual. Preceding rounds: R18
+                #2156 099087943, R16 #2157 1ed9af0ed, R17 #2167 aca4651f7 +
+                #2173 5922646ca, R15 #2126 ab548e1f3 + #2138 b94790f4f. R14
                 was the documentation/administrative campaign round
 validation:     the 2026-08-05 evening checkpoint on jts3 — now the current
                 on-hardware result. It passed as an INSTRUMENT proof: the flow
@@ -1028,23 +1035,38 @@ owed_on_device: the boost path is STILL OWED. An earlier reading of this
                 the envelope's bar — the ~-4.5 dB dip is crossover
                 integration, which boost does not fix — so the selector rounds
                 should confirm boost engages when a genuine deficit exists.
-                Correction record: #1894 (2026-08-05 late). Also owed: R18's
-                verify slice and the R16/R17 lateral walk, both owner-run
-                (morning); and SetConfig->GetConfig, exercised live by the
-                flow's readback gate but probe-measured on the load path only
-follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
-                #2099 owns the fit / spatial-grade / bass-room seam; #2100
-                owns honest Full-stage progress and recovery disclosure;
-                #2106 (atomic R15) is closed; #2107 (lateral evidence) is now
-                R16's territory. The checkpoint walk filed two defects: #2151
-                (capture page loses the recording on window-focus loss) and
-                #2152 (review chart shows only the unmeasured prediction).
+                Correction record: #1894 (2026-08-05 late). Also owed, all
+                owner-run: the new-floor CHECK/MEASURE slice (~3 min) and the
+                six-pose selection walk, which together exercise R16/R17/R18
+                on hardware for the first time; the #2233 /sound/ browser pass
+                (three named checks, owed before the next commissioning run
+                that delegates a level); and SetConfig->GetConfig, exercised
+                live by the flow's readback gate but probe-measured on the
+                load path only. Every one of these is EVIDENCE debt — no
+                round is waiting on code
+follow_ups:     #2099 owns the fit / spatial-grade / bass-room seam; #2100
+                owns honest Full-stage progress and recovery disclosure.
+                Closed by the campaign: #2098 (by #2242), #2106, #2107,
+                #2151, #2152, #2191 (by #2194). Still OPEN and needing an
+                owner ruling: #2092 (spread-blind geometry lock), #1654's
+                deferred protection-corner precedence half, and #2160's
+                k-of-N/geometry disclosure residual. R20 inherited four
+                reconcile items from #2242's gate: the unknown-STATE
+                named-word treatment (retiring the doctor's :823-825
+                comment), the :832 provenance clause, plus #2245 (`_finite`
+                OverflowError) and #2256 (walking cross-ecosystem pin guard).
                 The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   after R18 lands: the R16 + R17 co-scoped vertical (lateral
-                producer, then the Fc selector that consumes it)
-blocked_on:     R16/R17 are blocked on R18 landing and on the owner's morning
-                lateral walk. R18 itself is blocked on nothing
+next_mission:   no campaign round is open. The owner's two hardware slices
+                come first — they are the only evidence that can justify a
+                follow-on round. The named R21 candidate is the apply-vertical
+                that would let a RECOMMENDED Fc reach applied DSP (nine sites
+                across six modules, its own round with a real gate, per the
+                Reading-1 ruling on #1894); #1791 Room and #1703 3-way stay
+                parked by design, Room as its own campaign with its own Gate 0
+blocked_on:     nothing in code. The hardware slices are blocked only on the
+                owner's availability; jts3's declaration is confirmed and its
+                Confirm click is done
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1776,7 +1798,17 @@ R13 remains the last on-hardware validation. The footer below is unchanged for
 the same reason as the pass above. No product/issue write, deployment, DSP
 change, or measurement.
 
-**Verification scope.** A **2026-08-05 checkpoint / Gate-0 record pass** updated
+**Verification scope.** A **2026-08-08 R20 campaign-close pass** updated only
+CURRENT POSITION, to close out the 80/20 crossover + linearization campaign.
+Every round's PR number and merge commit was re-read from `gh`/`git`; the two
+jts3 lines (build `bcc15b8b3`, declaration confirmed at revision 7) are
+read-only probes of that box taken during the pass and are the only measured
+facts it added. The `validation:` field is unchanged and still names the
+2026-08-05 checkpoint, because no newer hardware run exists. Nothing else in
+the spine — charter, ladder, rungs, research index, issue index — was
+re-read, and the footer date below warrants only this block.
+
+A **2026-08-05 checkpoint / Gate-0 record pass** updated
 only CURRENT POSITION. It re-read the Gate 0 comments on #1894, #1675, and
 #2099 from `gh` and confirmed #2151/#2152 exist as filed. It ran no hardware:
 every checkpoint number here, the build SHA included, is transcribed from the
@@ -1823,4 +1855,4 @@ below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** �
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
 
-Last verified: 2026-08-04
+Last verified: 2026-08-08
