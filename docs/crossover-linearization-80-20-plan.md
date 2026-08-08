@@ -427,7 +427,8 @@ any line above 400 must map directly to an unmet acceptance requirement. Five
 production files is soft, a sixth requires a named-file conductor/owner
 ratification, and new production modules are zero absent re-ratification. Tests
 are 500 gross, over which the conductor may ratify an honesty-fixture overage
-recorded on the owning issue. Docs 120. R16 350, R17 400 (ceiling re-ratified
+recorded on the owning issue. Docs 120. R16 350 (landed 649, ratification not
+in the record — §11), R17 400 (ceiling re-ratified
 400 → 650 → 800 → 1000 across the round; landed 1365 gross production,
 ratified at the measured size — §11), R18 460 (re-ratified from 180 — §11),
 R19 580 across at most two independent PRs (landed 442 — §11), and R20 zero.
@@ -487,7 +488,7 @@ search ticket, or a second Fc issue. Existing issues already own those facts.
 | **R15 — Atomic fixed-Fc proof** *(complete)* | Protected-neutral CHECK/MEASURE, skip pre-apply cloud, compose exact configured-Fc evidence into every current consumer, preserve review/Apply/VERIFY | commissioning lifecycle | fail-closed restore and deterministic fixed-Fc equivalence are pinned in one PR; no durable/lateral/dynamic contract, deploy, or measurement — met by #2126 (`ab548e1f3`) and its boost-gate follow-up #2138 (`b94790f4f`) |
 | **Checkpoint — Prove** *(passed)* | Owner runs the reviewed fixed-2-kHz flow on hardware | hardware/evidence only | pass before any dynamic implementation; failure opens a newly bounded repair — passed 2026-08-05 on jts3 as an instrument proof |
 | **R18 — Verification widening** *(complete)* | Widen VERIFY so the selector has an honest referee: judge the crossover region the current 2000–4000 Hz band misses (#1868, #1654) | verification | lands FIRST; ceiling **≤460** production / ≤5 files / 0 new modules, tests ≤600, docs ≤120 — re-ratified from 180 after a measured STOP at 441, [recorded on #1868](https://github.com/jaspercurry/JTS/issues/1868#issuecomment-5197236195); two lenses (correctness, hearing-safety) |
-| **R16 — Lateral evidence producer** *(complete)* | Produce the lateral walk's evidence, paired in the same vertical with R17 as its current consumer (#2107) | lateral capture | ceiling 350; two lenses (correctness, resilience) — landed as [#2157](https://github.com/jaspercurry/JTS/pull/2157) (`1ed9af0ed`, 2026-08-06) at **649** gross production across 4 files, [ratified at ≤650 production / ≤790 tests](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5203437285) under §9 item 10; shipped complete and OFF, with R17 as the flipper |
+| **R16 — Lateral evidence producer** *(complete)* | Produce the lateral walk's evidence, paired in the same vertical with R17 as its current consumer (#2107) | lateral capture | ceiling 350; two lenses (correctness, resilience) — landed as [#2157](https://github.com/jaspercurry/JTS/pull/2157) (`1ed9af0ed`, 2026-08-06) at **649** gross production across 4 files and 789 tests; shipped complete and OFF, with R17 as the flipper. **The overage's ratification is not in the record.** R20 checked: #2157's body cites `#1894#issuecomment-5203437285`, which 404s and is absent from #1894's comments, and its prose (≤600 / ≤640) contradicts its own table (≤650 / ≤790) — under the prose pair the round busts both. Per §9 item 10 an unrecorded ratification did not happen; recording or re-ratifying one is a conductor/owner act R20 did not take |
 | **R17 — Fc selector** *(complete)* | Consume R16's lateral evidence to adjudicate Fc within limits (#1894), taking the declared driver diameter as a beaming/ka prior (#1675, owner ruling) | selector | ceiling 400, re-ratified 650 → 800 → 1000 as three structural discoveries reshaped the round; landed 678 production in the final PR / **1365** cumulative round production against the 1000 cap, [ratified at the measured size](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5206143077); three lenses — it decides applied DSP |
 | **R19 — Honest grading + validator repair** *(complete)* | Two independent PRs under the §9 ceiling: honest post-apply grading (PR-A, #2098/#2160) and the search-band validator repair (PR-B, #2191) — [scoped on #1894](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5208109165) | grading/disclosure (PR-A); declaration validation (PR-B) | both landed: PR-B [#2194](https://github.com/jaspercurry/JTS/pull/2194) (`95306c910`, 2026-08-07, closed #2191) and PR-A [#2242](https://github.com/jaspercurry/JTS/pull/2242) (`415b44e96`, 2026-08-08, closed #2098) at **297** gross production against the 350 soft cap / 380 hard STOP [re-ratified 2026-08-08](https://github.com/jaspercurry/JTS/issues/1894#issuecomment-5224127404) — **442 of the 580** two-PR envelope spent; two lenses each — correctness/evidence + resilience/observability (PR-A), correctness/evidence + hearing-safety (PR-B) — PR-A to 0/0 only after a delta round. #2160 stays OPEN by ruling (§10) |
 | **R20 — Audit** *(complete)* | Read-only campaign close-out: walk every §7–§13 promise to the test that pins it, true up this plan and the program CURRENT POSITION, hand the owner the open decisions | docs/issues; no product code | 2026-08-08 — promise→test walk recorded, campaign records trued up, owner brief delivered; zero production code, zero measurement |
@@ -760,9 +761,10 @@ campaign-progress sections against the `gh` and `git` record: §9's per-round
 ceiling line, §11's R16/R17/R18/R19/R20 rows, and §10's #2098, #2160, and
 #2168 sweep rows, against #2157 (`1ed9af0ed`), #2194 (`95306c910`), #2242
 (`415b44e96`), and issues #2098, #2160, #2168, #1894. Marked every landed
-round complete — R16 at its ratified 649, R19 at its 442 two-PR ledger —
-recorded why #2160 stays open and what size its residual is, and marked R20 as
-the read-only close-out audit it ran. The
+round complete — R19 at its 442 two-PR ledger, R16 at its 649 with the finding
+that no ratification for that overage exists in the record (its cited comment
+id 404s) — recorded why #2160 stays open and what size its residual is, and
+marked R20 as the read-only close-out audit it ran. The
 measurement contracts, the substance of the anti-spiral constraints, and the
 launch-contract blocks were not re-read. R20 also walked §7–§13's behavioral
 promises against the test suite; that walk's gaps are the owner's brief and
