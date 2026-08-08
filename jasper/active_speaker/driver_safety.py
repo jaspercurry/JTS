@@ -55,10 +55,13 @@ SUPPORTED_FIELD_CONFIDENCE = {"low", "medium", "high", "unknown"}
 MAX_UNKNOWNS = 32
 MAX_PROVENANCE_FIELDS = 32
 MAX_PROVENANCE_SOURCES = 8
-#: Cap for a provenance entry's single free-text ``source`` citation. Sized to
-#: hold a long datasheet URL (the URL list uses 320) while staying one line in
-#: the /sound/ echo-back panel that renders it.
-MAX_PROVENANCE_SOURCE_CHARS = 160
+#: Cap for a provenance entry's single free-text ``source`` citation. Deliberately
+#: the same budget as a ``sources[]`` URL (320): the citation slot legitimately
+#: holds a datasheet URL, so any URL the list accepts must be promotable here
+#: verbatim. A tighter cap would refuse a legal source for being long, and the
+#: /sound/ echo-back panel wraps a long citation rather than depending on it
+#: fitting one line.
+MAX_PROVENANCE_SOURCE_CHARS = 320
 
 _MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
 _MANUAL_DRIVER_FIELDS = {
@@ -172,9 +175,12 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
 def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
     """Return the code-owned protection bounds /sound/ needs to *explain* itself.
 
-    Display-only, derived, never persisted-authoritative: the design draft
-    re-stamps it on every load the same way ``driver_safety_profile_evaluation``
-    is re-stamped, so a saved copy can never be read back as current policy.
+    Display-only, derived, never persisted-authoritative: every design-draft
+    load that knows the topology re-stamps it, the same way
+    ``driver_safety_profile_evaluation`` is re-stamped, so a saved copy can
+    never be read back as current policy.  (``load_design_draft`` without a
+    topology cannot re-derive either one and returns the disk copy untouched;
+    the /sound/ page always loads with a topology.)
 
     It exists because the browser has to answer two questions before anything
     is saved, and both are policy the browser must not own a second copy of:
@@ -188,6 +194,17 @@ def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
 
     ``role_class`` travels with each target so the page never has to keep its
     own copy of which roles are high-frequency.
+
+    Two fields here have no reader on the page yet and are kept deliberately.
+    ``policy_version`` is staleness detection on a view whose whole contract is
+    that it gets re-stamped: without it, a copy captured under an older policy
+    is indistinguishable from a current one.  ``min_highpass_hz`` is the only
+    field that *discriminates* — every high-frequency style shares
+    ``max_auto_level_dbfs = -65``, so it is what proves this view was derived
+    from ``driver_protection_profile`` rather than restated from a constant,
+    and it is the natural next panel field ("protected above N Hz") the
+    sentinel sentence already alludes to.  ``role`` had neither property and is
+    not emitted: ``role_class`` answers every question the page asks.
     """
 
     return {
@@ -196,7 +213,6 @@ def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
         "targets": [
             {
                 "target_id": str(target["target_id"]),
-                "role": str(target.get("role") or ""),
                 "role_class": policy.role_class,
                 "max_auto_level_dbfs": policy.max_auto_level_dbfs,
                 "min_highpass_hz": policy.min_highpass_hz,

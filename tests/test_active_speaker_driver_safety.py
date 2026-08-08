@@ -2053,6 +2053,45 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
         _normalise_field_provenance(too_long, "driver.field_provenance")
     assert "level_duration_limits.source" in str(excinfo.value)
 
+    # The citation slot must hold any URL the `sources` list holds. They are
+    # separate budgets, but a datasheet URL is a legal citation, so a cap that
+    # accepted a URL in the list and refused the SAME URL in `source` would
+    # reject a correct reply for a reason no researcher could have anticipated.
+    # Pinned behaviourally in both slots rather than by comparing constants,
+    # because what matters is that the promotion works, not how it is spelled.
+    long_url = "https://example.test/datasheets/" + "d" * 280
+    both_slots = {
+        "hard_excitation_band_hz": {
+            "confidence": "high",
+            "basis": "datasheet usable range",
+            "source": long_url,
+            "sources": [long_url],
+        }
+    }
+    promoted = _normalise_field_provenance(both_slots, "driver.field_provenance")[
+        "hard_excitation_band_hz"
+    ]
+    assert promoted["sources"] == [long_url]
+    assert promoted["source"] == long_url, (
+        "a URL the sources list accepts must be promotable verbatim into the "
+        "single citation slot"
+    )
+
+    # And the pre-#2233 cap is genuinely gone: 161 characters used to raise.
+    formerly_refused = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated",
+            "source": "y" * 161,
+        }
+    }
+    assert (
+        _normalise_field_provenance(formerly_refused, "driver.field_provenance")[
+            "level_duration_limits"
+        ]["source"]
+        == "y" * 161
+    )
+
 
 @pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
 def test_protection_policy_view_reads_policy_never_restates_it(
@@ -2089,8 +2128,22 @@ def test_protection_policy_view_reads_policy_never_restates_it(
     assert woofer["role_class"] == "low_frequency"
     assert woofer["min_highpass_hz"] is None
 
+    # The emitted per-target shape, pinned. `role` is deliberately absent --
+    # role_class answers every question the page asks, and a field with no
+    # reader is a field that drifts unnoticed. `min_highpass_hz` stays because
+    # it is the only value here that DISCRIMINATES between HF styles (they all
+    # share max_auto_level_dbfs), so it is what the parametrisation above uses
+    # to prove this view is derived rather than restated.
+    assert set(tweeter) == {
+        "target_id",
+        "role_class",
+        "max_auto_level_dbfs",
+        "min_highpass_hz",
+    }
+    assert set(view) == {"policy_version", "hf_measurement_abs_ceiling_dbfs", "targets"}
 
-def test_design_draft_restamps_the_protection_policy_on_every_load(
+
+def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
     tmp_path: Path,
 ) -> None:
     """A saved policy echo is never read back as current policy.
@@ -2099,6 +2152,10 @@ def test_design_draft_restamps_the_protection_policy_on_every_load(
     was right for the code and topology in force when it was written, and both
     move underneath it.  A stale ``max_auto_level_dbfs`` here would mislabel the
     delegation sentinel on the /sound/ echo-back panel.
+
+    Scoped to a topology-supplied load on purpose -- that is the only kind that
+    can re-derive anything, and it is what the /sound/ endpoint always does.
+    ``load_design_draft`` with no topology returns the disk copy untouched.
     """
 
     from jasper.active_speaker.driver_safety import driver_protection_policy_view
@@ -2111,16 +2168,25 @@ def test_design_draft_restamps_the_protection_policy_on_every_load(
         operator_inputs=_operator_inputs(),
         path=path,
     )
-    assert saved["driver_protection_policy"] == driver_protection_policy_view(topology)
+    assert saved["driver_protection_policy_view"] == driver_protection_policy_view(
+        topology
+    )
 
     # Poison the persisted copy the way a policy change would.
     raw = json.loads(path.read_text())
-    raw["driver_protection_policy"]["hf_measurement_abs_ceiling_dbfs"] = -99.0
-    raw["driver_protection_policy"]["targets"] = []
+    raw["driver_protection_policy_view"]["hf_measurement_abs_ceiling_dbfs"] = -99.0
+    raw["driver_protection_policy_view"]["targets"] = []
     path.write_text(json.dumps(raw))
 
     loaded = load_design_draft(path, topology=topology)
-    assert loaded["driver_protection_policy"] == driver_protection_policy_view(topology)
+    assert loaded["driver_protection_policy_view"] == driver_protection_policy_view(
+        topology
+    )
+
+    # The name is load-bearing: excitation_safety_plan already hashes a
+    # DIFFERENT shape under `driver_protection_policy` inside the protection-
+    # requirement fingerprint, so the draft key must not collide with it.
+    assert "driver_protection_policy" not in saved
 
 
 def test_provenance_has_no_second_writer_for_published_versus_estimated() -> None:

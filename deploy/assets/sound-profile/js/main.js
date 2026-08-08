@@ -3164,18 +3164,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<span class="driver-echo__source driver-echo__source--empty">' +
         'no source given</span>';
     }
+    // target="_blank" because this panel renders BEFORE anything is saved:
+    // following a citation in this tab would navigate away from the pasted
+    // JSON the operator is checking. Same convention as every other external
+    // link in the management UI; rel guards the opener either way.
     if (/^https?:\/\/[^\s]+$/i.test(source)) {
       return '<a class="driver-echo__source" href="' + escapeHtml(source) +
-        '" rel="noreferrer noopener">' + escapeHtml(source) + '</a>';
+        '" target="_blank" rel="noreferrer noopener">' +
+        escapeHtml(source) + '</a>';
     }
     return '<span class="driver-echo__source">' + escapeHtml(source) + '</span>';
   }
   // Code-owned protection bounds for one target, straight from the server
-  // (design draft `driver_protection_policy`, re-derived on every load). The
+  // (design draft `driver_protection_policy_view`, re-derived on every load
+  // that knows the topology — which the /sound/ endpoint always does). The
   // page deliberately keeps NO copy of max_auto_level_dbfs or the absolute
   // measurement ceiling: both are policy, and a second copy here would drift.
   function driverProtectionPolicy() {
-    var policy = (driverResearch.designDraft || {}).driver_protection_policy;
+    var policy = (driverResearch.designDraft || {}).driver_protection_policy_view;
     return (policy && typeof policy === 'object') ? policy : null;
   }
   function driverProtectionPolicyForTarget(targetId) {
@@ -3202,6 +3208,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
     }).filter(Boolean).join('; ');
   }
+  // Cabinet GEOMETRY only. enclosure_kind is an operator-declared installation
+  // choice the research ask is forbidden to infer, and the import boundary
+  // strips it out of a reply's cabinet before applying it -- so it is not one
+  // of "the values the research reply gave us" and does not belong in a panel
+  // that says it is.
+  function echoCabinetText(setting) {
+    var parts = [];
+    var count = manualNumberValue(setting.radiator_count);
+    var diameter = manualNumberValue(setting.effective_radiating_diameter_mm);
+    var baffle = manualNumberValue(setting.baffle_width_mm);
+    if (count != null) parts.push(count + (count === 1 ? ' radiator' : ' radiators'));
+    if (diameter != null) parts.push(diameter + ' mm effective diameter');
+    if (baffle != null) parts.push(baffle + ' mm baffle');
+    return parts.join(', ');
+  }
   function echoLevelText(setting) {
     var parts = [];
     var peak = manualNumberValue(setting.max_effective_peak_dbfs);
@@ -3214,11 +3235,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (cooldown != null) parts.push(cooldown + ' s cooldown');
     return parts.join(', ');
   }
-  // The five keys the research ask carries provenance for, in the order they
-  // matter to a household reading the panel. Each reads the value JTS is
-  // actually RUNNING WITH out of the working setting, not the number in the
-  // reply — those are the same until the operator edits one, and the setting
-  // is what gets frozen.
+  // Exactly the union of two server-owned sets, in the order they matter to a
+  // household reading the panel:
+  //   * the five keys the research ask requires a source for
+  //     (driver_safety._PROMPT_PROVENANCE_KEYS), and
+  //   * the six fields _profile_core FREEZES into the confirmed safety profile
+  //     (its `safety_field_names`).
+  // Eight keys, because three overlap. The panel headline states that union as
+  // its completeness claim, so the two must not drift apart: the tripwire is
+  // tests/test_sound_profile_echo_back_contract.py, which also pins every key
+  // here inside _V2_RESEARCH_COMPARABLE_FIELDS.
+  //
+  // Each entry reads the value JTS is actually RUNNING WITH out of the working
+  // setting, not the number in the reply — those are the same until the
+  // operator edits one, and the setting is what gets frozen.
   function driverEchoBackFields() {
     return [
       {
@@ -3240,6 +3270,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         read: echoFilterText
       },
       {
+        key: 'measurement_band_hz',
+        label: 'Measure inside',
+        read: function(setting) { return echoBandText(setting, 'measurement'); }
+      },
+      {
+        key: 'crossover_search_band_hz',
+        label: 'Try crossovers inside',
+        read: function(setting) { return echoBandText(setting, 'crossover_search'); }
+      },
+      {
         key: 'level_duration_limits',
         label: 'Test level and duration',
         read: echoLevelText
@@ -3251,6 +3291,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           var value = manualNumberValue(setting.sensitivity_db_2v83_1m);
           return value == null ? '' : fmtDb(value) + ' dB';
         }
+      },
+      {
+        key: 'cabinet',
+        label: 'Cabinet geometry',
+        read: echoCabinetText
       }
     ];
   }
@@ -3334,10 +3379,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }).filter(Boolean).join('');
     if (!blocks) return '';
     return '<div class="driver-research__panel driver-echo">' +
+      // The completeness claim is scoped to the set driverEchoBackFields
+      // actually renders, and it has to stay that way: an earlier draft said
+      // "every value the research reply gave us" while three frozen fields
+      // went unechoed, which is the one thing a check-before-you-confirm
+      // surface cannot be wrong about.
       '<div><p class="setting-row__title">3. What JTS is running with</p>' +
-        '<p class="setting-row__hint">Every value the research reply gave us, ' +
-        'and whether it was a published figure or an estimate. Check anything ' +
-        'that looks wrong before you confirm.</p></div>' +
+        '<p class="setting-row__hint">Every value the research reply gave us ' +
+        'that JTS asked it to source, or that gets frozen into this ' +
+        'speaker&rsquo;s safety limits. Each one shows whether it was a ' +
+        'published figure or an estimate. Check anything that looks wrong ' +
+        'before you confirm.</p></div>' +
       blocks +
     '</div>';
   }

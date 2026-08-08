@@ -4575,7 +4575,14 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
 // value would pass a -35 fixture and fail this one.
 const ECHO_HF_ABS_CEILING_DBFS = -42.5;
 const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
+// The low-frequency class ceiling, which LIMITS permits a woofer to declare
+// exactly. Delegation is a high-frequency-only rule, so landing on this number
+// must NOT produce the sentinel -- see the woofer half of the sentinel test.
+const ECHO_WOOFER_CLASS_CEILING_DBFS = 0;
 
+// Shaped like driver_protection_policy_view: target_id + role_class +
+// max_auto_level_dbfs + min_highpass_hz. No `role` -- the view stopped
+// emitting one, because role_class answers every question the page asks.
 function echoProtectionPolicy(overrides = {}) {
   return {
     policy_version: "driver_protection_auto_level_v1",
@@ -4583,14 +4590,12 @@ function echoProtectionPolicy(overrides = {}) {
     targets: [
       {
         target_id: "main:woofer",
-        role: "woofer",
         role_class: "low_frequency",
-        max_auto_level_dbfs: 0,
+        max_auto_level_dbfs: ECHO_WOOFER_CLASS_CEILING_DBFS,
         min_highpass_hz: null,
       },
       {
         target_id: "main:tweeter",
-        role: "tweeter",
         role_class: "high_frequency",
         max_auto_level_dbfs: ECHO_TWEETER_CLASS_CEILING_DBFS,
         min_highpass_hz: 3000,
@@ -4603,6 +4608,11 @@ function echoProtectionPolicy(overrides = {}) {
 // One reply, four provenance shapes on purpose: a URL citation, a plain-text
 // citation (a datasheet is usually a NAME), an entry with no citation, and a
 // consumed value with no provenance entry at all.
+//
+// It also carries all three fields the FIRST cut of this panel left unechoed
+// (measurement_band_hz, crossover_search_band_hz, cabinet). All three are
+// frozen into the confirmed safety profile by _profile_core, so a panel that
+// claims completeness at the confirmation gate has to name them.
 function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
   return {
     artifact_schema_version: 2,
@@ -4615,6 +4625,17 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
         role: "woofer",
         model: "Manual Woofer",
         hard_excitation_band_hz: [30, 5000],
+        measurement_band_hz: [40, 3000],
+        // Carries an enclosure_kind on purpose. It is an operator-declared
+        // installation choice, so the panel must echo the GEOMETRY and never
+        // the enclosure -- the "no enclosure" assertion in the echo test has
+        // something to catch only because this value is here to leak.
+        cabinet: {
+          enclosure_kind: "sealed",
+          radiator_count: 1,
+          effective_radiating_diameter_mm: 116,
+          baffle_width_mm: 200,
+        },
         field_provenance: {
           hard_excitation_band_hz: {
             confidence: "high",
@@ -4622,6 +4643,14 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
             source: "https://example.test/w6-datasheet.pdf",
             sources: ["https://example.test/w6-datasheet.pdf"],
           },
+          measurement_band_hz: {
+            confidence: "high",
+            basis: "datasheet piston band",
+            source: "https://example.test/w6-datasheet.pdf",
+            sources: [],
+          },
+          // cabinet: consumed and FROZEN, asserted nothing about. Silence is
+          // not a publication claim, so this must badge `estimated`.
         },
       },
       {
@@ -4630,6 +4659,7 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
         role: "tweeter",
         model: "Dayton CX120-8",
         hard_excitation_band_hz: [2500, 20000],
+        crossover_search_band_hz: [2800, 4000],
         required_protection_filters: [{
           kind: "highpass",
           cutoff_hz: 3000,
@@ -4649,6 +4679,12 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
             confidence: "medium",
             basis: "independent measurement",
             source: "Dayton CX120-8 datasheet, p.2",
+            sources: [],
+          },
+          crossover_search_band_hz: {
+            confidence: "low",
+            basis: "estimated: one octave above Fs",
+            source: "estimated from the declared high-pass",
             sources: [],
           },
           required_protection_filters: {
@@ -4676,9 +4712,12 @@ function echoManualSettings(research) {
       role: driver.role,
       model: driver.model,
       hard_excitation_band_hz: driver.hard_excitation_band_hz,
+      measurement_band_hz: driver.measurement_band_hz,
+      crossover_search_band_hz: driver.crossover_search_band_hz,
       required_protection_filters: driver.required_protection_filters,
       level_duration_limits: driver.level_duration_limits,
       sensitivity_db_2v83_1m: driver.sensitivity_db_2v83_1m,
+      cabinet: driver.cabinet,
     })),
     crossover_candidates: [],
   };
@@ -4697,7 +4736,13 @@ function echoDraft({ research, policy } = {}) {
   };
   draft.driver_research = packet;
   draft.manual_settings = echoManualSettings(packet);
-  if (policy !== null) draft.driver_protection_policy = policy || echoProtectionPolicy();
+  // `driver_protection_policy_view`, not `driver_protection_policy`: the
+  // latter is taken by a different shape inside excitation_safety_plan's
+  // protection-requirement fingerprint, and one name for two shapes is how a
+  // reader ends up consuming the wrong one.
+  if (policy !== null) {
+    draft.driver_protection_policy_view = policy || echoProtectionPolicy();
+  }
   return draft;
 }
 
@@ -4725,6 +4770,9 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
   }
 
   // What we're RUNNING WITH, per value, read out of the working setting.
+  // The last three are the completeness fix: every one is frozen into the
+  // confirmed safety profile by _profile_core, and the first cut of this panel
+  // echoed none of them while claiming to echo everything.
   for (const expected of [
     "Never test outside",
     "30 Hz to 5.0 kHz",
@@ -4735,6 +4783,12 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
     "-65.0 dBFS peak, sweeps up to 4 s, 3 repeats, 2 s cooldown",
     "Sensitivity",
     "+89.2 dB",
+    "Measure inside",
+    "40 Hz to 3.0 kHz",
+    "Try crossovers inside",
+    "2.8 kHz to 4.0 kHz",
+    "Cabinet geometry",
+    "1 radiator, 116 mm effective diameter, 200 mm baffle",
   ]) {
     if (!panel.includes(expected)) {
       fail("the echo-back must name the value JTS is running with", {
@@ -4743,22 +4797,46 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
     }
   }
 
+  // The headline's completeness claim is scoped to exactly what renders. It
+  // may not drift back into claiming the whole reply.
+  if (!panel.includes(
+    "Every value the research reply gave us that JTS asked it to source, or " +
+    "that gets frozen into this speaker&rsquo;s safety limits."
+  )) {
+    fail("the panel must claim only the completeness it actually delivers", {
+      panel,
+    });
+  }
+
+  // The woofer's cabinet carries enclosure_kind "sealed". It is an
+  // operator-declared installation choice the ask is forbidden to infer, so
+  // the geometry is echoed and the enclosure is not.
+  if (panel.includes("sealed")) {
+    fail("an operator-declared enclosure must not be echoed as research", {
+      panel,
+    });
+  }
+
   // Badges are DERIVED from confidence: high and medium assert a published
-  // figure, low does not, and neither does silence.
+  // figure, low does not, and neither does silence. `cabinet` is the silence
+  // case among the newly-echoed three.
   const confirmed = (panel.match(/>confirmed</g) || []).length;
   const estimated = (panel.match(/>estimated</g) || []).length;
-  if (confirmed !== 2 || estimated !== 3) {
+  if (confirmed !== 3 || estimated !== 5) {
     fail("badge derivation must follow confidence (high/medium -> confirmed)", {
       confirmed, estimated, panel,
     });
   }
 
   // A URL citation is a link; a datasheet NAME is not, and neither is absent.
+  // target="_blank" because the panel renders BEFORE the save: following a
+  // citation in this tab would discard the pasted JSON being checked.
   if (!panel.includes(
     '<a class="driver-echo__source" href="https://example.test/w6-datasheet.pdf"' +
-    ' rel="noreferrer noopener">https://example.test/w6-datasheet.pdf</a>'
+    ' target="_blank" rel="noreferrer noopener">' +
+    'https://example.test/w6-datasheet.pdf</a>'
   )) {
-    fail("an http(s) source must linkify", { panel });
+    fail("an http(s) source must linkify and open in a new tab", { panel });
   }
   if (!panel.includes(
     '<span class="driver-echo__source">Dayton CX120-8 datasheet, p.2</span>'
@@ -4823,6 +4901,46 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
       noBound,
     });
   }
+
+  // The role_class gate, pinned. Delegation is a HIGH-FREQUENCY rule --
+  // resolve_driver_excitation_ceilings only supersedes a declared peak for an
+  // HF role -- but LIMITS lets a woofer declare exactly 0.0 dBFS, which is its
+  // own class ceiling. Without the gate that woofer gets "never goes above
+  // -42.5 dBFS" printed directly under a row reading 0.0 dBFS: a 42.5 dB
+  // understatement, on the biggest driver, about a delegation the server never
+  // performs.
+  const lfOnCeiling = echoResearchPacket();
+  lfOnCeiling.drivers[0].level_duration_limits = {
+    max_effective_peak_dbfs: ECHO_WOOFER_CLASS_CEILING_DBFS,
+    max_sweep_duration_s: 6,
+    max_repeat_count: 3,
+    minimum_cooldown_s: 2,
+  };
+  const lfPanel = echoPanel(await echoHarness(
+    echoDraft({ research: lfOnCeiling })
+  ));
+  // Positive control: the woofer's own peak row is on screen, so the absence
+  // asserted below is the gate holding rather than a row that never rendered.
+  if (!lfPanel.includes("0.0 dBFS peak, sweeps up to 6 s")) {
+    fail("expected the woofer to declare its class ceiling in this fixture", {
+      lfPanel,
+    });
+  }
+  const sentinels = (lfPanel.match(/Test level here is left to JTS/g) || []).length;
+  if (sentinels !== 1) {
+    fail("only the high-frequency target may disclose a delegation", {
+      sentinels, lfPanel,
+    });
+  }
+  const wooferBlock = lfPanel.split('<section class="driver-echo__driver">')[1] || "";
+  if (!wooferBlock.includes("Woofer / midbass")) {
+    fail("expected the first echo block to be the woofer", { wooferBlock });
+  }
+  if (wooferBlock.includes("Test level here is left to JTS")) {
+    fail("a low-frequency target on its class ceiling delegates nothing", {
+      wooferBlock,
+    });
+  }
   return { researchEchoBackDisclosesTheDelegationSentinel: true };
 }
 
@@ -4830,10 +4948,20 @@ async function testResearchEchoBackEscapesUntrustedSources() {
   // `source` is free text pasted from an LLM reply: untrusted input reaching
   // innerHTML. Neither branch may emit live markup, and a javascript: URL must
   // not satisfy the linkify test.
+  //
+  // Three payloads, one per branch, because the first two both FAIL the
+  // linkify regex and route to the text branch -- leaving the anchor branch's
+  // two escapeHtml calls (href slot and text slot) unpinned. The third is
+  // URL-shaped on purpose: it starts `https://` and contains no whitespace, so
+  // it PASSES the regex and is the only payload that reaches them.
   const research = echoResearchPacket();
+  const urlShaped = 'https://a.test/x"><script>alert(1)</script>';
+  const urlShapedEscaped =
+    "https://a.test/x&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;";
   research.drivers[0].field_provenance.hard_excitation_band_hz.source =
     "javascript:alert(1)";
   research.drivers[0].field_provenance.hard_excitation_band_hz.sources = [];
+  research.drivers[0].field_provenance.measurement_band_hz.source = urlShaped;
   research.drivers[1].field_provenance.level_duration_limits.source =
     '<img src=x onerror="alert(1)">';
   const panel = echoPanel(await echoHarness(echoDraft({ research })));
@@ -4848,6 +4976,18 @@ async function testResearchEchoBackEscapesUntrustedSources() {
     '<span class="driver-echo__source">javascript:alert(1)</span>'
   )) {
     fail("a non-http(s) scheme must render as text, never as a link", { panel });
+  }
+
+  // The anchor branch: both slots escaped, in one exact string, so dropping
+  // escapeHtml from EITHER the href or the link text fails here.
+  if (!panel.includes(
+    '<a class="driver-echo__source" href="' + urlShapedEscaped +
+    '" target="_blank" rel="noreferrer noopener">' + urlShapedEscaped + '</a>'
+  )) {
+    fail("a URL-shaped payload must be escaped in both anchor slots", { panel });
+  }
+  if (panel.includes("<script>") || panel.includes('x">')) {
+    fail("a URL-shaped payload must not break out of the anchor", { panel });
   }
   return { researchEchoBackEscapesUntrustedSources: true };
 }

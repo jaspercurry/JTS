@@ -1192,7 +1192,7 @@ def build_design_draft(
         "driver_research": research,
         "driver_safety_profile": safety_profile,
         "driver_safety_profile_evaluation": safety_evaluation,
-        "driver_protection_policy": driver_protection_policy_view(topology),
+        "driver_protection_policy_view": driver_protection_policy_view(topology),
         "manual_settings": manual,
         "summary": summary,
         "permissions": {
@@ -1265,7 +1265,15 @@ def load_design_draft(
     *,
     topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
-    """Return the saved design draft, failing soft when it has not been saved."""
+    """Return the saved design draft, failing soft when it has not been saved.
+
+    The derived, code-owned fields (``driver_safety_profile_evaluation`` and
+    ``driver_protection_policy_view``) are re-stamped here only when a
+    ``topology`` is supplied — without one there is nothing to re-derive them
+    from, and the disk copy is returned as it was written.  Callers that show
+    either field to an operator must pass a topology; the /sound/ design-draft
+    endpoint always does.
+    """
 
     target = _design_draft_path(path)
     try:
@@ -1377,7 +1385,10 @@ def load_design_draft(
     # Re-stamped, never trusted from disk: the saved copy was correct for the
     # policy and topology in force when it was written, and both can move
     # underneath it. Same reason the evaluation above is recomputed here.
-    out["driver_protection_policy"] = driver_protection_policy_view(topology)
+    # `_view` in the name because `driver_protection_policy` is already taken,
+    # by a different shape: excitation_safety_plan hashes one under that key
+    # inside the protection-requirement fingerprint.
+    out["driver_protection_policy_view"] = driver_protection_policy_view(topology)
     return out
 
 

@@ -471,11 +471,16 @@ name** rather than silently clamping it, so the operator sees the bound and
 decides.
 
 The operator is the arbiter, so `/sound/` echoes the reply back before anything
-is confirmed: "What JTS is running with" names every consumed value, badges it
-`confirmed` or `estimated`, and shows its single source, linkified only when it
-really is a URL. That per-value truth replaced a bare tally of how many limits
-arrived as estimates — a count told the operator how many numbers to distrust
-without saying which. The badge is derived from `confidence`, which stays the
+is confirmed: "What JTS is running with" names every value the ask required a
+source for **and** every value `_profile_core` freezes into the safety profile
+— the union, eight keys — badges each `confirmed` or `estimated`, and shows its
+single source, linkified only when it really is a URL. The panel says exactly
+that much and no more: a completeness claim on the one screen whose job is
+accuracy has to be literally true, so the rendered set and the sentence above
+it are pinned together in
+`tests/test_sound_profile_echo_back_contract.py`. That per-value truth replaced
+a bare tally of how many limits arrived as estimates — a count told the
+operator how many numbers to distrust without saying which. The badge is derived from `confidence`, which stays the
 single stored writer of published-versus-estimated; there is deliberately no
 second `state` key on the wire that could disagree with it. Owner rulings,
 2026-08-06 (issues #2186 and #2195, the latter superseding the former's
@@ -486,7 +491,9 @@ For a high-frequency role on the proven-high-pass path,
 `resolve_driver_excitation_ceilings` reads a declared
 `max_effective_peak_dbfs` that exactly equals the class default as "no
 driver-specific level intent was expressed" and supersedes it with the
-sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS`; any
+sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS` — a
+hearing-safety bound, not derived from any driver's declared data, and
+provisional pending W6 bench validation; any
 other declared value is honoured literally. So a tweeter declared at the class
 default can be measured up to 30 dB louder than that number suggests, while one
 declared a single dB quieter is taken at face value. That discontinuity predates
