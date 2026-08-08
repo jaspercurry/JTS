@@ -966,11 +966,14 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("abandon_fails", "purge_fails"),
-    ((False, False), (True, False), (False, True)),
+    ("abandon_fails", "purge_fails", "fault_type"),
+    (
+        (False, False, OSError), (True, False, OSError),
+        (False, True, OSError), (False, False, CaptureTimeout),
+    ),
 )
 def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
-    monkeypatch, caplog, abandon_fails, purge_fails,
+    monkeypatch, caplog, abandon_fails, purge_fails, fault_type,
 ):
     """Reproduce P0.3's live ordering through the real relay plan runner.
 
@@ -1017,7 +1020,7 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
                 return
             if self.stale_delivered:
                 self.transport_failed = True
-                raise OSError("relay delivery closed after stale slot")
+                raise fault_type("relay delivery closed after stale slot")
             super().step()
 
     client, session, phone = _mint_v2_session(
@@ -1062,7 +1065,7 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
 
     volume = _IncidentVolume()
     with caplog.at_level(logging.INFO), pytest.raises(
-        OSError, match="relay delivery closed"
+        fault_type, match="relay delivery closed"
     ):
         _run(_build_runner(conductor, volume), client, session)
 

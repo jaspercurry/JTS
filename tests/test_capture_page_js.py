@@ -271,7 +271,7 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "396114aaea8be8bf6619db71d929c3d5da69834e18d269bd4477313d673e0fda"
+    "fa134f36fa9dd878dc3e8ffa9addfcd66749092dbf7de5b644658f751a6f3723"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260808.2"
 

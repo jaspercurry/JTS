@@ -24,6 +24,7 @@ export class RelayError extends Error {
 // cannot freeze the page's serialized meter loop. Blob uploads are intentionally
 // excluded; their bounded size and transfer time are a different contract.
 export const RELAY_CONTROL_TIMEOUT_MS = 3000;
+const EVENT_POST_TAILS = new Map();
 
 // The rejection a timed-out control request produces, carrying a MACHINE tag.
 //
@@ -59,7 +60,6 @@ export class RelayClient {
     this.authenticatedEventsRequired = false;
     this._eventSequence = 0;
     this._eventSequenceStorageKey = `jts.capture.event-sequence.${sessionId}`;
-    this._eventPostTail = Promise.resolve();
     this._fetch = fetchImpl || ((...a) => globalThis.fetch(...a));
   }
 
@@ -124,9 +124,14 @@ export class RelayClient {
   }
 
   _serializeEventPost(operation) {
-    const queued = this._eventPostTail.then(operation, operation);
-    // Reject this caller without poisoning later posts.
-    this._eventPostTail = queued.catch(() => undefined);
+    const key = this._eventSequenceStorageKey;
+    const prior = EVENT_POST_TAILS.get(key) ?? Promise.resolve();
+    const queued = prior.then(operation, operation);
+    const tail = queued.catch(() => undefined);
+    EVENT_POST_TAILS.set(key, tail);
+    void tail.then(() => {
+      if (EVENT_POST_TAILS.get(key) === tail) EVENT_POST_TAILS.delete(key);
+    });
     return queued;
   }
 

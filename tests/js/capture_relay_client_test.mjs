@@ -190,9 +190,12 @@ async function withSessionStorage(storage, run) {
 async function testAuthenticatedSequenceSurvivesReloadAndBackForwardRestore() {
   await withSessionStorage(memorySessionStorage(), async () => {
     const seen = [];
+    const delivered = [];
+    let releaseFirst;
     const integrity = {
       async authenticatePhoneEvent(payload, sequence) {
         seen.push(sequence);
+        if (sequence === 1) await new Promise((resolve) => { releaseFirst = resolve; });
         return {
           authenticated_event: {
             sequence,
@@ -202,15 +205,25 @@ async function testAuthenticatedSequenceSurvivesReloadAndBackForwardRestore() {
         };
       },
     };
-    const first = makeClient(mockFetch(() => res(200, { ok: true })));
+    const f = mockFetch((_url, init) => {
+      delivered.push(JSON.parse(init.body).authenticated_event.sequence);
+      return res(200, { ok: true });
+    });
+    const first = makeClient(f);
     first.setTransportIntegrity(integrity, { required: true });
-    await first.postEvent({ begin_capture: { index: 1, attempt: 1 } });
+    const firstPost = first.postEvent({ begin_capture: { index: 1, attempt: 1 } });
+    await Promise.resolve();
 
-    // A reload constructs a new client; a bfcache restore can then revive the
-    // older instance. Both must allocate above the shared session high-water.
-    const reloaded = makeClient(mockFetch(() => res(200, { ok: true })));
+    const reloaded = makeClient(f);
     reloaded.setTransportIntegrity(integrity, { required: true });
-    await reloaded.postEvent({ armed: true });
+    const secondPost = reloaded.postEvent({ armed: true });
+    await Promise.resolve();
+    assert.deepEqual(seen, [1]);
+    releaseFirst();
+    await Promise.all([firstPost, secondPost]);
+    assert.deepEqual(delivered, [1, 2]);
+
+    // A bfcache-restored older client still allocates above the shared mark.
     await first.postEvent({ capture_integrity: { focus_lost: false } });
     assert.deepEqual(seen, [1, 2, 3]);
   });
