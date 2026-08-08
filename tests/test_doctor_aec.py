@@ -51,7 +51,7 @@ def _bridge_reference_stats(
 
 def _outputd_reference_status(
     *,
-    target: str = "127.0.0.1:9891",
+    target: object = "127.0.0.1:9891",
     active: bool = True,
     error_count: int = 0,
 ) -> dict:
@@ -155,6 +155,42 @@ def test_assess_aec_output_outputd_endpoint_mismatch_reconciles_both_hops():
     assert "127.0.0.1:9999" in result.detail
 
 
+@pytest.mark.parametrize(
+    "outputd_status",
+    [
+        {
+            "reference_outputs": {
+                "udp_active": True,
+                "udp_error_count": 0,
+            },
+        },
+        _outputd_reference_status(target=9891),
+        _outputd_reference_status(target="not-an-endpoint"),
+    ],
+    ids=["missing", "non-string", "malformed"],
+)
+def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
+    outputd_status,
+):
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats("outputd_udp"),
+        outputd_status=outputd_status,
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "source=outputd_udp" in result.detail
+    assert "no comparable UDP target" in result.detail
+    assert "cannot declare an endpoint match or mismatch" in result.detail
+    assert "publisher target and bridge receiver do not match" not in result.detail
+    assert "jasper-aec-reconcile" in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+
+
 def test_assess_aec_output_alsa_remediation_retains_asound_advice():
     lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
 
@@ -217,6 +253,36 @@ def test_assess_aec_output_stale_reference_stats_are_ignored():
     assert "source=outputd_udp" not in result.detail
     assert "pcm.jasper_capture" not in result.detail
     assert "/etc/asound.conf" not in result.detail
+
+
+def test_reference_provenance_rejects_json_valid_oversized_timestamp():
+    huge_json_integer = "1" + ("0" * 4_000)
+    stats = json.loads(
+        '{"updated_epoch_sec":'
+        + huge_json_integer
+        + ',"active_capture_plan":{"mic_reference_identity":'
+        '{"ref_source":"outputd_udp",'
+        '"outputd_ref_udp":"127.0.0.1:9891"}}}'
+    )
+
+    detail = doctor.aec._aec_reference_failure_remediation(
+        bridge_stats=stats,
+        outputd_status=_outputd_reference_status(),
+        now=1_000.0,
+    )
+
+    assert "cannot safely name the failed hop" in detail
+    assert "source=outputd_udp" not in detail
+
+
+def test_reference_provenance_rejects_future_timestamp():
+    stats = _bridge_reference_stats(
+        "outputd_udp",
+        now=1_000.0,
+        age_sec=-1.0,
+    )
+
+    assert doctor.aec._bridge_reference_provenance(stats, 1_000.0) is None
 
 
 def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch):

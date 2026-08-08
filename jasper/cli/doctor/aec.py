@@ -854,7 +854,7 @@ def _bridge_reference_provenance(
         updated = float(stats["updated_epoch_sec"])
         identity = stats["active_capture_plan"]["mic_reference_identity"]
         source = identity["ref_source"]
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, OverflowError, TypeError, ValueError):
         return None
     age = now - updated
     if not math.isfinite(updated) or age < 0 or age > _BRIDGE_STATS_FRESH_SEC:
@@ -864,16 +864,20 @@ def _bridge_reference_provenance(
     if source != "outputd_udp":
         return None
     endpoint = identity.get("outputd_ref_udp")
-    if not isinstance(endpoint, str):
+    if not _valid_udp_endpoint(endpoint):
         return None
-    host, separator, raw_port = endpoint.rpartition(":")
+    return source, endpoint
+
+
+def _valid_udp_endpoint(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    host, separator, raw_port = value.rpartition(":")
     try:
         port = int(raw_port)
     except ValueError:
-        return None
-    if not separator or not host or not 0 < port <= 65535:
-        return None
-    return source, endpoint
+        return False
+    return bool(separator and host and 0 < port <= 65535)
 
 
 def _read_outputd_status_for_aec_reference() -> dict | None:
@@ -947,6 +951,14 @@ def _aec_reference_failure_remediation(
         f"reference_outputs.udp_target={target_text!r}, "
         f"udp_active={active_text}, udp_error_count={error_text}. "
     )
+    if not _valid_udp_endpoint(outputd_target):
+        return observed + (
+            "outputd STATUS has no comparable UDP target, so doctor cannot "
+            "declare an endpoint match or mismatch. Run `sudo systemctl start "
+            "jasper-aec-reconcile`, restart jasper-outputd and "
+            "jasper-aec-bridge, and inspect outputd's STATUS/journal if the "
+            "target remains unavailable."
+        )
     if outputd_target != bridge_endpoint:
         return observed + (
             "The publisher target and bridge receiver do not match. Run "
