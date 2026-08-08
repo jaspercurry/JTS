@@ -51,7 +51,7 @@ class _ProbeLockBusy(_ProbeLockError):
 
 
 class _ProbeIsolationCleanupError(RuntimeError):
-    """The tone body completed, but measurement-window teardown failed."""
+    """The probe body completed, but measurement-window teardown failed."""
 
     def __init__(self, results: list[CheckResult], cause: MeasurementWindowError):
         super().__init__(str(cause))
@@ -187,9 +187,10 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
             CheckResult(
                 "probe — audio isolation cleanup",
                 "fail",
-                f"the test tone ran, but isolation cleanup failed ({exc}). "
-                "Household audio may remain gated until the mux/voice safety "
-                "leases expire; check System status before re-running.",
+                "the probe body completed; playback outcome is shown above, "
+                f"but isolation cleanup failed ({exc}). Household audio may "
+                "remain gated until the mux/voice safety leases expire; check "
+                "System status before re-running.",
             )
         )
     except MeasurementWindowError as exc:

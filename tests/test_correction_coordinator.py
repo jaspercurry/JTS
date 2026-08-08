@@ -735,10 +735,11 @@ async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status)
         [],
         {},
         {"result": "BUSY"},
-    {"result": "DRAIN_TIMEOUT"},
+        {"result": "ok"},
     ],
-    ids=["unreachable", "malformed", "nonmapping", "missing", "busy",
-        "drain-timeout",
+    ids=[
+        "unreachable", "malformed", "nonmapping", "missing", "busy",
+        "old-daemon-missing-drain-proof",
     ],
 )
 @pytest.mark.asyncio
@@ -794,7 +795,7 @@ async def test_permissive_window_owns_cleanup_after_voice_drain_timeout(
         if cmd == "STATUS":
             return {"state": "WAKE"}
         if cmd == "MEASURE_PAUSE":
-            return {"result": "DRAIN_TIMEOUT"}
+            return {"result": "ok", "drained": False}
         return {"result": "ok"}
 
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
@@ -811,6 +812,24 @@ async def test_permissive_window_owns_cleanup_after_voice_drain_timeout(
 
 
 @pytest.mark.asyncio
+async def test_permissive_window_accepts_old_daemon_pause_reply(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        return {"result": "ok"}
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+
+    async with measurement_window():
+        calls.append("body")
+
+    assert calls == ["STATUS", "MEASURE_PAUSE", "body", "MEASURE_RESUME"]
+
+
+@pytest.mark.asyncio
 async def test_strict_window_orders_isolation_around_body(monkeypatch):
     events: list[str] = []
 
@@ -818,6 +837,8 @@ async def test_strict_window_orders_isolation_around_body(monkeypatch):
         events.append(cmd)
         if cmd == "STATUS":
             return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            return {"result": "ok", "drained": True}
         return {"result": "ok"}
 
     async def acquire(*, gate_owner):
@@ -860,6 +881,7 @@ async def test_strict_voice_renewal_failure_aborts_and_restores(monkeypatch):
             pause_calls += 1
             if pause_calls > 1:
                 raise RuntimeError("renewal lost")
+            return {"result": "ok", "drained": True}
         return {"result": "ok"}
 
     async def acquire(*, gate_owner):
@@ -894,6 +916,8 @@ async def test_strict_window_cancellation_restores_voice_and_mux(monkeypatch):
         events.append(cmd)
         if cmd == "STATUS":
             return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            return {"result": "ok", "drained": True}
         return {"result": "ok"}
 
     async def acquire(*, gate_owner):

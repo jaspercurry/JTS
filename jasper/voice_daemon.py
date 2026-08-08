@@ -522,8 +522,10 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # timeout. A transport-level timeout still leaves an older permissive
 # coordinator unable to know that voice armed the pause, so it skips
 # MEASURE_RESUME and the daemon's auto-clear must recover. A completed
-# drain timeout is different: the daemon replies ``DRAIN_TIMEOUT`` so
-# current coordinators retain cleanup ownership. install.sh restarts
+# drain timeout is different: the daemon keeps ``result=ok`` for rolling
+# compatibility and adds ``drained=false``, so current strict callers can
+# fail closed while every old/new caller retains cleanup ownership.
+# install.sh restarts
 # jasper-voice and jasper-web at different points of a deploy, so an OLD
 # coordinator can be talking to a NEW daemon — the bound has to fit under
 # the timeout that coordinator already shipped with, not one we raise
@@ -2524,6 +2526,21 @@ class WakeLoop:
                 await self._shadow_vad_score_raw(frame)
 
     async def measurement_pause(self) -> str:
+        """Open/renew a measurement pause with the legacy scalar result."""
+
+        result, _drained = await self._measurement_pause_detailed()
+        return result
+
+    async def measurement_pause_response(self) -> dict[str, object]:
+        """Open/renew a pause and include additive drain evidence on the wire."""
+
+        result, drained = await self._measurement_pause_detailed()
+        response: dict[str, object] = {"result": result}
+        if drained is not None:
+            response["drained"] = drained
+        return response
+
+    async def _measurement_pause_detailed(self) -> tuple[str, bool | None]:
         """Open a measurement window. Set the gate event, pause content
         activity observation, arm the MEASUREMENT_AUTOCLEAR_SEC safety
         timer, and wait (bounded) for in-flight assistant audio to
@@ -2562,13 +2579,17 @@ class WakeLoop:
         renewals stay latency-free.
 
         Returns:
-          - "ok" when the window is now open.
-          - "BUSY" when refused due to an active session.
-          - "DRAIN_TIMEOUT" when the pause is armed but prior assistant audio
+          - ("ok", True) when the window is open and output is drained.
+          - ("ok", False) when the pause is armed but prior assistant output
             did not drain within the bound. The caller still owns RESUME.
+          - ("BUSY", None) when refused due to an active session.
+
+        The scalar result deliberately remains ``ok`` whenever the pause is
+        armed. Older coordinators branch only on that field; changing it would
+        make them skip lease renewal and RESUME during a rolling deploy.
         """
         if self._state is State.SESSION:
-            return "BUSY"
+            return "BUSY", None
         opening = not self._measurement_active.is_set()
         admission_cleanup_required = False
         if opening:
@@ -2612,8 +2633,8 @@ class WakeLoop:
             # we cancel via that slot on RESUME or repeated PAUSE.
             self._measurement_safety_task = loop.create_task(_safety())
             if opening and not await self._drain_inflight_output():
-                return "DRAIN_TIMEOUT"
-            return "ok"
+                return "ok", False
+            return "ok", True
         except BaseException:
             if admission_cleanup_required:
                 await self._restore_measurement_state(trigger="pause_error")
@@ -2624,10 +2645,10 @@ class WakeLoop:
         landed, so its tail cannot enter the window's first capture.
 
         Bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`. On timeout the pause and
-        cleanup ownership stay armed, but the command returns `DRAIN_TIMEOUT`
-        and says so at WARNING. Strict callers refuse to capture; the
-        established correction caller may retain its explicit proceed-anyway
-        policy and still sends RESUME afterward.
+        cleanup ownership stay armed and the detailed response reports
+        ``drained=false`` while preserving ``result=ok`` for old callers.
+        Strict callers refuse to capture; the established correction caller
+        may retain its explicit proceed-anyway policy and still sends RESUME.
 
         Returns immediately — without yielding to the event loop — when
         the gate is already idle, which is the overwhelmingly common
@@ -2695,6 +2716,7 @@ class WakeLoop:
                     segment_kind="cue",
                     source_profile=profile,
                 )
+                await self._tts.wait_drained()
             except Exception as e:  # noqa: BLE001
                 logger.warning("mic mute click failed: %s", e)
         finally:
@@ -4975,6 +4997,13 @@ class WakeLoop:
         # paths into _end_turn: VAD silence, hard cap (wake without
         # speech), remote release, idle-watchdog turn-complete.
         await self._play_listening_chirp(going_on=False)
+        try:
+            # Queue completion is not acoustic completion. Keep the turn's
+            # output/duck ownership until the final chirp has cleared the
+            # physical route, for both fan-in and member-local outputd TTS.
+            await self._tts.wait_drained()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("teardown TTS drain wait failed: %s", e)
 
         await self._ducker.restore()
         self._volume_coordinator.note_voice_session(False)

@@ -531,13 +531,14 @@ async def measurement_window(
                         )
                     raise TypeError("MEASURE_PAUSE response is not an object")
                 pause_result = resp.get("result")
-                if pause_result in {"ok", "DRAIN_TIMEOUT"}:
+                if pause_result == "ok":
                     voice_paused = True
                     voice_pause_cleanup_required = True
-                    if pause_result == "DRAIN_TIMEOUT" and require_voice_pause:
+                    drained = resp.get("drained")
+                    if require_voice_pause and drained is not True:
                         raise MeasurementWindowError(
-                            "Voice pause was armed, but prior assistant audio "
-                            "did not drain before the deadline."
+                            "Voice pause was armed, but the daemon did not "
+                            "prove prior assistant audio drained."
                         )
 
                     async def _refresh_voice_lease() -> None:
@@ -581,10 +582,15 @@ async def measurement_window(
                                     return
                                 delay = MEASUREMENT_LEASE_RETRY_SEC
                                 continue
-                            if (
-                                not isinstance(renewal, dict)
-                                or renewal.get("result") != "ok"
-                            ):
+                            renewal_ok = (
+                                isinstance(renewal, dict)
+                                and renewal.get("result") == "ok"
+                                and (
+                                    not require_voice_pause
+                                    or renewal.get("drained") is True
+                                )
+                            )
+                            if not renewal_ok:
                                 logger.warning(
                                     "measurement lease refresh returned non-ok: %s",
                                     renewal,
@@ -599,7 +605,7 @@ async def measurement_window(
                     lease_refresh_task = asyncio.create_task(
                         _refresh_voice_lease()
                     )
-                    if pause_result == "DRAIN_TIMEOUT":
+                    if drained is False:
                         logger.warning(
                             "MEASURE_PAUSE timed out draining prior assistant "
                             "audio — proceeding under the historical permissive "

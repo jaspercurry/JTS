@@ -2081,8 +2081,13 @@ Captured here so future sessions don't repeat the mistakes.
     renderer starts that race the precheck, including USB/direct input, while
     `MEASURE_PAUSE` atomically closes `AssistantOutputGate` admission and drains
     already-admitted assistant audio whether TTS is routed pre-DSP through
-    fan-in or member-locally through outputd. A drain timeout is non-ok: the
-    strict probe never yields, while cleanup still owns `MEASURE_RESUME`.
+    fan-in or member-locally through outputd. Feedback and final-turn chirps
+    retain that gate ownership through the TTS route's physical-drain wait.
+    The compatible PAUSE reply keeps
+    `result=ok` whenever the pause armed and adds exact `drained` evidence. The
+    strict probe requires `drained is true`, so a timeout—or an old daemon
+    lacking the additive field—never yields while cleanup still owns
+    `MEASURE_RESUME`.
     The probe creates the WAV, runs `aplay`, waits, and assesses telemetry only
     inside that held window. The body uses bounded synchronous subprocess work
     in a thread; cancellation (including repeated cancellation) does not kill
@@ -2090,8 +2095,9 @@ Captured here so future sessions don't repeat the mistakes.
     stops and only then re-raises cancellation. Unavailable/malformed STATUS,
     refused or unconfirmed PAUSE, or a lost mux/voice lease aborts admission;
     `MEASURE_RESUME` and owner-scoped mux release run on every exit. If teardown
-    fails after the tone ran, doctor preserves the probe evidence and reports a
-    distinct isolation-cleanup failure instead of claiming no tone played.
+    fails after the body completes, doctor preserves each body result and
+    reports a neutral, distinct isolation-cleanup failure: it points to the
+    playback outcome above rather than inferring whether a tone ran.
     An unavailable or malformed initial `/state` likewise fails closed with no
     tone because USB/direct output can be invisible to the loopback check.
 

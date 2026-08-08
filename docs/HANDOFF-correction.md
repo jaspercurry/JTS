@@ -2247,22 +2247,29 @@ in feedback (2026-05-09).
   not become assistant loudness baselines; cancel any active
   `Ducker.duck()` and skip future ones; pause the voice daemon's 1 Hz Camilla
   drift reconciler so it cannot overwrite the quiet-start/ramp/restore
-  transaction; return JSON `{"result": "ok"}` once any previously admitted
-  output drains.
+  transaction; return JSON `{"result": "ok", "drained": <bool>}`. The
+  additive drain field preserves the scalar result older coordinators require
+  to renew and later resume the pause during rolling deploys.
 - The reply is held while assistant audio that was **already in playout**
   when `MEASURE_PAUSE` landed finishes (issue #1898). The output gate closes
   before the window is armed, so even pre-render work that passed an earlier
   measurement check cannot begin either supported TTS route; mic frames also
-  stop immediately (issue #1786). The drain then waits out only the
+  stop immediately (issue #1786). Mute feedback and a turn's final listening
+  chirp retain their gate episode through `TtsPlayout.wait_drained()`, so a
+  completed socket write cannot hide a still-audible physical tail. The drain
+  then waits out only the
   already-admitted tail, deferring to it rather than cancelling it. Bounded by
   `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC`, which must stay under the
   coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout. On a completed
   drain timeout the daemon keeps every pause armed, returns
-  `{"result": "DRAIN_TIMEOUT"}`, and logs
+  `{"result": "ok", "drained": false}`, and logs
   `event=measurement.inflight_drain_timeout` at WARNING. The strict doctor
-  caller fails before playing its tone; established correction flows may keep
-  their explicit permissive policy, but current callers retain cleanup
-  ownership and send `MEASURE_RESUME`. Renewals do not drain.
+  caller requires `drained is true` and fails before playing its tone; this
+  also makes a new strict caller fail closed against an old daemon whose reply
+  lacks the field. Established correction flows may keep their explicit
+  permissive policy, and all callers that see `result=ok` retain cleanup
+  ownership and send `MEASURE_RESUME`. Renewals report `drained=true` without
+  repeating the drain.
 - While the measurement window remains open, the coordinator repeats
   idempotent `MEASURE_PAUSE` every `MEASUREMENT_LEASE_REFRESH_SEC` to renew
   the voice daemon's crash-recovery timer

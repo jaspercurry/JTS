@@ -1206,7 +1206,11 @@ Verified seams (checked 2026-08-08; re-verify before building):
   alone does not prevent a racing `MEASURE_RESUME`. The shipped doctor pairs
   its registered owner with strict voice pause: `AssistantOutputGate` closes
   admission atomically before its bounded drain, so timer pre-render work,
-  mute feedback, cues, and turns cannot enter after PAUSE. Crash recovery
+  mute feedback, cues, and turns cannot enter after PAUSE; feedback and the
+  turn-closing chirp keep their episode through physical TTS drain. The rolling-safe
+  PAUSE wire keeps `result=ok` whenever cleanup is owned and adds `drained`;
+  strict admission requires that field to be exactly `true`, while permissive
+  correction and old coordinators remain cleanup-compatible. Crash recovery
   remains layered: the doctor advisory lock drops
   with its process, the mux lease auto-expires within
   `mux.FANIN_TEST_LEASE_SEC`, and the voice pause auto-clears within

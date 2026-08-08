@@ -15,16 +15,17 @@ capture.
 (so nothing new can start and mic frames stop immediately), and then waits,
 bounded by
 `MEASUREMENT_INFLIGHT_DRAIN_SEC`, for the already-playing episode to
-finish. On timeout it returns `DRAIN_TIMEOUT` with cleanup ownership still
-armed; strict callers refuse to capture, while the historical permissive
-correction path may proceed but must still send RESUME.
+finish. On timeout it preserves the compatible `result=ok`, adds
+`drained=false`, and keeps cleanup ownership armed; strict callers refuse to
+capture, while the historical permissive correction path may proceed but must
+still send RESUME.
 
 The bound is a compatibility ceiling, not a preference: an OLD coordinator
 (which awaits the reply with `VOICE_MEASURE_PAUSE_TIMEOUT_SEC`) can be talking
 to a NEW daemon across a deploy. A transport timeout still leaves that old
 caller unable to know the pause was armed, so the auto-clear is the backstop;
-current callers additionally understand the explicit `DRAIN_TIMEOUT` reply
-and retain cleanup ownership. The pairing is pinned here.
+current callers additionally read the additive `drained` evidence and retain
+cleanup ownership. The pairing is pinned here.
 
 The #1786 refusal behaviour itself lives in
 tests/test_voice_daemon_measurement_gate.py; the gate's own idle-wait
@@ -145,6 +146,30 @@ class _CountingGate(AssistantOutputGate):
         return await super().resume_admission()
 
 
+class _TailHeldTts:
+    """TTS fake whose write returns before its physical tail drains."""
+
+    def __init__(self) -> None:
+        self.drain_started = asyncio.Event()
+        self.release_drain = asyncio.Event()
+
+    async def prepare_assistant_context(self, **_kwargs) -> None:
+        return None
+
+    async def write_segment(self, *_args, **_kwargs) -> None:
+        return None
+
+    async def wait_drained(self) -> None:
+        self.drain_started.set()
+        await self.release_drain.wait()
+
+    async def pause_content_meter(self) -> None:
+        return None
+
+    async def resume_content_meter(self) -> None:
+        return None
+
+
 class _RefusingCues:
     """Cue manager that raises if asked to play — proves nothing played."""
 
@@ -263,10 +288,10 @@ async def test_drained_path_logs_the_wait(caplog) -> None:
     await _close_window(wl)
 
 
-# --- the bound: non-ok on timeout, cleanup remains owned -------------------
+# --- the bound: explicit drain evidence, cleanup remains owned --------------
 
 
-async def test_pause_reports_non_ok_and_retains_cleanup_on_drain_timeout(
+async def test_pause_reports_additive_timeout_and_retains_cleanup(
     caplog,
 ) -> None:
     wl = WakeLoop.for_tests()
@@ -274,9 +299,10 @@ async def test_pause_reports_non_ok_and_retains_cleanup_on_drain_timeout(
     wl._output_gate = gate
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        result = await wl.measurement_pause()
+        result, drained = await wl._measurement_pause_detailed()
 
-    assert result == "DRAIN_TIMEOUT"
+    assert result == "ok"
+    assert drained is False
     assert wl._measurement_active.is_set()
     assert gate.admission_paused
     # Never fail the window open silently.
@@ -331,6 +357,32 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     assert not gate.admission_paused
     assert gate.resume_calls == 1
     assert tts.resume_calls == 1
+
+
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None:
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    tts = _TailHeldTts()
+    wl._tts = tts
+
+    click = asyncio.create_task(wl._play_mute_click(going_on=True))
+    await wait_signalled(
+        tts.drain_started,
+        "mute click physical drain",
+        producer=click,
+    )
+
+    pause = asyncio.create_task(wl.measurement_pause())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not pause.done(), tts_socket
+    assert wl._output_gate.active_kind == "feedback"
+
+    tts.release_drain.set()
+    await click
+    assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+    await _close_window(wl)
 
 
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:
@@ -454,8 +506,36 @@ async def test_old_coordinator_read_timeout_survives_a_held_reply() -> None:
         )
 
         # Exactly what the pre-#1898 coordinator branches on.
-        assert resp.get("result") == "ok"
-        assert resp == {"result": "ok"}
+        assert resp == {"result": "ok", "drained": True}
+    finally:
+        server.close()
+        await server.wait_closed()
+        await _close_window(wl)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+async def test_old_coordinator_resumes_new_daemon_after_drain_timeout() -> None:
+    """The legacy result stays ``ok`` so old cleanup logic still runs."""
+    from jasper.voice.daemon_main import _start_control_socket
+
+    wl = WakeLoop.for_tests()
+    gate = _StuckGate()
+    wl._output_gate = gate
+    sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-")
+    socket_path = f"{sock_dir}/voice.sock"
+    server = await _start_control_socket(wl, socket_path)
+    try:
+        response = await _voice_uds_command(socket_path, "MEASURE_PAUSE")
+        assert response == {"result": "ok", "drained": False}
+
+        # This is exactly the old coordinator's wire decision: it knows only
+        # the scalar result, and must still renew/RESUME a pause that armed.
+        if response.get("result") == "ok":
+            resumed = await _voice_uds_command(socket_path, "MEASURE_RESUME")
+            assert resumed == {"result": "ok"}
+
+        assert not wl._measurement_active.is_set()
+        assert not gate.admission_paused
     finally:
         server.close()
         await server.wait_closed()

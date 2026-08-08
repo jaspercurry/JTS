@@ -480,8 +480,60 @@ def test_active_aec_probe_reports_exit_cleanup_failure_after_tone(monkeypatch):
         "probe — audio isolation cleanup",
     ]
     assert results[-1].status == "fail"
-    assert "test tone ran" in results[-1].detail
+    assert "probe body completed" in results[-1].detail
+    assert "playback outcome is shown above" in results[-1].detail
+    assert "test tone ran" not in results[-1].detail.lower()
     assert "no test tone was played" not in results[-1].detail.lower()
+
+
+def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
+    monkeypatch,
+):
+    @asynccontextmanager
+    async def release_fails(**_kwargs):
+        yield
+        raise doctor.aec_probe.MeasurementWindowError("mux release stuck")
+
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_run",
+        lambda cmd, **_kwargs: SimpleNamespace(
+            stdout="active\n" if cmd[:2] == ["systemctl", "is-active"] else "",
+            stderr="",
+            returncode=0,
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "measurement_window", release_fails)
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_play_and_assess_probe",
+        lambda: [
+            doctor.CheckResult(
+                "probe — generate sine",
+                "fail",
+                "could not write probe file",
+            )
+        ],
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.name for result in results] == [
+        "probe — bridge running",
+        "probe — renderers idle",
+        "probe — generate sine",
+        "probe — audio isolation cleanup",
+    ]
+    assert results[-2].status == "fail"
+    assert "could not write probe file" in results[-2].detail
+    assert "probe body completed" in results[-1].detail
+    assert "test tone ran" not in results[-1].detail.lower()
 
 
 def test_assess_aec_output_empty_journal_is_ok():
