@@ -18,7 +18,7 @@ import {
   renderScreen,
   setText,
 } from "./render.js?v=20260802-1";
-import { RelayClient } from "./relay-client.js?v=20260728-1";
+import { RelayClient } from "./relay-client.js?v=20260808-1";
 import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,

@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
+
 import pytest
 
 from jasper.capture_relay.integrity import (
@@ -15,6 +18,7 @@ from jasper.capture_relay.integrity import (
     verify_authenticated_phone_event,
     verify_capture_spec_mac,
 )
+from jasper.capture_relay.session import PhoneEventVerifier
 
 KEY = bytes(range(32))
 SESSION = "cap_integrity_test"
@@ -50,3 +54,58 @@ def test_authenticated_event_binds_exact_payload_sequence_and_session():
         verify_authenticated_phone_event(KEY, SESSION, tampered)
     with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
         verify_authenticated_phone_event(KEY, "cap_other_session", envelope)
+
+
+def test_phone_event_verifier_ignores_authenticated_stale_sequence_only(caplog):
+    """A delayed relay slot is stale only after its MAC/session binding passes.
+
+    The accepted sequence stays monotonic, an identical current-slot replay is
+    idempotent, and every conflicting/auth-invalid shape remains fail closed.
+    """
+    session = SimpleNamespace(
+        content_key=KEY,
+        session_id=SESSION,
+        spec=SimpleNamespace(kind="crossover_v2:verify"),
+    )
+    verifier = PhoneEventVerifier(session)
+    current = {"armed": True, "begin_capture": {"index": 1, "attempt": 1}}
+    accepted = authenticated_phone_event(KEY, SESSION, current, sequence=2)
+
+    with caplog.at_level(logging.INFO):
+        assert verifier.verify(accepted) == current
+        assert verifier.verify(accepted) == current
+        assert verifier.verify(
+            authenticated_phone_event(
+                KEY, SESSION, {"begin_capture": {"index": 1, "attempt": 1}},
+                sequence=1,
+            )
+        ) is None
+        # A persistent stale relay slot must not emit once per poll.
+        assert verifier.verify(
+            authenticated_phone_event(
+                KEY, SESSION, {"begin_capture": {"index": 1, "attempt": 1}},
+                sequence=1,
+            )
+        ) is None
+
+    assert verifier.sequence == 2
+    assert sum(
+        "event=capture_relay.phone_event_sequence_accepted" in record.message
+        for record in caplog.records
+    ) == 1
+    stale = [
+        record.message for record in caplog.records
+        if "event=capture_relay.phone_event_stale_ignored" in record.message
+    ]
+    assert len(stale) == 1
+    assert "accepted_sequence=2" in stale[0]
+    assert "stale_sequence=1" in stale[0]
+
+    with pytest.raises(CaptureIntegrityError, match="sequence"):
+        verifier.verify(authenticated_phone_event(
+            KEY, SESSION, {"armed": False}, sequence=2,
+        ))
+    with pytest.raises(CaptureIntegrityError, match="integrity check failed"):
+        verifier.verify(authenticated_phone_event(
+            KEY, "cap_other_session", {"armed": False}, sequence=3,
+        ))

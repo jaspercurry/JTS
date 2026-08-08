@@ -184,6 +184,10 @@ we submitted is invalid, mismatch means something else is live.
   the two sides have to move close together.
   #2097's terminal result is a page-first compatibility cut; follow the
   fixture and rollback order owned by [`capture-page/README.md`](../capture-page/README.md).
+  P0.3's phone-sequence fix is also **page first, Pi second**: publish build
+  `20260808.2`, verify the custom domain serves it, then update the Pi host.
+  The new page remains compatible with the old host; reversing the order leaves
+  a cached page able to restart or race its authenticated event counter.
 - **Relay Worker:** the Cloudflare Worker under
   [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
   **third independent release**, and like the page it ships **before**
@@ -201,6 +205,32 @@ we submitted is invalid, mismatch means something else is live.
   [`relay/README.md`](../relay/README.md) "Release order".
 
 ## Current status (2026-08-05)
+
+### Relay sequence and terminal precedence (2026-08-08)
+
+`capture-page/js/relay-client.js` is the single owner of the phone-event
+sequence. It serializes event signing and POST delivery, and keeps the active
+session's high-water mark in `sessionStorage`, re-reading it on every allocation
+so reload and back/forward restoration continue above the last sequence. If
+storage is unavailable, capture continues with the instance counter.
+
+The Pi authenticates every event before sequence handling. A lower authenticated
+sequence is a stale no-op (`event=capture_relay.phone_event_stale_ignored`);
+an identical current-sequence replay remains idempotent, while a conflicting
+payload at that sequence or any MAC/session-binding failure remains fatal.
+Accepted transitions are visible at
+`event=capture_relay.phone_event_sequence_accepted`, once per new slot.
+
+For the same session, a durably persisted VERIFY acoustic outcome is the
+authoritative terminal commissioning result. A later relay timeout, delivery
+fault, or cleanup fault cannot replace its durable failure or phone-facing
+`capture_result`; the demotion is visible at
+`event=correction.crossover_v2_terminal_verdict_preserved`. Before a
+VERIFY outcome exists, relay death keeps the existing fail-loud `relay_timeout`
+behavior. Volume restore and relay purge still run independently on every exit;
+their result is reported by `correction.crossover_v2_cleanup_complete` or
+the existing component-specific `correction.crossover_v2_volume_*_failed`
+events; relay-purge failure uses `correction.crossover_v2_cleanup_failed`.
 
 ### Live attempts loop (2026-08-03)
 
@@ -3632,7 +3662,9 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-08 — P0.2 re-verified only "Recommending an Fc" against
+Last verified: 2026-08-08 — P0.3 verified only "Relay sequence and terminal
+precedence" and its page-first/Pi-second release note against the relay client,
+session verifier, and v2 cleanup/persistence seams. P0.2 re-verified only "Recommending an Fc" against
 the selector, conductor, durable summary, household copy, and capture-page wait;
 the post-P0.1 live-Pi all-six timing remains explicitly unverified. The prior
 2026-08-04 pass added and verified the planning-vs-shipped

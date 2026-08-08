@@ -2802,7 +2802,7 @@ def persist_conductor_state(
 
 def _persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (),
-) -> None:
+) -> bool:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
     verify priors survive so ``/v2/verify`` can re-arm.
@@ -2821,16 +2821,43 @@ def _persist_terminal_failure(
     """
     from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
 
+    prior = load_v2_state()
+    session_id = str(getattr(conductor, "session_id", ""))
+    prior_verify = (prior or {}).get("verify")
+    prior_outcome = str(
+        (prior_verify or {}).get("outcome")
+        if isinstance(prior_verify, Mapping)
+        else ""
+    )
+    if (
+        isinstance(prior_verify, Mapping)
+        and prior_outcome in {"pass", "fail", "inconclusive"}
+        and (prior or {}).get("session_id") == session_id
+    ):
+        # consume() persists VERIFY before publishing capture_result. Later
+        # relay trouble is a cleanup fault, not a commissioning verdict.
+        log_event(
+            logger,
+            "correction.crossover_v2_terminal_verdict_preserved",
+            level=logging.WARNING,
+            session_id=session_id,
+            outcome=prior_outcome,
+            verdict_code=prior_verify.get("code") or "",
+            cleanup_fault_code=code,
+        )
+        return True
+
     persist_conductor_state(
         conductor, failure_code=code, failure_refusals=refusals,
     )
     state = load_v2_state()
     if state is None:
-        return
+        return False
     if not state.get("applied") and code != REASON_APPLY_FAILED:
         state["accepted_phases"] = []
         state["gain_plan_db"] = None
     save_v2_state(state)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -4579,19 +4606,48 @@ def build_v2_run_and_consume(
 
         async def _purge_best_effort() -> None:
             try:
-                await asyncio.to_thread(purge, client, pi_session)
-            except (OSError, RuntimeError, ValueError):
-                logger.warning("v2 relay purge failed", exc_info=True)
+                purged = await asyncio.to_thread(purge, client, pi_session)
+            except (OSError, RuntimeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_cleanup_failed",
+                    level=logging.WARNING,
+                    session_id=pi_session.session_id,
+                    component="relay_purge",
+                    error_type=type(exc).__name__,
+                )
+                return
+            log_event(
+                logger,
+                (
+                    "correction.crossover_v2_cleanup_complete"
+                    if purged is not False
+                    else "correction.crossover_v2_cleanup_failed"
+                ),
+                level=(logging.INFO if purged is not False else logging.WARNING),
+                session_id=pi_session.session_id,
+                component="relay_purge",
+            )
 
         async def _abandon_best_effort() -> None:
             try:
                 await volume.abandon()
-            except (OSError, RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError) as exc:
                 log_event(
                     logger,
                     "correction.crossover_v2_volume_abandon_failed",
                     level=logging.CRITICAL,
+                    session_id=pi_session.session_id,
+                    component="volume_abandon",
+                    error_type=type(exc).__name__,
                 )
+                return
+            log_event(
+                logger,
+                "correction.crossover_v2_cleanup_complete",
+                session_id=pi_session.session_id,
+                component="volume_abandon",
+            )
 
         async def _post_terminal_failure_host_event(code: str) -> None:
             """Tell the phone the session is over so it stops waiting (§5.10).
@@ -4830,8 +4886,9 @@ def build_v2_run_and_consume(
                     # resume that does not exist.
                     accepted_phases=",".join(sorted(conductor.accepted_phases)),
                 )
-            await _post_session_over_host_event(budget)
-            _persist_terminal_failure(conductor, code)
+            verdict_preserved = _persist_terminal_failure(conductor, code)
+            if not verdict_preserved:
+                await _post_session_over_host_event(budget)
             await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
@@ -4888,11 +4945,21 @@ def build_v2_run_and_consume(
         if done:
             try:
                 await volume.close()
-            except (OSError, RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError) as exc:
                 log_event(
                     logger,
                     "correction.crossover_v2_volume_close_failed",
                     level=logging.CRITICAL,
+                    session_id=pi_session.session_id,
+                    component="volume_close",
+                    error_type=type(exc).__name__,
+                )
+            else:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_cleanup_complete",
+                    session_id=pi_session.session_id,
+                    component="volume_close",
                 )
         else:
             await _abandon_best_effort()

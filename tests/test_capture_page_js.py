@@ -215,7 +215,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260808.1",
+        "capture_page_build": "20260808.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -223,7 +223,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260808-1" in index_html
+    assert "main.js?v=20260808-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260805-1"' in main_js
@@ -232,11 +232,10 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # would keep attributing the browser's own track settings to the
     # microphone — the exact misattribution this sweep removed.
     assert 'from "./constraints.js?v=20260731-1"' in main_js
-    # Bumped with #1824 B1: relay-client.js gained the machine-readable
-    # timeout tag the page classifies on. A warm-cache phone holding the old
-    # module would keep raising untagged timeouts, so the classifier would stay
-    # broken for exactly the phones already in a household's hands.
-    assert 'from "./relay-client.js?v=20260728-1"' in main_js
+    # Bumped with P0.3: relay-client.js owns the serialized, session-persistent
+    # authenticated event sequence. A warm-cache phone holding the old module
+    # could still race or restart the counter after a reload.
+    assert 'from "./relay-client.js?v=20260808-1"' in main_js
     # Both modules changed in the protocol-deletion PR, and both carry a
     # SECURITY tightening (mandatory spec MAC; a version-less spec is refused
     # rather than read as legacy protocol 1). An unstamped or stale-stamped
@@ -272,9 +271,9 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "48ac0265cf7b7d10db52094deb4547632064cce49c0c3070d1b402444f60d357"
+    "396114aaea8be8bf6619db71d929c3d5da69834e18d269bd4477313d673e0fda"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260808.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260808.2"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
