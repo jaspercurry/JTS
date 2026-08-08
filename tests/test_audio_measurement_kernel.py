@@ -195,6 +195,33 @@ def test_fractional_octave_smoothing_matches_incident_sized_reference():
     assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
 
 
+@pytest.mark.parametrize("quiet_db", [-100.0, -110.0])
+def test_fractional_octave_smoothing_preserves_quiet_tail_after_loud_band(quiet_db):
+    """Global-prefix cancellation must not corrupt a later quiet window."""
+    freqs = np.linspace(0.0, 24000.0, 4097, dtype=np.float64)
+    magnitude_db = np.full(freqs.shape, quiet_db)
+    magnitude_db[: len(freqs) // 2] = 20.0
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 48)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 48)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+    assert actual[-1] == pytest.approx(quiet_db, abs=SMOOTH_EQUIVALENCE_ATOL_DB)
+
+
+def test_fractional_octave_smoothing_preserves_quiet_band_between_loud_bands():
+    """Scalar fallback protects windows ill-conditioned in both directions."""
+    freqs = np.linspace(0.0, 24000.0, 4097, dtype=np.float64)
+    magnitude_db = np.full(freqs.shape, 20.0)
+    magnitude_db[len(freqs) // 4:3 * len(freqs) // 4] = -100.0
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 48)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 48)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+    assert actual[len(freqs) // 2] == pytest.approx(
+        -100.0, abs=SMOOTH_EQUIVALENCE_ATOL_DB
+    )
+
+
 def test_fractional_octave_smoothing_preserves_zero_and_nonfinite_edges():
     all_zero = np.full(7, -np.inf)
     freqs = np.array([-2.0, 0.0, 1.0, 2.0, 4.0, 8.0, 16.0])
@@ -256,7 +283,7 @@ def test_fractional_octave_smoothing_uses_bulk_prefix_operations(monkeypatch):
     analysis.smooth_fractional_octave(freqs, magnitude_db, 6)
 
     assert search_shapes == [(4096,), (4096,)]
-    assert cumsum_shapes == [(4097,)]
+    assert cumsum_shapes == [(4097,), (4097,)]
 
 
 # ---------- 2. QualityModel value contract ---------------------------------

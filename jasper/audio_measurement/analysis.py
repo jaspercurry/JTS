@@ -70,11 +70,39 @@ def smooth_fractional_octave(
         prefix = np.empty(n + 1, dtype=prefix_dtype)
         prefix[0] = 0
         np.cumsum(power, dtype=prefix_dtype, out=prefix[1:])
-        finite = np.all(np.isfinite(prefix)) and np.all(hi_idx <= n)
+        reverse_prefix = np.empty(n + 1, dtype=prefix_dtype)
+        reverse_prefix[0] = 0
+        np.cumsum(power[::-1], dtype=prefix_dtype, out=reverse_prefix[1:])
+        finite = (
+            np.all(np.isfinite(prefix))
+            and np.all(np.isfinite(reverse_prefix))
+            and np.all(hi_idx <= n)
+        )
         if finite:
-            smoothed[positive] = (
-                (prefix[hi_idx] - prefix[lo_idx]) / (hi_idx - lo_idx)
+            forward_sum = prefix[hi_idx] - prefix[lo_idx]
+            reverse_sum = (
+                reverse_prefix[n - lo_idx] - reverse_prefix[n - hi_idx]
             )
+            use_reverse = reverse_prefix[n - hi_idx] < prefix[lo_idx]
+            window_sum = np.where(use_reverse, reverse_sum, forward_sum)
+            subtraction_scale = np.where(
+                use_reverse,
+                reverse_prefix[n - lo_idx] + reverse_prefix[n - hi_idx],
+                prefix[hi_idx] + prefix[lo_idx],
+            )
+            # If even the better-direction subtraction is ill-conditioned,
+            # take only that rare window through the exact scalar reduction.
+            suspect = (subtraction_scale > 0) & (
+                window_sum
+                <= np.finfo(prefix_dtype).eps * 1e12 * subtraction_scale
+            )
+            smoothed[positive] = window_sum / (hi_idx - lo_idx)
+            positive_idx = np.flatnonzero(positive)
+            for position in np.flatnonzero(suspect):
+                i = positive_idx[position]
+                smoothed[i] = float(
+                    np.mean(power[lo_idx[position]:hi_idx[position]])
+                )
 
     if not finite:
         # Prefix subtraction can contaminate windows after NaN/+inf or a
