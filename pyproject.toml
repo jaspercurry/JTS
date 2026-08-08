@@ -230,10 +230,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 # Security floors for packages we never import directly — both are
-# transitive-only (pulled in by google-auth). A plain pyproject.toml
-# dependency line would misrepresent them as things JTS imports; a uv
-# constraint bounds whatever pulls them in without adding a fake direct
-# dependency. Bump the floor (never lower it) if a future CVE lands here.
+# transitive-only — pyasn1 via google-auth → pyasn1-modules, httplib2
+# via google-api-python-client and google-auth-httplib2. A plain
+# pyproject.toml dependency line would misrepresent them as things JTS
+# imports; a uv constraint bounds whatever pulls them in without adding
+# a fake direct dependency. Bump the floor (never lower it) if a future
+# CVE lands here.
 constraint-dependencies = [
     # CVE-2026-59884 / CVE-2026-59885 / CVE-2026-59886 (quadratic-time
     # OID decode, unbounded BER tag length, Real.__float__ cost) — all
