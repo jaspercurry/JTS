@@ -109,10 +109,12 @@ async def test_measurement_pause_and_resume_transfer_volume_ownership():
 
     assert await wl.measurement_pause() == "ok"
     assert wl._measurement_active.is_set()
+    assert wl._output_gate.admission_paused
     assert ownership == [True]
 
     assert await wl.measurement_resume() == "ok"
     assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
     assert ownership == [True, False]
     assert wl.session_status()["measurement_active"] is False
 
@@ -149,6 +151,7 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
 
     assert ownership == [True, False]
     assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
 
 
 async def test_manual_start_begins_turn_when_unguarded():

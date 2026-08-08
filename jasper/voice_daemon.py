@@ -519,9 +519,11 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 #
 # 2.0 s is a ceiling, not a preference. The coordinator awaits this
 # command's reply with a VOICE_MEASURE_PAUSE_TIMEOUT_SEC (3.0 s) read
-# timeout, and a coordinator that gives up believes voice was never
-# paused: it skips MEASURE_RESUME on the way out, and the speaker then
-# stays gated until the daemon's auto-clear. install.sh restarts
+# timeout. A transport-level timeout still leaves an older permissive
+# coordinator unable to know that voice armed the pause, so it skips
+# MEASURE_RESUME and the daemon's auto-clear must recover. A completed
+# drain timeout is different: the daemon replies ``DRAIN_TIMEOUT`` so
+# current coordinators retain cleanup ownership. install.sh restarts
 # jasper-voice and jasper-web at different points of a deploy, so an OLD
 # coordinator can be talking to a NEW daemon — the bound has to fit under
 # the timeout that coordinator already shipped with, not one we raise
@@ -2532,8 +2534,9 @@ class WakeLoop:
         coordinator (jasper.correction.coordinator) is expected to
         check STATUS first; this is defense-in-depth.
 
-        Ordering is load-bearing (issue #1898). The gate event is set,
-        and the safety timer armed, BEFORE the in-flight drain, so that:
+        Ordering is load-bearing (issue #1898). AssistantOutputGate admission
+        is atomically closed first, then the measurement event is set and the
+        safety timer armed BEFORE the in-flight drain, so that:
 
         * no NEW cue, timer, or announcement can start during the drain.
           Two mechanisms, not one: the four #1786 entry points
@@ -2546,9 +2549,11 @@ class WakeLoop:
           drain window and open a reactive cue behind our back;
         * a crash mid-drain still auto-clears (MEASUREMENT_AUTOCLEAR_SEC).
 
-        The drain therefore only ever waits out audio that was already
-        playing when PAUSE landed. It defers to that audio; it never
-        cancels it, so no wake-blocking cue is cut short or dropped.
+        The drain therefore only ever waits out audio that already owned the
+        gate when PAUSE landed. It defers to that audio; it never cancels it,
+        so no wake-blocking cue is cut short or dropped. Pre-render work that
+        passed an earlier measurement check cannot acquire output afterward:
+        admission, not scattered checks, is the authority.
 
         Idempotent — calling twice is harmless. The drain runs only on
         the opening transition: the coordinator's lease refresh
@@ -2559,71 +2564,80 @@ class WakeLoop:
         Returns:
           - "ok" when the window is now open.
           - "BUSY" when refused due to an active session.
+          - "DRAIN_TIMEOUT" when the pause is armed but prior assistant audio
+            did not drain within the bound. The caller still owns RESUME.
         """
         if self._state is State.SESSION:
             return "BUSY"
         opening = not self._measurement_active.is_set()
-        await self._set_measurement_active(True, trigger="pause")
-        self._content_activity.pause()
-        await self._tts.pause_content_meter()
-
-        # Cancel any prior safety timer (idempotent re-pause path).
-        prev = self._measurement_safety_task
-        if prev is not None and not prev.done():
-            prev.cancel()
-
-        # Arm new safety timer. If the coordinator crashes (kill -9)
-        # without sending RESUME, this auto-clears the gate so the
-        # speaker doesn't stay silent forever. Logged at WARNING so
-        # the operator can see something went wrong.
-        loop = asyncio.get_running_loop()
-
-        async def _safety() -> None:
-            try:
-                await asyncio.sleep(MEASUREMENT_AUTOCLEAR_SEC)
-            except asyncio.CancelledError:
-                return
-            if self._measurement_active.is_set():
-                logger.warning(
-                    "measurement window auto-clearing after %.0f s — "
-                    "coordinator likely crashed without sending "
-                    "MEASURE_RESUME",
-                    MEASUREMENT_AUTOCLEAR_SEC,
-                )
-                await self._set_measurement_active(False, trigger="auto_clear")
-                self._content_activity.resume()
-                await self._tts.resume_content_meter()
-
-        # Note: this is a fire-once-and-exit task that we deliberately
-        # do NOT add to self._bg_tasks — WakeLoop treats done bg tasks
-        # as turn completion through its background watcher and
-        # session-frame backup, so adding short-lived tasks there would
-        # corrupt the turn lifecycle. Single-slot reference is enough;
-        # we cancel via that slot on RESUME or repeated PAUSE.
-        self._measurement_safety_task = loop.create_task(_safety())
+        admission_cleanup_required = False
         if opening:
-            await self._drain_inflight_output()
-        return "ok"
+            await self._output_gate.pause_admission()
+            admission_cleanup_required = True
+        try:
+            await self._set_measurement_active(True, trigger="pause")
+            self._content_activity.pause()
+            await self._tts.pause_content_meter()
 
-    async def _drain_inflight_output(self) -> None:
+            # Cancel any prior safety timer (idempotent re-pause path).
+            prev = self._measurement_safety_task
+            if prev is not None and not prev.done():
+                prev.cancel()
+
+            # Arm new safety timer. If the coordinator crashes (kill -9)
+            # without sending RESUME, this auto-clears the gate so the
+            # speaker doesn't stay silent forever. Logged at WARNING so
+            # the operator can see something went wrong.
+            loop = asyncio.get_running_loop()
+
+            async def _safety() -> None:
+                try:
+                    await asyncio.sleep(MEASUREMENT_AUTOCLEAR_SEC)
+                except asyncio.CancelledError:
+                    return
+                if self._measurement_active.is_set():
+                    logger.warning(
+                        "measurement window auto-clearing after %.0f s — "
+                        "coordinator likely crashed without sending "
+                        "MEASURE_RESUME",
+                        MEASUREMENT_AUTOCLEAR_SEC,
+                    )
+                    await self._restore_measurement_state(trigger="auto_clear")
+
+            # Note: this is a fire-once-and-exit task that we deliberately
+            # do NOT add to self._bg_tasks — WakeLoop treats done bg tasks
+            # as turn completion through its background watcher and
+            # session-frame backup, so adding short-lived tasks there would
+            # corrupt the turn lifecycle. Single-slot reference is enough;
+            # we cancel via that slot on RESUME or repeated PAUSE.
+            self._measurement_safety_task = loop.create_task(_safety())
+            if opening and not await self._drain_inflight_output():
+                return "DRAIN_TIMEOUT"
+            return "ok"
+        except BaseException:
+            if admission_cleanup_required:
+                await self._restore_measurement_state(trigger="pause_error")
+            raise
+
+    async def _drain_inflight_output(self) -> bool:
         """Wait out assistant audio that was already playing when PAUSE
         landed, so its tail cannot enter the window's first capture.
 
-        Bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`. On timeout the
-        window stays open and we say so at WARNING: blocking a
-        measurement behind a stuck output episode would be worse than
-        one contaminated capture the household can simply re-run, and
-        failing the window open silently would be worse than both.
+        Bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`. On timeout the pause and
+        cleanup ownership stay armed, but the command returns `DRAIN_TIMEOUT`
+        and says so at WARNING. Strict callers refuse to capture; the
+        established correction caller may retain its explicit proceed-anyway
+        policy and still sends RESUME afterward.
 
         Returns immediately — without yielding to the event loop — when
         the gate is already idle, which is the overwhelmingly common
         case.
         """
         if not self._output_gate.is_active:
-            return
+            return True
         active_kind = self._output_gate.active_kind or "unknown"
         started = time.monotonic()
-        drained = await self._output_gate.wait_idle(
+        drained = await self._output_gate.drain_paused(
             MEASUREMENT_INFLIGHT_DRAIN_SEC
         )
         waited_ms = int((time.monotonic() - started) * 1000)
@@ -2634,7 +2648,7 @@ class WakeLoop:
                 active_kind=active_kind,
                 waited_ms=waited_ms,
             )
-            return
+            return True
         log_event(
             logger,
             "measurement.inflight_drain_timeout",
@@ -2643,39 +2657,48 @@ class WakeLoop:
             bound_sec=MEASUREMENT_INFLIGHT_DRAIN_SEC,
             detail=(
                 "assistant audio still playing; the measurement window is "
-                "open anyway and its first capture may be contaminated"
+                "armed but the caller must not begin a strict capture"
             ),
             level=logging.WARNING,
         )
+        return False
 
     async def _play_mute_click(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't open or write fails,
         the visual feedback on the web UI is enough — never raise."""
-        if self._output_gate.is_active:
+        episode = await self._output_gate.begin_if_idle("feedback")
+        if episode is None:
             log_event(
                 logger,
                 "mute_click.skipped",
-                reason="output_active",
+                reason=(
+                    "output_admission_paused"
+                    if self._output_gate.admission_paused
+                    else "output_active"
+                ),
                 active_kind=self._output_gate.active_kind,
             )
             return
         try:
-            await self._prepare_feedback_loudness_context(kind="mute_click")
-            pcm = (
-                self._mute_click_on_pcm
-                if going_on else self._mute_click_off_pcm
-            )
-            profile = (
-                self._mute_click_on_profile
-                if going_on else self._mute_click_off_profile
-            )
-            await self._tts.write_segment(
-                pcm,
-                segment_kind="cue",
-                source_profile=profile,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("mic mute click failed: %s", e)
+            try:
+                await self._prepare_feedback_loudness_context(kind="mute_click")
+                pcm = (
+                    self._mute_click_on_pcm
+                    if going_on else self._mute_click_off_pcm
+                )
+                profile = (
+                    self._mute_click_on_profile
+                    if going_on else self._mute_click_off_profile
+                )
+                await self._tts.write_segment(
+                    pcm,
+                    segment_kind="cue",
+                    source_profile=profile,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("mic mute click failed: %s", e)
+        finally:
+            await self._output_gate.end(episode)
 
 
     async def _prepare_feedback_loudness_context(
@@ -2826,14 +2849,26 @@ class WakeLoop:
         Idempotent — calling twice (or before any PAUSE) is harmless.
         Always returns "ok".
         """
-        await self._set_measurement_active(False, trigger="resume")
-        self._content_activity.resume()
-        await self._tts.resume_content_meter()
+        await self._restore_measurement_state(trigger="resume")
         if self._measurement_safety_task is not None:
-            if not self._measurement_safety_task.done():
+            current = asyncio.current_task()
+            if (
+                self._measurement_safety_task is not current
+                and not self._measurement_safety_task.done()
+            ):
                 self._measurement_safety_task.cancel()
             self._measurement_safety_task = None
         return "ok"
+
+    async def _restore_measurement_state(self, *, trigger: str) -> None:
+        """Restore every voice-side pause, always reopening admission."""
+
+        try:
+            await self._set_measurement_active(False, trigger=trigger)
+            self._content_activity.resume()
+            await self._tts.resume_content_meter()
+        finally:
+            await self._output_gate.resume_admission()
 
     async def _set_measurement_active(self, active: bool, *, trigger: str) -> None:
         """Update the voice gate and reconcile guard as one state change."""

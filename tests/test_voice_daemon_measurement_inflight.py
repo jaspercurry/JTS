@@ -11,18 +11,20 @@ residual half: `measurement_pause()` checked only `State.SESSION`, never
 moment BEFORE the PAUSE landed kept playing into the window's first
 capture.
 
-`measurement_pause()` now arms the window first (so nothing new can start
-and mic frames stop immediately) and then waits, bounded by
+`measurement_pause()` now closes output admission atomically, arms the window
+(so nothing new can start and mic frames stop immediately), and then waits,
+bounded by
 `MEASUREMENT_INFLIGHT_DRAIN_SEC`, for the already-playing episode to
-finish. On timeout it proceeds with the window open and says so at
-WARNING — it never blocks the measurement flow, and never fails open
-silently.
+finish. On timeout it returns `DRAIN_TIMEOUT` with cleanup ownership still
+armed; strict callers refuse to capture, while the historical permissive
+correction path may proceed but must still send RESUME.
 
-The bound is a compatibility ceiling, not a preference: an OLD
-coordinator (which awaits the reply with
-`VOICE_MEASURE_PAUSE_TIMEOUT_SEC`) can be talking to a NEW daemon across
-a deploy, and a coordinator that times out skips MEASURE_RESUME. The
-pairing is pinned here.
+The bound is a compatibility ceiling, not a preference: an OLD coordinator
+(which awaits the reply with `VOICE_MEASURE_PAUSE_TIMEOUT_SEC`) can be talking
+to a NEW daemon across a deploy. A transport timeout still leaves that old
+caller unable to know the pause was armed, so the auto-clear is the backstop;
+current callers additionally understand the explicit `DRAIN_TIMEOUT` reply
+and retain cleanup ownership. The pairing is pinned here.
 
 The #1786 refusal behaviour itself lives in
 tests/test_voice_daemon_measurement_gate.py; the gate's own idle-wait
@@ -34,6 +36,8 @@ import asyncio
 import logging
 import shutil
 import tempfile
+
+import pytest
 
 from jasper.correction.coordinator import (
     MEASUREMENT_LEASE_REFRESH_SEC,
@@ -59,6 +63,23 @@ class _IdleGate:
     is_active = False
     active_kind = None
 
+    def __init__(self) -> None:
+        self.admission_paused = False
+
+    async def pause_admission(self) -> bool:
+        changed = not self.admission_paused
+        self.admission_paused = True
+        return changed
+
+    async def drain_paused(self, timeout: float) -> bool:
+        del timeout
+        return True
+
+    async def resume_admission(self) -> bool:
+        changed = self.admission_paused
+        self.admission_paused = False
+        return changed
+
     async def wait_idle(self, timeout: float) -> bool:
         raise AssertionError(
             "measurement_pause must not wait when output is already idle"
@@ -74,6 +95,21 @@ class _StuckGate:
 
     def __init__(self) -> None:
         self.waits: list[float] = []
+        self.admission_paused = False
+
+    async def pause_admission(self) -> bool:
+        changed = not self.admission_paused
+        self.admission_paused = True
+        return changed
+
+    async def drain_paused(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        return False
+
+    async def resume_admission(self) -> bool:
+        changed = self.admission_paused
+        self.admission_paused = False
+        return changed
 
     async def wait_idle(self, timeout: float) -> bool:
         self.waits.append(timeout)
@@ -92,9 +128,21 @@ class _ObservedGate(AssistantOutputGate):
         super().__init__()
         self.drain_entered = asyncio.Event()
 
-    async def wait_idle(self, timeout: float) -> bool:
+    async def drain_paused(self, timeout: float) -> bool:
         self.drain_entered.set()
-        return await super().wait_idle(timeout)
+        return await super().drain_paused(timeout)
+
+
+class _CountingGate(AssistantOutputGate):
+    """Real gate with observable cleanup calls for error-path ownership."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.resume_calls = 0
+
+    async def resume_admission(self) -> bool:
+        self.resume_calls += 1
+        return await super().resume_admission()
 
 
 class _RefusingCues:
@@ -138,8 +186,7 @@ async def test_pause_drains_tts_for_both_supported_mix_stages() -> None:
     for tts_socket in (FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET):
         wl = WakeLoop.for_tests()
         wl._cfg.tts_outputd_socket = tts_socket
-        episode = await wl._output_gate.begin_if_idle("assistant")
-        assert episode is not None
+        episode = await wl._output_gate.begin_turn()
 
         pause = asyncio.create_task(wl.measurement_pause())
         for _ in range(5):
@@ -216,10 +263,10 @@ async def test_drained_path_logs_the_wait(caplog) -> None:
     await _close_window(wl)
 
 
-# --- the bound: proceed on timeout, loudly ---------------------------------
+# --- the bound: non-ok on timeout, cleanup remains owned -------------------
 
 
-async def test_pause_proceeds_with_warning_when_the_drain_times_out(
+async def test_pause_reports_non_ok_and_retains_cleanup_on_drain_timeout(
     caplog,
 ) -> None:
     wl = WakeLoop.for_tests()
@@ -229,9 +276,9 @@ async def test_pause_proceeds_with_warning_when_the_drain_times_out(
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.measurement_pause()
 
-    # Never block the measurement flow.
-    assert result == "ok"
+    assert result == "DRAIN_TIMEOUT"
     assert wl._measurement_active.is_set()
+    assert gate.admission_paused
     # Never fail the window open silently.
     assert "event=measurement.inflight_drain_timeout" in caplog.text
     assert "active_kind=proactive" in caplog.text
@@ -245,6 +292,7 @@ async def test_pause_proceeds_with_warning_when_the_drain_times_out(
     assert gate.waits == [MEASUREMENT_INFLIGHT_DRAIN_SEC]
 
     await _close_window(wl)
+    assert not gate.admission_paused
 
 
 # --- the common path: idle gate costs nothing ------------------------------
@@ -257,6 +305,32 @@ async def test_idle_output_never_waits() -> None:
     assert await wl.measurement_pause() == "ok"
     assert wl._measurement_active.is_set()
     await _close_window(wl)
+
+
+async def test_pause_setup_error_restores_output_admission_once() -> None:
+    class _FailingPauseTts:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        async def pause_content_meter(self) -> None:
+            raise RuntimeError("meter pause failed")
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+
+    wl = WakeLoop.for_tests()
+    gate = _CountingGate()
+    tts = _FailingPauseTts()
+    wl._output_gate = gate
+    wl._tts = tts
+
+    with pytest.raises(RuntimeError, match="meter pause failed"):
+        await wl.measurement_pause()
+
+    assert not wl._measurement_active.is_set()
+    assert not gate.admission_paused
+    assert gate.resume_calls == 1
+    assert tts.resume_calls == 1
 
 
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:

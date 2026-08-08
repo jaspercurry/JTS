@@ -2070,16 +2070,28 @@ Captured here so future sessions don't repeat the mistakes.
     the active probe requires a trustworthy `active_source="idle"` from
     jasper-control `/state`, then uses the loopback-lane check as defense in
     depth. Those are early diagnostic checks, not the isolation authority:
-    after them, the probe enters the existing correction
+    before any precheck, the standalone command takes a fail-fast advisory
+    lock at `/run/jasper/doctor-aec-probe.lock` and holds it through final
+    cleanup. The stable lock file is never unlinked; CLOEXEC prevents `aplay`
+    from inheriting it, and process death releases the kernel flock. This
+    serializes standalone doctor probes. After the prechecks, the probe enters
+    the existing correction
     `measurement_window()` with its own mux owner (`doctor-aec-probe`) and
     strict voice pause enabled. Mux then holds `correction` selected against
     renderer starts that race the precheck, including USB/direct input, while
-    `MEASURE_PAUSE` blocks and drains assistant audio whether TTS is routed
-    pre-DSP through fan-in or member-locally through outputd. The probe creates
-    the WAV, runs `aplay`, waits, and assesses telemetry only inside that held
-    window. Unavailable/malformed STATUS, refused or unconfirmed PAUSE, or a
-    lost mux/voice lease aborts with no new tone (or stops an in-progress
-    probe); `MEASURE_RESUME` and owner-scoped mux release run on every exit.
+    `MEASURE_PAUSE` atomically closes `AssistantOutputGate` admission and drains
+    already-admitted assistant audio whether TTS is routed pre-DSP through
+    fan-in or member-locally through outputd. A drain timeout is non-ok: the
+    strict probe never yields, while cleanup still owns `MEASURE_RESUME`.
+    The probe creates the WAV, runs `aplay`, waits, and assesses telemetry only
+    inside that held window. The body uses bounded synchronous subprocess work
+    in a thread; cancellation (including repeated cancellation) does not kill
+    that worker, so teardown keeps isolation held until the worker actually
+    stops and only then re-raises cancellation. Unavailable/malformed STATUS,
+    refused or unconfirmed PAUSE, or a lost mux/voice lease aborts admission;
+    `MEASURE_RESUME` and owner-scoped mux release run on every exit. If teardown
+    fails after the tone ran, doctor preserves the probe evidence and reports a
+    distinct isolation-cleanup failure instead of claiming no tone played.
     An unavailable or malformed initial `/state` likewise fails closed with no
     tone because USB/direct output can be invisible to the loopback check.
 

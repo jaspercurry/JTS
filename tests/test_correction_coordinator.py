@@ -735,8 +735,11 @@ async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status)
         [],
         {},
         {"result": "BUSY"},
+    {"result": "DRAIN_TIMEOUT"},
     ],
-    ids=["unreachable", "malformed", "nonmapping", "missing", "busy"],
+    ids=["unreachable", "malformed", "nonmapping", "missing", "busy",
+        "drain-timeout",
+    ],
 )
 @pytest.mark.asyncio
 async def test_strict_pause_failure_resumes_and_releases_exact_owner(
@@ -777,6 +780,33 @@ async def test_strict_pause_failure_resumes_and_releases_exact_owner(
         "MEASURE_PAUSE",
         "MEASURE_RESUME",
         "release:doctor-aec-probe:False",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permissive_window_owns_cleanup_after_voice_drain_timeout(
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            return {"result": "DRAIN_TIMEOUT"}
+        return {"result": "ok"}
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+
+    async with measurement_window():
+        calls.append("body")
+
+    assert calls == [
+        "STATUS",
+        "MEASURE_PAUSE",
+        "body",
+        "MEASURE_RESUME",
     ]
 
 
@@ -1028,7 +1058,8 @@ async def test_sustained_renewal_failure_aborts_via_registered_target(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_abort_target_falls_back_to_entering_task_when_none_registered(monkeypatch):
+async def test_abort_target_falls_back_to_entering_task_when_none_registered(monkeypatch,
+):
     """Between plays (nothing registered) the abort still cancels the entering
     task — the pre-existing behavior — in addition to latching ``failed``."""
     acquire_calls = 0

@@ -530,9 +530,15 @@ async def measurement_window(
                             "MEASURE_PAUSE returned a malformed response."
                         )
                     raise TypeError("MEASURE_PAUSE response is not an object")
-                if resp.get("result") == "ok":
+                pause_result = resp.get("result")
+                if pause_result in {"ok", "DRAIN_TIMEOUT"}:
                     voice_paused = True
                     voice_pause_cleanup_required = True
+                    if pause_result == "DRAIN_TIMEOUT" and require_voice_pause:
+                        raise MeasurementWindowError(
+                            "Voice pause was armed, but prior assistant audio "
+                            "did not drain before the deadline."
+                        )
 
                     async def _refresh_voice_lease() -> None:
                         nonlocal voice_lease_error
@@ -593,6 +599,12 @@ async def measurement_window(
                     lease_refresh_task = asyncio.create_task(
                         _refresh_voice_lease()
                     )
+                    if pause_result == "DRAIN_TIMEOUT":
+                        logger.warning(
+                            "MEASURE_PAUSE timed out draining prior assistant "
+                            "audio — proceeding under the historical permissive "
+                            "correction policy; MEASURE_RESUME remains required"
+                        )
                 else:
                     if require_voice_pause:
                         raise MeasurementWindowError(

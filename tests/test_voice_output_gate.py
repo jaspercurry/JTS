@@ -114,3 +114,50 @@ async def test_wait_idle_rechecks_after_each_wake() -> None:
 
     await gate.end(second)
     assert await asyncio.wait_for(waiter, timeout=1.0) is True
+async def test_paused_admission_refuses_every_non_turn_output_kind() -> None:
+    from jasper.voice.output_gate import AssistantOutputGate
+
+    gate = AssistantOutputGate()
+    assert await gate.pause_admission() is True
+    assert await gate.pause_admission() is False
+
+    for kind in ("proactive", "admin", "feedback"):
+        assert await gate.begin_if_idle(kind) is None
+
+    assert gate.admission_paused
+    assert await gate.resume_admission() is True
+    assert await gate.resume_admission() is False
+
+
+async def test_turn_admission_waits_until_pause_is_resumed() -> None:
+    from jasper.voice.output_gate import AssistantOutputGate
+
+    gate = AssistantOutputGate()
+    await gate.pause_admission()
+
+    turn_task = asyncio.create_task(gate.begin_turn())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not turn_task.done()
+
+    await gate.resume_admission()
+    turn = await asyncio.wait_for(turn_task, timeout=1.0)
+    assert turn.kind == "turn"
+
+
+async def test_paused_gate_boundedly_drains_only_the_preexisting_episode() -> None:
+    from jasper.voice.output_gate import AssistantOutputGate
+
+    gate = AssistantOutputGate()
+    episode = await gate.begin_if_idle("admin")
+    assert episode is not None
+
+    await gate.pause_admission()
+    assert await gate.begin_if_idle("proactive") is None
+    assert await gate.drain_paused(0.01) is False
+
+    await gate.end(episode)
+    assert await gate.drain_paused(0.0) is True
+    assert await gate.begin_if_idle("feedback") is None
+    await gate.resume_admission()
+    assert await gate.begin_if_idle("feedback") is not None

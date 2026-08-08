@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import errno
+import fcntl
 import json
 import math
 import os
 import struct
 import time
 import wave
+from contextlib import contextmanager
+from typing import Iterator
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...control import client as control
@@ -35,6 +39,58 @@ _PROBE_SINE_DURATION_S = 5.0
 _PROBE_GATE_OWNER = "doctor-aec-probe"
 
 
+_PROBE_LOCK_PATH = "/run/jasper/doctor-aec-probe.lock"
+
+
+class _ProbeLockError(RuntimeError):
+    """The standalone probe's cross-process admission lock failed."""
+
+
+class _ProbeLockBusy(_ProbeLockError):
+    """Another standalone AEC probe owns the admission lock."""
+
+
+class _ProbeIsolationCleanupError(RuntimeError):
+    """The tone body completed, but measurement-window teardown failed."""
+
+    def __init__(self, results: list[CheckResult], cause: MeasurementWindowError):
+        super().__init__(str(cause))
+        self.results = results
+
+
+@contextmanager
+def _probe_lock(path: str | None = None) -> Iterator[int]:
+    """Fail-fast process lock for one standalone audible probe.
+
+    The file is never unlinked, avoiding inode-replacement races. CLOEXEC keeps
+    ``aplay`` from inheriting ownership; the kernel closes the descriptor and
+    releases ``flock`` if the doctor process exits or crashes.
+    """
+
+    lock_path = path or _PROBE_LOCK_PATH
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise _ProbeLockError(f"could not open {lock_path}: {exc}") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise _ProbeLockBusy(
+                    "another jasper-doctor --probe-aec run is already active"
+                ) from exc
+            raise _ProbeLockError(f"could not lock {lock_path}: {exc}") from exc
+        try:
+            yield fd
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def probe_aec_ref_path() -> list[CheckResult]:
     """Play a brief sine and confirm that the bridge reference RMS rises.
 
@@ -42,6 +98,31 @@ def probe_aec_ref_path() -> list[CheckResult]:
     differential evidence to distinguish a silent reference path from a
     generally inaudible or muted test signal.
     """
+    try:
+        with _probe_lock():
+            return _probe_aec_ref_path_locked()
+    except _ProbeLockBusy as exc:
+        return [
+            CheckResult(
+                "probe — exclusive run",
+                "fail",
+                f"{exc}; wait for it to finish, then re-run. No test tone was played.",
+            )
+        ]
+    except _ProbeLockError as exc:
+        return [
+            CheckResult(
+                "probe — exclusive run",
+                "fail",
+                f"could not establish the probe process lock ({exc}); check "
+                "/run/jasper permissions. No test tone was played.",
+            )
+        ]
+
+
+def _probe_aec_ref_path_locked() -> list[CheckResult]:
+    """Run prechecks and the audible body under the process lock."""
+
     results: list[CheckResult] = []
 
     is_active = _run(
@@ -100,6 +181,17 @@ def probe_aec_ref_path() -> list[CheckResult]:
 
     try:
         results.extend(asyncio.run(_run_isolated_probe()))
+    except _ProbeIsolationCleanupError as exc:
+        results.extend(exc.results)
+        results.append(
+            CheckResult(
+                "probe — audio isolation cleanup",
+                "fail",
+                f"the test tone ran, but isolation cleanup failed ({exc}). "
+                "Household audio may remain gated until the mux/voice safety "
+                "leases expire; check System status before re-running.",
+            )
+        )
     except MeasurementWindowError as exc:
         results.append(CheckResult(
             "probe — audio isolation", "fail",
@@ -112,25 +204,48 @@ def probe_aec_ref_path() -> list[CheckResult]:
 async def _run_isolated_probe() -> list[CheckResult]:
     """Run every audible/probe action while the shared isolation is held."""
 
-    async with measurement_window(
-        gate_owner=_PROBE_GATE_OWNER,
-        require_voice_pause=True,
-    ):
-        # The body uses synchronous subprocess and journal helpers. Keep them
-        # off this event loop so both mux and voice leases can renew while the
-        # five-second tone and telemetry wait are in progress.
-        body = asyncio.create_task(asyncio.to_thread(_play_and_assess_probe))
+    entered = False
+    body_results: list[CheckResult] | None = None
+    try:
+        async with measurement_window(
+            gate_owner=_PROBE_GATE_OWNER,
+            require_voice_pause=True,
+        ):
+            entered = True
+            # The body uses synchronous subprocess and journal helpers. Keep
+            # them off this event loop so both mux and voice leases can renew.
+            body = asyncio.create_task(asyncio.to_thread(_play_and_assess_probe))
+            body_results, cancelled = await _await_probe_body(body)
+            if cancelled:
+                raise asyncio.CancelledError
+            return body_results
+    except MeasurementWindowError as exc:
+        if entered and body_results is not None:
+            raise _ProbeIsolationCleanupError(body_results, exc) from exc
+        raise
+
+
+async def _await_probe_body(
+    body: asyncio.Task[list[CheckResult]],
+) -> tuple[list[CheckResult], bool]:
+    """Keep isolation held through repeated cancellation until body stops."""
+
+    cancelled = False
+    current = asyncio.current_task()
+    while not body.done():
         try:
-            return await asyncio.shield(body)
+            await asyncio.shield(body)
         except asyncio.CancelledError:
-            # Cancelling a to_thread await does not stop its subprocess. Keep
-            # isolation held until the bounded aplay/journal body has actually
-            # stopped; otherwise teardown could reopen household audio while
-            # the diagnostic tone is still audible.
-            try:
-                await body
-            finally:
-                raise
+            cancelled = True
+            if current is not None:
+                current.uncancel()
+    try:
+        result = body.result()
+    except Exception:
+        if cancelled:
+            raise asyncio.CancelledError from None
+        raise
+    return result, cancelled
 
 
 def _play_and_assess_probe() -> list[CheckResult]:

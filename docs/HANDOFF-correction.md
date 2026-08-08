@@ -2240,32 +2240,37 @@ in feedback (2026-05-09).
 
 **Decision:** Add two commands to `voice_daemon`'s control socket
 ([jasper/voice_daemon.py](../jasper/voice_daemon.py)):
-- `MEASURE_PAUSE` → set in-process `_measurement_active` event;
+- `MEASURE_PAUSE` → atomically close `AssistantOutputGate` admission, then
+  set the in-process `_measurement_active` event;
   pause `WakeLoop` (block on the event before pulling the next
   audio chunk); pause outputd's content loudness meter so sweeps do
   not become assistant loudness baselines; cancel any active
   `Ducker.duck()` and skip future ones; pause the voice daemon's 1 Hz Camilla
   drift reconciler so it cannot overwrite the quiet-start/ramp/restore
-  transaction;
-  return JSON `{"result": "ok"}`.
+  transaction; return JSON `{"result": "ok"}` once any previously admitted
+  output drains.
 - The reply is held while assistant audio that was **already in playout**
-  when `MEASURE_PAUSE` landed finishes (issue #1898). The window is armed
-  first — so no new cue/timer/announcement can start and mic frames stop
-  immediately (issue #1786) — and the drain then waits out only that tail,
-  deferring to it rather than cancelling it. Bounded by
+  when `MEASURE_PAUSE` landed finishes (issue #1898). The output gate closes
+  before the window is armed, so even pre-render work that passed an earlier
+  measurement check cannot begin either supported TTS route; mic frames also
+  stop immediately (issue #1786). The drain then waits out only the
+  already-admitted tail, deferring to it rather than cancelling it. Bounded by
   `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC`, which must stay under the
-  coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout: a
-  coordinator that gives up believes voice was never paused and skips
-  `MEASURE_RESUME`. On timeout the daemon proceeds with the window open
-  and logs `event=measurement.inflight_drain_timeout` at WARNING, naming
-  the first capture as possibly contaminated. Renewals do not drain.
+  coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout. On a completed
+  drain timeout the daemon keeps every pause armed, returns
+  `{"result": "DRAIN_TIMEOUT"}`, and logs
+  `event=measurement.inflight_drain_timeout` at WARNING. The strict doctor
+  caller fails before playing its tone; established correction flows may keep
+  their explicit permissive policy, but current callers retain cleanup
+  ownership and send `MEASURE_RESUME`. Renewals do not drain.
 - While the measurement window remains open, the coordinator repeats
   idempotent `MEASURE_PAUSE` every `MEASUREMENT_LEASE_REFRESH_SEC` to renew
   the voice daemon's crash-recovery timer
   (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`). A dead coordinator stops
   renewing, so the speaker still self-recovers. A test pins the pair.
 - `MEASURE_RESUME` → clear the event and reconcile guard, restart trackers,
-  return JSON.
+  atomically reopen assistant-output admission, return JSON. Explicit resume,
+  auto-clear, and pause-error cleanup are idempotent.
 
 The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
