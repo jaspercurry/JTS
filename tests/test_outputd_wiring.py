@@ -883,13 +883,18 @@ ALLOCATING_TOKENS = [
     "vec![",
     "mem::take(",
     ".to_vec()",
+    ".to_owned()",
     "Vec::with_capacity(",
-    # None of these appear in the five bodies today, so adding them is zero
+    # None of these appear in the guarded bodies today, so adding them is zero
     # churn — they are here because they are the OTHER ways an allocation
-    # reaches this thread, and a guard that only knows the four shapes that
-    # happened to exist when it was written invites the next one in.
+    # reaches this thread, and a guard that only knows the shapes that happened
+    # to exist when it was written invites the next one in.
     ".clone()",
-    ".collect()",
+    # `.collect` WITHOUT parens on purpose: Rust requires the turbofish
+    # (`.collect::<Vec<_>>()`) wherever the collection type is not inferable, and
+    # `".collect()"` does not match that spelling — a review probe slipped a
+    # turbofish collect straight past the parenthesised form.
+    ".collect",
     "format!(",
     "String::from(",
     "Box::new(",

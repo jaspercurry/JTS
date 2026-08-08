@@ -2578,6 +2578,23 @@ mod tests {
         );
     }
 
+    /// **LOAD-BEARING — do not weaken.** This is the ONLY test in the tree that
+    /// catches an `S32Le` child converting when it must copy — a 65536×
+    /// resolution loss on the wide composite arm.
+    ///
+    /// Its on-grid sibling `deinterleaves_active_4ch_to_one_stereo_period_per_s32_child`
+    /// CANNOT catch that class, and this is measured, not assumed: wiring
+    /// `ChildEdgeSample for ProgramSample` to
+    /// `widen_i16_to_i32(narrow_i32_to_i16_round(s))` leaves that test GREEN,
+    /// because its fixture is built from widened S16 values and a widened S16
+    /// value round-trips through narrow-then-widen exactly. Only an OFF-GRID
+    /// vector — samples that are not multiples of 65536 — can tell a copy from a
+    /// round trip.
+    ///
+    /// So the tempting cleanup is the dangerous one: consolidating the two S32
+    /// tests and keeping the channel-map one would disarm the guard while
+    /// leaving the suite green. If they are ever merged, the surviving test must
+    /// carry THIS off-grid vector.
     #[test]
     fn an_s32_child_edge_converts_nothing_at_all() {
         // The payoff, and the one thing that could silently be wrong on a wide
