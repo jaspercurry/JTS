@@ -55,12 +55,21 @@ def probe_aec_ref_path() -> list[CheckResult]:
 
     try:
         state = control.get_state(timeout=3)
-        active = state.get("active_source", "idle")
-        if active not in ("idle", "voice"):
+        active = state.get("active_source")
+        if not isinstance(active, str):
             results.append(CheckResult(
                 "probe — renderers idle", "fail",
-                f"active_source={active!r}; refuse to play test sine over "
-                f"existing music. Stop {active} playback and re-run.",
+                "jasper-control /state did not provide a trustworthy "
+                f"active_source ({active!r}); idleness could not be "
+                "established, so no test tone was played.",
+            ))
+            return results
+        if active != "idle":
+            results.append(CheckResult(
+                "probe — renderers idle", "fail",
+                f"active_source={active!r}; refuse to play the test sine "
+                "while audio or a voice session may be active. Stop the "
+                "active source and re-run.",
             ))
             return results
         if _loopback_playback_active():
@@ -75,19 +84,12 @@ def probe_aec_ref_path() -> list[CheckResult]:
             "probe — renderers idle", "ok", f"active_source={active!r}"
         ))
     except (control.ControlError, json.JSONDecodeError) as exc:
-        if _loopback_playback_active():
-            results.append(CheckResult(
-                "probe — renderers idle", "fail",
-                f"jasper-control /state unreachable ({exc}) and a fan-in "
-                "input lane is open in /proc/asound. Refuse to play test "
-                "sine over possible active renderer audio.",
-            ))
-            return results
         results.append(CheckResult(
-            "probe — renderers idle", "warn",
-            f"jasper-control /state unreachable ({exc}); /proc/asound shows "
-            "fan-in input lanes idle, so proceeding with active probe.",
+            "probe — renderers idle", "fail",
+            f"jasper-control /state unavailable or malformed ({exc}); "
+            "idleness could not be established, so no test tone was played.",
         ))
+        return results
 
     sample_rate = 48_000
     amplitude = 0.05  # -26 dBFS

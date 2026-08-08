@@ -79,6 +79,139 @@ def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):
     ]
 
 
+def _active_probe_run_recorder():
+    calls = []
+
+    def _run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        raise AssertionError(f"probe continued unexpectedly: {cmd}")
+
+    return calls, _run
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        doctor.aec_probe.control.ControlError("connection refused"),
+        json.JSONDecodeError("invalid JSON", "not-json", 0),
+    ],
+    ids=["control-unreachable", "malformed-json"],
+)
+def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error):
+    calls, fake_run = _active_probe_run_recorder()
+
+    def raise_state_error(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        raise_state_error,
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert "idleness could not be established" in results[-1].detail
+    assert "no test tone was played" in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {"active_source": None},
+        {"active_source": 1},
+        {"active_source": ["idle"]},
+    ],
+    ids=["missing", "null", "integer", "list"],
+)
+def test_active_aec_probe_fails_closed_for_untrusted_active_source(
+    monkeypatch, state
+):
+    calls, fake_run = _active_probe_run_recorder()
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control, "get_state", lambda **_kwargs: state
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert "trustworthy active_source" in results[-1].detail
+    assert "no test tone was played" in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("active_source", "loopback_active", "detail"),
+    [
+        ("spotify", False, "active_source='spotify'"),
+        ("voice", False, "active_source='voice'"),
+        ("idle", True, "fan-in input lane is currently open"),
+    ],
+)
+def test_active_aec_probe_refuses_known_active_playback(
+    monkeypatch, active_source, loopback_active, detail
+):
+    calls, fake_run = _active_probe_run_recorder()
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": active_source},
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe, "_loopback_playback_active", lambda: loopback_active
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert detail in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        if cmd and cmd[0] == "aplay":
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd and cmd[0] == "journalctl":
+            return SimpleNamespace(
+                stdout=_rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0),
+                stderr="",
+                returncode=0,
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_DURATION_S", 0.0)
+    monkeypatch.setattr(
+        doctor.aec_probe, "_PROBE_SINE_PATH", str(tmp_path / "probe.wav")
+    )
+    monkeypatch.setattr(doctor.aec_probe.time, "sleep", lambda _seconds: None)
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "ok", "ok", "ok"]
+    assert any(call and call[0] == "aplay" for call in calls)
+
+
 def test_assess_aec_output_empty_journal_is_ok():
     """No rms lines = bridge probably just restarted in the assessment
     window. Not a failure, just nothing to evaluate."""
