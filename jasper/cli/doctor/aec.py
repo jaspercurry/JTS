@@ -46,6 +46,7 @@ from ._shared import (
     _run,
     _sha256_file,
 )
+from .audio_runtime import _OUTPUTD_STATUS_SOCKET, _read_status_socket
 
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
@@ -570,6 +571,198 @@ _AEC_REF_SILENT_THRESHOLD = 50
 # which repeats this baseline for the operator).
 _AEC_DRIFT_WARN_THRESHOLD = 30  # in 90 s
 
+# The bridge rewrites its stats snapshot every 0.5 s. A snapshot older than
+# this belongs to a stopped/wedged writer and retains the journal fallback used
+# by older bridge revisions.
+_BRIDGE_STATS_FRESH_SEC = 30.0
+
+# Schema 4 adds authoritative receiver-side progress for the reference input.
+# UDP send success is not delivery proof, so only the bridge's successful
+# conversion + bounded-queue enqueue advances this signal.
+_AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION = 4
+_AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC = 10.0
+_AEC_REFERENCE_INPUT_STALE_SEC = 5.0
+
+
+def _outputd_reference_localization(
+    status: dict[str, object] | None,
+    *,
+    expected_endpoint: str,
+    error: str | None = None,
+) -> str:
+    """Describe sender-side state without treating it as receiver proof."""
+
+    if error:
+        return f"outputd STATUS unavailable ({error})"
+    if not isinstance(status, dict):
+        return "outputd STATUS unavailable"
+    reference_outputs = status.get("reference_outputs")
+    if not isinstance(reference_outputs, dict):
+        return "outputd STATUS missing reference_outputs"
+
+    target = reference_outputs.get("udp_target")
+    active = reference_outputs.get("udp_active")
+    error_count = reference_outputs.get("udp_error_count")
+    if target != expected_endpoint:
+        return (
+            f"outputd STATUS udp_target={target!r}, expected "
+            f"{expected_endpoint!r}"
+        )
+    if active is not True:
+        return (
+            "outputd STATUS reports UDP inactive "
+            f"(cumulative udp_error_count={error_count!r})"
+        )
+    if isinstance(error_count, int) and not isinstance(error_count, bool):
+        error_detail = f", cumulative udp_error_count={error_count}"
+    else:
+        error_detail = ", udp_error_count unavailable"
+    return (
+        "outputd STATUS claims UDP sender active"
+        f"{error_detail}; send success is not receiver proof"
+    )
+
+
+def _assess_aec_reference_input_from_stats(
+    stats: dict[str, object],
+    now: float,
+    *,
+    configured_source: str,
+    expected_endpoint: str,
+    outputd_status: dict[str, object] | None = None,
+    outputd_status_error: str | None = None,
+) -> tuple[CheckResult, bool] | None:
+    """Assess current bridge-side reference receiver progress.
+
+    Returns ``(result, startup_grace)`` for a fresh schema that can be trusted.
+    ``None`` preserves the journal assessment for rolling deploys, malformed
+    files, and stale snapshots. The second element lets the caller suppress
+    previous-process journal windows during the explicit startup grace.
+    """
+
+    if configured_source != "outputd_udp":
+        return None
+    try:
+        schema_version = stats["schema_version"]
+        updated_epoch_sec = float(stats["updated_epoch_sec"])
+        started_epoch_sec = float(stats["started_epoch_sec"])
+        reference_input = stats["reference_input"]
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            return None
+        if schema_version < _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION:
+            return None
+        if not isinstance(reference_input, dict):
+            return None
+        source = reference_input["source"]
+        endpoint = reference_input["endpoint"]
+        frames_enqueued = reference_input["frames_enqueued"]
+        last_frame_age_ms = reference_input["last_frame_age_ms"]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if (
+        not isinstance(source, str)
+        or not source
+        or not isinstance(endpoint, str)
+        or not endpoint
+        or isinstance(frames_enqueued, bool)
+        or not isinstance(frames_enqueued, int)
+        or frames_enqueued < 0
+        or not all(map(math.isfinite, (updated_epoch_sec, started_epoch_sec, now)))
+    ):
+        return None
+
+    snapshot_age_sec = now - updated_epoch_sec
+    process_age_sec = now - started_epoch_sec
+    if (
+        snapshot_age_sec < 0
+        or snapshot_age_sec > _BRIDGE_STATS_FRESH_SEC
+        or process_age_sec < 0
+    ):
+        return None
+
+    if frames_enqueued == 0:
+        if last_frame_age_ms is not None:
+            return None
+        receiver_age_sec: float | None = None
+    else:
+        if isinstance(last_frame_age_ms, bool):
+            return None
+        try:
+            receiver_age_sec = float(last_frame_age_ms) / 1000.0
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(receiver_age_sec) or receiver_age_sec < 0:
+            return None
+        # ``last_frame_age_ms`` is measured at snapshot time. Add the bounded
+        # wall-clock snapshot age so even a stats writer that stopped 6 seconds
+        # ago cannot make a frozen zero-age sample look current.
+        receiver_age_sec += snapshot_age_sec
+
+    localization = _outputd_reference_localization(
+        outputd_status,
+        expected_endpoint=expected_endpoint,
+        error=outputd_status_error,
+    )
+    if source != configured_source or endpoint != expected_endpoint:
+        return (
+            CheckResult(
+                "AEC bridge output", "fail",
+                "bridge reference receiver does not match configured "
+                f"outputd UDP input: source={source!r}, endpoint={endpoint!r}, "
+                f"expected source='outputd_udp', endpoint={expected_endpoint!r}; "
+                f"{localization}",
+            ),
+            False,
+        )
+
+    if process_age_sec <= _AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC:
+        age_detail = (
+            "no reference frame received yet"
+            if receiver_age_sec is None
+            else f"last reference frame age={receiver_age_sec:.2f}s"
+        )
+        return (
+            CheckResult(
+                "AEC bridge output", "ok",
+                f"reference receiver is within its "
+                f"{_AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC:g}s startup grace "
+                f"({age_detail}; process age={process_age_sec:.2f}s)",
+            ),
+            True,
+        )
+
+    if receiver_age_sec is None:
+        return (
+            CheckResult(
+                "AEC bridge output", "fail",
+                "bridge has received zero complete 20 ms reference frames "
+                f"after {process_age_sec:.1f}s; outputd UDP reference receiver "
+                f"is not making progress. {localization}",
+            ),
+            False,
+        )
+    if receiver_age_sec > _AEC_REFERENCE_INPUT_STALE_SEC:
+        return (
+            CheckResult(
+                "AEC bridge output", "fail",
+                f"bridge outputd UDP reference receiver is stale: last complete "
+                f"20 ms frame age={receiver_age_sec:.2f}s exceeds "
+                f"{_AEC_REFERENCE_INPUT_STALE_SEC:g}s; frames_enqueued="
+                f"{frames_enqueued}. A carried-forward AEC frame and historical "
+                f"RMS cannot prove current receiver progress. {localization}",
+            ),
+            False,
+        )
+    return (
+        CheckResult(
+            "AEC bridge output", "ok",
+            f"outputd UDP reference receiver current: last complete 20 ms frame "
+            f"age={receiver_age_sec:.2f}s, frames_enqueued={frames_enqueued}",
+        ),
+        False,
+    )
+
 def _assess_aec_bridge_output(
     journal_text: str,
     music_chain_active: bool | None = None,
@@ -758,14 +951,16 @@ def check_aec_bridge_output_health() -> CheckResult:
        wake detector consuming an un-cancelled mic with music
        blasting through it, but `systemctl is-active` says ok.
 
-    This check parses the bridge's last 90 s of `rms over` log
-    lines + drift warnings and flags the two failure modes by
-    pattern. 90 s is chosen to ride past the transient that
-    install.sh produces during a deploy (~30-60 s where the bridge
-    restarts and ref capture re-converges) without missing a
-    sustained outage (the 2026-05-15 dsnoop incident lasted 4
-    days). The parser logic is in `_assess_aec_bridge_output` so it
-    can be exercised in unit tests without subprocess mocks."""
+    A fresh schema-v4 bridge snapshot is authoritative for current
+    outputd-UDP receiver progress. Missing, malformed, stale, and
+    older snapshots retain the bridge's last 90 s of `rms over` log
+    lines + drift warnings as a rolling-deploy fallback. 90 s is
+    chosen to ride past the transient that install.sh produces
+    during a deploy (~30-60 s where an older bridge restarts and ref
+    capture re-converges) without missing a sustained outage (the
+    2026-05-15 dsnoop incident lasted 4 days). Both assessment paths
+    are pure functions so they can be unit-tested without subprocess
+    mocks."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "AEC bridge output", "ok",
@@ -782,8 +977,42 @@ def check_aec_bridge_output_health() -> CheckResult:
             "(bridge not running — see AEC bridge service check above)",
         )
 
-    # Use a 90-second window, not 5 minutes. Rationale: install.sh
-    # restarts the bridge during a deploy, and there's a transient
+    configured_source = os.environ.get(
+        "JASPER_AEC_REF_SOURCE", "outputd_udp",
+    ).strip().lower()
+    expected_endpoint = (
+        f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_HOST', '127.0.0.1').strip()}:"
+        f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_PORT', '9891').strip()}"
+    )
+    bridge_stats = _read_bridge_stats_snapshot()
+    now = time.time()
+
+    stats_assessment: tuple[CheckResult, bool] | None = None
+    if isinstance(bridge_stats, dict):
+        stats_assessment = _assess_aec_reference_input_from_stats(
+            bridge_stats,
+            now,
+            configured_source=configured_source,
+            expected_endpoint=expected_endpoint,
+        )
+    if stats_assessment is not None:
+        stats_result, startup_grace = stats_assessment
+        if stats_result.status == "fail":
+            localized = _assess_aec_reference_input_from_stats(
+                bridge_stats,
+                now,
+                configured_source=configured_source,
+                expected_endpoint=expected_endpoint,
+                outputd_status=_read_outputd_status_for_aec_reference(),
+            )
+            if localized is not None:
+                return localized[0]
+            return stats_result
+        if startup_grace:
+            return stats_result
+
+    # Rolling-deploy fallback: use a 90-second window, not 5 minutes.
+    # Rationale: install.sh restarts an older bridge, and there's a transient
     # (~30-90 s) where the bridge is running but its ref capture
     # hasn't reconnected yet. Within 90 s of deploy completion, that
     # transient looks like the broken state we're trying to catch.
@@ -802,32 +1031,29 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
         )
 
-    bridge_stats = _read_bridge_stats_snapshot()
-    now = time.time()
     provenance = _bridge_reference_provenance(bridge_stats, now)
     music_chain_active = _loopback_playback_active()
-    result = _assess_aec_bridge_output(
+    journal_result = _assess_aec_bridge_output(
         proc.stdout,
         music_chain_active=music_chain_active,
         bridge_stats=bridge_stats,
         now=now,
     )
-    if result.status != "fail" or provenance is None:
-        return result
-    if provenance[0] != "outputd_udp":
-        return result
-    return _assess_aec_bridge_output(
-        proc.stdout,
-        music_chain_active=music_chain_active,
-        bridge_stats=bridge_stats,
-        outputd_status=_read_outputd_status_for_aec_reference(),
-        now=now,
-    )
-
-# How stale the bridge stats snapshot may be before the doctor falls
-# back to journal parsing. The bridge rewrites it every 0.5 s, so 30 s
-# of staleness means the snapshot belongs to a dead/old process.
-_BRIDGE_STATS_FRESH_SEC = 30.0
+    if (
+        journal_result.status == "fail"
+        and provenance is not None
+        and provenance[0] == "outputd_udp"
+    ):
+        journal_result = _assess_aec_bridge_output(
+            proc.stdout,
+            music_chain_active=music_chain_active,
+            bridge_stats=bridge_stats,
+            outputd_status=_read_outputd_status_for_aec_reference(),
+            now=now,
+        )
+    if stats_assessment is not None:
+        journal_result.detail += f"; {stats_assessment[0].detail}"
+    return journal_result
 
 
 def _read_bridge_stats_snapshot() -> dict | None:

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import logging
-from queue import Empty, Full
+from queue import Empty, Full, Queue
 import struct
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -156,6 +156,90 @@ def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
         "input_latency_seconds": 0.08,
         "input_latency_frames": 1280,
     }
+
+
+def test_bridge_stats_reference_input_is_null_before_first_frame(
+    monkeypatch,
+) -> None:
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
+    stats = aec_bridge._BridgeStats()
+    stats.reset(
+        reference_source="outputd_udp",
+        reference_endpoint="127.0.0.1:9891",
+    )
+
+    assert stats.snapshot()["reference_input"] == {
+        "source": "outputd_udp",
+        "endpoint": "127.0.0.1:9891",
+        "frames_enqueued": 0,
+        "last_frame_age_ms": None,
+    }
+
+
+def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
+    monkeypatch,
+) -> None:
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
+    aec_bridge._bridge_stats.reset(
+        reference_source="outputd_udp",
+        reference_endpoint="127.0.0.1:9891",
+    )
+    frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
+    batch = aec_bridge._ReferenceFrameBatch(
+        frames=(frame, frame),
+        clipped_samples=0,
+        total_samples=2 * FRAME_SAMPLES,
+    )
+    ref_q: Queue[bytes] = Queue(maxsize=4)
+
+    aec_bridge._enqueue_reference_frames(
+        ref_q,
+        batch,
+        drop_log=aec_bridge._DropLogDebouncer(),
+        drop_message="unused %d %.1f",
+    )
+    first = aec_bridge._bridge_stats.snapshot()["reference_input"]
+    assert first["frames_enqueued"] == 2
+    assert first["last_frame_age_ms"] == 0
+
+    clock.now = 101.25
+    assert (
+        aec_bridge._bridge_stats.snapshot()["reference_input"]
+        ["last_frame_age_ms"]
+        == 1250
+    )
+
+    ref_q.get_nowait()
+    ref_q.get_nowait()
+    aec_bridge._enqueue_reference_frames(
+        ref_q,
+        aec_bridge._ReferenceFrameBatch(
+            frames=(frame,),
+            clipped_samples=0,
+            total_samples=FRAME_SAMPLES,
+        ),
+        drop_log=aec_bridge._DropLogDebouncer(),
+        drop_message="unused %d %.1f",
+    )
+    latest = aec_bridge._bridge_stats.snapshot()["reference_input"]
+    assert latest["frames_enqueued"] == 3
+    assert latest["last_frame_age_ms"] == 0
+
+
+def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
+    stats = aec_bridge._BridgeStats()
+    snapshot = stats.snapshot()
+
+    assert snapshot["schema_version"] == 4
+    assert set(snapshot["reference_input"]) == {
+        "source",
+        "endpoint",
+        "frames_enqueued",
+        "last_frame_age_ms",
+    }
+    assert isinstance(snapshot["counters"], dict)
 
 
 def test_drop_log_debouncer_aggregates_one_second_windows():
@@ -304,7 +388,10 @@ def test_reference_enqueue_counts_and_debounces_full_queue(
     )
 
     counters = aec_bridge._bridge_stats.snapshot()["counters"]
+    reference_input = aec_bridge._bridge_stats.snapshot()["reference_input"]
     assert counters["queue_drops"]["ref"] == 3
+    assert reference_input["frames_enqueued"] == 0
+    assert reference_input["last_frame_age_ms"] is None
     assert aec_bridge._ref_clipped_samples == 4
     assert aec_bridge._ref_total_samples == 3 * FRAME_SAMPLES
     assert "ref queue full, dropped 3 frames in last 1.0s" in caplog.text

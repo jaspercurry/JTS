@@ -515,6 +515,321 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
         assert doctor._loopback_playback_active() is False
 
 
+def _reference_input_stats(
+    *,
+    now: float = 1_000.0,
+    schema_version: int = 4,
+    snapshot_age_sec: float = 0.5,
+    process_age_sec: float = 60.0,
+    source: str = "outputd_udp",
+    endpoint: str = "127.0.0.1:9891",
+    frames_enqueued: int = 100,
+    last_frame_age_ms: float | None = 100.0,
+    ref_starved_frames: int = 0,
+) -> dict:
+    return {
+        "schema_version": schema_version,
+        "updated_epoch_sec": now - snapshot_age_sec,
+        "started_epoch_sec": now - process_age_sec,
+        "reference_input": {
+            "source": source,
+            "endpoint": endpoint,
+            "frames_enqueued": frames_enqueued,
+            "last_frame_age_ms": last_frame_age_ms,
+        },
+        "counters": {"ref_starved_frames": ref_starved_frames},
+    }
+
+
+def _active_outputd_reference_status(
+    *,
+    target: str = "127.0.0.1:9891",
+    active: bool = True,
+    errors: int = 0,
+) -> dict:
+    return {
+        "reference_outputs": {
+            "udp_target": target,
+            "udp_active": active,
+            "udp_error_count": errors,
+        }
+    }
+
+
+def _assess_reference_stats(stats: dict, *, now: float = 1_000.0):
+    return doctor.aec._assess_aec_reference_input_from_stats(
+        stats,
+        now,
+        configured_source="outputd_udp",
+        expected_endpoint="127.0.0.1:9891",
+        outputd_status=_active_outputd_reference_status(),
+    )
+
+
+def test_assess_reference_input_recent_receiver_is_ok():
+    assessed = _assess_reference_stats(_reference_input_stats())
+
+    assert assessed is not None
+    result, startup_grace = assessed
+    assert result.status == "ok"
+    assert startup_grace is False
+    assert "receiver current" in result.detail
+
+
+def test_assess_reference_input_no_frame_after_startup_grace_fails():
+    assessed = _assess_reference_stats(
+        _reference_input_stats(
+            frames_enqueued=0,
+            last_frame_age_ms=None,
+        )
+    )
+
+    assert assessed is not None
+    result, startup_grace = assessed
+    assert result.status == "fail"
+    assert startup_grace is False
+    assert "zero complete 20 ms reference frames" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("source", "endpoint"),
+    [
+        ("alsa", "jasper_ref"),
+        ("outputd_udp", "127.0.0.1:9999"),
+    ],
+)
+def test_assess_reference_input_runtime_identity_mismatch_fails(
+    source,
+    endpoint,
+):
+    assessed = _assess_reference_stats(
+        _reference_input_stats(source=source, endpoint=endpoint)
+    )
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "fail"
+    assert "does not match configured outputd UDP input" in result.detail
+
+
+def test_assess_reference_input_formerly_nonzero_but_frozen_fails():
+    assessed = _assess_reference_stats(
+        _reference_input_stats(
+            frames_enqueued=55_000,
+            last_frame_age_ms=5_100,
+        )
+    )
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "fail"
+    assert "receiver is stale" in result.detail
+    assert "carried-forward AEC frame" in result.detail
+
+
+@pytest.mark.parametrize(
+    "stats",
+    [
+        _reference_input_stats(schema_version=3),
+        _reference_input_stats(snapshot_age_sec=31.0),
+        {
+            **_reference_input_stats(),
+            "reference_input": {"source": "outputd_udp"},
+        },
+    ],
+    ids=["old-schema", "stale-snapshot", "malformed-current-schema"],
+)
+def test_assess_reference_input_untrusted_stats_preserve_fallback(stats):
+    assert _assess_reference_stats(stats) is None
+
+
+def test_assess_reference_input_young_process_gets_explicit_grace():
+    assessed = _assess_reference_stats(
+        _reference_input_stats(
+            process_age_sec=9.9,
+            frames_enqueued=0,
+            last_frame_age_ms=None,
+        )
+    )
+
+    assert assessed is not None
+    result, startup_grace = assessed
+    assert result.status == "ok"
+    assert startup_grace is True
+    assert "10s startup grace" in result.detail
+
+
+def test_assess_reference_input_sender_active_is_not_receiver_proof():
+    assessed = _assess_reference_stats(
+        _reference_input_stats(last_frame_age_ms=9_000)
+    )
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "fail"
+    assert "sender active" in result.detail
+    assert "send success is not receiver proof" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "expected_detail"),
+    [
+        ({}, None, "missing reference_outputs"),
+        (
+            _active_outputd_reference_status(target="127.0.0.1:9999"),
+            None,
+            "udp_target='127.0.0.1:9999'",
+        ),
+        (
+            _active_outputd_reference_status(active=False, errors=2),
+            None,
+            "reports UDP inactive",
+        ),
+        (None, "socket unavailable", "STATUS unavailable"),
+    ],
+)
+def test_reference_input_failure_localizes_outputd_without_using_it_as_proof(
+    status,
+    error,
+    expected_detail,
+):
+    assessed = doctor.aec._assess_aec_reference_input_from_stats(
+        _reference_input_stats(last_frame_age_ms=9_000),
+        1_000.0,
+        configured_source="outputd_udp",
+        expected_endpoint="127.0.0.1:9891",
+        outputd_status=status,
+        outputd_status_error=error,
+    )
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "fail"
+    assert expected_detail in result.detail
+
+
+def test_assess_reference_input_historical_starvation_does_not_fail_recent_ref():
+    assessed = _assess_reference_stats(
+        _reference_input_stats(
+            last_frame_age_ms=50,
+            ref_starved_frames=1_000_000,
+        )
+    )
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "ok"
+
+
+@pytest.mark.parametrize("configured_source", ["alsa", "custom"])
+def test_assess_reference_input_non_udp_sources_keep_journal_policy(
+    configured_source,
+):
+    assert (
+        doctor.aec._assess_aec_reference_input_from_stats(
+            _reference_input_stats(),
+            1_000.0,
+            configured_source=configured_source,
+            expected_endpoint="jasper_ref",
+        )
+        is None
+    )
+
+
+def _install_reference_health_check_fakes(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    stats: dict,
+    journal: str,
+) -> list[list[str]]:
+    stats_path = tmp_path / "aec_bridge_stats.json"
+    stats_path.write_text(json.dumps(stats), encoding="utf-8")
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "outputd_udp")
+    monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
+    monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891")
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
+    monkeypatch.setattr(doctor.aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_read_status_socket",
+        lambda _path: _active_outputd_reference_status(),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout=journal, stderr="")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    return calls
+
+
+def test_check_reference_freshness_fails_with_usb_invisible_to_loopback(
+    monkeypatch,
+    tmp_path: Path,
+):
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=8_000),
+        journal="",
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "receiver is stale" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+
+
+def test_check_reference_freshness_failure_cannot_be_overridden_by_rms(
+    monkeypatch,
+    tmp_path: Path,
+):
+    healthy_rms = "\n".join(
+        _rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)
+        for _ in range(8)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=8_000),
+        journal=healthy_rms,
+    )
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "historical RMS cannot prove current receiver progress" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+
+
+def test_check_old_reference_stats_fall_back_to_journal(
+    monkeypatch,
+    tmp_path: Path,
+):
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(schema_version=3),
+        journal="",
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "no recent RMS windows" in result.detail
+    assert any(command[0] == "journalctl" for command in calls)
+
+
 # ----------------------------------------- DTLN-aec engine health assessment
 
 

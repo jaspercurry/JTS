@@ -61,7 +61,7 @@ def _bridge_stats(
     production_chip_aec: bool = True,
 ) -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": artifact_cli.BRIDGE_STATS_SCHEMA_VERSION,
         "pid": 123,
         "started_epoch_sec": 80.0,
         "counters": {"usb_mic_source_fallback_frames": 0},

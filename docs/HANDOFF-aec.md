@@ -273,6 +273,23 @@ unknown provenance stays source-neutral rather than guessing a legacy path.
 The reader is shared with the DTLN doctor check, so both checks identify the
 same live bridge snapshot source.
 
+**Reference-input health is receiver-owned.** Bridge stats schema v4 publishes
+one bounded `reference_input` block: the runtime source and endpoint, the
+lifetime count of complete 20 ms frames successfully converted and accepted by
+the bounded AEC reference queue, and monotonic `last_frame_age_ms` (`null`
+before the first frame). Reusing `last_ref_bytes` while the receiver is starved
+does not advance this telemetry. For `outputd_udp`, `jasper-doctor` gives a new
+bridge 10 seconds to start, then fails when no frame has arrived or the newest
+receiver frame is more than 5 seconds old. A fresh current-schema snapshot
+wins over historical RMS and the loopback-activity heuristic, including for USB
+Audio Input, which that heuristic cannot see. Missing, malformed, stale, and
+older snapshots retain the 90-second journal assessment for rolling-deploy
+compatibility; explicit ALSA/custom reference routes retain that journal policy
+as well. Outputd `STATUS` is consulted only to localize a receiver failure
+(target drift, inactive/error state, or a sender claiming activity); UDP send
+success is never treated as receiver proof. This is observability and diagnosis
+only: capture, queue bounds, frame carry-forward, DSP, and routing are unchanged.
+
 **CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
 The bridge reads the XVF mic directly and consumes outputd's final-reference
 UDP stream; its explicit ALSA fallback is the pre-Camilla `pcm.jasper_ref`
@@ -2024,8 +2041,11 @@ Captured here so future sessions don't repeat the mistakes.
     fail when zero healthy windows exist in the assessment period
     AND the silent-ref pattern persists. PR #75's failure was
     sustained `ref = 0` across all windows for days; this check
-    still catches that. See `_assess_aec_bridge_output` in
-    `jasper/cli/doctor/aec.py`.
+    still catches that as the rolling-deploy fallback. Current bridge
+    stats additionally make receiver progress authoritative: a previously
+    nonzero RMS window cannot hide an `outputd_udp` receiver that has stopped
+    enqueuing fresh frames. See `_assess_aec_reference_input_from_stats` and
+    `_assess_aec_bridge_output` in `jasper/cli/doctor/aec.py`.
 
     The same investigation produced `jasper-doctor --probe-aec`,
     which actively plays a quiet sine into `correction_substream`
@@ -3018,7 +3038,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-08 (scope: the silent-reference doctor remediation was rechecked against the bridge stats provenance, outputd STATUS fields, and `jasper/cli/doctor/aec.py`; the rest of this file was NOT re-verified in that pass. Earlier 2026-08-08: the K-lifecycle section only — the chip-reference window now comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`; the rest of this file was NOT re-verified in that pass. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, and lesson #10 only — schema-v4 receiver-side source/endpoint/frame-count/monotonic-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, outputd-STATUS localization-only rule, rolling-deploy journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; the rest of this file was NOT re-verified in that pass. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and

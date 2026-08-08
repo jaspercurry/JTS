@@ -279,7 +279,7 @@ USB_MIC_RATE = 0
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-BRIDGE_STATS_SCHEMA_VERSION = 3
+BRIDGE_STATS_SCHEMA_VERSION = 4
 CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
 # Drop-frame threshold. If queues fill faster than they drain,
@@ -556,12 +556,21 @@ class _BridgeStats:
     def reset(
         self,
         aec3_sweep_variants: tuple[Aec3SweepVariant, ...] = AEC3_SWEEP_VARIANTS,
+        *,
+        reference_source: str = REF_SOURCE,
+        reference_endpoint: str = (
+            f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}"
+        ),
     ) -> None:
         with self._lock:
             self._started_epoch_sec = time.time()
             self._leg_engines = {}
             self._active_capture_plan: dict[str, object] = {}
             self._capture_stream: dict[str, object] = {}
+            self._reference_source = reference_source
+            self._reference_endpoint = reference_endpoint
+            self._reference_frames_enqueued = 0
+            self._reference_last_frame_monotonic: float | None = None
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
@@ -576,6 +585,23 @@ class _BridgeStats:
                 "udp_send_drops_by_leg": _zero_leg_counters(aec3_sweep_variants),
                 "packets_sent_by_leg": _zero_leg_counters(aec3_sweep_variants),
             }
+
+    def record_reference_frames(self, count: int) -> None:
+        """Record complete 20 ms reference frames accepted by ``ref_q``.
+
+        Conversion alone is not receiver progress: if the bounded queue is
+        full, the AEC loop cannot consume the new frame.  Callers therefore
+        report only successful ``put_nowait`` operations here.  The AEC
+        loop's reuse of ``last_ref_bytes`` deliberately never reaches this
+        method, so a carried-forward frame cannot refresh receiver health.
+        """
+
+        if count <= 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._reference_frames_enqueued += count
+            self._reference_last_frame_monotonic = now
 
     def set_capture_stream(
         self,
@@ -703,7 +729,22 @@ class _BridgeStats:
             leg_engines = json.loads(json.dumps(self._leg_engines))
             active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
             capture_stream = json.loads(json.dumps(self._capture_stream))
+            reference_source = self._reference_source
+            reference_endpoint = self._reference_endpoint
+            reference_frames_enqueued = self._reference_frames_enqueued
+            reference_last_frame_monotonic = self._reference_last_frame_monotonic
             started = self._started_epoch_sec
+            now_monotonic = time.monotonic()
+        last_frame_age_ms = (
+            None
+            if reference_last_frame_monotonic is None
+            else max(
+                0,
+                round(
+                    (now_monotonic - reference_last_frame_monotonic) * 1000
+                ),
+            )
+        )
         return {
             "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
             "pid": os.getpid(),
@@ -715,6 +756,12 @@ class _BridgeStats:
             "counters": counters,
             "leg_engines": leg_engines,
             "capture_stream": capture_stream,
+            "reference_input": {
+                "source": reference_source,
+                "endpoint": reference_endpoint,
+                "frames_enqueued": reference_frames_enqueued,
+                "last_frame_age_ms": last_frame_age_ms,
+            },
             "active_capture_plan": active_capture_plan,
             "wake_corpus_plan_id": active_capture_plan.get(
                 "wake_corpus_plan_id", "",
@@ -1509,11 +1556,14 @@ def _enqueue_reference_frames(
     _ref_clipped_samples += batch.clipped_samples
     _ref_total_samples += batch.total_samples
     dropped = 0
+    enqueued = 0
     for frame in batch.frames:
         try:
             ref_q.put_nowait(frame)
+            enqueued += 1
         except Full:
             dropped += 1
+    _bridge_stats.record_reference_frames(enqueued)
     if dropped:
         _bridge_stats.inc_nested("queue_drops", "ref", dropped)
 
@@ -3024,7 +3074,16 @@ def main() -> int:
     from .. import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)
-    _bridge_stats.reset(config.aec3_sweep_variants)
+    reference_endpoint = (
+        f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
+        if config.ref_source == "outputd_udp"
+        else REF_DEVICE
+    )
+    _bridge_stats.reset(
+        config.aec3_sweep_variants,
+        reference_source=config.ref_source,
+        reference_endpoint=reference_endpoint,
+    )
     _bridge_stats.write_snapshot(config.bridge_stats_path)
     corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
     corpus_usb_enabled = _env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
