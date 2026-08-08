@@ -38,13 +38,17 @@ Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 # arm failure (rolled back to loopback) also exits 1 and would retry-loop.
 [Service]
 Type=oneshot
-# Worst-case pass under the entry lock (review #1252 tally): <=10s lock wait
-# + usbsink restart 8s + outputd 8s + coordinated fan-in restart (camilla
-# stop 8s + fanin 8s + camilla start 8s) + camilla reconcile + a possible
-# audio-hardware-reconcile kick 15s ~= 75s+. 120s gives honest headroom: a
-# systemd kill mid-sequence between camilla-stop and camilla-start leaves
-# CamillaDSP cleanly stopped, which OnFailure=jasper-camilla-recover does
-# NOT catch (clean stop != failed) — so the timeout must outlast the pass.
+# Worst-case pass under the entry lock (review #1252 tally, re-tallied for the
+# #2175 start-budget resets): <=10s lock wait + usbsink restart 8s + outputd
+# 8s + coordinated fan-in restart (camilla stop 8s + fanin 8s + camilla start
+# 8s) + camilla reconcile + a possible audio-hardware-reconcile kick 15s, plus
+# the three reset-failed calls that now precede a start-consuming verb on a
+# crash-budget daemon (outputd restart, fan-in restart, camilla start) at a 5s
+# timeout CEILING each — normal cost is milliseconds ~= 90s. 120s still gives
+# honest headroom (~30s): a systemd kill mid-sequence between camilla-stop and
+# camilla-start leaves CamillaDSP cleanly stopped, which
+# OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed) — so
+# the timeout must outlast the pass.
 TimeoutStartSec=120
 # The CLI hydrates the trusted base and reconciler-owned fanin env internally.
 # Do not inject the group-writable fanin.env into this root Python process:

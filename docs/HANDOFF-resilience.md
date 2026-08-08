@@ -412,6 +412,18 @@ thinks the system is healthy.
   Bluetooth rebooted a Zero 2 W, because every source transaction
   asks the coupling owner to converge and a desired-On USB source
   that could not compose re-armed fan-in on each pass).
+  **The cost, tracked as #2234**: the same call clears `NRestarts`,
+  which is a live flapping signal, not just a latch — doctor's
+  `check_service_runtime_state` warns while it is non-zero,
+  `/system/data.json` carries it (a unit surfaces on that alone),
+  and the dashboard's service tile colours on it. Only CamillaDSP
+  has a compensating "not running" detector
+  (`audio_health._camilla_stopped`, deliberately CamillaDSP-scoped
+  because outputd and voice have legitimate parked states);
+  `jasper-fanin` and `jasper-outputd` sit outside it. So a fan-in
+  that crash-restarted four times reads `NRestarts=0` after one
+  household source toggle: the reboot is prevented, the evidence
+  that it nearly happened is not preserved.
   **Camilla exception
   (2026-06-25, JTS5)**: `jasper-camilla.service` still uses
   `Restart=always` + `StartLimitBurst=5/60`, but start-limit exhaustion

@@ -598,37 +598,53 @@ def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog
     assert 'failed_siblings="bluetooth' not in caplog.text
 
 
-def test_failed_siblings_never_names_the_requested_source(tmp_path):
+def test_failed_siblings_never_names_the_requested_source():
     """The field means "somebody ELSE failed". A status document that somehow
     reports the requested source as failed is the caller's own outcome (already
     raised by the target check) and is not repeated here as a sibling."""
 
-    status_path = str(tmp_path / "status.json")
-    source_intent._default_write_status(
-        status_path,
+    named = source_intent._failed_siblings(
         {
-            "completed_monotonic_ns": time.monotonic_ns(),
-            "intent_fingerprint": "x",
-            "sources": {
-                "bluetooth": {
-                    "desired": "enabled",
-                    "effective": "degraded",
-                    "result": "failed",
-                    "reason": "rfkill failed",
-                },
-                "spotify": {
-                    "desired": "enabled",
-                    "effective": "degraded",
-                    "result": "failed",
-                    "reason": "librespot down",
-                },
+            "bluetooth": {
+                "desired": "enabled",
+                "effective": "degraded",
+                "result": "failed",
+                "reason": "rfkill failed",
+            },
+            "spotify": {
+                "desired": "enabled",
+                "effective": "degraded",
+                "result": "failed",
+                "reason": "librespot down",
             },
         },
+        Source.BLUETOOTH,
     )
 
-    named = source_intent._failed_siblings(status_path, Source.BLUETOOTH)
-
     assert named == "spotify: librespot down"
+
+
+def test_failed_siblings_caps_each_reason_so_no_sibling_name_is_crowded_out():
+    """One verbose sibling must not truncate the NEXT sibling's name away.
+
+    The field's whole job is naming WHO failed, so the per-entry reason cap is
+    what keeps the last sibling's name inside the overall bound — capping only
+    the joined string would spend the budget on one reason."""
+
+    named = source_intent._failed_siblings(
+        {
+            "airplay": {"result": "failed", "reason": "x" * 500},
+            "spotify": {"result": "failed", "reason": "y" * 500},
+            "usbsink": {"result": "failed", "reason": "z" * 500},
+        },
+        Source.BLUETOOTH,
+    )
+
+    for name in ("airplay", "spotify", "usbsink"):
+        assert f"{name}: " in named
+    assert "x" * source_intent._MAX_SIBLING_REASON_CHARS in named
+    assert "x" * (source_intent._MAX_SIBLING_REASON_CHARS + 1) not in named
+    assert len(named) <= 300
 
 
 def test_sibling_failure_reports_null_when_no_source_can_be_named(tmp_path, caplog):

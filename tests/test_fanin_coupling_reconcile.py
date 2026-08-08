@@ -2396,10 +2396,21 @@ def test_repeated_config_applies_never_reach_fanin_start_limit_reboot(monkeypatc
     assert fake.starts == 1  # each apply resets, then spends exactly one slot
 
 
-def test_crash_restarts_still_escalate_to_the_start_limit(monkeypatch):
-    """The other half of the promise: the guard exempts DELIBERATE restarts
-    only. A daemon's own Restart= path never runs this code, so a genuine crash
-    loop still walks the same budget into StartLimitAction=reboot."""
+def test_fake_systemd_models_start_limit_escalation():
+    """POSITIVE CONTROL for the fixture, NOT evidence about production code.
+
+    This exercises only ``_FakeSystemd`` — no reconciler code runs — so it
+    proves exactly one thing: the fake CAN reach ``rebooted``, which is what
+    makes the ``assert fake.rebooted is False`` above a real assertion instead
+    of a vacuous one. It documents the modelled budget (start-consuming verbs
+    spend a slot; exceeding the burst fires the action) and would stay green if
+    the production guard were reverted.
+
+    The production-scope evidence lives in
+    :func:`test_start_budget_reset_covers_only_crash_budget_daemon_starts`,
+    which pins that the reset precedes a start-consuming verb on a crash-budget
+    daemon and nothing else.
+    """
     import jasper.fanin.coupling_reconcile as cr
 
     burst, _action = _fanin_start_limit()
