@@ -130,21 +130,41 @@ def test_change_reported_when_a_wide_box_arms_the_ring(tmp_path):
     assert change == (DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT)
 
 
-def test_the_probe_never_reads_a_camilla_config_file(tmp_path):
+def test_the_probe_reads_only_env_files_never_a_camilla_config(monkeypatch, tmp_path):
     """Both sides come from reconciler-owned env ON PURPOSE. install re-renders the
     flat cutover config BEFORE the bounce, so a config-file read at bounce time can
     already show the NEW width while the running CamillaDSP still holds the lane at
-    the old one — stale in the one direction that matters. Pin it: a config file
-    declaring the wide width right next to a pre-flip outputd.env must NOT suppress
-    the change."""
-    (tmp_path / "outputd-cutover.yml").write_text(
-        "devices:\n  playback:\n    type: Alsa\n"
-        '    device: "outputd_content_playback"\n'
-        f"    format: {DEFAULT_PLAYBACK_FORMAT}\n",
-        encoding="utf-8",
-    )
+    the old one — stale in the one direction that matters.
+
+    Enforced by POISONING every non-``.env`` read for the duration of the call,
+    rather than by writing a decoy config next door: the probe takes no
+    config-path parameter, so a decoy in ``tmp_path`` could never be reached and
+    a future HARDCODED read of ``/var/lib/camilladsp/...`` would sail past it.
+    Both legitimate readers (``read_env_file_state`` and
+    ``read_persisted_coupling``) go through ``Path.read_text`` on a ``.env``
+    path, so anything else opening a file here is by construction a read this
+    probe must not be doing — and the test fails naming it.
+    """
+    real_read_text = Path.read_text
+    opened: list[str] = []
+
+    def poisoned_read_text(self, *args, **kwargs):
+        opened.append(str(self))
+        if self.suffix != ".env":
+            raise AssertionError(
+                f"outputd_content_format_change read a non-env file: {self}. "
+                "Both sides of this probe must come from reconciler-owned env; "
+                "a CamillaDSP config read here is stale by construction."
+            )
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", poisoned_read_text)
     change = outputd_content_format_change(**_envs(tmp_path, outputd=None, fanin=None))
     assert change == ("S16_LE", DEFAULT_PLAYBACK_FORMAT)
+    # And the poisoning was actually exercised — a probe that read nothing at all
+    # would pass the assertion above vacuously.
+    assert opened, "the probe read no files; the guard proved nothing"
+    assert all(p.endswith(".env") for p in opened), opened
 
 
 # --- the shell behaviour -----------------------------------------------------

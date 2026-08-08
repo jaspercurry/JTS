@@ -992,6 +992,39 @@ def _loaded_playback_format(config_path: Path) -> str | None:
     return _loaded_device_field(config_path, "playback", "format")
 
 
+def _loaded_playback_device(config_path: Path) -> str | None:
+    """The ``devices.playback.device`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "playback", "device")
+
+
+def _expected_playback_format(
+    playback_type: str | None, playback_device: str | None
+) -> tuple[str, str]:
+    """``(expected_format, constant_name)`` for a loaded config's playback lane.
+
+    Three lanes, three owners of the width — see
+    :func:`check_camilla_playback_format` for why each is what it is.
+
+    The first two predicates are DISJOINT in every reachable config, so their
+    order is belt only, not load-bearing: a ``File`` sink names its target with
+    ``filename`` and carries no ``device`` key at all, so ``playback_device`` is
+    ``None`` on every pipe/parked graph. Do not read the sequence here as a
+    precedence rule that something depends on — a mutation swapping the two
+    kills no test, precisely because no config can satisfy both.
+    """
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, RING_WIRE_FORMAT
+
+    if playback_type == "File":
+        return DEFAULT_PIPE_SINK_FORMAT, "DEFAULT_PIPE_SINK_FORMAT"
+    if playback_device == RING_PLAYBACK_DEVICE:
+        return RING_WIRE_FORMAT, "RING_WIRE_FORMAT"
+    return DEFAULT_PLAYBACK_FORMAT, "DEFAULT_PLAYBACK_FORMAT"
+
+
 @doctor_check(order=51.75, group="audio")
 def check_camilla_playback_format() -> CheckResult:
     """The loaded CamillaDSP config's declared playback format must match its
@@ -1002,25 +1035,41 @@ def check_camilla_playback_format() -> CheckResult:
     un-reconciled stale file) reflects another — was silent rather than a red
     doctor line.
 
-    Lane-aware via the sibling ``_loaded_playback_type`` helper: a ``File``
-    sink (the bonded-leader pipe, or the active-speaker parked graph's
-    ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT`` — pinned narrow
-    (D4) regardless of the general program lane; every other sink (the ALSA
-    loopback lane, the SHM ring, every real active-speaker DAC graph)
-    expects ``DEFAULT_PLAYBACK_FORMAT``. Without this split, the check would
-    red-line every healthy pipe-sink leader and parked box now that
-    ``DEFAULT_PLAYBACK_FORMAT`` is wide (PR-6) — the exact lanes the
-    wide-output-path program pins narrow — with a remediation string that
-    tells the operator to regenerate a config that is already correct. The two
-    constants now genuinely differ (ALSA lane ``S32_LE``, pipe/File sink
-    ``S16_LE``), so the split is load-bearing rather than latent.
-    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1 and PR-6.
-    """
-    from jasper.camilla_config_contract import (
-        DEFAULT_PIPE_SINK_FORMAT,
-        DEFAULT_PLAYBACK_FORMAT,
-    )
+    LANE-AWARE, and there are THREE lanes, not two — the width has three
+    separate owners and this check must ask the right one
+    (:func:`_expected_playback_format`):
 
+    - a ``File`` sink (the bonded-leader pipe, or the active-speaker parked
+      graph's ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT`` — pinned
+      narrow by the snapserver wire contract (D4) regardless of the general
+      program lane;
+    - the SHM ring's playback device (``RING_PLAYBACK_DEVICE``) expects
+      ``RING_WIRE_FORMAT`` — an ARMED RING IS ``type: Alsa``, so the File split
+      alone does not cover it. Its width is forced narrow by the coupling's own
+      kwargs (``capture_kwargs_for_coupling``) and hard-enforced by
+      ``jasper_ring::Geometry::validate_self``, which is exactly why a
+      ring-coupled box keeps a coherent S16 lane on a box whose general default
+      is wide (the PR-6 ring ruling);
+    - every other sink — the ALSA loopback lane, every real active-speaker DAC
+      graph — expects ``DEFAULT_PLAYBACK_FORMAT``.
+
+    Miss either split and this check red-lines a HEALTHY box with a remediation
+    that regenerates the identical config: without the File split, every
+    pipe-sink leader and parked box; without the ring split, every armed-ring box
+    (including the certified-latency USB box), whose canary criterion is
+    literally "doctor green". All three constants now genuinely differ in force
+    (loopback lane ``S32_LE``, pipe/File sink and SHM ring ``S16_LE``), so both
+    splits are load-bearing rather than latent.
+
+    Keyed on the LOADED CONFIG's own ``device``/``type``, not on the persisted
+    coupling: this check's one job is "does the config on disk match what its own
+    lane should be", so introducing a second source (``read_persisted_coupling``)
+    would let a box mid-arm — coupling flipped, config not yet swapped — read as
+    healthy or as broken depending on which source won, when the honest answer is
+    determined by the config in front of it. It also keeps the check a pure read
+    of one file, matching every sibling here.
+    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1, PR-6, D4, D5.
+    """
     label = "camilla playback format"
     _, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -1032,21 +1081,24 @@ def check_camilla_playback_format() -> CheckResult:
             label, "ok", f"{path} has no devices.playback.format field"
         )
     playback_type = _loaded_playback_type(path)
-    expected_format = (
-        DEFAULT_PIPE_SINK_FORMAT if playback_type == "File" else DEFAULT_PLAYBACK_FORMAT
-    )
-    expected_name = (
-        "DEFAULT_PIPE_SINK_FORMAT" if playback_type == "File" else "DEFAULT_PLAYBACK_FORMAT"
+    playback_device = _loaded_playback_device(path)
+    expected_format, expected_name = _expected_playback_format(
+        playback_type, playback_device
     )
     if loaded_format == expected_format:
         return CheckResult(
-            label, "ok", f"playback format={loaded_format} (type={playback_type})"
+            label,
+            "ok",
+            f"playback format={loaded_format} "
+            f"(type={playback_type}, device={playback_device}, "
+            f"expected {expected_name})",
         )
     return CheckResult(
         label,
         "fail",
         f"loaded CamillaDSP playback format={loaded_format!r} for playback "
-        f"type={playback_type!r}, expected {expected_format!r} "
+        f"type={playback_type!r} device={playback_device!r}, expected "
+        f"{expected_format!r} "
         f"({expected_name}) — a half-flipped box: {path} was generated "
         f"against a different {expected_name} than the one currently in "
         "force. Regenerate the config (sudo /opt/jasper/.venv/bin/jasper-sound "

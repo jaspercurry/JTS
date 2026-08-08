@@ -34,8 +34,16 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
 # wide all the way to outputd's i32 program spine, so the ONE deliberate output
 # quantization happens at the DAC edge, at the DAC's own declared width. At a
-# ≥24-bit edge that floor sits below the DAC's analog noise; at an S16 edge
-# outputd rounds to nearest once instead of truncating twice.
+# ≥24-bit edge that floor sits below the DAC's analog noise, so it stops being
+# audible at all.
+#
+# What changed at an S16 edge is WHERE that single narrowing happens, not how
+# many there are: before the flip there was already exactly one lossy narrowing
+# (CamillaDSP's S16 playback write), and outputd's widen→narrow round trip around
+# it was proven bit-exact. The flip MOVES that narrowing downstream of outputd's
+# mixing, ducking, and trim, which now do their arithmetic on full-resolution
+# content instead of on samples already quantized to 16 bits — which is what makes
+# a −18 dB tweeter trim stop costing three bits of program resolution.
 #
 # Two things must move with this value, and both are derived rather than
 # restated: ``deploy/alsa/asoundrc.jasper`` pins the PASSIVE lane's snd-aloop
