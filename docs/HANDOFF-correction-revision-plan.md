@@ -972,23 +972,29 @@ restate strategy in a handoff; move the marker here and point at it.
 date:           2026-08-08 (R20 campaign close-out; the 80/20 crossover +
                 linearization campaign is CODE-COMPLETE R14-R20 and its
                 remaining debt is hardware evidence, not implementation)
-capture_page:   public capture_page_build read-only verified 2026-08-04 at
-                20260803.4. Carried forward unchanged — no round since has
-                touched the capture page's contract
+capture_page:   the REPO ships 20260805.1 — moved by #2155 (7e1137afc,
+                2026-08-05, closing #2151). The last read-only probe of the
+                PUBLIC page was 2026-08-04 at 20260803.4 and was NOT repeated
+                this pass, so what the public page serves today is unverified.
+                capture_protocol_version is unchanged at 3
 jts3_sha:       bcc15b8b3 — read-only probed from /var/lib/jasper/build.txt on
-                2026-08-08 (installed 03:46 EDT, status=ok). It carries R15
-                through R17 but NOT R19 PR-A (415b44e96 merged 11:13 UTC the
-                same day, after that install), so jts3's grading surfaces are
-                still the pre-R19 ones. That deploy came from the parallel
-                wide-output-path campaign, not this one
+                2026-08-08 (installed 03:46 EDT, status=ok). Ancestry-checked
+                per round: it carries R15 through R18 AND R19 PR-B
+                (95306c910), but NOT R19 PR-A (415b44e96, merged 07:13 EDT the
+                same day, after that install). So jts3's post-apply grading
+                producer is pre-PR-A, while PR-B's search-band repair and its
+                honest-incomplete copy are live. That deploy came from the
+                parallel wide-output-path campaign, not this one
 declaration:    jts3's design profile read-only probed 2026-08-08 as
-                status=confirmed, revision 7, confirmed_and_current=true. The
-                pending Confirm click the 2026-08-06 campaign handoff was
-                blocked on is DONE, so the owner's owed hardware slices below
-                are no longer gated on it
-compatibility:  20260803.4 + bcc15b8b3 is the pair jts3 currently runs; the
-                capture_page observation is still the 2026-08-04 one. These
-                establish what was seen, not deployment order or chronology
+                status=confirmed, revision 7, confirmed_and_current=true —
+                that much is measured. Inferred from it, not measured: that
+                this is the 2026-08-06 handoff's pending Confirm click, and
+                that the owner's owed hardware slices below are therefore no
+                longer gated on it
+compatibility:  bcc15b8b3 is what jts3 runs. The capture-page half of the pair
+                is UNVERIFIED (above) — do not read a compatible pair here.
+                This establishes what was seen, not deployment order or
+                chronology
 active_round:   none — R20 closed the campaign. R20 was read-only: a
                 promise-to-test walk over plan §7-§13, a records true-up, and
                 the owner's campaign-close brief. Zero production code
@@ -1798,23 +1804,25 @@ R13 remains the last on-hardware validation. The footer below is unchanged for
 the same reason as the pass above. No product/issue write, deployment, DSP
 change, or measurement.
 
-**Verification scope.** A **2026-08-08 R20 campaign-close pass** updated only
-CURRENT POSITION, to close out the 80/20 crossover + linearization campaign.
-Every round's PR number and merge commit was re-read from `gh`/`git`; the two
-jts3 lines (build `bcc15b8b3`, declaration confirmed at revision 7) are
-read-only probes of that box taken during the pass and are the only measured
-facts it added. The `validation:` field is unchanged and still names the
-2026-08-05 checkpoint, because no newer hardware run exists. Nothing else in
-the spine — charter, ladder, rungs, research index, issue index — was
-re-read, and the footer date below warrants only this block.
-
-A **2026-08-05 checkpoint / Gate-0 record pass** updated
+**Verification scope.** A **2026-08-05 checkpoint / Gate-0 record pass** updated
 only CURRENT POSITION. It re-read the Gate 0 comments on #1894, #1675, and
 #2099 from `gh` and confirmed #2151/#2152 exist as filed. It ran no hardware:
 every checkpoint number here, the build SHA included, is transcribed from the
 durable evidence record on #1894, which the conductor posted after this pass
 flagged that they lived only in session context. The footer is unchanged for
 the same reason as the two passes above.
+
+**Verification scope.** A **2026-08-08 R20 campaign-close pass** updated only
+CURRENT POSITION, to close out the 80/20 crossover + linearization campaign.
+Every round's PR number and merge commit was re-read from `gh`/`git`, and the
+per-round ancestry of jts3's build was checked commit by commit. Two facts are
+measured, both read-only probes of jts3 taken during the pass: its build
+(`bcc15b8b3`) and its declaration state. Everything the block says about the
+capture page is repo-side or explicitly marked unverified — the PUBLIC page
+was not probed. `validation:` is unchanged and still names the 2026-08-05
+checkpoint, because no newer hardware run exists. Nothing else in the spine —
+charter, ladder, rungs, research index, issue index — was re-read, and the
+footer date below warrants only this block.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
