@@ -431,6 +431,21 @@ The repaired output ladder is:
    exit inside that window skips retry and leaves the unit parked instead
    of restart-looping into `StartLimitAction=reboot`.
 
+   One exit-1 class gets the same out-of-band treatment: a **content-lane
+   open** that keeps failing. That open is exit-1/restart class on purpose —
+   on boot and on a width-flip deploy it means CamillaDSP has not yet opened
+   its half of the snd-aloop pair, and restarting is how outputd waits that
+   out, so the first failures restart untouched. A peer permanently locked at
+   another width (or drifted env) produces the identical failure forever, so
+   the helper counts consecutive failures whose journal tail carries outputd's
+   own content-lane open contexts and, on the 4th, `reset-failed`s and stops
+   the unit — a park that leaves start 5 of `StartLimitBurst=5` unspent
+   instead of reaching the reboot. The reason and the fix are written to
+   `/run/jasper-outputd-content-lane.state` (a plain `/run` file, so it
+   outlives the stop and clears at boot); the streak clears on any other
+   failure class and on the next clean stop. Recovery is the config park's:
+   match the width on both halves, then `systemctl restart jasper-outputd`.
+
 `/sound/` also keeps the saved speaker topology separate from the current
 observed hardware. A saved dual-Apple active topology is not silently
 deleted when one DAC is unplugged; the page shows the saved topology, the

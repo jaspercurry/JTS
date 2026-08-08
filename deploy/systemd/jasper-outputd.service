@@ -108,6 +108,16 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # plus no-block outputd retry, then parks on a repeated config exit. It uses
 # --no-restart for the reconcile itself so that reconciler never controls
 # jasper-outputd from inside this unit's stop transaction.
+#
+# It also owns the one exit-1 class the restart ladder above cannot resolve:
+# a content-lane open that keeps failing. The first such failures restart
+# normally — that open is how outputd waits for CamillaDSP's half of the
+# snd-aloop pair on boot and on a width-flip deploy. A peer permanently locked
+# at another width produces the same failure forever, so on the 4th consecutive
+# one the helper stops the unit out-of-band (leaving start 5 of the burst
+# unspent) and records the reason and the fix in
+# /run/jasper-outputd-content-lane.state. Recovery is the same as the config
+# park: fix the width, then `systemctl restart jasper-outputd`.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 

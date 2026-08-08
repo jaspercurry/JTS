@@ -17,6 +17,18 @@
 # exit 78 one bounded reconcile + retry per short window. Persistent bad config
 # still parks instead of crash-looping into StartLimitAction=reboot. This helper
 # is deliberately fail-open and always exits 0.
+#
+# A content-lane open failure is a different shape: exit 1, restart class, and
+# deliberately so. On boot and on a width-flip deploy it means CamillaDSP has
+# not yet opened its half of the snd-aloop pair, and restarting is how outputd
+# waits that out (category A — see `FinalSinkStartupConfigError`'s doc comment
+# in rust/jasper-outputd/src/alsa_backend.rs for why marking that open
+# park-class would turn a routine wait into a silent speaker). The SAME failure
+# is permanent when the peer is locked at a different width or the env drifted
+# (category B): every retry fails identically and the unit rides
+# Restart=on-failure into StartLimitAction=reboot. The two are one signature
+# apart only by COUNT, so this helper counts consecutive content-lane failures
+# and parks the unit out-of-band once the count says the lane is not opening.
 
 set -uo pipefail
 
@@ -24,9 +36,47 @@ RESULT="${SERVICE_RESULT:-unknown}"
 STATUS="${EXIT_STATUS:-}"
 RECONCILE="${JASPER_AUDIO_HARDWARE_RECONCILE:-/usr/local/sbin/jasper-audio-hardware-reconcile}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+JOURNALCTL="${JASPER_JOURNALCTL:-journalctl}"
 CONFIG_EXIT_STATUS=78
 CONFIG_RETRY_STATE="${JASPER_OUTPUTD_CONFIG_RETRY_STATE:-/run/jasper-outputd/config-retry.stamp}"
 CONFIG_RETRY_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
+
+# Streak record for the content-lane park. A plain /run file, NOT
+# jasper-outputd's RuntimeDirectory: the count has to survive the unit's own
+# auto-restarts AND the park record has to outlive the stop that ends them,
+# which a RuntimeDirectory (reaped when its unit stops) cannot do. /run still
+# wipes it at boot, so a fresh boot re-derives the verdict instead of
+# inheriting one.
+CONTENT_LANE_STATE="${JASPER_OUTPUTD_CONTENT_LANE_STATE:-/run/jasper-outputd-content-lane.state}"
+CONTENT_LANE_WINDOW_SEC="${JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC:-300}"
+
+# Park on the 4th consecutive content-lane failure. Two bounds fix the number:
+#
+#   Ceiling — jasper-outputd.service allows StartLimitBurst=5 starts per
+#   StartLimitIntervalSec=300 and the 6th trips StartLimitAction=reboot, so the
+#   park has to land by failure 5. Parking on 4 leaves start 5 unspent: a stop
+#   job that lands late still beats the reboot.
+#
+#   Floor — a category-A transient is a ONE-attempt event.
+#   jasper-camilla.service is After=jasper-outputd.service, so its start job is
+#   released the moment outputd's start job settles (a failed start settles):
+#   the peer opens its half during the first RestartSec=5 gap and attempt 2
+#   finds the lane there. The deploy path does not even produce that one —
+#   release_camilla_content_lane_for_format_flip
+#   (deploy/lib/install/systemd-units.sh) stops CamillaDSP only when the width
+#   actually moves, and outputd then opens first and locks the pair. So 4
+#   consecutive failures is ~15 s of an unopenable lane across four independent
+#   attempts, each of which already had a jasper-audio-hardware-reconcile pass
+#   in front of it.
+CONTENT_LANE_PARK_AFTER="${JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER:-4}"
+CONTENT_LANE_JOURNAL_LINES="${JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES:-40}"
+
+# Every context string outputd attaches to a content-lane open, from both
+# AlsaBackend openers in rust/jasper-outputd/src/alsa_backend.rs (the
+# single-ALSA lane and its composite `active_content` sibling).
+# tests/test_output_recovery_scripts.py reads the strings back out of that file,
+# so a reworded context cannot silently stop matching here.
+CONTENT_LANE_SIGNATURE='(opening|configuring) outputd (active )?content capture PCM|starting capture PCM'
 
 log() {
     local outcome="$1"
@@ -55,7 +105,96 @@ mark_config_retry() {
     now_sec > "$CONFIG_RETRY_STATE" 2>/dev/null || true
 }
 
+journal_tail() {
+    local -a cmd
+    cmd=("$JOURNALCTL" --no-pager --output=cat --lines="$CONTENT_LANE_JOURNAL_LINES")
+    if [[ -n "${INVOCATION_ID:-}" ]]; then
+        # systemd exports the dying invocation's id to ExecStopPost, which
+        # scopes the read to exactly the run that just failed.
+        cmd+=("_SYSTEMD_INVOCATION_ID=${INVOCATION_ID}")
+    else
+        cmd+=(--unit=jasper-outputd.service --since="2 minutes ago")
+    fi
+    "${cmd[@]}" 2>/dev/null || true
+}
+
+content_lane_failure() {
+    # An unreadable journal reads as NOT a content-lane failure. The safe
+    # direction is the existing restart ladder: a park this helper cannot
+    # justify from evidence is a silent speaker.
+    local tail
+    [[ "$STATUS" == "1" ]] || return 1
+    tail="$(journal_tail)"
+    [[ "$tail" =~ $CONTENT_LANE_SIGNATURE ]]
+}
+
+content_lane_streak() {
+    # Echo the live consecutive-failure count, 0 when there is none. A record
+    # older than the window is not a streak: outputd stayed up long enough in
+    # between that these are separate events, not one lane that will not open.
+    local key value count epoch now age
+    count=""
+    epoch=""
+    if [[ -f "$CONTENT_LANE_STATE" ]]; then
+        while IFS='=' read -r key value; do
+            case "$key" in
+                count) count="$value" ;;
+                last_failure_epoch) epoch="$value" ;;
+            esac
+        done < "$CONTENT_LANE_STATE"
+    fi
+    if [[ ! "$count" =~ ^[0-9]+$ || ! "$epoch" =~ ^[0-9]+$ ]]; then
+        echo 0
+        return 0
+    fi
+    now="$(now_sec)"
+    age=$((now - epoch))
+    if [[ "$age" -lt 0 || "$age" -ge "$CONTENT_LANE_WINDOW_SEC" ]]; then
+        echo 0
+        return 0
+    fi
+    echo "$count"
+}
+
+write_content_lane_state() {
+    local count="$1"
+    shift || true
+    local dir line
+    dir="$(dirname "$CONTENT_LANE_STATE")"
+    mkdir -p "$dir" 2>/dev/null || true
+    {
+        printf 'count=%s\n' "$count"
+        printf 'last_failure_epoch=%s\n' "$(now_sec)"
+        for line in "$@"; do
+            printf '%s\n' "$line"
+        done
+    } > "$CONTENT_LANE_STATE" 2>/dev/null || true
+}
+
+clear_content_lane_state() {
+    rm -f "$CONTENT_LANE_STATE" 2>/dev/null || true
+}
+
+park_content_lane() {
+    local count="$1"
+    write_content_lane_state "$count" \
+        "parked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "reason=content_lane_open_repeated" \
+        "detail=jasper-outputd could not open its snd-aloop content lane on ${count} consecutive starts" \
+        "action=match the content-lane width on both halves of the pair (JASPER_OUTPUTD_CONTENT_FORMAT against the CamillaDSP playback half), then: systemctl restart jasper-outputd"
+    # reset-failed clears the start rate-limit counter so the recovery restart
+    # is start 1 of a fresh burst rather than start 5 of the one this park
+    # interrupted; stop cancels the pending Restart=on-failure. Re-runs on every
+    # later failure of the same streak, so a stop job that never landed is
+    # retried instead of silently lost.
+    "$SYSTEMCTL" reset-failed jasper-outputd.service >/dev/null 2>&1 || true
+    "$SYSTEMCTL" --no-block stop jasper-outputd.service >/dev/null 2>&1 || true
+    log park reason=content_lane_open_repeated failures="$count" \
+        park_after="$CONTENT_LANE_PARK_AFTER" state="$CONTENT_LANE_STATE"
+}
+
 if [[ "$RESULT" == "success" || "$RESULT" == "condition" ]]; then
+    clear_content_lane_state
     log skip reason=non_retrying_stop
     exit 0
 fi
@@ -66,6 +205,9 @@ if [[ ! -x "$RECONCILE" ]]; then
 fi
 
 if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
+    # An EX_CONFIG park is not a content-lane open failure, so it breaks any
+    # streak in progress.
+    clear_content_lane_state
     if config_retry_recent; then
         log skip reason=config_retry_already_attempted state="$CONFIG_RETRY_STATE"
         exit 0
@@ -82,11 +224,28 @@ if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
     exit 0
 fi
 
+if content_lane_failure; then
+    content_lane_failures=$(( $(content_lane_streak) + 1 ))
+    write_content_lane_state "$content_lane_failures"
+else
+    content_lane_failures=0
+    clear_content_lane_state
+fi
+
+# The reconcile runs first even on the failure that parks: it is what refreshes
+# JASPER_OUTPUTD_CONTENT_FORMAT, so it gets its last chance at repairing the
+# width before the unit stops. By the park it has already had that chance on
+# every earlier failure of the streak.
 if "$RECONCILE" --reason outputd-failure --no-restart; then
-    log ok reason=reconciled
+    log ok reason=reconciled content_lane_failures="$content_lane_failures"
 else
     rc=$?
-    log failed reason=reconciler_nonzero rc="$rc"
+    log failed reason=reconciler_nonzero rc="$rc" \
+        content_lane_failures="$content_lane_failures"
+fi
+
+if [[ "$content_lane_failures" -ge "$CONTENT_LANE_PARK_AFTER" ]]; then
+    park_content_lane "$content_lane_failures"
 fi
 
 exit 0
