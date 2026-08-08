@@ -27,10 +27,16 @@ pub const CHANNELS: u16 = 2;
 /// an i32 sample, so f32 gain math would silently truncate the bottom 7 bits of
 /// every sample it touched.
 ///
-/// The single quantization to the hardware's width happens at the DAC edge — in
-/// the coherent single sink's `alsa_backend::AlsaBackend::write_dac_period` (and,
-/// on a composite sink, in `alsa_backend::deinterleave_4ch_to_dual_stereo` at the
-/// children's edge) — nowhere upstream. Everything above that edge is this type.
+/// The conversion to the hardware's width happens at the DAC edge — in the
+/// coherent single sink's `alsa_backend::AlsaBackend::write_dac_period`, and on a
+/// composite sink in `alsa_backend::deinterleave_4ch_to_dual_stereo` as it splits
+/// the period to the children's edge — nowhere upstream. Everything above that
+/// edge is this type.
+///
+/// Either edge converts only when it is NARROWER than the spine, and then
+/// exactly once: an `S16Le` edge — single DAC or composite child — is the one
+/// quantization on the output path, while an `S32Le` edge is already the spine's
+/// own width and carries these samples through untouched.
 pub type ProgramSample = i32;
 
 /// The crate's ONE sample-format vocabulary.
@@ -100,13 +106,19 @@ pub fn widen_period(samples: &[i16], out: &mut [ProgramSample]) -> Result<()> {
 
 /// Narrow one program period to S16, or fail loudly on a length mismatch.
 ///
-/// The counterpart to [`widen_period`], and the ONLY i32→i16 conversion on the
-/// output path besides nothing else — it serves the S16 DAC edge, the S16
-/// reference taps (:9891 + chip-ref, S16 by contract), the composite children,
-/// and the loudness meter's S16 scratch. It rounds to nearest via
-/// `jasper_resampler::narrow_i32_to_i16_round`; the truncating
+/// The counterpart to [`widen_period`]: it serves the S16 DAC edge, the S16
+/// reference taps (:9891 + chip-ref, S16 by contract), and the loudness meter's
+/// S16 scratch. It rounds to nearest via
+/// `jasper_resampler::narrow_i32_to_i16_round_slice`; the truncating
 /// `s32_high_word_to_s16` is UAC2 *capture* semantics and must never appear on an
 /// output path.
+///
+/// It is not the only i32→i16 conversion in the crate: a composite sink's S16
+/// children are narrowed by the SCALAR `narrow_i32_to_i16_round` inside
+/// `alsa_backend::deinterleave_4ch_to_dual_stereo`, because that conversion is
+/// strided (one 4-channel period fans out into two stereo ones) and has no whole
+/// slice to hand this wrapper. Same rounding primitive, same rails; only the
+/// traversal differs.
 pub fn narrow_period(samples: &[ProgramSample], out: &mut [i16]) -> Result<()> {
     if !jasper_resampler::narrow_i32_to_i16_round_slice(samples, out) {
         anyhow::bail!(

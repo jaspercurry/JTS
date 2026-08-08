@@ -384,8 +384,11 @@ pub struct PairedCompositeSink {
     last_delay_delta: Option<i64>,
     last_delay_delta_error: Option<i64>,
     max_delay_delta_frames: i64,
-    period_a: Vec<i16>,
-    period_b: Vec<i16>,
+    /// The two child period buffers, at the children's declared edge width —
+    /// and the ONE place that width is represented at runtime. See
+    /// [`ChildPeriods`] for why the width is the variant rather than a separate
+    /// field beside two typed buffer pairs.
+    periods: ChildPeriods,
     /// The format the ACTIVE content capture PCM negotiated — same contract as
     /// [`AlsaBackend::content_format`], never `Option` here because the
     /// composite sink always opens its content lane (the SHM-ring source is
@@ -394,6 +397,92 @@ pub struct PairedCompositeSink {
     /// Reused i16 ingest staging for an `S16Le` active content lane. Same
     /// contract as [`AlsaBackend::content_widen_buf`]; empty on an `S32Le` lane.
     content_widen_buf: Vec<i16>,
+}
+
+/// One sample at a composite CHILD's edge width, and the conversion from the
+/// program spine that produces it.
+///
+/// A CLOSED trait — exactly two implementations, both in this module — rather
+/// than a conversion closure passed in by the caller. The difference matters:
+/// with a closure, a call site could hand the split loop
+/// `jasper_resampler::s32_high_word_to_s16` (UAC2 *capture* truncation) and put
+/// a half-LSB downward bias on every sample at the speaker edge, and nothing
+/// about the split would look wrong. Here the conversion is a property of the
+/// output type, so the wrong one is unreachable rather than merely untested.
+trait ChildEdgeSample: Copy {
+    fn from_program(sample: ProgramSample) -> Self;
+}
+
+impl ChildEdgeSample for i16 {
+    /// The composite's quantization: round-to-nearest, saturating — the SAME
+    /// primitive the coherent sink's `S16Le` edge narrows through, so the two
+    /// final edges cannot drift into rounding differently.
+    fn from_program(sample: ProgramSample) -> Self {
+        jasper_resampler::narrow_i32_to_i16_round(sample)
+    }
+}
+
+impl ChildEdgeSample for ProgramSample {
+    /// An `S32Le` child IS the spine's own width, so there is nothing to
+    /// convert — the identity, exactly as the coherent sink's `S32Le` edge
+    /// writes the spine straight through.
+    fn from_program(sample: ProgramSample) -> Self {
+        sample
+    }
+}
+
+/// The composite's two child period buffers, at the children's declared edge
+/// width.
+///
+/// An enum rather than two typed buffer pairs plus a `SampleFormat` field,
+/// because the buffers' element type and the width the children negotiated are
+/// ONE fact: a struct holding both could drift into an `S32Le` format field over
+/// i16 buffers, and the write path would then hand `io_i32()` a slice of
+/// half-samples — full-scale garbage at the speaker. Here the width IS the
+/// variant, and [`Self::format`] reads it back off the same value the buffers
+/// live in, so `/state` cannot report a width the buffers are not.
+///
+/// Both variants are allocated once, at open, and reused; the audio path only
+/// ever writes into them. Unlike the coherent sink's `dac_narrow_buf` — EMPTY on
+/// the edge that converts nothing — a composite always needs a scratch pair
+/// whatever the width, because the 4-channel program period has to be SPLIT into
+/// two stereo periods before either child can be written. Only the element type
+/// moves.
+enum ChildPeriods {
+    S16 {
+        a: Vec<i16>,
+        b: Vec<i16>,
+    },
+    S32 {
+        a: Vec<ProgramSample>,
+        b: Vec<ProgramSample>,
+    },
+}
+
+impl ChildPeriods {
+    /// One stereo period per child, at `format`. `CHANNELS` (not the sink's
+    /// 4-channel content width): each child is a stereo DAC.
+    fn new(format: SampleFormat, period_frames: u32) -> Self {
+        let samples = (period_frames as usize) * (CHANNELS as usize);
+        match format {
+            SampleFormat::S16Le => Self::S16 {
+                a: vec![0i16; samples],
+                b: vec![0i16; samples],
+            },
+            SampleFormat::S32Le => Self::S32 {
+                a: vec![0 as ProgramSample; samples],
+                b: vec![0 as ProgramSample; samples],
+            },
+        }
+    }
+
+    /// The children's edge width, read off the buffers themselves.
+    fn format(&self) -> SampleFormat {
+        match self {
+            Self::S16 { .. } => SampleFormat::S16Le,
+            Self::S32 { .. } => SampleFormat::S32Le,
+        }
+    }
 }
 
 /// Marker for a startup fault that a restart cannot repair, attached via
@@ -844,7 +933,8 @@ impl PairedCompositeSink {
             channels: config.content_channels,
             // The active lane's own declared hop — same axis the single-ALSA
             // content role reads, and independent of what the composite's
-            // children run at their edges (those stay S16-pinned below).
+            // children run at their edges (those take the DECLARED edge format
+            // below, from the other declaration).
             format: config.content_format,
             buffer_frames: config.content_buffer_frames,
             manual_start: false,
@@ -871,10 +961,19 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
-                // Composite children stay S16-pinned: the native-format write
-                // is scoped to the coherent single DAC, and no registered
-                // composite profile declares another edge format.
-                format: SampleFormat::S16Le,
+                // BOTH children request the registry-declared edge format, the
+                // same declaration the coherent single DAC reads. Per-child
+                // divergence is deliberately not modelled: the one registered
+                // composite profile pairs two of the SAME dongle
+                // (`child_profile_ids = (apple_usb_c_dongle, apple_usb_c_dongle)`),
+                // so one declaration describes both edges, and
+                // `configure_pcm`'s final-edge readback proves each child
+                // installed it. A future composite of unlike children needs a
+                // per-child declaration in the registry first — the pair's
+                // negotiated-shape equality check below would catch the
+                // mismatch, but it would catch it as a startup park, which is
+                // the wrong place to discover a registry gap.
+                format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
             })
@@ -893,7 +992,8 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
-                format: SampleFormat::S16Le,
+                // Same declaration as child A — see that call's comment.
+                format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
             })
@@ -925,9 +1025,16 @@ impl PairedCompositeSink {
             }
         }
 
+        // `content_format=` and `format=` spelled exactly as the single sink's
+        // `event=outputd.alsa.opened` line spells them, so one grep recipe reads
+        // both hops on either transport and a half-flipped box is visible at
+        // open rather than only in STATUS. `format=` is the CHILDREN's edge (both
+        // children, one declaration); it is bare for the same reason it is bare
+        // over there — operators and journal recipes read that key.
         eprintln!(
-            "event=outputd.dual_apple.opened content_pcm={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={}",
+            "event=outputd.dual_apple.opened content_pcm={} content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
             config.content_pcm,
+            config.content_format.as_str(),
             dac_a_pcm,
             dac_b_pcm,
             dac_a_negotiated.sample_rate,
@@ -936,9 +1043,9 @@ impl PairedCompositeSink {
             dac_a_negotiated.buffer_frames,
             linked,
             config.dual_max_delay_delta_frames,
+            config.declared_dac_format.as_str(),
         );
 
-        let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
         Ok(Self {
             content,
             dac_a,
@@ -955,8 +1062,11 @@ impl PairedCompositeSink {
             last_delay_delta: None,
             last_delay_delta_error: None,
             max_delay_delta_frames: config.dual_max_delay_delta_frames,
-            period_a: vec![0i16; period_samples],
-            period_b: vec![0i16; period_samples],
+            // `configure_pcm`'s final-edge readback checked the installed
+            // client-side format on BOTH children against this requested one, so
+            // building the buffers at the request builds them at what outputd is
+            // running — neither child reached here otherwise.
+            periods: ChildPeriods::new(config.declared_dac_format, config.period_frames),
             content_format: config.content_format,
             // The active content lane is 4-channel, so its ingest staging is
             // wider than the per-child period buffers above.
@@ -976,6 +1086,18 @@ impl PairedCompositeSink {
     /// by `configure_pcm`'s content readback).
     pub fn content_format(&self) -> SampleFormat {
         self.content_format
+    }
+
+    /// The format BOTH children's edges negotiated (readback-checked at open by
+    /// `configure_pcm`'s final-edge readback, per child).
+    ///
+    /// The composite twin of [`AlsaBackend::dac_format`], and what `/state`
+    /// reports as `dac.format` for this transport. One value for the pair: both
+    /// children request one declaration, and their buffers are one
+    /// [`ChildPeriods`] — so there is no per-child answer to give, and no second
+    /// place this could disagree with what the write path actually writes.
+    pub fn dac_format(&self) -> SampleFormat {
+        self.periods.format()
     }
 
     pub fn dual_status(&self) -> CompositeStatus {
@@ -1079,20 +1201,71 @@ impl PairedCompositeSink {
         Ok(frames)
     }
 
+    /// Split one 4-channel program period to the two children and write both —
+    /// **the composite's single quantization, at the children's edge.**
+    ///
+    /// The width arm is chosen by [`ChildPeriods`], which is the children's
+    /// negotiated width: an `S16Le` pair narrows once per sample during the
+    /// split (round-to-nearest, the same primitive the coherent sink's `S16Le`
+    /// edge uses), an `S32Le` pair carries the spine's own samples and converts
+    /// nothing. Every buffer either arm touches was sized at open.
+    ///
+    /// The `.context(...)` strings are `&'static str` rather than `format!`-ed
+    /// PCM names, exactly as `AlsaBackend::write_dac_period`'s io-handle context
+    /// is: this body is period-hot and
+    /// `test_outputd_period_hot_functions_do_not_allocate` covers it. Both
+    /// children are named literally so the message still says which one failed;
+    /// the PCM aliases are on the open-time `event=outputd.dual_apple.opened`
+    /// line and in STATUS.
     pub fn write_dual_period(&mut self, samples_4ch: &[ProgramSample]) -> Result<()> {
-        deinterleave_4ch_to_dual_stereo(samples_4ch, &mut self.period_a, &mut self.period_b)?;
-        write_dac_fail_closed(
-            &self.dac_a,
-            &self.dac_a_pcm,
-            &self.period_a,
-            &mut self.counters.dac_xrun_count,
-        )?;
-        write_dac_fail_closed(
-            &self.dac_b,
-            &self.dac_b_pcm,
-            &self.period_b,
-            &mut self.counters.dac_xrun_count,
-        )?;
+        match &mut self.periods {
+            ChildPeriods::S16 { a, b } => {
+                deinterleave_4ch_to_dual_stereo(samples_4ch, a, b)?;
+                let io_a = self
+                    .dac_a
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd dual Apple DAC A")?;
+                write_dac_fail_closed(
+                    &io_a,
+                    &self.dac_a_pcm,
+                    a,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+                let io_b = self
+                    .dac_b
+                    .io_i16()
+                    .context("getting i16 IO handle for outputd dual Apple DAC B")?;
+                write_dac_fail_closed(
+                    &io_b,
+                    &self.dac_b_pcm,
+                    b,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+            }
+            ChildPeriods::S32 { a, b } => {
+                deinterleave_4ch_to_dual_stereo(samples_4ch, a, b)?;
+                let io_a = self
+                    .dac_a
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd dual Apple DAC A")?;
+                write_dac_fail_closed(
+                    &io_a,
+                    &self.dac_a_pcm,
+                    a,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+                let io_b = self
+                    .dac_b
+                    .io_i32()
+                    .context("getting i32 IO handle for outputd dual Apple DAC B")?;
+                write_dac_fail_closed(
+                    &io_b,
+                    &self.dac_b_pcm,
+                    b,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+            }
+        }
         self.counters.dac_frames_written += (samples_4ch.len() / 4) as u64;
         if self.dac_a.state() == State::Running && self.dac_b.state() == State::Running {
             self.check_delay_delta()?;
@@ -1188,13 +1361,15 @@ struct PcmConfig<'a> {
     sample_rate: u32,
     period_frames: u32,
     channels: u16,
-    /// The format to REQUEST from ALSA for this PCM. Two roles vary it, from
-    /// two independent declarations: `dac` takes the registry-declared final
-    /// edge (`Config::declared_dac_format`), and the `content` /
-    /// `active_content` lanes take `Config::content_format`. Both default to
-    /// `S16Le`. Every remaining role (`chip_ref`, the composite children) passes
-    /// `S16Le` explicitly by contract, which is byte-identical to the retired
-    /// module-level `FORMAT` const they used to inherit.
+    /// The format to REQUEST from ALSA for this PCM. Every role that varies it
+    /// reads one of TWO independent declarations: the final-edge roles
+    /// ([`is_final_edge_role`] — `dac` and both composite children) take the
+    /// registry-declared edge (`Config::declared_dac_format`), and the `content`
+    /// / `active_content` lanes take `Config::content_format`. Both default to
+    /// `S16Le`. The one remaining role, `chip_ref`, passes `S16Le` explicitly by
+    /// contract (16 kHz/2ch/S16, `validate_chip_ref_geometry` exact), which is
+    /// byte-identical to the retired module-level `FORMAT` const it used to
+    /// inherit.
     format: SampleFormat,
     buffer_frames: u32,
     manual_start: bool,
@@ -1245,7 +1420,7 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         };
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
-    if role == "dac" {
+    if is_final_edge_role(role) {
         // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
         // it is not what was requested. Read the scope of that claim honestly,
         // because it depends on what sits between outputd and the card:
@@ -1268,13 +1443,19 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // tests/test_outputd_wiring.py::test_every_single_dac_profile_renders_raw_hw_with_no_plug
         // drives the render script for every registered single DAC profile and
         // asserts a raw `type hw` block with no `plug` in the output.
+        //
+        // The COMPOSITE CHILDREN reach here on the same terms and with the same
+        // scope: `jasper.output_hardware` hands the reconciler each child as a
+        // raw `hw:CARD=<card>,DEV=<n>` alias, so a child's client edge is its
+        // hardware edge too, and until this PR neither child was checked at all
+        // — both simply asked for S16 and believed it.
         let current = pcm
             .hw_params_current()
             .context("reading installed outputd DAC HwParams")?;
         let installed = current
             .get_format()
             .context("get installed outputd DAC format")?;
-        verify_dac_format(pcm_name, format, installed)?;
+        verify_dac_format(role, pcm_name, format, installed)?;
     }
     if role == "content" || role == "active_content" {
         // Prove what outputd's own client edge ended up at, exactly as the dac
@@ -1353,29 +1534,55 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     Ok(negotiated)
 }
 
+/// The roles whose PCM is a FINAL HARDWARE EDGE: the coherent single DAC, and
+/// each child of a paired composite.
+///
+/// A named predicate rather than an inline `matches!` inside `configure_pcm`,
+/// because `configure_pcm` cannot be called without a live PCM and so cannot be
+/// unit-tested at all — pulling the role set out here makes "which roles get the
+/// edge readback" a pure function a test can pin, which is the whole content of
+/// the branch. Deliberately an ALLOWLIST: a future role that is an edge has to
+/// be added here on purpose, and one that is not (the content lanes, `chip_ref`)
+/// cannot fall in by resembling a name.
+fn is_final_edge_role(role: &str) -> bool {
+    matches!(role, "dac" | "dual_dac_a" | "dual_dac_b")
+}
+
 /// Fail closed unless the format ALSA installed on OUTPUTD'S OWN CLIENT EDGE
 /// is exactly the one requested.
 ///
 /// Scope: the client edge equals the hardware edge only on a raw `hw:` device
 /// — true for every registered single DAC today, InnoMaker included, since
-/// PR-4 (format-foundation) deleted the last per-profile `plug`. See
-/// `configure_pcm`'s dac readback comment for why a `plug` would defeat this
-/// check, and for the regression test that keeps one from coming back.
+/// PR-4 (format-foundation) deleted the last per-profile `plug`, and true for
+/// both composite children, which the reconciler passes as raw `hw:CARD=…`
+/// aliases. See `configure_pcm`'s dac readback comment for why a `plug` would
+/// defeat this check, and for the regression test that keeps one from coming
+/// back.
 ///
 /// Separate from `validate_negotiated` because the failure is a different kind:
 /// a rate or period mismatch means the device could not serve outputd's
 /// geometry, while this means it served a DIFFERENT sample format than the one
-/// the alignment identity would be certified against. Called only
-/// from `configure_pcm`'s `dac` role, whose caller wraps it in
-/// `final_sink_startup` — so a mismatch parks the unit at EX_CONFIG 78 rather
-/// than restart-looping against hardware that cannot change.
+/// the alignment identity would be certified against. Called only from
+/// `configure_pcm`'s final-edge roles ([`is_final_edge_role`]), every one of
+/// whose callers wraps it in `final_sink_startup` — so a mismatch parks the unit
+/// at EX_CONFIG 78 rather than restart-looping against hardware that cannot
+/// change.
+///
+/// `role` is a parameter, not the constant `"dac"` it was before the composite
+/// children joined: with three edges in play, "which edge moved" is only
+/// answerable if the message says which one it was.
 ///
 /// It is NOT redundant with `alsa`'s own `io_i16`/`io_i32` format check. That
 /// one runs per period, deep on the audio path, and reports an opaque
 /// `unsupported io_xx`; this runs once, at startup, names both formats, and
 /// reaches the operator as a park rather than as a restart loop.
-fn verify_dac_format(pcm_name: &str, requested: SampleFormat, installed: Format) -> Result<()> {
-    verify_installed_format("dac", pcm_name, requested, installed)
+fn verify_dac_format(
+    role: &str,
+    pcm_name: &str,
+    requested: SampleFormat,
+    installed: Format,
+) -> Result<()> {
+    verify_installed_format(role, pcm_name, requested, installed)
 }
 
 /// Fail closed unless the format ALSA installed on the CONTENT lane's client
@@ -1509,19 +1716,27 @@ fn validate_negotiated(
 }
 
 /// Split one 4-channel program period into the composite's two stereo child
-/// periods, narrowing each sample to the children's S16 edge as it goes.
+/// periods, at the children's declared edge width.
 ///
-/// This is the composite sink's own single quantization, and it is the same
-/// round-to-nearest the coherent sink's S16 edge uses. The children are declared
-/// `S16Le` here (no registered composite profile declares otherwise), so the
-/// narrow is where the wide spine meets their width — one conversion per sample,
-/// at the edge, exactly as `write_dac_period` does for a single DAC. Making the
-/// child width configurable (and this function generic over it) is the
-/// composite-sink step of the wide-output-path program, not this one.
-fn deinterleave_4ch_to_dual_stereo(
+/// **This is where the composite meets its children's width — the composite
+/// sink's counterpart to `AlsaBackend::write_dac_period`, and its ONLY
+/// conversion site.** The width is chosen by the output slices' element type,
+/// through the closed [`ChildEdgeSample`] trait: `i16` children quantize here,
+/// round-to-nearest and saturating, the same primitive the coherent sink's
+/// `S16Le` edge narrows through; `i32` children are already the spine's own
+/// width and are copied unconverted.
+///
+/// ONE loop over both widths, not one loop each: the frame arithmetic and the
+/// two bounds checks are the fail-closed part (a short scratch would write a
+/// partial period to a live DAC), and a second copy of them would be a twin that
+/// drifts. Only the per-sample conversion varies, and it varies by type.
+///
+/// The channel map is width-independent and unchanged: child A takes program
+/// channels 0/1, child B takes 2/3.
+fn deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>(
     samples_4ch: &[ProgramSample],
-    out_a: &mut [i16],
-    out_b: &mut [i16],
+    out_a: &mut [T],
+    out_b: &mut [T],
 ) -> Result<()> {
     if samples_4ch.len() % 4 != 0 {
         anyhow::bail!("active content period does not contain whole 4-channel frames");
@@ -1530,14 +1745,13 @@ fn deinterleave_4ch_to_dual_stereo(
     if out_a.len() < frames * 2 || out_b.len() < frames * 2 {
         anyhow::bail!("dual output scratch buffers are smaller than content period");
     }
-    let narrow = jasper_resampler::narrow_i32_to_i16_round;
     for frame in 0..frames {
         let src = frame * 4;
         let dst = frame * 2;
-        out_a[dst] = narrow(samples_4ch[src]);
-        out_a[dst + 1] = narrow(samples_4ch[src + 1]);
-        out_b[dst] = narrow(samples_4ch[src + 2]);
-        out_b[dst + 1] = narrow(samples_4ch[src + 3]);
+        out_a[dst] = T::from_program(samples_4ch[src]);
+        out_a[dst + 1] = T::from_program(samples_4ch[src + 1]);
+        out_b[dst] = T::from_program(samples_4ch[src + 2]);
+        out_b[dst + 1] = T::from_program(samples_4ch[src + 3]);
     }
     Ok(())
 }
@@ -1601,16 +1815,27 @@ fn write_dac_frames<S: Copy>(
     Ok(())
 }
 
-fn write_dac_fail_closed(
-    pcm: &PCM,
+/// One composite CHILD's period write, over whatever sample type its negotiated
+/// edge takes.
+///
+/// Generic for the same reason `write_dac_frames` is: the abort-on-xrun policy
+/// that makes this "fail closed" — a composite must not paper over a child's
+/// xrun, because a recovered child would silently be one buffer out of phase
+/// with its sibling and the pair's whole promise is that they stay aligned —
+/// must not be able to drift between an S16 and an S32 child. Monomorphised for
+/// `i16` this is instruction-for-instruction the pre-wide-composite writer.
+///
+/// The caller fetches the IO handle (`io_i16`/`io_i32` per its `ChildPeriods`
+/// arm) rather than this function taking the `PCM` and choosing, which is what
+/// makes the width the caller's single decision — and lets the caller use
+/// `&'static str` contexts on the period-hot path.
+fn write_dac_fail_closed<S: Copy>(
+    io: &IO<'_, S>,
     pcm_name: &str,
-    samples: &[i16],
+    samples: &[S],
     xrun_count: &mut u64,
 ) -> Result<()> {
     let frames_total = samples.len() / (CHANNELS as usize);
-    let io = pcm
-        .io_i16()
-        .with_context(|| format!("getting i16 IO handle for outputd DAC {pcm_name}"))?;
     let mut frames_done = 0usize;
     while frames_done < frames_total {
         let offset = frames_done * (CHANNELS as usize);
@@ -1936,8 +2161,8 @@ mod tests {
 
     #[test]
     fn dac_format_readback_accepts_the_installed_format_it_requested() {
-        verify_dac_format("outputd_dac", SampleFormat::S16Le, Format::S16LE).unwrap();
-        verify_dac_format("outputd_dac", SampleFormat::S32Le, Format::S32LE).unwrap();
+        verify_dac_format("dac", "outputd_dac", SampleFormat::S16Le, Format::S16LE).unwrap();
+        verify_dac_format("dac", "outputd_dac", SampleFormat::S32Le, Format::S32LE).unwrap();
     }
 
     #[test]
@@ -1947,7 +2172,8 @@ mod tests {
         // own request client-side, so a plug can never produce this
         // disagreement (see `configure_pcm`'s dac readback comment). Both
         // formats must be named — the operator needs to know which end moved.
-        let err = verify_dac_format("outputd_dac", SampleFormat::S32Le, Format::S16LE).unwrap_err();
+        let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S32Le, Format::S16LE)
+            .unwrap_err();
         let text = err.to_string();
         assert!(text.contains("outputd_dac"), "{text}");
         assert!(text.contains("S16LE"), "{text}");
@@ -1956,7 +2182,8 @@ mod tests {
 
     #[test]
     fn dac_format_readback_rejects_an_edge_outside_the_vocabulary() {
-        let err = verify_dac_format("outputd_dac", SampleFormat::S16Le, Format::S24LE).unwrap_err();
+        let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S16Le, Format::S24LE)
+            .unwrap_err();
         assert!(err.to_string().contains("S24LE"), "{err}");
     }
 
@@ -1966,6 +2193,7 @@ mod tests {
         // readback mismatch must carry the configuration marker main() turns
         // into EX_CONFIG 78. A restart cannot change what the device installs.
         let error = final_sink_startup(verify_dac_format(
+            "dac",
             "outputd_dac",
             SampleFormat::S32Le,
             Format::S16LE,
@@ -1975,6 +2203,86 @@ mod tests {
         assert!(error
             .downcast_ref::<FinalSinkStartupConfigError>()
             .is_some());
+    }
+
+    #[test]
+    fn the_final_edge_readback_covers_the_single_dac_and_both_composite_children() {
+        // The role set `configure_pcm`'s edge readback branches on. Before this
+        // PR the branch was a bare `role == "dac"`, so BOTH composite children
+        // opened with no format proof at all — they asked for S16 and believed
+        // it. Every role that requests a declared HARDWARE width has to be in
+        // here, and nothing else may be.
+        for role in ["dac", "dual_dac_a", "dual_dac_b"] {
+            assert!(is_final_edge_role(role), "{role} is a final hardware edge");
+        }
+        // The content lanes have their OWN readback (`verify_content_format`,
+        // whose park scope and plug caveats differ), `chip_ref` has an exact
+        // whole-geometry check, and the fake backend opens nothing. None of them
+        // may fall into the edge branch — nor may a name that merely resembles a
+        // child role.
+        for role in [
+            "content",
+            "active_content",
+            "chip_ref",
+            "dual_dac",
+            "dual_dac_c",
+            "",
+        ] {
+            assert!(!is_final_edge_role(role), "{role} is not a hardware edge");
+        }
+    }
+
+    #[test]
+    fn child_dac_format_readback_accepts_and_rejects_per_child_naming_the_role() {
+        // Each child proves its own edge, and its message says WHICH child: a
+        // composite whose A came up S16 and whose B came up S32 is a real
+        // failure mode (two independently-negotiating USB devices), and an
+        // operator cannot act on "a DAC installed the wrong format".
+        //
+        // The role assertion matches the SENTENCE POSITION, not the bare
+        // substring — the same trap PR-3's content readback test recorded: the
+        // child PCM alias could itself contain the role token, and
+        // `text.contains(role)` would then be satisfied by the PCM name alone
+        // and stay green with the role hardcoded to the wrong child.
+        for (role, pcm) in [
+            ("dual_dac_a", "hw:CARD=A,DEV=0"),
+            ("dual_dac_b", "hw:CARD=B,DEV=0"),
+        ] {
+            verify_dac_format(role, pcm, SampleFormat::S16Le, Format::S16LE).unwrap();
+            verify_dac_format(role, pcm, SampleFormat::S32Le, Format::S32LE).unwrap();
+
+            let err = verify_dac_format(role, pcm, SampleFormat::S32Le, Format::S16LE).unwrap_err();
+            let text = err.to_string();
+            assert!(text.contains(&format!("outputd {role} PCM")), "{text}");
+            assert!(text.contains(pcm), "{text}");
+            assert!(text.contains("S16LE"), "{text}");
+            assert!(text.contains("S32_LE"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_child_format_mismatch_parks_the_unit_instead_of_restart_looping() {
+        // Both children's `configure_pcm` calls are already wrapped in
+        // `final_sink_startup` (they were, for negotiation faults), so the new
+        // readback inherits the park class: a dongle that installs a width other
+        // than the one requested will install it again on the next start, and
+        // this unit's restart loop escalates to StartLimitAction=reboot.
+        for role in ["dual_dac_a", "dual_dac_b"] {
+            let error = final_sink_startup(verify_dac_format(
+                role,
+                "hw:CARD=A,DEV=0",
+                SampleFormat::S32Le,
+                Format::S16LE,
+            ))
+            .unwrap_err();
+
+            assert!(
+                error
+                    .downcast_ref::<FinalSinkStartupConfigError>()
+                    .is_some(),
+                "{role} mismatch must park, not restart-loop"
+            );
+        }
     }
 
     #[test]
@@ -2135,7 +2443,7 @@ mod tests {
         // One comparison behind both entry points: the dac and content lanes
         // cannot drift into disagreeing about what a mismatch is or how it
         // reads. Same requested/installed pair, same message but for the role.
-        let dac = verify_dac_format("some_pcm", SampleFormat::S32Le, Format::S16LE)
+        let dac = verify_dac_format("dac", "some_pcm", SampleFormat::S32Le, Format::S16LE)
             .unwrap_err()
             .to_string();
         let content =
@@ -2180,34 +2488,56 @@ mod tests {
         assert!(err.to_string().contains("buffer_frames: 256"));
     }
 
+    /// The 4-channel program period every split fixture below feeds, so the two
+    /// widths are compared on the SAME audio rather than on two hand-written
+    /// vectors that could quietly differ.
+    ///
+    /// The INPUT is a program period (i32 spine), so it has to be written at that
+    /// scale — bare `10` here is 10/65536 of an S16 LSB and narrows to silence.
+    /// CI caught exactly that once: type inference accepted the unwidened
+    /// literals, so the test compiled and asserted the wrong audio.
+    fn split_fixture() -> [ProgramSample; 8] {
+        [w(10), w(11), w(20), w(21), w(12), w(13), w(22), w(23)]
+    }
+
     #[test]
-    fn deinterleaves_active_4ch_to_one_stereo_period_per_dac() {
-        // The INPUT is now a program period (i32 spine), so the fixture has to be
-        // written at that scale — bare `10` here is 10/65536 of an S16 LSB and
-        // narrows to silence. CI caught exactly that: type inference accepted the
-        // unwidened literals, so the test compiled and asserted the wrong audio.
+    fn deinterleaves_active_4ch_to_one_stereo_period_per_s16_child() {
+        // THE TRANSPARENCY PROOF for every live composite box: `S16Le` children
+        // are what the registry declares today, so this arm must be exactly the
+        // pre-PR-5 path. Same fixture, same expected samples as before the split
+        // became width-dispatching.
         let mut a = vec![0i16; 4];
         let mut b = vec![0i16; 4];
 
-        deinterleave_4ch_to_dual_stereo(
-            &[w(10), w(11), w(20), w(21), w(12), w(13), w(22), w(23)],
-            &mut a,
-            &mut b,
-        )
-        .unwrap();
+        deinterleave_4ch_to_dual_stereo(&split_fixture(), &mut a, &mut b).unwrap();
 
-        // Child A takes program channels 0/1, child B takes 2/3 — the split is
-        // unchanged; only the input's width moved.
+        // Child A takes program channels 0/1, child B takes 2/3.
         assert_eq!(a, vec![10, 11, 12, 13]);
         assert_eq!(b, vec![20, 21, 22, 23]);
     }
 
     #[test]
-    fn the_composite_edge_quantizes_by_rounding_and_saturates_at_the_rails() {
+    fn deinterleaves_active_4ch_to_one_stereo_period_per_s32_child() {
+        // The dormant arm (nothing in the tree declares an S32 composite yet).
+        // The channel map is identical — the SAME assertion as the S16 arm, at
+        // the spine's own scale — because only the element width moved. If the
+        // map ever diverged between arms, one child would play the other's audio
+        // on a wide box and no S16 test would notice.
+        let mut a = vec![0 as ProgramSample; 4];
+        let mut b = vec![0 as ProgramSample; 4];
+
+        deinterleave_4ch_to_dual_stereo(&split_fixture(), &mut a, &mut b).unwrap();
+
+        assert_eq!(a, vec![w(10), w(11), w(12), w(13)]);
+        assert_eq!(b, vec![w(20), w(21), w(22), w(23)]);
+    }
+
+    #[test]
+    fn the_s16_child_edge_quantizes_by_rounding_and_saturates_at_the_rails() {
         // The composite's own single quantization. It must be the SAME
         // round-to-nearest the coherent sink's S16 edge uses, not a truncation —
-        // the widened fixture above cannot tell those apart, so this off-grid
-        // vector is what pins it.
+        // a widened fixture cannot tell those apart, so this off-grid vector is
+        // what pins it.
         let mut a = vec![0i16; 2];
         let mut b = vec![0i16; 2];
 
@@ -2230,18 +2560,93 @@ mod tests {
     }
 
     #[test]
-    fn the_composite_edge_rejects_scratch_buffers_smaller_than_the_period() {
-        // Unchanged contract, re-asserted at the new input width: a short scratch
-        // would otherwise write a partial period to a live DAC.
-        let mut a = vec![0i16; 2];
-        let mut b = vec![0i16; 2];
-        let err = deinterleave_4ch_to_dual_stereo(&[w(1); 8], &mut a, &mut b).unwrap_err();
-        assert!(
-            err.to_string().contains("smaller than content period"),
-            "{err}"
-        );
+    fn an_s32_child_edge_converts_nothing_at_all() {
+        // The payoff, and the one thing that could silently be wrong on a wide
+        // composite: an `S32Le` child IS the spine's width, so the split must
+        // COPY. Fed the exact vector the S16 arm above rounds and saturates,
+        // every sample has to survive bit-for-bit — a stray narrow-then-widen
+        // here would cost 16 bits per sample and read as "quieter, grainier" with
+        // nothing in any counter to show for it.
+        let off_grid = [32_768, -32_768, ProgramSample::MAX, ProgramSample::MIN];
+        let mut a = vec![0 as ProgramSample; 2];
+        let mut b = vec![0 as ProgramSample; 2];
 
-        let err = deinterleave_4ch_to_dual_stereo(&[w(1); 7], &mut a, &mut b).unwrap_err();
-        assert!(err.to_string().contains("whole 4-channel frames"), "{err}");
+        deinterleave_4ch_to_dual_stereo(&off_grid, &mut a, &mut b).unwrap();
+
+        assert_eq!(a, vec![32_768, -32_768], "an S32 child must not round");
+        assert_eq!(
+            b,
+            vec![ProgramSample::MAX, ProgramSample::MIN],
+            "an S32 child must not clamp to the S16 rails"
+        );
+    }
+
+    #[test]
+    fn the_composite_edge_rejects_scratch_buffers_smaller_than_the_period() {
+        // Unchanged contract, asserted at BOTH child widths: a short scratch
+        // would otherwise write a partial period to a live DAC, and the bounds
+        // check lives in the shared generic body — so if one width ever skipped
+        // it, that would be a width-specific hole in a fail-closed guard.
+        let mut a16 = vec![0i16; 2];
+        let mut b16 = vec![0i16; 2];
+        let mut a32 = vec![0 as ProgramSample; 2];
+        let mut b32 = vec![0 as ProgramSample; 2];
+
+        for err in [
+            deinterleave_4ch_to_dual_stereo(&[w(1); 8], &mut a16, &mut b16).unwrap_err(),
+            deinterleave_4ch_to_dual_stereo(&[w(1); 8], &mut a32, &mut b32).unwrap_err(),
+        ] {
+            assert!(
+                err.to_string().contains("smaller than content period"),
+                "{err}"
+            );
+        }
+
+        for err in [
+            deinterleave_4ch_to_dual_stereo(&[w(1); 7], &mut a16, &mut b16).unwrap_err(),
+            deinterleave_4ch_to_dual_stereo(&[w(1); 7], &mut a32, &mut b32).unwrap_err(),
+        ] {
+            assert!(err.to_string().contains("whole 4-channel frames"), "{err}");
+        }
+    }
+
+    #[test]
+    fn child_periods_allocate_one_stereo_pair_at_the_declared_width() {
+        // Sized once, at open, per child: `CHANNELS` (2) x period frames, NOT the
+        // sink's 4-channel content width. A pair sized at 4 channels would be
+        // twice the mlocked bytes it needs; a pair sized at 1 would let the split
+        // hit its own bounds check every period.
+        let narrow = ChildPeriods::new(SampleFormat::S16Le, 1024);
+        match &narrow {
+            ChildPeriods::S16 { a, b } => {
+                assert_eq!(a.len(), 2048);
+                assert_eq!(b.len(), 2048);
+                assert!(a.iter().chain(b.iter()).all(|&s| s == 0));
+            }
+            ChildPeriods::S32 { .. } => panic!("S16Le children must hold i16 buffers"),
+        }
+
+        let wide = ChildPeriods::new(SampleFormat::S32Le, 1024);
+        match &wide {
+            ChildPeriods::S32 { a, b } => {
+                assert_eq!(a.len(), 2048);
+                assert_eq!(b.len(), 2048);
+                assert!(a.iter().chain(b.iter()).all(|&s| s == 0));
+            }
+            ChildPeriods::S16 { .. } => panic!("S32Le children must hold i32 buffers"),
+        }
+    }
+
+    #[test]
+    fn child_periods_report_the_width_their_buffers_actually_are() {
+        // `PairedCompositeSink::dac_format` — and through it `/state.dac.format`
+        // and the chip-AEC alignment identity — reads this. It has to be derived
+        // from the buffers rather than stored beside them: a second copy of the
+        // width could disagree with what the write path writes, which is exactly
+        // the lie the old hardcoded `SampleFormat::S16Le` in
+        // `RuntimeAlsaSink::dac_format` was.
+        for format in [SampleFormat::S16Le, SampleFormat::S32Le] {
+            assert_eq!(ChildPeriods::new(format, 64).format(), format);
+        }
     }
 }

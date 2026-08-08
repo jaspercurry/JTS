@@ -56,8 +56,13 @@ Conversion primitives live in `jasper-resampler`
 (`widen_i16_to_i32` / `narrow_i32_to_i16_round`); the truncating
 `s32_high_word_to_s16` beside them is UAC2 *capture* semantics and must never
 appear on an output path. Every wire that crosses outputd's boundary keeps its own
-declared width, and converts exactly once, at that boundary. **Egress** narrows:
-the :9891 reference datagrams, the chip-reference leg, the composite children.
+declared width, and converts exactly once, at that boundary. **Egress** narrows
+where the wire is narrower than the spine: the :9891 reference datagrams and the
+chip-reference leg always (both S16 by contract), and a paired-composite sink's
+two children when the registry declares an `S16_LE` edge — which it does for the
+one registered composite profile today, so both Apple children narrow. A composite
+declaring `S32_LE` would split the period to its children with no conversion at
+all, exactly as a single `S32_LE` edge does.
 **Ingress** widens: the S16 content lane, the SHM ring, the snapclient round-trip
 FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
 TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
