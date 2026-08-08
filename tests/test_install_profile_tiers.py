@@ -322,7 +322,7 @@ def test_correction_relay_dependency_is_explicit_in_both_install_profiles():
 
     for profile in ("full", "streambox"):
         dependencies = data["project"]["optional-dependencies"][profile]
-        assert "cryptography>=42" in dependencies, profile
+        assert "cryptography>=50.0.0" in dependencies, profile
 
 
 # ---------- (4) no endpoint install functions / deleted artifacts --------
