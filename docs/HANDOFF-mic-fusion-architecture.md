@@ -270,7 +270,12 @@ the precursor `_configured_wake_legs(cfg)` in `voice_daemon.py` is the
 real version of this function: it iterates `wake_input_legs()` and gates
 each optional leg on its `cfg.mic_device_*` device string being non-empty
 (the reconciler sets/clears those from the `JASPER_WAKE_LEG_*` booleans),
-with the primary `on` leg always present. The `profile.does_hardware_aec`
+with the primary `on` leg present in every case but one: a speaker with no
+microphone of its own plans **no legs at all** and listens only while a paired
+remote's button is held (issue #2205). That is keyed on the AEC reconciler's
+published `JASPER_LOCAL_MIC_PRESENT`, never on a device string — see
+[HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md) Layer 1.
+The `profile.does_hardware_aec`
 branch and the `cfg.wake_leg_dtln` toggle shown above are the Phase-2
 shape — neither exists yet. Two small token→vocabulary maps stay in their
 consumers rather than on the frozen registry: `_LEG_DEVICE_ATTR`

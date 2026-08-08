@@ -123,9 +123,9 @@ def test_push_to_talk_box_reads_as_advisory_not_failure(
     card = audio.check_mic_card_matches_config(_CFG)
     assert card.status == "warn"
     assert "wiim_remote_2" in card.detail
-    # GATE state, not runtime state. Opening the gate is necessary but not
-    # sufficient — the daemon still exits 66 with no local mic (issue #2205) —
-    # so this must not claim voice is running on the accessory.
+    # GATE state, not runtime state. The daemon half of issue #2205 has landed,
+    # so such a box can answer — but this check never looks at the daemon, so
+    # it still must not claim voice is running on the accessory.
     assert "the voice-input gate is open for it" in card.detail
     assert "#2205" in card.detail
     assert "runs push-to-talk" not in card.detail

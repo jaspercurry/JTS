@@ -115,6 +115,7 @@ a new cue" below for both patterns.
 | `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule); rate-limited to once per hour | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
 | `measurement_relay_unreachable` | proactive | phone-mic capture relay: Pi cannot reach the cloud relay to run a new measurement (`jasper/capture_relay`, `RELAY_UNREACHABLE_CUE_SLUG`) | "I couldn't reach the measurement service. New measurements need internet, but anything already set up still works." |
 | `measurement_failed` | proactive | phone-mic capture relay: a started measurement can't be used — phone timeout, decrypt/integrity failure, stimulus alignment failure, or phone aborted (`jasper/capture_relay`, `MEASUREMENT_FAILED_CUE_SLUG`) | "Sorry, that measurement didn't work. Visit `{hostname}` to try again." |
+| `no_room_microphone` | reactive | a source-less session start on a speaker with no always-listening microphone — its only voice input is a paired push-to-talk remote (`jasper/voice_daemon.py`, `NO_ROOM_MIC_CUE_SLUG`, issue #2205). Without it that request ducked the music, chirped, forwarded zero bytes, and died to the idle watchdog in total silence | "I don't have a microphone of my own. Hold the button on your remote to talk to me." |
 
 Cues are **provider-agnostic** — they don't say "Google" or
 "Gemini". The voice backend is replaceable; baking provider names
@@ -316,4 +317,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-07-11 (registry table diffed against `jasper/cues/registry.py` CUES — added the two capture-relay rows; `set_failure_escalation_cb` wiring location corrected to `jasper/voice/daemon_main.py`'s `run()`)
+Last verified: 2026-08-07 (registry table re-diffed against `jasper/cues/registry.py` CUES — added the `no_room_microphone` row for the #2205 daemon half; the rest of the file retains its 2026-07-11 verification, when the two capture-relay rows were added and `set_failure_escalation_cb`'s wiring location was corrected to `jasper/voice/daemon_main.py`'s `run()`)

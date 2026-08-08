@@ -274,6 +274,56 @@ write_mic_profile_env() {
     set_env_var "$ENV_FILE" JASPER_XVF_REASON "${JASPER_XVF_REASON:-}"
 }
 
+# Publish THIS script's half of the voice-input question, for jasper-voice.
+#
+# The gate marker is the AND of both halves' absences, so it cannot say WHICH
+# half is satisfied — and the daemon needs exactly that. With no local
+# microphone it must plan ZERO wake legs and serve the accessory's button
+# instead of opening a primary leg against a card that is not there, which is
+# the daemon half of issue #2205.
+#
+# The daemon must NOT re-derive this from its own config. `Config.mic_device`
+# defaults to the literal "Array" when JASPER_MIC_DEVICE is unset, and the
+# no-mic branches below deliberately write FALLBACK_MIC to clear a stale
+# udp:PORT — so "empty or odd mic_device" is not evidence of absence on any
+# real box. One owner, one derivation, published once.
+#
+# Three values, and the third is not padding:
+#   1        a candidate capture card is present — the same `PRESENT_MIC`
+#            probe every mic-selecting branch below already trusts.
+#   0        positively no candidate capture card is present. This is the ONLY
+#            value that lets the daemon skip its primary wake leg, which keeps
+#            "there is no room mic" distinguishable from "the room mic should
+#            be here and isn't" — the latter must still raise and park, or a
+#            broken mic would silently downgrade to push-to-talk on a speaker
+#            with no remote.
+#   unknown  a custom JASPER_MIC_DEVICE: an operator device this script
+#            deliberately does not manage, whose name need not appear in
+#            MIC_CANDIDATES at all, so PRESENT_MIC says nothing about it.
+#            Writing 1 would claim a check we did not perform; writing nothing
+#            would let a stale 0 from an earlier pass silently downgrade a
+#            custom-mic speaker to push-to-talk. Unknown reads as "plan the
+#            leg", i.e. exactly today's behaviour.
+#
+# Written ONCE per pass, before the branch tree, so no RECONCILING path can
+# exit leaving a stale value behind, and every restart_voice below picks up the
+# fresh one. Two exits precede it, both deliberate no-op modes that mutate
+# nothing at all: `--check-aec-ready` (a read-only ExecCondition probe) and the
+# live-commissioning-marker hand-off, where the foreground commissioner owns
+# every lifecycle mutation. Same shape as write_mic_profile_env above.
+write_local_mic_presence_env() {
+    local value="unknown"
+    if is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
+        if [[ -n "$PRESENT_MIC" ]]; then
+            value="1"
+        else
+            value="0"
+        fi
+    fi
+    set_env_var "$ENV_FILE" JASPER_LOCAL_MIC_PRESENT "$value"
+    log "local mic presence: ${value} (candidate=${PRESENT_MIC:-<none>})"
+}
+
 mark_outputd_restart_if_changed() {
     local key="$1"
     local desired="$2"
@@ -1405,6 +1455,7 @@ fi
 
 log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC},chip_aec_150:${LEG_CHIP_AEC_150},chip_aec_210:${LEG_CHIP_AEC_210}"
 write_mic_profile_env
+write_local_mic_presence_env
 if profile_managed_mic_resolution; then
     set_env_var "$ENV_FILE" JASPER_AEC_MIC_DEVICE "$AEC_MIC_DEVICE"
 fi

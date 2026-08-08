@@ -1189,6 +1189,13 @@ async def _get_state(
             # fields explicitly, so a new session_status field must be
             # pulled through here too.
             "wake_legs": (voice_st or {}).get("wake_legs"),
+            # Why `wake_legs` is empty, from the daemon that decided it: on a
+            # speaker with no room mic and a paired accessory, zero legs is
+            # the design and every turn is a button turn. Without this the
+            # two opposite states — "arms nothing on purpose" and "every leg
+            # failed to open" — render identically. Curated pull-through like
+            # the fields above; null when voice is unreachable.
+            "push_to_talk_only": (voice_st or {}).get("push_to_talk_only"),
             # Per-pack tool-registration outcomes from jasper-voice's
             # session_status (added with the data-driven tool-pack
             # registry). jasper-doctor's check_tool_packs reads this to

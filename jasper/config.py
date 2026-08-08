@@ -85,6 +85,43 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def _env_optional_bool(name: str) -> bool | None:
+    """Tri-state boolean: None when the writer published no answer.
+
+    Unlike ``_env_bool`` there is no default to fall back to, because the
+    absence of an answer is itself load-bearing information: "I did not
+    determine this" must stay distinguishable from "I determined False".
+    Unset, empty, and any unrecognised token (the reconciler writes the
+    literal ``unknown``) all read as None.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
+def local_mic_present_from_env() -> bool | None:
+    """``jasper-aec-reconcile``'s published local-microphone verdict.
+
+    Public because the verdict has more than one reader and they must not
+    disagree about the shape of the speaker: ``Config.local_mic_present``
+    below is this call, and so is ``jasper-doctor``'s wake-leg check, which
+    has to know a no-room-mic box arms zero wake legs *on purpose* before it
+    can tell that apart from a bridge that died. One parse, two readers.
+
+    ``None`` means the writer published no answer (unset, or the literal
+    ``unknown`` it writes for a custom ``JASPER_MIC_DEVICE`` it deliberately
+    does not manage) — never "absent". Only an explicit ``False`` may change
+    behaviour anywhere.
+    """
+    return _env_optional_bool("JASPER_LOCAL_MIC_PRESENT")
+
+
 def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
     raw = os.environ.get(name, default)
     result: dict[str, str] = {}
@@ -218,6 +255,12 @@ class Config:
     wake_model: str
     wake_threshold: float
     mic_device: str
+    # jasper-aec-reconcile's published half of "is there usable voice input":
+    # True/False when it resolved local-microphone presence, None when it
+    # deliberately did not (a custom JASPER_MIC_DEVICE) or never ran. Only an
+    # explicit False lets the leg planner drop the primary wake leg — see
+    # `_configured_wake_legs`.
+    local_mic_present: bool | None
     manual_mic_sources: MappingProxyType[str, str]
     mic_device_raw: str
     mic_device_dtln: str
@@ -526,6 +569,15 @@ class Config:
             # the XVF3800's "Array: USB Audio (hw:N,0)"; "UMIK-2" matches
             # the MiniDSP UMIK-2). Empty/absent → PortAudio default.
             mic_device=_env("JASPER_MIC_DEVICE", "Array"),
+            # JASPER_LOCAL_MIC_PRESENT is written by jasper-aec-reconcile —
+            # the owner of the voice-input gate — as `1` / `0` / `unknown`.
+            # It exists because `mic_device` above CANNOT answer "is there a
+            # room mic": it defaults to the literal "Array" when unset, and
+            # the reconciler writes a real candidate name on the no-mic paths
+            # to clear a stale udp:PORT. Never guess this locally; a wrong
+            # `0` would make a speaker with a broken mic look like a
+            # push-to-talk-only one and go quietly deaf.
+            local_mic_present=local_mic_present_from_env(),
             # JASPER_MANUAL_MIC_SOURCES declares active push-to-talk audio
             # sources that bypass wake detection. The key is an internal source
             # id carried by /session/start; the value is any make_mic_capture()

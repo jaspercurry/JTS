@@ -11,6 +11,7 @@ import os
 import signal
 import sys
 from collections import deque
+from collections.abc import Iterable
 
 from jasper.log_event import log_event
 
@@ -169,6 +170,50 @@ def _active_voice(cfg: Config) -> str:
     """Return the voice id for the currently selected provider."""
     provider, _model, voice = active_voice_identity(cfg)
     return voice or f"<unknown:{provider}>"
+
+
+def _require_usable_input(
+    legs: list[_LegRuntime],
+    manual_mics: list[_ManualMicRuntime],
+    declared_manual_devices: Iterable[str],
+) -> None:
+    """Refuse to run a daemon that can never hear anything.
+
+    No wake leg AND no manual mic means every input this daemon could have
+    opened is gone. A planned primary leg that fails to open already raises
+    in the leg factory, so this is the backstop for the *other* shape: a
+    speaker with no room mic (so no leg was planned at all — issue #2205)
+    whose accessory sources then all failed to open. That loop deliberately
+    SKIPS a bad source rather than raising, so without this the daemon would
+    come up, log "ready", pat its watchdog on the keepalive tick, and be
+    permanently deaf — the exact silent failure the house rule forbids.
+
+    Fails the same fatal-but-CLEAN way a primary mic-open failure does:
+    `InputDeviceUnavailable` → `main()` exits VOICE_MIC_UNAVAILABLE_EXIT →
+    systemd parks the unit instead of crash-looping toward a reboot.
+    """
+    if legs or manual_mics:
+        return
+    raise InputDeviceUnavailable(
+        ",".join(declared_manual_devices) or "<none>",
+        RuntimeError("no usable mic source: no wake leg, no manual mic"),
+    )
+
+
+def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
+    """The startup line's ``wake=`` field.
+
+    Keyed on the RESOLVED leg plan, never on ``cfg.wake_model`` alone: on a
+    speaker with no room mic the plan is empty and no detector is built, and
+    naming the model there would tell an operator wake detection is live on a
+    box that will never wake.
+
+    Extracted for the same reason as ``_tts_ready_detail`` — the string is
+    the operator's evidence (the #2205 hardware verification greps for it in
+    the journal), so it gets a test rather than living unreachable inside a
+    ~350-line ``run()``.
+    """
+    return cfg.wake_model if planned_wake_legs else "disabled(no wake leg)"
 
 
 def _tts_ready_detail(cfg: Config) -> str:
@@ -872,10 +917,15 @@ async def run() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
 
+    # `wake=` must report what this daemon actually DOES, not what the config
+    # happens to name — see `_wake_ready_detail`. Resolved once here because
+    # the AsyncExitStack below opens its mics from this same list.
+    planned_wake_legs = _configured_wake_legs(cfg)
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-        cfg.voice_provider, _active_model(cfg), cfg.wake_model,
-        cfg.mic_device, _tts_ready_detail(cfg),
+        cfg.voice_provider, _active_model(cfg),
+        _wake_ready_detail(cfg, planned_wake_legs),
+        cfg.mic_device or "(none)", _tts_ready_detail(cfg),
     )
 
     # Open the persistent live connection ONCE at daemon startup and
@@ -961,7 +1011,7 @@ async def run() -> None:
         # skipped so the speaker keeps waking on the healthy legs.
         async with contextlib.AsyncExitStack() as stack:
             legs: list[_LegRuntime] = []
-            for spec, device in _configured_wake_legs(cfg):
+            for spec, device in planned_wake_legs:
                 try:
                     leg_mic = await stack.enter_async_context(
                         make_mic_capture(
@@ -1030,6 +1080,9 @@ async def run() -> None:
                     manual_mic,
                     device,
                 ))
+            _require_usable_input(
+                legs, manual_mics, cfg.manual_mic_sources.values(),
+            )
             tts = await stack.enter_async_context(make_tts_playout(
                 transport=cfg.tts_transport,
                 device=cfg.tts_device,

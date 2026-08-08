@@ -62,13 +62,23 @@ ConditionPathExists=!/var/lib/jasper/voice-input-absent
 # emit `READY=1` (via sdnotify, see jasper/watchdog.py) before
 # systemd considers it active. `WatchdogSec=30s` requires the
 # daemon to pat the watchdog every < 30 s; the heartbeat thread
-# only pats if the WakeLoop's mic-frame iterator has advanced
-# recently (sentinel pattern). If the async loop wedges or mic
-# capture dies (PortAudio InputStream death after USB hiccup,
-# blocked I/O, deadlock), `WATCHDOG=1` stops firing and systemd
-# revives us with a fresh process. `TimeoutStopSec=5s` cuts the
-# default 90 s SIGTERM grace — a wedged daemon should get to
-# restart fast, not accumulate wedge time.
+# only pats if the WakeLoop's frame iterator has advanced recently
+# (sentinel pattern). On a speaker WITH a room mic that iterator is
+# the mic, so the pat covers both the async loop and capture: if
+# either dies (PortAudio InputStream death after USB hiccup, blocked
+# I/O, deadlock), `WATCHDOG=1` stops firing and systemd revives us
+# with a fresh process.
+#
+# Read the coverage narrowly on a push-to-talk-only speaker (no room
+# mic, a paired accessory — issue #2205). There the iterator is a
+# fixed 2 s keepalive tick, so the pat proves ONLY that the async
+# loop is running. Input death is NOT covered: the accessory's audio
+# arrives on a separate task, and a dead sender blocks it rather
+# than ending it, so the pats continue while the speaker cannot
+# hear. Runtime liveness for that path is issue #2243 (connection
+# state, owned by the accessory reconciler) — not this watchdog.
+# `TimeoutStopSec=5s` cuts the default 90 s SIGTERM grace — a wedged
+# daemon should get to restart fast, not accumulate wedge time.
 Type=notify
 WatchdogSec=30s
 TimeoutStopSec=5s
