@@ -4,9 +4,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
+import socket
 import subprocess
 import sys
+import threading
+import time
 import types
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +23,9 @@ from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.cli import aec_init
 from jasper.mics import xvf3800
+from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
+
+_IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,7 +182,7 @@ def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
         384,
     )
     monkeypatch.setattr(
-        aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245)
+        aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245, -38)
     )
     monkeypatch.setattr(
         aec_init,
@@ -230,7 +238,7 @@ def test_production_chip_profile_parks_on_physical_output_change(monkeypatch) ->
     monkeypatch.setattr(
         aec_init, "load_artifact",
         lambda: AlignmentArtifact(
-            replace(identity, output_hardware_key="usb-serial:replacement"), 245
+            replace(identity, output_hardware_key="usb-serial:replacement"), 245, -38
         ),
     )
     monkeypatch.setattr(
@@ -259,7 +267,7 @@ def test_production_chip_profile_parks_on_physical_xvf_change(monkeypatch) -> No
     )
     monkeypatch.setattr(
         aec_init, "load_artifact",
-        lambda: AlignmentArtifact(replace(identity, xvf_serial="replacement"), 245),
+        lambda: AlignmentArtifact(replace(identity, xvf_serial="replacement"), 245, -38),
     )
     monkeypatch.setattr(
         aec_init,
@@ -297,7 +305,7 @@ def test_production_chip_profile_parks_when_final_edge_format_changes(
     assert commissioned != identity
     assert replace(commissioned, output_format="S16_LE") == identity
     monkeypatch.setattr(
-        aec_init, "load_artifact", lambda: AlignmentArtifact(commissioned, 245)
+        aec_init, "load_artifact", lambda: AlignmentArtifact(commissioned, 245, -38)
     )
     monkeypatch.setattr(
         aec_init,
@@ -779,7 +787,7 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
         "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
     )
     monkeypatch.setattr(
-        aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245)
+        aec_init, "load_artifact", lambda: AlignmentArtifact(identity, 245, -38)
     )
     _outputd_env(tmp_path, monkeypatch)
     _stub_start_instant(monkeypatch, _ENV_WRITTEN_AT - 20.0)
@@ -939,20 +947,29 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Cadence-aware chip-reference queue collection (#2253)
+# Chip-reference queue collection over outputd's per-write ring (#2253)
 #
-# The pre-#2253 rule — eight consecutive readings, every one at
+# The pre-#2253 rule — eight consecutive STATUS reads, every one at
 # reference_sequence_lag == 0, spread <= 16 — encoded a 128-frame mix period's
-# timing as if it were universal.  jts.local (period 128, 2.7 ms cadence) met it;
-# jts3 (period 1024, 21.3 ms cadence, identical chip-ref geometry) could not, so
-# commissioning AND every boot of jasper-aec-init parked the box.  The two
-# fixtures below are built to the spread, lag rate, and geometry each box
-# measured on 2026-08-08 — that shape is the measurement; the individual
-# readings inside it are constructed to carry it.
+# timing as if it were universal.  jts.local (period 128, 2.7 ms cadence) met
+# it; jts3 (period 1024, 21.3 ms cadence, identical chip-ref geometry) could
+# not, so commissioning AND every boot of jasper-aec-init parked the box.
+#
+# Neither can a poll assemble the window: outputd's state server is one thread
+# that sleeps 500 ms between accepts and answers one command per connection, so
+# a sequential reader gets ~2 reads/s (measured on jts3: 11 reads in 5.14 s).
+# outputd therefore publishes the writer's own recent observations and this
+# collector folds them into a sliding window.  The fixtures below are built to
+# the spread, cadence, and geometry each box measured on 2026-08-08 — that shape
+# is the measurement; the individual readings inside it carry it.
 # ---------------------------------------------------------------------------
 
 REFERENCE_PCM = "hw:CARD=Array,DEV=0"
 DAC_RATE = 48_000
+# What outputd's ring holds (rust/jasper-outputd/src/state.rs
+# CHIP_REF_RECENT_WRITES). Restated here because these tests stand in for
+# outputd; tests/test_wire_contracts.py pins the two together.
+RING_CAPACITY = 256
 
 
 class _FakeClock:
@@ -973,10 +990,10 @@ class _WriterStream:
 
     One completed write per mix period is the real contract — outputd enqueues
     one packet per period and the writer records `snd_pcm_delay` when that
-    packet's write returns — so how many distinct readings exist is a function of
-    elapsed time, not of how often the poll asks.  Reading faster than the cadence
-    returns the same write again, which is the case the collector has to tell
-    apart from a stall.
+    packet's write returns — so how many distinct observations exist is a
+    function of elapsed time, not of how often the poll asks.  What a read
+    returns is the last `RING_CAPACITY` of them, which is the whole point: the
+    reader's rate and the writer's rate are decoupled.
     """
 
     def __init__(
@@ -985,8 +1002,9 @@ class _WriterStream:
         *,
         mix_period_frames: int,
         delays,
-        lags=(0,),
+        lag: int = 0,
         stall_after: int | None = None,
+        capacity: int = RING_CAPACITY,
     ) -> None:
         self.clock = clock
         self.mix_period_frames = mix_period_frames
@@ -995,13 +1013,29 @@ class _WriterStream:
             mix_period_frames * xvf3800.CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ / DAC_RATE
         )
         self.delays = tuple(delays)
-        self.lags = tuple(lags)
+        self.lag = lag
         self.stall_after = stall_after
+        self.capacity = capacity
         self.reads = 0
+        self.counters = dict.fromkeys(aec_init.REFERENCE_WRITER_COUNTER_NAMES, 0)
 
     def _writes_completed(self) -> int:
         elapsed = int(self.clock.now / self.period_seconds) + 1
         return elapsed if self.stall_after is None else min(elapsed, self.stall_after)
+
+    def _recent_writes(self, writes: int) -> list[dict]:
+        first = max(writes - self.capacity, 0)
+        return [
+            {
+                "frames_written": (index + 1) * self.burst,
+                "snd_pcm_delay_frames": self.delays[index % len(self.delays)],
+                "reference_sequence": index + 1 if index else None,
+                "age_ms": int(
+                    (self.clock.now - index * self.period_seconds) * 1_000
+                ),
+            }
+            for index in range(first, writes)
+        ]
 
     def __call__(self, _path: str) -> dict:
         self.reads += 1
@@ -1011,13 +1045,15 @@ class _WriterStream:
             "desired": True,
             "active": True,
             "status": "active",
-            "reference_sequence_lag": self.lags[(writes - 1) % len(self.lags)],
+            "reference_sequence_lag": self.lag,
             "snd_pcm_delay_sample_age_ms": age_ms,
             "last_write_age_ms": age_ms,
             "snd_pcm_delay_frames": self.delays[(writes - 1) % len(self.delays)],
             "frames_written": writes * self.burst,
+            "recent_writes_capacity": self.capacity,
+            "recent_writes": self._recent_writes(writes),
         }
-        writer.update(dict.fromkeys(aec_init.REFERENCE_WRITER_COUNTER_NAMES, 0))
+        writer.update(self.counters)
         return {
             "backend": "alsa",
             "sink_mode": "single",
@@ -1051,10 +1087,9 @@ FINE_CADENCE_DELAYS = (285, 284, 286, 290, 279, 288, 283, 287, 281, 285)
 # 256-frame ALSA ring, so every write blocks and completes wherever scheduling
 # slack leaves it — which is why the readings sit near the top with a tail.
 COARSE_CADENCE_DELAYS = (448, 445, 448, 362, 447, 401, 448, 430, 448, 419)
-COARSE_CADENCE_LAGS = (0, 1, 0, 1, 0, 0, 1, 0, 1, 0)
 
 
-def _install_queue_stream(monkeypatch, stream: _WriterStream, clock: _FakeClock) -> None:
+def _install_queue_stream(monkeypatch, stream, clock: _FakeClock) -> None:
     monkeypatch.setattr(aec_init, "read_status_socket", stream)
     monkeypatch.setattr(aec_init, "require_outputd_env_loaded", lambda **_kwargs: None)
     monkeypatch.setattr(aec_init, "time", clock)
@@ -1063,7 +1098,7 @@ def _install_queue_stream(monkeypatch, stream: _WriterStream, clock: _FakeClock)
 def test_fine_cadence_box_still_settles_in_the_reference_window(monkeypatch) -> None:
     # jts.local's numbers. Widening the rule for coarse cadences must not make
     # the fine one slower or looser than the window K was originally measured
-    # with: same 2 s of holding still, same spread, more readings inside it.
+    # with: same holding-still span, same spread, more readings inside it.
     clock = _FakeClock()
     stream = _WriterStream(clock, mix_period_frames=128, delays=FINE_CADENCE_DELAYS)
     _install_queue_stream(monkeypatch, stream, clock)
@@ -1077,15 +1112,13 @@ def test_fine_cadence_box_still_settles_in_the_reference_window(monkeypatch) -> 
 
 def test_coarse_cadence_box_settles_inside_the_collection_budget(monkeypatch) -> None:
     # The #2253 regression, as measured on jts3: two commission attempts and
-    # every boot failed here. Steady-state pipelining (lag 1) and a spread the
-    # blocking write cannot avoid must both be admissible, and the window has to
-    # close well inside the 30 s budget aec-init's caller allows for it.
+    # every boot failed here. A spread the blocking write cannot avoid must be
+    # admissible, and the window has to close well inside the 30 s budget
+    # aec-init's caller allows for it — which it can only do because one read
+    # carries the writer's history rather than one reading.
     clock = _FakeClock()
     stream = _WriterStream(
-        clock,
-        mix_period_frames=1024,
-        delays=COARSE_CADENCE_DELAYS,
-        lags=COARSE_CADENCE_LAGS,
+        clock, mix_period_frames=1024, delays=COARSE_CADENCE_DELAYS, lag=1
     )
     _install_queue_stream(monkeypatch, stream, clock)
 
@@ -1094,43 +1127,84 @@ def test_coarse_cadence_box_settles_inside_the_collection_budget(monkeypatch) ->
     spread = max(queue) - min(queue)
     assert spread == 86, "the fixture carries jts3's measured spread"
     assert spread > alignment.QUEUE_MAX_SPREAD, "the old rule rejected this outright"
-    assert 1 in COARSE_CADENCE_LAGS, "the old rule rejected a lag of one outright"
-    # The precision rule, not the raw spread, is what the window is held to.
-    assert len(queue) == alignment.required_queue_samples(spread)
+    assert stream.lag == 1, "the old rule rejected a lag of one outright"
+    assert len(queue) >= alignment.required_queue_samples(spread)
     assert clock.now < 30.0
+    # The whole window came out of the ring, so the collector needed a handful
+    # of reads rather than one per reading — the throughput the panel measured.
+    assert stream.reads < len(queue)
 
 
 def test_the_collected_window_is_one_runtime_sys_delay_accepts(monkeypatch) -> None:
     # Two consumers, one definition of a usable window: whatever the collector
     # hands back at boot goes straight into runtime_sys_delay, so an acceptance
-    # rule looser than the re-validation would park every coarse-cadence box with
-    # "queue is unstable" immediately after the poll passed.
+    # rule looser than the re-validation would park every coarse-cadence box
+    # with "queue is unstable" immediately after the poll passed. The assertion
+    # is that runtime_sys_delay RETURNS — a window it rejects raises.
     clock = _FakeClock()
     stream = _WriterStream(
-        clock,
-        mix_period_frames=1024,
-        delays=COARSE_CADENCE_DELAYS,
-        lags=COARSE_CADENCE_LAGS,
+        clock, mix_period_frames=1024, delays=COARSE_CADENCE_DELAYS, lag=1
     )
     _install_queue_stream(monkeypatch, stream, clock)
 
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
+    commissioned = 400 - alignment.median_samples(queue)
 
-    assert alignment.runtime_sys_delay(400, queue) == 400 - alignment.median_samples(
-        queue
+    assert (
+        alignment.runtime_sys_delay(400, queue, commissioned_sys_delay=commissioned)
+        == commissioned
+    )
+
+
+def test_an_outputd_without_the_sample_ring_is_named_not_guessed(monkeypatch) -> None:
+    # An outputd too old to publish the ring cannot be worked around: at ~2
+    # STATUS reads a second the single latest reading assembles no window on any
+    # box, so guessing would trade a loud refusal for a boot that burns its
+    # budget and then blames the queue.
+    clock = _FakeClock()
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
+
+    def without_ring(path: str) -> dict:
+        status = stream(path)
+        del status["reference_outputs"]["chip_ref_writer"]["recent_writes"]
+        return status
+
+    _install_queue_stream(monkeypatch, without_ring, clock)
+
+    with pytest.raises(aec_init.ChipInitError) as excinfo:
+        aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    reason = str(excinfo.value)
+    assert "no chip-ref sample ring" in reason
+    assert "deploy an outputd that reports it" in reason
+
+
+def test_an_empty_sample_ring_is_a_writer_that_has_not_written_yet(
+    monkeypatch,
+) -> None:
+    # Absent and empty are different states. A writer that has just opened its
+    # PCM has nothing to report and the next read will, so an empty ring must
+    # not be read as an outputd too old to have one.
+    clock = _FakeClock()
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
+    status = stream(REFERENCE_PCM)
+    status["reference_outputs"]["chip_ref_writer"]["recent_writes"] = []
+
+    assert (
+        aec_init.validate_reference_status(status, expected_pcm=REFERENCE_PCM).writes
+        == ()
     )
 
 
 def test_a_stalled_writer_still_fails_loudly(monkeypatch) -> None:
-    # The liveness the removed lag == 0 gate was doing no work for: a writer that
-    # stops writing repeats its last reading forever. Repeats are no longer
-    # progress evidence, so the wall-clock ages are what have to fail it.
+    # A writer that stops writing keeps publishing the same ring forever. The
+    # ring cannot say so — its entries do not know they are stale — so the
+    # writer-level wall-clock ages are what have to fail it.
     clock = _FakeClock()
     stream = _WriterStream(
         clock,
         mix_period_frames=1024,
         delays=COARSE_CADENCE_DELAYS,
-        lags=COARSE_CADENCE_LAGS,
         stall_after=4,
     )
     _install_queue_stream(monkeypatch, stream, clock)
@@ -1143,10 +1217,14 @@ def test_a_stalled_writer_still_fails_loudly(monkeypatch) -> None:
     assert clock.now >= 30.0, "a stall consumes the budget rather than short-circuiting"
 
 
-def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(monkeypatch) -> None:
-    # A reference queue whose spread keeps growing cannot carry K at any sample
-    # count, and the operator needs the shortfall rather than "not current and
-    # active". A reading that ramps every write is the drift shape.
+def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
+    monkeypatch, caplog
+) -> None:
+    # A reference queue whose median walks away from its start cannot carry K at
+    # any sample count, and the operator needs the shortfall — plus the covariate
+    # that separates "would not hold still" from "could not be sampled fast
+    # enough" — rather than "not current and active".
+    caplog.set_level("WARNING", logger="jasper.aec_init")
     clock = _FakeClock()
     stream = _WriterStream(
         clock, mix_period_frames=1024, delays=tuple(range(300, 300 + 4_096))
@@ -1158,51 +1236,42 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(monkeypatch) 
 
     reason = str(excinfo.value)
     assert "chip-reference queue spread" in reason
-    assert "readings over" in reason and "held" in reason
+    assert "halves" in reason and "held" in reason
+    assert "event=chip_aec_init.reference_queue" in caplog.text
+    assert "outcome=unstable" in caplog.text
+    for field in ("status_reads=", "poll_interval_ms=", "samples=", "required="):
+        assert field in caplog.text
 
 
-class _PerturbedStream:
-    """A `_WriterStream` whose STATUS is rewritten from the Nth read onward."""
+def test_a_window_whose_median_walked_is_rejected_on_both_sides_of_the_edge() -> None:
+    # The count rule alone cannot see drift: a walking queue satisfies any count
+    # you like if you sample long enough. Pin the acceptance boundary itself —
+    # at the limit the window is usable, one frame past it is not.
+    def window(step: int) -> tuple[int, ...]:
+        # Two halves of 200 readings each carrying jts3's measured 86-frame
+        # spread, the second offset by `step`, so the half-medians differ by
+        # exactly `step`. 400 readings clear the count rule at both steps, which
+        # is what leaves drift as the only difference between the two windows.
+        half = [362 + (index * 86) // 199 for index in range(200)]
+        return tuple(half + [value + step for value in half])
 
-    def __init__(self, stream: _WriterStream, *, after: int, mutate) -> None:
-        self.stream = stream
-        self.after = after
-        self.mutate = mutate
+    at_limit = window(alignment.QUEUE_MAX_MEDIAN_DRIFT)
+    past_limit = window(alignment.QUEUE_MAX_MEDIAN_DRIFT + 1)
+    for candidate in (at_limit, past_limit):
+        spread = max(candidate) - min(candidate)
+        assert len(candidate) >= alignment.required_queue_samples(spread)
 
-    def __call__(self, path: str) -> dict:
-        status = self.stream(path)
-        if self.stream.reads > self.after:
-            self.mutate(status, self.stream.reads)
-        return status
-
-
-def _writer_of(status: dict) -> dict:
-    return status["reference_outputs"]["chip_ref_writer"]
-
-
-def _collect_perturbed(monkeypatch, *, after: int, mutate, timeout: float) -> str:
-    """Run one perturbed collection and return the reason it refused.
-
-    A 1024-frame-period stream is polled at 10.67 ms and writes every 21.33 ms,
-    so reads alternate new-write, repeat, new-write.  ``after`` picks which read
-    first carries the perturbation and ``timeout`` ends the budget on the poll
-    right after it, which is what makes the raised reason that comparison's own
-    rather than whatever the loop last said while rebuilding a window around the
-    perturbed readings.
-    """
-
-    clock = _FakeClock()
-    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
-    _install_queue_stream(
-        monkeypatch, _PerturbedStream(stream, after=after, mutate=mutate), clock
+    assert alignment.queue_median_drift(at_limit) == alignment.QUEUE_MAX_MEDIAN_DRIFT
+    assert alignment.queue_window_is_stable(at_limit)
+    assert (
+        alignment.queue_median_drift(past_limit)
+        == alignment.QUEUE_MAX_MEDIAN_DRIFT + 1
     )
-    with pytest.raises(aec_init.ChipInitError) as excinfo:
-        aec_init.collect_reference_queue(REFERENCE_PCM, timeout=timeout)
-    return str(excinfo.value)
+    assert not alignment.queue_window_is_stable(past_limit)
 
 
 def test_an_unperturbed_stream_closes_a_window(monkeypatch) -> None:
-    # The control for the two perturbation tests below: everything they hold
+    # The control for the perturbation tests below: everything they hold
     # constant is already enough to close a window, so the perturbation is the
     # only thing their failure can be attributed to.
     clock = _FakeClock()
@@ -1216,79 +1285,155 @@ def test_an_unperturbed_stream_closes_a_window(monkeypatch) -> None:
 
 def test_moving_error_counters_are_not_one_window(monkeypatch) -> None:
     # An xrun, a reopen, or a dropped period splits the readings on either side
-    # of it into two different pipeline states; a median taken across the seam is
-    # one no instant ever held.
-    def tick(status: dict, reads: int) -> None:
-        _writer_of(status)["write_xrun_count"] = reads
+    # of it into two different pipeline states; a median taken across the seam
+    # is one no instant ever held. A counter moving on every read means no
+    # stretch is ever seam-free, so no window can close.
+    clock = _FakeClock()
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
 
-    reason = _collect_perturbed(monkeypatch, after=2, mutate=tick, timeout=0.03)
+    def tick(path: str) -> dict:
+        status = stream(path)
+        status["reference_outputs"]["chip_ref_writer"]["write_xrun_count"] = (
+            stream.reads
+        )
+        return status
 
-    assert "error counters moved" in reason
+    _install_queue_stream(monkeypatch, tick, clock)
 
+    with pytest.raises(aec_init.ChipInitError) as excinfo:
+        aec_init.collect_reference_queue(REFERENCE_PCM)
 
-def test_a_writer_whose_frames_go_backwards_is_not_one_window(monkeypatch) -> None:
-    # outputd restarting under the poll reopens the PCM and restarts the writer's
-    # frame counter, so readings from before and after belong to different opens.
-    # Saying so beats letting the window quietly stop growing until the budget
-    # runs out.
-    def rewind(status: dict, _reads: int) -> None:
-        _writer_of(status)["frames_written"] = 1
-
-    reason = _collect_perturbed(monkeypatch, after=2, mutate=rewind, timeout=0.03)
-
-    assert "did not progress cleanly" in reason
+    assert "error counters moved" in str(excinfo.value)
 
 
-def test_reading_faster_than_the_writer_writes_is_not_a_sample(monkeypatch) -> None:
-    # The poll runs at half the mix cadence, so about every other read repeats
-    # the write already recorded. Counting a repeat would let a window
-    # "stabilise" on a single reading; treating one as a stall would fail every
-    # coarse-cadence box.
+def test_the_ring_cannot_rebuild_a_window_across_a_seam(monkeypatch) -> None:
+    # The ring is history, so clearing the window at a seam is not enough on its
+    # own: the very next read hands the discarded pre-seam observations straight
+    # back. Without the admission floor this closes a window that spans the xrun
+    # — which is the check going quietly inert, not passing.
+    clock = _FakeClock()
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
+    clock.now = 6.0  # a full ring of history exists before the seam
+
+    def tick_once(path: str) -> dict:
+        status = stream(path)
+        if stream.reads > 1:
+            status["reference_outputs"]["chip_ref_writer"]["write_xrun_count"] = 1
+        return status
+
+    _install_queue_stream(monkeypatch, tick_once, clock)
+    seam_at = 6.0 + aec_init.QUEUE_POLL_INTERVAL_SEC
+
+    _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    # Every reading in the accepted window was written after the seam: the
+    # window spans at least the minimum, and it could only start after it.
+    assert clock.now - seam_at >= aec_init.QUEUE_MIN_WINDOW_SEC
+    assert len(queue) <= (clock.now - seam_at) / (1024 / DAC_RATE) + 1
+
+
+def test_an_intermittent_counter_tick_still_closes_inside_the_budget(
+    monkeypatch,
+) -> None:
+    # One xrun is not a broken box. It restarts the window — readings either
+    # side of it belong to different pipeline states — and the collector has to
+    # rebuild and close inside the same budget rather than spending it.
+    clock = _FakeClock()
+    stream = _WriterStream(
+        clock, mix_period_frames=1024, delays=COARSE_CADENCE_DELAYS, lag=1
+    )
+
+    def one_tick(path: str) -> dict:
+        status = stream(path)
+        if stream.reads > 1:
+            status["reference_outputs"]["chip_ref_writer"]["write_xrun_count"] = 1
+        return status
+
+    _install_queue_stream(monkeypatch, one_tick, clock)
+
+    _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    assert len(queue) >= alignment.required_queue_samples(max(queue) - min(queue))
+    assert clock.now < 30.0
+
+
+def test_a_rewound_write_counter_splits_the_window(monkeypatch) -> None:
+    # outputd restarting under the poll builds a new state object, so the
+    # writer's cumulative frame counter — the ring entries' own identity —
+    # restarts too. Saying so beats letting the window quietly stop growing
+    # because every incoming entry looks like one already folded in.
+    held = [aec_init.ReferenceWrite(delay=448, frames=4_096, sequence=9, age_ms=0)]
+    window = aec_init._merge_writes([], held, now=10.0, floor=0.0)
+    assert len(window) == 1, "the control: an ordinary fold keeps the reading"
+
+    forward = [aec_init.ReferenceWrite(delay=448, frames=4_437, sequence=10, age_ms=0)]
+    assert len(aec_init._merge_writes(window, forward, now=10.5, floor=0.0)) == 2
+
+    restarted = [aec_init.ReferenceWrite(delay=448, frames=341, sequence=1, age_ms=0)]
+    with pytest.raises(aec_init.ChipInitError, match="did not progress cleanly"):
+        aec_init._merge_writes(window, restarted, now=10.5, floor=0.0)
+
+
+def test_a_ring_out_of_write_order_is_refused(monkeypatch) -> None:
+    # The entries' identity IS their cumulative frame count, so a ring that is
+    # not strictly increasing is not the writer's history and cannot be deduped
+    # against.
+    clock = _FakeClock()
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448, 449, 450))
+    clock.now = 1.0
+    status = stream(REFERENCE_PCM)
+    writes = status["reference_outputs"]["chip_ref_writer"]["recent_writes"]
+    assert len(writes) >= 3
+    writes[1]["frames_written"] = writes[0]["frames_written"]
+
+    with pytest.raises(aec_init.ChipInitError, match="not in write order"):
+        aec_init.validate_reference_status(status, expected_pcm=REFERENCE_PCM)
+
+
+def test_overlapping_reads_are_folded_in_once(monkeypatch) -> None:
+    # Consecutive reads return overlapping rings by design — that overlap is
+    # what makes a slow reader lossless. Counting an entry twice would let a
+    # window "stabilise" on far fewer real observations than it claims.
     clock = _FakeClock()
     stream = _WriterStream(clock, mix_period_frames=1024, delays=(400,))
     _install_queue_stream(monkeypatch, stream, clock)
 
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
 
-    assert len(queue) >= alignment.QUEUE_SAMPLE_COUNT
-    assert stream.reads > len(queue), "the repeats were read and not counted"
-    # One reading per mix period is the ceiling; a counted repeat would let the
-    # window close in less wall time than that many writes can take.
+    # One reading per mix period is the ceiling, so a double-counted overlap
+    # would let the window close in less wall time than that many writes take.
     assert clock.now >= (len(queue) - 1) * 1024 / DAC_RATE
+    assert stream.reads * RING_CAPACITY > len(queue)
 
 
-def test_the_poll_interval_comes_from_the_snapshots_own_mix_cadence() -> None:
-    # Cadence-aware means read out of the STATUS being sampled. A fixed 0.25 s
-    # poll is 11.7 mix periods on jts3 — it cannot collect the readings a wider
-    # spread needs inside the budget.
+def test_the_window_slides_so_one_outlier_ages_out(monkeypatch) -> None:
+    # Grow-only was the defect: a single wild write inflates the spread, the
+    # spread inflates the required count, and the run is doomed for as long as
+    # that reading stays in the window. It has to leave.
     clock = _FakeClock()
-    fine = _WriterStream(clock, mix_period_frames=128, delays=(285,))(REFERENCE_PCM)
-    coarse = _WriterStream(clock, mix_period_frames=1024, delays=(448,))(REFERENCE_PCM)
+    # One reading 4000 frames off, then a still queue forever after.
+    delays = (4_400,) + (448,) * 4_095
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=delays)
+    _install_queue_stream(monkeypatch, stream, clock)
 
-    assert aec_init.mix_period_seconds(coarse) == 1024 / DAC_RATE
-    assert aec_init.queue_poll_interval(coarse, 0.25) == 1024 / DAC_RATE / 2
-    # Half of a 128-frame period is 1.3 ms; the floor keeps the poll off a spin.
-    assert (
-        aec_init.queue_poll_interval(fine, 0.25) == aec_init.MIN_QUEUE_POLL_INTERVAL_SEC
-    )
-    assert aec_init.MIN_QUEUE_POLL_INTERVAL_SEC < 1024 / DAC_RATE / 2, (
-        "the floor must not clamp jts3's cadence, or writes get skipped"
-    )
-    # No cadence in the snapshot means no derivation — keep the caller's value.
-    assert aec_init.queue_poll_interval({}, 0.25) == 0.25
-    assert aec_init.mix_period_seconds({"dac": {"period_frames": 0}}) is None
+    _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    assert max(queue) - min(queue) == 0, "the outlier left the window"
+    assert clock.now > aec_init.QUEUE_WINDOW_MAX_SEC
+    assert clock.now < 30.0
 
 
 def test_a_writer_further_behind_than_the_pipelining_ceiling_is_rejected() -> None:
     # Two periods is the ceiling: one being written, one published before the
     # writer dequeued it. Deeper means the writer is losing ground on a producer
-    # it is rate-locked to.
+    # it is rate-locked to. Pinned on both sides of the edge because this cap is
+    # the first-line liveness check on the writer feeding the ring.
     clock = _FakeClock()
     behind = _WriterStream(
         clock,
         mix_period_frames=1024,
         delays=(448,),
-        lags=(aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT + 1,),
+        lag=aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT + 1,
     )(REFERENCE_PCM)
 
     with pytest.raises(aec_init.ChipInitError, match="mix periods behind"):
@@ -1298,10 +1443,117 @@ def test_a_writer_further_behind_than_the_pipelining_ceiling_is_rejected() -> No
         clock,
         mix_period_frames=1024,
         delays=(448,),
-        lags=(aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT,),
+        lag=aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT,
     )(REFERENCE_PCM)
 
+    assert aec_init.validate_reference_status(
+        at_ceiling, expected_pcm=REFERENCE_PCM
+    ).writes
+
+
+def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> None:
+    # Both are load-bearing and both are invisible to fixtures built FROM them.
+    # The in-flight cap is the sole first-line replacement for the removed
+    # lag == 0 gate; the minimum window is the drift exposure the pre-#2253
+    # eight-readings-at-0.25 s window covered (seven intervals = 1.75 s),
+    # rounded up.
+    assert aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT == 2
+    assert aec_init.QUEUE_MIN_WINDOW_SEC == 2.0
     assert (
-        aec_init.validate_reference_status(at_ceiling, expected_pcm=REFERENCE_PCM).delay
-        == 448
+        aec_init.QUEUE_MIN_WINDOW_SEC
+        >= (alignment.QUEUE_SAMPLE_COUNT - 1) * aec_init.QUEUE_POLL_INTERVAL_SEC
     )
+    # The sliding horizon must leave room for the minimum window several times
+    # over, or an outlier ageing out would take the whole window with it.
+    assert aec_init.QUEUE_WINDOW_MAX_SEC >= 4 * aec_init.QUEUE_MIN_WINDOW_SEC
+
+
+class _LiveClock:
+    """Real elapsed seconds, in the shape `_WriterStream` reads its clock."""
+
+    def __init__(self) -> None:
+        self._started = time.monotonic()
+
+    @property
+    def now(self) -> float:
+        return time.monotonic() - self._started
+
+
+class _ThrottledStatusServer:
+    """A real AF_UNIX STATUS server with outputd's own throughput ceiling.
+
+    outputd's state server is ONE thread doing a non-blocking accept and
+    sleeping `ACCEPT_POLL_INTERVAL` (500 ms) whenever nothing is pending, and it
+    answers one command per connection.  Every other test here substitutes
+    `read_status_socket` with a free fake, which is exactly how round one of
+    #2253 shipped a collector that needed 232 readings at 4 reads/s from a
+    socket that serves 2.  This one charges the real price.
+    """
+
+    def __init__(self, path, stream, *, accept_interval: float = 0.5) -> None:
+        self.path = str(path)
+        self.stream = stream
+        self.accept_interval = accept_interval
+        self.served = 0
+        self._stop = threading.Event()
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.bind(self.path)
+        self._sock.listen(8)
+        self._sock.setblocking(False)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        self._sock.close()
+        with contextlib.suppress(OSError):
+            os.unlink(self.path)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._sock.accept()
+            except (BlockingIOError, OSError):
+                self._stop.wait(self.accept_interval)
+                continue
+            with conn, contextlib.suppress(OSError):
+                conn.settimeout(1.0)
+                conn.recv(256)
+                conn.sendall(json.dumps(self.stream(self.path)).encode() + b"\n")
+                self.served += 1
+
+
+def test_the_collector_closes_against_outputds_real_throughput(
+    short_sock_path, monkeypatch
+) -> None:
+    # jts3's numbers against jts3's socket. 232 readings at spread 86 are
+    # unreachable by polling — the blocker that killed round one — and reachable
+    # from the ring at the same two reads a second.
+    #
+    # Real wall clock here, not the fake one: the point is the socket's own
+    # pace. The writer's cadence is driven off that same clock so the readings
+    # accrue at jts3's 46.9 writes/s, and the budget is trimmed to 20 s so a
+    # wedge fails this test well before it wedges the suite.
+    monkeypatch.setattr(aec_init, "require_outputd_env_loaded", lambda **_kwargs: None)
+    stream = _WriterStream(
+        _LiveClock(), mix_period_frames=1024, delays=COARSE_CADENCE_DELAYS, lag=1
+    )
+
+    started = time.monotonic()
+    with _ThrottledStatusServer(short_sock_path, stream) as server:
+        _status, queue = aec_init.collect_reference_queue(
+            REFERENCE_PCM, socket_path=short_sock_path, timeout=20.0
+        )
+    elapsed = time.monotonic() - started
+
+    assert max(queue) - min(queue) == 86
+    assert len(queue) >= alignment.required_queue_samples(86)
+    assert elapsed < 20.0
+    # The ceiling this test exists to charge: about two reads a second. Round
+    # one needed one read per reading and could never have cleared it.
+    assert server.served <= 2 * elapsed + 2
+    assert server.served < alignment.required_queue_samples(86)

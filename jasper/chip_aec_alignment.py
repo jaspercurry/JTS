@@ -26,13 +26,41 @@ if TYPE_CHECKING:
 
 ARTIFACT_PATH = Path("/var/lib/jasper/chip-aec-alignment.json")
 ARTIFACT_KIND = "jts.xvf3800-chip-aec-alignment"
-ARTIFACT_SCHEMA = 2
+ARTIFACT_SCHEMA = 3
 # The reference window: the precision K is defined against.  The median of
 # QUEUE_SAMPLE_COUNT chip-reference readings whose range is at most
 # QUEUE_MAX_SPREAD frames.  Windows at other mix cadences are held to the same
 # median precision rather than to these literal numbers — `required_queue_samples`.
 QUEUE_SAMPLE_COUNT = 8
 QUEUE_MAX_SPREAD = 16
+# How far the two halves of an accepted window may disagree on their median.
+#
+# `required_queue_samples` bounds the SAMPLING noise a window's median carries:
+# it holds `spread / sqrt(readings)` at or under the reference window's
+# QUEUE_MAX_SPREAD / sqrt(QUEUE_SAMPLE_COUNT).  It says nothing about the median
+# having MOVED across the window, and a queue walking steadily away from its
+# start holds any spread you like if you stop looking soon enough.  This is the
+# bound on that movement, measured as the gap between the first half's median
+# and the last half's.
+#
+# The value is three times the worst median-error scale the precision rule
+# permits, so a still queue passes on noise alone: for a window of `n` readings
+# spanning `s` frames the two half-medians differ with a standard deviation
+# near `s / sqrt(n)`, which the precision rule caps at that same scale — jts3's
+# 256-reading window sits at 3.2 sigma, so a boot false-rejects about one time
+# in 600 and re-evaluates on the next read inside the same budget.  What it
+# rejects is drift: across a window spanning T seconds it refuses anything past
+# 2 * QUEUE_MAX_MEDIAN_DRIFT / T frames per second — 6.2 f/s at jts3's
+# ring-fed 5.5 s window, 17 f/s at jts.local's 2 s one.  That is looser than
+# the pre-#2253 rule's ~8 f/s on a fine cadence, because that number was the
+# 16-frame spread bound doing double duty and no bound of that shape survives a
+# box whose write jitter alone is 86 frames.  The end-to-end guard on the
+# quantity K actually depends on is `runtime_sys_delay`'s MIN_EDGE_MARGIN
+# bound against the commissioned SYS_DELAY, which no amount of drift escapes.
+QUEUE_DRIFT_NOISE_SIGMAS = 3
+QUEUE_MAX_MEDIAN_DRIFT = math.ceil(
+    QUEUE_DRIFT_NOISE_SIGMAS * QUEUE_MAX_SPREAD / math.sqrt(QUEUE_SAMPLE_COUNT)
+)
 WINDOW_CENTER = 20.5
 MAX_CENTER_ERROR = 2.0
 MIN_EDGE_MARGIN = 8
@@ -96,25 +124,76 @@ def required_queue_samples(spread: float) -> int:
     return max(QUEUE_SAMPLE_COUNT, needed)
 
 
+def queue_median_drift(queue_samples: Sequence[int | float]) -> int:
+    """Return how far a window's first and last halves disagree on their median.
+
+    ``queue_samples`` must be in the order the writer produced them — this is
+    the one place in the contract where that ordering is load-bearing, because
+    a window is split in time here.  An odd-length window drops its middle
+    reading so both halves are the same size.
+    """
+
+    half = len(queue_samples) // 2
+    if half < 1:
+        return 0
+    return abs(
+        median_samples(queue_samples[:half]) - median_samples(queue_samples[-half:])
+    )
+
+
 def queue_window_is_stable(queue_samples: Sequence[int | float]) -> bool:
-    """Whether a window estimates its median as precisely as the reference one."""
+    """Whether a window carries a median K can be measured against.
+
+    Two independent conditions, both required: it estimates its median as
+    precisely as the reference window did (`required_queue_samples`), and its
+    median held still across the window (`QUEUE_MAX_MEDIAN_DRIFT`).  The first
+    bounds sampling noise, the second bounds movement; neither implies the
+    other.  The samples are time-ordered — see `queue_median_drift`.
+    """
 
     if not queue_samples:
         return False
     spread = max(queue_samples) - min(queue_samples)
-    return len(queue_samples) >= required_queue_samples(spread)
+    if len(queue_samples) < required_queue_samples(spread):
+        return False
+    return queue_median_drift(queue_samples) <= QUEUE_MAX_MEDIAN_DRIFT
 
 
-def runtime_sys_delay(k_samples: int, queue_samples: Sequence[int | float]) -> int:
-    """Return ``K - median(the live queue window)``; never clamp."""
+def runtime_sys_delay(
+    k_samples: int,
+    queue_samples: Sequence[int | float],
+    *,
+    commissioned_sys_delay: int,
+) -> int:
+    """Return ``K - median(the live queue window)``; never clamp.
 
-    if type(k_samples) is not int:
-        raise ValueError("K must be an integer")
+    ``commissioned_sys_delay`` is keyword-only and has no default on purpose:
+    every caller has to supply the artifact's own value, so a boot cannot be
+    silently ungated.  The bound it enables is the end-to-end one.  Since
+    ``K = commissioned SYS_DELAY + median(commissioned window)``, the difference
+    between the delay resolved here and the commissioned one IS the difference
+    between the two windows' medians — the only error term standing between the
+    commissioner's verified alignment and what boot applies.  ``choose_delay``
+    reserves ``MIN_EDGE_MARGIN`` frames of causal-window margin on both edges,
+    so that is exactly how far the live median may have moved before the
+    projected first peak leaves the window commissioning proved.  Past it, park
+    loudly rather than apply a delay nobody measured.
+    """
+
+    if type(k_samples) is not int or type(commissioned_sys_delay) is not int:
+        raise ValueError("K and the commissioned SYS_DELAY must be integers")
     values = tuple(float(v) for v in queue_samples)
     queue = median_samples(values)
     if not queue_window_is_stable(values):
         raise ValueError("chip-reference queue is unstable")
     delay = k_samples - queue
+    moved = delay - commissioned_sys_delay
+    if abs(moved) > MIN_EDGE_MARGIN:
+        raise ValueError(
+            f"live reference queue median has moved {moved:+d} frames from the "
+            f"commissioned window (limit {MIN_EDGE_MARGIN}); SYS_DELAY {delay} "
+            "is outside the causal margin commissioning reserved"
+        )
     if not xvf3800.CHIP_AEC_SYS_DELAY_MIN <= delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX:
         raise ValueError(f"runtime SYS_DELAY {delay} is out of range")
     return delay
@@ -176,10 +255,24 @@ class AlignmentIdentity:
 class AlignmentArtifact:
     identity: AlignmentIdentity
     k_samples: int
+    # The SYS_DELAY the commissioner verified — the one that passed the causal
+    # window, the convergence transition, and the >= 10 dB beam suppression.
+    # Stored so boot can bound how far it is allowed to resolve away from it
+    # (`runtime_sys_delay`).  Without it the only boot-side check on the delay
+    # is the chip's own -64..256 range, which is six times wider than the causal
+    # window, so a live median tens of frames off the commissioned one would be
+    # applied silently.
+    sys_delay: int
 
     def __post_init__(self) -> None:
-        if type(self.k_samples) is not int:
-            raise ValueError("artifact K must be an integer")
+        if type(self.k_samples) is not int or type(self.sys_delay) is not int:
+            raise ValueError("artifact K and SYS_DELAY must be integers")
+        if not (
+            xvf3800.CHIP_AEC_SYS_DELAY_MIN
+            <= self.sys_delay
+            <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
+        ):
+            raise ValueError("artifact SYS_DELAY is out of range")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -187,12 +280,13 @@ class AlignmentArtifact:
             "schema": ARTIFACT_SCHEMA,
             "identity": asdict(self.identity),
             "k_samples": self.k_samples,
+            "sys_delay": self.sys_delay,
         }
 
 
 def artifact_from_dict(value: object) -> AlignmentArtifact:
     if not isinstance(value, Mapping) or set(value) != {
-        "kind", "schema", "identity", "k_samples"
+        "kind", "schema", "identity", "k_samples", "sys_delay"
     }:
         raise ValueError("alignment artifact schema is invalid")
     if value["kind"] != ARTIFACT_KIND or value["schema"] != ARTIFACT_SCHEMA:
@@ -204,6 +298,7 @@ def artifact_from_dict(value: object) -> AlignmentArtifact:
     return AlignmentArtifact(
         AlignmentIdentity(**{name: identity[name] for name in fields}),
         value["k_samples"],  # type: ignore[arg-type]
+        value["sys_delay"],  # type: ignore[arg-type]
     )
 
 

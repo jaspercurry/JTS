@@ -45,14 +45,24 @@ def _identity() -> AlignmentIdentity:
 
 
 def test_runtime_delay_uses_k_minus_exact_eight_sample_median() -> None:
-    assert runtime_sys_delay(245, [282, 283, 284, 283, 282, 284, 283, 283]) == -38
+    window = [282, 283, 284, 283, 282, 284, 283, 283]
+    assert runtime_sys_delay(245, window, commissioned_sys_delay=-38) == -38
 
 
 def test_runtime_delay_rejects_instability_and_out_of_range_without_clamp() -> None:
     with pytest.raises(ValueError, match="unstable"):
-        runtime_sys_delay(245, [270, 271, 272, 273, 290, 291, 292, 293])
+        runtime_sys_delay(
+            245, [270, 271, 272, 273, 290, 291, 292, 293], commissioned_sys_delay=-38
+        )
+    # Out of range is reachable only from a commissioned delay near the
+    # chip's own ceiling, since the median bound below keeps the two within
+    # MIN_EDGE_MARGIN of each other.
     with pytest.raises(ValueError, match="out of range"):
-        runtime_sys_delay(1_000, [283] * 8)
+        runtime_sys_delay(
+            283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
+            [283] * 8,
+            commissioned_sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MAX,
+        )
 
 
 def test_the_reference_window_is_the_precision_every_cadence_is_held_to() -> None:
@@ -99,15 +109,80 @@ def test_a_window_is_stable_only_once_it_has_bought_that_precision() -> None:
     assert not alignment.queue_window_is_stable([])
     # The same readings are what boot feeds back in, so the re-validation has to
     # accept exactly what the collector accepted — one rule, two callers.
-    assert runtime_sys_delay(400, jts3_window) == 400 - alignment.median_samples(
-        jts3_window
+    commissioned = 400 - alignment.median_samples(jts3_window)
+    assert (
+        runtime_sys_delay(400, jts3_window, commissioned_sys_delay=commissioned)
+        == commissioned
     )
     with pytest.raises(ValueError, match="unstable"):
-        runtime_sys_delay(400, jts3_window[:231])
+        runtime_sys_delay(
+            400, jts3_window[:231], commissioned_sys_delay=commissioned
+        )
+
+
+def test_precision_and_drift_are_independent_conditions() -> None:
+    # Neither implies the other, so a window has to clear both. A tight window
+    # that stepped is precise and wrong; a wide still one is imprecise and
+    # honest. Pinned because collapsing the two would leave the survivor
+    # looking like it guards both.
+    stepped = tuple([300] * 200 + [300 + alignment.QUEUE_MAX_MEDIAN_DRIFT + 1] * 200)
+    assert len(stepped) >= alignment.required_queue_samples(max(stepped) - min(stepped))
+    assert not alignment.queue_window_is_stable(stepped)
+
+    # Two identical halves: the readings cover the whole 86-frame spread and
+    # the median provably did not move.
+    sweep = [362 + (index * 86) // 57 for index in range(58)]
+    wide_but_still = tuple(sweep + sweep)
+    assert max(wide_but_still) - min(wide_but_still) == 86
+    assert alignment.queue_median_drift(wide_but_still) == 0
+    assert not alignment.queue_window_is_stable(wide_but_still), "too few readings"
+
+
+def test_boot_bounds_the_delay_against_the_commissioned_one_both_ways() -> None:
+    # K = commissioned SYS_DELAY + commissioned median, so the gap between the
+    # delay boot resolves and the commissioned one IS the two windows' median
+    # difference — the only error term between the alignment the commissioner
+    # verified and what boot applies. choose_delay reserves MIN_EDGE_MARGIN
+    # frames on both causal-window edges, so that is exactly how far it may
+    # move. Pin the acceptance boundary on both sides, and in both directions.
+    window = [283] * 8
+    for offset in (
+        -alignment.MIN_EDGE_MARGIN,
+        0,
+        alignment.MIN_EDGE_MARGIN,
+    ):
+        # A live median `offset` frames BELOW the commissioned one resolves a
+        # delay `offset` frames above it, and vice versa.
+        assert (
+            runtime_sys_delay(245, window, commissioned_sys_delay=-38 - offset)
+            == -38
+        )
+    for offset in (
+        -alignment.MIN_EDGE_MARGIN - 1,
+        alignment.MIN_EDGE_MARGIN + 1,
+    ):
+        with pytest.raises(ValueError, match="moved"):
+            runtime_sys_delay(245, window, commissioned_sys_delay=-38 - offset)
+
+
+def test_an_artifact_without_the_commissioned_delay_forces_recommissioning() -> None:
+    # The schema is exact-field-set, so an artifact predating the commissioned
+    # SYS_DELAY is rejected rather than defaulted — jasper-aec-init turns that
+    # into CommissionRequired. Defaulting would leave the boot bound above
+    # guarding nothing on exactly the boxes that most need it.
+    artifact = AlignmentArtifact(_identity(), 245, -38)
+    older = artifact.to_dict()
+    del older["sys_delay"]
+
+    with pytest.raises(ValueError, match="schema"):
+        artifact_from_dict(older)
+
+    with pytest.raises(ValueError, match="out of range"):
+        AlignmentArtifact(_identity(), 245, xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1)
 
 
 def test_artifact_is_strict_identity_plus_k_only() -> None:
-    artifact = AlignmentArtifact(_identity(), 245)
+    artifact = AlignmentArtifact(_identity(), 245, -38)
     assert artifact_from_dict(artifact.to_dict()) == artifact
 
     legacy = artifact.to_dict() | {"schema": 1}

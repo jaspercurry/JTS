@@ -98,41 +98,70 @@ minimum raw excess SNR was `15.76 dB`; AEC-off beam acquisition was
 were zero; convergence changed `0 → 1`. Silent reconcile and reboot preserved
 the artifact byte-for-byte while queue medians moved to `264–266` and runtime
 delay followed to `-16/-18`. The original schema-v1 artifact was operationally
-enriched with the same live hardware identity now required by schema v2 while
+enriched with the same live hardware identity schema v2 required at the time while
 preserving its proven `K=248`; this was not a code migration or a recommission.
 Outputd reported zero playback xruns and the current boot contained no
 commissioner/reset events.
 
 Success atomically publishes only
-`/var/lib/jasper/chip-aec-alignment.json`: schema-v2 identity (XVF factory
+`/var/lib/jasper/chip-aec-alignment.json`: schema-v3 identity (XVF factory
 iSerial, firmware/beam/fixed-profile identity, physical USB-output serial or
 I2S profile/card identity, the final-edge sample format outputd NEGOTIATED and
-reports as `dac.format`, and negotiated output geometry) plus `K`. The
-lifecycle relationship is
+reports as `dac.format`, and negotiated output geometry) plus `K` and the
+commissioned `sys_delay`. The lifecycle relationship is
 `K = commissioned SYS_DELAY + commissioned median reference queue`. On
 boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples a
 run of progressing queue positions and applies
 `runtime SYS_DELAY = K - median(live queue)`. An unstable queue, identity
 mismatch, or out-of-range result is rejected, never clamped.
 
-**The window is cadence-aware, and both ends measure it the same way
-(#2253).** outputd records `snd_pcm_delay` once per completed chip-reference
-write, so how far those readings spread is a property of the mix cadence: one
-mix period carries `period_frames × 16000 / dac_rate` reference frames, and a
-burst wider than the writer's 256-frame ALSA ring makes every write block, so
-the reading lands wherever scheduling slack leaves it. Measured 2026-08-08 with
-identical chip-ref geometry: jts.local (128-frame mix period, 2.7 ms) spreads
-11 frames and never shows a lag; jts3 (1024-frame period, 21.3 ms) spreads 86
-and shows `reference_sequence_lag=1` on 10 reads in 24 — steady-state
-pipelining, not a fault. The window therefore holds the MEDIAN's precision
-constant rather than the raw spread: `required_queue_samples` in
-`jasper/chip_aec_alignment.py` keeps `spread / sqrt(readings)` at the eight-
-readings-over-16-frames reference ratio, so a wider spread buys its precision
-back by sampling longer (86 frames costs 232 readings, about 5 s at jts3's
-cadence, inside the 30 s collection budget). The window must also hold still for
-`QUEUE_MIN_WINDOW_SEC`, which keeps the drift exposure a fine cadence had before
-the poll got faster. `collect_reference_queue` and `runtime_sys_delay` both read
-that one rule, so boot never rejects a window commissioning accepted.
+**The window comes out of outputd's per-write sample ring, and both ends
+measure it the same way (#2253; rewritten 2026-08-08 for the ring pivot).**
+outputd records `snd_pcm_delay` once per completed chip-reference write and
+publishes its most recent 256 observations as
+`reference_outputs.chip_ref_writer.recent_writes` — the ring is the transport,
+because outputd's state server is one thread with a 500 ms accept poll and one
+command per connection, so a sequential reader gets about two STATUS reads a
+second while the writer writes 47-375 times a second. An outputd without the
+ring is refused by name, not guessed around.
+
+How far the readings spread is a property of the mix cadence: one mix period
+carries `period_frames × 16000 / dac_rate` reference frames, and a burst wider
+than the writer's 256-frame ALSA ring makes every write block, so the reading
+lands wherever scheduling slack leaves it. Measured 2026-08-08 with identical
+chip-ref geometry: jts.local (128-frame mix period, 2.7 ms) spreads 11 frames
+and never shows a lag; jts3 (1024-frame period, 21.3 ms) spreads 86 and shows
+`reference_sequence_lag=1` on 10 reads in 24 — steady-state pipelining, not a
+fault. The window therefore holds the MEDIAN's precision constant rather than
+the raw spread: `required_queue_samples` in `jasper/chip_aec_alignment.py`
+keeps `spread / sqrt(readings)` at the eight-readings-over-16-frames reference
+ratio, so a wider spread buys its precision back by sampling longer (86 frames
+costs 232 readings, about 5 s at jts3's cadence, inside the 30 s collection
+budget). Two more conditions apply: the window must span `QUEUE_MIN_WINDOW_SEC`
+and its two halves must agree on the median within `QUEUE_MAX_MEDIAN_DRIFT`,
+which is what the count rule cannot see — a queue walking away from its start
+holds any spread you like if you stop looking soon enough. The window SLIDES
+(`QUEUE_WINDOW_MAX_SEC`), so one outlier write ages out instead of holding the
+required count up for the whole budget, and it never reaches back past the
+collection's own start, so every reading in it was made while the loop watched
+the writer's error counters hold still.
+
+`collect_reference_queue` and `runtime_sys_delay` both read that one rule, so
+boot cannot reject a window on a criterion commissioning never applied. The
+symmetry is that of the RULE, not of the outcome: the live window at boot is a
+fresh measurement of a different stretch of time, and it can still fail on its
+own numbers — that is the check working.
+
+**Boot bounds the delay against the commissioned one.** Because
+`K = commissioned SYS_DELAY + commissioned median`, the gap between the delay
+boot resolves and the commissioned one IS the difference between the two
+windows' medians — the only error term between the alignment the commissioner
+verified (causal window, convergence transition, ≥ 10 dB beam suppression) and
+what boot applies. `choose_delay` reserves `MIN_EDGE_MARGIN` frames of margin
+on both causal-window edges, so that is the bound: past it, `jasper-aec-init`
+parks with the numbers instead of applying a delay nobody measured. The
+chip's own −64..256 range is six times wider than the causal window and was
+never a substitute for this.
 
 **Adding `dac.format` to the identity force-recommissions the fleet.** Every
 artifact commissioned before that field existed fails the identity check, so on
@@ -2959,7 +2988,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-30 (managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-08 (scope: the K-lifecycle section only — the chip-reference window now comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`; the rest of this file was NOT re-verified in that pass. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and
