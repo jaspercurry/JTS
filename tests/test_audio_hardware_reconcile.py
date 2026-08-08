@@ -3023,3 +3023,114 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
     assert "reason=registry_probe_unavailable" in result.stderr
     assert "dac_id=apple_usb_c_dongle" in result.stderr
+
+
+def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_probe_is_absent(
+    tmp_path: Path,
+):
+    """The dual-Apple composite arm's call to emit_dac_format_for_recognized,
+    inside apply_audio_runtime_env's `mode=dual_apple` branch, is the
+    single-arm test's twin. It shares the same helper, but until this test
+    existed that call site was unpinned — a revert to write-through form
+    there would still pass the whole suite.
+
+    The value seeded here (S24_3LE) is the stale single-Apple-dongle format a
+    box would carry across a single -> dual upgrade: outputd's composite sink
+    has no packed-24 child write path, so S24_3LE is wrong for the composite
+    id even though it was right for the prior single id. A lost probe must
+    still SKIP rather than guess — committing empty would be read as S16_LE
+    (arguably the right answer here) purely by accident, and the skip
+    contract has to hold independent of whether the stale value happens to be
+    survivable.
+    """
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="B",
+        usb_path="1-1",
+        serial="right",
+    )
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="A",
+        usb_path="1-2",
+        serial="left",
+    )
+    topology_path = tmp_path / "output_topology.json"
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("stereo", "active_2_way").to_dict()
+    topology["topology_id"] = "dual_apple"
+    topology["name"] = "Dual Apple"
+    topology["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "left",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "right",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "unit-test-dual-apple-composite-skip",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": 0,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": ["left", "right"],
+        },
+    }
+    topology_path.write_text(
+        json.dumps(topology),
+        encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n",
+        extra_env={
+            "JASPER_SYS_CLASS_SOUND": str(sys_class),
+            "JASPER_PROC_ASOUND": str(proc_asound),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _python_shim_that_cannot_answer_the_edge_format(tmp_path)
+            ),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Unchanged (skip, not empty) — the composite arm gets the same protection
+    # as the single arm.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" not in outputd_env
+    assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
+    assert "reason=registry_probe_unavailable" in result.stderr
+    assert "dac_id=dual_apple_usb_c_dac_4ch" in result.stderr
+    # The value left in place is named on the skip line, and the runtime_env
+    # summary line carries it under the same dac_format= key its
+    # content_format= sibling already used.
+    assert "preserved=S24_3LE" in result.stderr
+    assert "event=audio_hardware_reconcile.runtime_env" in result.stderr
+    assert "mode=dual_apple" in result.stderr
+    assert "dac_format=S24_3LE" in result.stderr

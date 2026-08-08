@@ -688,9 +688,10 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # regardless of what the child profile declares for its own single-dongle
     # case.
     #
-    # What moves this: a packed-24 child write path in the paired sink. Then the
-    # composite and this program's D9 rule (composite and children move width
-    # together, or not at all) can be satisfied in one change.
+    # What moves this: a packed-24 child write path in the paired sink (#2257).
+    # Until then the surviving invariant is the narrower one stated on
+    # final_edge_format's doc: no composite declares a width its transport
+    # refuses.
 )
 
 

@@ -401,10 +401,11 @@ therefore cannot disable, the outputd unit.
 > immediately ahead of `jasper-audio-hardware-reconcile --reason install` in
 > `deploy/lib/install/systemd-units.sh` — so no live daemon is holding a width
 > across the rewrite. Second, this key is
-> re-emitted from the DAC registry on **every** reconcile pass, so a rolled-back
-> reconciler writes its OWN registry's value on that same pass rather than
-> inheriting the newer one — a box rolled back past the Apple dongle's `S24_3LE`
-> declaration is re-emitted `S16_LE` and opens there. (The content key has no such
+> re-emitted from the DAC registry on **every** reconcile pass that can reach
+> the registry, so a rolled-back reconciler writes its OWN registry's value on
+> that same pass rather than inheriting the newer one — a box rolled back past
+> the Apple dongle's `S24_3LE` declaration is re-emitted `S16_LE` and opens
+> there. (The content key has no such
 > self-correction: old code cannot rewrite a key it does not know exists.) The one
 > way to strand a half-flipped value is an abnormal termination mid-install, which
 > is why the deploy should run uninterrupted — and even then outputd's open-time
