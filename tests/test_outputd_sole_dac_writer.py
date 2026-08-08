@@ -19,9 +19,12 @@ Whichever daemon is configured to *open* ``outputd_dac`` is the writer. The
 enforcement point is therefore the shipped systemd unit wiring: ``outputd_dac``
 is named by exactly one unit (``jasper-outputd.service``, via
 ``JASPER_OUTPUTD_DAC_PCM``), and the sibling audio daemons route to loopback
-lanes / local sockets instead. The rollback alias ``pcm.jasper_out`` (also a
-raw ``hw:CARD=...`` on the physical card, kept for pre-outputd rollback) is
-deliberately wired into no daemon.
+lanes / local sockets instead. The retired pre-outputd rollback alias
+``pcm.jasper_out`` (also a raw ``hw:CARD=...`` on the physical card, removed
+from the ALSA template by issue #2240) must never be wired into any daemon
+again — a name denylist, kept even though the alias itself is gone, since a
+future revert or hand-edit reintroducing the name would resurrect a second
+writer.
 
 These tests parse the unit files as data (no hardware). They fail loudly if a
 future edit points a second daemon at the physical DAC — the exact "two
@@ -43,12 +46,12 @@ SYSTEMD_DIR = REPO / "deploy" / "systemd"
 # (``type hw; card <detected>`` — see deploy/lib/jasper-asound-render.sh).
 PHYSICAL_DAC_PCM = "outputd_dac"
 
-# The pre-outputd rollback alias for the same physical card
-# (``pcm.jasper_out`` → ``hw:CARD=<dongle>,DEV=0``). Defined in the ALSA
-# template but must stay unwired from every daemon: wiring it back in would
-# create a second writer to the physical sink. Matched at a word boundary so
-# it never collides with the ``jasper-outputd`` unit name or ``JASPER_OUTPUTD_``
-# env prefix.
+# The retired pre-outputd rollback alias for the same physical card
+# (``pcm.jasper_out`` → ``hw:CARD=<dongle>,DEV=0``, removed from the ALSA
+# template by issue #2240). No longer defined, but the name must stay unwired
+# from every daemon forever: wiring it back in would create a second writer
+# to the physical sink. Matched at a word boundary so it never collides with
+# the ``jasper-outputd`` unit name or ``JASPER_OUTPUTD_`` env prefix.
 ROLLBACK_DAC_PCM_RE = re.compile(r"\bjasper_out\b")
 
 # The audio daemons that sit on the output path and could plausibly be
@@ -110,7 +113,8 @@ def test_physical_dac_pcm_is_wired_into_exactly_one_unit():
 
 def test_rollback_dac_alias_is_wired_into_no_unit():
     """``pcm.jasper_out`` (the pre-outputd rollback alias for the raw physical
-    card) must stay defined-but-unwired: no daemon unit may open it.
+    card, retired from the ALSA template by issue #2240) must never be wired
+    into any daemon unit — a name denylist that outlives the alias itself.
 
     Wiring it into any unit resurrects a second writer to the physical sink.
     """

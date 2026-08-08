@@ -188,8 +188,9 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
   from `jasper_renderer_in` (the plug-on-dmix) to its assigned substream
   alias (`pcm.librespot_substream`, etc.). The renderer code is unchanged.
 - **Final output owner.** Changed by the outputd mainline topology:
-  the already-crossed-over/protected stream reaches `jasper-outputd`,
-  and `pcm.jasper_out` is only the pre-outputd rollback dmix.
+  the already-crossed-over/protected stream reaches `jasper-outputd`.
+  The pre-outputd `pcm.jasper_out` rollback dmix was retired (issue
+  #2240).
 - **CamillaDSP config.** Capture device stays `plug:jasper_capture`.
   The dsnoop's underlying substream remains `(1,7)` in the asoundrc —
   invisible to CamillaDSP itself. Playback is `outputd_content_playback`
@@ -960,7 +961,9 @@ plug played, but per-renderer instead of fronting a shared dmix.
   `hw:Loopback,1,7` (the new "summed music" substream).
 - `pcm.jasper_ref` plug wrapper unchanged as explicit fallback/diagnostics
   (slave is still `jasper_capture`).
-- CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`).
+- CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`)
+  at the time of this migration; `v1.yml` itself was later retired (issue
+  #2240) once the outputd mainline topology shipped.
 
 ### snd-aloop module parameters
 

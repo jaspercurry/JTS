@@ -2883,8 +2883,11 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
   ReSpeaker, `Loopback` for snd-aloop). The AEC bridge no longer
   has an ALSA output — it sends UDP to `127.0.0.1:9876` since
   May 2026; see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
-- `logs/camilladsp-latest.yml` — current CamillaDSP config on
-  the Pi
+- `logs/camilladsp-latest.yml` — the shipped baseline CamillaDSP
+  config (`outputd-cutover.yml`) on the Pi. If a room correction has
+  been applied, the truly active config is the one named by
+  `config_path` in `/var/lib/camilladsp/outputd-statefile.yml`, which
+  this fetch does not resolve
 - `logs/asoundrc-latest.txt` — current `/etc/asound.conf`
   (legacy: `/root/.asoundrc`; migrated 2026-05-23 per PR #223)
 - `logs/jasper.env-latest.txt` — current env (secrets redacted)

@@ -2559,7 +2559,7 @@ Files involved in the AEC subsystem:
   `check_xvf_firmware_6ch`
 - `jasper/cli/doctor/audio.py` — `check_mic_capture`
 - `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
-  (the dsnoop tap) and `pcm.jasper_out` (dongle dmix)
+  (the dsnoop tap)
 - `deploy/modprobe.d/snd-aloop.conf` — single-card music-chain
   snd-aloop config (`index=6 id=Loopback`)
 - `deploy/modules-load.d/snd-aloop.conf` — auto-load at boot

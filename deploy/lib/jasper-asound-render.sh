@@ -8,7 +8,7 @@
 #
 # Inputs are the already-detected role variables owned by install.sh and
 # jasper-audio-hardware-reconcile:
-#   DONGLE_CARD, OUTPUT_DAC_CARD, OUTPUT_DAC_ID
+#   OUTPUT_DAC_CARD, OUTPUT_DAC_ID
 #
 # Keep this narrow. It renders the outputd_dac PCM/ctl blocks and simple
 # placeholders in deploy/alsa/asoundrc.jasper; it is not a DAC abstraction.
@@ -88,7 +88,6 @@ jasper_asound_render_template() {
             fi
             continue
         fi
-        line="${line//__DONGLE_CARD__/${DONGLE_CARD}}"
         printf '%s\n' "$line"
     done < "$source" > "$dest"
 }

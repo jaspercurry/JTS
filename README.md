@@ -143,8 +143,7 @@ level/source-volume knob.
 > after the program duck, then hands one protected stream to CamillaDSP.
 > `jasper-outputd` owns the final DAC timing loop and nothing else
 > normally writes to the physical sink. To test the chain at a
-> controlled volume, play to `correction_substream`; the legacy
-> `jasper_out` dmix remains only as the pre-outputd rollback path. How
+> controlled volume, play to `correction_substream`. How
 > assistant loudness matching works:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
@@ -432,7 +431,7 @@ jasper/                         Python daemon source
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
   alsa/                         /etc/asound.conf template
-  camilladsp/                   legacy v1.yml + outputd-cutover.yml baselines
+  camilladsp/                   outputd-cutover.yml baseline
   systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init,...}
                                 + librespot, shairport-sync, nqptp, Bluetooth no-code agent
   modules-load.d/               snd-aloop autoload

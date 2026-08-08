@@ -40,22 +40,20 @@ Slice=jts-audio.slice
 Type=simple
 # --statefile lets CamillaDSP persist the currently-loaded config path
 # (and main_volume) across restarts. Without it, every restart drops
-# back to v1.yml regardless of what was applied, silently wiping a
+# back to whatever the ExecStart resolves to, silently wiping a
 # user's room correction on reboot / power cycle / install.sh re-run.
 #
-# The outputd topology deliberately uses a separate statefile so
-# the normal production /var/lib/camilladsp/statefile.yml stays intact.
-# Rollback is: stop/disable jasper-outputd, then deploy a pre-outputd
-# release/branch; that older unit returns Camilla to the production
-# statefile and therefore restores the previously active correction path.
+# The pre-outputd rollback path (a positional v1.yml plus
+# /var/lib/camilladsp/statefile.yml) was retired (issue #2240); rollback
+# is now git history plus a redeploy of an older build.
 #
 # CRITICAL: there is intentionally NO positional CONFIGFILE arg.
 # CamillaDSP behavior in v4.x: when both a positional config and
 # --statefile are given, the positional wins on startup AND the
 # statefile gets OVERWRITTEN with the positional's path on every
-# start. So passing `/etc/camilladsp/v1.yml` here would make this
-# whole feature a no-op. install.sh seeds the outputd statefile to
-# point at outputd-cutover.yml so first-boot still has a config to load.
+# start. So passing a config path here would make this whole feature
+# a no-op. install.sh seeds the outputd statefile to point at
+# outputd-cutover.yml so first-boot still has a config to load.
 #
 # Recovery from a bad correction without editing the statefile by
 # hand: add --no_config to the args (which makes Camilla ignore

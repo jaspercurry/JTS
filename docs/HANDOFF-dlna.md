@@ -165,9 +165,8 @@ jasper-camilla (main_volume + filters) → outputd_content_playback
 jasper-outputd → outputd_dac → amp → speakers
 ```
 
-(`pcm.jasper_out` still exists in `/etc/asound.conf` but only as
-the pre-outputd rollback dmix path — it is no longer the active
-convergence point.)
+(The `pcm.jasper_out` pre-outputd rollback dmix was retired from
+`/etc/asound.conf` — issue #2240.)
 
 The sidecar subscribes to gmrender's UPnP `AVTransport` and
 `RenderingControl` services via GENA (`SUBSCRIBE`/`NOTIFY`)

@@ -948,8 +948,8 @@ create a second retention system.
   "Durable evidence and observability". balance/sync still don't persist
   bundles (lost on restart).
 - **JTS3 lab Pi (2026-06-19): the crossover is not live.** Output HW is a
-  HiFiBerry DAC8x (8 outputs); the live CamillaDSP graph (`v1.yml` and the
-  outputd `outputd-cutover.yml`) is a **flat identity passthrough** — no
+  HiFiBerry DAC8x (8 outputs); the live CamillaDSP graph (the outputd
+  `outputd-cutover.yml`) is a **flat identity passthrough** — no
   crossover, no per-driver trim. With a B&C DE250-8 compression driver
   (~108.5 dB) ~**25 dB hotter** than the Epique E150HE-44 woofer
   (~83.3 dB), full-range equal-level audio = shrill/horn-dominant, and a

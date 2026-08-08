@@ -627,10 +627,8 @@ def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     assert "zero_fill_content_period(out, 4, classified.read)" in paired_sink
 
 
-def test_camilla_outputd_config_is_not_legacy_v1():
-    production = (REPO / "deploy" / "camilladsp" / "v1.yml").read_text()
+def test_camilla_outputd_config_declares_outputd_lane():
     cutover = (REPO / "deploy" / "camilladsp" / "outputd-cutover.yml").read_text()
-    assert 'device: "jasper_out"' in production
     assert 'device: "outputd_content_playback"' in cutover
     assert 'volume_limit: 0.0' in cutover
 
@@ -644,9 +642,6 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
     start pins the snd-aloop content pair at one width and the first
     regeneration at another — on the raw active lane that is a failed open, and
     on the passive lane a silent extra requantization.
-
-    The legacy v1.yml path is deliberately NOT included: it writes the S16
-    pcm.jasper_out dmix, not an outputd lane (wide-output-path D8).
     """
     from jasper.camilla_config_contract import (
         DEFAULT_PLAYBACK_FORMAT,
@@ -658,9 +653,6 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
         read_camilla_device_field(cutover, "playback", "format")
         == DEFAULT_PLAYBACK_FORMAT
     )
-    legacy = REPO / "deploy" / "camilladsp" / "v1.yml"
-    assert read_camilla_device_field(legacy, "playback", "format") == "S16_LE"
-    assert read_camilla_device_field(legacy, "playback", "device") == "jasper_out"
 
 
 def test_install_uses_separate_outputd_statefile():
@@ -670,7 +662,6 @@ def test_install_uses_separate_outputd_statefile():
     ).read_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
     assert "outputd-cutover.yml" in install_sh
-    assert "config_path: /etc/camilladsp/v1.yml" in install_sh
     assert "runtime-safe-graph" in install_sh
     assert "ensure_outputd_camilla_statefile" in install_sh
     assert "--write-statefile" in install_sh

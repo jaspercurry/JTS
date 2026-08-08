@@ -1176,9 +1176,10 @@ never redirected.
   every start when both are given. The hotfix removes the positional.
   In the outputd topology, Camilla reads
   `/var/lib/camilladsp/outputd-statefile.yml` seeded to
-  `/etc/camilladsp/outputd-cutover.yml`; the normal
-  `/var/lib/camilladsp/statefile.yml` is preserved for pre-outputd rollback.
-  Subsequent `set_config_file_path()` calls from the wizard update the
+  `/etc/camilladsp/outputd-cutover.yml`. The pre-outputd `v1.yml` /
+  `/var/lib/camilladsp/statefile.yml` rollback path was retired
+  (issue #2240); rollback is git history plus a redeploy of an
+  older build. Subsequent `set_config_file_path()` calls from the wizard update the
   active statefile in place; future restarts read it back. Recovery
   from a bad correction without hand-editing the statefile: add
   `--no_config` to the ExecStart args, restart, fix or re-measure,

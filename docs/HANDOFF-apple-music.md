@@ -259,10 +259,12 @@ jasper-voice
     apple_music_substream  ──  snd-aloop  ──►  jasper-fanin
                                                      │
                                                      ▼
-    jasper-camilla (CamillaDSP, main_volume ducking)
+    jasper-camilla (CamillaDSP, main_volume ducking) → outputd_content_playback
+         │
+         ▼ (snd-aloop loop) → outputd_content_capture
          │
          ▼
-    pcm.jasper_out (dmix on Apple dongle) → amp → speakers
+    jasper-outputd → outputd_dac → amp → speakers
 ```
 
 ### Mux integration

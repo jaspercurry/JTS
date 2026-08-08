@@ -106,8 +106,8 @@ in P6, shairport LAST.
   `pcm_notify=0`, index=6 pinning) + `deploy/modules-load.d/snd-aloop.conf`.
 - `/etc/asound.conf` lanes: rendered from `deploy/alsa/asoundrc.jasper` —
   all `*_substream` PCMs, `outputd_content_*`, `outputd_active_content_*`,
-  `jasper_capture` dsnoop, `jasper_ref`, plus the legacy `jasper_out` dmix
-  rollback block (`__DONGLE_CARD__`).
+  `jasper_capture` dsnoop, `jasper_ref`. (The legacy `jasper_out` dmix
+  rollback block was retired — issue #2240.)
 - Cable-wedge handling: the LoopbackAEC card was already deleted
   (2026-05-11, UDP replacement) — surviving artifacts are lore/comments in
   [`jasper/audio_io.py`](../jasper/audio_io.py) `UdpMicCapture`,
