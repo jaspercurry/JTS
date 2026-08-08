@@ -671,6 +671,106 @@ def test_accessory_voice_restart_is_deferred_past_the_mic_device_write(
     assert "JASPER_MIC_DEVICE=Array" in env_file.read_text()
 
 
+def test_publishes_local_mic_absent_for_the_daemon(tmp_path: Path) -> None:
+    """The daemon half of #2205 needs to know WHICH half satisfied the gate.
+
+    The marker is the AND of both absences, so it cannot say. This reconciler
+    owns local-mic presence, so it publishes that half as a fact the daemon
+    reads instead of re-deriving — and a `0` here is what lets jasper-voice
+    plan zero wake legs and serve the remote's button.
+    """
+    env_file = _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_accessory_mics(
+        tmp_path,
+        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _env_assignments(env_file)["JASPER_LOCAL_MIC_PRESENT"] == "0"
+
+
+def test_publishes_local_mic_present_when_a_candidate_card_exists(
+    tmp_path: Path,
+) -> None:
+    """The positive half. A mic-bearing speaker must NEVER read as absent —
+    that would drop its wake leg and leave it deaf until someone pressed a
+    button it may not even have."""
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, "Array", channels=2)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _env_assignments(env_file)["JASPER_LOCAL_MIC_PRESENT"] == "1"
+
+
+def test_publishes_unknown_for_a_custom_mic_device(tmp_path: Path) -> None:
+    """A custom JASPER_MIC_DEVICE is an operator device this script does not
+    manage, and whose name need not appear in MIC_CANDIDATES at all — so the
+    absence of a candidate card says nothing about it.
+
+    Publishing `0` here would be the dangerous answer: the daemon would drop
+    the primary leg and never open the operator's mic. Publishing nothing
+    would be nearly as bad, because a stale `0` from an earlier pass would
+    survive and do the same thing.
+    """
+    env_file = _write_env(tmp_path, "UMIK-2")
+    _write_mode(tmp_path)
+    # Seed the stale value this path must overwrite.
+    env_file.write_text(
+        env_file.read_text() + "JASPER_LOCAL_MIC_PRESENT=0\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _env_assignments(env_file)["JASPER_LOCAL_MIC_PRESENT"] == "unknown"
+
+
+def test_local_mic_presence_is_published_before_voice_is_restarted(
+    tmp_path: Path,
+) -> None:
+    """Order matters: restart_voice uses `systemctl --no-block`, so systemd
+    can start jasper-voice while this oneshot is still running. If the
+    published verdict landed after the restart was queued, the daemon could
+    read a stale value and plan the wrong leg set for a whole run."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    _write_accessory_mics(
+        tmp_path,
+        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+    )
+    snapshotting_systemctl = tmp_path / "systemctl-snapshot"
+    snapshotting_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$JASPER_SYSTEMCTL_LOG"\n'
+        'if [[ "$*" == *"restart jasper-voice.service"* ]]; then\n'
+        '  cp "$JASPER_ENV_FILE" "$JASPER_ENV_SNAPSHOT"\n'
+        "fi\n"
+        "exit 0\n",
+    )
+    snapshotting_systemctl.chmod(0o755)
+    snapshot = tmp_path / "jasper.env.at-restart"
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYSTEMCTL": str(snapshotting_systemctl),
+            "JASPER_ENV_SNAPSHOT": str(snapshot),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.exists(), "voice was never restarted"
+    assert _env_assignments(snapshot)["JASPER_LOCAL_MIC_PRESENT"] == "0"
+
+
 def test_no_local_mic_and_no_accessory_still_parks_voice(tmp_path: Path) -> None:
     """The other half of #2205: absence of BOTH is what the marker claims."""
     _write_env(tmp_path, "udp:9876")

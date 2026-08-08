@@ -18,6 +18,9 @@ no-input box from crash-looping into StartLimitAction=reboot:
    (issue #2205): the accessory env path agrees across its owner, the unit,
    and env_load, and the bash reconciler carries no copy of it because it
    asks jasper.accessories.mic_env instead.
+5. The gate owner PUBLISHES which half it resolved
+   (JASPER_LOCAL_MIC_PRESENT), and the daemon's leg planner reads that
+   published fact rather than re-deriving mic presence from its own config.
 """
 from __future__ import annotations
 
@@ -164,6 +167,89 @@ def test_gate_owner_can_actually_report_enabled() -> None:
         and not line.lstrip().startswith("#")
     ]
     assert enable_lines, "install.sh must enable the voice-input gate owner"
+
+
+LOCAL_MIC_PRESENT_KEY = "JASPER_LOCAL_MIC_PRESENT"
+
+
+def test_reconciler_publishes_the_local_half_of_the_gate() -> None:
+    """The gate owner must publish WHICH half it resolved.
+
+    The marker is the AND of both absences, so it structurally cannot say
+    "there is no local mic but a remote is paired" — and that is exactly the
+    case the daemon has to serve. Without this published key the daemon would
+    have to guess local-mic presence from its own config, which cannot work:
+    `Config.mic_device` defaults to the literal "Array" and the reconciler
+    writes a real candidate name on its no-mic paths.
+    """
+    code = "\n".join(
+        line for line in RECONCILE.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert f"set_env_var \"$ENV_FILE\" {LOCAL_MIC_PRESENT_KEY}" in code
+
+
+def _config_with(monkeypatch, **env) -> object:
+    from jasper.config import Config
+
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "published,expected",
+    [("1", True), ("0", False), ("unknown", None)],
+)
+def test_config_reads_the_published_local_mic_verdict(
+    monkeypatch, published, expected,
+) -> None:
+    """Tri-state, and the third state is load-bearing: `unknown` must NOT
+    collapse into `absent`, or a custom mic the reconciler declines to
+    resolve would silently lose its wake leg."""
+    cfg = _config_with(monkeypatch, **{LOCAL_MIC_PRESENT_KEY: published})
+    assert cfg.local_mic_present is expected
+
+
+def test_absent_key_reads_as_unresolved(monkeypatch) -> None:
+    """No reconcile has ever run (fresh box, first boot). Must read as
+    "unknown", never as "no mic" — the daemon's pre-#2205 behaviour."""
+    monkeypatch.delenv(LOCAL_MIC_PRESENT_KEY, raising=False)
+    cfg = _config_with(monkeypatch)
+    assert cfg.local_mic_present is None
+
+
+def test_published_verdict_reaches_the_leg_planner(monkeypatch) -> None:
+    """End to end across the key name: the value the reconciler publishes is
+    the value that drops the primary wake leg.
+
+    Renaming the key on either side breaks this even though both sides would
+    still be internally consistent — which is the drift this pins.
+    """
+    from jasper.voice_daemon import _configured_wake_legs
+
+    cfg = _config_with(
+        monkeypatch,
+        **{
+            LOCAL_MIC_PRESENT_KEY: "0",
+            "JASPER_MANUAL_MIC_SOURCES": "wiim_remote_2=udp:9892",
+        },
+    )
+    assert _configured_wake_legs(cfg) == []
+
+    # Control: the SAME config with the local half resolved present keeps the
+    # primary leg, so the empty plan above is the published verdict's doing
+    # and not an artefact of the accessory source alone.
+    cfg_with_mic = _config_with(
+        monkeypatch,
+        **{
+            LOCAL_MIC_PRESENT_KEY: "1",
+            "JASPER_MANUAL_MIC_SOURCES": "wiim_remote_2=udp:9892",
+        },
+    )
+    assert [s.token for s, _ in _configured_wake_legs(cfg_with_mic)] == ["on"]
 
 
 def test_voice_parked_no_mic_reads_marker(tmp_path, monkeypatch) -> None:

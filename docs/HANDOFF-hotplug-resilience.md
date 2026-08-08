@@ -43,7 +43,7 @@ For every hot-pluggable component, all four must hold:
 | **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22; tightened 2026-07-06.** ALSA control events plus Apple USB remove helper wake reconcile; outputd stages and validates buffer/period env before retry, and config exits get one bounded reconcile/retry before parking |
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile`; optional output reference owned by `jasper-outputd` | voice clean park; outputd keeps DAC playback running and retries the chip-reference sink in the background | udev → reconcile restart; outputd reconnects its reference writer without a playback restart | **Fixed 2026-06-21; output/reference isolation tightened 2026-07-10.** A missing mic may park voice and degrade chip AEC, but cannot silence speaker output |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
-| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-wiim-remote-ce` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, then refreshes voice — starting `jasper-aec-reconcile` so the gate's owner re-derives it when that owner is enabled, else `try-restart`ing a running voice; adapter re-requests the BLE connection-event reservation on every reconnect | **Fixed 2026-06-26; gate made accessory-aware 2026-08-06 (issue #2205).** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure. A paired remote now satisfies the voice-input **gate** on its own — necessary but not sufficient: the daemon still builds its primary wake leg unconditionally (`_configured_wake_legs`) and exits 66 when that device is absent, so a no-local-mic box does not yet answer. Daemon-side accessory-only support is tracked separately by issue #2205. **Realtime delivery additionally depends on the CE reservation landing** — see the degraded mode below |
+| **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-wiim-remote-ce` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, then refreshes voice — starting `jasper-aec-reconcile` so the gate's owner re-derives it when that owner is enabled, else `try-restart`ing a running voice; adapter re-requests the BLE connection-event reservation on every reconnect | **Fixed 2026-06-26; gate made accessory-aware 2026-08-06, daemon half 2026-08-07 (issue #2205).** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure. A paired remote satisfies the voice-input **gate** on its own, and a no-local-mic box now plans zero wake legs and serves the button instead of parking — driven by the reconciler's published `JASPER_LOCAL_MIC_PRESENT`, not by anything the daemon guesses. End-to-end "the speaker wakes via the remote" is **not yet hardware-verified**. **Realtime delivery additionally depends on the CE reservation landing** — see the degraded mode below |
 
 The original Workstream C gap was the **microphone**. A later JTS5
 dual-Apple unplug incident found one output-side edge too: when one Apple
@@ -202,15 +202,61 @@ bind an unfed UDP socket and watchdog-restart into `StartLimitAction=reboot`.
 Un-parking that path needs the mic device normalised away from `udp:` first;
 that is its own change.
 
-**What this does not do.** Opening the gate does not by itself make a
-no-local-mic box answer. `jasper/voice_daemon.py`'s `_configured_wake_legs`
-builds the primary (`"on"`) leg unconditionally — its docstring says so — and
-`daemon_main` re-raises `InputDeviceUnavailable` for that leg, exiting 66 before
-the manual-mic loop below it ever runs. So such a box currently opens the gate,
-starts, and clean-parks. That is bounded (`RestartPreventExitStatus=66`, no
-loop) and is the state the daemon-side change converts into a running
-push-to-talk daemon; it is why every status string here reports **gate** state
-and not runtime state.
+#### Which half satisfied the gate — the published local verdict
+
+Opening the gate is not the same as the daemon being able to *serve* an
+accessory-only box, and for a while it was not: `_configured_wake_legs` built
+the primary (`"on"`) leg unconditionally, `daemon_main` re-raised
+`InputDeviceUnavailable` for it, and the daemon exited 66 before the
+manual-mic loop below it ever ran. The gate opened and the remote's button
+still did nothing.
+
+The marker structurally cannot fix that, because it is the AND: its presence
+means "neither half", and its **absence** does not say which half answered. So
+the gate owner publishes its own half as a fact, and the daemon reads it:
+
+```sh
+JASPER_LOCAL_MIC_PRESENT=1|0|unknown   # /etc/jasper/jasper.env
+```
+
+- `write_local_mic_presence_env` in `jasper-aec-reconcile` writes it **once
+  per pass, before the branch tree**, so no exit path can leave a stale value,
+  and every `restart_voice` below picks up the fresh one.
+- `1` / `0` are the same `PRESENT_MIC` (`first_present_candidate`) probe every
+  mic-selecting branch already trusts. `unknown` is a custom
+  `JASPER_MIC_DEVICE` — an operator device the reconciler deliberately does
+  not manage, whose name need not appear in `MIC_CANDIDATES` at all, so a
+  missing candidate card says nothing about it.
+- `Config.local_mic_present` (`bool | None`) reads it. `_configured_wake_legs`
+  plans **zero** wake legs when, and only when, it is an explicit `False`
+  *and* `manual_mic_sources` is non-empty. An empty leg plan and "no primary
+  mic" then agree by construction rather than by two derivations that can
+  disagree.
+
+The daemon must not re-derive this. `Config.mic_device` defaults to the
+literal `"Array"` when unset, and the reconciler writes a real candidate name
+on its no-mic paths to clear a stale `udp:`, so "empty or odd `mic_device`" is
+not evidence of absence on any real box.
+
+The tri-state is what keeps **"this speaker has no room mic"** separable from
+**"the room mic should be here and isn't."** Only an explicit `0` drops the
+leg; `unknown` and an absent key keep the pre-existing behaviour, so a broken
+or busy mic still plans its leg, still raises, and still parks loudly (Layer 2)
+instead of quietly downgrading a mic-bearing speaker to push-to-talk.
+
+On the zero-leg box the daemon then substitutes a keepalive tick
+(`PTT_KEEPALIVE_INTERVAL_SEC`, 2 s) for the primary mic's frame stream, because
+that stream was also the Tier-1 heartbeat's liveness proof. The tick is an
+honestly weaker claim — a frame proves capture *and* the loop, a tick only the
+loop — which is why `_require_usable_input` refuses to run a daemon that
+opened neither a wake leg nor a manual mic: otherwise it would pat its
+watchdog forever while deaf.
+
+Runtime, not gate: `manual_session_start` with **no source** on such a speaker
+is refused (`NO_ROOM_MIC`) with a WARN and the `no_room_microphone` cue.
+Accepting it opened a turn nothing could feed — music ducked, chirp played,
+zero bytes sent, killed by the idle watchdog ~20 s later with no warning at
+all, because both end-of-turn warnings are keyed on `bytes_sent > 0`.
 
 **Cold boot still fails closed where it matters.** A box with *no* input at all
 carries the marker from its last reconcile and is gated at instant zero, exactly
@@ -560,9 +606,10 @@ session):**
 ## Files
 
 - [`deploy/systemd/jasper-voice.service`](../deploy/systemd/jasper-voice.service) — `ConditionPathExists` gate, exit-66 park
-- [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) — single writer of the marker
+- [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) — single writer of the marker; publisher of `JASPER_LOCAL_MIC_PRESENT`
 - [`deploy/systemd/jasper-aec-reconcile.service`](../deploy/systemd/jasper-aec-reconcile.service) — bounded oneshot wrapper for mic/AEC/voice convergence
 - [`jasper/voice/input_presence.py`](../jasper/voice/input_presence.py) — marker path + `voice_parked_no_mic()`
+- [`jasper/voice_daemon.py`](../jasper/voice_daemon.py) — `_configured_wake_legs` (reads the published local verdict), the push-to-talk keepalive, and the `NO_ROOM_MIC` refusal + cue
 - [`jasper/accessories/mic_env.py`](../jasper/accessories/mic_env.py) — accessory-mic env path + entry format; the accessory half of the gate
 - [`jasper/mic_presence.py`](../jasper/mic_presence.py) — the voice-input SSOT reader (mic-agnostic presence + accessory sources + XVF enrichment)
 - [`jasper/audio_io.py`](../jasper/audio_io.py) — `InputDeviceUnavailable`; absent-aware open-failure log
@@ -581,6 +628,9 @@ session):**
 Last verified: 2026-08-07 (Layer 1 re-derived against the reconcilers and units
 for the voice-input-gate OR, issue #2205, including which install profiles
 reach `refresh_voice_input` — read from `deploy/lib/install/systemd-units.sh`
-— and `try-restart`'s no-op behaviour measured on jts4; accessory/grouping
-timeout relationship retains its 2026-07-14 verification, and other subsystem
-claims their 2026-07-10 verification.)
+— and `try-restart`'s no-op behaviour measured on jts4. The "which half
+satisfied the gate" subsection is the daemon half of #2205 and is verified
+against the code and its hardware-free tests only: no accessory-only speaker
+has been observed answering on hardware, so treat end-to-end behaviour there as
+inferred. Accessory/grouping timeout relationship retains its 2026-07-14
+verification, and other subsystem claims their 2026-07-10 verification.)

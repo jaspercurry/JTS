@@ -25,6 +25,40 @@ def test_tts_ready_detail_reports_outputd_socket() -> None:
     assert "jasper_out" not in detail
 
 
+def test_require_usable_input_raises_when_nothing_opened() -> None:
+    """A daemon with no wake leg AND no manual mic is permanently deaf.
+
+    Reachable since #2205: a no-room-mic speaker plans zero legs, and the
+    manual-mic loop SKIPS a source it cannot open rather than raising. Without
+    this guard the daemon would log "ready", keep patting its watchdog on the
+    keepalive tick, and never hear anything — a speaker that looks healthy and
+    is not. It must park the same clean way a primary mic-open failure does.
+    """
+    import pytest
+
+    from jasper.audio_io import InputDeviceUnavailable
+    from jasper.voice.daemon_main import _require_usable_input
+
+    with pytest.raises(InputDeviceUnavailable) as exc:
+        _require_usable_input([], [], ["udp:9892"])
+    # The declared-but-unopenable device is named, so the journal says WHICH
+    # source was expected rather than just "no mic".
+    assert "udp:9892" in str(exc.value)
+
+    with pytest.raises(InputDeviceUnavailable) as exc:
+        _require_usable_input([], [], [])
+    assert "<none>" in str(exc.value)
+
+
+def test_require_usable_input_accepts_either_input_alone() -> None:
+    """Control: one wake leg is enough, and so is one manual mic on its own —
+    the second is the whole point of the accessory-only speaker."""
+    from jasper.voice.daemon_main import _require_usable_input
+
+    _require_usable_input([object()], [], [])          # room mic only
+    _require_usable_input([], [object()], ["udp:9892"])  # remote only
+
+
 def test_tts_ready_detail_marks_non_outputd_transport_unsupported() -> None:
     cfg = SimpleNamespace(
         tts_transport="sounddevice",

@@ -401,6 +401,8 @@ def _cfg(
     mic_device_dtln="",
     mic_device_chip_aec_150="",
     mic_device_chip_aec_210="",
+    local_mic_present=None,
+    manual_mic_sources=None,
 ):
     """Minimal Config stand-in for _configured_wake_legs (which reads each
     wake-input leg's device attr by name). SimpleNamespace, not MagicMock —
@@ -413,6 +415,8 @@ def _cfg(
         mic_device_dtln=mic_device_dtln,
         mic_device_chip_aec_150=mic_device_chip_aec_150,
         mic_device_chip_aec_210=mic_device_chip_aec_210,
+        local_mic_present=local_mic_present,
+        manual_mic_sources=manual_mic_sources or {},
     )
 
 
@@ -664,3 +668,203 @@ def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
     wl._maybe_refresh_condition(now_loop=5.0)  # must not raise
     assert wl._current_condition == "ambient"  # stale condition kept
     assert wl._condition_refreshed_at == 5.0   # timer advanced -> ~1 Hz retry
+
+
+# ---------------------------------------------------------------------------
+# Push-to-talk-only speakers — no microphone of their own (Zero-class
+# streambox + WiiM Remote 2). Issue #2205: the start gate already lets these
+# boxes run; these pin that the daemon then plans an input set it can
+# actually open, and that a mic-BEARING speaker is never downgraded into the
+# same shape by accident.
+# ---------------------------------------------------------------------------
+
+
+def test_no_local_mic_plus_accessory_plans_zero_wake_legs():
+    """The published no-local-mic verdict + a published accessory source is
+    the one shape that drops the primary leg.
+
+    Without this the "on" leg is built against a card that is not there,
+    run() re-raises InputDeviceUnavailable, and the daemon exits 66 before it
+    ever reaches the manual-mic loop — the gate opens and the remote's button
+    still does nothing.
+    """
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="Array",
+        local_mic_present=False,
+        manual_mic_sources={"wiim_remote_2": "udp:9892"},
+    ))
+    assert legs == []
+
+
+def test_leg_planner_never_infers_push_to_talk_from_an_empty_mic_device():
+    """An empty or odd `JASPER_MIC_DEVICE` must NOT be read as "this is a
+    push-to-talk speaker".
+
+    `Config.from_env` defaults `mic_device` to the literal "Array" and the AEC
+    reconciler writes a real candidate name on its no-mic paths to clear a
+    stale udp: device, so "empty primary device" is not evidence of anything
+    on a real box. Only the reconciler's published verdict may drop the leg.
+    """
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="",
+        manual_mic_sources={"wiim_remote_2": "udp:9892"},
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [("on", "")]
+
+
+def test_unresolved_local_mic_still_plans_the_primary_leg():
+    """`unknown` (custom device, or no reconcile has run) is NOT `absent`.
+
+    This is the property that keeps "this speaker has no room mic" separable
+    from "the room mic should be here and isn't". Collapse them and a broken
+    mic silently downgrades to push-to-talk on a box with no remote — a
+    speaker that looks healthy and cannot hear.
+    """
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="UMIK-2",
+        local_mic_present=None,
+        manual_mic_sources={"wiim_remote_2": "udp:9892"},
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [("on", "UMIK-2")]
+
+
+def test_no_local_mic_without_an_accessory_still_plans_the_primary_leg():
+    """No local mic AND no accessory is a BROKEN speaker, not a PTT one.
+
+    The gate marker should have parked it before Python ran; if it somehow
+    starts, the planned leg fails to open and the daemon parks loudly on
+    exit 66 rather than idling deaf with no wake detection.
+    """
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="Array", local_mic_present=False,
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [("on", "Array")]
+
+
+def test_accessory_alongside_a_real_mic_keeps_wake_legs():
+    """A push-to-talk remote on a speaker that DOES have a mic is additive:
+    it adds a manual source without disabling wake detection."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876",
+        mic_device_raw="udp:9877",
+        local_mic_present=True,
+        manual_mic_sources={"wiim_remote_2": "udp:9892"},
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [
+        ("on", "udp:9876"), ("off", "udp:9877"),
+    ]
+
+
+def test_push_to_talk_only_is_derived_from_resolved_runtime():
+    """The daemon knows it is push-to-talk from what it actually opened —
+    zero wake legs plus at least one manual mic source — never from a config
+    string it might have inherited from a default."""
+    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
+
+    def _remote():
+        return [_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")]
+
+    assert WakeLoop.for_tests(
+        legs=[], manual_mics=_remote(),
+    )._push_to_talk_only is True
+    # Zero legs and no manual source is a broken speaker, not a PTT one.
+    assert WakeLoop.for_tests(legs=[])._push_to_talk_only is False
+    # A remote on a speaker that also has a room mic is additive.
+    assert WakeLoop.for_tests(
+        manual_mics=_remote(),
+    )._push_to_talk_only is False
+
+
+def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
+    """The primary-leg aliases must tolerate the absent "on" leg. `_mic` is
+    what run() branches on; `_capture_ring_on` must still be a real deque so
+    its readers need no special case."""
+    from collections import deque
+
+    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
+
+    wl = WakeLoop.for_tests(
+        legs=[],
+        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+    )
+    assert wl._mic is None
+    assert wl._detector is None
+    assert isinstance(wl._capture_ring_on, deque)
+
+
+def test_ptt_keepalive_stays_inside_heartbeat_stale_threshold():
+    """Load-bearing relationship: with no mic frames to bump the progress
+    sentinel, the keepalive tick IS the liveness proof. If its interval ever
+    drifts past Heartbeat's stale threshold, the heartbeat thread stops
+    patting systemd and WatchdogSec=30s reaps a perfectly healthy daemon."""
+    import inspect
+
+    from jasper.voice_daemon import PTT_KEEPALIVE_INTERVAL_SEC
+    from jasper.watchdog import Heartbeat
+
+    stale = inspect.signature(Heartbeat).parameters[
+        "stale_threshold_sec"
+    ].default
+    assert PTT_KEEPALIVE_INTERVAL_SEC < stale, (
+        f"keepalive {PTT_KEEPALIVE_INTERVAL_SEC}s must stay under the "
+        f"{stale}s heartbeat stale threshold"
+    )
+
+
+async def test_zero_leg_run_ticks_the_heartbeat_without_a_primary_mic(
+    monkeypatch,
+):
+    """run() must keep the Tier-1 heartbeat alive on a speaker with no
+    primary mic, and must not mistake a tick for audio.
+
+    Without the keepalive the heartbeat's progress sentinel never advances,
+    the thread stops patting systemd, and WatchdogSec=30s restarts a daemon
+    that is working exactly as designed.
+    """
+    import asyncio
+
+    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
+
+    wl = WakeLoop.for_tests(
+        legs=[],
+        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+    )
+    bumps = 0
+    ticked = asyncio.Event()
+
+    class _Heartbeat:
+        def bump(self):
+            nonlocal bumps
+            bumps += 1
+            ticked.set()
+
+    wl._heartbeat = _Heartbeat()
+    # No manual loops to spawn: this exercises the primary-loop substitute.
+    wl._manual_mics = {}
+    # A list, not a deque: if a tick ever reached the frame body it would be
+    # appended here and the assertion below would see it.
+    wl._pre_roll = []
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_seconds):
+        # Still yields to the event loop — a bare `return None` would let the
+        # keepalive spin without ever suspending and starve this test.
+        await real_sleep(0)
+
+    # The cadence itself is pinned by the heartbeat-threshold test above;
+    # here we only need the loop to iterate promptly.
+    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", _fast_sleep)
+
+    task = asyncio.create_task(wl.run())
+    await asyncio.wait_for(ticked.wait(), timeout=2.0)
+    wl._stop_event.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert bumps >= 1
+    assert wl._pre_roll == []

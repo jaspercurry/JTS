@@ -86,7 +86,7 @@ class VoiceRoutes(ControlHandlerMixin):
             return
         # Result codes from voice_daemon's manual_session_*:
         #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
-        #   NO_SESSION / ALREADY_ENDED / UNKNOWN_SOURCE / ERROR
+        #   NO_SESSION / ALREADY_ENDED / UNKNOWN_SOURCE / NO_ROOM_MIC / ERROR
         # Map non-OK outcomes to non-2xx so remote and automation
         # callers receive an actionable status.
         http_status = 200
@@ -95,7 +95,11 @@ class VoiceRoutes(ControlHandlerMixin):
                 http_status = 503
             elif result.get("result") in ("BUSY", "NO_SESSION"):
                 http_status = 409
-            elif result.get("result") == "UNKNOWN_SOURCE":
+            # Both are bad REQUESTS, not transient states: the caller named a
+            # source this speaker does not have, or named none on a speaker
+            # whose only input is a push-to-talk source. Retrying either
+            # unchanged can never succeed, so 400 rather than 503.
+            elif result.get("result") in ("UNKNOWN_SOURCE", "NO_ROOM_MIC"):
                 http_status = 400
             else:
                 http_status = 502

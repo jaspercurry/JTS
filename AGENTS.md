@@ -2285,9 +2285,15 @@ which is never gated). "Usable input" is an OR over a local microphone
 so the marker is the AND of their absences — the reconciler consults the
 accessory owner's *published file*, never BlueZ, before it writes. It
 remains the single writer; the accessory owner asks it to re-derive rather
-than writing here. Opening the gate is not the same as the daemon *using*
-an accessory-only input — that half is issue #2205, and every status
-string on this path says **gate**, not runtime. Canonical:
+than writing here. The marker is the AND, so it can never say *which* half
+answered — the reconciler publishes its own half separately as
+`JASPER_LOCAL_MIC_PRESENT` (`1` / `0` / `unknown`), and that is what lets
+`_configured_wake_legs` plan **zero** wake legs on a no-room-mic box and serve
+the remote's button instead of parking. Only an explicit `0` does so; `unknown`
+(a custom device the reconciler declines to resolve) and an absent key keep the
+old behaviour, which is what keeps "no room mic" separable from "the room mic
+should be here and isn't". Status strings on the *marker* path still say
+**gate**, not runtime. Canonical:
 [docs/HANDOFF-hotplug-resilience.md](docs/HANDOFF-hotplug-resilience.md)
 "Layer 1". `jasper-voice.service` carries
 `ConditionPathExists=!/var/lib/jasper/voice-input-absent`, so a no-mic

@@ -141,6 +141,23 @@ CUES: tuple[CueDef, ...] = (
             "cause it can't stand behind and points the household to retry."
         ),
     ),
+    CueDef(
+        slug="no_room_microphone",
+        template=(
+            "I don't have a microphone of my own. Hold the button on your "
+            "remote to talk to me."
+        ),
+        description=(
+            "Played when something asks this speaker to open a room-mic turn "
+            "but it has no always-listening microphone — a streambox whose "
+            "only voice input is a paired push-to-talk remote (issue #2205). "
+            "Without it that request ducks the music, chirps, forwards no "
+            "audio at all, and dies to the idle watchdog in silence. Wired "
+            "from WakeLoop.manual_session_start via NO_ROOM_MIC_CUE_SLUG. "
+            "Names the remedy, not the cause: the household can act on "
+            "'hold the button', not on 'no primary leg was planned'."
+        ),
+    ),
 )
 
 
