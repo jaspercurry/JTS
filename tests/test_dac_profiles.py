@@ -585,6 +585,42 @@ def test_final_edge_format_matches_known_hardware() -> None:
     assert HIFIBERRY_DAC8X.final_edge_format == "S16_LE"
     assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
     assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
+    # The composite's declaration became load-bearing when outputd started
+    # requesting it on BOTH children (wide-output-path PR-5): every live
+    # dual-Apple box opens its two dongles at exactly this value, so an
+    # unintended flip here is an unintended change to real hardware.
+    assert DUAL_APPLE_USB_C_DAC_4CH.final_edge_format == "S16_LE"
+
+
+def test_a_composite_declares_the_same_edge_format_as_every_child() -> None:
+    """A composite's declared format IS what outputd asks each child for.
+
+    `jasper-audio-hardware-reconcile` emits `JASPER_OUTPUTD_DAC_FORMAT` from the
+    ARMED profile — the composite's — and outputd requests that on both child
+    PCMs, so a child profile declaring a different width would be declaring
+    something no code ever asks for: a lie in the registry, invisible at runtime
+    until someone trusted it.
+
+    This is also the tripwire for the S24_3LE work: moving the Apple dongle's
+    edge without moving the composite (or vice versa) fails here rather than
+    shipping a composite that opens at a width its own children do not claim.
+    """
+    checked = 0
+    for profile in dac.all_profiles():
+        if profile.kind != "composite":
+            continue
+        for child_id in profile.child_profile_ids:
+            child = dac.by_id(child_id)
+            assert child is not None, f"{profile.id}: unknown child {child_id!r}"
+            assert child.final_edge_format == profile.final_edge_format, (
+                f"{profile.id} declares {profile.final_edge_format!r} but child "
+                f"{child.id} declares {child.final_edge_format!r}; outputd asks "
+                f"every child for the COMPOSITE's format"
+            )
+            checked += 1
+    # Non-vacuity: a registry with no composite profile would satisfy every
+    # assertion above by never running one.
+    assert checked >= 2, f"expected at least one composite's children, saw {checked}"
 
 
 def test_final_edge_format_rejects_unsupported_value() -> None:

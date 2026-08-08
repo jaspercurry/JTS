@@ -225,13 +225,16 @@ impl RuntimeAlsaSink {
     }
 
     /// The sample format this sink's final edge actually negotiated.
+    ///
+    /// Both transports answer from their own readback-verified state — the
+    /// composite from its `ChildPeriods`, which is the width its write path
+    /// actually writes. There is no hardcoded arm left here: while there was
+    /// one, a composite that negotiated any other width would have reported
+    /// `S16_LE` to STATUS and to the chip-AEC alignment identity regardless.
     fn dac_format(&self) -> SampleFormat {
         match self {
             Self::Single(sink) => sink.dac_format(),
-            // Composite children are S16-pinned in `PairedCompositeSink::new`
-            // — the native-format write is scoped to the coherent single DAC.
-            // Report what they run, not what the profile declared.
-            Self::Composite(_) => SampleFormat::S16Le,
+            Self::Composite(sink) => sink.dac_format(),
         }
     }
 

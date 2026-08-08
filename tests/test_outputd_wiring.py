@@ -477,6 +477,57 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "delay divergence" in alsa_rs
 
 
+def test_outputd_composite_children_take_the_declared_edge_width():
+    """Both composite children request the registry-declared edge format, prove
+    it by readback, and STATUS reports what they negotiated.
+
+    A static source check because `PairedCompositeSink::new` and `configure_pcm`
+    cannot be constructed without live ALSA PCMs — the Rust unit tests cover the
+    pure pieces (the split at both widths, `ChildPeriods`, `is_final_edge_role`,
+    the readback comparison), and this pins the WIRING between them, which is
+    what a hardcoded width would silently break.
+    """
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+
+    # Exactly the two child roles ask for the declaration, not a literal. Count
+    # the requests rather than merely finding one: a single child left on
+    # `SampleFormat::S16Le` would open at a different width than its sibling and
+    # the pair's negotiated-shape check does not compare formats.
+    child_open = alsa_rs.split("impl PairedCompositeSink", 1)[1].split(
+        "pub fn counters(", 1
+    )[0]
+    assert child_open.count('role: "dual_dac_a"') == 1
+    assert child_open.count('role: "dual_dac_b"') == 1
+    assert child_open.count("format: config.declared_dac_format,") == 2, (
+        "both composite children must request the declared edge format"
+    )
+    # ...and neither of them may still be pinned to a literal width. (The active
+    # CONTENT lane in the same block legitimately reads `config.content_format`,
+    # which is the other hop — so this is not a blanket ban on literals in the
+    # file, only in the child-open block.)
+    assert "format: SampleFormat::S16Le," not in child_open
+
+    # The readback branch covers the children, by the shared allowlist.
+    assert 'matches!(role, "dac" | "dual_dac_a" | "dual_dac_b")' in alsa_rs
+    assert "if is_final_edge_role(role) {" in alsa_rs
+
+    # Child period buffers carry the width, and STATUS reads it from them —
+    # `RuntimeAlsaSink::dac_format` must NOT answer with a constant for the
+    # composite arm, which is what it did before the child width was declared.
+    assert "ChildPeriods::new(config.declared_dac_format, config.period_frames)" in alsa_rs
+    assert "Self::Composite(sink) => sink.dac_format()," in main_rs
+    dac_format_fn = main_rs.split("fn dac_format(&self) -> SampleFormat {", 1)[1].split(
+        "\n    }", 1
+    )[0]
+    # Positive anchors first, so a moved signature cannot leave the two absence
+    # assertions below passing over an empty extraction.
+    assert "Self::Single(sink) => sink.dac_format()," in dac_format_fn
+    assert "Self::Composite(sink) => sink.dac_format()," in dac_format_fn
+    assert "SampleFormat::S16Le" not in dac_format_fn
+    assert "SampleFormat::S32Le" not in dac_format_fn
+
+
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same
     path as a 2ch Apple), publishes a stereo reference via a clip-proof 1/N mono
@@ -807,15 +858,23 @@ def test_outputd_tts_runtime_is_bonded_scoped():
 # `StartLimitAction=reboot`.
 #
 # `.resize(` is deliberately NOT in this list: FOUR of these bodies use it
-# (everything except `prepare_from_buffered_content`) behind an `if len != wanted`
-# guard that is a no-op in steady state, which is the crate's documented pattern
-# for a buffer sized once at open. Adding it here would fail the guarded,
-# intended form.
+# (`read_content_available`, `write_dac_period`, `PairedCompositeSink::
+# read_content_period`, and `publish`) behind an `if len != wanted` guard that is
+# a no-op in steady state, which is the crate's documented pattern for a buffer
+# sized once at open. Adding it here would fail the guarded, intended form.
 PERIOD_HOT_FUNCTIONS = [
     # (source file, enclosing `impl` block or None, function signature prefix)
     ("alsa_backend.rs", "impl AlsaBackend", "pub fn read_content_available("),
     ("alsa_backend.rs", "impl AlsaBackend", "pub fn write_dac_period("),
     ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn read_content_period("),
+    # The composite's WRITE half, and the split it drives. Added when the child
+    # edge gained a configurable width: the write path grew a per-width arm and
+    # the split grew a type parameter, and both are the natural place someone
+    # "just allocates the child buffers here" instead of reusing `ChildPeriods`.
+    # The composite runs on the same SCHED_FIFO playout thread as the single
+    # sink, so it inherits the same reboot-class consequence.
+    ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn write_dual_period("),
+    ("alsa_backend.rs", None, "fn deinterleave_4ch_to_dual_stereo<"),
     ("main.rs", "impl ReferenceSideOutputs", "fn publish("),
     ("core.rs", "impl OutputCore", "fn prepare_from_buffered_content("),
 ]
@@ -824,13 +883,18 @@ ALLOCATING_TOKENS = [
     "vec![",
     "mem::take(",
     ".to_vec()",
+    ".to_owned()",
     "Vec::with_capacity(",
-    # None of these appear in the five bodies today, so adding them is zero
+    # None of these appear in the guarded bodies today, so adding them is zero
     # churn — they are here because they are the OTHER ways an allocation
-    # reaches this thread, and a guard that only knows the four shapes that
-    # happened to exist when it was written invites the next one in.
+    # reaches this thread, and a guard that only knows the shapes that happened
+    # to exist when it was written invites the next one in.
     ".clone()",
-    ".collect()",
+    # `.collect` WITHOUT parens on purpose: Rust requires the turbofish
+    # (`.collect::<Vec<_>>()`) wherever the collection type is not inferable, and
+    # `".collect()"` does not match that spelling — a review probe slipped a
+    # turbofish collect straight past the parenthesised form.
+    ".collect",
     "format!(",
     "String::from(",
     "Box::new(",

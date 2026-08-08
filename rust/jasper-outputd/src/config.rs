@@ -163,9 +163,12 @@ pub struct Config {
     ///
     /// Declared by the DAC registry (`DacProfile.final_edge_format`) and
     /// emitted by `jasper-audio-hardware-reconcile` as
-    /// `JASPER_OUTPUTD_DAC_FORMAT`. It is NOT what the composite sink writes:
-    /// composite children stay S16-pinned (no registered composite profile
-    /// declares anything else), and the fake backend opens no edge at all.
+    /// `JASPER_OUTPUTD_DAC_FORMAT`, from the profile of whichever sink is armed
+    /// — so on a composite box this is the COMPOSITE profile's declaration, and
+    /// BOTH of its children request it. One value for the pair on purpose:
+    /// per-child divergence is not modelled, because the one registered
+    /// composite profile pairs two of the same dongle. The fake backend opens no
+    /// edge at all and converts nothing.
     pub declared_dac_format: SampleFormat,
     pub dual_dac_a_pcm: Option<String>,
     pub dual_dac_b_pcm: Option<String>,

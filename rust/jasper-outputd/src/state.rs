@@ -2481,8 +2481,8 @@ mod tests {
     fn snapshot_json_reports_the_negotiated_edge_format_once_the_sink_opens() {
         // The identity must certify against the edge outputd IS running, not
         // the one the registry declared. Where they disagree — the shape a
-        // silently-converting ALSA plug would produce, or a composite whose
-        // S16-pinned children ignore a wider declaration — the readback wins.
+        // silently-converting ALSA plug would produce, or a device that
+        // installed a width other than the one requested — the readback wins.
         let state = OutputdState::new(&Config {
             declared_dac_format: SampleFormat::S32Le,
             ..test_config()
@@ -2629,6 +2629,39 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+    }
+
+    #[test]
+    fn a_composite_reports_the_width_its_children_negotiated_not_a_constant() {
+        // STATUS honesty for the composite transport. Until PR-5,
+        // `RuntimeAlsaSink::dac_format` returned a hardcoded `S16Le` for this
+        // sink, so a composite that negotiated anything else reported S16_LE —
+        // to `/state`, to the doctor, and to the chip-AEC alignment identity,
+        // which certifies against `dac.format`. Both halves are asserted here:
+        // the DECLARED echo before the sink opens, and the NEGOTIATED value
+        // after, on the same composite config.
+        let state = OutputdState::new(&Config {
+            declared_dac_format: SampleFormat::S32Le,
+            ..dual_test_config()
+        });
+
+        let declared = state.snapshot_json();
+        let _ = parse_snapshot_json(&declared);
+        assert!(
+            declared.contains(r#""dac":{"pcm":"dual_apple_usb_c_dac_4ch","format":"S32_LE""#),
+            "a composite's declared child width must reach the wire: {declared}"
+        );
+
+        // What the children actually came up at wins, exactly as it does for the
+        // coherent sink — including this half-negotiated shape, where a wide
+        // declaration met two dongles that only offer S16.
+        state.set_dac_format(SampleFormat::S16Le);
+        let negotiated = state.snapshot_json();
+        let _ = parse_snapshot_json(&negotiated);
+        assert!(
+            negotiated.contains(r#""dac":{"pcm":"dual_apple_usb_c_dac_4ch","format":"S16_LE""#),
+            "a composite's negotiated child width must win: {negotiated}"
+        );
     }
 
     #[test]
