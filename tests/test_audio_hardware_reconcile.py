@@ -2961,3 +2961,65 @@ def test_reconcile_leaves_content_format_alone_when_the_policy_probe_is_absent(
     assert "event=audio_hardware_reconcile.content_format_skip" in result.stderr
     assert "reason=coupling_probe_unavailable" in result.stderr
     assert "content_format=unset" in result.stderr
+
+
+def _python_shim_that_cannot_answer_the_edge_format(tmp_path: Path) -> Path:
+    """The DAC-axis twin of the coupling shim above: forwards every call to the
+    real interpreter EXCEPT the final-edge-format probe, which it fails.
+
+    Same fault-injection reasoning — removing the interpreter outright aborts the
+    reconcile before the DAC axis is reached and would prove nothing here."""
+    shim = tmp_path / "python-no-edge-format"
+    shim.write_text(
+        "#!/bin/bash\n"
+        'script="$(cat)"\n'
+        'if [[ "$script" == *final_edge_format_for* ]]; then\n'
+        '  echo "simulated: DAC registry probe unavailable" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'printf "%s" "$script" | exec {sys.executable} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absent(
+    tmp_path: Path,
+):
+    """A lost probe must not commit an empty edge format.
+
+    Empty is a MEANINGFUL value on this key — outputd reads it as S16_LE — so
+    writing it here would silently NARROW this box's declared S24_3LE edge with
+    no error anywhere, and because the edge format is a chip-AEC alignment
+    identity input it would also invalidate the box's commissioned artifact.
+    Nothing about the hardware changed on a lost probe, so the previous value is
+    still the right one: keep it and log the skip.
+
+    The recognized-DAC path only. The deliberate explicit-empty write for a
+    DAC with no queryable profile is a different branch, where emptiness IS the
+    answer — asserted in
+    test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _python_shim_that_cannot_answer_the_edge_format(tmp_path)
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Preserved, not cleared — and specifically NOT the explicit-empty spelling
+    # the unrecognized-DAC branch writes.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" not in outputd_env
+    assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
+    assert "reason=registry_probe_unavailable" in result.stderr
+    assert "dac_id=apple_usb_c_dongle" in result.stderr

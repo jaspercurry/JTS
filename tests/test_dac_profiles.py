@@ -801,11 +801,16 @@ def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> 
     """The accepted SET itself, not just "every profile is inside it" — and it is
     compared against outputd's ACTUAL parse, not against prose claiming parity.
 
-    The set-vs-membership distinction is what keeps this non-vacuous: no profile
-    declares ``S24_3LE`` today, so removing it from ``DacProfile.__post_init__``'s
-    tuple would leave every other assertion in this file green while silently
-    making the registry unable to express the width outputd's packed write path
-    exists for.
+    The set-vs-membership distinction is what this test was built for, and the
+    gap it was built to cover has since closed from the other side: when nothing
+    declared ``S24_3LE``, removing it from ``DacProfile.__post_init__``'s tuple
+    left every other assertion in this file green while silently making the
+    registry unable to express the width outputd's packed write path exists for.
+    Now that ``APPLE_USB_C_DONGLE`` declares it, that same removal raises
+    ``ValueError`` at import and takes most of this module down with it. The
+    equality assertion below is still the one that catches the *reverse* edit —
+    adding a value the registry validates and Rust cannot parse — which no
+    membership check reaches at all.
 
     The cross-owner comparison is what keeps it HONEST. One fact lives in two
     places — this tuple, and ``config.rs``'s ``JASPER_OUTPUTD_DAC_FORMAT`` match
@@ -818,11 +823,9 @@ def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> 
       ``JASPER_OUTPUTD_DAC_FORMAT``, outputd's parse bails, and the FINAL-OUTPUT
       OWNER parks at exit 78 — a silent speaker after a routine deploy.
     * **Rust parses more than the registry validates** → unreachable dead
-      vocabulary. Harmless today, but worth knowing about: it is exactly the state
-      this PR is deliberately in for ``S24_3LE``… on the *profile* axis, not this
-      one. The tuple and the parse move together; only ``final_edge_format=`` on a
-      profile lags, which
-      :func:`test_no_profile_declares_the_packed_24_edge_yet` pins separately.
+      vocabulary. Harmless in itself, but it hides the drift direction above:
+      whichever side is broader, the two owners have stopped agreeing about one
+      fact. The tuple and the parse move together.
     """
     rust_arms = _rust_dac_format_arms()
     registry_values = _registry_final_edge_formats()
