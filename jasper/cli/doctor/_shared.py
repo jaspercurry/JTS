@@ -384,8 +384,9 @@ _RUNTIME_STATE_UNITS = (
 # in-flight state (a reconcile pass running right now), not the stuck-start
 # instability it signals on the long-running daemons above — only a real
 # `failed` end-state should flag them. A genuinely wedged (stuck-activating)
-# oneshot is still caught: its unit's TimeoutStartSec (60s on both) fires and
-# moves it to `failed`, which this check then surfaces on the next run.
+# oneshot is still caught: its unit's TimeoutStartSec (120s on the one member,
+# jasper-fanin-coupling-auto) fires and moves it to `failed`, which this check
+# then surfaces on the next run.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
 })

@@ -2241,7 +2241,9 @@ def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
     assert ok is True and detail == ""
     assert calls == [
         ("jasper-camilla.service", "stop", "t"),
+        ("jasper-fanin.service", "reset-failed", "t"),
         ("jasper-fanin.service", "restart", "t"),
+        ("jasper-camilla.service", "reset-failed", "t"),
         ("jasper-camilla.service", "start", "t"),
     ]
 
@@ -2253,7 +2255,10 @@ def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
         env_path=env,
     )
     assert ok is True
-    assert calls == [("jasper-fanin.service", "restart", "t")]
+    assert calls == [
+        ("jasper-fanin.service", "reset-failed", "t"),
+        ("jasper-fanin.service", "restart", "t"),
+    ]
 
 
 def test_coordinated_fanin_restart_helper_ok_is_fanin_restarted(
@@ -2314,6 +2319,179 @@ def test_camilla_stop_start_are_broker_authorized():
     assert "start" in rb.ALLOWED_VERBS
     assert rb._unit_allowed_for_verb("jasper-camilla.service", "stop") is True
     assert rb._unit_allowed_for_verb("jasper-camilla.service", "start") is True
+
+
+# --- #2175: a config-apply restart must not spend the crash-reboot budget ----
+
+
+class _FakeSystemd:
+    """The slice of PID 1 this defect lives in: a per-unit start rate limit.
+
+    Models ``StartLimitIntervalSec`` / ``StartLimitBurst`` / ``StartLimitAction``
+    as systemd implements them for the units this reconciler bounces: every
+    start-consuming action spends a slot, ``reset-failed`` zeroes the counter,
+    and exhausting the burst inside the window fires the action (for
+    jasper-fanin: reboot). Numbers are read from the shipped unit so a retune
+    of the real budget retunes this reproduction with it.
+    """
+
+    def __init__(self, unit: str, *, burst: int) -> None:
+        self.unit = unit
+        self.burst = burst
+        self.starts = 0
+        self.rebooted = False
+
+    def manage_units(self, *units, verb="restart", reason="", no_block=True,
+                     timeout=5.0):
+        for name in units:
+            if name != self.unit:
+                continue
+            if verb == "reset-failed":
+                self.starts = 0
+            elif verb in {"start", "restart", "try-restart"}:
+                self.starts += 1
+                if self.starts > self.burst:
+                    self.rebooted = True
+                    return {"ok": False, "error": "start request repeated too quickly"}
+        return {"ok": True}
+
+
+def _fanin_start_limit() -> tuple[int, str]:
+    from tests.systemd_unit_helpers import value_for
+
+    unit = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "systemd" / "jasper-fanin.service"
+    ).read_text(encoding="utf-8")
+    return int(value_for(unit, "StartLimitBurst")), value_for(unit, "StartLimitAction")
+
+
+def test_repeated_config_applies_never_reach_fanin_start_limit_reboot(monkeypatch):
+    """#2175 reproduction: a household member toggling a source must never
+    reboot the speaker.
+
+    Every source transaction asks this owner to converge, and a desired-On USB
+    source that cannot compose re-arms/disarms fan-in on each pass — so a burst
+    of toggles becomes a burst of DELIBERATE fan-in restarts. Against the real
+    unit's budget (StartLimitBurst inside StartLimitIntervalSec, escalating to
+    StartLimitAction=reboot) that is exactly what rebooted a Zero 2 W. The
+    reset-failed that precedes each deliberate restart is what keeps the count
+    from accumulating."""
+    import jasper.fanin.coupling_reconcile as cr
+
+    burst, action = _fanin_start_limit()
+    assert action == "reboot", (
+        "this test's premise is jasper-fanin's reboot escalation; if the unit "
+        f"no longer declares StartLimitAction=reboot, revisit it (got {action!r})"
+    )
+    fake = _FakeSystemd(cr.FANIN_UNIT, burst=burst)
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units",
+                        fake.manage_units)
+
+    for _ in range(burst * 2):
+        ok, detail = cr._restart_fanin(reason="source enable/disable")
+        assert ok is True, detail
+
+    assert fake.rebooted is False
+    assert fake.starts == 1  # each apply resets, then spends exactly one slot
+
+
+def test_fake_systemd_models_start_limit_escalation():
+    """POSITIVE CONTROL for the fixture, NOT evidence about production code.
+
+    This exercises only ``_FakeSystemd`` — no reconciler code runs — so it
+    proves exactly one thing: the fake CAN reach ``rebooted``, which is what
+    makes the ``assert fake.rebooted is False`` above a real assertion instead
+    of a vacuous one. It documents the modelled budget (start-consuming verbs
+    spend a slot; exceeding the burst fires the action) and would stay green if
+    the production guard were reverted.
+
+    The production-scope evidence lives in
+    :func:`test_start_budget_reset_covers_only_crash_budget_daemon_starts`,
+    which pins that the reset precedes a start-consuming verb on a crash-budget
+    daemon and nothing else.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    burst, _action = _fanin_start_limit()
+    fake = _FakeSystemd(cr.FANIN_UNIT, burst=burst)
+
+    for _ in range(burst + 1):  # systemd restarting the unit on its own
+        fake.manage_units(cr.FANIN_UNIT, verb="restart")
+
+    assert fake.rebooted is True
+
+
+def test_start_budget_reset_covers_only_crash_budget_daemon_starts(monkeypatch):
+    """Scope pin. The reset precedes a start-consuming verb on a long-running
+    daemon that carries a crash budget — not a stop (which spends no start
+    slot), and not the oneshot owners this module kicks (they have no crash
+    budget, and are START_ONLY in the broker, which denies ``reset-failed``)."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker as rb
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
+        calls.append((units[0], verb))
+        return {"ok": True}
+
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", fake_manage)
+
+    cr._restart_outputd(reason="t")
+    cr._stop_camilla(reason="t")
+    cr._start_camilla(reason="t")
+    cr._start_audio_hardware_reconcile(reason="t")
+
+    assert calls == [
+        (cr.OUTPUTD_UNIT, "reset-failed"),
+        (cr.OUTPUTD_UNIT, "restart"),
+        (cr.CAMILLA_UNIT, "stop"),
+        (cr.CAMILLA_UNIT, "reset-failed"),
+        (cr.CAMILLA_UNIT, "start"),
+        (cr.AUDIO_HARDWARE_RECONCILE_UNIT, "start"),
+    ]
+    # Why the oneshot is excluded rather than merely unnecessary.
+    assert rb._unit_allowed_for_verb(cr.AUDIO_HARDWARE_RECONCILE_UNIT,
+                                     "reset-failed") is False
+
+
+def test_start_budget_reset_is_best_effort_and_never_blocks_the_restart(
+    monkeypatch, caplog,
+):
+    """A denied or failed reset is logged and the restart still runs: the reset
+    is defence for the reboot budget, never a new gate in front of the audio
+    graph's recovery path."""
+    import jasper.fanin.coupling_reconcile as cr
+
+    calls: list[str] = []
+
+    def fake_manage(*units, verb="restart", reason="", no_block=True, timeout=5.0):
+        calls.append(verb)
+        if verb == "reset-failed":
+            return {"ok": False, "error": "denied"}
+        return {"ok": True}
+
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", fake_manage)
+
+    with caplog.at_level("WARNING"):
+        ok, detail = cr._restart_fanin(reason="t")
+
+    assert ok is True and detail == ""
+    assert calls == ["reset-failed", "restart"]
+    assert "result=start_budget_reset_failed" in caplog.text
+
+
+def test_crash_budget_units_are_broker_reset_failed_permitted():
+    """Allowlist lockstep (the jts 2026-06-27 fan-in class): every unit whose
+    start budget this module clears must stay ``reset-failed``-permitted in the
+    broker, or the defence silently degrades to a warning per restart."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker as rb
+
+    assert "reset-failed" in rb.ALLOWED_VERBS
+    for unit in cr._CRASH_BUDGET_UNITS:
+        assert rb._unit_allowed_for_verb(unit, "reset-failed") is True, unit
 
 
 # --- removed transport_pipe migration (fail-safe to loopback) ----------------

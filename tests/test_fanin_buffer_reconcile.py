@@ -48,7 +48,12 @@ def test_shrink_writes_env_and_restarts(env_path, stub_broker):
     assert r.ok and r.changed and r.restarted
     assert r.frames == 1024
     assert env_path.read_text().strip() == "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
-    assert stub_broker == [((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive")]
+    # reset-failed precedes the deliberate restart so this config-apply cannot
+    # walk fan-in into StartLimitAction=reboot (#2175).
+    assert stub_broker == [
+        ((br.FANIN_UNIT,), "reset-failed", "adaptive_usb_exclusive"),
+        ((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive"),
+    ]
 
 
 def test_reconciler_gets_buffer_actions_from_runtime_plan():
@@ -105,10 +110,14 @@ def test_shrink_on_shm_ring_coupling_coordinates_camilla(env_path, stub_broker):
         1024, reason="adaptive_usb_exclusive", env_path=env_path,
     )
     assert r.ok and r.changed and r.restarted
-    # The load-bearing ORDER: stop camilla -> restart fan-in -> start camilla.
+    # The load-bearing ORDER: stop camilla -> restart fan-in -> start camilla,
+    # each start-consuming action preceded by its own reset-failed (#2175). The
+    # camilla STOP takes none — a stop spends no start budget.
     assert stub_broker == [
         ((CAMILLA_UNIT,), "stop", "adaptive_usb_exclusive"),
+        ((br.FANIN_UNIT,), "reset-failed", "adaptive_usb_exclusive"),
         ((br.FANIN_UNIT,), "restart", "adaptive_usb_exclusive"),
+        ((CAMILLA_UNIT,), "reset-failed", "adaptive_usb_exclusive"),
         ((CAMILLA_UNIT,), "start", "adaptive_usb_exclusive"),
     ]
     # The upsert touched only the buffer key; the coupling line is intact.
@@ -126,7 +135,9 @@ def test_restore_on_shm_ring_coupling_coordinates_camilla(env_path, stub_broker)
     assert r.ok and r.changed and r.restarted
     assert stub_broker == [
         ((CAMILLA_UNIT,), "stop", "networked_join"),
+        ((br.FANIN_UNIT,), "reset-failed", "networked_join"),
         ((br.FANIN_UNIT,), "restart", "networked_join"),
+        ((CAMILLA_UNIT,), "reset-failed", "networked_join"),
         ((CAMILLA_UNIT,), "start", "networked_join"),
     ]
     text = env_path.read_text()
@@ -141,7 +152,10 @@ def test_shrink_on_loopback_coupling_stays_plain_restart(env_path, stub_broker):
     env_path.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     r = br.set_fanin_output_buffer(1024, reason="x", env_path=env_path)
     assert r.ok and r.restarted
-    assert stub_broker == [((br.FANIN_UNIT,), "restart", "x")]
+    assert stub_broker == [
+        ((br.FANIN_UNIT,), "reset-failed", "x"),
+        ((br.FANIN_UNIT,), "restart", "x"),
+    ]
 
 
 def test_shrink_camilla_stop_failure_aborts_restart_and_rolls_back(
@@ -167,10 +181,11 @@ def test_shrink_camilla_stop_failure_aborts_restart_and_rolls_back(
     assert r.changed is False
     assert r.restarted is False
     assert "aborted fan-in restart" in r.detail
-    # fan-in was NEVER restarted; camilla start-back was attempted after the
-    # failed stop.
+    # fan-in was NEVER restarted (so it never even reached its reset-failed);
+    # camilla start-back was attempted after the failed stop.
     assert calls == [
         ((CAMILLA_UNIT,), "stop"),
+        ((CAMILLA_UNIT,), "reset-failed"),
         ((CAMILLA_UNIT,), "start"),
     ]
     # SF-1 rollback: the buffer override is gone, the coupling line survives.
@@ -208,7 +223,10 @@ def test_restore_strips_override_and_restarts(env_path, stub_broker):
     # The override line is removed; the file is unlinked (empties to nothing) so
     # the unit's Environment="...=1024" default reasserts as the only source.
     assert not env_path.exists()
-    assert stub_broker == [((br.FANIN_UNIT,), "restart", "networked_join")]
+    assert stub_broker == [
+        ((br.FANIN_UNIT,), "reset-failed", "networked_join"),
+        ((br.FANIN_UNIT,), "restart", "networked_join"),
+    ]
 
 
 def test_restore_keeps_other_keys_when_override_present(env_path, stub_broker):

@@ -38,6 +38,7 @@ def _write_target_status(
     reason: str = "",
     completed_monotonic_ns: int | None = None,
     fingerprint: str | None = None,
+    siblings: dict[str, dict[str, str]] | None = None,
 ) -> None:
     text = Path(env_path).read_text(encoding="utf-8")
     source_intent._default_write_status(
@@ -60,6 +61,7 @@ def _write_target_status(
                     "result": result,
                     "reason": reason,
                 },
+                **(siblings or {}),
             },
         },
     )
@@ -540,6 +542,150 @@ def test_request_succeeds_when_target_did_but_sibling_failed(tmp_path, caplog):
     assert kicks == 1
     assert "event=source.intent_sibling_failure" in caplog.text
     assert "spotify failed" in caplog.text
+
+
+def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog):
+    """#2175 — the warning must name the FAILING source, not just the pressed one.
+
+    A Bluetooth toggle on a box whose USB gadget cannot compose reconciled
+    ``result=ok`` for Bluetooth while the pass exited non-zero for USB. The old
+    line carried only ``source=bluetooth`` and an opaque ``aggregate_error=rc=1``,
+    and was read as "the Bluetooth toggle failed" — the misreport this pins shut.
+    """
+
+    env_path = str(tmp_path / "intent.env")
+    status_path = str(tmp_path / "status.json")
+
+    def kicker():
+        _write_target_status(
+            status_path,
+            env_path,
+            Source.BLUETOOTH,
+            "enabled",
+            effective="on",
+            siblings={
+                "airplay": {
+                    "desired": "enabled",
+                    "effective": "on",
+                    "result": "ok",
+                    "reason": "",
+                },
+                "usbsink": {
+                    "desired": "enabled",
+                    "effective": "degraded",
+                    "result": "failed",
+                    "reason": "USB On transition failed: gadget restart timed out",
+                },
+            },
+        )
+        return {"ok": False, "rc": 1}
+
+    with caplog.at_level("WARNING"):
+        source_intent.request_source_intent(
+            Source.BLUETOOTH,
+            True,
+            env_path=env_path,
+            status_path=status_path,
+            kicker=kicker,
+        )
+
+    assert "event=source.intent_sibling_failure" in caplog.text
+    assert "usbsink: USB On transition failed" in caplog.text
+    # The source that converged is never listed as a failure, and the requested
+    # source is never listed as its own sibling.
+    assert "airplay" not in caplog.text
+    assert "failed_siblings" in caplog.text
+    assert 'failed_siblings="bluetooth' not in caplog.text
+
+
+def test_failed_siblings_never_names_the_requested_source():
+    """The field means "somebody ELSE failed". A status document that somehow
+    reports the requested source as failed is the caller's own outcome (already
+    raised by the target check) and is not repeated here as a sibling."""
+
+    named = source_intent._failed_siblings(
+        {
+            "bluetooth": {
+                "desired": "enabled",
+                "effective": "degraded",
+                "result": "failed",
+                "reason": "rfkill failed",
+            },
+            "spotify": {
+                "desired": "enabled",
+                "effective": "degraded",
+                "result": "failed",
+                "reason": "librespot down",
+            },
+        },
+        Source.BLUETOOTH,
+    )
+
+    assert named == "spotify: librespot down"
+
+
+def test_failed_siblings_caps_each_reason_so_no_sibling_name_is_crowded_out():
+    """One verbose sibling must not truncate the NEXT sibling's name away.
+
+    The field's whole job is naming WHO failed, so the per-entry reason cap is
+    what keeps the last sibling's name inside the overall bound — capping only
+    the joined string would spend the budget on one reason."""
+
+    named = source_intent._failed_siblings(
+        {
+            "airplay": {"result": "failed", "reason": "x" * 500},
+            "spotify": {"result": "failed", "reason": "y" * 500},
+            "usbsink": {"result": "failed", "reason": "z" * 500},
+        },
+        Source.BLUETOOTH,
+    )
+
+    for name in ("airplay", "spotify", "usbsink"):
+        assert f"{name}: " in named
+    assert "x" * source_intent._MAX_SIBLING_REASON_CHARS in named
+    assert "x" * (source_intent._MAX_SIBLING_REASON_CHARS + 1) not in named
+    assert len(named) <= 300
+
+
+def test_sibling_failure_reports_null_when_no_source_can_be_named(tmp_path, caplog):
+    """An aggregate failure with no failed source (an unpublishable status, a
+    rejected intent key, a broker-level error) reports ``failed_siblings=null``
+    rather than inventing one. Untrusted keys in the status document are never
+    named — only declared sources are."""
+
+    env_path = str(tmp_path / "intent.env")
+    status_path = str(tmp_path / "status.json")
+
+    def kicker():
+        _write_target_status(
+            status_path,
+            env_path,
+            Source.BLUETOOTH,
+            "enabled",
+            effective="on",
+            siblings={
+                "; rm -rf /": {
+                    "desired": "enabled",
+                    "effective": "degraded",
+                    "result": "failed",
+                    "reason": "not a declared source",
+                },
+            },
+        )
+        return {"ok": False, "error": "restart broker unavailable"}
+
+    with caplog.at_level("WARNING"):
+        source_intent.request_source_intent(
+            Source.BLUETOOTH,
+            True,
+            env_path=env_path,
+            status_path=status_path,
+            kicker=kicker,
+        )
+
+    assert "event=source.intent_sibling_failure" in caplog.text
+    assert "failed_siblings=null" in caplog.text
+    assert "rm -rf" not in caplog.text
 
 
 def test_request_fails_when_fresh_target_outcome_failed(tmp_path):

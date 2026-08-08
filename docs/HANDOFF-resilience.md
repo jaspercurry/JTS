@@ -398,7 +398,35 @@ thinks the system is healthy.
   shape. Since 2026-06-02, `jasper-voice`'s first-time unconfigured
   provider exit is explicitly excluded from this budget via
   `SuccessExitStatus=78` + `RestartPreventExitStatus=78`; actual
-  voice crashes still flow through T5.1. **Camilla exception
+  voice crashes still flow through T5.1. **The budget is for CRASH
+  loops, so a deliberate config-apply must not spend it**: a
+  reconciler that restarts one of these daemons to apply new config
+  runs `systemctl reset-failed <unit>` first (it clears the start
+  rate counter as well as the failed latch), so N control-plane
+  applies never accumulate toward the reboot. A daemon's own
+  `Restart=` path never runs that reset, so genuine crash loops
+  still escalate. Shipped in `jasper.multiroom.reconcile`
+  (2026-06-24 follower reboot: six `/grouping/set` POSTs in 44 s
+  tripped outputd's start-limit) and in
+  `jasper.fanin.coupling_reconcile` (#2175: repeatedly toggling
+  Bluetooth rebooted a Zero 2 W, because every source transaction
+  asks the coupling owner to converge and a desired-On USB source
+  that could not compose re-armed fan-in on each pass).
+  **The cost, tracked as #2234**: the same call clears `NRestarts`,
+  which is a live flapping signal, not just a latch — doctor's
+  `check_service_runtime_state` warns while it is non-zero,
+  `/system/data.json` carries it (a unit surfaces on that alone),
+  and the dashboard sorts the unit toward the top of its services
+  table on it (after a toggle-driven reset the Restarts column
+  simply reads 0). Only CamillaDSP
+  has a compensating "not running" detector
+  (`audio_health._camilla_stopped`, deliberately CamillaDSP-scoped
+  because outputd and voice have legitimate parked states);
+  `jasper-fanin` and `jasper-outputd` sit outside it. So a fan-in
+  that crash-restarted four times reads `NRestarts=0` after one
+  household source toggle: the reboot is prevented, the evidence
+  that it nearly happened is not preserved.
+  **Camilla exception
   (2026-06-25, JTS5)**: `jasper-camilla.service` still uses
   `Restart=always` + `StartLimitBurst=5/60`, but start-limit exhaustion
   runs `OnFailure=jasper-camilla-recover.service` with

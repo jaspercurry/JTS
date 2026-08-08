@@ -37,7 +37,7 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -448,6 +448,12 @@ class _TargetStatus:
     exact: bool
     succeeded: bool
     detail: str
+    # The per-source outcomes THIS validated read saw, empty when the read
+    # never got that far. Handed out so a caller can attribute the pass
+    # without re-opening the file (see `_failed_siblings`).
+    # excluded from eq/hash: keeps the frozen dataclass hashable; consumers
+    # only field-access it
+    sources: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
 
 def _read_target_status(
@@ -498,31 +504,82 @@ def _read_target_status(
     observed_fingerprint = payload.get("intent_fingerprint")
     if observed_fingerprint != intent_fingerprint:
         return _TargetStatus(False, False, "completion status intent does not match")
-    sources = payload.get("sources")
-    entry = sources.get(source.value) if isinstance(sources, dict) else None
+    raw_sources = payload.get("sources")
+    sources: Mapping[str, Any] = raw_sources if isinstance(raw_sources, dict) else {}
+    entry = sources.get(source.value)
     if not isinstance(entry, dict):
-        return _TargetStatus(False, False, "completion status has no target result")
+        return _TargetStatus(
+            False, False, "completion status has no target result", sources
+        )
     observed_desired = entry.get("desired")
     if observed_desired != desired:
         return _TargetStatus(
             False,
             False,
             f"completion status desired={observed_desired!r}, expected={desired!r}",
+            sources,
         )
     result = entry.get("result")
     if result not in {"ok", "failed"}:
         return _TargetStatus(
-            False, False, "completion status has invalid target result"
+            False, False, "completion status has invalid target result", sources
         )
     effective = str(entry.get("effective") or "unknown")
     reason = str(entry.get("reason") or "")
     if result == "ok":
-        return _TargetStatus(True, True, f"target effective={effective}")
+        return _TargetStatus(True, True, f"target effective={effective}", sources)
     return _TargetStatus(
         True,
         False,
         f"target effective={effective} failed" + (f": {reason}" if reason else ""),
+        sources,
     )
+
+
+# One sibling's reason must never crowd another sibling's NAME out of the
+# field. Capping per entry rather than only the joined string bounds the worst
+# case structurally: the fixed 4-source allowlist gives at most 3 siblings, so
+# 3 * (len("bluetooth") + len(": ") + 80) + 2 separators = 277 <= the 300-char
+# overall backstop below, and every failing source is always named.
+_MAX_SIBLING_REASON_CHARS = 80
+
+
+def _failed_siblings(sources: Mapping[str, Any], source: Source) -> str:
+    """Name the sources OTHER than ``source`` that failed the same pass.
+
+    Only called once the requested source has been proved converged, so the
+    aggregate's non-zero exit belongs to something else. The coordinator
+    already published a per-source outcome for every source; reading it turns
+    an opaque ``aggregate_error="rc=1"`` into the source that actually failed.
+    Issue #2175 is the cost of not doing this: a reader of the journal saw
+    Bluetooth reconcile ``result=ok`` and the request still log a warning
+    naming ``source=bluetooth``, and concluded the Bluetooth toggle had failed
+    — it was USB's gadget restart timing out.
+
+    Takes the ``sources`` mapping :func:`_read_target_status` already parsed
+    rather than re-reading the file. The re-read happened after the request
+    lock was released and skipped that function's fingerprint/monotonic
+    validation, so it could name a sibling from a DIFFERENT reconcile pass than
+    the ``aggregate_error`` it decorates. One validated read now backs both
+    fields.
+
+    Only declared sources are named, so an untrusted key in the status
+    document can never reach the journal. Best-effort and non-raising: this
+    decorates a warning, so an unexpected document reports nothing rather than
+    turning a converged request into a failed one. An empty result is honest —
+    the aggregate can also fail on a bad intent key or an unpublishable status,
+    neither of which is a sibling source.
+    """
+
+    declared = {declared_source.value for declared_source in source_intent_sources()}
+    failures: list[str] = []
+    for name in sorted(declared - {source.value}):
+        entry = sources.get(name)
+        if not isinstance(entry, dict) or entry.get("result") != "failed":
+            continue
+        reason = str(entry.get("reason") or "").strip()[:_MAX_SIBLING_REASON_CHARS]
+        failures.append(f"{name}: {reason}" if reason else name)
+    return "; ".join(failures)[:300]
 
 
 def _default_write_status(path: str, payload: Mapping[str, Any]) -> None:
@@ -720,11 +777,16 @@ def request_source_intent(
         )
         raise RuntimeError(f"could not apply {source.value} {value} intent: {detail}")
     if not response.get("ok"):
+        # The requested source converged; the aggregate did not. Name the
+        # sibling that failed so this warning cannot be read as "the toggle the
+        # household pressed failed" (#2175). Attributed from the same validated
+        # read that proved the target converged — not a fresh, unlocked one.
         log_event(
             logger,
             "source.intent_sibling_failure",
             source=source.value,
             desired=value,
+            failed_siblings=_failed_siblings(target_status.sources, source) or None,
             aggregate_error=aggregate_detail,
             target=target_status.detail,
             level=logging.WARNING,

@@ -28,6 +28,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -1064,6 +1065,84 @@ def test_power_route_delegates_exact_boolean_to_shared_source_intent(
     assert h.status == int(http.HTTPStatus.OK)
     assert json.loads(h.wfile.getvalue()) == {"ok": True, "desired": value}
     request_intent.assert_called_once_with(bluetooth_setup.Source.BLUETOOTH, value)
+
+
+def test_power_route_reports_success_when_only_a_SIBLING_source_failed(
+    monkeypatch,
+    tmp_path,
+):
+    """#2175 — the toggle the household pressed reports ITS OWN outcome.
+
+    A reconcile pass converges all four sources and exits non-zero if any of
+    them failed. On a box whose USB gadget cannot compose, every pass fails in
+    the aggregate while Bluetooth reconciles fine. Turning Bluetooth on must
+    still answer 200 — a 502 here is what makes a household member press the
+    toggle again, which is how the incident reached fan-in's start limit.
+
+    The real request adjudicator runs (only the systemd kick and the file
+    locations are stubbed), so this exercises the target-scoped verdict rather
+    than a mock of it.
+    """
+    from jasper import source_intent
+
+    env_path = str(tmp_path / "intent.env")
+    status_path = str(tmp_path / "status.json")
+
+    def kicker():
+        source_intent._default_write_status(
+            status_path,
+            {
+                "completed_monotonic_ns": time.monotonic_ns(),
+                "intent_fingerprint": source_intent._intent_fingerprint(
+                    Path(env_path).read_text(encoding="utf-8"),
+                ),
+                "sources": {
+                    "bluetooth": {
+                        "desired": "enabled",
+                        "effective": "on",
+                        "result": "ok",
+                        "reason": "",
+                    },
+                    "usbsink": {
+                        "desired": "enabled",
+                        "effective": "degraded",
+                        "result": "failed",
+                        "reason": "USB On transition failed",
+                    },
+                },
+            },
+        )
+        return {"ok": False, "rc": 1}  # the aggregate pass exited non-zero
+
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "request_source_intent",
+        lambda source, enabled: source_intent.request_source_intent(
+            source,
+            enabled,
+            env_path=env_path,
+            status_path=status_path,
+            kicker=kicker,
+        ),
+    )
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "probe_bluetooth_availability",
+        lambda _unit_probe: _availability(),
+    )
+    token = "s" * 64
+    h = _make_request(
+        "/power",
+        body=json.dumps({"on": True}).encode(),
+        cookies="jts_csrf=" + token,
+        csrf_header=token,
+    )
+
+    h.do_POST()
+
+    assert h.status == int(http.HTTPStatus.OK)
+    assert json.loads(h.wfile.getvalue()) == {"ok": True, "desired": True}
 
 
 @pytest.mark.parametrize("value", (False, True))

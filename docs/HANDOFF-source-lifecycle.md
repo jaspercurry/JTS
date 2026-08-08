@@ -398,7 +398,11 @@ Stable events are:
 - `event=source.intent_requested`, `event=source.intent_write_failed`, and
   `event=source.intent_apply_failed` at the request boundary;
 - `event=source.intent_sibling_failure` when the requested target succeeded but
-  another source made the aggregate pass fail;
+  another source made the aggregate pass fail. It carries `failed_siblings`
+  naming the declared source(s) that failed the same pass, so the warning
+  cannot be read as a failure of the toggle the household pressed;
+  `failed_siblings=null` means the aggregate failed with no failing source to
+  name (a rejected intent key, or an unpublishable completion fact);
 - `event=source_intent.begin` with the trigger reason;
 - one `event=source.reconcile` per source with `desired`, `effective`,
   `result`, and a bounded failure `reason`;
