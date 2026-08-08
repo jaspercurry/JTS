@@ -564,6 +564,15 @@ right place. Read this before adding or restructuring docs.
    subsystem currently do?", it's operational. If you'd reach for
    it to answer "why did we end up here?", it's historical.
 
+11. **Comments and docs state only what IS, not a still-pending
+   roadmap.** Sweep changed files with `bash scripts/tense-grep.sh`
+   before publishing — enumerating stale sites by hand is a
+   hypothesis, never a bound, and the 2026-08 wide-output-path
+   program found an eight-site same-shape incident (pre-flip comments
+   describing a not-yet-landed state; a ninth candidate was examined
+   and found sound) exactly this way, all trued up in the
+   squash-merged commit `2787623bf` (PR #2246).
+
 ---
 
 ## Web wizard conventions
