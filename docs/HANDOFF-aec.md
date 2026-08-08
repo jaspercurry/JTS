@@ -1998,9 +1998,13 @@ Captured here so future sessions don't repeat the mistakes.
     ASR-beam AGC. There `ref = 0` is correct — nothing was supposed
     to be in the reference. Assistant TTS is *not* such a source on
     current main: it rides the same fan-in → CamillaDSP → outputd
-    path as music, so it reaches both reference taps (outputd's
-    final-speaker UDP monitor, the production `JASPER_AEC_REF_SOURCE`,
-    and the `jasper_ref` ALSA fallback) like any other program audio.
+    path as music, so it reaches outputd's final-speaker UDP monitor
+    — the production `JASPER_AEC_REF_SOURCE` — like any other program
+    audio. On a solo speaker it reaches the `jasper_ref` ALSA fallback
+    too, since fan-in mixes TTS into the same sum it writes to lane 7.
+    The one exception is a passive bonded multiroom member, whose
+    local TTS enters at outputd downstream of fan-in: absent from
+    `jasper_ref`, still present in the outputd tap.
     Prose here used to cite the pre-outputd dmix that genuinely did
     bypass the reference; that alias was retired in issue #2240, and
     naming TTS as the reason for a ref-silent window is now a wrong
@@ -2025,7 +2029,8 @@ Captured here so future sessions don't repeat the mistakes.
     pure-voice session). Even with `healthy_ref_windows = 0`, the
     silent-ref + mic-loud pattern proves nothing when no renderer
     is writing the loopback — every ref sample is correctly silent
-    and the mic-loud bursts come from the TTS path. Added a
+    and the mic-loud bursts come from room voice or ambient noise
+    (not from TTS, which rides the reference; see above). Added a
     `music_chain_active` gate that reads
     `/proc/asound/Loopback/pcm0p/sub*/status`; when every sub is
     `closed`, the FAIL demotes to OK with a "re-run doctor while
