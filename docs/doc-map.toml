@@ -32,6 +32,12 @@ session_artifacts = [
   # planning authority lives in docs/llm-native-tuning-workbench-plan.md.
   "docs/tuning-bench-design.md",
   "docs/tuning-bench-execution-plan.md",
+  # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
+  # active target for multiroom-grouping code-change routing until the plan
+  # is re-verified and executed. Current operational truth remains
+  # HANDOFF-multiroom.md / HANDOFF-distributed-active.md / dumb-endpoint-bringup.md
+  # (see docs/doc-map.toml's multiroom-grouping subsystem). Tracked by #1852.
+  "docs/multiroom-pairing-reliability-plan.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
