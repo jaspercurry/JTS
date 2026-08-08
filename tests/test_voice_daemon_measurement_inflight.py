@@ -1033,6 +1033,166 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
     assert gate.end_calls == 1
 
 
+@pytest.mark.parametrize("path", ["admin", "proactive"])
+async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
+    monkeypatch,
+    path: str,
+) -> None:
+    """Cancellation cannot orphan a remote ON whose worker later succeeds."""
+
+    from jasper.voice_daemon import FanInDucker
+
+    loop = asyncio.get_running_loop()
+    on_started = asyncio.Event()
+    off_started = asyncio.Event()
+    release_on = threading.Event()
+    release_off = threading.Event()
+    commands: list[bytes] = []
+
+    def send_command(payload: bytes) -> bool:
+        commands.append(payload)
+        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+            loop.call_soon_threadsafe(on_started.set)
+            if not release_on.wait(timeout=2.0):
+                raise AssertionError("test did not release PROGRAM_DUCK_ON")
+        elif payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+            loop.call_soon_threadsafe(off_started.set)
+            if not release_off.wait(timeout=2.0):
+                raise AssertionError("test did not release PROGRAM_DUCK_OFF")
+        else:
+            raise AssertionError(f"unexpected fan-in command: {payload!r}")
+        return True
+
+    class _Tts:
+        async def prepare_assistant_context(self, **_kwargs) -> None:
+            return None
+
+        async def wait_drained(self) -> None:
+            return None
+
+    class _Cues:
+        calls = 0
+
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def play(self, _slug: str) -> bool:
+            self.calls += 1
+            return True
+
+        async def speak_text(self, _text: str) -> bool:
+            self.calls += 1
+            return True
+
+    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
+    monkeypatch.setattr(ducker, "_send_command", send_command)
+    cues = _Cues()
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = FANIN_TTS_SOCKET
+    wl._output_gate = gate
+    wl._ducker = ducker
+    wl._tts = _Tts()
+    wl._cues = cues
+    if path == "admin":
+        playing = asyncio.create_task(wl._play_cue("cant_connect"))
+        expected_kind = "admin"
+    else:
+        playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
+        expected_kind = "proactive"
+
+    try:
+        await wait_signalled(
+            on_started,
+            f"{path} fan-in PROGRAM_DUCK_ON worker",
+            producer=playing,
+        )
+        assert commands == [b"PROGRAM_DUCK_ON\nCLOSE\n"]
+        assert wl._output_gate.active_kind == expected_kind
+
+        playing.cancel()
+        await asyncio.sleep(0)
+        playing.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not playing.done(), "ON outcome still owns cancellation"
+        assert not ducker.is_ducked
+        assert wl._output_gate.active_kind == expected_kind
+
+        release_on.set()
+        await wait_signalled(
+            off_started,
+            f"{path} fan-in PROGRAM_DUCK_OFF worker",
+            producer=playing,
+        )
+        assert ducker.is_ducked
+        assert commands == [
+            b"PROGRAM_DUCK_ON\nCLOSE\n",
+            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+        ]
+        assert wl._output_gate.active_kind == expected_kind
+
+        playing.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not playing.done(), "cleanup must retain the gate through OFF"
+        assert wl._output_gate.active_kind == expected_kind
+
+        release_off.set()
+        with pytest.raises(asyncio.CancelledError):
+            await playing
+        assert not ducker.is_ducked
+        assert not wl._output_gate.is_active
+        assert gate.end_calls == 1
+        assert cues.calls == 0
+        assert commands == [
+            b"PROGRAM_DUCK_ON\nCLOSE\n",
+            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+        ]
+    finally:
+        release_on.set()
+        release_off.set()
+
+
+async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
+    caplog,
+) -> None:
+    """Drain/restore Exceptions are both logged; exact release still wins."""
+
+    class _FailingDrainTts:
+        async def wait_drained(self) -> None:
+            raise RuntimeError("physical drain exploded")
+
+    restore_calls = 0
+
+    async def failing_restore() -> None:
+        nonlocal restore_calls
+        restore_calls += 1
+        raise ValueError("duck restore exploded")
+
+    wl = WakeLoop.for_tests()
+    gate = _EndCountingGate()
+    wl._output_gate = gate
+    wl._tts = _FailingDrainTts()
+    episode = await gate.begin_if_idle("admin")
+    assert episode is not None
+
+    await wl._finish_ducked_output_episode_after_drain(
+        episode,
+        failing_restore,
+        cleanup_label="contract cue",
+    )
+
+    assert restore_calls == 1
+    assert gate.end_calls == 1
+    assert not gate.is_active
+    assert (
+        "contract cue drain cleanup failed: physical drain exploded"
+        in caplog.text
+    )
+    assert "contract cue restore failed: duck restore exploded" in caplog.text
+
+
 @pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
 async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     monkeypatch,

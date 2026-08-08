@@ -202,11 +202,38 @@ class FanInDucker:
     async def duck(self) -> None:
         if self._ducked:
             return
-        ok = await asyncio.to_thread(
-            self._send_command, b"PROGRAM_DUCK_ON\nCLOSE\n"
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._send_command,
+                b"PROGRAM_DUCK_ON\nCLOSE\n",
+            ),
+            name="fanin-program-duck-on",
         )
+        deferred_cancel = False
+        current = asyncio.current_task()
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                if current is None or current.cancelling() == 0:
+                    break
+                deferred_cancel = True
+                current.uncancel()
+        if worker.cancelled():
+            raise asyncio.CancelledError
+        error = worker.exception()
+        if error is not None:
+            if deferred_cancel:
+                raise asyncio.CancelledError from None
+            raise error
+        ok = worker.result()
         if not ok:
+            if deferred_cancel:
+                raise asyncio.CancelledError
             return
+        # The remote ON is now authoritative. Publish local ownership before
+        # returning cancellation so the caller's already-owned cleanup sends
+        # exactly one OFF for the command that landed.
         self._ducked = True
         log_event(
             logger,
@@ -216,6 +243,8 @@ class FanInDucker:
             socket=self._socket_path,
             duck_db=f"{self._duck_db:.1f}",
         )
+        if deferred_cancel:
+            raise asyncio.CancelledError
 
     async def restore(self) -> None:
         if not self._ducked:
