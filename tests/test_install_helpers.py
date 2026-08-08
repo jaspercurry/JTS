@@ -97,13 +97,11 @@ def _render_install_asound_template(
     dest = tmp_path / "asoundrc.rendered"
     source.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
-        "__OUTPUTD_DAC_CTL_BLOCK__\n"
-        "pcm.jasper_out { card __DONGLE_CARD__ }\n",
+        "__OUTPUTD_DAC_CTL_BLOCK__\n",
         encoding="utf-8",
     )
     script = (
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
-        "DONGLE_CARD=A && "
         f"OUTPUT_DAC_CARD={shlex.quote(output_dac_card)} && "
         f"OUTPUT_DAC_ID={shlex.quote(output_dac_id)} && "
         f"OUTPUT_DAC_RECOGNIZED={shlex.quote(output_dac_recognized)} && "
@@ -1126,7 +1124,6 @@ def test_install_asound_renderer_renders_direct_outputd_dac(tmp_path: Path):
     assert "device 0" in rendered
     assert "ctl.outputd_dac" in rendered
     assert "card sndrpihifiberry" in rendered
-    assert "pcm.jasper_out { card A }" in rendered
     _assert_no_empty_alsa_card(rendered)
 
 
@@ -1156,7 +1153,6 @@ def test_install_asound_renderer_unknown_output_parks_outputd_dac(tmp_path: Path
     assert "pcm.outputd_dac" in rendered
     assert "type null" in rendered
     assert "ctl.outputd_dac" not in rendered
-    assert "pcm.jasper_out { card A }" in rendered
     _assert_no_empty_alsa_card(rendered)
 
 
@@ -1172,7 +1168,6 @@ def test_install_asound_renderer_rejects_empty_direct_outputd_dac_card(
     )
     script = (
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
-        "DONGLE_CARD=A && "
         "OUTPUT_DAC_CARD='' && "
         "OUTPUT_DAC_ID=hifiberry_dac8x && "
         "OUTPUT_DAC_RECOGNIZED=1 && "

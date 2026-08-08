@@ -70,7 +70,6 @@ def _run_reconcile(
     source_template.write_text(
         "__OUTPUTD_DAC_PCM_BLOCK__\n"
         "__OUTPUTD_DAC_CTL_BLOCK__\n"
-        "pcm.jasper_out { card __DONGLE_CARD__ }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n",
         encoding="utf-8",
     )
@@ -916,7 +915,6 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "    type hw\n"
         "    card A\n"
         "}\n"
-        "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
     outputd_env = (
@@ -1252,7 +1250,6 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "pcm.outputd_dac" in template
     assert "type hw" in template
     assert "card sndrpihifiberry" in template
-    assert "pcm.jasper_out { card A }" in template
     _assert_no_empty_alsa_card(template)
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
@@ -1503,7 +1500,6 @@ def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
             "    type hw\n"
             "    card sndrpihifiberry\n"
             "}\n"
-            "pcm.jasper_out { card A }\n"
             "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
         ),
     )
@@ -1539,7 +1535,6 @@ def test_reconcile_outputd_runtime_env_change_restarts_outputd_only(
         "    type hw\n"
         "    card A\n"
         "}\n"
-        "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
     result = _run_reconcile(
@@ -1582,7 +1577,6 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "    type hw\n"
         "    card A\n"
         "}\n"
-        "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
     # Converged apple outputd.env: every runtime key and every apple profile
@@ -1679,7 +1673,6 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(
         "    type hw\n"
         "    card A\n"
         "}\n"
-        "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
     result = _run_reconcile(
@@ -1733,7 +1726,6 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "    type hw\n"
         "    card A\n"
         "}\n"
-        "pcm.jasper_out { card A }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
     # Fully converged apple + usb_low_latency outputd.env: the route's content

@@ -1054,6 +1054,13 @@ install_camilladsp() {
     # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
     # removed if present from a prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
+    # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
+    # installed by this function. Remove any copy left behind by a prior
+    # install: an upgraded box that keeps it on disk indefinitely is still
+    # selectable in camillagui's config picker (config_dir scans
+    # /etc/camilladsp/*.yml) and can leave a flat-allowed statefile pointer
+    # aimed at a file that writes to the now-removed pcm.jasper_out dmix.
+    rm -f "${CAMILLA_CONF}/v1.yml"
 }
 
 run_captured_command() {
@@ -1259,7 +1266,7 @@ select_audio_hardware_roles() {
     if [[ "${APPLE_DONGLE_PRESENT}" == "1" ]]; then
         echo "  Apple dongle: CARD=${DONGLE_CARD}"
     else
-        echo "  Apple dongle: not detected (fallback CARD=${DONGLE_CARD} for legacy templates)"
+        echo "  Apple dongle: not detected"
     fi
     echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
     echo "  Output DAC id: ${OUTPUT_DAC_ID}"

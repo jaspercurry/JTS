@@ -646,7 +646,7 @@ down the chain** — converging music + TTS *after* CamillaDSP.
    [`deploy/alsa/asoundrc.jasper`](../deploy/alsa/asoundrc.jasper)
    wrapping `hw:Loopback,0,2`. ipc_key 7780 (unique vs the existing
    7777=jasper_out, 7778=jasper_capture, 7779=jasper_renderer_mix).
-2. Update [`deploy/camilladsp/v1.yml`](../deploy/camilladsp/v1.yml)
+2. Update `deploy/camilladsp/v1.yml`
    so CamillaDSP's playback target is `jasper_premix` instead of
    `jasper_out`.
 3. Update [`jasper/config.py`](../jasper/config.py)
@@ -737,7 +737,7 @@ incrementally.
    `bluez-alsa-aplay.service`) to write to the PipeWire sink
    (typically via `pipewire-pulse` which presents a Pulse
    server API, or directly as PipeWire clients).
-4. Update [`deploy/camilladsp/v1.yml`](../deploy/camilladsp/v1.yml)
+4. Update `deploy/camilladsp/v1.yml`
    — CamillaDSP supports PipeWire as both a capture and a
    playback backend.
 5. Retire `jasper-aec-bridge` — the
