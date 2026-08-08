@@ -1239,7 +1239,17 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
     assert "halves" in reason and "held" in reason
     assert "event=chip_aec_init.reference_queue" in caplog.text
     assert "outcome=unstable" in caplog.text
-    for field in ("status_reads=", "poll_interval_ms=", "samples=", "required="):
+    # The VALUES, not the labels: a covariate reported as a constant separates
+    # nothing, and a label-only assertion would not notice.
+    assert stream.reads > 1
+    assert f"status_reads={stream.reads}" in caplog.text
+    assert (
+        f"poll_interval_ms={round(aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1)}"
+        in caplog.text
+    )
+    assert "samples=0 " not in caplog.text
+    assert "required=0 " not in caplog.text
+    for field in ("spread=", "median_drift=", "held_sec="):
         assert field in caplog.text
 
 

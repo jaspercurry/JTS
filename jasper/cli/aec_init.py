@@ -527,10 +527,9 @@ def _merge_writes(
         # an earlier read; the rings of two reads overlap by design.
         if merged and write.frames <= merged[-1][1].frames:
             continue
-        observed_at = now - write.age_ms / 1_000
-        if observed_at < floor:
-            continue
-        merged.append((observed_at, write))
+        merged.append((now - write.age_ms / 1_000, write))
+    # One filter, both jobs: nothing older than the sliding horizon, and nothing
+    # from before the floor.
     horizon = max(now - QUEUE_WINDOW_MAX_SEC, floor)
     return [item for item in merged if item[0] >= horizon]
 

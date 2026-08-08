@@ -164,6 +164,38 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
     assert artifact_from_dict(__import__("json").loads(artifact_path.read_text())) == artifact
 
 
+def test_passed_evidence_records_the_queue_cross_check_margin(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    # `abs(queue_median - before_median) > 2` is the only place K's median term
+    # is cross-checked against a second measurement, and it is the tightest
+    # tolerance in the run. A spread means nothing without the count it came
+    # from, and a tolerance means nothing without the margin it passed by — so
+    # the record has to carry both windows' medians and their difference.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    io = _FakeIO()
+
+    artifact = aec_commission.run_commissioning(
+        io,
+        marker_path=tmp_path / "active",
+        artifact_path=tmp_path / "alignment.json",
+        effective_uid=0,
+    )
+
+    assert "event=chip_aec_commission.passed" in caplog.text
+    for field in (
+        "queue_median=",
+        "queue_median_before=",
+        "queue_median_delta=",
+        "queue_samples=",
+        "queue_spread=",
+    ):
+        assert field in caplog.text, field
+    # The commissioned delay travels in the artifact so boot can bound against
+    # it; it is the same number the evidence reports.
+    assert f"sys_delay={artifact.sys_delay}" in caplog.text
+
+
 def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     tmp_path: Path,
 ) -> None:
