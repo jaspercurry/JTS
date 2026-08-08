@@ -3829,6 +3829,38 @@ def test_state_voice_tool_packs_flows_from_session_status(
     assert body["voice"]["tool_packs"] == packs
 
 
+def test_state_voice_push_to_talk_only_flows_from_session_status(
+    server_with_coordinator, monkeypatch,
+):
+    """Same curated-vs-passthrough regression as wake_legs/tool_packs, for
+    push_to_talk_only: jasper-voice's session_status reports whether this
+    box has no room mic of its own (every turn opened by an accessory
+    button), and /state.voice must pull the field through — jasper-doctor's
+    `Wake legs` check reads it (alongside its own independent re-derivation)
+    to report `n/a` instead of a permanent yellow on such a box. Pinned here
+    at the aggregator seam specifically: _get_state hand-curates
+    /state.voice field-by-field, so a key silently dropped from that dict
+    literal is invisible to daemon-side coverage of session_status()
+    (tests/test_voice_daemon_wake_triple_stream.py) and to source-level
+    checks that the key is merely present somewhere in the module."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
+        return {
+            "state": "WAKE", "input_ended": False, "spend_allowed": True,
+            "connection_paused": False, "mic_muted": False,
+            "duck_active": False, "music_dbfs": -32.0,
+            "wake_legs": [], "push_to_talk_only": True,
+        }
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["voice"]["reachable"] is True
+    assert body["voice"]["push_to_talk_only"] is True
+
+
 def test_state_audio_metrics_sanitize_non_finite_values(
     server_with_coordinator, monkeypatch, tmp_path,
 ):

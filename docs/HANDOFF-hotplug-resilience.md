@@ -257,8 +257,9 @@ a household that unplugs the mic and keeps using the remote should keep being
 answered, and the alternative — parking a speaker that has working input — is
 worse. What the tri-state buys is the *attached-but-broken* case above, which
 is the one where silence would be a lie. The visible signal for the unplugged
-case is the doctor's `microphone` line and `/state.voice.push_to_talk_only`,
-not a park.
+case is `/state.voice.push_to_talk_only`, plus the doctor's softened
+`mic ALSA card` / `mic capture` warns (issue #2205) — not the `microphone`
+line, which reads `ok` on this box, and not a park.
 
 The daemon derives the resulting mode ONCE — `WakeLoop._push_to_talk_only`,
 from what it actually opened (zero wake legs plus at least one manual source) —

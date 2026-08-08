@@ -144,11 +144,13 @@ def _push_to_talk_only_speaker() -> bool:
     """This box has no microphone of its own but a push-to-talk accessory —
     the one shape where jasper-voice arms ZERO wake legs deliberately.
 
-    Reads the SAME two published facts ``_configured_wake_legs``
-    (jasper/voice_daemon.py) reads, through the same readers, so the doctor
-    cannot disagree with the daemon about the speaker's shape: the AEC
-    reconciler's ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory
-    owner's published source file. Neither is re-derived here.
+    Reads the same two published facts ``_configured_wake_legs``
+    (jasper/voice_daemon.py) reads — the AEC reconciler's
+    ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory owner's
+    published source file — but not through the same readers: the daemon
+    snapshots them once into ``Config`` at process start, while this
+    rereads them fresh on every call. Neither is re-derived here, and the
+    fresh read is why this still works when jasper-voice is down.
 
     Only an explicit "no local mic" counts. ``unknown`` (a custom
     ``JASPER_MIC_DEVICE`` the reconciler declines to resolve) and an absent

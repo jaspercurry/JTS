@@ -13,6 +13,7 @@ import weakref
 
 import pytest
 
+from jasper.audio_io import InputDeviceUnavailable
 from jasper.voice.session import LiveConnection, LiveTurn
 from jasper.voice_daemon import (
     State,
@@ -116,6 +117,31 @@ async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
         assert wl._fire_and_forget == set()
     finally:
         await wl._cancel_fire_and_forget_tasks()
+
+
+async def test_run_parks_instead_of_crashing_on_the_impossible_no_mic_state():
+    """`run()`'s else branch used to dereference `self._mic` unconditionally.
+
+    On the shape where `_push_to_talk_only` is False yet no primary leg was
+    ever built, that was a bare AttributeError — main() has no handler for
+    it, so the daemon would exit 1 and Restart=on-failure would walk the
+    unit into StartLimitAction=reboot, unlike every other input failure,
+    which parks cleanly at exit 66 via InputDeviceUnavailable.
+
+    This shape is unreachable on any daemon that actually started —
+    `_require_usable_input` (jasper/voice/daemon_main.py) refuses to start
+    one with neither a wake leg nor a manual mic — so this test constructs
+    it directly, the same way
+    test_voice_daemon_manual_start_guard.test_source_less_refusal_reads_the_single_derivation
+    does: no legs at all (`_mic` stays None) and no manual mics
+    (`_push_to_talk_only` derives False, not True).
+    """
+    wl = WakeLoop.for_tests(legs=[])
+    assert wl._mic is None
+    assert wl._push_to_talk_only is False
+
+    with pytest.raises(InputDeviceUnavailable):
+        await wl.run()
 
 
 class _StalledTurn:

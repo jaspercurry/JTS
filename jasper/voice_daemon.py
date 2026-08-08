@@ -23,6 +23,7 @@ from .audio_buffer import (
     drain_acquire_buffer,
 )
 from .audio_io import (
+    InputDeviceUnavailable,
     MicCapture,
     TtsPlayout,
 )
@@ -2339,6 +2340,22 @@ class WakeLoop:
                 keepalive_sec=PTT_KEEPALIVE_INTERVAL_SEC,
             )
         else:
+            if self._mic is None:
+                # Unreachable by construction — see the comment above: any
+                # daemon that actually started has either a primary leg
+                # (`_mic` set) or `_push_to_talk_only` derived True from a
+                # manual mic. This guard exists only to choose park-over-
+                # reboot if that invariant ever breaks. Without it,
+                # `self._mic.frames()` below raises a bare AttributeError,
+                # which main() does not special-case, so it exits 1 and
+                # Restart=on-failure walks the unit into
+                # StartLimitAction=reboot instead of the clean
+                # VOICE_MIC_UNAVAILABLE_EXIT park every other input failure
+                # gets.
+                raise InputDeviceUnavailable(
+                    "no primary capture and not push-to-talk-only — "
+                    "impossible state; parking"
+                )
             _frames = self._mic.frames()
         try:
             async for frame in _frames:
@@ -4360,8 +4377,12 @@ class WakeLoop:
             # it is a MODE, not an absence — inferring it from an empty
             # `wake_legs` would read identically to a daemon whose legs all
             # failed to open, which is the opposite diagnosis. The daemon's
-            # own derivation, so /state and jasper-doctor cannot disagree
-            # with it.
+            # own derivation: /state.voice.push_to_talk_only reads this
+            # field verbatim, but jasper-doctor's _push_to_talk_only_speaker
+            # does not read it at all — it re-derives from the same two
+            # published facts (the env tri-state + the accessory file), so
+            # it still reports correctly even when jasper-voice, and this
+            # field with it, is down.
             "push_to_talk_only": self._push_to_talk_only,
             # Who closes the in-flight turn's input. The decision itself,
             # not a re-derivation of it — "the remote cut me off" and "the
