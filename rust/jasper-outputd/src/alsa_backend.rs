@@ -442,11 +442,12 @@ impl ChildEdgeSample for ProgramSample {
 /// variant, and [`Self::format`] reads it back off the same value the buffers
 /// live in, so `/state` cannot report a width the buffers are not.
 ///
-/// Both variants are allocated once, at open, and reused; the audio path only
-/// ever writes into them. Unlike the coherent sink's `dac_narrow_buf` — EMPTY on
-/// the edge that converts nothing — a composite always needs a scratch pair
-/// whatever the width, because the 4-channel program period has to be SPLIT into
-/// two stereo periods before either child can be written. Only the element type
+/// Both variants are allocated once, at open, and reused — the audio path fills
+/// them in the split and then hands them to the child writes, never resizing or
+/// replacing them. Unlike the coherent sink's `dac_narrow_buf` — EMPTY on the
+/// edge that converts nothing — a composite always needs a scratch pair whatever
+/// the width, because the 4-channel program period has to be SPLIT into two
+/// stereo periods before either child can be written. Only the element type
 /// moves.
 enum ChildPeriods {
     S16 {
@@ -968,11 +969,19 @@ impl PairedCompositeSink {
                 // (`child_profile_ids = (apple_usb_c_dongle, apple_usb_c_dongle)`),
                 // so one declaration describes both edges, and
                 // `configure_pcm`'s final-edge readback proves each child
-                // installed it. A future composite of unlike children needs a
-                // per-child declaration in the registry first — the pair's
-                // negotiated-shape equality check below would catch the
-                // mismatch, but it would catch it as a startup park, which is
-                // the wrong place to discover a registry gap.
+                // installed it.
+                //
+                // A future composite of unlike children needs a per-child
+                // declaration in the registry first, and the thing that would
+                // catch its absence is the PER-CHILD READBACK — one child
+                // installing a width other than the requested one parks at exit
+                // 78 naming that child. NOT the `dac_a_negotiated !=
+                // dac_b_negotiated` check below: `NegotiatedPcm` carries
+                // sample_rate/period_frames/buffer_frames and no format at all,
+                // so two children running different widths compare equal there.
+                // The registry-side guard is
+                // tests/test_dac_profiles.py::test_a_composite_declares_the_same_edge_format_as_every_child,
+                // which fails at build time instead of on a household's speaker.
                 format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
@@ -1818,12 +1827,22 @@ fn write_dac_frames<S: Copy>(
 /// One composite CHILD's period write, over whatever sample type its negotiated
 /// edge takes.
 ///
-/// Generic for the same reason `write_dac_frames` is: the abort-on-xrun policy
-/// that makes this "fail closed" — a composite must not paper over a child's
-/// xrun, because a recovered child would silently be one buffer out of phase
-/// with its sibling and the pair's whole promise is that they stay aligned —
-/// must not be able to drift between an S16 and an S32 child. Monomorphised for
-/// `i16` this is instruction-for-instruction the pre-wide-composite writer.
+/// Generic for the same reason `write_dac_frames` is: whatever this function's
+/// xrun policy is, it must not be able to DIFFER between an S16 and an S32
+/// child. The write loop itself is unchanged by the child width — monomorphised
+/// for `i16` its body is instruction-for-instruction the pre-wide-composite
+/// loop; only the IO-handle fetch moved out to the caller.
+///
+/// **The policy this implements is today's, not a defended one.** It counts the
+/// xrun and bails on the FIRST `EPIPE`/`ESTRPIPE` from either child, with no
+/// `try_recover` and no recovery budget — unlike the coherent sink's
+/// `write_dac_frames`. HANDOFF-speaker-output-reference.md's design-of-record
+/// calls that out as a wart to fix ("Unified xrun policy": bounded per-child
+/// `try_recover` mirroring the single path, bailing only on recovery exhaustion
+/// or delay divergence, because bail-on-first-xrun reboot-loops via
+/// `StartLimitAction`). Changing it is that work's job, not the child-width
+/// change's — this function is generic so the fix lands once for both widths
+/// instead of twice.
 ///
 /// The caller fetches the IO handle (`io_i16`/`io_i32` per its `ChildPeriods`
 /// arm) rather than this function taking the `PCM` and choosing, which is what
