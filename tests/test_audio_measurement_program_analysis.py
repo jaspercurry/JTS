@@ -5772,6 +5772,31 @@ def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
     )
 
 
+def test_verify_reuses_one_measured_smoothing_for_both_graders(monkeypatch):
+    """Tracking and absolute grade the same once-smoothed measured curve."""
+    smoothed_inputs = []
+    original = analysis_mod.smooth_fractional_octave
+
+    def counted_smoothing(freqs, magnitude_db, fraction=48):
+        smoothed_inputs.append(magnitude_db)
+        return original(freqs, magnitude_db, fraction)
+
+    monkeypatch.setattr(
+        analysis_mod, "smooth_fractional_octave", counted_smoothing
+    )
+    result = _r18_verify()
+
+    assert "not_evaluated" not in result.verify_absolute
+    assert result.verify_tracking is not None
+    # One measured call plus the independently smoothed prediction. The
+    # absolute grader must consume the measured result already used above.
+    assert len(smoothed_inputs) == 2
+    assert sum(
+        values is result.summed_response.magnitude_db
+        for values in smoothed_inputs
+    ) == 1
+
+
 def test_crossover_region_band_reaches_below_the_tweeter_sweep_floor():
     """The band widening, isolated (#1654's revival for #1868).
 

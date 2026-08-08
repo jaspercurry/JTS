@@ -51,25 +51,47 @@ def smooth_fractional_octave(
     power = 10.0 ** (magnitude_db / 10.0)
     factor = 2.0 ** (1.0 / (2.0 * fraction))
 
-    # The straightforward implementation is O(N * window_size) which
-    # at N=24k bins (rfft of 48k) and a half-octave window of ~50
-    # bins is ~1.2M ops. That's fast enough (<10 ms in numpy) that
-    # we don't bother with cumulative-sum tricks; clarity wins.
     smoothed = np.empty_like(power)
     n = len(freqs)
-    for i in range(n):
-        f = freqs[i]
-        if f <= 0:
-            smoothed[i] = power[i]
-            continue
-        lower = f / factor
-        upper = f * factor
-        # Linear bins in `freqs`, so use binary-search bounds.
-        lo_idx = int(np.searchsorted(freqs, lower, side="left"))
-        hi_idx = int(np.searchsorted(freqs, upper, side="right"))
-        lo_idx = max(0, lo_idx)
-        hi_idx = max(lo_idx + 1, min(n, hi_idx))
-        smoothed[i] = float(np.mean(power[lo_idx:hi_idx]))
+    finite = np.all(np.isfinite(freqs)) and np.all(np.isfinite(power))
+    positive = freqs > 0
+    smoothed[~positive] = power[~positive]
+
+    if finite and np.any(positive):
+        positive_freqs = freqs[positive]
+        lo_idx = np.searchsorted(freqs, positive_freqs / factor, side="left")
+        hi_idx = np.searchsorted(freqs, positive_freqs * factor, side="right")
+        lo_idx = np.maximum(0, lo_idx)
+        hi_idx = np.maximum(lo_idx + 1, np.minimum(n, hi_idx))
+
+        # Prefix sums preserve the exact inclusive window bounds above while
+        # reducing every power mean to two indexed reads and a subtraction.
+        prefix_dtype = np.result_type(power.dtype, np.float64)
+        prefix = np.empty(n + 1, dtype=prefix_dtype)
+        prefix[0] = 0
+        np.cumsum(power, dtype=prefix_dtype, out=prefix[1:])
+        finite = np.all(np.isfinite(prefix)) and np.all(hi_idx <= n)
+        if finite:
+            smoothed[positive] = (
+                (prefix[hi_idx] - prefix[lo_idx]) / (hi_idx - lo_idx)
+            )
+
+    if not finite:
+        # Prefix subtraction can contaminate windows after NaN/+inf or a
+        # cumulative overflow. Preserve the former scalar behavior there;
+        # finite measurement curves take the vectorized path above.
+        for i in range(n):
+            f = freqs[i]
+            if f <= 0:
+                smoothed[i] = power[i]
+                continue
+            lower = f / factor
+            upper = f * factor
+            lo_idx = int(np.searchsorted(freqs, lower, side="left"))
+            hi_idx = int(np.searchsorted(freqs, upper, side="right"))
+            lo_idx = max(0, lo_idx)
+            hi_idx = max(lo_idx + 1, min(n, hi_idx))
+            smoothed[i] = float(np.mean(power[lo_idx:hi_idx]))
 
     # Clamp before log to avoid -inf for any all-zero windows.
     return 10.0 * np.log10(np.maximum(smoothed, 1e-12))

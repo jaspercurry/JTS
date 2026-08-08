@@ -5044,7 +5044,9 @@ ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
 
 
-def _verify_absolute_result(summed, segment, fc_hz, priors) -> dict[str, Any]:
+def _verify_absolute_result(
+    summed, segment, fc_hz, priors, measured_db=None,
+) -> dict[str, Any]:
     """Measured summed response vs the CANDIDATE'S OWN crossover target across
     the crossover region — plan §7 claim 3's absolute half (issue #1868).
 
@@ -5088,9 +5090,10 @@ def _verify_absolute_result(summed, segment, fc_hz, priors) -> dict[str, Any]:
         sign = -1 if int(signs.get(role, 1)) < 0 else 1
         total = total + sign * np.asarray(response(freqs), dtype=np.complex128)
     target_db = 20.0 * np.log10(np.maximum(np.abs(total), 1e-12))
-    measured_db = analysis_mod.smooth_fractional_octave(
-        freqs, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
-    )
+    if measured_db is None:
+        measured_db = analysis_mod.smooth_fractional_octave(
+            freqs, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
+        )
     # The SAME offset-invariant grader the tracking pair uses, so two numbers
     # on one screen mean the same kind of thing.
     rms_db, max_db = analysis_mod.tracking_error_db(
@@ -5148,6 +5151,7 @@ def _analyze_verify(
     ripple = None
     tracking = None
     tracking_curve = None
+    measured_db = None
     if fc_hz is not None:
         lo, hi = overlap_band_hz(
             fc_hz,
@@ -5328,7 +5332,9 @@ def _analyze_verify(
         summed_response=summed,
         summed_ripple_db=ripple,
         verify_tracking=tracking,
-        verify_absolute=_verify_absolute_result(summed, seg, fc_hz, priors),
+        verify_absolute=_verify_absolute_result(
+            summed, seg, fc_hz, priors, measured_db=measured_db,
+        ),
         verify_tracking_curve=tracking_curve,
         pilots=pilots,
         linearity_ok=linearity_ok,
