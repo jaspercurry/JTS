@@ -131,13 +131,14 @@ fallback.
 >
 > **What survives:** `jasper-usbsink.service` as the derived USB-audio lifecycle
 > unit (canonical household intent lives in
-> `/var/lib/jasper/source_intent.env`) and its standby-loop `state.json`
-> publisher / `Type=notify` watchdog; `jasper-usbsink-volume.service`
+> `/var/lib/jasper/source_intent.env`) — now a `Type=oneshot`, process-free
+> readiness marker, not a resident `state.json` publisher or `Type=notify`
+> watchdog, since that standby loop went with the Rust bridge (see the
+> current-truth block above for its gates); `jasper-usbsink-volume.service`
 > + `volume_bridge.py`; the `/sources/` toggle; the fan-in `usbsink`
 > lane and its IDLE aloop fallback (fan-in still opens `hw:Loopback,1,3`
 > when USB Audio Input is off — nothing writes that lane now, and
-> `snd-aloop pcm_substreams=8` is unchanged, no renumber); the
-> standby/liveness helper with no audio-mode env or generated overlay; and the
+> `snd-aloop pcm_substreams=8` is unchanged, no renumber); and the
 > `JASPER_USBSINK_PREEMPT=disabled`
 > escape hatch (now gates the fan-in lane mute). The combo host clock
 > lives in `jasper-fanin` (`rust/jasper-fanin/src/host_clock.rs` + the
@@ -2111,6 +2112,31 @@ blockers; defaults are documented for each.
   binding; same lib used by jasper-aec-bridge
 
 ## Appendix A — Worked example: end-to-end signal trace
+
+> **Superseded 2026-07-10 — this trace predates fan-in DIRECT capture and
+> `jasper-outputd`.** Step 4 is the deleted aloop solo path: no
+> `jasper-usbsink` daemon reads the gadget or writes `usbsink_substream`
+> (that unit is now a process-free readiness marker). Today `jasper-fanin`
+> DIRECT-captures `hw:UAC2Gadget`, and `jasper-outputd` — absent from this
+> trace entirely — owns final output after CamillaDSP. Step 8's capture
+> leg still holds (CamillaDSP reads `plug:jasper_capture`, the dsnoop on
+> substream 7), but its `usbsink_substream` sentence belongs to that same
+> deleted path and its output leg is retired — CamillaDSP now writes
+> `outputd_content_playback`, not `pcm.jasper_out`. Step 5's `state.json`
+> RMS publisher died with the Rust bridge: liveness is frames-only off
+> fan-in's DIRECT lane, and the −50 dB hysteresis no longer routes. Step 6
+> predates the 2026-07-22 arbitration model; a losing USB is silenced by
+> MUTEing that lane rather than by the daemon writing zeros.
+> Step 11's AEC reference is now outputd's final-speaker monitor over UDP,
+> not a pre-CamillaDSP `pcm.jasper_capture` dsnoop. That list is
+> illustrative, not a bound — other details have drifted too, so read the
+> trace as archaeology rather than checking it step by step.
+>
+> Current truth:
+> [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Current
+> Production Route" / "USB DIRECT (combo mode)",
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
+> and [audio-paths.md](audio-paths.md).
 
 User plugs Mac into the 8086 splitter, opens Music.app, plays a song.
 What happens:
