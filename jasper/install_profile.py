@@ -271,6 +271,17 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
     changing its mind — the Zero 2 W starves its watchdog trying. The
     mic/AEC stack rides along, because always-on wake is its only
     always-on consumer.
+
+    Staged, not wired: this predicate has no production reader yet, and
+    neither does the ``wake_detection`` key it feeds in
+    ``system_capabilities_for_profile``. The scheduled first consumer is
+    the streambox smart-remote sequence (#2205 and the work around it),
+    which needs ASSISTANT granted without WAKE_DETECTION.
+    ``test_both_tiers_keep_wake_and_assistant_welded_for_now`` is the
+    tripwire: it is SUPPOSED to fail the day that flip lands, which is
+    how you'll know to update it rather than leave it red. If the
+    smart-remote sequence is abandoned instead, remove this predicate
+    and the key rather than leave them declared-but-unread.
     """
     return install_profile_has_capability(profile, Capability.WAKE_DETECTION)
 
@@ -312,7 +323,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         # having the headroom to listen for a wake word all day. The
         # landing page has no data-requires="wake_detection" gate yet —
         # the key exists so a surface CAN gate on the right question
-        # instead of overloading voice_brain.
+        # instead of overloading voice_brain. No production reader yet;
+        # see install_profile_supports_wake_detection's docstring for
+        # the staging note (scheduled consumer, tripwire test).
         "wake_detection": wake_detection,
         "network_settings": True,
         "speaker_settings": True,

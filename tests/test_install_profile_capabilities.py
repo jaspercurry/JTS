@@ -72,7 +72,19 @@ def test_granted_capabilities_are_all_real_capabilities():
 
 
 def test_capability_values_are_stable_snake_case_tokens():
-    """The enum values reach logs and the /system JSON; keep them stable."""
+    """Pin the enum's own token format — not a claim about who reads it.
+
+    Nothing in this module logs a ``Capability`` today, and the /system
+    JSON keys ``system_capabilities_for_profile`` emits are hand-written
+    literals, not ``Capability.value`` — the two vocabularies are
+    separate by design (``voice_brain`` in the JSON vs. ``assistant`` on
+    the enum; ``wake_detection`` happens to match today, which is
+    coincidence, not coupling). Pinning the format still earns its keep:
+    it locks in stable snake_case identifiers for whatever serialization
+    DOES read ``.value`` in the future, and it stops a rename from
+    silently decoupling the enum from prose/comments elsewhere in this
+    module that reference these exact tokens.
+    """
     assert Capability.ASSISTANT.value == "assistant"
     assert Capability.WAKE_DETECTION.value == "wake_detection"
 
