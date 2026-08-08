@@ -240,13 +240,12 @@ async def _await_probe_body(
             cancelled = True
             if current is not None:
                 current.uncancel()
-    try:
-        result = body.result()
-    except Exception:
-        if cancelled:
-            raise asyncio.CancelledError from None
-        raise
-    return result, cancelled
+    if cancelled:
+        # Retrieve a worker failure so the task cannot emit an unhandled-
+        # exception warning, but cancellation remains the caller's outcome.
+        if body.cancelled() or body.exception() is not None:
+            raise asyncio.CancelledError
+    return body.result(), cancelled
 
 
 def _play_and_assess_probe() -> list[CheckResult]:

@@ -2592,6 +2592,7 @@ class WakeLoop:
             return "BUSY", None
         opening = not self._measurement_active.is_set()
         admission_cleanup_required = False
+        pause_returned = False
         if opening:
             await self._output_gate.pause_admission()
             admission_cleanup_required = True
@@ -2633,12 +2634,13 @@ class WakeLoop:
             # we cancel via that slot on RESUME or repeated PAUSE.
             self._measurement_safety_task = loop.create_task(_safety())
             if opening and not await self._drain_inflight_output():
+                pause_returned = True
                 return "ok", False
+            pause_returned = True
             return "ok", True
-        except BaseException:
-            if admission_cleanup_required:
+        finally:
+            if admission_cleanup_required and not pause_returned:
                 await self._restore_measurement_state(trigger="pause_error")
-            raise
 
     async def _drain_inflight_output(self) -> bool:
         """Wait out assistant audio that was already playing when PAUSE
@@ -5002,7 +5004,7 @@ class WakeLoop:
             # output/duck ownership until the final chirp has cleared the
             # physical route, for both fan-in and member-local outputd TTS.
             await self._tts.wait_drained()
-        except Exception as e:  # noqa: BLE001
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
             logger.warning("teardown TTS drain wait failed: %s", e)
 
         await self._ducker.restore()
