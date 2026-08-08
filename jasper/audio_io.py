@@ -1358,9 +1358,9 @@ class OutputdTtsPlayout(TtsPlayout):
                     continue
                 raise
         paced_sec = 0.0
-        queued_end = self._ring_end_monotonic
         for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
             now = time.monotonic()
+            queued_end = self._ring_end_monotonic
             if queued_end is None or queued_end < now:
                 queued_end = now
             pace_excess = (queued_end - now) - _OUTPUTD_PACE_AHEAD_SEC
@@ -1379,14 +1379,20 @@ class OutputdTtsPlayout(TtsPlayout):
                         level=logging.WARNING,
                     )
                 raise
-            queued_end += len(chunk) / (
+            # Commit only after this AUDIO command was accepted, and commit
+            # every accepted command independently. A later command can fail
+            # after this one is already queued at the IPC owner; deferring the
+            # ledger until the whole write returns would then advertise idle
+            # while that accepted prefix is still physically audible.
+            sent_at = time.monotonic()
+            committed_end = self._ring_end_monotonic
+            if committed_end is None or committed_end < sent_at:
+                committed_end = sent_at
+            committed_end += len(chunk) / (
                 self._output_rate * _OUTPUTD_AUDIO_FRAME_BYTES
             )
+            self._ring_end_monotonic = committed_end
         queued_at = time.monotonic()
-        if self._ring_end_monotonic is None or queued_at > self._ring_end_monotonic:
-            self._ring_end_monotonic = queued_at + chunk_duration_sec
-        else:
-            self._ring_end_monotonic += chunk_duration_sec
         # Exclude deliberate pacing sleeps so the warning keeps meaning
         # "the IPC itself is slow", not "the writer paced as designed".
         write_ms = (queued_at - write_start) * 1000 - paced_sec * 1000

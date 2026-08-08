@@ -2713,12 +2713,17 @@ class WakeLoop:
                     self._mute_click_on_profile
                     if going_on else self._mute_click_off_profile
                 )
-                await self._tts.write_segment(
-                    pcm,
-                    segment_kind="cue",
-                    source_profile=profile,
-                )
-                await self._tts.wait_drained()
+                try:
+                    await self._tts.write_segment(
+                        pcm,
+                        segment_kind="cue",
+                        source_profile=profile,
+                    )
+                finally:
+                    # A multi-command IPC write can fail after an accepted
+                    # prefix. Its per-command drain ledger is still binding:
+                    # never release the feedback episode over that tail.
+                    await self._tts.wait_drained()
             except Exception as e:  # noqa: BLE001
                 logger.warning("mic mute click failed: %s", e)
         finally:

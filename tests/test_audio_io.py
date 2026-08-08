@@ -498,6 +498,47 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
     assert stream.writes == [stereo[:8], stereo[8:16], stereo[16:]]
 
 
+async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
+    monkeypatch,
+):
+    import scipy.signal
+
+    class _FailSecondWrite(_CaptureOutputdStream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def write(self, data: bytes) -> None:
+            self.attempts += 1
+            if self.attempts == 2:
+                raise OSError("second AUDIO command failed")
+            super().write(data)
+
+    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=1.0,
+    )
+    stream = _FailSecondWrite()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
+    with pytest.raises(OSError, match="second AUDIO command failed"):
+        await p.write(mono.tobytes())
+
+    assert stream.attempts == 2
+    assert len(stream.writes) == 1
+    assert p._ring_end_monotonic is not None
+    assert p.expected_drain_at() > time.monotonic()
+
+
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     import scipy.signal
 

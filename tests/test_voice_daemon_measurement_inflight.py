@@ -385,6 +385,98 @@ async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None
     await _close_window(wl)
 
 
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
+    monkeypatch,
+    tts_socket: str,
+) -> None:
+    """A later AUDIO failure cannot erase an earlier command's audible tail."""
+    import scipy.signal
+
+    import jasper.audio_io as audio_io_mod
+    from jasper.audio_io import OutputdTtsPlayout
+
+    class _FailSecondWrite:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def set_gain_db(self, _db: float) -> None:
+            return None
+
+        def start_segment(self, **_kwargs) -> None:
+            return None
+
+        def write(self, _data: bytes) -> None:
+            self.attempts += 1
+            if self.attempts == 2:
+                raise OSError("second AUDIO command failed")
+
+        def pause_content_meter(self) -> None:
+            return None
+
+        def resume_content_meter(self) -> None:
+            return None
+
+    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def fake_drain_sleep(seconds: float) -> None:
+        assert seconds > 0
+        drain_started.set()
+        await release_drain.wait()
+
+    fake_asyncio = type(
+        "_FakeAsyncio",
+        (),
+        {
+            "to_thread": staticmethod(asyncio.to_thread),
+            "sleep": staticmethod(fake_drain_sleep),
+        },
+    )
+    monkeypatch.setattr(audio_io_mod, "asyncio", fake_asyncio)
+
+    tts = OutputdTtsPlayout(
+        socket_path=tts_socket,
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=1.0,
+    )
+    stream = _FailSecondWrite()
+    tts._stream = stream  # type: ignore[assignment]
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._tts = tts
+    wl._mute_click_on_pcm = b"\x01\x00" * 5
+
+    click = asyncio.create_task(wl._play_mute_click(going_on=True))
+    await wait_signalled(
+        drain_started,
+        "partial mute write accepted-prefix drain",
+        producer=click,
+    )
+    assert stream.attempts == 2
+    assert wl._output_gate.active_kind == "feedback"
+
+    pause = asyncio.create_task(wl.measurement_pause_response())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not pause.done(), tts_socket
+
+    release_drain.set()
+    await click
+    assert await asyncio.wait_for(pause, timeout=1.0) == {
+        "result": "ok",
+        "drained": True,
+    }
+    await _close_window(wl)
+
+
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:
     """The coordinator re-sends MEASURE_PAUSE every
     MEASUREMENT_LEASE_REFRESH_SEC to renew the daemon's crash-recovery
