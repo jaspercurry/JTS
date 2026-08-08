@@ -131,6 +131,7 @@ from jasper.active_speaker.fc_selector import (
     EVAL_REFUSED_UNFITTABLE,
     FcCandidateEvaluation,
     FcSelection,
+    fc_comparison_complete,
     select_fc,
 )
 from jasper.active_speaker.camilla_yaml import role_polarity
@@ -1340,7 +1341,10 @@ def fc_candidate_set(
             rejected.append((fc, reason))
     return FcCandidateSet(
         configured_hz=float(configured_hz),
-        candidates=tuple(sorted(set(candidates))),
+        candidates=(
+            float(configured_hz),
+            *sorted(set(candidates) - {float(configured_hz)}),
+        ),
         rejected=tuple(rejected),
         limits=limits,
     )
@@ -1350,21 +1354,11 @@ def fc_candidate_set(
 # edge comparison must not refuse a value it just rounded onto that edge.
 _FC_GRID_EPS_HZ = 0.05
 
-# The floor in the PHONE's own result-wait deadline
-# (``waitForCaptureResult``: ``max(30000, spec.duration_ms)``), spelled here
-# because the Pi has to bound itself by a number the page owns. Its expiry is
-# a TERMINAL ``sweepFailed``, so this is a session-killing ceiling, not a
-# retry. Pinned against the page by ``tests/test_crossover_v2_fc_selector_wiring``.
-PHONE_RESULT_WAIT_FLOOR_MS = 30_000
-
-#: Share of that deadline the candidate sweep may spend. Conservative on
-#: purpose: the anchor's own analysis (7.0 s measured on jts3, #1894
-#: 2026-08-06 profile) has ALREADY come out of the window before the sweep
-#: starts, the verdict still has to travel back, and the deadline is a hard
-#: session failure rather than a degraded result. At the live 41.9 s deadline
-#: this is ~21 s — three candidates on a quiet Pi, fewer under load, disclosed
-#: either way as k-of-N.
-FC_EVALUATION_BUDGET_FRACTION = 0.5
+#: One-time serial candidate-sweep wall budget. The capture page separately
+#: owns a 90 s end-to-end result wait, leaving 20 s for anchor analysis, result
+#: publication, polling, and loaded-Pi variance. Post-P0.1 live-Pi all-six
+#: timing is unverified; this is the bounded deployment ceiling.
+FC_SWEEP_COMPUTE_BUDGET_S = 70.0
 
 # The conductor fields ``_fit_linearization`` writes as side effects. Saved and
 # restored around the candidate sweep: the walk's own candidate build re-runs
@@ -8752,22 +8746,8 @@ class CrossoverV2Conductor:
         )
 
     def _fc_evaluation_budget_s(self) -> float:
-        """Wall this sweep may spend, bounded by the PHONE's own deadline.
-
-        ``waitForCaptureResult`` allows ``max(30 s, spec.duration_ms)`` for the
-        Pi to answer a capture and throws a TERMINAL ``sweepFailed`` on expiry
-        — so overrunning does not degrade a recommendation, it kills the
-        household's session. The budget is therefore a FRACTION of that
-        deadline: the anchor's own analysis has already spent part of the
-        window before this starts, and the answer still has to travel. Scoring
-        fewer candidates than proposed is disclosed as k-of-N.
-        """
-        measure_ms = (
-            _program_duration_ms(self._measure_program) + CAPTURE_ENTRY_MARGIN_MS
-            if self._measure_program is not None else 0
-        )
-        deadline_ms = max(PHONE_RESULT_WAIT_FLOOR_MS, measure_ms)
-        return FC_EVALUATION_BUDGET_FRACTION * deadline_ms / 1000.0
+        """The explicit wall budget for this one-time serial computation."""
+        return FC_SWEEP_COMPUTE_BUDGET_S
 
     def _sweep_fc_candidates(self, program: Any, result: Any, anchor: Any) -> None:
         """Evaluate the proposable Fc set against THIS capture, then release.
@@ -8834,11 +8814,25 @@ class CrossoverV2Conductor:
                     )
                     evaluations.append(_fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE))
                 slowest_s = max(slowest_s, time.monotonic() - started - elapsed)
+            attempted = [
+                round(e.fc_hz, 1)
+                for e in evaluations if e.refusal != EVAL_REFUSED_BUDGET
+            ]
+            skipped = [
+                {"fc_hz": round(e.fc_hz, 1), "reason": e.refusal}
+                for e in evaluations if e.refusal == EVAL_REFUSED_BUDGET
+            ]
+            comparison_complete = fc_comparison_complete(
+                evaluations, len(candidates.candidates)
+            )
             log_event(
                 logger, "correction.crossover_v2_fc_sweep",
                 session_id=self.session_id, configured_hz=round(self._fc_hz, 1),
                 planned=len(candidates.candidates),
                 evaluated=sum(1 for e in evaluations if e.refusal is None),
+                candidate_order=[round(fc, 1) for fc in candidates.candidates],
+                attempted=attempted, skipped=skipped,
+                comparison_complete=comparison_complete,
                 elapsed_s=round(time.monotonic() - started, 2),
                 budget_s=round(budget_s, 2),
                 limits={k: round(v, 1) for k, v in candidates.limits.items()},
@@ -8874,12 +8868,13 @@ class CrossoverV2Conductor:
         evaluations, self._fc_evaluations = self._fc_evaluations, ()
         if not evaluations:
             return
+        candidates = self._fc_candidate_set()
         self._fc_selection = select_fc(
             evaluations,
             [pose.curves for pose in self._lateral_poses],
             configured_hz=self._fc_hz,
-            limits=self._fc_candidate_set().limits,
-            planned=len(evaluations),
+            limits=candidates.limits,
+            planned=len(candidates.candidates),
         )
         log_event(
             logger, "correction.crossover_v2_fc_selection",
@@ -8895,6 +8890,13 @@ class CrossoverV2Conductor:
             ),
             evaluated=self._fc_selection.evaluated,
             planned=self._fc_selection.planned,
+            candidate_order=[round(fc, 1) for fc in self._fc_selection.candidate_order],
+            attempted=[round(fc, 1) for fc in self._fc_selection.attempted],
+            skipped=[
+                {"fc_hz": round(fc, 1), "reason": reason}
+                for fc, reason in self._fc_selection.skipped
+            ],
+            comparison_complete=self._fc_selection.comparison_complete,
             poses=len(self._lateral_poses),
         )
 

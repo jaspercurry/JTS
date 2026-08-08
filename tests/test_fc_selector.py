@@ -217,6 +217,7 @@ def _select(evaluations, poses=(), configured_hz=2000.0, planned=None):
 def test_an_alternative_must_clear_the_margin_to_be_recommended():
     """§9.8: configured is golden until a candidate proves improvement. A
     win smaller than the margin is not a win."""
+    assert sel.MIN_RECOMMENDATION_MARGIN_DB == 1.0
     barely = _select([
         _evaluation(fc_hz=2000.0, sum_db=_dip(-4.0)),
         _evaluation(fc_hz=1700.0, sum_db=_dip(-3.5)),
@@ -264,13 +265,38 @@ def test_a_refused_candidate_is_disclosed_not_dropped():
         1700.0: sel.EVAL_REFUSED_UNFITTABLE, 1800.0: sel.EVAL_REFUSED_BUDGET,
     }
     assert result.evaluated == 1
+    assert result.comparison_complete is False
+    assert result.attempted == (2000.0, 1700.0)
+    assert result.skipped == ((1800.0, sel.EVAL_REFUSED_BUDGET),)
 
 
-def test_k_of_n_is_reported_when_the_budget_cut_the_sweep_short():
-    """A loaded Pi may score fewer than it proposed. That is disclosed, never
-    hidden, and never a session failure."""
+def test_an_incomplete_sweep_cannot_recommend_a_scored_alternative():
+    """A budget-short sweep may keep configured, never crown a partial best."""
+    result = _select([
+        _evaluation(fc_hz=2000.0, sum_db=_dip(-6.0)),
+        _evaluation(fc_hz=1700.0, sum_db=_dip(-0.5)),
+        _evaluation(fc_hz=1800.0, refusal=sel.EVAL_REFUSED_BUDGET),
+    ])
+    assert result.comparison_complete is False
+    assert result.verdict == sel.SELECTION_KEEP_CONFIGURED
+    assert result.recommended_hz is None
+
+
+def test_missing_candidate_record_makes_the_comparison_incomplete():
     result = _select([_evaluation(fc_hz=2000.0, sum_db=_dip(-3.0))], planned=6)
     assert (result.evaluated, result.planned) == (1, 6)
+    assert result.comparison_complete is False
+    assert result.recommended_hz is None
+
+
+def test_attempted_but_invalid_candidate_keeps_the_comparison_complete():
+    result = _select([
+        _evaluation(fc_hz=2000.0, sum_db=_dip(-3.0)),
+        _evaluation(fc_hz=1700.0, refusal=sel.EVAL_REFUSED_UNFITTABLE),
+    ])
+    assert result.comparison_complete is True
+    assert result.attempted == (2000.0, 1700.0)
+    assert result.skipped == ()
 
 
 def test_no_configured_candidate_is_named_as_such_rather_than_guessed():
@@ -365,7 +391,7 @@ def test_widening_the_tweeter_declaration_blooms_the_sweep_with_nothing_else_cha
     _, live = _candidates_for(JTS3_LIVE_BANDS)
     _, widened = _candidates_for(JTS3_WIDENED_BANDS)
     assert len(live.candidates) == 1
-    assert widened.candidates == (1648.7, 1698.9, 1750.6, 1803.9, 1858.9, 2000.0)
+    assert widened.candidates == (2000.0, 1648.7, 1698.9, 1750.6, 1803.9, 1858.9)
     assert 2000.0 in widened.candidates, "§9.8: configured is always evaluated"
 
     # …and the selector can then actually recommend one.
@@ -377,3 +403,14 @@ def test_widening_the_tweeter_declaration_blooms_the_sweep_with_nothing_else_cha
     assert verdict.verdict == sel.SELECTION_RECOMMEND
     assert verdict.recommended_hz in widened.alternatives
     assert verdict.evaluated == len(widened.candidates)
+    assert verdict.comparison_complete is True
+
+
+def test_configured_is_first_and_duplicate_alternatives_are_removed():
+    candidates = fc_candidate_set(
+        configured_hz=2000.0,
+        hf_hard_floor_hz=1000.0,
+        lower_driver_hard_ceiling_hz=1000.2,
+        count=5,
+    )
+    assert candidates.candidates == (2000.0, 1000.1, 1000.2)

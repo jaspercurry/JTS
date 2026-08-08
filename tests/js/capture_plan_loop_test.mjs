@@ -88,6 +88,10 @@ const withoutImports = raw
   .replace(
     /^const PAGE_VERSION_URL = .*;$/m,
     'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
+  )
+  .replace(
+    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;",
+    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 25;",
   );
 if (/^import\s/m.test(withoutImports)) {
   throw new Error("unhandled import in main.js — update the harness strip rule");
@@ -1405,7 +1409,7 @@ async function testRejectionCopyFallsBackWhenThePiSendsNoGuidance() {
 // past — a retry there risks a fatal begin_replayed refusal. Simulates the
 // timeout by having the fake status poll throw the same `.sweepFailed`-
 // flagged error waitForCaptureResult's real deadline path throws, since
-// exercising the actual 30s+ deadline would require real wall-clock time.
+// exercising the actual 90 s deadline would require real wall-clock time.
 // ============================================================================
 async function testTimedOutResultPollRendersTerminalNotStaleRetry() {
   statusHistory.length = 0;

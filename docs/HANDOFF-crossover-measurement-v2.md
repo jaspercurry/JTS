@@ -1734,7 +1734,8 @@ justified when recommendations prove consistently right.
   ceiling, the INTERSECTED declared `crossover_search_band_hz` (a two-way Fc
   puts both drivers at Fc, so every participating role must admit it, and an
   undeclared role means no proposal), and the ka beaming ceiling from the
-  declared diameter. The configured Fc is always evaluated even when a bound
+  declared diameter. Candidate order is the configured Fc first, then sorted
+  unique alternatives. The configured Fc is mandatory even when a bound
   excludes it — otherwise the speaker has no golden candidate.
 - `CrossoverV2Conductor._sweep_fc_candidates` — runs at MEASURE-consume,
   because the raw capture is alive only there. Per candidate:
@@ -1749,25 +1750,33 @@ justified when recommendations prove consistently right.
 
 **Two bounds worth knowing before you touch it.**
 
-*The phone's deadline is a session-killer, not a retry.*
-`waitForCaptureResult` allows `max(30 000, spec.duration_ms)` — 41 885 ms on
-the live stage-1 spec — and throws a terminal `sweepFailed` on expiry. The
-sweep's budget is a conservative fraction of that, and a candidate is not
-STARTED unless the slowest one so far fits in what remains. Scoring fewer than
-proposed is disclosed as k-of-N (`FcSelection.evaluated` / `planned`), never
-hidden and never a failure.
+*Compute and result waits have separate, explicit owners.* The serial sweep's
+one-time compute budget is `FC_SWEEP_COMPUTE_BUDGET_S` (70 s); the capture
+page owns `CAPTURE_RESULT_WAIT_BUDGET_MS` (90 s minimum) for anchor analysis, result
+publication, polling, and loaded-Pi variance. The configured candidate always
+starts. Later candidates start only when the slowest attempt so far forecasts
+they fit; otherwise each is represented as `evaluation_budget_spent`.
 
-*Memory is bounded by releasing, not by caching.* One MEASURE analysis is ~7.0 s
-and ~400–430 MB on a Pi 5. Six naive is 39.9 s and 464 MB; the
-deconvolve-cached variant is faster but heavier (491 MB) and is a recorded
-later optimization, not this design. Each candidate's intermediates are freed
-before the next allocates; what survives the walk is scalars plus ~120-point
-arrays per candidate.
+`FcSelection.comparison_complete` is the one completeness fact: true only when
+every deliberately selected candidate was attempted. An attempted but invalid
+candidate remains an honest refusal and does not make the sweep incomplete. A
+budget-skipped candidate does. An incomplete sweep may retain the safe
+configured-Fc linearization, but cannot select, persist, or present an
+alternative as best; its durable summary labels the comparison incomplete.
 
-**Debugging.** `event=correction.crossover_v2_fc_sweep` (planned, evaluated,
-elapsed, budget, the derived limits, each rejected proposal and why) and
-`event=correction.crossover_v2_fc_selection` (the verdict). A candidate that
-could not be scored is disclosed with a reason code, never dropped: `fit_refused`
+*Memory is bounded by releasing, not by caching.* Historical pre-P0.1 live-Pi
+evidence put alternatives around 10.1–10.4 s each, a serial all-six path around
+55–62 s, and analysis workspaces around 400–500 MB. P0.1's smoothing speedup is
+locally measured; post-P0.1 live-Pi all-six timing is unverified. The 70 s
+budget is a bounded deployment ceiling, not a claimed runtime. Each
+candidate's intermediates are released before the next allocates; only scalars
+plus ~120-point arrays per candidate survive the walk.
+
+**Debugging.** `event=correction.crossover_v2_fc_sweep` and
+`event=correction.crossover_v2_fc_selection` disclose candidate order,
+attempted and reasoned skipped candidates, elapsed/budget, and
+`comparison_complete`, plus the verdict and limits. A candidate that could not
+be scored is disclosed with a reason code, never dropped: `fit_refused`
 (no candidate, or the session is not Layer-1a eligible), `no_trusted_crossover_region`,
 `evaluation_budget_spent`.
 
@@ -3623,7 +3632,10 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-06 — the prior 2026-08-04 pass added and verified the planning-vs-shipped
+Last verified: 2026-08-08 — P0.2 re-verified only "Recommending an Fc" against
+the selector, conductor, durable summary, household copy, and capture-page wait;
+the post-P0.1 live-Pi all-six timing remains explicitly unverified. The prior
+2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
 re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the

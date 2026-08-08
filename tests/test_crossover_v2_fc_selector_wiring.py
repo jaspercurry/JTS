@@ -477,6 +477,10 @@ def test_the_sweep_retains_no_analysis_sized_object():
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 1)
     assert c._fc_evaluations
+    planned = c._fc_candidate_set().candidates
+    assert tuple(e.fc_hz for e in c._fc_evaluations) == planned
+    assert len(planned) == len(set(planned)) == 6
+    assert all(e.refusal != flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
     grid = flow.lateral_evidence_grid_hz()
     for evaluation in c._fc_evaluations:
         assert isinstance(evaluation, flow.FcCandidateEvaluation)
@@ -522,59 +526,16 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         assert c._fc_evaluations == (), broken
 
 
-def test_the_evaluation_budget_tracks_the_measure_programs_real_duration():
-    """The budget must be DERIVED from the phone's deadline, not a constant.
-
-    ``max(PHONE_RESULT_WAIT_FLOOR_MS, measure_ms)`` is the whole derivation, and
-    the neighbouring bound test cannot see it: that one asserts
-    ``0 < budget < deadline``, an inequality with slack that a hardcoded
-    floor-based constant satisfies just as well (correctness lens — hardcoding
-    it left 601 tests passing). A broken derivation would then be
-    indistinguishable from a loaded Pi, because both surface only as a smaller
-    ``k`` in the k-of-N disclosure.
-
-    Two durations straddling the 30 000 ms floor, so the ``max`` is exercised in
-    both directions. This bites on the shipped shape rather than in principle:
-    the live stage-1 spec is 41 885 ms and even this fixture's own MEASURE
-    program is 40 385 ms — both above the floor, so the floor is NOT what
-    governs today and a constant would be wrong right now.
-    """
+def test_the_evaluation_budget_has_one_explicit_owner():
     c = _selector_conductor(_eligible_seams())
-
-    def budget_for(duration_ms: int) -> float:
-        # ``_program_duration_ms`` is samples/rate, so a duck-typed stub is
-        # enough and keeps this about the derivation rather than program
-        # composition.
-        c._measure_program = SimpleNamespace(
-            total_samples=duration_ms * 48, sample_rate_hz=48_000,
-        )
-        return c._fc_evaluation_budget_s()
-
-    below = budget_for(10_000)   # + margin = 12 000 ms, under the floor
-    above = budget_for(50_000)   # + margin = 52 000 ms, over it
-    assert below < above, "the budget does not track the MEASURE program at all"
-
-    fraction = flow.FC_EVALUATION_BUDGET_FRACTION
-    assert below == pytest.approx(
-        fraction * flow.PHONE_RESULT_WAIT_FLOOR_MS / 1000.0
-    ), "under the floor, the floor governs"
-    assert above == pytest.approx(
-        fraction * (50_000 + flow.CAPTURE_ENTRY_MARGIN_MS) / 1000.0
-    ), "over the floor, the recording window governs"
+    assert c._fc_evaluation_budget_s() == flow.FC_SWEEP_COMPUTE_BUDGET_S
+    assert 0 < flow.FC_SWEEP_COMPUTE_BUDGET_S <= 70.0
 
 
-def test_the_evaluation_budget_is_bounded_by_the_phones_own_deadline():
-    """The page throws a TERMINAL ``sweepFailed`` when its result wait expires,
-    so the sweep's budget must sit strictly inside that deadline — and a
-    spent budget must DISCLOSE the candidates it skipped, never drop them."""
+def test_zero_budget_attempts_configured_then_discloses_every_skip():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     _run_phase(c, 1, 1)
-    measure_ms = flow._program_duration_ms(
-        c._program_for_phase(PHASE_MEASURE)
-    ) + flow.CAPTURE_ENTRY_MARGIN_MS
-    deadline_s = max(flow.PHONE_RESULT_WAIT_FLOOR_MS, measure_ms) / 1000.0
-    assert 0 < c._fc_evaluation_budget_s() < deadline_s
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
@@ -585,27 +546,83 @@ def test_the_evaluation_budget_is_bounded_by_the_phones_own_deadline():
     planned = len(c._fc_candidate_set().candidates)
     assert planned > 1
     assert len(c._fc_evaluations) == planned, "a skipped candidate is disclosed"
+    assert c._fc_evaluations[0].fc_hz == c._fc_hz
     assert [e.refusal for e in c._fc_evaluations[1:]] == (
         [flow.EVAL_REFUSED_BUDGET] * (planned - 1)
     )
+    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+        _run_phase(c, index, 1)
+    assert c.candidate is not None
+    assert c.fc_selection.comparison_complete is False
+    assert c.fc_selection.recommended_hz is None
+    from jasper.web.correction_crossover_v2 import _fc_selection_summary
+    summary = _fc_selection_summary(c)
+    assert summary["comparison_complete"] is False
+    assert summary["recommended_hz"] is None
+    assert summary["attempted"] == [c._fc_hz]
+    assert all(item["reason"] == flow.EVAL_REFUSED_BUDGET for item in summary["skipped"])
 
 
-def test_the_phone_result_wait_floor_matches_the_page():
-    """The Pi bounds itself by a number the capture page owns, so the two are
-    pinned against each other rather than agreeing by inspection."""
+def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
+    """Regression: a numerically-high configured Fc used to sort last.
+
+    With two 0.9 s alternatives and a 2.0 s budget, the forecast then skipped
+    the 2000 Hz baseline before it was attempted.  The baseline is the golden
+    comparison and must instead be first regardless of numeric order.
+    """
+    caplog.set_level("INFO")
+    c = _selector_conductor(_eligible_seams())
+    c._fc_hz = 2000.0
+    candidates = flow.fc_candidate_set(
+        configured_hz=2000.0,
+        hf_hard_floor_hz=1600.0,
+        lower_driver_hard_ceiling_hz=4000.0,
+        search_band_hz=(1600.0, 2500.0),
+        lower_driver_diameter_mm=114.0,
+    )
+    attempted: list[float] = []
+
+    def evaluate(self, fc_hz, anchor, program, result):
+        attempted.append(fc_hz)
+        return flow._fc_refusal(fc_hz, "attempted")
+
+    clock = iter((0.0, 0.0, 0.9, 0.9, 1.8, 1.8, 1.8))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(c, "_fc_candidate_set", lambda: candidates)
+        mp.setattr(c, "_fc_evaluation_budget_s", lambda: 2.0)
+        mp.setattr(flow.CrossoverV2Conductor, "_evaluate_fc_candidate", evaluate)
+        mp.setattr(flow.time, "monotonic", lambda: next(clock))
+        c._sweep_fc_candidates(object(), object(), object())
+
+    assert attempted[0] == 2000.0
+    assert [e.fc_hz for e in c._fc_evaluations] == list(candidates.candidates)
+    assert all(
+        e.refusal == flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations[2:]
+    )
+    sweep_log = next(
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_fc_sweep " in record.getMessage()
+    )
+    for field in (
+        "candidate_order=", "attempted=", "skipped=", "elapsed_s=",
+        "budget_s=", "comparison_complete=false",
+    ):
+        assert field in sweep_log
+
+
+def test_the_result_wait_is_named_once_and_exceeds_the_compute_budget():
     source = (
         Path(__file__).resolve().parents[1] / "capture-page" / "js" / "main.js"
     ).read_text(encoding="utf-8")
-    # Anchored on ``Date.now() + Math.max(...)``, which is
-    # ``waitForCaptureResult``'s own form: the page ALSO carries a 5 000 ms
-    # ``Math.max(…, spec.duration_ms)`` in ``waitForSweepComplete``, and a
-    # looser pattern pins the Pi's budget to the wrong wait entirely.
     match = re.search(
-        r"Date\.now\(\)\s*\+\s*Math\.max\((\d+),\s*Number\(spec\.duration_ms\)",
+        r"const CAPTURE_RESULT_WAIT_BUDGET_MS = (\d+);",
         source,
     )
-    assert match, "waitForCaptureResult's deadline floor moved or was renamed"
-    assert int(match.group(1)) == flow.PHONE_RESULT_WAIT_FLOOR_MS
+    assert match
+    wait_s = int(match.group(1)) / 1000.0
+    assert wait_s >= flow.FC_SWEEP_COMPUTE_BUDGET_S + 20.0
+    assert source.count("CAPTURE_RESULT_WAIT_BUDGET_MS") == 2
+    assert "CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0" in source
 
 
 # --- the recommendation, and what it may not do -------------------------------
@@ -633,6 +650,10 @@ def test_the_walk_close_publishes_a_recommendation_that_names_sound_settings():
     summary = _fc_selection_summary(c)
     assert summary["configured_hz"] == FC_HZ
     assert summary["evaluated"] <= summary["planned"]
+    assert summary["comparison_complete"] is True
+    assert summary["candidate_order"][0] == FC_HZ
+    assert summary["attempted"] == summary["candidate_order"]
+    assert summary["skipped"] == []
     # Small enough for durable state, and carrying no working evidence.
     assert len(json.dumps(summary)) < 4096
 
@@ -658,6 +679,8 @@ def test_a_recommending_verdict_always_says_the_household_must_edit_sound():
         "verdict": "recommend_alternative",
         "configured_hz": 2000.0, "recommended_hz": 1750.0, "margin_db": 1.4,
         "evaluated": 6, "planned": 6, "limits": {}, "refusals": [], "scores": [],
+        "attempted": [2000.0, 1650.0, 1700.0, 1750.0, 1800.0, 1850.0],
+        "comparison_complete": True,
     }}})
     joined = " ".join(lines).lower()
     assert "1750 hz" in joined and "2000 hz" in joined
@@ -666,6 +689,32 @@ def test_a_recommending_verdict_always_says_the_household_must_edit_sound():
     assert "sound settings" in joined, joined
     assert "measure again" in joined, joined
     assert "does not change it for you" in joined, joined
+
+
+def test_incomplete_or_legacy_state_never_presents_an_alternative_as_best():
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        _fc_recommendation_lines,
+    )
+
+    selection = {
+        "verdict": "recommend_alternative",
+        "configured_hz": 2000.0,
+        "recommended_hz": 1700.0,
+        "evaluated": 2,
+        "planned": 6,
+        "attempted": [2000.0, 1700.0],
+    }
+    for completeness in (False, None):
+        payload = dict(selection)
+        if completeness is not None:
+            payload["comparison_complete"] = completeness
+        joined = " ".join(_fc_recommendation_lines({
+            "crossover_v2": {"fc_selection": payload},
+        })).lower()
+        assert "incomplete" in joined
+        assert "no alternative was selected" in joined
+        assert "measured better" not in joined
+        assert "best" not in joined
 
 
 def test_no_recommendation_is_rendered_when_no_sweep_ran():
