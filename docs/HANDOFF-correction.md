@@ -2257,11 +2257,17 @@ in feedback (2026-05-09).
   stop immediately (issue #1786). Mute feedback and a turn's final listening
   chirp retain their gate episode through `TtsPlayout.wait_drained()`, so a
   completed socket write cannot hide a still-audible physical tail. The drain
-  then waits out only the
-  already-admitted tail, deferring to it rather than cancelling it. Bounded by
-  `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC`, which must stay under the
-  coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout. On a completed
-  drain timeout the daemon keeps every pause armed, returns
+  then waits out only the already-admitted tail, deferring to it rather than
+  cancelling it. One 2.5 s aggregate daemon deadline covers transition-lock
+  acquisition, a stale safety-task join, the volume measurement guard,
+  outputd's canonical meter pause (itself capped at 250 ms), and the residual
+  in-flight drain. Setup plus drain gets 2.25 s; the final 0.25 s is reserved
+  for fail-closed local rollback. This remains strictly below the already
+  shipped coordinator `VOICE_MEASURE_PAUSE_TIMEOUT_SEC=3.0`, leaving 0.5 s for
+  UDS reply scheduling on a loaded Pi. The residual drain is additionally
+  capped by `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC=2.0`; earlier setup
+  work consumes that allowance rather than starting a fresh drain timeout. On
+  a completed drain timeout the daemon keeps every pause armed, returns
   `{"result": "ok", "drained": false}`, and logs
   `event=measurement.inflight_drain_timeout` at WARNING. The strict doctor
   caller requires `drained is true` and fails before playing its tone; this
@@ -3450,14 +3456,20 @@ Internal:
 
 ---
 
-Verification scope (2026-08-04): PR-1 ingress/current-surface scope: canonical Sound
+Verification scope (2026-08-08): the live Decision 4 `MEASURE_PAUSE` timeout
+invariant was rechecked against `jasper.voice_daemon`,
+`jasper.correction.coordinator`, and deterministic hardware-free UDS tests:
+2.5 s aggregate daemon ownership, 2.25 s setup/drain, 250 ms outputd meter
+control, 0.25 s rollback reserve, and 0.5 s margin below the shipped 3.0 s
+legacy-coordinator read timeout. The historical implementation narratives were not
+re-verified. Prior 2026-08-04 (PR-1 ingress/current-surface scope: canonical Sound
 measurement routes, direct `/correction/*` aliases, Bass's page-relative status
 request, both nginx profiles, the unchanged `/correction/room/` relay return
 path, and the unchanged correction-only static-preflight allowlist were
 rechecked against the correction renderers/modules, nginx profiles, and 768
 passing focused hardware-free Sound/correction/landing tests; 28
 environment-dependent cases were deselected. No Pi, microphone, acoustic,
-deploy, or reboot validation was performed. Prior 2026-07-27 (runtime-integrity memory evidence rechecked against
+deploy, or reboot validation was performed). Prior 2026-07-27 (runtime-integrity memory evidence rechecked against
 the shared RAM-tier-aware headroom policy; hardware-free tests only). Prior
 2026-07-27 (flow-simplification PR-U3 — the Status bullet's
 "16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
@@ -3616,4 +3628,4 @@ topology-safe correction reset/start behavior; prior 2026-06-17 pass covered
 auto-level controller ownership, state guards, and status/bundle payload
 ownership; prior 2026-06-15 pass covered bonded-follower delegation.)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-08

@@ -36,6 +36,8 @@ import jasper.audio_io as audio_io_mod
 from jasper.assistant_loudness import AssistantLoudnessProfile
 from jasper.audio_io import OutputdTtsPlayout, TtsPlayout, make_tts_playout
 
+from ._async_wait import wait_signalled
+
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
@@ -936,7 +938,11 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
 
     monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
     first = asyncio.create_task(p._current_outputd_stream())
-    await connect_entered.wait()
+    await wait_signalled(
+        connect_entered,
+        "first outputd reconnect",
+        producer=first,
+    )
     second = asyncio.create_task(p._current_outputd_stream())
     await asyncio.sleep(0)
     release_connect.set()

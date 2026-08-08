@@ -11,7 +11,7 @@ import os
 import socket
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
@@ -2200,23 +2200,17 @@ class WakeLoop:
             await self._cues.speak_text(text)
             return True
 
+        restore: Callable[[], Awaitable[None]] | None = None
         try:
             await self._prepare_feedback_loudness_context(kind="dynamic_text")
             if isinstance(self._ducker, FanInDucker):
+                restore = self._ducker.restore
                 played = False
                 try:
                     await self._ducker.duck()
                     played = await _speak()
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
-                finally:
-                    # The accepted PCM tail still belongs to this duck even if
-                    # the speaking task is repeatedly cancelled. Restore only
-                    # after the physical drain, not merely after write().
-                    try:
-                        await wait_tts_drained_owned(self._tts)
-                    finally:
-                        await self._ducker.restore()
                 return played
             if self._camilla is None:
                 # No camilla handle — degrade to unducked playback rather
@@ -2227,19 +2221,32 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
                     return False
-            async with CueDuck(self._camilla, self._cfg.duck_db):
-                try:
-                    return await _speak()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("dynamic text play failed: %s", e)
-                    return False
-                finally:
-                    # Keep CueDuck's snapshot ownership through the same
-                    # accepted-PCM boundary as the fan-in ducker above.
-                    await wait_tts_drained_owned(self._tts)
+            cue_duck = CueDuck(self._camilla, self._cfg.duck_db)
+
+            async def _restore_cue_duck() -> None:
+                # Deliberately neutral context: CueDuck.__aexit__ only writes
+                # its snapshot and never suppresses an exception. The caller
+                # retains the original cancellation/error while the cleanup
+                # task owns restore to a known outcome.
+                await cue_duck.__aexit__(None, None, None)
+
+            restore = _restore_cue_duck
+            await cue_duck.__aenter__()
+            try:
+                return await _speak()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text play failed: %s", e)
+                return False
         finally:
             try:
-                await self._finish_output_episode_after_drain(episode)
+                if restore is None:
+                    await self._finish_output_episode_after_drain(episode)
+                else:
+                    await self._finish_ducked_output_episode_after_drain(
+                        episode,
+                        restore,
+                        cleanup_label="dynamic text",
+                    )
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.warning("dynamic text drain cleanup failed: %s", e)
 
@@ -2302,35 +2309,60 @@ class WakeLoop:
         slug: str,
         episode: AssistantOutputEpisode,
     ) -> bool:
+        ducker = self._ducker
         played = False
         try:
+            await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
             try:
-                await self._prepare_feedback_loudness_context(kind="cue", slug=slug)
-                try:
-                    await self._ducker.duck()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "cue %s: duck failed (cue will play unducked): %s",
-                        slug, e,
-                    )
-                try:
-                    played = await self._cues.play(slug)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("cue %s play failed: %s", slug, e)
-            finally:
-                try:
-                    try:
-                        await wait_tts_drained_owned(self._tts)
-                    finally:
-                        await self._ducker.restore()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("cue %s restore failed: %s", slug, e)
+                await ducker.duck()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "cue %s: duck failed (cue will play unducked): %s",
+                    slug, e,
+                )
+            try:
+                played = await self._cues.play(slug)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cue %s play failed: %s", slug, e)
         finally:
             try:
-                await self._finish_output_episode_after_drain(episode)
+                await self._finish_ducked_output_episode_after_drain(
+                    episode,
+                    ducker.restore,
+                    cleanup_label=f"cue {slug}",
+                )
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.warning("cue %s drain cleanup failed: %s", slug, e)
         return played
+
+    async def _finish_ducked_output_episode_after_drain(
+        self,
+        episode: AssistantOutputEpisode,
+        restore: Callable[[], Awaitable[None]],
+        *,
+        cleanup_label: str,
+    ) -> None:
+        """Own physical drain, duck restore, and exact gate release as one."""
+
+        async def _drain_restore_and_release() -> None:
+            try:
+                try:
+                    await wait_tts_drained_owned(self._tts)
+                except Exception as e:  # noqa: BLE001 - feedback is best-effort
+                    logger.warning("%s drain cleanup failed: %s", cleanup_label, e)
+            finally:
+                try:
+                    try:
+                        await restore()
+                    except Exception as e:  # noqa: BLE001 - restore is best-effort
+                        logger.warning("%s restore failed: %s", cleanup_label, e)
+                finally:
+                    await self._output_gate.end(episode)
+
+        await self._await_output_cleanup_owned(
+            _drain_restore_and_release(),
+            task_name=f"output-cleanup-{episode.kind}-{episode.id}",
+        )
 
     async def _finish_output_episode_after_drain(
         self,
@@ -2341,8 +2373,8 @@ class WakeLoop:
         Socket writes running in worker threads cannot be revoked by task
         cancellation. Once a cue path may have queued PCM, repeated caller
         cancellation is therefore deferred by an ``asyncio.wait`` ownership
-        loop until one cleanup task
-        reaches the playout deadline and releases the exact episode token.
+        loop until one cleanup task reaches the playout deadline and releases
+        the exact episode token.
         """
 
         async def _drain_and_release() -> None:
@@ -2351,10 +2383,20 @@ class WakeLoop:
             finally:
                 await self._output_gate.end(episode)
 
-        cleanup = asyncio.create_task(
+        await self._await_output_cleanup_owned(
             _drain_and_release(),
-            name=f"output-drain-{episode.kind}-{episode.id}",
+            task_name=f"output-drain-{episode.kind}-{episode.id}",
         )
+
+    @staticmethod
+    async def _await_output_cleanup_owned(
+        operation: Coroutine,
+        *,
+        task_name: str,
+    ) -> None:
+        """Defer repeated caller cancellation until one cleanup completes."""
+
+        cleanup = asyncio.create_task(operation, name=task_name)
         deferred_cancel = False
         current = asyncio.current_task()
         while not cleanup.done():

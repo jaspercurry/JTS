@@ -164,6 +164,18 @@ class _CountingGate(AssistantOutputGate):
         return await super().resume_admission()
 
 
+class _EndCountingGate(AssistantOutputGate):
+    """Real gate that records exact episode-release ownership."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.end_calls = 0
+
+    async def end(self, *args, **kwargs) -> None:
+        self.end_calls += 1
+        await super().end(*args, **kwargs)
+
+
 class _TailHeldTts:
     """TTS fake whose write returns before its physical tail drains."""
 
@@ -904,7 +916,10 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
 
     tts = _TailHeldTts()
     ducked = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
     restored = asyncio.Event()
+    restore_calls = 0
 
     class _Cues:
         async def prerender_text(self, _text: str) -> bool:
@@ -922,6 +937,13 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
             ducked.set()
 
         async def restore(self) -> None:
+            nonlocal restore_calls
+            restore_calls += 1
+            restore_started.set()
+            await wait_signalled(
+                release_restore,
+                "release fan-in proactive restore",
+            )
             self._ducked = False
             restored.set()
 
@@ -947,12 +969,21 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
             *,
             best_effort: bool,
         ) -> float:
+            nonlocal restore_calls
+            restore_calls += 1
             assert db == -20.0
             assert best_effort
+            restore_started.set()
+            await wait_signalled(
+                release_restore,
+                "release CueDuck proactive restore",
+            )
             restored.set()
             return db
 
     wl = WakeLoop.for_tests()
+    gate = _EndCountingGate()
+    wl._output_gate = gate
     wl._cfg.tts_outputd_socket = tts_socket
     wl._cfg.duck_db = -25.0
     wl._tts = tts
@@ -972,8 +1003,6 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
     )
 
     playing.cancel()
-    await asyncio.sleep(0)
-    playing.cancel()
     for _ in range(5):
         await asyncio.sleep(0)
     assert not playing.done(), (tts_socket, duck_kind)
@@ -981,10 +1010,27 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
     assert wl._output_gate.active_kind == "proactive"
 
     tts.release_drain.set()
+    await wait_signalled(
+        restore_started,
+        f"{duck_kind} proactive restore",
+        producer=playing,
+    )
+    assert not restored.is_set()
+    assert wl._output_gate.active_kind == "proactive"
+
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done(), "second cancel must not interrupt restore"
+    assert wl._output_gate.active_kind == "proactive"
+
+    release_restore.set()
     with pytest.raises(asyncio.CancelledError):
         await playing
     assert restored.is_set()
     assert not wl._output_gate.is_active
+    assert restore_calls == 1
+    assert gate.end_calls == 1
 
 
 @pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
@@ -1008,7 +1054,10 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     )
     drain_started = asyncio.Event()
     release_drain = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
     restored = asyncio.Event()
+    restore_calls = 0
 
     class _AcceptedStream:
         def set_gain_db(self, _db: float) -> None:
@@ -1025,6 +1074,13 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
             return None
 
         async def restore(self) -> None:
+            nonlocal restore_calls
+            restore_calls += 1
+            restore_started.set()
+            await wait_signalled(
+                release_restore,
+                "release admin cue restore",
+            )
             restored.set()
 
     tts = OutputdTtsPlayout(
@@ -1056,6 +1112,8 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
         wav.writeframes(b"\x01\x00" * 5)
 
     wl = WakeLoop.for_tests()
+    gate = _EndCountingGate()
+    wl._output_gate = gate
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
     wl._cues = cues
@@ -1068,8 +1126,6 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     )
 
     playing.cancel()
-    await asyncio.sleep(0)
-    playing.cancel()
     for _ in range(5):
         await asyncio.sleep(0)
     assert not playing.done(), tts_socket
@@ -1077,10 +1133,27 @@ async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     assert wl._output_gate.active_kind == "admin"
 
     release_drain.set()
+    await wait_signalled(
+        restore_started,
+        "admin cue restore",
+        producer=playing,
+    )
+    assert not restored.is_set()
+    assert wl._output_gate.active_kind == "admin"
+
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done(), "second cancel must not interrupt restore"
+    assert wl._output_gate.active_kind == "admin"
+
+    release_restore.set()
     with pytest.raises(asyncio.CancelledError):
         await playing
     assert restored.is_set()
     assert not wl._output_gate.is_active
+    assert restore_calls == 1
+    assert gate.end_calls == 1
 
 
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:
