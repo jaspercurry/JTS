@@ -425,10 +425,10 @@ def _loopback_playback_active() -> bool:
     confuse the daemon's own output with a renderer source.
 
     Used to gate the AEC bridge FAIL: ref-silent windows are only
-    diagnostic of a broken dsnoop when music IS being routed through the
-    loopback. When no renderer is writing, ref-silent is the expected
-    state and mic-loud bursts come from non-loopback sources (TTS via
-    jasper_out, voice in the room).
+    diagnostic of a broken reference chain when music IS being routed
+    through the loopback. When no renderer is writing, ref-silent is the
+    expected state and mic-loud bursts come from sound the speaker never
+    played (voice in the room, ambient noise).
     """
     import glob
     for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):

@@ -1993,12 +1993,18 @@ Captured here so future sessions don't repeat the mistakes.
 10. **Doctor's `check_aec_bridge_output_health` had a false-positive
     failure mode.** Same investigation date. The check flagged
     `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
-    mic-loud signal can also come from sources that **bypass the
-    loopback by design**: TTS / wake cues enter `jasper-outputd`
-    directly on current main (or `pcm.jasper_out` on pre-outputd
-    rollbacks), and loud ambient voice gets pumped by the chip's ASR-beam AGC. In both
-    cases `ref = 0` is correct —
-    nothing was supposed to be in the loopback. **Fix**: count
+    mic-loud signal can also come from **sound the speaker never
+    played**: room voice and ambient noise, pumped by the chip's
+    ASR-beam AGC. There `ref = 0` is correct — nothing was supposed
+    to be in the reference. Assistant TTS is *not* such a source on
+    current main: it rides the same fan-in → CamillaDSP → outputd
+    path as music, so it reaches both reference taps (outputd's
+    final-speaker UDP monitor, the production `JASPER_AEC_REF_SOURCE`,
+    and the `jasper_ref` ALSA fallback) like any other program audio.
+    Prose here used to cite the pre-outputd dmix that genuinely did
+    bypass the reference; that alias was retired in issue #2240, and
+    naming TTS as the reason for a ref-silent window is now a wrong
+    diagnosis. **Fix**: count
     `healthy_ref_windows` (any window where `ref ≥ 50`) and only
     fail when zero healthy windows exist in the assessment period
     AND the silent-ref pattern persists. PR #75's failure was
