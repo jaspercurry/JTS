@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 ARTIFACT_PATH = Path("/var/lib/jasper/chip-aec-alignment.json")
 ARTIFACT_KIND = "jts.xvf3800-chip-aec-alignment"
 ARTIFACT_SCHEMA = 2
+# The reference window: the precision K is defined against.  The median of
+# QUEUE_SAMPLE_COUNT chip-reference readings whose range is at most
+# QUEUE_MAX_SPREAD frames.  Windows at other mix cadences are held to the same
+# median precision rather than to these literal numbers — `required_queue_samples`.
 QUEUE_SAMPLE_COUNT = 8
 QUEUE_MAX_SPREAD = 16
 WINDOW_CENTER = 20.5
@@ -52,9 +56,7 @@ def _round(value: float) -> int:
     return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
 
 
-def median_samples(values: Sequence[int | float], *, count: int | None = None) -> int:
-    if count is not None and len(values) != count:
-        raise ValueError(f"expected exactly {count} samples")
+def median_samples(values: Sequence[int | float]) -> int:
     if not values or any(isinstance(v, bool) or not math.isfinite(float(v)) for v in values):
         raise ValueError("samples must be finite numbers")
     ordered = sorted(float(v) for v in values)
@@ -67,14 +69,50 @@ def median_samples(values: Sequence[int | float], *, count: int | None = None) -
     return _round(median)
 
 
+def required_queue_samples(spread: float) -> int:
+    """Return how many chip-reference readings a window of ``spread`` frames needs.
+
+    outputd samples ``snd_pcm_delay`` once per completed chip-reference write, so
+    a window is a run of per-write readings and its spread is the writer's own
+    jitter.  How wide that jitter runs is a property of the mix cadence: one mix
+    period carries ``period_frames × chip_rate / dac_rate`` reference frames, and
+    a burst wider than the writer's ALSA ring makes every write block, so where
+    the reading lands at write completion moves with scheduling slack.  A fine
+    cadence fits inside the ring and barely moves; a coarse one sweeps most of a
+    burst.  jts.local (128-frame mix period) measures a spread of 11; jts3
+    (1024-frame period) measures 86 with the same writer geometry.
+
+    What has to hold across both is the precision of the MEDIAN, because K is
+    ``commissioned SYS_DELAY + median(commissioned window)`` and boot applies
+    ``K - median(live window)``.  The median's sampling error scales as
+    ``spread / sqrt(samples)``, so pinning that ratio to the reference window's
+    value gives every cadence the precision K was measured with — a wider spread
+    buys back its precision by sampling longer, not by relaxing the bar.
+    """
+
+    if not math.isfinite(spread) or spread < 0:
+        raise ValueError("queue spread must be a finite non-negative number")
+    needed = math.ceil(spread * spread * QUEUE_SAMPLE_COUNT / (QUEUE_MAX_SPREAD**2))
+    return max(QUEUE_SAMPLE_COUNT, needed)
+
+
+def queue_window_is_stable(queue_samples: Sequence[int | float]) -> bool:
+    """Whether a window estimates its median as precisely as the reference one."""
+
+    if not queue_samples:
+        return False
+    spread = max(queue_samples) - min(queue_samples)
+    return len(queue_samples) >= required_queue_samples(spread)
+
+
 def runtime_sys_delay(k_samples: int, queue_samples: Sequence[int | float]) -> int:
-    """Return ``K - median(eight live queue samples)``; never clamp."""
+    """Return ``K - median(the live queue window)``; never clamp."""
 
     if type(k_samples) is not int:
         raise ValueError("K must be an integer")
     values = tuple(float(v) for v in queue_samples)
-    queue = median_samples(values, count=QUEUE_SAMPLE_COUNT)
-    if max(values) - min(values) > QUEUE_MAX_SPREAD:
+    queue = median_samples(values)
+    if not queue_window_is_stable(values):
         raise ValueError("chip-reference queue is unstable")
     delay = k_samples - queue
     if not xvf3800.CHIP_AEC_SYS_DELAY_MIN <= delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX:

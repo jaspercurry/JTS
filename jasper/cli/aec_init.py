@@ -38,6 +38,8 @@ from jasper.chip_aec_alignment import (
     AlignmentIdentity,
     load_artifact,
     median_samples,
+    queue_window_is_stable,
+    required_queue_samples,
     runtime_sys_delay,
 )
 from jasper.log_event import log_event
@@ -71,6 +73,33 @@ OUTPUTD_ENV_SETTLE_SEC = 10.0
 # as unknown: an unanswerable systemctl is not evidence that outputd is current.
 SYSTEMCTL_QUERY_TIMEOUT_SEC = 5.0
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
+# How many mix periods outputd may legitimately have in flight to the
+# chip-reference writer at the instant STATUS is read.  One write carries
+# exactly one mix period of audio at the chip's own rate, so in steady state it
+# cannot span more than one period of wall time: the writer holds at most the
+# period it is writing, and outputd can publish the next one before the writer
+# dequeues it.  This is a pipelining depth, not a cadence — it is the same at
+# every mix period, which is why a coarse cadence (where a write blocks for most
+# of a period, so STATUS lands mid-write about half the time) reads a lag of one
+# as often as zero.  A deeper backlog means the writer is losing ground on a
+# rate-locked producer, which the error counters and write ages then confirm.
+MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
+# The queue poll targets half the writer's own cadence, so no write's
+# snd_pcm_delay reading is skipped, and is clamped at both ends.  The floor keeps
+# a very fine mix period off a spin on the STATUS socket — such a box produces
+# far more writes than a window needs, so skipping some of them costs nothing.
+# The ceiling keeps a very coarse one from spending the budget unsampled.
+MIN_QUEUE_POLL_INTERVAL_SEC = 0.01
+MAX_QUEUE_POLL_INTERVAL_SEC = 0.25
+# How long the reference queue has to hold still, independent of how many
+# readings that takes.  Sample count alone bounds the median's precision but
+# says nothing about drift: a queue walking steadily away from its start can
+# hold a narrow spread across a short window and still be worthless to K, which
+# is measured once and reused for months.  Two seconds is the span the
+# pre-#2253 window covered (eight readings at its fixed 0.25 s poll), so the
+# drift a fine-cadence box had to survive is unchanged — reading it faster now
+# buys precision, not a shorter look.
+QUEUE_MIN_WINDOW_SEC = 2.0
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
     "retry_count",
@@ -161,9 +190,13 @@ def validate_reference_status(
         writer.get("desired") is not True
         or writer.get("active") is not True
         or writer.get("status") != "active"
-        or writer.get("reference_sequence_lag") != 0
     ):
         raise ChipInitError("native chip-reference writer is not current and active")
+    lag = _integer(writer.get("reference_sequence_lag"), "reference_sequence_lag")
+    if lag > MAX_REFERENCE_PERIODS_IN_FLIGHT:
+        raise ChipInitError(
+            f"native chip-reference writer is {lag} mix periods behind outputd"
+        )
     for name in ("snd_pcm_delay_sample_age_ms", "last_write_age_ms"):
         if _integer(writer.get(name), name) > 250:
             raise ChipInitError(f"native chip-reference writer {name} is stale")
@@ -382,14 +415,54 @@ def require_outputd_env_loaded(
         time.sleep(interval)
 
 
+def mix_period_seconds(status: Mapping[str, Any]) -> float | None:
+    """Return outputd's mix period in seconds, or None when STATUS cannot say.
+
+    This is the chip-reference writer's own cadence: outputd hands it exactly one
+    packet per mix period, so the period is both how often a fresh
+    ``snd_pcm_delay`` reading exists and how much audio one blocking write
+    carries.  Read from the same snapshot the queue readings come from, so it
+    describes the box being sampled rather than any box's assumed geometry.
+    """
+
+    dac = status.get("dac")
+    if not isinstance(dac, Mapping):
+        return None
+    period, rate = dac.get("period_frames"), dac.get("sample_rate")
+    if type(period) is not int or type(rate) is not int or period < 1 or rate < 1:
+        return None
+    return period / rate
+
+
+def queue_poll_interval(status: Mapping[str, Any], fallback: float) -> float:
+    """Return the poll interval this box's mix cadence asks for."""
+
+    period = mix_period_seconds(status)
+    if period is None:
+        return fallback
+    return min(max(period / 2, MIN_QUEUE_POLL_INTERVAL_SEC), MAX_QUEUE_POLL_INTERVAL_SEC)
+
+
 def collect_reference_queue(
     expected_pcm: str,
     *,
     socket_path: str = OUTPUTD_STATUS_SOCKET,
-    interval: float = 0.25,
+    interval: float = MAX_QUEUE_POLL_INTERVAL_SEC,
     timeout: float = 30.0,
 ) -> tuple[dict[str, Any], tuple[int, ...]]:
-    """Collect eight progressing samples with stable counters and queue."""
+    """Collect a run of per-write queue readings precise enough to carry K.
+
+    The window grows until it has held still for `QUEUE_MIN_WINDOW_SEC` AND its
+    median is estimated as precisely as the reference window's was.
+    `required_queue_samples` owns the precision half, and both this acceptance
+    and `runtime_sys_delay`'s re-validation read it, so there is one definition
+    of a usable window.  A fine mix cadence meets the precision bar in eight
+    readings and spends the rest of the window watching for drift; a coarse one,
+    whose blocking writes sweep most of a burst, buys the same precision by
+    sampling for a few seconds.  A window whose spread keeps growing satisfies
+    neither and fails inside the budget with the numbers in the message: a
+    reference queue that will not hold still cannot carry K.
+    """
 
     # Both consumers of a live STATUS — this oneshot and jasper-aec-commission —
     # funnel through here, and the queue positions returned below are as
@@ -401,30 +474,63 @@ def collect_reference_queue(
 
     deadline = time.monotonic() + timeout
     accepted: list[ReferenceSample] = []
+    opened = time.monotonic()
     last_error = "no STATUS response"
     while time.monotonic() < deadline:
+        fresh = True
         try:
             status = read_status_socket(socket_path)
+            interval = queue_poll_interval(status, interval)
             sample = validate_reference_status(status, expected_pcm=expected_pcm)
-            if accepted and (
-                sample.frames <= accepted[-1].frames
-                or sample.sequence <= accepted[-1].sequence
-                or sample.counters != accepted[0].counters
-            ):
-                raise ChipInitError("chip-reference writer did not progress cleanly")
+            if accepted:
+                if sample.counters != accepted[0].counters:
+                    raise ChipInitError("chip-reference writer error counters moved")
+                if (
+                    sample.frames < accepted[-1].frames
+                    or sample.sequence < accepted[-1].sequence
+                ):
+                    raise ChipInitError("chip-reference writer did not progress cleanly")
+                # A repeat of the write already recorded: on a coarse cadence the
+                # poll runs at half the writer's period, so about every other read
+                # lands on a write already in the window.  Not progress — and not
+                # a stall either: the write and delay-sample ages validated above
+                # are what fail a wedged writer, and they grow in wall time no
+                # matter how fast this loop reads.
+                fresh = sample.frames > accepted[-1].frames
         except (OSError, ValueError, ChipInitError) as exc:
             accepted.clear()
             last_error = str(exc)
         else:
-            accepted.append(sample)
-            if len(accepted) == 8:
+            if fresh:
+                if not accepted:
+                    opened = time.monotonic()
+                accepted.append(sample)
                 delays = tuple(item.delay for item in accepted)
-                if max(delays) - min(delays) <= 16:
+                held = time.monotonic() - opened
+                if held >= QUEUE_MIN_WINDOW_SEC and queue_window_is_stable(delays):
+                    log_event(
+                        logger,
+                        "chip_aec_init.reference_queue",
+                        outcome="stable",
+                        samples=len(delays),
+                        spread=max(delays) - min(delays),
+                        median=median_samples(delays),
+                        held_sec=round(held, 2),
+                        poll_interval_ms=round(interval * 1_000, 1),
+                    )
                     return status, delays
-                accepted.clear()
-                last_error = "chip-reference queue is unstable"
+                last_error = _queue_shortfall(delays, held)
         time.sleep(interval)
     raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
+
+
+def _queue_shortfall(delays: Sequence[int], held: float) -> str:
+    spread = max(delays) - min(delays)
+    return (
+        f"chip-reference queue spread {spread} needs "
+        f"{required_queue_samples(spread)} readings over "
+        f"{QUEUE_MIN_WINDOW_SEC:g}s, held {len(delays)} over {held:.1f}s"
+    )
 
 
 def _chip_text(dev, name: str) -> str:
@@ -652,6 +758,7 @@ def main() -> int:
                 k_samples=artifact.k_samples,
                 queue_median=median_samples(queue),
                 queue_spread=max(queue) - min(queue),
+                queue_samples=len(queue),
             )
         elif mode == "corpus":
             plan = xvf3800.chip_beam_plan_from_env(os.environ)

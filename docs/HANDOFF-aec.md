@@ -110,10 +110,29 @@ I2S profile/card identity, the final-edge sample format outputd NEGOTIATED and
 reports as `dac.format`, and negotiated output geometry) plus `K`. The
 lifecycle relationship is
 `K = commissioned SYS_DELAY + commissioned median reference queue`. On
-boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples
-eight progressing queue positions and applies
+boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples a
+run of progressing queue positions and applies
 `runtime SYS_DELAY = K - median(live queue)`. An unstable queue, identity
 mismatch, or out-of-range result is rejected, never clamped.
+
+**The window is cadence-aware, and both ends measure it the same way
+(#2253).** outputd records `snd_pcm_delay` once per completed chip-reference
+write, so how far those readings spread is a property of the mix cadence: one
+mix period carries `period_frames × 16000 / dac_rate` reference frames, and a
+burst wider than the writer's 256-frame ALSA ring makes every write block, so
+the reading lands wherever scheduling slack leaves it. Measured 2026-08-08 with
+identical chip-ref geometry: jts.local (128-frame mix period, 2.7 ms) spreads
+11 frames and never shows a lag; jts3 (1024-frame period, 21.3 ms) spreads 86
+and shows `reference_sequence_lag=1` on 10 reads in 24 — steady-state
+pipelining, not a fault. The window therefore holds the MEDIAN's precision
+constant rather than the raw spread: `required_queue_samples` in
+`jasper/chip_aec_alignment.py` keeps `spread / sqrt(readings)` at the eight-
+readings-over-16-frames reference ratio, so a wider spread buys its precision
+back by sampling longer (86 frames costs 232 readings, about 5 s at jts3's
+cadence, inside the 30 s collection budget). The window must also hold still for
+`QUEUE_MIN_WINDOW_SEC`, which keeps the drift exposure a fine cadence had before
+the poll got faster. `collect_reference_queue` and `runtime_sys_delay` both read
+that one rule, so boot never rejects a window commissioning accepted.
 
 **Adding `dac.format` to the identity force-recommissions the fleet.** Every
 artifact commissioned before that field existed fails the identity check, so on

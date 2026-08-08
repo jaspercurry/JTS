@@ -55,6 +55,57 @@ def test_runtime_delay_rejects_instability_and_out_of_range_without_clamp() -> N
         runtime_sys_delay(1_000, [283] * 8)
 
 
+def test_the_reference_window_is_the_precision_every_cadence_is_held_to() -> None:
+    # The pre-#2253 rule was a literal pair — eight readings, spread 16 — and it
+    # is now the reference point the rule is expressed in, so the fine-cadence
+    # answer has to come out unchanged.
+    assert alignment.required_queue_samples(alignment.QUEUE_MAX_SPREAD) == (
+        alignment.QUEUE_SAMPLE_COUNT
+    )
+    assert alignment.required_queue_samples(0) == alignment.QUEUE_SAMPLE_COUNT
+    # One frame past the reference spread already costs readings.
+    assert alignment.required_queue_samples(alignment.QUEUE_MAX_SPREAD + 1) > (
+        alignment.QUEUE_SAMPLE_COUNT
+    )
+
+
+def test_a_wider_spread_buys_its_precision_back_with_readings() -> None:
+    # The median's sampling error scales as spread / sqrt(readings), so the
+    # required count is the smallest one holding spread / sqrt(count) at or under
+    # the reference window's ratio. Anything shallower would let a coarse cadence
+    # publish a K measured less precisely than the one it has to agree with at
+    # boot, so pin both directions: the count is sufficient, and one fewer is not.
+    for spread in (17, 20, 43, 86, 172):
+        needed = alignment.required_queue_samples(spread)
+        assert spread**2 * alignment.QUEUE_SAMPLE_COUNT <= (
+            alignment.QUEUE_MAX_SPREAD**2 * needed
+        )
+        assert spread**2 * alignment.QUEUE_SAMPLE_COUNT > (
+            alignment.QUEUE_MAX_SPREAD**2 * (needed - 1)
+        )
+        # Quadratic, not linear: a linear rule would only double.
+        assert alignment.required_queue_samples(2 * spread) > 3 * needed
+    # jts3's measured spread, and what it costs: about five seconds of readings
+    # at one per 21.3 ms mix period, inside the 30 s collection budget.
+    assert alignment.required_queue_samples(86) == 232
+
+
+def test_a_window_is_stable_only_once_it_has_bought_that_precision() -> None:
+    jts3_window = [362 + (index * 86) % 87 for index in range(232)]
+    assert max(jts3_window) - min(jts3_window) == 86
+
+    assert alignment.queue_window_is_stable(jts3_window)
+    assert not alignment.queue_window_is_stable(jts3_window[:231])
+    assert not alignment.queue_window_is_stable([])
+    # The same readings are what boot feeds back in, so the re-validation has to
+    # accept exactly what the collector accepted — one rule, two callers.
+    assert runtime_sys_delay(400, jts3_window) == 400 - alignment.median_samples(
+        jts3_window
+    )
+    with pytest.raises(ValueError, match="unstable"):
+        runtime_sys_delay(400, jts3_window[:231])
+
+
 def test_artifact_is_strict_identity_plus_k_only() -> None:
     artifact = AlignmentArtifact(_identity(), 245)
     assert artifact_from_dict(artifact.to_dict()) == artifact

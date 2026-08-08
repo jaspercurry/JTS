@@ -199,6 +199,7 @@ def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, A
                 "k_samples": artifact.k_samples,
                 "queue_median": queue_median,
                 "queue_spread": max(after.samples) - min(after.samples),
+                "queue_samples": len(after.samples),
                 "lags": lags,
                 "center": center,
                 "worst_edge_margin": margin,
