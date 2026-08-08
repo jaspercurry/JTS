@@ -1285,7 +1285,11 @@ For anyone touching the resilience code:
   If outputd exits with `EX_CONFIG=78` during hotplug shear, the
   `jasper-outputd-failure-reconcile` stop hook runs one bounded no-restart
   reconcile plus explicit outputd retry, then parks repeated config exits
-  instead of looping into `StartLimitAction=reboot`.
+  instead of looping into `StartLimitAction=reboot`. The same hook parks a
+  content-lane open that fails on four consecutive starts — the first
+  failures still restart, because that open is how outputd waits for
+  CamillaDSP's half of the snd-aloop pair. Details in
+  [docs/HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, restarts the output graph
   (`jasper-camilla`, `jasper-outputd`, `jasper-audio-hardware-reconcile`),

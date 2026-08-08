@@ -633,7 +633,11 @@ impl AlsaBackend {
             // instead: `release_camilla_content_lane_for_format_flip` in
             // `deploy/lib/install/systemd-units.sh` stops the old CamillaDSP
             // before outputd restarts, exactly when the content lane's format
-            // is about to move under it.
+            // is about to move under it. A width mismatch reached any OTHER
+            // way still fails here forever; `jasper-outputd-failure-reconcile`
+            // (the unit's `ExecStopPost`) counts consecutive failures carrying
+            // these contexts and parks the unit out-of-band before the restart
+            // ladder reaches `StartLimitAction=reboot`.
             let content =
                 PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
                     format!("opening outputd content capture PCM {}", config.content_pcm)

@@ -347,6 +347,15 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
+    # The same helper's content-lane park. These tune the consecutive-failure
+    # streak record that turns a permanent content-lane open failure into a park
+    # instead of a StartLimitAction=reboot; consumed only by
+    # deploy/bin/jasper-outputd-failure-reconcile. The Rust daemon never reads
+    # them — it only produces the journal contexts the helper matches on.
+    "JASPER_OUTPUTD_CONTENT_LANE_STATE": "outputd failure helper streak record path; script-only",
+    "JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC": "outputd failure helper streak window; script-only",
+    "JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER": "outputd failure helper park bound; script-only",
+    "JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES": "outputd failure helper journal-tail bound; script-only",
     # The removed transport_pipe coupling's env keys (deleted 2026-07-11). The
     # Rust local_content_pipe path was deleted with the coupling, so neither is
     # Rust-read anymore. JASPER_FANIN_CAMILLA_PIPE survives ONLY in the

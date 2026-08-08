@@ -431,6 +431,44 @@ The repaired output ladder is:
    exit inside that window skips retry and leaves the unit parked instead
    of restart-looping into `StartLimitAction=reboot`.
 
+   One exit-1 class gets the same out-of-band treatment: a **content-lane
+   open** that keeps failing. That open is exit-1/restart class on purpose —
+   on boot and on a width-flip deploy it means CamillaDSP has not yet opened
+   its half of the snd-aloop pair, and restarting is how outputd waits that
+   out, so the first failures restart untouched. A peer permanently locked at
+   another width (or drifted env) produces the identical failure forever, so
+   the helper counts consecutive failures whose journal tail carries outputd's
+   own content-lane open contexts and, on the 4th, `reset-failed`s and stops
+   the unit — a park that leaves start 5 of `StartLimitBurst=5` unspent
+   instead of reaching the reboot. The reason and the fix are written to
+   `/run/jasper-outputd-content-lane.state` (a plain `/run` file, so it
+   outlives the stop and clears at boot); the streak clears on any other
+   failure class and on the next clean stop.
+
+   The bound's floor is fan-in, not outputd. `jasper-camilla.service` is
+   `After=sound.target network.target jasper-outputd.service
+   jasper-fanin.service`, so the peer's start job waits on the LAST of the
+   four, and `jasper-fanin` is `Type=notify` with no `TimeoutStartSec` — it can
+   hold that gate for systemd's 90-s default while its PCMs and STATUS come up.
+   So four failures at `RestartSec=5` gives the peer ~15 s of fan-in readiness
+   plus CamillaDSP's own device open, and a fan-in stall past ~20 s parks a box
+   whose failure was really category A. That is bounded and recoverable, and
+   beyond ~24 s it is not a new exposure at all: the same stall exhausted
+   outputd's `StartLimitBurst` before this helper existed, and the outcome
+   there was a reboot. The claim is exact only past that point. Pre-change the
+   box got 5 attempts (~24 s) before the reboot, so a peer arriving in roughly
+   the **18–24 s band previously recovered and now parks** — a ~6 s conversion
+   band, trading a recovery for a park; beyond ~24 s the trade is a park for a
+   reboot.
+
+   **Nothing re-arms a parked outputd on its own.** Recovery is a sound-card
+   udev event (`jasper-audio-hardware-reconcile` does `reset-failed` + `start`),
+   a deploy, `jasper-camilla-recover`'s `OnFailure` pass (it restarts outputd),
+   a reboot — `/run` wipes, so the park is per-boot — or an operator's
+   `systemctl restart jasper-outputd`. The record's `re_arm=` names them; its
+   `action=` carries the width fix, which is the config park's: match the width
+   on both halves first.
+
 `/sound/` also keeps the saved speaker topology separate from the current
 observed hardware. A saved dual-Apple active topology is not silently
 deleted when one DAC is unplugged; the page shows the saved topology, the
