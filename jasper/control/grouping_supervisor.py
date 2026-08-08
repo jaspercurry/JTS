@@ -71,6 +71,7 @@ from jasper.log_event import log_event
 
 from . import household_credential
 from .client import AsyncControlClient, DEFAULT_PORT
+from .uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -441,9 +442,12 @@ class GroupingSupervisor:
         try:
             writer.write(b"STATUS\n")
             await writer.drain()
-            body = await asyncio.wait_for(
-                reader.read(8192), timeout=self._probe_timeout,
-            )
+            # Read to EOF under the shared ceiling, never one bounded read: a
+            # truncated reply parses as nothing, and None here means "outputd
+            # unreachable" — which this supervisor answers with a reconciler
+            # kick that RESTARTS outputd. A healthy daemon whose STATUS simply
+            # grew past a private cap would be restarted every poll, forever.
+            body = await read_status_body(reader, timeout=self._probe_timeout)
         except (OSError, asyncio.TimeoutError):
             return None
         finally:
@@ -452,6 +456,8 @@ class GroupingSupervisor:
                 await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except (OSError, asyncio.TimeoutError, AssertionError):
                 pass
+        if body is None:
+            return None
         try:
             payload = json.loads(body.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:

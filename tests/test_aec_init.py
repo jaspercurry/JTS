@@ -994,6 +994,15 @@ class _WriterStream:
     function of elapsed time, not of how often the poll asks.  What a read
     returns is the last `RING_CAPACITY` of them, which is the whole point: the
     reader's rate and the writer's rate are decoupled.
+
+    A read COSTS TIME, in the order outputd's state server really spends it:
+    that thread sleeps up to `ACCEPT_POLL_INTERVAL` before it accepts, THEN
+    takes the snapshot, THEN builds and writes the reply.  Modelling that order
+    is what makes the collector's `now`-sampling bias measurable at all — with
+    a read that advances the clock by zero, every placement is exact by
+    construction and the question cannot be asked.  Defaults reproduce jts3's
+    measured 11 reads in 5.14 s: a 0.25 s mean accept wait on a 500 ms poll
+    cycle plus the collector's own 0.25 s sleep is ~0.5 s a read.
     """
 
     def __init__(
@@ -1005,6 +1014,8 @@ class _WriterStream:
         lag: int = 0,
         stall_after: int | None = None,
         capacity: int = RING_CAPACITY,
+        accept_wait: float = 0.25,
+        reply_latency: float = 0.004,
     ) -> None:
         self.clock = clock
         self.mix_period_frames = mix_period_frames
@@ -1016,7 +1027,12 @@ class _WriterStream:
         self.lag = lag
         self.stall_after = stall_after
         self.capacity = capacity
+        self.accept_wait = accept_wait
+        self.reply_latency = reply_latency
         self.reads = 0
+        # When each reply's snapshot was taken, so a test can compare the
+        # instant the collector placed an observation at against the truth.
+        self.snapshot_instants: list[float] = []
         self.counters = dict.fromkeys(aec_init.REFERENCE_WRITER_COUNTER_NAMES, 0)
 
     def _writes_completed(self) -> int:
@@ -1039,6 +1055,9 @@ class _WriterStream:
 
     def __call__(self, _path: str) -> dict:
         self.reads += 1
+        # The server's accept poll runs BEFORE the snapshot is taken...
+        self.clock.now += self.accept_wait
+        self.snapshot_instants.append(self.clock.now)
         writes = self._writes_completed()
         age_ms = int((self.clock.now - (writes - 1) * self.period_seconds) * 1_000)
         writer = {
@@ -1054,6 +1073,9 @@ class _WriterStream:
             "recent_writes": self._recent_writes(writes),
         }
         writer.update(self.counters)
+        # ...and building, writing and reading the reply happens after it. This
+        # is the only gap between the snapshot and the collector's `now`.
+        self.clock.now += self.reply_latency
         return {
             "backend": "alsa",
             "sink_mode": "single",
@@ -1156,11 +1178,14 @@ def test_the_collected_window_is_one_runtime_sys_delay_accepts(monkeypatch) -> N
     )
 
 
-def test_an_outputd_without_the_sample_ring_is_named_not_guessed(monkeypatch) -> None:
+def test_an_outputd_without_the_sample_ring_is_named_not_guessed(
+    monkeypatch, caplog
+) -> None:
     # An outputd too old to publish the ring cannot be worked around: at ~2
     # STATUS reads a second the single latest reading assembles no window on any
     # box, so guessing would trade a loud refusal for a boot that burns its
     # budget and then blames the queue.
+    caplog.set_level("WARNING", logger="jasper.aec_init")
     clock = _FakeClock()
     stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
 
@@ -1177,6 +1202,10 @@ def test_an_outputd_without_the_sample_ring_is_named_not_guessed(monkeypatch) ->
     reason = str(excinfo.value)
     assert "no chip-ref sample ring" in reason
     assert "deploy an outputd that reports it" in reason
+    # Every numeric field of this refusal is zero, so without the reason the
+    # event cannot be told from any other empty-window failure.
+    assert "outcome=unstable samples=0 spread=0" in caplog.text
+    assert 'reason="outputd STATUS has no chip-ref sample ring' in caplog.text
 
 
 def test_an_empty_sample_ring_is_a_writer_that_has_not_written_yet(
@@ -1226,17 +1255,29 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
     # enough" — rather than "not current and active".
     caplog.set_level("WARNING", logger="jasper.aec_init")
     clock = _FakeClock()
+    # A median walking 22 frames a second — past the 17 f/s the bound admits
+    # at the minimum window, but slow enough that the spread it opens is one
+    # this cadence can still answer for, so the DRIFT bound is what refuses it
+    # rather than the count rule or the retention ceiling. A walking queue
+    # widens without limit, so the budget is trimmed to end while that is still
+    # the live reason.
     stream = _WriterStream(
-        clock, mix_period_frames=1024, delays=tuple(range(300, 300 + 4_096))
+        clock,
+        mix_period_frames=1024,
+        delays=tuple(300 + (index * 22 * 1024) // DAC_RATE for index in range(4_096)),
     )
     _install_queue_stream(monkeypatch, stream, clock)
 
     with pytest.raises(aec_init.ChipInitError) as excinfo:
-        aec_init.collect_reference_queue(REFERENCE_PCM)
+        aec_init.collect_reference_queue(REFERENCE_PCM, timeout=5.0)
 
     reason = str(excinfo.value)
     assert "chip-reference queue spread" in reason
     assert "halves" in reason and "held" in reason
+    assert "retention window" not in reason, (
+        "a closable-looking shortfall and an unclosable ceiling must stay "
+        "distinguishable in the message"
+    )
     assert "event=chip_aec_init.reference_queue" in caplog.text
     assert "outcome=unstable" in caplog.text
     # The VALUES, not the labels: a covariate reported as a constant separates
@@ -1247,10 +1288,28 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
         f"poll_interval_ms={round(aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1)}"
         in caplog.text
     )
-    assert "samples=0 " not in caplog.text
-    assert "required=0 " not in caplog.text
-    for field in ("spread=", "median_drift=", "held_sec="):
-        assert field in caplog.text
+    # Every field by value against the window that was actually refused —
+    # a label-only assertion cannot tell a live covariate from a constant.
+    line = next(
+        text for text in caplog.text.splitlines() if "outcome=unstable" in text
+    )
+    fields = dict(
+        part.split("=", 1) for part in line.split() if "=" in part and "event=" not in part
+    )
+    assert int(fields["samples"]) > alignment.QUEUE_SAMPLE_COUNT
+    assert int(fields["spread"]) > alignment.QUEUE_MAX_SPREAD
+    assert int(fields["required"]) == alignment.required_queue_samples(
+        int(fields["spread"])
+    )
+    assert int(fields["median"]) >= 300, "the fixture's readings start at 300"
+    assert int(fields["median_drift"]) > alignment.QUEUE_MAX_MEDIAN_DRIFT, (
+        "this queue was refused BECAUSE its halves disagreed; the field has to "
+        "say so"
+    )
+    assert float(fields["held_sec"]) >= aec_init.QUEUE_MIN_WINDOW_SEC
+    # The reason is a quoted sentence, so it is read off the line, not the
+    # whitespace split above.
+    assert 'reason="chip-reference queue spread' in line
 
 
 def test_a_window_whose_median_walked_is_rejected_on_both_sides_of_the_edge() -> None:
@@ -1421,14 +1480,19 @@ def test_the_window_slides_so_one_outlier_ages_out(monkeypatch) -> None:
     # spread inflates the required count, and the run is doomed for as long as
     # that reading stays in the window. It has to leave.
     clock = _FakeClock()
-    # One reading 4000 frames off, then a still queue forever after.
-    delays = (4_400,) + (448,) * 4_095
+    # One reading 4000 frames off, then a still queue forever after. It sits
+    # past write 12 so it lands AFTER the counter baseline — a wild reading
+    # before the baseline is excluded by the floor and would never test the
+    # horizon at all.
+    delays = (448,) * 14 + (4_400,) + (448,) * 4_095
     stream = _WriterStream(clock, mix_period_frames=1024, delays=delays)
     _install_queue_stream(monkeypatch, stream, clock)
 
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
 
     assert max(queue) - min(queue) == 0, "the outlier left the window"
+    # A spread of 3952 needs more readings than exist, so the window cannot
+    # close until the horizon evicts the outlier — which is the point.
     assert clock.now > aec_init.QUEUE_WINDOW_MAX_SEC
     assert clock.now < 30.0
 
@@ -1461,6 +1525,172 @@ def test_a_writer_further_behind_than_the_pipelining_ceiling_is_rejected() -> No
     ).writes
 
 
+
+def test_the_placement_bias_is_the_reply_not_the_accept_wait(monkeypatch) -> None:
+    # Two mechanisms were proposed for how late an observation gets placed.
+    # (1) `now` is sampled after the read, so the whole read latency (measured
+    # 243-510 ms against a live outputd) biases the placement. (2) outputd's
+    # state server sleeps its accept poll BEFORE it takes the snapshot, so that
+    # wait precedes the observation and only the reply separates the snapshot
+    # from `now`. This measures which is real against a fixture that spends
+    # time in the server's actual order — and it is (2): the bias equals the
+    # reply latency, and adding a HALF-SECOND accept wait does not move it.
+    biases: list[float] = []
+    for accept_wait in (0.25, 0.5):
+        clock = _FakeClock()
+        stream = _WriterStream(
+            clock,
+            mix_period_frames=1024,
+            delays=(448,),
+            accept_wait=accept_wait,
+            reply_latency=0.004,
+        )
+        _install_queue_stream(monkeypatch, stream, clock)
+
+        placed: list[list[tuple[float, aec_init.ReferenceWrite]]] = []
+        real_merge = aec_init._merge_writes
+
+        def capture(window, writes, now, floor, _real=real_merge, _out=placed):
+            merged = _real(window, writes, now, floor)
+            _out.append(merged)
+            return merged
+
+        monkeypatch.setattr(aec_init, "_merge_writes", capture)
+        aec_init.collect_reference_queue(REFERENCE_PCM)
+        monkeypatch.setattr(aec_init, "_merge_writes", real_merge)
+
+        # The newest reading of the last read: its true instant is that read's
+        # snapshot minus its own age, and the collector placed it at
+        # `now - age`. The gap between the two IS the bias.
+        window = placed[-1]
+        newest_at, newest = max(window, key=lambda item: item[0])
+        snapshot_at = stream.snapshot_instants[-1]
+        biases.append(newest_at - (snapshot_at - newest.age_ms / 1_000))
+
+    assert all(abs(bias - 0.004) < 1e-6 for bias in biases), biases
+    assert biases[0] == pytest.approx(biases[1]), (
+        "the accept wait doubled and the placement bias did not move: it "
+        "precedes the snapshot, so it is not part of the bias"
+    )
+    # And it is small against the window it biases, which is what makes
+    # sampling `now` after the read the accurate AND conservative choice —
+    # sampling before it would move the floor earlier, the loosening direction.
+    assert max(biases) < aec_init.QUEUE_MIN_WINDOW_SEC / 100
+
+
+def test_the_window_never_reaches_back_before_its_counter_baseline(
+    monkeypatch,
+) -> None:
+    # The ring is history. Readings older than the baseline sit in an interval
+    # whose lower end this loop never observed the counters at, so a seam
+    # inside it is invisible — and a step at the leading edge is invisible to
+    # the split-half drift bound by construction. The floor is the baseline
+    # instant, so none of them are admitted.
+    clock = _FakeClock()
+    clock.now = 6.0  # a full ring of history exists before the first read
+    stream = _WriterStream(clock, mix_period_frames=1024, delays=(448,))
+    _install_queue_stream(monkeypatch, stream, clock)
+
+    placed: list[list[tuple[float, aec_init.ReferenceWrite]]] = []
+    real_merge = aec_init._merge_writes
+    monkeypatch.setattr(
+        aec_init,
+        "_merge_writes",
+        lambda w, r, now, floor: placed.append(real_merge(w, r, now, floor))
+        or placed[-1],
+    )
+
+    aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    baseline_at = stream.snapshot_instants[0] + stream.reply_latency
+    earliest = min(at for at, _write in placed[-1])
+    assert earliest >= baseline_at, (
+        "a reading from before the counter baseline was admitted; no instant "
+        "in the window's lower half was ever checked for a seam"
+    )
+    # The ring genuinely offered older readings — otherwise this proves nothing.
+    assert stream.snapshot_instants[0] > aec_init.QUEUE_WINDOW_MAX_SEC / 4
+
+
+def test_the_horizon_is_what_caps_the_spread_a_cadence_can_answer_for() -> None:
+    # The retained count is cadence x horizon, so the horizon — not the 30 s
+    # budget — is the real ceiling on how wide a queue a box can carry K at.
+    # The comment on QUEUE_WINDOW_MAX_SEC states both numbers; derive them.
+    for writes_per_sec, stated_cap in ((DAC_RATE / 1024, 109), (DAC_RATE / 128, 309)):
+        retained = int(writes_per_sec * aec_init.QUEUE_WINDOW_MAX_SEC)
+        assert alignment.required_queue_samples(stated_cap) <= retained
+        assert alignment.required_queue_samples(stated_cap + 1) > retained
+    # jts3 measures 86 against its cap of 109 — real headroom, and thin enough
+    # that shrinking the horizon would put the measured box outside it.
+    assert alignment.required_queue_samples(86) <= int(
+        DAC_RATE / 1024 * aec_init.QUEUE_WINDOW_MAX_SEC
+    )
+
+
+def test_a_spread_past_the_horizon_names_the_ceiling_not_a_shortfall(
+    monkeypatch,
+) -> None:
+    # A spread wider than the cadence can answer for fails with "more readings
+    # than this cadence produces inside the retention window", not with a
+    # reading shortfall — the latter sends an operator looking for a longer
+    # budget that can never close it.
+    clock = _FakeClock()
+    # 220 frames of spread at jts3's cadence needs ~1512 readings; the horizon
+    # retains 375.
+    stream = _WriterStream(
+        clock, mix_period_frames=1024, delays=(448, 668) * 2_048
+    )
+    _install_queue_stream(monkeypatch, stream, clock)
+
+    with pytest.raises(aec_init.ChipInitError) as excinfo:
+        aec_init.collect_reference_queue(REFERENCE_PCM)
+
+    reason = str(excinfo.value)
+    assert "retention window" in reason
+    assert "wider than this output cadence can carry K at" in reason
+    assert "held" not in reason, "a closable shortfall would misattribute this"
+
+
+def test_a_boot_gate_trip_asks_for_recommissioning_not_an_inspection(
+    monkeypatch, caplog
+) -> None:
+    # The artifact stopped describing this box; nothing is broken. Routing that
+    # to the generic fault bucket would send a household at a healthy daemon,
+    # and the commission_required park is already the recoverable one.
+    dev = _FakeXvfDevice()
+    _install_fake_xvf(monkeypatch, dev)
+    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
+    identity = AlignmentIdentity(
+        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
+        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
+        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
+        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
+    )
+    # Commissioned at -38; the live queue resolves one frame past the bound.
+    monkeypatch.setattr(
+        aec_init,
+        "load_artifact",
+        lambda: AlignmentArtifact(
+            identity, 245, -38 - alignment.MIN_EDGE_MARGIN - 1
+        ),
+    )
+    monkeypatch.setattr(
+        aec_init, "collect_reference_queue",
+        lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
+    )
+    monkeypatch.setattr(aec_init, "build_identity", lambda *_a, **_k: identity)
+    caplog.set_level("ERROR", logger="jasper.aec_init")
+
+    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
+
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+    assert "outcome=parked" in caplog.text
+    assert "jasper-aec-commission" in caplog.text
+    assert "inspect" not in caplog.text
+    assert "has moved" in caplog.text
+
 def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> None:
     # Both are load-bearing and both are invisible to fixtures built FROM them.
     # The in-flight cap is the sole first-line replacement for the removed
@@ -1469,6 +1699,14 @@ def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> No
     # rounded up.
     assert aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT == 2
     assert aec_init.QUEUE_MIN_WINDOW_SEC == 2.0
+    # This round's own constants, pinned for the same reason. The drift bound
+    # survives being widened to 26 against fixtures built from it, which walks
+    # back most of the tightening it exists for; MIN_EDGE_MARGIN is the only
+    # end-to-end guard between the alignment the commissioner verified and
+    # what boot applies, and it survives being cut to 1.
+    assert alignment.QUEUE_MAX_MEDIAN_DRIFT == 17
+    assert alignment.QUEUE_DRIFT_NOISE_SIGMAS == 3
+    assert alignment.MIN_EDGE_MARGIN == 8
     assert (
         aec_init.QUEUE_MIN_WINDOW_SEC
         >= (alignment.QUEUE_SAMPLE_COUNT - 1) * aec_init.QUEUE_POLL_INTERVAL_SEC
@@ -1479,7 +1717,12 @@ def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> No
 
 
 class _LiveClock:
-    """Real elapsed seconds, in the shape `_WriterStream` reads its clock."""
+    """Real elapsed seconds, in the shape `_WriterStream` reads its clock.
+
+    Writes are absorbed rather than rejected: `_WriterStream` advances its
+    clock to model a server's accept wait, and against a real server that time
+    is spent for real. Tests using this clock pass zero for both.
+    """
 
     def __init__(self) -> None:
         self._started = time.monotonic()
@@ -1487,6 +1730,10 @@ class _LiveClock:
     @property
     def now(self) -> float:
         return time.monotonic() - self._started
+
+    @now.setter
+    def now(self, _value: float) -> None:
+        return
 
 
 class _ThrottledStatusServer:
@@ -1549,8 +1796,16 @@ def test_the_collector_closes_against_outputds_real_throughput(
     # accrue at jts3's 46.9 writes/s, and the budget is trimmed to 20 s so a
     # wedge fails this test well before it wedges the suite.
     monkeypatch.setattr(aec_init, "require_outputd_env_loaded", lambda **_kwargs: None)
+    # accept_wait/reply_latency are zero here because the REAL server and the
+    # REAL socket spend that time; the fake clock's versions of them exist only
+    # to model it where there is no server.
     stream = _WriterStream(
-        _LiveClock(), mix_period_frames=1024, delays=COARSE_CADENCE_DELAYS, lag=1
+        _LiveClock(),
+        mix_period_frames=1024,
+        delays=COARSE_CADENCE_DELAYS,
+        lag=1,
+        accept_wait=0.0,
+        reply_latency=0.0,
     )
 
     started = time.monotonic()

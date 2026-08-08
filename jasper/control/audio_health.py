@@ -44,7 +44,7 @@ from .airplay_health import (
     SAMPLE_INTERVAL_SEC,
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
-from .uds import MUX_CONTROL_SOCKET_PATH, _mux_socket_command
+from .uds import MAX_STATUS_BYTES, MUX_CONTROL_SOCKET_PATH, _mux_socket_command
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,6 @@ SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
 OUTPUTD_SOCKET = "/run/jasper-outputd/control.sock"
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
-MAX_STATUS_BYTES = 256 * 1024
 FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
 

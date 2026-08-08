@@ -276,10 +276,18 @@ pub struct OutputdState {
     chip_ref_tee_open_error_count: AtomicU64,
     chip_ref_tee_write_error_count: AtomicU64,
     // The writer's own recent per-write observations (see
-    // `CHIP_REF_RECENT_WRITES`). Mutex for the same reason as `sro_estimator`
+    // `CHIP_REF_RECENT_WRITES`). Mutex on the same grounds as `sro_estimator`
     // below: a small fixed struct with one writer (the chip-ref writer thread)
     // and one reader (the state server), so the lock is uncontended and neither
     // side allocates while holding it.
+    //
+    // It is NOT the same duty cycle, and that is the part worth stating: the
+    // SRO estimator is fed at ~1 Hz (decimated), this is pushed once per
+    // completed write — 47 Hz at a 1024-frame mix period, 375 Hz at 128, i.e.
+    // 50-375x more often. What keeps that fine is that the critical section is
+    // a 32-byte store into a fixed array with no allocation and no syscall,
+    // and the only contender is a /state read a couple of times a second which
+    // copies out and releases before it formats anything.
     chip_ref_writes: Mutex<ChipRefWriteRing>,
     // Observe-only label (chip-AEC Layer 0): true when the reconciler armed
     // the chip-ref writer purely to MEASURE drift on the DAC playout clock (vs nominal)
@@ -918,7 +926,10 @@ impl OutputdState {
     }
 
     pub fn snapshot_json(&self) -> String {
-        let mut buf = String::with_capacity(1024);
+        // Sized for the payload this actually builds: the chip-reference
+        // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
+        // a chip-AEC box, and 1 KiB meant a dozen reallocations per read.
+        let mut buf = String::with_capacity(32 * 1024);
         let uptime_ms = self.uptime_ms();
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
@@ -1638,11 +1649,18 @@ impl OutputdState {
             .map(|written| reference_sequence.saturating_sub(written));
         // Reserve first, then copy under the lock: the chip-ref writer thread
         // must never wait on this thread's allocator (same rule the SRO block
-        // below states for its own snapshot).
-        let mut chip_ref_recent_writes: Vec<ChipRefObservation> =
-            Vec::with_capacity(CHIP_REF_RECENT_WRITES);
-        if let Ok(ring) = self.chip_ref_writes.lock() {
-            ring.copy_into(&mut chip_ref_recent_writes);
+        // below states for its own snapshot). The 8 KiB reservation is skipped
+        // entirely when the writer is not desired, which is every box that
+        // does not run chip AEC.
+        let mut chip_ref_recent_writes: Vec<ChipRefObservation> = if chip_ref_desired {
+            Vec::with_capacity(CHIP_REF_RECENT_WRITES)
+        } else {
+            Vec::new()
+        };
+        if chip_ref_desired {
+            if let Ok(ring) = self.chip_ref_writes.lock() {
+                ring.copy_into(&mut chip_ref_recent_writes);
+            }
         }
         buf.push_str(r#""chip_ref_writer":{"#);
         push_kv_bool(&mut buf, "desired", chip_ref_desired);
@@ -3258,6 +3276,28 @@ mod tests {
         // — the fifth write had none and is therefore no observation.
         let entries = j.matches(r#","age_ms":"#).count();
         assert_eq!(entries, 4, "{j}");
+
+        // `age_ms` is relative to THIS snapshot, and the reader places every
+        // observation on its own clock from it — so it must decrease from the
+        // oldest entry to the newest, and the newest must be no older than the
+        // writer-level delay-sample age reported beside it.
+        // Scan to the first non-digit rather than to a closing brace: a brace
+        // CHAR literal is not a string literal, so the panic-freedom scanner's
+        // brace counting would read it as ending this #[cfg(test)] module.
+        let ages: Vec<u64> = j
+            .match_indices(r#","age_ms":"#)
+            .map(|(at, needle)| {
+                let rest = &j[at + needle.len()..];
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                rest[..end].parse::<u64>().unwrap()
+            })
+            .collect();
+        assert_eq!(ages.len(), 4);
+        for pair in ages.windows(2) {
+            assert!(pair[0] >= pair[1], "ages must run oldest-first: {ages:?}");
+        }
     }
 
     #[test]

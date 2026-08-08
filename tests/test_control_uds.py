@@ -5,11 +5,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jasper.control import uds
+from jasper.control import grouping_supervisor, uds
+from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
+
+_IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
 
 def _connection(reply: bytes):
@@ -164,3 +169,146 @@ async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
         "measurement_window() teardown (#1952)"
     )
     assert task.cancelled()
+
+
+# ---------------------------------------------------------------------------
+# STATUS payload ceiling (#2253)
+#
+# jasper-outputd's STATUS crossed 8 KiB when the chip-reference writer's
+# per-write sample ring landed. Every local reader in jasper-control that used
+# a single bounded `read(8192)` then received a PREFIX, `json.loads` raised,
+# and the fail-soft path reported "daemon unreachable" for a daemon that had
+# answered perfectly — /state.outputd null on every chip-AEC box, and the
+# grouping supervisor reading a healthy bonded member as starved, which it
+# answers with a reconciler kick that RESTARTS outputd, every rate-limit
+# window, forever.
+#
+# The fake below serves a realistically-sized outputd STATUS in chunks, so a
+# single read cannot return the whole body and read-to-EOF is load-bearing.
+# ---------------------------------------------------------------------------
+
+_RING_ENTRIES = 256
+
+
+def _outputd_status_payload() -> bytes:
+    """A STATUS body the size a chip-AEC box actually answers with."""
+
+    ring = [
+        {
+            "frames_written": 1_073_741_824 + index * 341,
+            "snd_pcm_delay_frames": 362 + index % 87,
+            "reference_sequence": 4_193_847 + index,
+            "age_ms": (_RING_ENTRIES - index) * 21,
+        }
+        for index in range(_RING_ENTRIES)
+    ]
+    return json.dumps(
+        {
+            "backend": "alsa",
+            "dac_content": {"serving_fifo": True},
+            "reference_outputs": {
+                "chip_ref_writer": {
+                    "active": True,
+                    "recent_writes_capacity": _RING_ENTRIES,
+                    "recent_writes": ring,
+                }
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+async def _serve_once(path: str, payload: bytes):
+    """Serve `payload` in 4 KiB chunks, then EOF — a single read cannot win."""
+
+    async def handle(reader, writer):
+        # A client that refuses an over-cap reply hangs up mid-send, so every
+        # write here has to tolerate the peer going away — otherwise the
+        # handler parks on drain() and Server.wait_closed() never returns.
+        try:
+            await reader.readline()
+            for start in range(0, len(payload), 4096):
+                writer.write(payload[start : start + 4096])
+                await writer.drain()
+                await asyncio.sleep(0)
+            writer.write(b"\n")
+            await writer.drain()
+            writer.write_eof()
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                writer.close()
+
+    return await asyncio.start_unix_server(handle, path=path)
+
+
+@pytest.mark.asyncio
+async def test_both_local_status_readers_survive_a_real_outputd_payload(
+    short_sock_path,
+):
+    payload = _outputd_status_payload()
+    # The property that makes this test mean something: the body does not fit
+    # the 8192-byte single read both consumers used before #2253. A full ring
+    # of realistically-sized counters measures ~99.8 B an entry, so the array
+    # alone is ~25.6 KB — three times that read.
+    assert len(payload) > 8192, len(payload)
+    assert len(payload) > 24_000, len(payload)
+
+    server = await _serve_once(short_sock_path, payload)
+    try:
+        # Leg (a): the reader /state uses for outputd.
+        state_view = await uds._local_status_json(short_sock_path, timeout=5.0)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert state_view is not None, (
+        "/state.outputd goes null on every chip-AEC box — and the documented "
+        "jq .outputd.reference_outputs.chip_ref_writer diagnostics with it"
+    )
+    writer_view = state_view["reference_outputs"]["chip_ref_writer"]
+    assert len(writer_view["recent_writes"]) == _RING_ENTRIES
+
+
+@pytest.mark.asyncio
+async def test_the_grouping_supervisor_probe_survives_the_same_payload(
+    short_sock_path, monkeypatch
+):
+    payload = _outputd_status_payload()
+    assert len(payload) > 8192, len(payload)
+    monkeypatch.setattr(
+        grouping_supervisor, "OUTPUTD_CONTROL_SOCKET", short_sock_path
+    )
+
+    server = await _serve_once(short_sock_path, payload)
+    try:
+        supervisor = grouping_supervisor.GroupingSupervisor(probe_timeout_sec=5.0)
+        starvation_view = await supervisor.outputd_status()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert starvation_view is not None, (
+        "None means 'outputd unreachable', which this supervisor answers with "
+        "a reconciler kick that restarts outputd — so a healthy bonded member "
+        "would be restarted every rate-limit window, forever"
+    )
+    assert starvation_view["dac_content"]["serving_fifo"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
+    short_sock_path,
+):
+    # The cap is a safety bound on a hostile or wedged local daemon. Past it
+    # the reader returns None: a truncated object is not a smaller answer, it
+    # is a wrong one, and a caller that parsed a prefix would act on it.
+    payload = b'{"x":"' + b"y" * (uds.MAX_STATUS_BYTES + 1) + b'"}'
+    server = await _serve_once(short_sock_path, payload)
+    try:
+        assert await uds._local_status_json(short_sock_path, timeout=5.0) is None
+    finally:
+        server.close()
+        await server.wait_closed()

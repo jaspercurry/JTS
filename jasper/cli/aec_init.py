@@ -37,6 +37,7 @@ from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
+    QueueMovedFromCommissioned,
     load_artifact,
     median_samples,
     queue_median_drift,
@@ -117,8 +118,9 @@ QUEUE_MIN_WINDOW_SEC = 2.0
 # retained count is cadence x this horizon: 375 readings at jts3's 46.9
 # writes/s supports a spread up to 109 frames against the 86 it measures, and
 # 3000 at jts.local's 375 writes/s supports 309 against 11.  A box past its cap
-# fails inside the budget with its own numbers rather than quietly publishing a
-# median it did not earn.
+# spends the whole collection budget and then fails with its own numbers —
+# naming the ceiling, not a reading shortfall a longer budget could close —
+# rather than quietly publishing a median it did not earn.
 QUEUE_WINDOW_MAX_SEC = 8.0
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
@@ -580,36 +582,53 @@ def collect_reference_queue(
 
     deadline = time.monotonic() + timeout
     window: list[tuple[float, ReferenceWrite]] = []
-    counters: tuple[int, ...] | None = None
-    # The window reaches back only to here.  The ring is history, and its oldest
-    # entries predate the first read — the error counters are cumulative, so a
-    # seam inside that history is one nothing can see.  Starting the floor at
-    # the collection's own start keeps the pre-#2253 invariant exactly: every
-    # reading in an accepted window was made during a stretch this loop watched
-    # the counters hold still.  What the ring buys is not reach into the past —
-    # it is that no write made WHILE watching is missed at two reads a second.
-    floor = time.monotonic()
+    # The counter baseline and the instant it was taken, as ONE value — the
+    # window's floor is that instant and nothing else, so the two cannot drift
+    # apart and there is no floor to plant before a baseline exists.
+    #
+    # It has to be the baseline instant rather than the collection's start.
+    # The ring is history: its oldest entries predate this read, and the error
+    # counters are cumulative, so a seam anywhere before the baseline was taken
+    # is one nothing can see — a reading admitted from before it would sit in
+    # an interval this loop never watched both ends of, and a step at the
+    # leading edge is invisible to the split-half drift bound by construction.
+    # With the floor here the invariant is exact: every retained reading lies
+    # between two instants at which the counters were observed equal, and a
+    # cumulative counter cannot tick in between and come back.  What the ring
+    # buys is not reach into the past — it is that no write made WHILE watching
+    # is missed at two reads a second.
+    baseline: tuple[tuple[int, ...], float] | None = None
     status_reads = 0
     last_error = "no STATUS response"
     while time.monotonic() < deadline:
         try:
             status = read_status_socket(socket_path)
+            # Sampled AFTER the read on purpose.  outputd's state server sleeps
+            # up to its accept poll BEFORE it takes the snapshot, so that wait
+            # precedes the observation rather than following it; what separates
+            # this instant from the snapshot is only building, writing and
+            # reading the reply.  Sampling before the read would carry the whole
+            # accept wait into the placement instead, and would move the floor
+            # EARLIER — the loosening direction on both counts.  The bias is
+            # measured in tests/test_aec_init.py against a fixture that models
+            # the server's real order (accept wait, snapshot, reply).
             now = time.monotonic()
             status_reads += 1
             snapshot = validate_reference_status(status, expected_pcm=expected_pcm)
-            if counters is None:
-                counters = snapshot.counters
-            elif snapshot.counters != counters:
+            if baseline is None:
+                baseline = (snapshot.counters, now)
+                window = []
+            elif snapshot.counters != baseline[0]:
                 raise ChipInitError("chip-reference writer error counters moved")
-            window = _merge_writes(window, snapshot.writes, now, floor)
+            window = _merge_writes(window, snapshot.writes, now, baseline[1])
         except (OSError, ValueError, ChipInitError) as exc:
             # An xrun, a reopen, or a restart splits the readings on either side
-            # of it into different pipeline states, so the window starts over —
-            # and the floor moves with it, or the next read's ring would hand
-            # the discarded pre-seam observations straight back.
+            # of it into different pipeline states, so the window starts over
+            # and waits for a fresh baseline — which carries the floor past the
+            # seam, or the next read's ring would hand the discarded pre-seam
+            # observations straight back.
             window = []
-            counters = None
-            floor = time.monotonic()
+            baseline = None
             last_error = str(exc)
         else:
             delays = tuple(item.delay for _at, item in window)
@@ -631,6 +650,10 @@ def collect_reference_queue(
         held=_window_span(window),
         status_reads=status_reads,
         interval=interval,
+        # The reason travels in the event too: a refusal whose numbers are all
+        # zero (an outputd with no ring, a writer that never went active) is
+        # indistinguishable from any other under the instrument otherwise.
+        reason=last_error,
         level=logging.WARNING,
     )
     raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
@@ -652,6 +675,7 @@ def _log_reference_queue(
     held: float,
     status_reads: int,
     interval: float,
+    reason: str = "",
     level: int = logging.INFO,
 ) -> None:
     """Record the window one collection closed on — including the ones it did not.
@@ -663,29 +687,45 @@ def _log_reference_queue(
     """
 
     spread = max(delays) - min(delays) if delays else 0
-    log_event(
-        logger,
-        "chip_aec_init.reference_queue",
-        outcome=outcome,
-        samples=len(delays),
-        spread=spread,
-        required=required_queue_samples(spread) if delays else 0,
-        median=median_samples(delays) if delays else 0,
-        median_drift=queue_median_drift(delays),
-        held_sec=round(held, 2),
-        status_reads=status_reads,
-        poll_interval_ms=round(interval * 1_000, 1),
-        level=level,
-    )
+    fields: dict[str, Any] = {
+        "outcome": outcome,
+        "samples": len(delays),
+        "spread": spread,
+        "required": required_queue_samples(spread) if delays else 0,
+        "median": median_samples(delays) if delays else 0,
+        "median_drift": queue_median_drift(delays),
+        "held_sec": round(held, 2),
+        "status_reads": status_reads,
+        "poll_interval_ms": round(interval * 1_000, 1),
+    }
+    if reason:
+        fields["reason"] = reason
+    log_event(logger, "chip_aec_init.reference_queue", level=level, **fields)
 
 
 def _queue_shortfall(delays: Sequence[int], held: float) -> str:
     if not delays:
         return "chip-reference writer has published no queue readings yet"
     spread = max(delays) - min(delays)
+    required = required_queue_samples(spread)
+    # The window slides, so the readings it can ever hold are this box's write
+    # rate times the retention horizon — no matter how much budget is left.
+    # Reporting a plain reading shortfall when the required count is past that
+    # ceiling would send an operator looking for a longer budget that can never
+    # close it: the queue is simply wider than this output cadence can carry K
+    # at.  The rate comes from the window's own readings, so no cadence is
+    # assumed here.
+    reachable = len(delays) / held * QUEUE_WINDOW_MAX_SEC if held > 0 else 0.0
+    if reachable and required > reachable:
+        return (
+            f"chip-reference queue spread {spread} needs {required} readings, "
+            f"more than the {reachable:.0f} this cadence produces inside the "
+            f"{QUEUE_WINDOW_MAX_SEC:g}s retention window; the queue is wider "
+            "than this output cadence can carry K at"
+        )
     return (
         f"chip-reference queue spread {spread} needs "
-        f"{required_queue_samples(spread)} readings over "
+        f"{required} readings over "
         f"{QUEUE_MIN_WINDOW_SEC:g}s with its halves within "
         f"{QUEUE_MAX_MEDIAN_DRIFT} frames; held {len(delays)} over "
         f"{held:.1f}s with halves {queue_median_drift(delays)} apart"
@@ -910,6 +950,14 @@ def main() -> int:
                     queue,
                     commissioned_sys_delay=artifact.sys_delay,
                 )
+            except QueueMovedFromCommissioned as exc:
+                # Not a fault to inspect: the live reference queue no longer
+                # sits where it did when this artifact was measured, so the
+                # artifact does not describe this box any more. That is the
+                # recommission case, and it is already a recoverable park —
+                # sending the household at "inspect jasper-aec-init and
+                # outputd" would be sending them at a healthy daemon.
+                raise CommissionRequired(str(exc)) from exc
             except ValueError as exc:
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)

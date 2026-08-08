@@ -160,6 +160,17 @@ def queue_window_is_stable(queue_samples: Sequence[int | float]) -> bool:
     return queue_median_drift(queue_samples) <= QUEUE_MAX_MEDIAN_DRIFT
 
 
+class QueueMovedFromCommissioned(ValueError):
+    """The live queue median no longer sits where the artifact measured it.
+
+    A distinct type because the disposition is distinct: nothing is broken, the
+    artifact simply stopped describing this box, so the box needs
+    recommissioning rather than an operator inspecting a healthy daemon.  A
+    subclass of ValueError so a caller that only knows the old contract still
+    catches it.
+    """
+
+
 def runtime_sys_delay(
     k_samples: int,
     queue_samples: Sequence[int | float],
@@ -190,7 +201,7 @@ def runtime_sys_delay(
     delay = k_samples - queue
     moved = delay - commissioned_sys_delay
     if abs(moved) > MIN_EDGE_MARGIN:
-        raise ValueError(
+        raise QueueMovedFromCommissioned(
             f"live reference queue median has moved {moved:+d} frames from the "
             f"commissioned window (limit {MIN_EDGE_MARGIN}); SYS_DELAY {delay} "
             "is outside the causal margin commissioning reserved"

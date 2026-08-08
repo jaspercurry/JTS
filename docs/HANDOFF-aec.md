@@ -143,8 +143,11 @@ which is what the count rule cannot see — a queue walking away from its start
 holds any spread you like if you stop looking soon enough. The window SLIDES
 (`QUEUE_WINDOW_MAX_SEC`), so one outlier write ages out instead of holding the
 required count up for the whole budget, and it never reaches back past the
-collection's own start, so every reading in it was made while the loop watched
-the writer's error counters hold still.
+instant the writer's error-counter baseline was taken, so every reading in it
+lies between two instants at which those counters were observed equal. That
+floor is the baseline's own instant, not the collection's start: the counters
+are cumulative, so a seam before the baseline is one nothing can see, and a
+step at the leading edge is invisible to the split-half bound by construction.
 
 `collect_reference_queue` and `runtime_sys_delay` both read that one rule, so
 boot cannot reject a window on a criterion commissioning never applied. The
@@ -159,9 +162,11 @@ windows' medians — the only error term between the alignment the commissioner
 verified (causal window, convergence transition, ≥ 10 dB beam suppression) and
 what boot applies. `choose_delay` reserves `MIN_EDGE_MARGIN` frames of margin
 on both causal-window edges, so that is the bound: past it, `jasper-aec-init`
-parks with the numbers instead of applying a delay nobody measured. The
-chip's own −64..256 range is six times wider than the causal window and was
-never a substitute for this.
+parks with the numbers instead of applying a delay nobody measured, and it
+parks as **commission_required** — the artifact stopped describing the box, so
+the action is a recommission, not an operator inspecting a healthy daemon. The
+chip's own −64..256 range spans 320 frames against a 39-frame causal window and
+was never a substitute for this.
 
 **Adding `dac.format` to the identity force-recommissions the fleet.** Every
 artifact commissioned before that field existed fails the identity check, so on
