@@ -20,6 +20,7 @@ from jasper.cues.generator import (
     cue_filename,
 )
 from jasper.cues.registry import find
+from tests._async_wait import wait_signalled
 
 
 # --- Fakes ---
@@ -378,6 +379,52 @@ def test_play_swallows_tts_write_exception(tmp_path):
     mgr.regenerate()
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is False
+
+
+@pytest.mark.parametrize("operation", ["play", "speak_text"])
+async def test_cue_manager_defers_repeated_cancellation_through_drain(
+    tmp_path,
+    operation: str,
+) -> None:
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    class _HeldDrainTts(_FakeTtsPlayout):
+        async def wait_drained(self) -> None:
+            self.waits += 1
+            drain_started.set()
+            await wait_signalled(release_drain, "release cue manager drain")
+
+    backend = _FakeBackend()
+    tts = _HeldDrainTts()
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path),
+        hostname="jts.local",
+        voice="Aoede",
+        backend=backend,
+        tts_playout=tts,
+    )
+    if operation == "play":
+        mgr.regenerate(slug="spend_cap_reached")
+        playing = asyncio.create_task(mgr.play("spend_cap_reached"))
+    else:
+        playing = asyncio.create_task(mgr.speak_text("Timer finished"))
+
+    await wait_signalled(
+        drain_started,
+        f"{operation} cue-manager drain",
+        producer=playing,
+    )
+    playing.cancel()
+    await asyncio.sleep(0)
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done()
+
+    release_drain.set()
+    with pytest.raises(asyncio.CancelledError):
+        await playing
 
 
 # --- TTS-model change invalidation ---

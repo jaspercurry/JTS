@@ -12,7 +12,8 @@ import socket
 import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -775,6 +776,14 @@ class TtsPlayout:
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE
 _OUTPUTD_SAMPLE_RATE = 48_000
 _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
+# All IPC is local to the Pi. Healthy connects and control writes complete in
+# milliseconds, while one second tolerates scheduler pressure without letting
+# a dead owner or full Unix-socket buffer strand voice teardown indefinitely.
+# Lock waits use the same ceiling: their owner is itself bounded by the socket
+# timeout, and a timed-out waiter poisons the socket to wake that owner.
+_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC = 1.0
+_OUTPUTD_IPC_IO_TIMEOUT_SEC = 1.0
+_OUTPUTD_IPC_LOCK_TIMEOUT_SEC = 1.0
 # Keep individual IPC messages well below the daemon's 2 MiB hard cap.
 # 250 ms chunks make barge-in/flush sharper and set the granularity at
 # which the writer's pacing (below) applies backpressure. Chunking alone
@@ -840,7 +849,7 @@ async def _send_outputd_audio_chunk(stream, chunk: bytes) -> bool:
     current = asyncio.current_task()
     while not write_task.done():
         try:
-            await asyncio.shield(write_task)
+            await asyncio.wait({write_task})
         except asyncio.CancelledError:
             cancelled = True
             if current is not None:
@@ -853,6 +862,49 @@ async def _send_outputd_audio_chunk(stream, chunk: bytes) -> bool:
             raise asyncio.CancelledError from None
         raise error
     return cancelled
+
+
+async def wait_tts_drained_owned(
+    tts: Any,
+    *,
+    fallback_sec: float = 0.0,
+) -> None:
+    """Wait through the physical tail and defer repeated cancellation.
+
+    Cue and feedback callers use this once PCM may have been accepted. A
+    cancelled coroutine cannot revoke worker-thread socket writes, so the
+    caller retains duck/output ownership until the real drain waiter finishes,
+    then receives cancellation. ``fallback_sec`` supports legacy test/out-of-
+    tree playout objects that predate ``wait_drained``.
+    """
+
+    async def _wait() -> None:
+        wait_drained = getattr(tts, "wait_drained", None)
+        if callable(wait_drained):
+            await wait_drained()
+        elif fallback_sec > 0.0:
+            await asyncio.sleep(fallback_sec)
+
+    drain = asyncio.create_task(_wait(), name="tts-physical-drain")
+    deferred_cancel = False
+    current = asyncio.current_task()
+    while not drain.done():
+        try:
+            await asyncio.wait({drain})
+        except asyncio.CancelledError:
+            if current is None or current.cancelling() == 0:
+                break
+            deferred_cancel = True
+            current.uncancel()
+    if drain.cancelled():
+        raise asyncio.CancelledError
+    error = drain.exception()
+    if error is not None:
+        if deferred_cancel:
+            raise asyncio.CancelledError from None
+        raise error
+    if deferred_cancel:
+        raise asyncio.CancelledError
 
 
 def _outputd_segment_kind(kind: str) -> str:
@@ -909,10 +961,12 @@ class _OutputdStreamAdapter:
 
     def __init__(self, sock: socket.socket) -> None:
         self._sock = sock
+        self._sock.settimeout(_OUTPUTD_IPC_IO_TIMEOUT_SEC)
         self._recv_buffer = bytearray()
         self._lock = threading.Lock()
         self._active_segment: tuple[str, str, tuple[str, ...] | None] | None = None
         self._closed = False
+        self._timeout_logged = False
 
     @property
     def closed(self) -> bool:
@@ -945,26 +999,81 @@ class _OutputdStreamAdapter:
         try:
             if send_close:
                 if self._active_segment is not None:
-                    self._sock.sendall(b"SEGMENT_END\n")
+                    self._sendall_locked(b"SEGMENT_END\n")
                     self._active_segment = None
-                self._sock.sendall(b"CLOSE\n")
+                self._sendall_locked(b"CLOSE\n")
         except OSError:
             pass
+        self._poison(reason=None)
+
+    def _poison(self, *, reason: str | None) -> None:
+        """Close from any thread and wake a blocked socket operation."""
+
+        if self._closed:
+            return
         self._closed = True
+        self._active_segment = None
         self._recv_buffer.clear()
-        self._sock.close()
+        try:
+            # close() alone does not reliably wake a sendall blocked in a
+            # different thread on every supported kernel. shutdown() does.
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        if reason is not None and not self._timeout_logged:
+            self._timeout_logged = True
+            timeout_sec = (
+                _OUTPUTD_IPC_LOCK_TIMEOUT_SEC
+                if reason == "lock"
+                else _OUTPUTD_IPC_IO_TIMEOUT_SEC
+            )
+            log_event(
+                logger,
+                "tts_fanin.adapter_timeout",
+                phase=reason,
+                timeout_sec=timeout_sec,
+                action="socket_poisoned",
+                level=logging.WARNING,
+            )
+
+    @contextmanager
+    def _bounded_lock(self):
+        acquired = self._lock.acquire(timeout=_OUTPUTD_IPC_LOCK_TIMEOUT_SEC)
+        if not acquired:
+            # Do not release a lock this waiter never acquired. Poisoning the
+            # socket wakes the owning thread's bounded sendall; that owner
+            # releases its own lock in its finally block.
+            self._poison(reason="lock")
+            raise TimeoutError(
+                "TTS IPC adapter lock timed out after "
+                f"{_OUTPUTD_IPC_LOCK_TIMEOUT_SEC:.1f}s"
+            )
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def _sendall_locked(self, data: bytes) -> None:
         if self._closed:
             raise BrokenPipeError("TTS IPC socket is closed")
         try:
             self._sock.sendall(data)
+        except TimeoutError as e:
+            self._poison(reason="send")
+            raise TimeoutError(
+                "TTS IPC send timed out after "
+                f"{_OUTPUTD_IPC_IO_TIMEOUT_SEC:.1f}s"
+            ) from e
         except OSError:
-            self._close_unlocked(send_close=False)
+            self._poison(reason=None)
             raise
 
     def set_gain_db(self, db: float) -> None:
-        with self._lock:
+        with self._bounded_lock():
             self._sendall_locked(f"GAIN {db:.3f}\n".encode("ascii"))
 
     def prepare_assistant(
@@ -987,7 +1096,7 @@ class _OutputdStreamAdapter:
                 provider, model, voice,
             )
             return
-        with self._lock:
+        with self._bounded_lock():
             parts = [
                 "PREPARE_ASSISTANT",
                 provider,
@@ -1008,11 +1117,11 @@ class _OutputdStreamAdapter:
             self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
 
     def pause_content_meter(self) -> None:
-        with self._lock:
+        with self._bounded_lock():
             self._sendall_locked(b"CONTENT_METER_PAUSE\n")
 
     def resume_content_meter(self) -> None:
-        with self._lock:
+        with self._bounded_lock():
             self._sendall_locked(b"CONTENT_METER_RESUME\n")
 
     def start_segment(
@@ -1028,7 +1137,7 @@ class _OutputdStreamAdapter:
             _outputd_provider_token(provider_item_id),
             tuple(profile_tokens) if profile_tokens is not None else None,
         )
-        with self._lock:
+        with self._bounded_lock():
             if self._active_segment == segment:
                 return
             if self._active_segment is not None:
@@ -1040,14 +1149,14 @@ class _OutputdStreamAdapter:
             self._active_segment = segment
 
     def end_segment(self) -> None:
-        with self._lock:
+        with self._bounded_lock():
             if self._active_segment is None:
                 return
             self._sendall_locked(b"SEGMENT_END\n")
             self._active_segment = None
 
     def write(self, data: bytes) -> None:
-        with self._lock:
+        with self._bounded_lock():
             self._sendall_locked(f"AUDIO {len(data)}\n".encode("ascii"))
             self._sendall_locked(data)
 
@@ -1055,7 +1164,7 @@ class _OutputdStreamAdapter:
         self.flush_sync()
 
     def flush_sync(self) -> dict | None:
-        with self._lock:
+        with self._bounded_lock():
             try:
                 self._sendall_locked(b"FLUSH_SYNC\n")
                 self._active_segment = None
@@ -1090,7 +1199,9 @@ class _OutputdStreamAdapter:
         return None
 
     def close(self) -> None:
-        with self._lock:
+        if self._closed:
+            return
+        with self._bounded_lock():
             self._close_unlocked(send_close=True)
 
 
@@ -1139,8 +1250,39 @@ class OutputdTtsPlayout(TtsPlayout):
 
     async def _connect_stream_adapter(self) -> _OutputdStreamAdapter:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC)
+        connect_task = asyncio.create_task(
+            asyncio.to_thread(sock.connect, self._socket_path)
+        )
         try:
-            await asyncio.to_thread(sock.connect, self._socket_path)
+            await asyncio.wait_for(
+                asyncio.shield(connect_task),
+                timeout=_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+            # The thread is bounded by the socket timeout too, but it may
+            # finish after this coroutine returns. Consume that late outcome.
+            connect_task.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )
+            if isinstance(e, asyncio.CancelledError):
+                raise
+            log_event(
+                logger,
+                "tts_fanin.connect_timeout",
+                socket=self._socket_path,
+                timeout_sec=_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC,
+                level=logging.WARNING,
+            )
+            raise TimeoutError(
+                "TTS IPC connect timed out after "
+                f"{_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC:.1f}s"
+            ) from None
         except Exception as e:  # noqa: BLE001
             sock.close()
             logger.error(
@@ -1253,6 +1395,7 @@ class OutputdTtsPlayout(TtsPlayout):
                     attempt == 0
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
+                    and not isinstance(e, TimeoutError)
                 ):
                     log_event(
                         logger,
@@ -1288,6 +1431,7 @@ class OutputdTtsPlayout(TtsPlayout):
                     attempt == 0
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
+                    and not isinstance(e, TimeoutError)
                 ):
                     log_event(
                         logger,
@@ -1373,6 +1517,7 @@ class OutputdTtsPlayout(TtsPlayout):
                     attempt == 0
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
+                    and not isinstance(e, TimeoutError)
                 ):
                     log_event(
                         logger,

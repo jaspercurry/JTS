@@ -360,6 +360,134 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     assert tts.resume_calls == 1
 
 
+async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
+    import jasper.voice_daemon as voice_daemon_mod
+
+    note_entered = asyncio.Event()
+    release_note = asyncio.Event()
+
+    class _FailingVolume:
+        async def note_measurement_active(self, active: bool) -> None:
+            if active:
+                note_entered.set()
+                await wait_signalled(release_note, "release volume guard setup")
+                raise RuntimeError("volume guard failed")
+
+    class _Meter:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        async def pause_content_meter(self) -> None:
+            return None
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+
+    wl = WakeLoop.for_tests()
+    meter = _Meter()
+    wl._volume_coordinator = _FailingVolume()
+    wl._tts = meter
+
+    pause = asyncio.create_task(wl.measurement_pause())
+    await wait_signalled(
+        note_entered,
+        "measurement volume setup",
+        producer=pause,
+    )
+    assert wl._measurement_active.is_set()
+    assert wl._output_gate.admission_paused
+    safety = wl._measurement_safety_task
+    assert safety is not None and not safety.done()
+
+    release_note.set()
+    with pytest.raises(RuntimeError, match="volume guard failed"):
+        await pause
+
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+    assert wl._measurement_safety_task is None
+    assert safety.done()
+    assert meter.resume_calls == 1
+    assert voice_daemon_mod.MEASUREMENT_AUTOCLEAR_SEC > 0
+
+
+async def test_resume_reopens_admission_before_stuck_meter_recovers() -> None:
+    resume_entered = asyncio.Event()
+    release_resume = asyncio.Event()
+
+    class _Meter:
+        async def pause_content_meter(self) -> None:
+            return None
+
+        async def resume_content_meter(self) -> None:
+            resume_entered.set()
+            await wait_signalled(release_resume, "release meter resume")
+
+    wl = WakeLoop.for_tests()
+    wl._tts = _Meter()
+    assert await wl.measurement_pause() == "ok"
+
+    resume = asyncio.create_task(wl.measurement_resume())
+    await wait_signalled(
+        resume_entered,
+        "measurement meter resume",
+        producer=resume,
+    )
+    assert not resume.done()
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+
+    release_resume.set()
+    assert await resume == "ok"
+
+
+async def test_resume_restores_after_safety_join_timeout(
+    monkeypatch,
+    caplog,
+) -> None:
+    import jasper.voice_daemon as voice_daemon_mod
+
+    monkeypatch.setattr(
+        voice_daemon_mod,
+        "MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC",
+        0.01,
+    )
+    safety_started = asyncio.Event()
+    release_safety = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+
+    async def stubborn_safety() -> None:
+        safety_started.set()
+        try:
+            await wait_signalled(release_safety, "release stubborn safety")
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await wait_signalled(
+                release_safety,
+                "release cancelled stubborn safety",
+            )
+
+    wl = WakeLoop.for_tests()
+    await wl._output_gate.pause_admission()
+    wl._set_measurement_active_local(True, trigger="test")
+    safety = asyncio.create_task(stubborn_safety())
+    wl._measurement_safety_task = safety
+    await wait_signalled(
+        safety_started,
+        "stubborn measurement safety start",
+        producer=safety,
+    )
+
+    assert await wl.measurement_resume() == "ok"
+    assert cancellation_seen.is_set()
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+    assert "event=measurement.safety_join_timeout" in caplog.text
+
+    release_safety.set()
+    await asyncio.wait_for(safety, timeout=1.0)
+
+
 @pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
 async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None:
     wl = WakeLoop.for_tests()
@@ -441,6 +569,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
             "current_task": staticmethod(asyncio.current_task),
             "shield": staticmethod(asyncio.shield),
             "to_thread": staticmethod(asyncio.to_thread),
+            "wait": staticmethod(asyncio.wait),
             "sleep": staticmethod(fake_drain_sleep),
         },
     )
@@ -559,6 +688,199 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     await _close_window(wl)
 
 
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+@pytest.mark.parametrize("path", ["admin", "proactive"])
+async def test_cancelled_cue_tail_retains_output_episode(
+    monkeypatch,
+    tts_socket: str,
+    path: str,
+) -> None:
+    """Accepted cue PCM keeps admin/proactive ownership under cancellation."""
+    import scipy.signal
+
+    from jasper.audio_io import OutputdTtsPlayout
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    class _AcceptedStream:
+        def set_gain_db(self, _db: float) -> None:
+            return None
+
+        def start_segment(self, **_kwargs) -> None:
+            return None
+
+        def write(self, _data: bytes) -> None:
+            return None
+
+    tts = OutputdTtsPlayout(
+        socket_path=tts_socket,
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    tts._stream = _AcceptedStream()  # type: ignore[assignment]
+
+    async def controlled_drain() -> None:
+        drain_started.set()
+        await wait_signalled(release_drain, "release accepted cue tail")
+
+    tts.wait_drained = controlled_drain  # type: ignore[method-assign]
+
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def play(self, _slug: str) -> bool:
+            await tts.write_segment(b"\x01\x00" * 5, segment_kind="cue")
+            return True
+
+        async def speak_text(self, _text: str) -> bool:
+            await tts.write_segment(b"\x01\x00" * 5, segment_kind="cue")
+            return True
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._tts = tts
+    wl._cues = _Cues()
+    wl._camilla = None
+    if path == "admin":
+        playing = asyncio.create_task(wl._play_cue("cant_connect"))
+        expected_kind = "admin"
+    else:
+        playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
+        expected_kind = "proactive"
+
+    await wait_signalled(
+        drain_started,
+        f"{path} cue physical drain",
+        producer=playing,
+    )
+    assert tts._ring_end_monotonic is not None
+    playing.cancel()
+    await asyncio.sleep(0)
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done(), (tts_socket, path)
+    assert wl._output_gate.active_kind == expected_kind
+
+    pause = asyncio.create_task(wl.measurement_pause_response())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not pause.done(), (tts_socket, path)
+
+    release_drain.set()
+    with pytest.raises(asyncio.CancelledError):
+        await playing
+    assert await asyncio.wait_for(pause, timeout=1.0) == {
+        "result": "ok",
+        "drained": True,
+    }
+    await _close_window(wl)
+
+
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
+    monkeypatch,
+    tmp_path,
+    tts_socket: str,
+) -> None:
+    import wave
+
+    import scipy.signal
+
+    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.cues import AudioCueManager
+    from jasper.cues.registry import find
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+    restored = asyncio.Event()
+
+    class _AcceptedStream:
+        def set_gain_db(self, _db: float) -> None:
+            return None
+
+        def start_segment(self, **_kwargs) -> None:
+            return None
+
+        def write(self, _data: bytes) -> None:
+            return None
+
+    class _Ducker:
+        async def duck(self) -> None:
+            return None
+
+        async def restore(self) -> None:
+            restored.set()
+
+    tts = OutputdTtsPlayout(
+        socket_path=tts_socket,
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    tts._stream = _AcceptedStream()  # type: ignore[assignment]
+
+    async def controlled_drain() -> None:
+        drain_started.set()
+        await wait_signalled(release_drain, "release ducked cue tail")
+
+    tts.wait_drained = controlled_drain  # type: ignore[method-assign]
+    cues = AudioCueManager(
+        sounds_dir=str(tmp_path),
+        hostname="jts.local",
+        voice="Aoede",
+        tts_playout=tts,
+    )
+    cue = find("cant_connect")
+    assert cue is not None
+    cue_path = cues.expected_path(cue)
+    with wave.open(cue_path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(b"\x01\x00" * 5)
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._tts = tts
+    wl._cues = cues
+    wl._ducker = _Ducker()
+    playing = asyncio.create_task(wl._play_cue("cant_connect"))
+    await wait_signalled(
+        drain_started,
+        "admin cue manager physical drain",
+        producer=playing,
+    )
+
+    playing.cancel()
+    await asyncio.sleep(0)
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done(), tts_socket
+    assert not restored.is_set(), "duck restore must follow the physical tail"
+    assert wl._output_gate.active_kind == "admin"
+
+    release_drain.set()
+    with pytest.raises(asyncio.CancelledError):
+        await playing
+    assert restored.is_set()
+    assert not wl._output_gate.is_active
+
+
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:
     """The coordinator re-sends MEASURE_PAUSE every
     MEASUREMENT_LEASE_REFRESH_SEC to renew the daemon's crash-recovery
@@ -573,6 +895,64 @@ async def test_lease_refresh_into_an_open_window_never_waits() -> None:
     assert await wl.measurement_pause() == "ok"
 
     assert gate.waits == []
+    await _close_window(wl)
+
+
+async def test_lease_refresh_joins_stale_auto_clear_before_return(
+    monkeypatch,
+) -> None:
+    """An expiring old lease cannot reopen admission behind its renewal."""
+    import jasper.voice_daemon as voice_daemon_mod
+
+    old_sleeping = asyncio.Event()
+    release_old = asyncio.Event()
+    old_released = asyncio.Event()
+    new_sleeping = asyncio.Event()
+    keep_new_armed = asyncio.Event()
+    calls = 0
+
+    async def controlled_safety_sleep(_seconds: float) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            old_sleeping.set()
+            await wait_signalled(release_old, "release old measurement safety")
+            old_released.set()
+            return
+        new_sleeping.set()
+        await wait_signalled(keep_new_armed, "renewed safety cancellation")
+
+    monkeypatch.setattr(
+        voice_daemon_mod,
+        "_measurement_safety_sleep",
+        controlled_safety_sleep,
+    )
+    wl = WakeLoop.for_tests()
+    assert await wl.measurement_pause() == "ok"
+    await wait_signalled(old_sleeping, "old measurement safety sleep")
+    old_task = wl._measurement_safety_task
+    assert old_task is not None
+
+    await wl._measurement_transition_lock.acquire()
+    try:
+        renewal = asyncio.create_task(wl.measurement_pause())
+        await asyncio.sleep(0)
+        release_old.set()
+        await wait_signalled(
+            old_released,
+            "old measurement safety expiry",
+            producer=old_task,
+        )
+        await asyncio.sleep(0)
+    finally:
+        wl._measurement_transition_lock.release()
+
+    assert await renewal == "ok"
+    await wait_signalled(new_sleeping, "renewed measurement safety sleep")
+    assert old_task.done()
+    assert wl._measurement_safety_task is not old_task
+    assert wl._measurement_active.is_set()
+    assert wl._output_gate.admission_paused
     await _close_window(wl)
 
 

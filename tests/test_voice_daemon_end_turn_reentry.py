@@ -30,6 +30,7 @@ import asyncio
 import pytest
 
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
+from tests._async_wait import wait_signalled
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 
 
@@ -275,11 +276,15 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
 
     async def wait_drained() -> None:
         drain_started.set()
-        await release_drain.wait()
+        await wait_signalled(release_drain, "release final chirp drain")
 
     wl._tts.wait_drained = wait_drained
     teardown = asyncio.create_task(wl._end_turn())
-    await drain_started.wait()
+    await wait_signalled(
+        drain_started,
+        "final chirp physical drain",
+        producer=teardown,
+    )
 
     assert wl._state is State.SESSION
     assert wl._output_gate.active_kind == "turn"

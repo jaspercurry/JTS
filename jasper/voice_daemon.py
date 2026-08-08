@@ -26,6 +26,7 @@ from .audio_io import (
     InputDeviceUnavailable,
     MicCapture,
     TtsPlayout,
+    wait_tts_drained_owned,
 )
 from .assistant_loudness import (
     active_voice_identity,
@@ -534,10 +535,9 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # work that runs BEFORE the drain and is therefore inside the same reply:
 # `note_measurement_active` waits on the volume coordinator's
 # `_reconcile_write_lock` for an already-started reconciler write to land,
-# and `pause_content_meter` does an `asyncio.to_thread` socket write to
-# outputd with one retry. Both are milliseconds when healthy and neither
-# is hard-bounded, so the margin has to absorb their worst case on a
-# loaded 1 GB Pi. 2.0 s then covers the typical remaining tail of a cue or
+# and `pause_content_meter` does a bounded local IPC write to outputd.
+# Both are milliseconds when healthy, so the margin absorbs their normal
+# scheduling cost on a loaded 1 GB Pi. 2.0 s then covers the typical tail of a cue or
 # timer announcement (registry cue texts run ~3-7 s of speech and PAUSE
 # lands mid-playout). Pinned against the coordinator's timeout by
 # tests/test_voice_daemon_measurement_inflight.py.
@@ -555,6 +555,16 @@ MEASUREMENT_INFLIGHT_DRAIN_SEC = 2.0
 # capture. Pinned against the refresh interval by
 # tests/test_voice_daemon_measurement_inflight.py.
 MEASUREMENT_AUTOCLEAR_SEC = 120.0
+
+# Replacing a measurement lease joins the prior crash-recovery task so a stale
+# task cannot reopen output after the renewal returns. The task normally exits
+# in one event-loop turn after cancellation; 1 s leaves ample Pi scheduling
+# headroom while keeping a broken cleanup task from wedging the control socket.
+MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC = 1.0
+
+# Test seam for deterministic lease-expiry interleavings without wall-clock
+# sleeps. Production retains asyncio.sleep exactly.
+_measurement_safety_sleep = asyncio.sleep
 
 
 class ContentActivityTracker:
@@ -1088,6 +1098,8 @@ class WakeLoop:
         # strand the speaker silent.
         self._measurement_active: asyncio.Event = asyncio.Event()
         self._measurement_safety_task: asyncio.Task | None = None
+        self._measurement_transition_lock = asyncio.Lock()
+        self._measurement_lease_generation = 0
 
         # User-driven mic mute. Set via mute_mic()/unmute_mic() (driven
         # through the MUTE / UNMUTE UDS commands). When True, the wake
@@ -2203,7 +2215,10 @@ class WakeLoop:
                     logger.warning("dynamic text play failed: %s", e)
                     return False
         finally:
-            await self._output_gate.end(episode)
+            try:
+                await self._finish_output_episode_after_drain(episode)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                logger.warning("dynamic text drain cleanup failed: %s", e)
 
     async def _play_cue(self, slug: str) -> bool:
         """Best-effort cue playback. Ducks music via CamillaDSP for
@@ -2285,8 +2300,53 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cue %s restore failed: %s", slug, e)
         finally:
-            await self._output_gate.end(episode)
+            try:
+                await self._finish_output_episode_after_drain(episode)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+                logger.warning("cue %s drain cleanup failed: %s", slug, e)
         return played
+
+    async def _finish_output_episode_after_drain(
+        self,
+        episode: AssistantOutputEpisode,
+    ) -> None:
+        """Retain output ownership until accepted PCM is physically silent.
+
+        Socket writes running in worker threads cannot be revoked by task
+        cancellation. Once a cue path may have queued PCM, repeated caller
+        cancellation is therefore deferred until one shielded cleanup task
+        reaches the playout deadline and releases the exact episode token.
+        """
+
+        async def _drain_and_release() -> None:
+            try:
+                await wait_tts_drained_owned(self._tts)
+            finally:
+                await self._output_gate.end(episode)
+
+        cleanup = asyncio.create_task(
+            _drain_and_release(),
+            name=f"output-drain-{episode.kind}-{episode.id}",
+        )
+        deferred_cancel = False
+        current = asyncio.current_task()
+        while not cleanup.done():
+            try:
+                await asyncio.wait({cleanup})
+            except asyncio.CancelledError:
+                if current is None or current.cancelling() == 0:
+                    break
+                deferred_cancel = True
+                current.uncancel()
+        if cleanup.cancelled():
+            raise asyncio.CancelledError
+        error = cleanup.exception()
+        if error is not None:
+            if deferred_cancel:
+                raise asyncio.CancelledError from None
+            raise error
+        if deferred_cancel:
+            raise asyncio.CancelledError
 
     async def run(self) -> None:
         # Spawn one wake-only consumer per non-primary leg (off / dtln /
@@ -2588,59 +2648,195 @@ class WakeLoop:
         armed. Older coordinators branch only on that field; changing it would
         make them skip lease renewal and RESUME during a rolling deploy.
         """
-        if self._state is State.SESSION:
-            return "BUSY", None
-        opening = not self._measurement_active.is_set()
-        admission_cleanup_required = False
-        pause_returned = False
-        if opening:
-            await self._output_gate.pause_admission()
-            admission_cleanup_required = True
-        try:
-            await self._set_measurement_active(True, trigger="pause")
-            self._content_activity.pause()
-            await self._tts.pause_content_meter()
+        async with self._measurement_transition_lock:
+            if self._state is State.SESSION:
+                return "BUSY", None
+            opening = not self._measurement_active.is_set()
+            deferred_cancel = False
+            if opening:
+                # Any orphaned slot is joined before admission changes. Once
+                # pause_admission returns, every following operation through
+                # safety-task installation is synchronous: crash recovery is
+                # therefore armed before the first post-close external await.
+                orphaned = self._measurement_safety_task
+                deferred_cancel |= await self._cancel_measurement_safety_locked(
+                    orphaned
+                )
+                if deferred_cancel:
+                    raise asyncio.CancelledError
+                await self._output_gate.pause_admission()
+                self._set_measurement_active_local(True, trigger="pause")
+                self._content_activity.pause()
+                self._arm_measurement_safety_locked()
+            else:
+                # Install the replacement before the first await so the
+                # active measurement never has a crash-backstop gap. The new
+                # generation/slot also makes the old task stale immediately.
+                previous = self._measurement_safety_task
+                self._arm_measurement_safety_locked()
+                deferred_cancel |= await self._cancel_measurement_safety_locked(
+                    previous
+                )
 
-            # Cancel any prior safety timer (idempotent re-pause path).
-            prev = self._measurement_safety_task
-            if prev is not None and not prev.done():
-                prev.cancel()
-
-            # Arm new safety timer. If the coordinator crashes (kill -9)
-            # without sending RESUME, this auto-clears the gate so the
-            # speaker doesn't stay silent forever. Logged at WARNING so
-            # the operator can see something went wrong.
-            loop = asyncio.get_running_loop()
-
-            async def _safety() -> None:
-                try:
-                    await asyncio.sleep(MEASUREMENT_AUTOCLEAR_SEC)
-                except asyncio.CancelledError:
-                    return
-                if self._measurement_active.is_set():
-                    logger.warning(
-                        "measurement window auto-clearing after %.0f s — "
-                        "coordinator likely crashed without sending "
-                        "MEASURE_RESUME",
-                        MEASUREMENT_AUTOCLEAR_SEC,
+            try:
+                await self._volume_coordinator.note_measurement_active(True)
+                await self._tts.pause_content_meter()
+                drained = not opening or await self._drain_inflight_output()
+            except asyncio.CancelledError:
+                if opening:
+                    deferred_cancel |= await self._rollback_measurement_open_locked(
+                        trigger="pause_error",
                     )
-                    await self._restore_measurement_state(trigger="auto_clear")
+                raise
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                if opening:
+                    deferred_cancel |= await self._rollback_measurement_open_locked(
+                        trigger="pause_error",
+                    )
+                raise
+            if deferred_cancel:
+                raise asyncio.CancelledError
+            return "ok", drained
 
-            # Note: this is a fire-once-and-exit task that we deliberately
-            # do NOT add to self._bg_tasks — WakeLoop treats done bg tasks
-            # as turn completion through its background watcher and
-            # session-frame backup, so adding short-lived tasks there would
-            # corrupt the turn lifecycle. Single-slot reference is enough;
-            # we cancel via that slot on RESUME or repeated PAUSE.
-            self._measurement_safety_task = loop.create_task(_safety())
-            if opening and not await self._drain_inflight_output():
-                pause_returned = True
-                return "ok", False
-            pause_returned = True
-            return "ok", True
-        finally:
-            if admission_cleanup_required and not pause_returned:
-                await self._restore_measurement_state(trigger="pause_error")
+    def _arm_measurement_safety_locked(self) -> None:
+        """Install one generation-bound crash backstop without awaiting."""
+
+        self._measurement_lease_generation += 1
+        generation = self._measurement_lease_generation
+        task = asyncio.create_task(
+            self._measurement_auto_clear(generation),
+            name=f"measurement-auto-clear-{generation}",
+        )
+        # Deliberately not in _bg_tasks: those tasks drive turn completion.
+        self._measurement_safety_task = task
+
+    async def _measurement_auto_clear(self, generation: int) -> None:
+        try:
+            await _measurement_safety_sleep(MEASUREMENT_AUTOCLEAR_SEC)
+        except asyncio.CancelledError:
+            return
+        async with self._measurement_transition_lock:
+            current = asyncio.current_task()
+            if (
+                generation != self._measurement_lease_generation
+                or self._measurement_safety_task is not current
+                or not self._measurement_active.is_set()
+            ):
+                return
+            logger.warning(
+                "measurement window auto-clearing after %.0f s — "
+                "coordinator likely crashed without sending MEASURE_RESUME",
+                MEASUREMENT_AUTOCLEAR_SEC,
+            )
+            try:
+                await self._restore_measurement_state(trigger="auto_clear")
+            finally:
+                if self._measurement_safety_task is current:
+                    self._measurement_safety_task = None
+
+    async def _cancel_measurement_safety_locked(
+        self,
+        previous: asyncio.Task | None,
+    ) -> bool:
+        """Cancel and boundedly join the installed backstop.
+
+        Returns whether cancellation of the calling transition was deferred
+        while it retained cleanup ownership. The caller propagates that only
+        after it has left measurement state safe.
+        """
+
+        if previous is None:
+            return False
+        current = asyncio.current_task()
+        if previous is current:
+            self._measurement_safety_task = None
+            return False
+        previous.cancel()
+        deferred_cancel = False
+        deadline = (
+            asyncio.get_running_loop().time()
+            + MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC
+        )
+        while not previous.done():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                log_event(
+                    logger,
+                    "measurement.safety_join_timeout",
+                    generation=self._measurement_lease_generation,
+                    timeout_sec=MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC,
+                    level=logging.ERROR,
+                )
+                raise TimeoutError("measurement safety task did not stop")
+            try:
+                done, _pending = await asyncio.wait(
+                    {previous},
+                    timeout=remaining,
+                )
+                if not done:
+                    log_event(
+                        logger,
+                        "measurement.safety_join_timeout",
+                        generation=self._measurement_lease_generation,
+                        timeout_sec=MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC,
+                        level=logging.ERROR,
+                    )
+                    raise TimeoutError(
+                        "measurement safety task did not stop"
+                    )
+            except asyncio.CancelledError:
+                # asyncio.wait never forwards the child's exception, so this
+                # cancellation belongs to the calling transition itself.
+                if current is None or current.cancelling() == 0:
+                    break
+                deferred_cancel = True
+                current.uncancel()
+        if self._measurement_safety_task is previous:
+            self._measurement_safety_task = None
+        return deferred_cancel
+
+    async def _rollback_measurement_open_locked(self, *, trigger: str) -> bool:
+        """Invalidate a failed opening and restore even if its task wedges."""
+
+        previous = self._measurement_safety_task
+        self._measurement_lease_generation += 1
+        self._measurement_safety_task = None
+        try:
+            deferred_cancel = await self._cancel_measurement_safety_locked(
+                previous
+            )
+        except TimeoutError:
+            # Already logged by the join helper. Generation + slot invalidation
+            # prevents the stale task from restoring a future lease.
+            deferred_cancel = False
+        deferred_cancel |= await self._restore_measurement_owned(trigger=trigger)
+        return deferred_cancel
+
+    async def _restore_measurement_owned(self, *, trigger: str) -> bool:
+        """Finish restore despite repeated cancellation; report it afterward."""
+
+        restore = asyncio.create_task(
+            self._restore_measurement_state(trigger=trigger),
+            name=f"measurement-restore-{trigger}",
+        )
+        deferred_cancel = False
+        current = asyncio.current_task()
+        while not restore.done():
+            try:
+                await asyncio.wait({restore})
+            except asyncio.CancelledError:
+                if current is None or current.cancelling() == 0:
+                    break
+                deferred_cancel = True
+                current.uncancel()
+        if restore.cancelled():
+            raise asyncio.CancelledError
+        error = restore.exception()
+        if error is not None:
+            if deferred_cancel:
+                raise asyncio.CancelledError from None
+            raise error
+        return deferred_cancel
 
     async def _drain_inflight_output(self) -> bool:
         """Wait out assistant audio that was already playing when PAUSE
@@ -2703,52 +2899,29 @@ class WakeLoop:
             )
             return
         try:
+            await self._prepare_feedback_loudness_context(kind="mute_click")
+            pcm = (
+                self._mute_click_on_pcm
+                if going_on else self._mute_click_off_pcm
+            )
+            profile = (
+                self._mute_click_on_profile
+                if going_on else self._mute_click_off_profile
+            )
             try:
-                await self._prepare_feedback_loudness_context(kind="mute_click")
-                pcm = (
-                    self._mute_click_on_pcm
-                    if going_on else self._mute_click_off_pcm
+                await self._tts.write_segment(
+                    pcm,
+                    segment_kind="cue",
+                    source_profile=profile,
                 )
-                profile = (
-                    self._mute_click_on_profile
-                    if going_on else self._mute_click_off_profile
-                )
-                try:
-                    await self._tts.write_segment(
-                        pcm,
-                        segment_kind="cue",
-                        source_profile=profile,
-                    )
-                finally:
-                    # A multi-command IPC write can fail after an accepted
-                    # prefix. Its per-command drain ledger is still binding:
-                    # never release the feedback episode over that tail.
-                    drain_task = asyncio.create_task(self._tts.wait_drained())
-                    deferred_cancel = False
-                    current = asyncio.current_task()
-                    while not drain_task.done():
-                        try:
-                            await asyncio.shield(drain_task)
-                        except asyncio.CancelledError:
-                            # Cancellation cannot revoke already-accepted
-                            # audio. Keep the feedback episode until its
-                            # physical tail clears, then propagate it.
-                            deferred_cancel = True
-                            if current is not None:
-                                current.uncancel()
-                    if drain_task.cancelled():
-                        raise asyncio.CancelledError
-                    drain_error = drain_task.exception()
-                    if drain_error is not None:
-                        if deferred_cancel:
-                            raise asyncio.CancelledError from None
-                        raise drain_error
-                    if deferred_cancel:
-                        raise asyncio.CancelledError
-            except Exception as e:  # noqa: BLE001
-                logger.warning("mic mute click failed: %s", e)
+            finally:
+                await wait_tts_drained_owned(self._tts)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mic mute click failed: %s", e)
         finally:
-            await self._output_gate.end(episode)
+            # A multi-command IPC write can fail after an accepted prefix.
+            # The shared cleanup retains this episode over that physical tail.
+            await self._finish_output_episode_after_drain(episode)
 
 
     async def _prepare_feedback_loudness_context(
@@ -2899,35 +3072,54 @@ class WakeLoop:
         Idempotent — calling twice (or before any PAUSE) is harmless.
         Always returns "ok".
         """
-        await self._restore_measurement_state(trigger="resume")
-        if self._measurement_safety_task is not None:
-            current = asyncio.current_task()
-            if (
-                self._measurement_safety_task is not current
-                and not self._measurement_safety_task.done()
-            ):
-                self._measurement_safety_task.cancel()
+        async with self._measurement_transition_lock:
+            previous = self._measurement_safety_task
+            self._measurement_lease_generation += 1
             self._measurement_safety_task = None
+            try:
+                deferred_cancel = await self._cancel_measurement_safety_locked(
+                    previous
+                )
+            except TimeoutError:
+                # Availability beats waiting forever on a broken backstop;
+                # generation invalidation makes that old task harmless.
+                deferred_cancel = False
+            deferred_cancel |= await self._restore_measurement_owned(
+                trigger="resume"
+            )
+        if deferred_cancel:
+            raise asyncio.CancelledError
         return "ok"
 
     async def _restore_measurement_state(self, *, trigger: str) -> None:
-        """Restore every voice-side pause, always reopening admission."""
+        """Restore local output first; remote observers are best-effort."""
 
+        self._set_measurement_active_local(False, trigger=trigger)
+        self._content_activity.resume()
+        # Admission is the household-facing availability boundary. Reopen it
+        # before meter IPC, whose adapter may be recovering from a stuck send.
+        await self._output_gate.resume_admission()
         try:
-            await self._set_measurement_active(False, trigger=trigger)
-            self._content_activity.resume()
             await self._tts.resume_content_meter()
-        finally:
-            await self._output_gate.resume_admission()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+            log_event(
+                logger,
+                "measurement.meter_resume_failed",
+                trigger=trigger,
+                exc_type=type(e).__name__,
+                err=str(e),
+                level=logging.WARNING,
+            )
+        await self._volume_coordinator.note_measurement_active(False)
 
-    async def _set_measurement_active(self, active: bool, *, trigger: str) -> None:
-        """Update the voice gate and reconcile guard as one state change."""
+    def _set_measurement_active_local(self, active: bool, *, trigger: str) -> None:
+        """Update the hot-path gate synchronously inside transition ownership."""
+
         changed = self._measurement_active.is_set() != bool(active)
         if active:
             self._measurement_active.set()
         else:
             self._measurement_active.clear()
-        await self._volume_coordinator.note_measurement_active(active)
         if changed:
             log_event(
                 logger,

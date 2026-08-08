@@ -277,7 +277,7 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
     await wl._play_mute_click(going_on=False)
 
     assert [name for name, _ in events] == [
-        "prepare", "write_segment", "wait_drained",
+        "prepare", "write_segment", "wait_drained", "wait_drained",
     ]
     prepare = events[0][1]
     assert prepare["provider"] == "openai"
