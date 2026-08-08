@@ -911,6 +911,80 @@ async def test_meter_control_recovers_on_access_after_stuck_lock(
     child.close()
 
 
+async def test_closed_outputd_adapter_reconnect_is_single_publisher(
+    monkeypatch,
+) -> None:
+    """Concurrent callers share the replacement published under the lock."""
+
+    parent, child = socket.socketpair()
+    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream.close()
+    child.close()
+    p = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p._stream = closed_stream  # type: ignore[assignment]
+    connect_entered = asyncio.Event()
+    release_connect = asyncio.Event()
+    replacement = _CaptureOutputdStream()
+    connect_calls = 0
+
+    async def fake_connect():
+        nonlocal connect_calls
+        connect_calls += 1
+        connect_entered.set()
+        await release_connect.wait()
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    first = asyncio.create_task(p._current_outputd_stream())
+    await connect_entered.wait()
+    second = asyncio.create_task(p._current_outputd_stream())
+    await asyncio.sleep(0)
+    release_connect.set()
+
+    first_stream, second_stream = await asyncio.gather(first, second)
+    assert connect_calls == 1
+    assert first_stream is replacement
+    assert second_stream is replacement
+    assert p._stream is replacement
+
+
+async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
+    """The fail-closed control is synchronous and cannot escape its reply."""
+
+    class _RefusingLock:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def acquire(self, *, timeout: float) -> bool:
+            self.timeouts.append(timeout)
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("a waiter must not release unowned lock")
+
+    parent, child = socket.socketpair()
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    lock = _RefusingLock()
+    adapter._lock = lock  # type: ignore[assignment]
+    p = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p._stream = adapter  # type: ignore[assignment]
+
+    with pytest.raises(TimeoutError, match="adapter lock timed out"):
+        await p.pause_content_meter_for_measurement(
+            time.monotonic() + 10.0,
+        )
+
+    assert len(lock.timeouts) == 1
+    assert 0.0 < lock.timeouts[0] <= (
+        audio_io_mod._OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC
+    )
+    assert adapter.closed
+    assert child.recv(64) == b""
+    await asyncio.sleep(0)
+    assert child.recv(64) == b"", "no worker may emit a late PAUSE command"
+    child.close()
+
+
 async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     monkeypatch,
     caplog,

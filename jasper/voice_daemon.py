@@ -530,18 +530,28 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # jasper-voice and jasper-web at different points of a deploy, so an OLD
 # coordinator can be talking to a NEW daemon — the bound has to fit under
 # the timeout that coordinator already shipped with, not one we raise
-# here. The coordinator's timeout bounds only its `reader.readline()`, so
-# the 1.0 s of margin is not transport overhead — it is the daemon-side
-# work that runs BEFORE the drain and is therefore inside the same reply:
-# `note_measurement_active` waits on the volume coordinator's
-# `_reconcile_write_lock` for an already-started reconciler write to land,
-# and `pause_content_meter` does a bounded local IPC write to outputd.
-# Both are milliseconds when healthy, so the margin absorbs their normal
-# scheduling cost on a loaded 1 GB Pi. 2.0 s then covers the typical tail of a cue or
-# timer announcement (registry cue texts run ~3-7 s of speech and PAUSE
-# lands mid-playout). Pinned against the coordinator's timeout by
+# here. The drain consumes only what remains of the aggregate setup budget
+# below; slow volume ownership or outputd control can never add another fresh
+# two seconds. The 2.0 s healthy-path ceiling still covers fan-in's 1.2 s
+# pace-ahead, one 250 ms IPC chunk, the 85 ms drain tail, and Pi scheduler
+# jitter. Pinned against the aggregate/client arithmetic by
 # tests/test_voice_daemon_measurement_inflight.py.
 MEASUREMENT_INFLIGHT_DRAIN_SEC = 2.0
+
+# One daemon-side budget covers transition-lock acquisition, stale-backstop
+# join, volume-guard acquisition, the canonical outputd meter PAUSE, and the
+# in-flight drain. The coordinator's already-shipped read
+# timeout is 3.0 s. Keep 0.5 s outside our budget for UDS response scheduling
+# on a loaded 1 GB Pi; reserve the final 0.25 s *inside* our budget for local
+# rollback if setup cannot complete. These are compatibility constants, not
+# latency goals. Tests pin the exact arithmetic against the coordinator SSOT.
+MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC = 2.5
+MEASUREMENT_PAUSE_REPLY_MARGIN_SEC = 0.5
+MEASUREMENT_PAUSE_ROLLBACK_RESERVE_SEC = 0.25
+MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC = (
+    MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
+    - MEASUREMENT_PAUSE_ROLLBACK_RESERVE_SEC
+)
 
 # How long a measurement window stays gated with no word from the
 # coordinator before the daemon clears it itself. This is the crash
@@ -565,6 +575,9 @@ MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC = 1.0
 # Test seam for deterministic lease-expiry interleavings without wall-clock
 # sleeps. Production retains asyncio.sleep exactly.
 _measurement_safety_sleep = asyncio.sleep
+# Same-purpose seam for aggregate-deadline arithmetic. Keeping it local avoids
+# patching ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
+_measurement_monotonic = time.monotonic
 
 
 class ContentActivityTracker:
@@ -2197,7 +2210,13 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
                 finally:
-                    await self._ducker.restore()
+                    # The accepted PCM tail still belongs to this duck even if
+                    # the speaking task is repeatedly cancelled. Restore only
+                    # after the physical drain, not merely after write().
+                    try:
+                        await wait_tts_drained_owned(self._tts)
+                    finally:
+                        await self._ducker.restore()
                 return played
             if self._camilla is None:
                 # No camilla handle — degrade to unducked playback rather
@@ -2214,6 +2233,10 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
                     return False
+                finally:
+                    # Keep CueDuck's snapshot ownership through the same
+                    # accepted-PCM boundary as the fan-in ducker above.
+                    await wait_tts_drained_owned(self._tts)
         finally:
             try:
                 await self._finish_output_episode_after_drain(episode)
@@ -2296,7 +2319,10 @@ class WakeLoop:
                     logger.warning("cue %s play failed: %s", slug, e)
             finally:
                 try:
-                    await self._ducker.restore()
+                    try:
+                        await wait_tts_drained_owned(self._tts)
+                    finally:
+                        await self._ducker.restore()
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cue %s restore failed: %s", slug, e)
         finally:
@@ -2314,7 +2340,8 @@ class WakeLoop:
 
         Socket writes running in worker threads cannot be revoked by task
         cancellation. Once a cue path may have queued PCM, repeated caller
-        cancellation is therefore deferred until one shielded cleanup task
+        cancellation is therefore deferred by an ``asyncio.wait`` ownership
+        loop until one cleanup task
         reaches the playout deadline and releases the exact episode token.
         """
 
@@ -2648,55 +2675,159 @@ class WakeLoop:
         armed. Older coordinators branch only on that field; changing it would
         make them skip lease renewal and RESUME during a rolling deploy.
         """
-        async with self._measurement_transition_lock:
+        started = _measurement_monotonic()
+        total_deadline = started + MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
+        setup_deadline = (
+            started + MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC
+        )
+        remaining = setup_deadline - _measurement_monotonic()
+        if remaining <= 0.0:
+            self._log_measurement_pause_timeout("transition_lock")
+            raise TimeoutError("MEASURE_PAUSE aggregate deadline expired")
+        try:
+            async with asyncio.timeout(remaining):
+                await self._measurement_transition_lock.acquire()
+        except TimeoutError:
+            self._log_measurement_pause_timeout("transition_lock")
+            raise TimeoutError(
+                "MEASURE_PAUSE transition lock exceeded aggregate deadline"
+            ) from None
+
+        try:
             if self._state is State.SESSION:
                 return "BUSY", None
             opening = not self._measurement_active.is_set()
             deferred_cancel = False
-            if opening:
-                # Any orphaned slot is joined before admission changes. Once
-                # pause_admission returns, every following operation through
-                # safety-task installation is synchronous: crash recovery is
-                # therefore armed before the first post-close external await.
-                orphaned = self._measurement_safety_task
-                deferred_cancel |= await self._cancel_measurement_safety_locked(
-                    orphaned
-                )
-                if deferred_cancel:
-                    raise asyncio.CancelledError
-                await self._output_gate.pause_admission()
-                self._set_measurement_active_local(True, trigger="pause")
-                self._content_activity.pause()
-                self._arm_measurement_safety_locked()
-            else:
-                # Install the replacement before the first await so the
-                # active measurement never has a crash-backstop gap. The new
-                # generation/slot also makes the old task stale immediately.
-                previous = self._measurement_safety_task
-                self._arm_measurement_safety_locked()
-                deferred_cancel |= await self._cancel_measurement_safety_locked(
-                    previous
-                )
-
+            opened = False
+            completed = False
+            meter_paused = False
             try:
-                await self._volume_coordinator.note_measurement_active(True)
-                await self._tts.pause_content_meter()
-                drained = not opening or await self._drain_inflight_output()
-            except asyncio.CancelledError:
                 if opening:
-                    deferred_cancel |= await self._rollback_measurement_open_locked(
-                        trigger="pause_error",
+                    # Any orphaned slot is joined before admission changes.
+                    # Its old one-second ceiling is clipped to this request's
+                    # absolute setup deadline, including when little budget
+                    # remains after waiting for the transition lock.
+                    orphaned = self._measurement_safety_task
+                    deferred_cancel |= (
+                        await self._cancel_measurement_safety_locked(
+                            orphaned,
+                            deadline_monotonic=setup_deadline,
+                        )
                     )
-                raise
-            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-                if opening:
-                    deferred_cancel |= await self._rollback_measurement_open_locked(
-                        trigger="pause_error",
+                    if deferred_cancel:
+                        raise asyncio.CancelledError
+                    await self._await_measurement_pause_step(
+                        self._output_gate.pause_admission(),
+                        deadline_monotonic=setup_deadline,
+                        phase="admission",
                     )
-                raise
-            if deferred_cancel:
-                raise asyncio.CancelledError
-            return "ok", drained
+                    opened = True
+                    # Every following operation through safety installation is
+                    # synchronous: recovery is armed before an external await.
+                    self._set_measurement_active_local(True, trigger="pause")
+                    self._content_activity.pause()
+                    self._arm_measurement_safety_locked()
+                else:
+                    # Install the replacement before the first await so the
+                    # active measurement never has a crash-backstop gap. The
+                    # generation/slot makes the old task stale immediately.
+                    previous = self._measurement_safety_task
+                    self._arm_measurement_safety_locked()
+                    deferred_cancel |= (
+                        await self._cancel_measurement_safety_locked(
+                            previous,
+                            deadline_monotonic=setup_deadline,
+                        )
+                    )
+                    if deferred_cancel:
+                        raise asyncio.CancelledError
+
+                await self._await_measurement_pause_step(
+                    self._volume_coordinator.note_measurement_active(True),
+                    deadline_monotonic=setup_deadline,
+                    phase="volume_guard",
+                )
+                pause_meter_for_measurement = getattr(
+                    self._tts,
+                    "pause_content_meter_for_measurement",
+                    None,
+                )
+                if callable(pause_meter_for_measurement):
+                    await self._await_measurement_pause_step(
+                        pause_meter_for_measurement(setup_deadline),
+                        deadline_monotonic=setup_deadline,
+                        phase="content_meter",
+                    )
+                else:
+                    await self._await_measurement_pause_step(
+                        self._tts.pause_content_meter(),
+                        deadline_monotonic=setup_deadline,
+                        phase="content_meter",
+                    )
+                meter_paused = True
+
+                drained = not opening or await self._drain_inflight_output(
+                    timeout_sec=max(
+                        0.0,
+                        min(
+                            MEASUREMENT_INFLIGHT_DRAIN_SEC,
+                            setup_deadline - _measurement_monotonic(),
+                        ),
+                    )
+                )
+                completed = True
+                return "ok", drained
+            finally:
+                # Completion, not an exception allowlist, owns rollback. Any
+                # BaseException after admission closes (including AssertionError,
+                # KeyboardInterrupt, SystemExit, or repeated cancellation)
+                # restores local availability before its original semantics
+                # leave this method.
+                if opened and not completed:
+                    deferred_cancel |= (
+                        await self._rollback_measurement_open_locked(
+                            trigger="pause_error",
+                            deadline_monotonic=total_deadline,
+                            resume_meter=meter_paused,
+                        )
+                    )
+        finally:
+            self._measurement_transition_lock.release()
+
+    @staticmethod
+    def _log_measurement_pause_timeout(phase: str) -> None:
+        log_event(
+            logger,
+            "measurement.pause_timeout",
+            phase=phase,
+            total_timeout_sec=MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC,
+            level=logging.WARNING,
+        )
+
+    async def _await_measurement_pause_step(
+        self,
+        operation: Coroutine,
+        *,
+        deadline_monotonic: float,
+        phase: str,
+    ) -> None:
+        """Await one cancellation-aware setup step inside the shared budget."""
+
+        remaining = deadline_monotonic - _measurement_monotonic()
+        if remaining <= 0.0:
+            operation.close()
+            self._log_measurement_pause_timeout(phase)
+            raise TimeoutError(
+                f"MEASURE_PAUSE {phase} exceeded aggregate deadline"
+            )
+        try:
+            async with asyncio.timeout(remaining):
+                await operation
+        except TimeoutError:
+            self._log_measurement_pause_timeout(phase)
+            raise TimeoutError(
+                f"MEASURE_PAUSE {phase} exceeded aggregate deadline"
+            ) from None
 
     def _arm_measurement_safety_locked(self) -> None:
         """Install one generation-bound crash backstop without awaiting."""
@@ -2737,6 +2868,8 @@ class WakeLoop:
     async def _cancel_measurement_safety_locked(
         self,
         previous: asyncio.Task | None,
+        *,
+        deadline_monotonic: float | None = None,
     ) -> bool:
         """Cancel and boundedly join the installed backstop.
 
@@ -2753,18 +2886,19 @@ class WakeLoop:
             return False
         previous.cancel()
         deferred_cancel = False
-        deadline = (
-            asyncio.get_running_loop().time()
-            + MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC
-        )
+        started = _measurement_monotonic()
+        deadline = started + MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC
+        if deadline_monotonic is not None:
+            deadline = min(deadline, deadline_monotonic)
+        join_bound_sec = max(0.0, deadline - started)
         while not previous.done():
-            remaining = deadline - asyncio.get_running_loop().time()
+            remaining = deadline - _measurement_monotonic()
             if remaining <= 0:
                 log_event(
                     logger,
                     "measurement.safety_join_timeout",
                     generation=self._measurement_lease_generation,
-                    timeout_sec=MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC,
+                    timeout_sec=join_bound_sec,
                     level=logging.ERROR,
                 )
                 raise TimeoutError("measurement safety task did not stop")
@@ -2778,7 +2912,7 @@ class WakeLoop:
                         logger,
                         "measurement.safety_join_timeout",
                         generation=self._measurement_lease_generation,
-                        timeout_sec=MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC,
+                        timeout_sec=join_bound_sec,
                         level=logging.ERROR,
                     )
                     raise TimeoutError(
@@ -2795,7 +2929,13 @@ class WakeLoop:
             self._measurement_safety_task = None
         return deferred_cancel
 
-    async def _rollback_measurement_open_locked(self, *, trigger: str) -> bool:
+    async def _rollback_measurement_open_locked(
+        self,
+        *,
+        trigger: str,
+        deadline_monotonic: float | None = None,
+        resume_meter: bool = True,
+    ) -> bool:
         """Invalidate a failed opening and restore even if its task wedges."""
 
         previous = self._measurement_safety_task
@@ -2803,20 +2943,47 @@ class WakeLoop:
         self._measurement_safety_task = None
         try:
             deferred_cancel = await self._cancel_measurement_safety_locked(
-                previous
+                previous,
+                deadline_monotonic=deadline_monotonic,
             )
         except TimeoutError:
             # Already logged by the join helper. Generation + slot invalidation
             # prevents the stale task from restoring a future lease.
             deferred_cancel = False
-        deferred_cancel |= await self._restore_measurement_owned(trigger=trigger)
+        try:
+            deferred_cancel |= await self._restore_measurement_owned(
+                trigger=trigger,
+                deadline_monotonic=deadline_monotonic,
+                resume_meter=resume_meter,
+            )
+        except BaseException as cleanup_error:  # noqa: BLE001
+            # The setup exception remains authoritative. Local restore runs
+            # before either remote observer, so even a broken best-effort
+            # cleanup cannot keep household output admission closed.
+            log_event(
+                logger,
+                "measurement.rollback_failed",
+                exc_type=type(cleanup_error).__name__,
+                err=str(cleanup_error),
+                level=logging.ERROR,
+            )
         return deferred_cancel
 
-    async def _restore_measurement_owned(self, *, trigger: str) -> bool:
+    async def _restore_measurement_owned(
+        self,
+        *,
+        trigger: str,
+        deadline_monotonic: float | None = None,
+        resume_meter: bool = True,
+    ) -> bool:
         """Finish restore despite repeated cancellation; report it afterward."""
 
         restore = asyncio.create_task(
-            self._restore_measurement_state(trigger=trigger),
+            self._restore_measurement_state(
+                trigger=trigger,
+                deadline_monotonic=deadline_monotonic,
+                resume_meter=resume_meter,
+            ),
             name=f"measurement-restore-{trigger}",
         )
         deferred_cancel = False
@@ -2838,7 +3005,11 @@ class WakeLoop:
             raise error
         return deferred_cancel
 
-    async def _drain_inflight_output(self) -> bool:
+    async def _drain_inflight_output(
+        self,
+        *,
+        timeout_sec: float = MEASUREMENT_INFLIGHT_DRAIN_SEC,
+    ) -> bool:
         """Wait out assistant audio that was already playing when PAUSE
         landed, so its tail cannot enter the window's first capture.
 
@@ -2856,9 +3027,11 @@ class WakeLoop:
             return True
         active_kind = self._output_gate.active_kind or "unknown"
         started = time.monotonic()
-        drained = await self._output_gate.drain_paused(
-            MEASUREMENT_INFLIGHT_DRAIN_SEC
-        )
+        try:
+            async with asyncio.timeout(timeout_sec):
+                drained = await self._output_gate.drain_paused(timeout_sec)
+        except TimeoutError:
+            drained = False
         waited_ms = int((time.monotonic() - started) * 1000)
         if drained:
             log_event(
@@ -2873,7 +3046,7 @@ class WakeLoop:
             "measurement.inflight_drain_timeout",
             active_kind=self._output_gate.active_kind or active_kind,
             waited_ms=waited_ms,
-            bound_sec=MEASUREMENT_INFLIGHT_DRAIN_SEC,
+            bound_sec=timeout_sec,
             detail=(
                 "assistant audio still playing; the measurement window is "
                 "armed but the caller must not begin a strict capture"
@@ -3091,14 +3264,40 @@ class WakeLoop:
             raise asyncio.CancelledError
         return "ok"
 
-    async def _restore_measurement_state(self, *, trigger: str) -> None:
-        """Restore local output first; remote observers are best-effort."""
+    async def _restore_measurement_state(
+        self,
+        *,
+        trigger: str,
+        deadline_monotonic: float | None = None,
+        resume_meter: bool = True,
+    ) -> None:
+        """Restore local output first; deadline-bound observers are best-effort."""
 
         self._set_measurement_active_local(False, trigger=trigger)
         self._content_activity.resume()
         # Admission is the household-facing availability boundary. Reopen it
         # before meter IPC, whose adapter may be recovering from a stuck send.
         await self._output_gate.resume_admission()
+
+        if deadline_monotonic is not None:
+            # The final quarter-second is rollback reserve. Clear the volume
+            # guard before best-effort meter recovery so availability does not
+            # depend on a poisoned outputd socket.
+            await self._restore_measurement_step_before_deadline(
+                self._volume_coordinator.note_measurement_active(False),
+                deadline_monotonic=deadline_monotonic,
+                event="measurement.volume_resume_failed",
+                trigger=trigger,
+            )
+            if resume_meter:
+                await self._restore_measurement_step_before_deadline(
+                    self._tts.resume_content_meter(),
+                    deadline_monotonic=deadline_monotonic,
+                    event="measurement.meter_resume_failed",
+                    trigger=trigger,
+                )
+            return
+
         try:
             await self._tts.resume_content_meter()
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
@@ -3111,6 +3310,38 @@ class WakeLoop:
                 level=logging.WARNING,
             )
         await self._volume_coordinator.note_measurement_active(False)
+
+    @staticmethod
+    async def _restore_measurement_step_before_deadline(
+        operation: Coroutine,
+        *,
+        deadline_monotonic: float,
+        event: str,
+        trigger: str,
+    ) -> None:
+        remaining = deadline_monotonic - _measurement_monotonic()
+        if remaining <= 0.0:
+            operation.close()
+            log_event(
+                logger,
+                event,
+                trigger=trigger,
+                reason="aggregate_deadline_expired",
+                level=logging.WARNING,
+            )
+            return
+        try:
+            async with asyncio.timeout(remaining):
+                await operation
+        except Exception as exc:  # noqa: BLE001 - rollback is local-first
+            log_event(
+                logger,
+                event,
+                trigger=trigger,
+                exc_type=type(exc).__name__,
+                err=str(exc),
+                level=logging.WARNING,
+            )
 
     def _set_measurement_active_local(self, active: bool, *, trigger: str) -> None:
         """Update the hot-path gate synchronously inside transition ownership."""

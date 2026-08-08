@@ -140,7 +140,10 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
         timer_started.set()
         await release_timer.wait()
 
-    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "jasper.voice_daemon._measurement_safety_sleep",
+        fake_sleep,
+    )
 
     assert await wl.measurement_pause() == "ok"
     await wait_signalled(

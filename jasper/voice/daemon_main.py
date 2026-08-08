@@ -528,7 +528,11 @@ async def _start_control_socket(
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            try:
+                raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("voice control socket: client read timed out")
+                return
             line = raw.decode("ascii", errors="replace").strip()
             parts = line.split(maxsplit=1)
             cmd = parts[0].upper() if parts else ""
@@ -555,8 +559,6 @@ async def _start_control_socket(
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))
             await writer.drain()
-        except asyncio.TimeoutError:
-            logger.warning("voice control socket: client read timed out")
         except Exception as e:  # noqa: BLE001
             logger.exception("voice control socket handler failed: %s", e)
             try:

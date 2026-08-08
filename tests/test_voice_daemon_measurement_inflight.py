@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import socket
 import tempfile
 import threading
 
@@ -52,11 +53,27 @@ from jasper.voice.output_gate import AssistantOutputGate
 from jasper.voice_daemon import (
     MEASUREMENT_AUTOCLEAR_SEC,
     MEASUREMENT_INFLIGHT_DRAIN_SEC,
+    MEASUREMENT_PAUSE_REPLY_MARGIN_SEC,
+    MEASUREMENT_PAUSE_ROLLBACK_RESERVE_SEC,
+    MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC,
+    MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC,
     State,
     WakeLoop,
 )
 
 from ._async_wait import wait_signalled
+
+
+class _FakeMonotonic:
+    def __init__(self, value: float = 100.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        assert seconds >= 0.0
+        self.value += seconds
 
 
 class _IdleGate:
@@ -181,6 +198,12 @@ class _RefusingCues:
 async def _close_window(wl: WakeLoop) -> None:
     """Cancel the auto-clear safety task so the test loop closes clean."""
     await wl.measurement_resume()
+
+
+async def _allow_test_measurement_meter(_deadline: float) -> None:
+    """Non-transport fakes opt out of outputd's canonical-adapter contract."""
+
+    return None
 
 
 # --- the defect: an in-flight cue delays the window ------------------------
@@ -357,7 +380,76 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     assert not wl._measurement_active.is_set()
     assert not gate.admission_paused
     assert gate.resume_calls == 1
-    assert tts.resume_calls == 1
+    assert tts.resume_calls == 0
+
+
+@pytest.mark.parametrize("error_type", [AssertionError, SystemExit])
+async def test_unexpected_base_exception_after_opening_still_rolls_back(
+    error_type: type[BaseException],
+) -> None:
+    class _UnexpectedMeter:
+        async def pause_content_meter(self) -> None:
+            raise error_type("unexpected setup failure")
+
+        async def resume_content_meter(self) -> None:
+            raise AssertionError("a meter that never paused must not resume")
+
+    wl = WakeLoop.for_tests()
+    wl._tts = _UnexpectedMeter()
+
+    with pytest.raises(error_type, match="unexpected setup failure"):
+        await wl.measurement_pause()
+
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+    assert wl._measurement_safety_task is None
+
+
+async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
+    setup_entered = asyncio.Event()
+    rollback_entered = asyncio.Event()
+    release_rollback = asyncio.Event()
+
+    class _CancellableDrainGate(AssistantOutputGate):
+        async def drain_paused(self, timeout: float) -> bool:
+            del timeout
+            setup_entered.set()
+            await asyncio.Event().wait()
+            return True
+
+    class _HeldRollbackMeter:
+        async def pause_content_meter(self) -> None:
+            return None
+
+        async def resume_content_meter(self) -> None:
+            rollback_entered.set()
+            await wait_signalled(release_rollback, "release pause rollback")
+
+    wl = WakeLoop.for_tests()
+    gate = _CancellableDrainGate()
+    episode = await gate.begin_if_idle("admin")
+    assert episode is not None
+    wl._output_gate = gate
+    wl._tts = _HeldRollbackMeter()
+    pause = asyncio.create_task(wl.measurement_pause())
+    await wait_signalled(setup_entered, "measurement setup", producer=pause)
+
+    pause.cancel()
+    await wait_signalled(rollback_entered, "measurement rollback", producer=pause)
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+
+    pause.cancel()
+    await asyncio.sleep(0)
+    pause.cancel()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not pause.done()
+
+    release_rollback.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pause
+    await gate.end(episode)
 
 
 async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
@@ -407,7 +499,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
     assert not wl._output_gate.admission_paused
     assert wl._measurement_safety_task is None
     assert safety.done()
-    assert meter.resume_calls == 1
+    assert meter.resume_calls == 0
     assert voice_daemon_mod.MEASUREMENT_AUTOCLEAR_SEC > 0
 
 
@@ -565,6 +657,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         (),
         {
             "CancelledError": asyncio.CancelledError,
+            "Lock": staticmethod(asyncio.Lock),
             "create_task": staticmethod(asyncio.create_task),
             "current_task": staticmethod(asyncio.current_task),
             "shield": staticmethod(asyncio.shield),
@@ -583,6 +676,9 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     )
     stream = _FailSecondWrite()
     tts._stream = stream  # type: ignore[assignment]
+    tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
+        _allow_test_measurement_meter
+    )
     wl = WakeLoop.for_tests()
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
@@ -648,6 +744,9 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         drain_tail_sec=1.0,
     )
     tts._stream = _BlockingWrite()  # type: ignore[assignment]
+    tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
+        _allow_test_measurement_meter
+    )
     wl = WakeLoop.for_tests()
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
@@ -725,6 +824,9 @@ async def test_cancelled_cue_tail_retains_output_episode(
         drain_tail_sec=0.0,
     )
     tts._stream = _AcceptedStream()  # type: ignore[assignment]
+    tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
+        _allow_test_measurement_meter
+    )
 
     async def controlled_drain() -> None:
         drain_started.set()
@@ -783,6 +885,106 @@ async def test_cancelled_cue_tail_retains_output_episode(
         "drained": True,
     }
     await _close_window(wl)
+
+
+@pytest.mark.parametrize(
+    ("tts_socket", "duck_kind"),
+    [
+        (FANIN_TTS_SOCKET, "fanin"),
+        (OUTPUTD_TTS_SOCKET, "cue"),
+    ],
+)
+async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
+    tts_socket: str,
+    duck_kind: str,
+) -> None:
+    """Both routed duck implementations restore only after physical drain."""
+
+    from jasper.voice_daemon import FanInDucker
+
+    tts = _TailHeldTts()
+    ducked = asyncio.Event()
+    restored = asyncio.Event()
+
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def speak_text(self, _text: str) -> bool:
+            return True
+
+    class _FanInDuck(FanInDucker):
+        def __init__(self) -> None:
+            self._ducked = False
+
+        async def duck(self) -> None:
+            self._ducked = True
+            ducked.set()
+
+        async def restore(self) -> None:
+            self._ducked = False
+            restored.set()
+
+    class _Camilla:
+        async def get_volume_db(self, *, best_effort: bool) -> float:
+            assert best_effort
+            return -20.0
+
+        async def adjust_volume_db(
+            self,
+            db: float,
+            *,
+            best_effort: bool,
+        ) -> float:
+            assert db < 0.0
+            assert best_effort
+            ducked.set()
+            return -40.0
+
+        async def set_volume_db(
+            self,
+            db: float,
+            *,
+            best_effort: bool,
+        ) -> float:
+            assert db == -20.0
+            assert best_effort
+            restored.set()
+            return db
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._cfg.duck_db = -25.0
+    wl._tts = tts
+    wl._cues = _Cues()
+    if duck_kind == "fanin":
+        wl._ducker = _FanInDuck()
+    else:
+        wl._ducker = object()  # type: ignore[assignment]
+        wl._camilla = _Camilla()
+
+    playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
+    await wait_signalled(ducked, f"{duck_kind} proactive duck", producer=playing)
+    await wait_signalled(
+        tts.drain_started,
+        f"{duck_kind} proactive physical drain",
+        producer=playing,
+    )
+
+    playing.cancel()
+    await asyncio.sleep(0)
+    playing.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not playing.done(), (tts_socket, duck_kind)
+    assert not restored.is_set(), "duck must cover accepted PCM tail"
+    assert wl._output_gate.active_kind == "proactive"
+
+    tts.release_drain.set()
+    with pytest.raises(asyncio.CancelledError):
+        await playing
+    assert restored.is_set()
+    assert not wl._output_gate.is_active
 
 
 @pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
@@ -956,6 +1158,53 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
     await _close_window(wl)
 
 
+async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None:
+    """An expiring setup cannot starve the generation-bound backstop."""
+
+    import jasper.voice_daemon as voice_daemon_mod
+
+    clock = _FakeMonotonic()
+    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+    safety_started = asyncio.Event()
+    expire_safety = asyncio.Event()
+
+    async def controlled_safety_sleep(_seconds: float) -> None:
+        safety_started.set()
+        await wait_signalled(expire_safety, "expire renewed measurement lease")
+
+    monkeypatch.setattr(
+        voice_daemon_mod,
+        "_measurement_safety_sleep",
+        controlled_safety_sleep,
+    )
+
+    class _ExpiringVolume:
+        async def note_measurement_active(self, active: bool) -> None:
+            if active:
+                clock.advance(MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC)
+                raise TimeoutError("volume setup exhausted aggregate budget")
+
+    wl = WakeLoop.for_tests()
+    await wl._output_gate.pause_admission()
+    wl._set_measurement_active_local(True, trigger="test")
+    wl._volume_coordinator = _ExpiringVolume()
+
+    with pytest.raises(TimeoutError, match="aggregate deadline"):
+        await wl.measurement_pause()
+    await wait_signalled(
+        safety_started,
+        "renewed safety task",
+        producer=wl._measurement_safety_task,
+    )
+    expire_safety.set()
+    safety = wl._measurement_safety_task
+    assert safety is not None
+    await safety
+
+    assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
+
+
 async def test_active_session_still_refuses_without_draining() -> None:
     wl = WakeLoop.for_tests()
     wl._state = State.SESSION
@@ -970,7 +1219,7 @@ async def test_active_session_still_refuses_without_draining() -> None:
 # --- protocol compatibility, both deploy directions ------------------------
 
 
-def test_drain_bound_fits_under_the_coordinator_read_timeout() -> None:
+def test_aggregate_pause_budget_fits_under_coordinator_read_timeout() -> None:
     """OLD coordinator + NEW daemon. install.sh restarts jasper-voice and
     jasper-web at different points of a deploy, so a coordinator pinned to
     the timeout it shipped with can be awaiting a daemon that now holds
@@ -978,10 +1227,203 @@ def test_drain_bound_fits_under_the_coordinator_read_timeout() -> None:
     was never paused, skips MEASURE_RESUME, and leaves the speaker gated
     until the daemon's auto-clear — so the bound must fit under the
     timeout with room for connect/write/scheduling on a loaded Pi."""
-    assert MEASUREMENT_INFLIGHT_DRAIN_SEC < VOICE_MEASURE_PAUSE_TIMEOUT_SEC
     assert (
-        VOICE_MEASURE_PAUSE_TIMEOUT_SEC - MEASUREMENT_INFLIGHT_DRAIN_SEC >= 1.0
+        MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
+        + MEASUREMENT_PAUSE_REPLY_MARGIN_SEC
+        == VOICE_MEASURE_PAUSE_TIMEOUT_SEC
     )
+    assert (
+        MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC
+        + MEASUREMENT_PAUSE_ROLLBACK_RESERVE_SEC
+        == MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
+    )
+    assert MEASUREMENT_INFLIGHT_DRAIN_SEC <= (
+        MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC
+    )
+    # Fan-in can hold 1.2 s ahead, plus one 250 ms chunk and the 85 ms
+    # physical-tail allowance. Keep Pi scheduler headroom above that 1.535 s.
+    assert MEASUREMENT_INFLIGHT_DRAIN_SEC >= 1.7
+
+
+async def test_uds_slow_setup_reduces_drain_to_aggregate_remaining(
+    monkeypatch,
+) -> None:
+    """The real wire shares one budget across volume, meter, and drain."""
+
+    import jasper.voice_daemon as voice_daemon_mod
+    from jasper.voice.daemon_main import _start_control_socket
+
+    clock = _FakeMonotonic()
+    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+
+    class _SlowVolume:
+        async def note_measurement_active(self, active: bool) -> None:
+            if active:
+                clock.advance(0.30)
+
+    class _SlowMeter:
+        async def pause_content_meter(self) -> None:
+            clock.advance(0.25)
+
+        async def resume_content_meter(self) -> None:
+            return None
+
+    class _BudgetGate(_StuckGate):
+        async def drain_paused(self, timeout: float) -> bool:
+            self.waits.append(timeout)
+            clock.advance(timeout)
+            return False
+
+    wl = WakeLoop.for_tests()
+    gate = _BudgetGate()
+    wl._output_gate = gate
+    wl._volume_coordinator = _SlowVolume()
+    wl._tts = _SlowMeter()
+    started = clock()
+    sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-shared-budget-")
+    socket_path = f"{sock_dir}/voice.sock"
+    server = await _start_control_socket(wl, socket_path)
+    try:
+        assert await _voice_uds_command(
+            socket_path,
+            "MEASURE_PAUSE",
+            timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
+        ) == {
+            "result": "ok",
+            "drained": False,
+        }
+        assert gate.waits == [pytest.approx(1.70)]
+        assert clock() - started == pytest.approx(
+            MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+        await _close_window(wl)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+async def test_uds_setup_expiry_rolls_back_inside_declared_total(
+    monkeypatch,
+) -> None:
+    """The real wire returns non-ok after local rollback, below old 3 s."""
+
+    import jasper.voice_daemon as voice_daemon_mod
+    from jasper.voice.daemon_main import _start_control_socket
+
+    clock = _FakeMonotonic()
+    monkeypatch.setattr(voice_daemon_mod, "_measurement_monotonic", clock)
+
+    class _SlowVolume:
+        async def note_measurement_active(self, active: bool) -> None:
+            clock.advance(0.40 if active else 0.10)
+
+    class _ExpiringMeter:
+        resume_calls = 0
+
+        async def pause_content_meter_for_measurement(
+            self,
+            deadline_monotonic: float,
+        ) -> None:
+            clock.advance(deadline_monotonic - clock())
+            raise TimeoutError("declared meter setup maximum reached")
+
+        async def pause_content_meter(self) -> None:
+            raise AssertionError("measurement-specific path must be selected")
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+
+    wl = WakeLoop.for_tests()
+    meter = _ExpiringMeter()
+    wl._volume_coordinator = _SlowVolume()
+    wl._tts = meter
+    started = clock()
+    sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-budget-")
+    socket_path = f"{sock_dir}/voice.sock"
+    server = await _start_control_socket(wl, socket_path)
+    try:
+        response = await _voice_uds_command(
+            socket_path,
+            "MEASURE_PAUSE",
+            timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
+        )
+        assert response == {"result": "ERROR"}
+        assert clock() - started == pytest.approx(
+            MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC + 0.10
+        )
+        assert clock() - started < MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
+        assert MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC < (
+            VOICE_MEASURE_PAUSE_TIMEOUT_SEC
+        )
+        assert not wl._measurement_active.is_set()
+        assert not wl._output_gate.admission_paused
+        assert meter.resume_calls == 0
+    finally:
+        server.close()
+        await server.wait_closed()
+        await _close_window(wl)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
+    monkeypatch,
+) -> None:
+    """MEASURE_PAUSE never reconnects; a later ordinary control does once."""
+
+    import jasper.audio_io as audio_io_mod
+    from jasper.audio_io import OutputdTtsPlayout
+    from jasper.voice.daemon_main import _start_control_socket
+
+    parent, child = socket.socketpair()
+    poisoned = audio_io_mod._OutputdStreamAdapter(parent)
+    poisoned.close()
+    child.close()
+    tts = OutputdTtsPlayout(socket_path="/tmp/outputd-test.sock")
+    tts._stream = poisoned  # type: ignore[assignment]
+    connect_calls = 0
+
+    class _Replacement:
+        def __init__(self) -> None:
+            self.meter_pauses = 0
+
+        def pause_content_meter(self) -> None:
+            self.meter_pauses += 1
+
+    replacement = _Replacement()
+
+    async def fake_connect():
+        nonlocal connect_calls
+        connect_calls += 1
+        return replacement
+
+    monkeypatch.setattr(tts, "_connect_stream_adapter", fake_connect)
+    wl = WakeLoop.for_tests()
+    wl._tts = tts
+    sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-poisoned-")
+    socket_path = f"{sock_dir}/voice.sock"
+    server = await _start_control_socket(wl, socket_path)
+    try:
+        response = await _voice_uds_command(
+            socket_path,
+            "MEASURE_PAUSE",
+            timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
+        )
+        assert response == {"result": "ERROR"}
+        assert connect_calls == 0
+        assert tts._stream is poisoned
+        assert not wl._measurement_active.is_set()
+        assert not wl._output_gate.admission_paused
+
+        await tts.pause_content_meter()
+        assert connect_calls == 1
+        assert tts._stream is replacement
+        assert replacement.meter_pauses == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+        await _close_window(wl)
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_lease_refresh_fits_under_the_daemon_measurement_auto_clear() -> None:

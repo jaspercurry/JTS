@@ -784,6 +784,11 @@ _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 _OUTPUTD_IPC_CONNECT_TIMEOUT_SEC = 1.0
 _OUTPUTD_IPC_IO_TIMEOUT_SEC = 1.0
 _OUTPUTD_IPC_LOCK_TIMEOUT_SEC = 1.0
+# MEASURE_PAUSE is a rare safety-control request, not an audio hot path. Its
+# canonical adapter call runs synchronously so it cannot outlive the reply;
+# 250 ms matches one IPC audio chunk and leaves ample room inside the daemon's
+# aggregate pause budget without stalling the event loop for a full IPC second.
+_OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC = 0.25
 # Keep individual IPC messages well below the daemon's 2 MiB hard cap.
 # 250 ms chunks make barge-in/flush sharper and set the granularity at
 # which the writer's pacing (below) applies backpressure. Chunking alone
@@ -1006,7 +1011,12 @@ class _OutputdStreamAdapter:
             pass
         self._poison(reason=None)
 
-    def _poison(self, *, reason: str | None) -> None:
+    def _poison(
+        self,
+        *,
+        reason: str | None,
+        timeout_sec: float | None = None,
+    ) -> None:
         """Close from any thread and wake a blocked socket operation."""
 
         if self._closed:
@@ -1026,11 +1036,12 @@ class _OutputdStreamAdapter:
             pass
         if reason is not None and not self._timeout_logged:
             self._timeout_logged = True
-            timeout_sec = (
-                _OUTPUTD_IPC_LOCK_TIMEOUT_SEC
-                if reason == "lock"
-                else _OUTPUTD_IPC_IO_TIMEOUT_SEC
-            )
+            if timeout_sec is None:
+                timeout_sec = (
+                    _OUTPUTD_IPC_LOCK_TIMEOUT_SEC
+                    if reason == "lock"
+                    else _OUTPUTD_IPC_IO_TIMEOUT_SEC
+                )
             log_event(
                 logger,
                 "tts_fanin.adapter_timeout",
@@ -1040,33 +1051,75 @@ class _OutputdStreamAdapter:
                 level=logging.WARNING,
             )
 
+    @staticmethod
+    def _remaining_timeout(
+        ceiling_sec: float,
+        deadline_monotonic: float | None,
+    ) -> float:
+        if deadline_monotonic is None:
+            return ceiling_sec
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError("TTS IPC aggregate deadline expired")
+        return min(ceiling_sec, remaining)
+
     @contextmanager
-    def _bounded_lock(self):
-        acquired = self._lock.acquire(timeout=_OUTPUTD_IPC_LOCK_TIMEOUT_SEC)
+    def _bounded_lock(
+        self,
+        *,
+        deadline_monotonic: float | None = None,
+    ):
+        try:
+            timeout_sec = self._remaining_timeout(
+                _OUTPUTD_IPC_LOCK_TIMEOUT_SEC,
+                deadline_monotonic,
+            )
+        except TimeoutError:
+            self._poison(reason="lock", timeout_sec=0.0)
+            raise
+        acquired = self._lock.acquire(timeout=timeout_sec)
         if not acquired:
             # Do not release a lock this waiter never acquired. Poisoning the
             # socket wakes the owning thread's bounded sendall; that owner
             # releases its own lock in its finally block.
-            self._poison(reason="lock")
+            self._poison(reason="lock", timeout_sec=timeout_sec)
             raise TimeoutError(
                 "TTS IPC adapter lock timed out after "
-                f"{_OUTPUTD_IPC_LOCK_TIMEOUT_SEC:.1f}s"
+                f"{timeout_sec:.3f}s"
             )
         try:
             yield
         finally:
             self._lock.release()
 
-    def _sendall_locked(self, data: bytes) -> None:
+    def _sendall_locked(
+        self,
+        data: bytes,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         if self._closed:
             raise BrokenPipeError("TTS IPC socket is closed")
         try:
+            timeout_sec = self._remaining_timeout(
+                _OUTPUTD_IPC_IO_TIMEOUT_SEC,
+                deadline_monotonic,
+            )
+        except TimeoutError:
+            self._poison(reason="send", timeout_sec=0.0)
+            raise
+        try:
+            # Every operation sets its own bound while holding the adapter
+            # lock. A measurement command may carry a tighter aggregate
+            # deadline than the ordinary one-second IPC ceiling; the next
+            # operation resets the socket timeout from its own budget.
+            self._sock.settimeout(timeout_sec)
             self._sock.sendall(data)
         except TimeoutError as e:
-            self._poison(reason="send")
+            self._poison(reason="send", timeout_sec=timeout_sec)
             raise TimeoutError(
                 "TTS IPC send timed out after "
-                f"{_OUTPUTD_IPC_IO_TIMEOUT_SEC:.1f}s"
+                f"{timeout_sec:.3f}s"
             ) from e
         except OSError:
             self._poison(reason=None)
@@ -1116,9 +1169,16 @@ class _OutputdStreamAdapter:
                 )
             self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
 
-    def pause_content_meter(self) -> None:
-        with self._bounded_lock():
-            self._sendall_locked(b"CONTENT_METER_PAUSE\n")
+    def pause_content_meter(
+        self,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
+        with self._bounded_lock(deadline_monotonic=deadline_monotonic):
+            self._sendall_locked(
+                b"CONTENT_METER_PAUSE\n",
+                deadline_monotonic=deadline_monotonic,
+            )
 
     def resume_content_meter(self) -> None:
         with self._bounded_lock():
@@ -1247,8 +1307,14 @@ class OutputdTtsPlayout(TtsPlayout):
         self._assistant_meter: AssistantSourceMeter | None = None
         self._profile_cache_key: tuple[str, str, str, str] | None = None
         self._profile_cache = None
+        # One publisher owns reconnect. Without this lock, simultaneous meter
+        # and audio callers can each connect after the same poisoned adapter
+        # and leave one live but unreachable socket behind.
+        self._outputd_reconnect_lock = asyncio.Lock()
 
-    async def _connect_stream_adapter(self) -> _OutputdStreamAdapter:
+    async def _connect_stream_adapter(
+        self,
+    ) -> _OutputdStreamAdapter:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC)
         connect_task = asyncio.create_task(
@@ -1308,26 +1374,36 @@ class OutputdTtsPlayout(TtsPlayout):
     async def _current_outputd_stream(self):
         stream = self._stream
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-            log_event(
-                logger,
-                "tts_fanin.reconnect",
-                reason="closed_socket",
-                socket=self._socket_path,
-            )
-            try:
-                stream = await self._connect_stream_adapter()
-            except Exception as e:  # noqa: BLE001
+            async with self._outputd_reconnect_lock:
+                # Another waiter may have published the replacement while we
+                # queued for the reconnect lock. Re-read inside ownership so
+                # every caller shares that adapter and no loser socket exists.
+                stream = self._stream
+                if not (
+                    isinstance(stream, _OutputdStreamAdapter)
+                    and stream.closed
+                ):
+                    return stream
                 log_event(
                     logger,
-                    "tts_fanin.reconnect_failed",
+                    "tts_fanin.reconnect",
                     reason="closed_socket",
                     socket=self._socket_path,
-                    exc_type=type(e).__name__,
-                    err=str(e),
-                    level=logging.WARNING,
                 )
-                return None
-            self._stream = stream  # type: ignore[assignment]
+                try:
+                    stream = await self._connect_stream_adapter()
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        logger,
+                        "tts_fanin.reconnect_failed",
+                        reason="closed_socket",
+                        socket=self._socket_path,
+                        exc_type=type(e).__name__,
+                        err=str(e),
+                        level=logging.WARNING,
+                    )
+                    return None
+                self._stream = stream  # type: ignore[assignment]
         return stream
 
     def set_gain_db(self, db: float) -> None:
@@ -1411,6 +1487,29 @@ class OutputdTtsPlayout(TtsPlayout):
 
     async def pause_content_meter(self) -> None:
         await self._send_meter_control("pause_content_meter")
+
+    async def pause_content_meter_for_measurement(
+        self,
+        deadline_monotonic: float,
+    ) -> None:
+        """Fail-closed meter pause that cannot outlive MEASURE_PAUSE.
+
+        Do not reconnect here: isolation setup must prove the command landed
+        on the canonical adapter it already owns. A poisoned/missing adapter
+        rolls the window back; ordinary later access owns reconnection.
+        """
+
+        stream = self._stream
+        if not isinstance(stream, _OutputdStreamAdapter) or stream.closed:
+            raise OSError("canonical TTS IPC adapter unavailable")
+        control_deadline = min(
+            deadline_monotonic,
+            time.monotonic() + _OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC,
+        )
+        # Deliberately synchronous: the bounded adapter critical section may
+        # hold the event loop for at most 250 ms, and no worker can emit PAUSE
+        # after this coroutine reports failure and voice reopens admission.
+        stream.pause_content_meter(deadline_monotonic=control_deadline)
 
     async def resume_content_meter(self) -> None:
         await self._send_meter_control("resume_content_meter")
