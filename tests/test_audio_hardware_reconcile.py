@@ -766,7 +766,15 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     # different one. STATUS dac.format then reports what outputd's client edge
     # negotiated (not an echo of this value), and the chip-AEC alignment
     # identity records that.
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    #
+    # wide-output-path PR-8 b3: the packed 24-bit edge, which the dongle's USB
+    # descriptor advertises (`aplay -D hw:A --dump-hw-params` -> S16_LE S24_3LE)
+    # and a live `aplay -D hw:A -f S24_3LE` open confirmed on jts.local
+    # (2026-08-08). This is the SINGLE-dongle arm; the dual-Apple composite arm
+    # emits its own S16_LE declaration instead, asserted in
+    # test_reconcile_dual_apple_pins_pcm_order_from_saved_topology (the one
+    # test that already drives the composite emit arm end to end).
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
@@ -929,8 +937,9 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so a second reconcile is a true no-op.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so a second reconcile is a true no-op. The Apple dongle's
+        # steady state is the packed S24_3LE edge (wide-output-path PR-8 b3).
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         # The single stereo path now also manages the wide-lane width knob,
         # cleared so a stale active width can't mis-size the stereo lane.
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
@@ -1123,6 +1132,17 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
+    # The composite's OWN declaration reaches outputd, not its children's. Both
+    # children of this composite are the Apple dongle profile, which declares
+    # the packed S24_3LE edge (wide-output-path PR-8 b3) — and outputd's paired
+    # composite sink has NO packed-24 child write path: `ChildPeriods::new`
+    # refuses that width and `PairedCompositeSink::new` parks the unit at
+    # EX_CONFIG 78 before either dongle opens (#2249). So an S24_3LE emitted
+    # here is a silent speaker on every dual-Apple box. This assertion is the
+    # tripwire for the whole single-vs-composite split model: it fails the
+    # moment the emission starts resolving through child_profile_ids.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" not in outputd_env
     # A wide composite sink (4ch) is already fenced off outputd's stereo-only
     # features by its channel width, so the reconciler does NOT set the 2-ch
     # active-lane marker here — it stays cleared.
@@ -1595,8 +1615,12 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so the floor stays the sole delta.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so the floor stays the sole delta. The Apple dongle's steady
+        # state is the packed S24_3LE edge (wide-output-path PR-8 b3); seeding
+        # the old S16_LE here would leave the format as a SECOND delta and
+        # quietly falsify this fixture's "floor-only" premise while the
+        # assertions below still passed.
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
@@ -1743,8 +1767,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so nothing commits.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so nothing commits. The Apple dongle's steady state is the
+        # packed S24_3LE edge (wide-output-path PR-8 b3).
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
@@ -2763,8 +2788,9 @@ def test_reconcile_emits_the_wide_content_format_on_a_loopback_box(tmp_path: Pat
     assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
     # The content lane and the DAC edge are separate hops with separate
     # declarations, and on this box they legitimately differ: an S32 lane into
-    # the Apple dongle's S16 edge.
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    # the Apple dongle's packed S24_3LE edge, the widest width that device
+    # advertises.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
     assert "content_format=S32_LE" in result.stderr
 
 

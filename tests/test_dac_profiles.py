@@ -882,26 +882,13 @@ def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> 
             )
 
 
-def test_no_profile_declares_the_packed_24_edge_yet() -> None:
-    """``S24_3LE`` is vocabulary, not a live declaration — and that is the point.
-
-    outputd's packed write path ships ahead of any profile flip (wide-output-path
-    D9), so this PR is dormant by construction: every live speaker keeps the edge
-    format it already had. This assertion is the tripwire for that claim. When the
-    dongle profile(s) DO flip, this test is the one that must be deleted in the
-    same PR — deliberately, with the hardware open-proof and the forced chip-AEC
-    recommission called out in its release note.
-    """
-    declaring = [p.id for p in dac.all_profiles() if p.final_edge_format == "S24_3LE"]
-    assert declaring == [], (
-        f"{declaring} declare S24_3LE; that flip forces a chip-AEC recommission "
-        f"on affected commissioned boxes and needs an `aplay -D hw:<card> -f "
-        f"S24_3LE` open proof first"
-    )
-
-
 def test_final_edge_format_matches_known_hardware() -> None:
-    assert APPLE_USB_C_DONGLE.final_edge_format == "S16_LE"
+    # wide-output-path PR-8 b3: the Apple dongle's USB descriptor advertises
+    # exactly S16_LE and S24_3LE at 48 kHz / 2ch, and a live
+    # `aplay -D hw:A -f S24_3LE` open succeeded on jts.local (2026-08-08).
+    # S24_3LE is the widest edge this silicon has — the dongle exposes no 32-bit
+    # width at all.
+    assert APPLE_USB_C_DONGLE.final_edge_format == "S24_3LE"
     # wide-output-path PR-7: HiFiBerry DAC8x is a measured S32 edge (jts3
     # `aplay --dump-hw-params` open test, 2026-08-07) — declaring it moves
     # outputd's i32 program spine straight through with zero narrowing.
@@ -917,39 +904,99 @@ def test_final_edge_format_matches_known_hardware() -> None:
     # The composite's declaration became load-bearing when outputd started
     # requesting it on BOTH children (wide-output-path PR-5): every live
     # dual-Apple box opens its two dongles at exactly this value, so an
-    # unintended flip here is an unintended change to real hardware.
+    # unintended flip here is an unintended change to real hardware. It stays
+    # S16_LE while its child declares S24_3LE above — see
+    # test_a_composite_never_declares_a_width_its_transport_refuses for why that
+    # divergence is the correct state and not drift.
     assert DUAL_APPLE_USB_C_DAC_4CH.final_edge_format == "S16_LE"
 
 
-def test_a_composite_declares_the_same_edge_format_as_every_child() -> None:
-    """A composite's declared format IS what outputd asks each child for.
+def test_a_composite_never_declares_a_width_its_transport_refuses() -> None:
+    """No composite may declare ``S24_3LE``: the paired sink cannot drive it.
 
-    `jasper-audio-hardware-reconcile` emits `JASPER_OUTPUTD_DAC_FORMAT` from the
-    ARMED profile — the composite's — and outputd requests that on both child
-    PCMs, so a child profile declaring a different width would be declaring
-    something no code ever asks for: a lie in the registry, invisible at runtime
-    until someone trusted it.
+    This is the Python half of a two-sided guard. The Rust half is
+    ``a_composite_child_edge_of_packed_24_is_refused_not_silently_narrowed``
+    plus
+    ``a_packed_24_composite_declaration_parks_the_unit_instead_of_restart_looping``
+    in ``rust/jasper-outputd/src/alsa_backend.rs``, which pin that
+    ``ChildPeriods::new`` refuses a packed-24 child edge and that
+    ``PairedCompositeSink::new`` turns the refusal into an EX_CONFIG 78 park
+    before either dongle opens. The refusal is correct behaviour; a composite
+    declaration that triggers it is a silent speaker shipped as data, so the
+    registry must never produce one.
 
-    This is also the tripwire for the S24_3LE work: moving the Apple dongle's
-    edge without moving the composite (or vice versa) fails here rather than
-    shipping a composite that opens at a width its own children do not claim.
+    ``ChildPeriods`` holds an i16 pair or an i32 pair and
+    ``deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>`` is generic over the
+    sample type — Rust has no 3-byte integer for ``T`` to be, which is why the
+    packed edge needed its own byte-staging write path on the single-DAC sink
+    (#2249) and why the paired sink has no equivalent yet.
     """
-    checked = 0
+    composites = [p for p in dac.all_profiles() if p.kind == "composite"]
+    # Non-vacuity: a registry with no composite profile would satisfy the loop
+    # below by never running it.
+    assert composites, "expected at least one composite profile"
+    for profile in composites:
+        assert profile.final_edge_format != "S24_3LE", (
+            f"{profile.id} declares S24_3LE, which outputd's paired composite "
+            f"sink refuses at open (ChildPeriods::new -> EX_CONFIG 78 park): "
+            f"the transport has no packed-24 child write path, so this ships a "
+            f"speaker that cannot start"
+        )
+
+
+def test_a_composite_may_diverge_from_its_child_only_at_that_capability_gap() -> None:
+    """The single/composite split model, asserted where it actually bites.
+
+    A composite's declaration is what outputd asks BOTH children for: the
+    reconciler emits ``JASPER_OUTPUTD_DAC_FORMAT`` from the ARMED profile's own
+    id (``final_edge_format_for`` -> ``by_id``), so while a composite is armed no
+    child profile's declaration is read, and while a single DAC is armed no
+    composite's is. The two are therefore independent facts about two different
+    armed configurations, not one fact stated twice.
+
+    They may only diverge where the paired transport genuinely cannot follow the
+    child — today, exactly the packed-24 gap. Any OTHER divergence is drift: two
+    widths the same silicon could both run, differing for no reason anyone
+    recorded. Asserting the live divergence case explicitly is what stops it
+    rotting into an unexplained mismatch once the packed child path lands.
+    """
+    diverging: list[tuple[str, str, str, str]] = []
     for profile in dac.all_profiles():
         if profile.kind != "composite":
             continue
         for child_id in profile.child_profile_ids:
             child = dac.by_id(child_id)
             assert child is not None, f"{profile.id}: unknown child {child_id!r}"
-            assert child.final_edge_format == profile.final_edge_format, (
-                f"{profile.id} declares {profile.final_edge_format!r} but child "
-                f"{child.id} declares {child.final_edge_format!r}; outputd asks "
-                f"every child for the COMPOSITE's format"
-            )
-            checked += 1
-    # Non-vacuity: a registry with no composite profile would satisfy every
-    # assertion above by never running one.
-    assert checked >= 2, f"expected at least one composite's children, saw {checked}"
+            if child.final_edge_format != profile.final_edge_format:
+                diverging.append(
+                    (
+                        profile.id,
+                        profile.final_edge_format,
+                        child.id,
+                        child.final_edge_format,
+                    )
+                )
+
+    for composite_id, composite_fmt, child_id, child_fmt in diverging:
+        assert child_fmt == "S24_3LE" and composite_fmt != "S24_3LE", (
+            f"{composite_id} declares {composite_fmt!r} but child {child_id} "
+            f"declares {child_fmt!r}; the only divergence this registry permits "
+            f"is a child on the packed S24_3LE edge that the paired composite "
+            f"transport cannot drive"
+        )
+
+    # The live case, named — so removing it is a deliberate edit rather than a
+    # loop that quietly stops finding anything to check.
+    assert (
+        DUAL_APPLE_USB_C_DAC_4CH.id,
+        DUAL_APPLE_USB_C_DAC_4CH.final_edge_format,
+        APPLE_USB_C_DONGLE.id,
+        APPLE_USB_C_DONGLE.final_edge_format,
+    ) in diverging, (
+        "the dual-Apple composite and its Apple dongle child no longer diverge; "
+        "if the paired sink gained a packed-24 child write path, move the "
+        "composite to S24_3LE and delete this assertion in that same PR"
+    )
 
 
 def test_final_edge_format_rejects_unsupported_value() -> None:
@@ -977,8 +1024,19 @@ def test_final_edge_format_rejects_unsupported_value() -> None:
 
 def test_final_edge_format_for_round_trips_for_bash() -> None:
     assert dac.final_edge_format_for(INNOMAKER_HIFI_AMP_PRO_ID) == "S32_LE"
-    assert dac.final_edge_format_for(APPLE_USB_C_DONGLE_ID) == "S16_LE"
+    assert dac.final_edge_format_for(APPLE_USB_C_DONGLE_ID) == "S24_3LE"
     assert dac.final_edge_format_for("no_such_dac") is None
+    # The lookup is BY ID, off whichever profile the reconciler armed — it never
+    # walks into child_profile_ids. That is what keeps the Apple dongle's packed
+    # S24_3LE edge out of a dual-Apple box, whose paired transport refuses it:
+    # asking for the composite's id answers with the COMPOSITE's declaration
+    # even though its two children are that very dongle profile.
+    assert dac.final_edge_format_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == "S16_LE"
+    assert dac.by_id(DUAL_APPLE_USB_C_DAC_4CH_ID) is not None
+    assert dac.by_id(DUAL_APPLE_USB_C_DAC_4CH_ID).child_profile_ids == (  # type: ignore[union-attr]
+        APPLE_USB_C_DONGLE_ID,
+        APPLE_USB_C_DONGLE_ID,
+    )
     # Whatever it prints, `jasper-audio-hardware-reconcile` writes verbatim into
     # JASPER_OUTPUTD_DAC_FORMAT, so every reachable answer must be a value
     # outputd's config parser accepts — or the emit parks the final-output owner

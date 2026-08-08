@@ -685,12 +685,11 @@ PY
 #
 # BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd reads
 # JASPER_OUTPUTD_DAC_FORMAT and accepts exactly {S16_LE, S24_3LE, S32_LE} or
-# empty (empty/unset == S16_LE). S24_3LE is the packed 3-byte 24-bit edge; no
-# profile declares it today, so this function cannot return it until one does —
-# outputd's write path shipped ahead of the registry deliberately
-# (wide-output-path D9). ALSA's 4-byte-word S24_LE is a DIFFERENT format and is
-# NOT accepted. Any other value fails its config parse and parks the
-# FINAL-OUTPUT OWNER at exit 78 — jasper-outputd-failure-reconcile grants one
+# empty (empty/unset == S16_LE). S24_3LE is the packed 3-byte 24-bit edge, and
+# the Apple USB-C dongle profile declares it. ALSA's 4-byte-word S24_LE is a
+# DIFFERENT format and is NOT accepted. Any other value fails its config parse
+# and parks the FINAL-OUTPUT OWNER at exit 78 —
+# jasper-outputd-failure-reconcile grants one
 # bounded retry per window, then the unit stays failed and the speaker is
 # silent. outputd REQUESTS this format on its DAC PCM and parks if the device
 # installs a different one, so a value the hardware cannot serve silences the
@@ -700,6 +699,13 @@ PY
 # format invalidates every commissioned artifact on that hardware and forces a
 # foreground `sudo jasper-aec-commission`. Emit sites are in
 # apply_audio_runtime_env.
+#
+# This resolves BY ID, off whichever profile the caller armed — it never walks a
+# composite's child_profile_ids. That is load-bearing, not incidental: outputd's
+# paired composite sink has no packed-24 child write path and parks at exit 78
+# on an S24_3LE child edge, so the dual-Apple composite declares S16_LE even
+# though both its children ARE the dongle profile that declares S24_3LE. Passing
+# the composite's id here is what answers S16_LE for that box.
 final_edge_format_for_dac() {
     local dac_id="$1"
     if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
@@ -739,7 +745,8 @@ PY
 # the plug-wrapped passive lane the plug converts, so a wrong value there is a
 # silent extra requantization rather than a refusal. It is NOT the DAC edge —
 # that is JASPER_OUTPUTD_DAC_FORMAT, a separate hop with its own declaration,
-# and the two legitimately differ (an S32 content lane into an S16 dongle edge).
+# and the two legitimately differ (an S32 content lane into the Apple dongle's
+# packed S24_3LE edge, which is the widest width that device advertises).
 # The content axis does NOT enter the chip-AEC alignment identity, so changing
 # it forces no recommission (wide-output-path D6). Emit site is in
 # apply_audio_runtime_env.
