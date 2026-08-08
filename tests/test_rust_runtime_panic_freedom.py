@@ -33,6 +33,21 @@ sub-family is an unqualified local ``cargo test`` (no ``--release``) or any
 debug-profile developer run (see ``fake.rs``'s "safe developer runs"),
 neither of which any existing gate checks. It stays in scope for that gap.
 
+Issue #2251: the scan still missed ``unreachable!``, ``todo!``, and
+``unimplemented!`` — all three expand to ``panic!`` at compile time, so a
+static source scan that doesn't name them lets any of the three sail
+through unmatched. Unlike ``.expect(`` / the ``assert!`` family, none of
+the three is a conditional guard with a legitimate invariant-documenting
+use: reaching any of them panics unconditionally, exactly like a bare
+``panic!``. They join ``.unwrap()`` / ``panic!`` in the intentionally
+empty-allowlist category rather than getting an allowlist of their own —
+see ``_BARE_PANIC_PAT`` below. A full sweep of every crate in
+``RUNTIME_CRATES`` (and, for completeness, the rest of ``rust/``) at the
+time of this fix found zero actual call sites; the sole textual hit was a
+``///`` doc-comment in ``jasper-outputd/src/alsa_backend.rs`` *naming* the
+macro in prose (already outside this scanner's reach, since comment text
+is stripped before matching), not an invocation.
+
 CI builds and ``cargo test``s these crates, but cargo cannot run in
 every dev environment and nothing in cargo's gate distinguishes a
 test-only ``unwrap`` from a runtime one. This guard is the
@@ -557,10 +572,15 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
 }
 
 _ASSERT_FAMILY_PAT = re.compile(r"\b(?:debug_)?assert(?:_eq|_ne)?!\(")
-# The two panic-family constructs with an intentionally empty allowlist:
-# no (file, key) can ever clear them, so their bare presence on a line
-# always disqualifies it, independent of what else is on that same line.
-_BARE_PANIC_PAT = re.compile(r"\.unwrap\(\)|panic!")
+# The panic-family constructs with an intentionally empty allowlist: no
+# (file, key) can ever clear them, so their bare presence on a line always
+# disqualifies it, independent of what else is on that same line.
+# unreachable!/todo!/unimplemented! (issue #2251) join .unwrap()/panic!
+# here rather than getting an allowlist of their own -- see the module
+# docstring's "Issue #2251" paragraph for why.
+_BARE_PANIC_PAT = re.compile(
+    r"\.unwrap\(\)|panic!|unreachable!|todo!|unimplemented!"
+)
 _PANIC_PAT = re.compile(
     _BARE_PANIC_PAT.pattern + r"|\.expect\(|" + _ASSERT_FAMILY_PAT.pattern
 )
@@ -747,8 +767,9 @@ def _runtime_findings() -> _Findings:
 def test_no_new_panics_in_rust_runtime_code() -> None:
     findings = _runtime_findings()
     assert not findings.violations, (
-        "unwrap()/expect()/panic!/assert!-family in runtime "
-        "(non-#[cfg(test)]) code of the production audio daemons:\n  "
+        "unwrap()/expect()/panic!/unreachable!/todo!/unimplemented!/"
+        "assert!-family in runtime (non-#[cfg(test)]) code of the "
+        "production audio daemons:\n  "
         + "\n  ".join(findings.violations)
         + "\nReturn a Result (or log-and-degrade) instead. If this is a "
         "genuine construction invariant, use .expect(\"<invariant>\") and "
