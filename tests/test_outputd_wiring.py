@@ -716,7 +716,11 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert 'RESULT="${SERVICE_RESULT:-unknown}"' in failure_reconcile
     assert 'STATUS="${EXIT_STATUS:-}"' in failure_reconcile
     assert '"$RESULT" == "success"' in failure_reconcile
-    assert '"$RESULT" == "condition"' in failure_reconcile
+    # `exec-condition` is systemd's own SERVICE_RESULT spelling for an
+    # ExecCondition skip (systemd.service(5)). This assertion pinned the bare
+    # `condition` until 2026-08-08 — a literal systemd never emits, so it held
+    # the skip branch dead rather than proving it worked.
+    assert '"$RESULT" == "exec-condition"' in failure_reconcile
     assert 'CONFIG_EXIT_STATUS=78' in failure_reconcile
 
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit

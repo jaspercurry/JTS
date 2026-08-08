@@ -29,6 +29,11 @@
 # Restart=on-failure into StartLimitAction=reboot. The two are one signature
 # apart only by COUNT, so this helper counts consecutive content-lane failures
 # and parks the unit out-of-band once the count says the lane is not opening.
+# That park is TERMINAL for the boot: nothing re-arms outputd on its own. It
+# comes back on a sound-card udev event (jasper-audio-hardware-reconcile does
+# reset-failed + start), a deploy, jasper-camilla-recover's OnFailure pass, a
+# reboot (/run wipes, so the streak is per-boot too), or an operator restart.
+# The record names those paths so the operator does not have to know them.
 
 set -uo pipefail
 
@@ -57,17 +62,24 @@ CONTENT_LANE_WINDOW_SEC="${JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC:-300}"
 #   park has to land by failure 5. Parking on 4 leaves start 5 unspent: a stop
 #   job that lands late still beats the reboot.
 #
-#   Floor — a category-A transient is a ONE-attempt event.
-#   jasper-camilla.service is After=jasper-outputd.service, so its start job is
-#   released the moment outputd's start job settles (a failed start settles):
-#   the peer opens its half during the first RestartSec=5 gap and attempt 2
-#   finds the lane there. The deploy path does not even produce that one —
+#   Floor — 4 failures at RestartSec=5 is ~15 s of an unopenable lane across
+#   four independent attempts, each of which already had a
+#   jasper-audio-hardware-reconcile pass in front of it. What has to fit inside
+#   that 15 s is the peer's arrival, and the peer is NOT gated on outputd
+#   alone: jasper-camilla.service is
+#   After=sound.target network.target jasper-outputd.service jasper-fanin.service,
+#   so its start job waits on the LAST of the four. jasper-fanin is Type=notify
+#   with no TimeoutStartSec, so it can hold that gate for the systemd default
+#   (90 s) while it brings up its PCMs and STATUS. The honest margin is
+#   therefore fan-in readiness plus CamillaDSP's own device open, and a fan-in
+#   stall past ~20 s parks a box that a category-A transient built. That is a
+#   bounded, recoverable regression and not a new one: the same stall
+#   exhausted outputd's StartLimitBurst before this helper existed, and the
+#   outcome there was a REBOOT. The deploy path is the easy case — it does not
+#   produce the wait at all, since
 #   release_camilla_content_lane_for_format_flip
 #   (deploy/lib/install/systemd-units.sh) stops CamillaDSP only when the width
-#   actually moves, and outputd then opens first and locks the pair. So 4
-#   consecutive failures is ~15 s of an unopenable lane across four independent
-#   attempts, each of which already had a jasper-audio-hardware-reconcile pass
-#   in front of it.
+#   actually moves and outputd then opens first and locks the pair.
 CONTENT_LANE_PARK_AFTER="${JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER:-4}"
 CONTENT_LANE_JOURNAL_LINES="${JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES:-40}"
 
@@ -156,19 +168,27 @@ content_lane_streak() {
     echo "$count"
 }
 
+# The one remediation sentence, written to the record AND the journal line so
+# neither surface sends an operator to the other to learn what to do.
+CONTENT_LANE_ACTION="match the content-lane width on both halves of the pair (JASPER_OUTPUTD_CONTENT_FORMAT against the CamillaDSP playback half), then: systemctl restart jasper-outputd"
+
 write_content_lane_state() {
     local count="$1"
     shift || true
-    local dir line
+    local dir line tmp
     dir="$(dirname "$CONTENT_LANE_STATE")"
     mkdir -p "$dir" 2>/dev/null || true
+    # tempfile+rename: a reader never sees a truncated record, and the park's
+    # full record replaces the count-only one in one step.
+    tmp="${CONTENT_LANE_STATE}.tmp.$$"
     {
         printf 'count=%s\n' "$count"
         printf 'last_failure_epoch=%s\n' "$(now_sec)"
         for line in "$@"; do
             printf '%s\n' "$line"
         done
-    } > "$CONTENT_LANE_STATE" 2>/dev/null || true
+    } > "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$CONTENT_LANE_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 clear_content_lane_state() {
@@ -181,19 +201,32 @@ park_content_lane() {
         "parked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "reason=content_lane_open_repeated" \
         "detail=jasper-outputd could not open its snd-aloop content lane on ${count} consecutive starts" \
-        "action=match the content-lane width on both halves of the pair (JASPER_OUTPUTD_CONTENT_FORMAT against the CamillaDSP playback half), then: systemctl restart jasper-outputd"
+        "action=${CONTENT_LANE_ACTION}" \
+        "re_arm=nothing re-arms outputd on its own: a sound-card udev event (jasper-audio-hardware-reconcile), a deploy, jasper-camilla-recover's OnFailure pass, a reboot, or an operator restart"
     # reset-failed clears the start rate-limit counter so the recovery restart
     # is start 1 of a fresh burst rather than start 5 of the one this park
     # interrupted; stop cancels the pending Restart=on-failure. Re-runs on every
     # later failure of the same streak, so a stop job that never landed is
     # retried instead of silently lost.
+    #
+    # That retry has no escalation ceiling, deliberately. Each iteration is
+    # bounded (one reconcile, two systemctl calls, one journal line) and loud,
+    # but if an external actor keeps starting outputd into the same broken
+    # width the pair repeats indefinitely — there is no machinery here that
+    # gives up. The alternative, a helper that stops trying, would be a silent
+    # speaker with no record of why.
     "$SYSTEMCTL" reset-failed jasper-outputd.service >/dev/null 2>&1 || true
     "$SYSTEMCTL" --no-block stop jasper-outputd.service >/dev/null 2>&1 || true
     log park reason=content_lane_open_repeated failures="$count" \
-        park_after="$CONTENT_LANE_PARK_AFTER" state="$CONTENT_LANE_STATE"
+        park_after="$CONTENT_LANE_PARK_AFTER" state="$CONTENT_LANE_STATE" \
+        action="\"${CONTENT_LANE_ACTION}\""
 }
 
-if [[ "$RESULT" == "success" || "$RESULT" == "condition" ]]; then
+# `exec-condition` is systemd's own SERVICE_RESULT spelling for an
+# ExecCondition skip (systemd.service(5) $SERVICE_RESULT). This read `condition`
+# until 2026-08-08, which matched nothing, so an ExecCondition park fell through
+# to the reconcile path it was written to skip.
+if [[ "$RESULT" == "success" || "$RESULT" == "exec-condition" ]]; then
     clear_content_lane_state
     log skip reason=non_retrying_stop
     exit 0
@@ -226,7 +259,12 @@ fi
 
 if content_lane_failure; then
     content_lane_failures=$(( $(content_lane_streak) + 1 ))
-    write_content_lane_state "$content_lane_failures"
+    if [[ "$content_lane_failures" -lt "$CONTENT_LANE_PARK_AFTER" ]]; then
+        # Below the bound this is the only writer. At or above it, the park is —
+        # a count-only write here would drop the reason/action fields of an
+        # earlier park for as long as the reconcile below runs.
+        write_content_lane_state "$content_lane_failures"
+    fi
 else
     content_lane_failures=0
     clear_content_lane_state

@@ -48,10 +48,15 @@ class _FailureReconcileHarness:
         self.state = tmp_path / "content-lane.state"
         self.reconcile_rc = tmp_path / "reconcile.rc"
         self.reconcile_rc.write_text("0", encoding="utf-8")
+        self.state_snapshot = tmp_path / "state-snapshot"
         fake_reconcile = _write_executable(
             tmp_path / "jasper-audio-hardware-reconcile",
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$*\" >> \"$JASPER_TEST_LOG\"\n"
+            # The reconcile runs BETWEEN the streak write and the park write,
+            # so copying the record here is how a test sees the mid-run window.
+            'cp "$JASPER_OUTPUTD_CONTENT_LANE_STATE" "$JASPER_TEST_STATE_SNAPSHOT" '
+            "2>/dev/null || rm -f \"$JASPER_TEST_STATE_SNAPSHOT\"\n"
             'exit "$(cat "$JASPER_TEST_RECONCILE_RC")"\n',
         )
         fake_systemctl = _write_executable(
@@ -59,9 +64,11 @@ class _FailureReconcileHarness:
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n",
         )
+        self.journalctl_log = tmp_path / "journalctl.log"
         fake_journalctl = _write_executable(
             tmp_path / "journalctl",
             "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >> \"$JASPER_TEST_JOURNALCTL_LOG\"\n"
             'cat "$JASPER_TEST_JOURNAL" 2>/dev/null || true\n',
         )
         self.env = os.environ.copy()
@@ -73,6 +80,8 @@ class _FailureReconcileHarness:
             "JASPER_TEST_RECONCILE_RC": str(self.reconcile_rc),
             "JASPER_SYSTEMCTL_LOG": str(self.systemctl_log),
             "JASPER_TEST_JOURNAL": str(self.journal),
+            "JASPER_TEST_JOURNALCTL_LOG": str(self.journalctl_log),
+            "JASPER_TEST_STATE_SNAPSHOT": str(self.state_snapshot),
             "JASPER_OUTPUTD_CONTENT_LANE_STATE": str(self.state),
             "JASPER_OUTPUTD_CONFIG_RETRY_STATE": str(tmp_path / "config-retry.stamp"),
         })
@@ -86,11 +95,16 @@ class _FailureReconcileHarness:
         journal: str = "",
         result: str = "exit-code",
         exit_status: str = "1",
+        invocation_id: str | None = "0" * 32,
         **env: str,
     ) -> subprocess.CompletedProcess[str]:
         self.journal.write_text(journal, encoding="utf-8")
         run_env = dict(self.env)
         run_env.update({"SERVICE_RESULT": result, "EXIT_STATUS": exit_status})
+        if invocation_id is None:
+            run_env.pop("INVOCATION_ID", None)
+        else:
+            run_env["INVOCATION_ID"] = invocation_id
         run_env.update(env)
         return subprocess.run(
             [str(FAILURE_RECONCILE)],
@@ -105,9 +119,14 @@ class _FailureReconcileHarness:
             return []
         return self.systemctl_log.read_text(encoding="utf-8").splitlines()
 
-    def state_record(self) -> dict[str, str]:
+    def journalctl_calls(self) -> list[str]:
+        if not self.journalctl_log.exists():
+            return []
+        return self.journalctl_log.read_text(encoding="utf-8").splitlines()
+
+    def state_record(self, path: Path | None = None) -> dict[str, str]:
         record: dict[str, str] = {}
-        for line in self.state.read_text(encoding="utf-8").splitlines():
+        for line in (path or self.state).read_text(encoding="utf-8").splitlines():
             key, _, value = line.partition("=")
             record[key] = value
         return record
@@ -439,18 +458,150 @@ def test_outputd_failure_reconcile_needs_journal_evidence_to_park(
     assert harness.systemctl_calls() == []
 
 
+def test_outputd_failure_reconcile_scopes_the_journal_to_the_invocation(
+    tmp_path: Path,
+) -> None:
+    """With INVOCATION_ID set, the read is scoped to the run that just died."""
+    harness = _FailureReconcileHarness(tmp_path)
+
+    harness.run(journal=CONTENT_LANE_JOURNAL, invocation_id="a" * 32)
+
+    assert harness.journalctl_calls() == [
+        "--no-pager --output=cat --lines=40 "
+        "_SYSTEMD_INVOCATION_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]
+
+
+def test_outputd_failure_reconcile_journal_fallback_without_invocation_id(
+    tmp_path: Path,
+) -> None:
+    """Without it the read falls back to a unit + time bounded tail, and works."""
+    harness = _FailureReconcileHarness(tmp_path)
+    park_after = _park_after()
+
+    for _ in range(park_after):
+        result = harness.run(journal=CONTENT_LANE_JOURNAL, invocation_id=None)
+
+    assert harness.journalctl_calls() == [
+        "--no-pager --output=cat --lines=40 "
+        "--unit=jasper-outputd.service --since=2 minutes ago"
+    ] * park_after
+    # The fallback is not decorative: classification still reaches the park.
+    assert "event=outputd.failure_reconcile.park" in result.stderr
+
+
+def test_outputd_failure_reconcile_skips_an_exec_condition_park(
+    tmp_path: Path,
+) -> None:
+    """`exec-condition` is systemd's spelling; `condition` matched nothing."""
+    harness = _FailureReconcileHarness(tmp_path)
+
+    result = harness.run(result="exec-condition", exit_status="1")
+
+    assert not harness.reconcile_log.exists()
+    assert "event=outputd.failure_reconcile.skip" in result.stderr
+    assert "reason=non_retrying_stop" in result.stderr
+
+
+def test_outputd_failure_reconcile_park_line_carries_the_remediation(
+    tmp_path: Path,
+) -> None:
+    """The journal line stands alone: it names the fix, not just the state file."""
+    harness = _FailureReconcileHarness(tmp_path)
+
+    for _ in range(_park_after()):
+        result = harness.run(journal=CONTENT_LANE_JOURNAL)
+
+    park_line = next(
+        line
+        for line in result.stderr.splitlines()
+        if "event=outputd.failure_reconcile.park" in line
+    )
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT" in park_line
+    assert "systemctl restart jasper-outputd" in park_line
+    # One remediation sentence, one owner: the record and the line agree.
+    assert harness.state_record()["action"] in park_line
+
+
+def test_outputd_failure_reconcile_park_record_never_loses_its_reason(
+    tmp_path: Path,
+) -> None:
+    """A later failure of the same streak re-parks without a count-only window."""
+    harness = _FailureReconcileHarness(tmp_path)
+    park_after = _park_after()
+
+    for _ in range(park_after):
+        harness.run(journal=CONTENT_LANE_JOURNAL)
+
+    # Something restarted outputd (deploy, udev, operator) into the same broken
+    # width: the record must never regress to count-only.
+    harness.run(journal=CONTENT_LANE_JOURNAL)
+
+    record = harness.state_record()
+    assert record["count"] == str(park_after + 1)
+    assert record["reason"] == "content_lane_open_repeated"
+    assert "systemctl restart jasper-outputd" in record["action"]
+    assert "udev" in record["re_arm"]
+
+    # And not only at the end: the snapshot the reconciler took mid-run — after
+    # the streak write, before the park write — still carries the remediation.
+    # A count-only rewrite at or above the bound would blank it for as long as
+    # the reconcile runs.
+    mid_run = harness.state_record(harness.state_snapshot)
+    assert mid_run["reason"] == "content_lane_open_repeated"
+    assert "systemctl restart jasper-outputd" in mid_run["action"]
+
+
+# A PCM-open context literal in either of the file's two `format!` idioms: the
+# trailing-positional `"... PCM {}"` the content lane uses today, and the inline
+# capture `"... PCM {pcm_name}"` / `"opening outputd {role} ... PCM"` used
+# elsewhere in the same file. Keying only on the trailing-positional form made
+# direction 2 below unfalsifiable — an opener in the inline idiom was invisible
+# to the guard and could escape the signature with every test green.
+_OPEN_CONTEXT_RE = re.compile(
+    r'"((?:opening|configuring|starting)[^"\\]*?PCM[^"\\]*?)"'
+)
+_PLACEHOLDER_RE = re.compile(r"\{[a-z_]*\}")
+
+
+def _open_context_literals(rust_source: str) -> set[str]:
+    """PCM-open context literals, placeholders normalized to a single token.
+
+    Scans the whole file, comments and Rust tests included. That over-collects
+    on purpose: a drift guard that fires on a hypothetical wording written in a
+    comment costs one look, while one that misses a real opener costs a reboot.
+    """
+    return {
+        _PLACEHOLDER_RE.sub("X", literal).strip()
+        for literal in _OPEN_CONTEXT_RE.findall(rust_source)
+    }
+
+
+def test_open_context_extraction_sees_the_inline_capture_idiom() -> None:
+    """The extractor is not blind to the idiom the guard below must police."""
+    inline = (
+        'let x = PCM::new(a, b, true).with_context(|| {\n'
+        '    format!("opening outputd {role} content lane PCM {pcm_name}")\n'
+        "});\n"
+    )
+    literals = _open_context_literals(inline)
+    assert literals == {"opening outputd X content lane PCM X"}
+    # And it is a real escape: the shipped signature does not match it, so the
+    # guard below fails the moment such an opener lands.
+    assert not _content_lane_signature().search(
+        "Error: opening outputd content content lane PCM outputd_content_capture"
+    )
+
+
 def test_content_lane_signature_covers_outputd_open_contexts() -> None:
     """The bash signature tracks the context strings outputd actually attaches."""
-    backend = ALSA_BACKEND.read_text(encoding="utf-8")
-    contexts = set(
-        re.findall(r'"((?:opening|configuring|starting)[^"]*PCM) \{\}"', backend)
-    )
+    contexts = _open_context_literals(ALSA_BACKEND.read_text(encoding="utf-8"))
     expected = {
-        "opening outputd content capture PCM",
-        "configuring outputd content capture PCM",
-        "opening outputd active content capture PCM",
-        "configuring outputd active content capture PCM",
-        "starting capture PCM",
+        "opening outputd content capture PCM X",
+        "configuring outputd content capture PCM X",
+        "opening outputd active content capture PCM X",
+        "configuring outputd active content capture PCM X",
+        "starting capture PCM X",
     }
     # Direction 1: a reworded Rust context fails here, next to the pattern that
     # has to learn the new wording.
@@ -461,12 +612,16 @@ def test_content_lane_signature_covers_outputd_open_contexts() -> None:
     )
 
     signature = _content_lane_signature()
-    # Direction 2: every content-lane context the file carries — including one
-    # added later — must be matched by the helper's signature.
-    covered = {c for c in contexts if "content capture" in c} | expected
+    # Direction 2: every context that names the content lane at all — keyed on
+    # `content`, not on today's exact `content capture` wording, so a rename
+    # cannot slip past — must be matched by the helper's signature.
+    covered = {c for c in contexts if "content" in c} | expected
     for context in sorted(covered):
-        assert signature.search(f"Error: {context} outputd_content_capture"), context
+        assert signature.search(f"Error: {context}"), (
+            f"{context!r} names the content lane but CONTENT_LANE_SIGNATURE in "
+            "deploy/bin/jasper-outputd-failure-reconcile does not match it"
+        )
 
     # Non-vacuity: the signature is narrower than "any outputd open failure".
-    assert "opening outputd DAC PCM" in contexts
+    assert "opening outputd DAC PCM X" in contexts
     assert not signature.search("Error: opening outputd DAC PCM outputd_dac")

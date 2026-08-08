@@ -349,7 +349,11 @@ therefore cannot disable, the outputd unit.
 > render `S16_LE`. On a raw **active** lane that is the deploy-ordering hazard in
 > reverse: whichever opener wins locks a width the other cannot serve, and the
 > racy shape is a `Restart=always` CamillaDSP re-execing onto S16 first, after
-> which outputd walks its `StartLimitAction=reboot` ladder; the other shape is a
+> which outputd walks its restart ladder — four consecutive content-lane open
+> failures now end in `jasper-outputd-failure-reconcile`'s out-of-band park
+> (stop + a record naming the width fix) instead of
+> `StartLimitAction=reboot`, so the box stays up and reachable but the speaker
+> is silent until the width is matched; the other shape is a
 > deterministic CamillaDSP crash-loop and a silent speaker. **Passive/plug boxes
 > are SAFE** — the `outputd_content_*` `plug` converts, so they need no pre-step.
 >
@@ -734,7 +738,14 @@ What exists:
   unchanged.
   If outputd cannot stay up after its restart burst, systemd reboots
   cleanly via `StartLimitAction=reboot` rather than leaving the speaker
-  without its final-output owner.
+  without its final-output owner — with one class carved out ahead of it:
+  a **content-lane open** that fails on four consecutive starts is parked
+  out-of-band by `jasper-outputd-failure-reconcile` (stop + a record at
+  `/run/jasper-outputd-content-lane.state`), which spends 4 of the 5 starts
+  and never reaches the reboot. The first failures still restart, because
+  that open is how outputd waits for CamillaDSP's half of the snd-aloop
+  pair. See
+  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
   During install, likely audio clients (`jasper-voice`,
   `jasper-aec-bridge`, outputd, camilla#2, Snapcast, AirPlay, Spotify,
   Bluetooth aplay, and the mux) are parked before fan-in/Camilla/outputd
@@ -1125,11 +1136,20 @@ rejected — see the "Stage 2a landed" callout above.)
   (mirror the single path), bailing only on recovery exhaustion or delay
   divergence — never the dual path's bail-on-first-xrun (which reboot-loops via
   `StartLimitAction`).
-- **Width mismatch (CamillaDSP N vs outputd M):** `EXIT_CONFIG`/78, parked, no
-  crash-loop. Belt-and-suspenders since both derive from one `OutputTransportPlan`.
+- **Width mismatch (CamillaDSP N vs outputd M):** two shapes, two exits.
+  When the lane *installs* a width other than the one outputd requested, the
+  content readback carries `FinalSinkStartupConfigError` → `EXIT_CONFIG`/78,
+  parked, no crash-loop. When the lane *refuses* the request outright — a raw
+  active lane whose peer already locked the pair — `hw_params` fails and the
+  open exits 1 on the ordinary restart ladder, because that same failure is how
+  outputd waits for CamillaDSP on every boot. Belt-and-suspenders on both since
+  the two openers derive from one `OutputTransportPlan`.
 - **Initial final-sink open/negotiation failure:** configuration-class exit 78,
   parked instead of consuming the restart/reboot budget. Content-capture
-  startup and later runtime faults keep their existing retryable semantics.
+  startup and later runtime faults keep their retryable semantics up to a
+  bound: four consecutive content-lane open failures are parked out-of-band by
+  `jasper-outputd-failure-reconcile` rather than reaching
+  `StartLimitAction=reboot` (see the restart-policy section above).
 - **DAC hotplug:** reconciler re-derives on udev (pattern-3 self-heal); replug
   re-arms **muted** via the masked startup config.
 - **Config-shear during DAC re-enumeration:** the reconciler stages and validates
@@ -1718,7 +1738,14 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-08 (two changes to the FINAL-EDGE hop landed the same
+Last verified: 2026-08-08 (SCOPED — the most recent pass re-read only the four
+passages the content-lane park touches: the restart-policy paragraph, the
+width-mismatch and initial-final-sink-failure failure-mode bullets, and the
+pre-flip rollback runbook's stated consequence, re-stated against
+`deploy/bin/jasper-outputd-failure-reconcile` and
+`deploy/systemd/jasper-outputd.service`. Nothing else in the file was re-read
+in that pass; the same-day entries below stand on their own. Two changes to the
+FINAL-EDGE hop landed the same
 day — a SEPARATE hop and a separate env var [`JASPER_OUTPUTD_DAC_FORMAT`] from
 the content-lane `S32_LE` flip described below
 [`JASPER_OUTPUTD_CONTENT_FORMAT`]. (1) The DAC output paragraph corrected: the

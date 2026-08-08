@@ -443,8 +443,25 @@ The repaired output ladder is:
    instead of reaching the reboot. The reason and the fix are written to
    `/run/jasper-outputd-content-lane.state` (a plain `/run` file, so it
    outlives the stop and clears at boot); the streak clears on any other
-   failure class and on the next clean stop. Recovery is the config park's:
-   match the width on both halves, then `systemctl restart jasper-outputd`.
+   failure class and on the next clean stop.
+
+   The bound's floor is fan-in, not outputd. `jasper-camilla.service` is
+   `After=sound.target network.target jasper-outputd.service
+   jasper-fanin.service`, so the peer's start job waits on the LAST of the
+   four, and `jasper-fanin` is `Type=notify` with no `TimeoutStartSec` — it can
+   hold that gate for systemd's 90-s default while its PCMs and STATUS come up.
+   So four failures at `RestartSec=5` gives the peer ~15 s of fan-in readiness
+   plus CamillaDSP's own device open, and a fan-in stall past ~20 s parks a box
+   whose failure was really category A. That is bounded and recoverable, and it
+   is not a new exposure: the same stall exhausted outputd's `StartLimitBurst`
+   before this helper existed, and the outcome there was a reboot.
+
+   **Nothing re-arms a parked outputd on its own.** Recovery is a sound-card
+   udev event (`jasper-audio-hardware-reconcile` does `reset-failed` + `start`),
+   a deploy, `jasper-camilla-recover`'s `OnFailure` pass (it restarts outputd),
+   a reboot — `/run` wipes, so the park is per-boot — or an operator's
+   `systemctl restart jasper-outputd`. The record's `action=` names them. The
+   fix itself is the config park's: match the width on both halves first.
 
 `/sound/` also keeps the saved speaker topology separate from the current
 observed hardware. A saved dual-Apple active topology is not silently
