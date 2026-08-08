@@ -1656,6 +1656,66 @@ GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
 
+# --------------------------------------------------------------------------- #
+# #2098's scope/completeness fact, and #2160's failed-gauge consumption.
+#
+# ``state`` above answers "was it checked". These answer the two questions a
+# surface needed and had to guess at: how WIDE is the evidence behind that
+# answer, and does that width meet what the commission tier promised.
+# --------------------------------------------------------------------------- #
+
+#: How far the evidence behind ``state`` reaches. Never a tier — a tier is what
+#: was PROMISED, this is what was DELIVERED, and conflating them is the #2098
+#: defect (a Full session's mark-only pass rendered as the full claim).
+GRADE_SCOPE_NONE = "none"
+GRADE_SCOPE_MARK = "mark"
+GRADE_SCOPE_SPATIAL = "spatial"
+
+#: The post-apply SPATIAL grade's own state (#2160). ``overall_passed`` is a
+#: bool and therefore cannot distinguish "graded and failed" from "could not be
+#: graded at all" — :attr:`~jasper.active_speaker.flat_spec.SpecFlatness.passed`
+#: is ``False`` for an unmeasurable spectrum too, by its own "will not report a
+#: clean bill of health for a spectrum it could not fully measure" rule. This
+#: field carries the distinction the verdict key structurally cannot.
+GRADE_SPATIAL_ABSENT = "absent"
+GRADE_SPATIAL_PASSED = "passed"
+GRADE_SPATIAL_FAILED = "failed"
+GRADE_SPATIAL_UNMEASURABLE = "unmeasurable"
+
+
+def _spatial_grade(post_apply: Any) -> str:
+    """One post-apply cloud entry reduced to its SPATIAL grade state.
+
+    ``overall_passed`` — projected by :func:`_compact_cloud_status` from the
+    spec report — stays THE consumed verdict key: every existing verdict path
+    reads it, and ``flatness.passed`` is the same value under another name, so
+    this deliberately does not become a second reader of it.
+    ``flatness.evaluable`` is consulted for exactly one thing, the distinction
+    ``overall_passed`` cannot carry: a spectrum where no band survived to be
+    measured reports ``passed=False`` and is NOT a failure.
+
+    Unmeasurable is claimed only on POSITIVE evidence (``evaluable`` present
+    and ``False``). A durable state whose entry carries no ``flatness`` at all
+    — an available pipeline written before the gauge shipped — leaves the only
+    verdict that exists standing, because downgrading a recorded failure to
+    "could not be measured" on the ABSENCE of a gauge would be the fabricated
+    reading this program forbids, pointed the other way.
+    """
+    if not isinstance(post_apply, Mapping):
+        return GRADE_SPATIAL_ABSENT
+    passed = post_apply.get("overall_passed")
+    if not isinstance(passed, bool):
+        # No verdict — the group never closed, or its pipeline never became
+        # available. Never a failing grade; see ``_spec_verdict``'s own
+        # "absence of a verdict is not a failing one" rule.
+        return GRADE_SPATIAL_ABSENT
+    if passed:
+        return GRADE_SPATIAL_PASSED
+    flatness = post_apply.get("flatness")
+    if isinstance(flatness, Mapping) and flatness.get("evaluable") is False:
+        return GRADE_SPATIAL_UNMEASURABLE
+    return GRADE_SPATIAL_FAILED
+
 
 def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     """Was the correction now ON the speaker ever checked after it landed?
