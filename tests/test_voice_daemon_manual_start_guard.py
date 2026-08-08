@@ -95,6 +95,67 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_manual_start_does_not_repeat_begin_owned_cleanup():
+    """A failed begin that released its episode is not cleaned twice."""
+
+    wl = _make_wake_loop()
+    cleanup_calls = 0
+    cleanup_method = type(wl)._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await cleanup_method(wl)
+
+    async def noop_prepare() -> None:
+        return None
+
+    async def failed_begin(**_kwargs) -> None:
+        await counted_cleanup()
+        raise RuntimeError("begin failed after owned cleanup")
+
+    def discard_task(coro, **_kwargs):
+        coro.close()
+        return None
+
+    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._prepare_assistant_loudness_context = noop_prepare
+    wl._begin_turn = failed_begin
+    wl._create_fire_and_forget_task = discard_task
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert cleanup_calls == 1
+    assert wl._turn_output_episode is None
+    assert not wl._output_gate.is_active
+
+
+async def test_manual_start_cleans_episode_when_failure_precedes_begin():
+    """The caller retains cleanup ownership until begin actually starts."""
+
+    wl = _make_wake_loop()
+    cleanup_calls = 0
+    begin = _SpyCalls()
+    cleanup_method = type(wl)._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await cleanup_method(wl)
+
+    async def fail_prepare() -> None:
+        raise RuntimeError("pre-begin loudness preparation failed")
+
+    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._prepare_assistant_loudness_context = fail_prepare
+    wl._begin_turn = begin
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert begin.called is False
+    assert cleanup_calls == 1
+    assert wl._turn_output_episode is None
+    assert not wl._output_gate.is_active
+
+
 async def test_measurement_pause_and_resume_transfer_volume_ownership():
     """The voice-side gate and volume-owner lease change together."""
     wl = _make_wake_loop()

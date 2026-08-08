@@ -222,19 +222,20 @@ class FanInDucker:
         if worker.cancelled():
             raise asyncio.CancelledError
         error = worker.exception()
+        ok = worker.result() if error is None else False
+        # Once the bounded worker ran, False/OSError and unexpected failures
+        # are ambiguous: connect/send may have delivered ON before CLOSE or
+        # the reported error. Conservatively own one idempotent OFF so every
+        # caller's cleanup restores the remote state before releasing output.
+        self._ducked = True
         if error is not None:
             if deferred_cancel:
                 raise asyncio.CancelledError from None
             raise error
-        ok = worker.result()
         if not ok:
             if deferred_cancel:
                 raise asyncio.CancelledError
             return
-        # The remote ON is now authoritative. Publish local ownership before
-        # returning cancellation so the caller's already-owned cleanup sends
-        # exactly one OFF for the command that landed.
-        self._ducked = True
         log_event(
             logger,
             "duck",
@@ -1983,7 +1984,8 @@ class WakeLoop:
                     job.id,
                     e,
                 )
-                await self._cleanup_after_failed_begin()
+                if self._turn_output_episode is not None:
+                    await self._cleanup_after_failed_begin()
                 return
             logger.exception(
                 "research confirmation window failed; reading immediately "
@@ -1991,7 +1993,8 @@ class WakeLoop:
                 job.id,
                 e,
             )
-            await self._cleanup_after_failed_begin()
+            if self._turn_output_episode is not None:
+                await self._cleanup_after_failed_begin()
             await self._read_research_job_immediately(job)
         finally:
             if reset_window:
@@ -4079,7 +4082,8 @@ class WakeLoop:
             # paused/failed mid-acquire; otherwise play the honest,
             # low-alarm internal-error cue.
             try:
-                await self._cleanup_after_failed_begin()
+                if self._turn_output_episode is not None:
+                    await self._cleanup_after_failed_begin()
             except Exception as cleanup_error:  # noqa: BLE001
                 logger.warning(
                     "turn acquire cleanup failed before failure cue: %s",
@@ -4892,7 +4896,8 @@ class WakeLoop:
             return "OK"
         except Exception as e:  # noqa: BLE001
             logger.exception("manual session start failed: %s", e)
-            await self._cleanup_after_failed_begin()
+            if self._turn_output_episode is not None:
+                await self._cleanup_after_failed_begin()
             return "ERROR"
         finally:
             if source:
@@ -5040,6 +5045,37 @@ class WakeLoop:
             pass
 
     async def _begin_turn(
+        self,
+        *,
+        pre_roll: bool = True,
+        text_context: str | None = None,
+    ) -> None:
+        try:
+            await self._begin_turn_inner(
+                pre_roll=pre_roll,
+                text_context=text_context,
+            )
+        except BaseException:  # noqa: BLE001
+            try:
+                await self._await_output_cleanup_owned(
+                    self._cleanup_after_failed_begin(),
+                    task_name="turn-begin-cleanup",
+                )
+            except asyncio.CancelledError:
+                # Repeated cancellation is deferred until the owned cleanup
+                # finishes. The original begin failure remains authoritative.
+                pass
+            except BaseException as cleanup_error:  # noqa: BLE001
+                log_event(
+                    logger,
+                    "turn.begin_cleanup_failed",
+                    level=logging.ERROR,
+                    exc_type=type(cleanup_error).__name__,
+                    err=str(cleanup_error),
+                )
+            raise
+
+    async def _begin_turn_inner(
         self,
         *,
         pre_roll: bool = True,

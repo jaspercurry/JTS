@@ -1034,11 +1034,13 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
 
 
 @pytest.mark.parametrize("path", ["admin", "proactive"])
+@pytest.mark.parametrize("on_outcome", ["true", "false", "error"])
 async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
     monkeypatch,
     path: str,
+    on_outcome: str,
 ) -> None:
-    """Cancellation cannot orphan a remote ON whose worker later succeeds."""
+    """Cancellation cannot orphan any possibly-delivered remote ON."""
 
     from jasper.voice_daemon import FanInDucker
 
@@ -1055,6 +1057,10 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             loop.call_soon_threadsafe(on_started.set)
             if not release_on.wait(timeout=2.0):
                 raise AssertionError("test did not release PROGRAM_DUCK_ON")
+            if on_outcome == "false":
+                return False
+            if on_outcome == "error":
+                raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
         elif payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
             loop.call_soon_threadsafe(off_started.set)
             if not release_off.wait(timeout=2.0):
@@ -1152,6 +1158,279 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
     finally:
         release_on.set()
         release_off.set()
+
+
+@pytest.mark.parametrize("on_outcome", ["false", "error"])
+async def test_fanin_ambiguous_on_owns_off_without_changing_original_semantics(
+    monkeypatch,
+    on_outcome: str,
+) -> None:
+    """False still returns and an unexpected error still propagates."""
+
+    from jasper.voice_daemon import FanInDucker
+
+    commands: list[bytes] = []
+    worker_error = RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
+
+    def send_command(payload: bytes) -> bool:
+        commands.append(payload)
+        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+            if on_outcome == "false":
+                return False
+            raise worker_error
+        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+            return True
+        raise AssertionError(f"unexpected fan-in command: {payload!r}")
+
+    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
+    monkeypatch.setattr(ducker, "_send_command", send_command)
+
+    if on_outcome == "false":
+        await ducker.duck()
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            await ducker.duck()
+        assert caught.value is worker_error
+
+    assert ducker.is_ducked
+    await ducker.restore()
+    assert not ducker.is_ducked
+    assert commands == [
+        b"PROGRAM_DUCK_ON\nCLOSE\n",
+        b"PROGRAM_DUCK_OFF\nCLOSE\n",
+    ]
+
+
+@pytest.mark.parametrize("on_outcome", ["true", "false", "error"])
+async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
+    monkeypatch,
+    on_outcome: str,
+) -> None:
+    """A cancelled real begin resets once after every ambiguous ON result."""
+
+    from jasper.voice_daemon import FanInDucker
+
+    loop = asyncio.get_running_loop()
+    on_started = asyncio.Event()
+    off_started = asyncio.Event()
+    release_on = threading.Event()
+    release_off = threading.Event()
+    commands: list[bytes] = []
+
+    def send_command(payload: bytes) -> bool:
+        commands.append(payload)
+        if payload == b"PROGRAM_DUCK_ON\nCLOSE\n":
+            loop.call_soon_threadsafe(on_started.set)
+            if not release_on.wait(timeout=2.0):
+                raise AssertionError("test did not release PROGRAM_DUCK_ON")
+            if on_outcome == "false":
+                return False
+            if on_outcome == "error":
+                raise RuntimeError("ambiguous PROGRAM_DUCK_ON failure")
+            return True
+        if payload == b"PROGRAM_DUCK_OFF\nCLOSE\n":
+            loop.call_soon_threadsafe(off_started.set)
+            if not release_off.wait(timeout=2.0):
+                raise AssertionError("test did not release PROGRAM_DUCK_OFF")
+            return True
+        raise AssertionError(f"unexpected fan-in command: {payload!r}")
+
+    class _Tts:
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.pause_calls = 0
+            self.resume_calls = 0
+
+        async def prepare_assistant_context(self, **_kwargs) -> None:
+            self.prepare_calls += 1
+
+        async def pause_content_meter(self) -> None:
+            self.pause_calls += 1
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+
+    class _ContentActivity:
+        music_dbfs = None
+
+        def __init__(self) -> None:
+            self.refresh_calls = 0
+            self.pause_calls = 0
+            self.resume_calls = 0
+
+        async def refresh_now(self) -> None:
+            self.refresh_calls += 1
+
+        def music_is_playing(self) -> bool:
+            return False
+
+        def pause(self) -> None:
+            self.pause_calls += 1
+
+        def resume(self) -> None:
+            self.resume_calls += 1
+
+    class _Volume:
+        def __init__(self) -> None:
+            self.session_calls: list[bool] = []
+
+        def get_listening_level(self) -> int:
+            return 50
+
+        def note_voice_session(self, active: bool, **_kwargs) -> None:
+            self.session_calls.append(active)
+
+    class _UsageStore:
+        def __init__(self) -> None:
+            self.open_calls = 0
+            self.close_calls = 0
+
+        def open_session(self, **_kwargs) -> int:
+            self.open_calls += 1
+            return 1
+
+        def close_session(self, *_args, **_kwargs) -> float:
+            self.close_calls += 1
+            return 0.0
+
+    ducker = FanInDucker("/tmp/unused-fanin.sock", -25.0)
+    monkeypatch.setattr(ducker, "_send_command", send_command)
+    tts = _Tts()
+    content = _ContentActivity()
+    volume = _Volume()
+    usage = _UsageStore()
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._ducker = ducker
+    wl._tts = tts
+    wl._content_activity = content
+    wl._volume_coordinator = volume
+    wl._usage_store = usage
+    wl._output_gate = gate
+    cleanup_calls = 0
+    real_cleanup = wl._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await real_cleanup()
+
+    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+    beginning = asyncio.create_task(wl._begin_turn(pre_roll=False))
+
+    try:
+        await wait_signalled(
+            on_started,
+            "voice turn PROGRAM_DUCK_ON worker",
+            producer=beginning,
+        )
+        assert gate.active_kind == "turn"
+        assert volume.session_calls == [True]
+        assert content.pause_calls == 1
+        assert tts.pause_calls == 1
+
+        beginning.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not beginning.done()
+
+        release_on.set()
+        await wait_signalled(
+            off_started,
+            "voice turn PROGRAM_DUCK_OFF worker",
+            producer=beginning,
+        )
+        assert ducker.is_ducked
+        assert gate.active_kind == "turn"
+
+        beginning.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not beginning.done(), "repeated cancel must not interrupt OFF"
+        assert gate.active_kind == "turn"
+
+        release_off.set()
+        with pytest.raises(asyncio.CancelledError):
+            await beginning
+
+        assert commands == [
+            b"PROGRAM_DUCK_ON\nCLOSE\n",
+            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+        ]
+        assert not ducker.is_ducked
+        assert cleanup_calls == 1
+        assert gate.end_calls == 1
+        assert not gate.is_active
+        assert tts.prepare_calls == 1
+        assert tts.pause_calls == 1
+        assert tts.resume_calls == 1
+        assert content.refresh_calls == 1
+        assert content.pause_calls == 1
+        assert content.resume_calls == 1
+        assert volume.session_calls == [True, False]
+        assert usage.open_calls == 0
+        assert usage.close_calls == 0
+        assert wl._turn is None
+        assert wl._session_id is None
+        assert wl._bg_tasks == set()
+        assert wl._active_manual_source is None
+        assert wl._acquiring is False
+        assert wl._state is State.WAKE
+        assert wl._turn_output_episode is None
+    finally:
+        release_on.set()
+        release_off.set()
+
+
+async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
+    monkeypatch,
+) -> None:
+    """The begin wrapper cleans and re-raises failures beyond Exception."""
+
+    class _BeginAbort(BaseException):
+        pass
+
+    class _FailingContentActivity:
+        music_dbfs = None
+
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        async def refresh_now(self) -> None:
+            raise failure
+
+        def pause(self) -> None:
+            raise AssertionError("pause is after the injected failure")
+
+        def resume(self) -> None:
+            self.resume_calls += 1
+
+    failure = _BeginAbort("begin aborted")
+    content = _FailingContentActivity()
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._content_activity = content
+    wl._output_gate = gate
+    cleanup_calls = 0
+    real_cleanup = wl._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await real_cleanup()
+
+    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+
+    with pytest.raises(_BeginAbort) as caught:
+        await wl._begin_turn(pre_roll=False)
+
+    assert caught.value is failure
+    assert cleanup_calls == 1
+    assert content.resume_calls == 1
+    assert gate.end_calls == 1
+    assert not gate.is_active
+    assert wl._state is State.WAKE
+    assert wl._turn_output_episode is None
 
 
 async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
