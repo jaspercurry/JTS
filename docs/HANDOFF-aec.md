@@ -2069,8 +2069,19 @@ Captured here so future sessions don't repeat the mistakes.
     `jasper/cli/doctor/aec.py`. Before generating or playing its tone,
     the active probe requires a trustworthy `active_source="idle"` from
     jasper-control `/state`, then uses the loopback-lane check as defense in
-    depth. An unavailable or malformed state fails closed with no tone because
-    USB/direct output can be invisible to the loopback check.
+    depth. Those are early diagnostic checks, not the isolation authority:
+    after them, the probe enters the existing correction
+    `measurement_window()` with its own mux owner (`doctor-aec-probe`) and
+    strict voice pause enabled. Mux then holds `correction` selected against
+    renderer starts that race the precheck, including USB/direct input, while
+    `MEASURE_PAUSE` blocks and drains assistant audio whether TTS is routed
+    pre-DSP through fan-in or member-locally through outputd. The probe creates
+    the WAV, runs `aplay`, waits, and assesses telemetry only inside that held
+    window. Unavailable/malformed STATUS, refused or unconfirmed PAUSE, or a
+    lost mux/voice lease aborts with no new tone (or stops an in-progress
+    probe); `MEASURE_RESUME` and owner-scoped mux release run on every exit.
+    An unavailable or malformed initial `/state` likewise fails closed with no
+    tone because USB/direct output can be invisible to the loopback check.
 
     Refined further on 2026-05-17 (PR #134) for the corner case
     where the entire assessment window has no music at all (a

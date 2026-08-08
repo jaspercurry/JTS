@@ -4,10 +4,13 @@
 
 """Unit tests for the jasper-doctor aec domain."""
 
+import asyncio
 import hashlib
 import json
 import re
 import subprocess
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -179,12 +182,28 @@ def test_active_aec_probe_refuses_known_active_playback(
 
 def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
     calls = []
+    isolation_open = False
+
+    @asynccontextmanager
+    async def fake_measurement_window(**kwargs):
+        nonlocal isolation_open
+        assert kwargs == {
+            "gate_owner": "doctor-aec-probe",
+            "require_voice_pause": True,
+        }
+        isolation_open = True
+        try:
+            yield
+        finally:
+            isolation_open = False
 
     def fake_run(cmd, **_kwargs):
         calls.append(cmd)
         if cmd[:2] == ["systemctl", "is-active"]:
             return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
         if cmd and cmd[0] == "aplay":
+            assert isolation_open
+            assert Path(doctor.aec_probe._PROBE_SINE_PATH).exists()
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd and cmd[0] == "journalctl":
             return SimpleNamespace(
@@ -195,6 +214,9 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
     monkeypatch.setattr(
         doctor.aec_probe.control,
         "get_state",
@@ -211,6 +233,122 @@ def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
 
     assert [result.status for result in results] == ["ok", "ok", "ok", "ok"]
     assert any(call and call[0] == "aplay" for call in calls)
+    assert isolation_open is False
+
+
+def test_active_aec_probe_releases_isolation_after_aplay_failure(
+    monkeypatch, tmp_path
+):
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def fake_measurement_window(**_kwargs):
+        events.append("isolation-enter")
+        try:
+            yield
+        finally:
+            events.append("isolation-exit")
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        if cmd and cmd[0] == "aplay":
+            events.append("aplay-failed")
+            return SimpleNamespace(stdout="", stderr="device busy", returncode=1)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_DURATION_S", 0.0)
+    monkeypatch.setattr(
+        doctor.aec_probe, "_PROBE_SINE_PATH", str(tmp_path / "probe.wav")
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert results[-1].name == "probe — aplay sine"
+    assert results[-1].status == "fail"
+    assert events == ["isolation-enter", "aplay-failed", "isolation-exit"]
+
+
+def test_active_aec_probe_never_generates_or_plays_without_isolation(
+    monkeypatch, tmp_path
+):
+    calls, fake_run = _active_probe_run_recorder()
+
+    @asynccontextmanager
+    async def unavailable_window(**kwargs):
+        assert kwargs["gate_owner"] == "doctor-aec-probe"
+        raise doctor.aec_probe.MeasurementWindowError("mux busy")
+        yield  # pragma: no cover
+
+    sine_path = tmp_path / "must-not-exist.wav"
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "measurement_window", unavailable_window)
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_PATH", str(sine_path))
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "ok", "fail"]
+    assert results[-1].name == "probe — audio isolation"
+    assert "no test tone was played" in results[-1].detail
+    assert not sine_path.exists()
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_active_aec_probe_keeps_isolation_until_cancelled_body_stops(
+    monkeypatch,
+):
+    events: list[str] = []
+    entered_body = asyncio.Event()
+    unblock_body = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    @asynccontextmanager
+    async def fake_measurement_window(**_kwargs):
+        events.append("isolation-enter")
+        try:
+            yield
+        finally:
+            events.append("isolation-exit")
+
+    def blocking_body():
+        loop.call_soon_threadsafe(entered_body.set)
+        assert unblock_body.wait(timeout=1.0)
+        events.append("body-stopped")
+        return []
+
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_play_and_assess_probe", blocking_body)
+
+    task = asyncio.create_task(doctor.aec_probe._run_isolated_probe())
+    await asyncio.wait_for(entered_body.wait(), timeout=1.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert events == ["isolation-enter"]
+
+    unblock_body.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["isolation-enter", "body-stopped", "isolation-exit"]
 
 
 def test_assess_aec_output_empty_journal_is_ok():

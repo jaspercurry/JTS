@@ -171,6 +171,35 @@ async def test_measurement_gate_uses_mux_owned_diagnostic_selection(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_measurement_gate_threads_custom_owner_through_acquire_and_release(
+    monkeypatch,
+):
+    replies = iter([
+        {
+            "active_source": "correction",
+            "test_source": "correction",
+            "test_owner": "doctor-aec-probe",
+        },
+        {"active_source": "idle", "test_source": None, "test_owner": None},
+    ])
+    commands: list[str] = []
+
+    async def command(value, **_kwargs):
+        commands.append(value)
+        return next(replies)
+
+    monkeypatch.setattr(coordinator, "_mux_socket_command", command)
+
+    await REAL_ACQUIRE_MEASUREMENT_GATE(gate_owner="doctor-aec-probe")
+    await REAL_RELEASE_MEASUREMENT_GATE(gate_owner="doctor-aec-probe")
+
+    assert commands == [
+        "TEST_SELECT correction doctor-aec-probe",
+        "TEST_RELEASE doctor-aec-probe",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_measurement_gate_refuses_unconfirmed_selection(monkeypatch):
     async def wrong_gate(*_args, **_kwargs):
         return {"active_source": "airplay", "test_source": None}
@@ -230,6 +259,32 @@ async def test_indeterminate_acquire_cleanup_never_releases_other_owner(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_custom_owner_indeterminate_cleanup_never_releases_foreign_owner(
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    async def command(value, **_kwargs):
+        calls.append(value)
+        if value == "STATUS":
+            return {
+                "active_source": "correction",
+                "test_source": "correction",
+                "test_owner": "correction-measurement",
+            }
+        raise RuntimeError("response lost")
+
+    monkeypatch.setattr(coordinator, "_mux_socket_command", command)
+
+    await REAL_RELEASE_MEASUREMENT_GATE(
+        gate_owner="doctor-aec-probe",
+        allow_other_owner=True,
+    )
+
+    assert calls == ["TEST_RELEASE doctor-aec-probe", "STATUS"]
+
+
+@pytest.mark.asyncio
 async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatch):
     cleanup_modes: list[bool] = []
 
@@ -281,6 +336,60 @@ async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch)
 
     assert gate_calls.count("acquire") >= 2
     assert gate_calls[-1] == "release"
+
+
+@pytest.mark.asyncio
+async def test_custom_owner_is_used_for_acquire_renew_and_release(monkeypatch):
+    gate_calls: list[str] = []
+    renewed = asyncio.Event()
+
+    async def acquire(*, gate_owner):
+        gate_calls.append(f"acquire:{gate_owner}")
+        if gate_calls.count("acquire:doctor-aec-probe") >= 2:
+            renewed.set()
+
+    async def release(*, gate_owner, allow_other_owner):
+        gate_calls.append(f"release:{gate_owner}:{allow_other_owner}")
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.01)
+
+    async with measurement_window(
+        gate_owner="doctor-aec-probe",
+        skip_voice_pause=True,
+    ):
+        await wait_signalled(renewed, "doctor mux lease renewal")
+
+    assert gate_calls[:2] == [
+        "acquire:doctor-aec-probe",
+        "acquire:doctor-aec-probe",
+    ]
+    assert gate_calls[-1] == "release:doctor-aec-probe:False"
+
+
+@pytest.mark.asyncio
+async def test_custom_owner_lost_acquire_runs_owner_scoped_cleanup(monkeypatch):
+    releases: list[tuple[str, bool]] = []
+
+    async def acquire(*, gate_owner):
+        assert gate_owner == "doctor-aec-probe"
+        raise MeasurementWindowError("response lost")
+
+    async def release(*, gate_owner, allow_other_owner):
+        releases.append((gate_owner, allow_other_owner))
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    with pytest.raises(MeasurementWindowError, match="response lost"):
+        async with measurement_window(
+            gate_owner="doctor-aec-probe",
+            skip_voice_pause=True,
+        ):
+            pytest.fail("an indeterminate acquire must not open the window")
+
+    assert releases == [("doctor-aec-probe", True)]
 
 
 def test_mux_gate_abort_ladder_fires_before_mux_lease_expiry():
@@ -578,6 +687,213 @@ async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
 
     async with measurement_window():
         pass
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        FileNotFoundError("no voice daemon"),
+        RuntimeError("empty response"),
+        [],
+        {},
+        {"state": "UNKNOWN"},
+        {"state": "SESSION"},
+    ],
+    ids=["unreachable", "malformed", "nonmapping", "missing", "unknown", "session"],
+)
+@pytest.mark.asyncio
+async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status):
+    acquired: list[bool] = []
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        assert cmd == "STATUS"
+        if isinstance(status, Exception):
+            raise status
+        return status
+
+    async def acquire(*, gate_owner):
+        acquired.append(True)
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+
+    with pytest.raises(MeasurementWindowError):
+        async with measurement_window(
+            gate_owner="doctor-aec-probe",
+            require_voice_pause=True,
+        ):
+            pytest.fail("strict STATUS failure must not open the window")
+
+    assert acquired == []
+
+
+@pytest.mark.parametrize(
+    "pause_reply",
+    [
+        FileNotFoundError("no voice daemon"),
+        RuntimeError("empty response"),
+        [],
+        {},
+        {"result": "BUSY"},
+    ],
+    ids=["unreachable", "malformed", "nonmapping", "missing", "busy"],
+)
+@pytest.mark.asyncio
+async def test_strict_pause_failure_resumes_and_releases_exact_owner(
+    monkeypatch, pause_reply
+):
+    events: list[str] = []
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        events.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            if isinstance(pause_reply, Exception):
+                raise pause_reply
+            return pause_reply
+        return {"result": "ok"}
+
+    async def acquire(*, gate_owner):
+        events.append(f"acquire:{gate_owner}")
+
+    async def release(*, gate_owner, allow_other_owner):
+        events.append(f"release:{gate_owner}:{allow_other_owner}")
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    with pytest.raises(MeasurementWindowError):
+        async with measurement_window(
+            gate_owner="doctor-aec-probe",
+            require_voice_pause=True,
+        ):
+            pytest.fail("strict PAUSE failure must not open the window")
+
+    assert events == [
+        "STATUS",
+        "acquire:doctor-aec-probe",
+        "MEASURE_PAUSE",
+        "MEASURE_RESUME",
+        "release:doctor-aec-probe:False",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_window_orders_isolation_around_body(monkeypatch):
+    events: list[str] = []
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        events.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        return {"result": "ok"}
+
+    async def acquire(*, gate_owner):
+        events.append(f"acquire:{gate_owner}")
+
+    async def release(*, gate_owner, allow_other_owner):
+        events.append(f"release:{gate_owner}:{allow_other_owner}")
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    async with measurement_window(
+        gate_owner="doctor-aec-probe",
+        require_voice_pause=True,
+    ):
+        events.append("body")
+
+    assert events == [
+        "STATUS",
+        "acquire:doctor-aec-probe",
+        "MEASURE_PAUSE",
+        "body",
+        "MEASURE_RESUME",
+        "release:doctor-aec-probe:False",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_voice_renewal_failure_aborts_and_restores(monkeypatch):
+    events: list[str] = []
+    pause_calls = 0
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        nonlocal pause_calls
+        events.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE":
+            pause_calls += 1
+            if pause_calls > 1:
+                raise RuntimeError("renewal lost")
+        return {"result": "ok"}
+
+    async def acquire(*, gate_owner):
+        events.append(f"acquire:{gate_owner}")
+
+    async def release(*, gate_owner, allow_other_owner):
+        events.append(f"release:{gate_owner}:{allow_other_owner}")
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.005)
+
+    with pytest.raises(MeasurementWindowError, match="Voice isolation"):
+        async with measurement_window(
+            gate_owner="doctor-aec-probe",
+            require_voice_pause=True,
+        ):
+            await asyncio.sleep(1.0)
+
+    assert pause_calls >= 2
+    assert "MEASURE_RESUME" in events
+    assert "release:doctor-aec-probe:False" in events
+
+
+@pytest.mark.asyncio
+async def test_strict_window_cancellation_restores_voice_and_mux(monkeypatch):
+    events: list[str] = []
+    entered = asyncio.Event()
+
+    async def fake_uds(_path, cmd, **_kwargs):
+        events.append(cmd)
+        if cmd == "STATUS":
+            return {"state": "WAKE"}
+        return {"result": "ok"}
+
+    async def acquire(*, gate_owner):
+        events.append(f"acquire:{gate_owner}")
+
+    async def release(*, gate_owner, allow_other_owner):
+        events.append(f"release:{gate_owner}:{allow_other_owner}")
+
+    async def hold_window():
+        async with measurement_window(
+            gate_owner="doctor-aec-probe",
+            require_voice_pause=True,
+        ):
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+
+    task = asyncio.create_task(hold_window())
+    await wait_signalled(entered, "strict window entry", producer=task)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events[-2:] == [
+        "MEASURE_RESUME",
+        "release:doctor-aec-probe:False",
+    ]
 
 
 @pytest.mark.asyncio

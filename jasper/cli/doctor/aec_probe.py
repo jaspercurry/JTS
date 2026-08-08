@@ -10,6 +10,7 @@ only runs through the explicit ``--probe-aec`` command-line mode.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import math
@@ -20,6 +21,7 @@ import wave
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...control import client as control
+from ...correction.coordinator import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _loopback_playback_active, _run
 from .aec import _AEC_MIC_MUSIC_THRESHOLD, _AEC_RMS_RE
 
@@ -30,6 +32,7 @@ from .aec import _AEC_MIC_MUSIC_THRESHOLD, _AEC_RMS_RE
 _PROBE_REF_PASS_THRESHOLD = 200
 _PROBE_SINE_PATH = "/tmp/jasper-doctor-probe-sine.wav"
 _PROBE_SINE_DURATION_S = 5.0
+_PROBE_GATE_OWNER = "doctor-aec-probe"
 
 
 def probe_aec_ref_path() -> list[CheckResult]:
@@ -95,6 +98,43 @@ def probe_aec_ref_path() -> list[CheckResult]:
         ))
         return results
 
+    try:
+        results.extend(asyncio.run(_run_isolated_probe()))
+    except MeasurementWindowError as exc:
+        results.append(CheckResult(
+            "probe — audio isolation", "fail",
+            f"could not establish exclusive music and voice isolation ({exc}); "
+            "no test tone was played.",
+        ))
+    return results
+
+
+async def _run_isolated_probe() -> list[CheckResult]:
+    """Run every audible/probe action while the shared isolation is held."""
+
+    async with measurement_window(
+        gate_owner=_PROBE_GATE_OWNER,
+        require_voice_pause=True,
+    ):
+        # The body uses synchronous subprocess and journal helpers. Keep them
+        # off this event loop so both mux and voice leases can renew while the
+        # five-second tone and telemetry wait are in progress.
+        body = asyncio.create_task(asyncio.to_thread(_play_and_assess_probe))
+        try:
+            return await asyncio.shield(body)
+        except asyncio.CancelledError:
+            # Cancelling a to_thread await does not stop its subprocess. Keep
+            # isolation held until the bounded aplay/journal body has actually
+            # stopped; otherwise teardown could reopen household audio while
+            # the diagnostic tone is still audible.
+            try:
+                await body
+            finally:
+                raise
+
+
+def _play_and_assess_probe() -> list[CheckResult]:
+    results: list[CheckResult] = []
     sample_rate = 48_000
     amplitude = 0.05  # -26 dBFS
     frequency = 1_000

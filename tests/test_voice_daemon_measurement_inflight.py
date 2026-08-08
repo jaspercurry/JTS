@@ -41,6 +41,7 @@ from jasper.correction.coordinator import (
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
     _voice_uds_command,
 )
+from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from jasper.voice.output_gate import AssistantOutputGate
 from jasper.voice_daemon import (
     MEASUREMENT_AUTOCLEAR_SEC,
@@ -129,6 +130,26 @@ async def test_pause_waits_for_inflight_cue_then_returns() -> None:
     assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
     assert wl._measurement_active.is_set()
     await _close_window(wl)
+
+
+async def test_pause_drains_tts_for_both_supported_mix_stages() -> None:
+    """The voice gate is route-independent: it covers fan-in and outputd TTS."""
+
+    for tts_socket in (FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET):
+        wl = WakeLoop.for_tests()
+        wl._cfg.tts_outputd_socket = tts_socket
+        episode = await wl._output_gate.begin_if_idle("assistant")
+        assert episode is not None
+
+        pause = asyncio.create_task(wl.measurement_pause())
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert wl._measurement_active.is_set()
+        assert not pause.done(), tts_socket
+        await wl._output_gate.end(episode)
+        assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+        await _close_window(wl)
 
 
 async def test_window_is_armed_before_the_drain_not_after() -> None:
