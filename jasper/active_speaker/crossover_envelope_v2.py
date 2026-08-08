@@ -3074,9 +3074,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # already names both the scope and the upgrade path).
             done_verdict = (
                 "Your speaker is tuned and confirmed at the mark, but the "
-                "wider check across several spots never finished — that part "
-                "is unproven. Measure again to finish it, or undo if it "
-                "sounds worse than before."
+                "wider check across several spots has not produced a result "
+                "— that part is unproven. Measure again to finish it, or "
+                "undo if it sounds worse than before."
             )
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:

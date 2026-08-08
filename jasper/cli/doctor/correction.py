@@ -799,9 +799,9 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     Still WARN, never FAIL, and never a revert: a failed spatial grade is a
     COMPLETED grade the household acts on at ``/correction/`` (#2160's ruling
     — grade and disclose, do not gate). An unknown ``spatial`` word from a
-    later build falls through to the passing wording rather than inventing a
-    verdict about a value this build cannot read, the same degrade rule
-    ``state`` already follows.
+    later build falls through to a WARN that names the unreadable word, never
+    the passing wording — the same direction ``state`` already takes on a
+    word this build has never heard of, never a guess at what it means.
     """
     from jasper.web.correction_crossover_v2 import (
         GRADE_FAILED,
@@ -809,7 +809,9 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_INCONCLUSIVE,
         GRADE_MARK_VERIFIED,
         GRADE_NOT_APPLIED,
+        GRADE_SPATIAL_ABSENT,
         GRADE_SPATIAL_FAILED,
+        GRADE_SPATIAL_PASSED,
         GRADE_SPATIAL_UNMEASURABLE,
         crossover_v2_status_block,
     )
@@ -827,6 +829,26 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
         verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
+        # A non-empty word this build does not recognize — a later build's
+        # vocabulary. Never the empty string, which means a durable state
+        # written before ``spatial`` existed at all and keeps its pre-R19
+        # fallthrough below. S1 (#2242 gate): this used to fall through to
+        # the passing wording; now it WARNS and names the word, the same
+        # direction ``state``'s own unrecognised-value fallback already
+        # takes.
+        if spatial and spatial not in {
+            GRADE_SPATIAL_ABSENT,
+            GRADE_SPATIAL_PASSED,
+            GRADE_SPATIAL_FAILED,
+            GRADE_SPATIAL_UNMEASURABLE,
+        }:
+            return CheckResult(
+                label, "warn",
+                f"applied and graded, but the spatial grade word {spatial!r} "
+                "is not one this build recognizes — treating it as unproven "
+                f"rather than guessing ({verify_text}); check for a "
+                "jasper-doctor update, or re-measure at /correction/",
+            )
         if spatial == GRADE_SPATIAL_FAILED:
             worst = grade.get("spatial_worst_db")
             at = grade.get("spatial_worst_hz")
@@ -853,10 +875,11 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         if grade.get("complete") is False:
             return CheckResult(
                 label, "warn",
-                f"applied and verified at the mark, but the "
-                f"{block.get('tier') or 'this'}-tier spatial grade never "
-                f"closed, so it is unproven away from the mark ({verify_text}) "
-                "— finish the measurement at /correction/, or undo",
+                f"applied and verified at the mark, but no "
+                f"{block.get('tier') or 'this'}-tier spatial grade exists "
+                f"for this session, so it is unproven away from the mark "
+                f"({verify_text}) — finish the measurement at /correction/, "
+                "or undo",
             )
         return CheckResult(
             label, "ok",

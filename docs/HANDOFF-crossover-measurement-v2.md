@@ -159,6 +159,10 @@ we submitted is invalid, mismatch means something else is live.
   steps (the spatial cloud); the wizard's five screens are unchanged,
   because the cloud changed how many captures a step takes, not what the
   household is doing.
+- **Commissioning is memory-privileged.** A MEASURE session's accept-time
+  analysis is not yet budgeted against the resident daemon set on a 1 GB
+  Pi — see "Boundaries / non-goals" below for the measured peak and the
+  open options (#2168).
 - **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
   flow and the `JASPER_CROSSOVER_FLOW` selector.
   `build_crossover_envelope` dispatches straight to
@@ -1697,9 +1701,10 @@ most visible thing on the screen.
 the stage-2 capture plan when stage 2 is ARMED — before the first tone — so it
 cannot know the post-apply cloud's spec verdict, which is computed from the
 last capture and can fail while tracking passes. Full's copy therefore states
-"Your speaker is tuned" (the claim both wizard verdicts open with) and points
-at the speaker page, rather than pre-committing "Verified and applied." The
-relay cannot repair this late: its host-event slot is last-write-wins, and
+"Your speaker is tuned" (the claim all seven of jts.local's done verdicts
+open with) and points at the speaker page, rather than pre-committing
+"Verified and applied." The relay cannot repair this late: its host-event
+slot is last-write-wins, and
 `capture_set_complete` routinely overwrites the final `capture_result` before
 the page's ~250 ms poll reads it.
 

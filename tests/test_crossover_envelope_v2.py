@@ -746,7 +746,11 @@ def test_done_headline_says_a_full_session_never_closed_its_wider_check():
     ))
     verdict = env["verdict_text"].lower()
     assert "confirmed at the mark" in verdict
-    assert "never finished" in verdict
+    # SF1 (#2242 gate): delivered-evidence wording only — never "never
+    # finished", which asserts a mechanism this branch cannot know (a closed
+    # group whose pipeline failed reaches the same branch and DID close).
+    assert "has not produced a result" in verdict
+    assert "never finished" not in verdict
     assert "unproven" in verdict
 
 

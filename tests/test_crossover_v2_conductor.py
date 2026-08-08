@@ -5050,11 +5050,11 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
       so a future "Verified" here would be as unearned as this one was.
     * **Cross-surface** — whatever the phone bakes has to hold under EVERY
       outcome jts.local can report. It does so by being exactly the claim each
-      of jts.local's five done verdicts OPENS with; jts.local owns the
+      of jts.local's seven done verdicts OPENS with; jts.local owns the
       divergence, as the only surface whose component vocabulary can carry it.
-      All five are pinned, not the two this fix reasoned about: the phone bakes
-      one headline for both tiers and all outcomes, so a single unpinned
-      variant is enough to reopen the defect.
+      All seven are pinned, not the two this fix reasoned about: the phone
+      bakes one headline for both tiers and all outcomes, so a single
+      unpinned variant is enough to reopen the defect.
     """
     import inspect
 

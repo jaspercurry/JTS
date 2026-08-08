@@ -1740,10 +1740,11 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     done screen, and is the household's call. What was missing is being told.
 
     The returned ``state`` is one of the ``GRADE_*`` constants above;
-    ``graded`` is the single boolean a caller can key on without knowing the
-    vocabulary. Both a passing VERIFY outcome and a graded post-apply cloud
-    count — either instrument is a real check, and the tiers differ in which
-    one they run.
+    ``graded`` answers only "was it checked" — since R19 it is no longer a
+    boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
+    ``complete`` below carry the verdict it cannot. Both a passing VERIFY
+    outcome and a graded post-apply cloud count — either instrument is a real
+    check, and the tiers differ in which one they run.
 
     **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
     answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
@@ -1761,10 +1762,25 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     ``scope`` is what the evidence DELIVERED; ``tier`` is what the session
     PROMISED; ``complete`` is the producer's own comparison of the two, so no
     consumer re-derives it (plan §7: one producer owns the scope/completeness
-    fact for the wizard, ``/state``, and doctor). An unrecognised tier — a
-    pre-tier state file, or one written by a later build — cannot have its
-    promise known, so it is judged on delivery alone rather than manufacturing
-    an incompleteness warning about a promise this build never read.
+    fact for the wizard, ``/state``, and doctor). The ``else`` tier branch
+    catches two different inputs and judges BOTH on delivery alone — but NOT
+    because "the promise cannot be known", which is false of the first input
+    and misdescribes the second:
+
+    * **No ``tier`` line at all.** ``normalize_tier`` documents an absent tier
+      as Full, so this promise IS knowable and the branch declines it BY
+      CHOICE. A state file with no tier came from a build that had no tier
+      concept and therefore never MADE Full's promise; judging it against
+      Full's stricter spatial-scope bar would false-warn a correctly
+      commissioned legacy speaker about delivery it was never asked to
+      produce. Wiring ``normalize_tier`` in here IS that regression.
+    * **A tier word from a later build.** ``normalize_tier`` does not default
+      this one — it RAISES, by its own "fail loudly rather than silently
+      measure something else" rule. That rule is right for a caller opening a
+      session and wrong here: ``_post_apply_grade`` runs unguarded inside
+      ``crossover_v2_status_block`` on every ``/state`` read, wizard poll, and
+      doctor run, so raising would take the whole status block down over a
+      word this build only needed to not grade.
 
     ``spatial_worst_db``/``_hz`` are copied from the same ``flatness`` gauge
     the doctor's cloud-pipeline line prints, never re-derived, so "the grade
