@@ -111,8 +111,14 @@ QUEUE_MIN_WINDOW_SEC = 2.0
 # the spread — and with it the required reading count — up for the whole
 # collection budget.  Eight seconds is four times the minimum window, so a box
 # always has a window to offer, and it bounds the retained readings at the
-# finest cadence in the fleet (375 writes/s x 8 s = 3000 entries) as well as
-# spanning jts3's whole 5.5 s ring in one read.
+# finest cadence in the fleet (375 writes/s x 8 s = 3000 entries).
+#
+# It is also what caps how wide a spread a box can answer for, since the
+# retained count is cadence x this horizon: 375 readings at jts3's 46.9
+# writes/s supports a spread up to 109 frames against the 86 it measures, and
+# 3000 at jts.local's 375 writes/s supports 309 against 11.  A box past its cap
+# fails inside the budget with its own numbers rather than quietly publishing a
+# median it did not earn.
 QUEUE_WINDOW_MAX_SEC = 8.0
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",

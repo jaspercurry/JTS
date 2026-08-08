@@ -47,16 +47,17 @@ QUEUE_MAX_SPREAD = 16
 # permits, so a still queue passes on noise alone: for a window of `n` readings
 # spanning `s` frames the two half-medians differ with a standard deviation
 # near `s / sqrt(n)`, which the precision rule caps at that same scale — jts3's
-# 256-reading window sits at 3.2 sigma, so a boot false-rejects about one time
-# in 600 and re-evaluates on the next read inside the same budget.  What it
-# rejects is drift: across a window spanning T seconds it refuses anything past
-# 2 * QUEUE_MAX_MEDIAN_DRIFT / T frames per second — 6.2 f/s at jts3's
-# ring-fed 5.5 s window, 17 f/s at jts.local's 2 s one.  That is looser than
-# the pre-#2253 rule's ~8 f/s on a fine cadence, because that number was the
-# 16-frame spread bound doing double duty and no bound of that shape survives a
-# box whose write jitter alone is 86 frames.  The end-to-end guard on the
-# quantity K actually depends on is `runtime_sys_delay`'s MIN_EDGE_MARGIN
-# bound against the commissioned SYS_DELAY, which no amount of drift escapes.
+# realised window (235 readings, spread 86) sits at 3.03 sigma, so a boot
+# false-rejects about one time in 400 and re-evaluates on the next read inside
+# the same budget.  What it rejects is drift: across a window spanning T
+# seconds it refuses anything past 2 * QUEUE_MAX_MEDIAN_DRIFT / T frames per
+# second — 6.8 f/s at jts3's 5.0 s window, 17 f/s at jts.local's 2.0 s one.
+# That is looser than the pre-#2253 rule's ~8 f/s on a fine cadence, because
+# that number was the 16-frame spread bound doing double duty and no bound of
+# that shape survives a box whose write jitter alone is 86 frames.  The
+# end-to-end guard on the quantity K actually depends on is
+# `runtime_sys_delay`'s MIN_EDGE_MARGIN bound against the commissioned
+# SYS_DELAY, which no amount of drift escapes.
 QUEUE_DRIFT_NOISE_SIGMAS = 3
 QUEUE_MAX_MEDIAN_DRIFT = math.ceil(
     QUEUE_DRIFT_NOISE_SIGMAS * QUEUE_MAX_SPREAD / math.sqrt(QUEUE_SAMPLE_COUNT)
