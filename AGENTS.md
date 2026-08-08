@@ -568,9 +568,10 @@ right place. Read this before adding or restructuring docs.
    roadmap.** Sweep changed files with `bash scripts/tense-grep.sh`
    before publishing — enumerating stale sites by hand is a
    hypothesis, never a bound, and the 2026-08 wide-output-path
-   program found a nine-site same-shape incident (pre-flip comments
-   describing a not-yet-landed state) exactly this way, all trued
-   up in the squash-merged commit `2787623bf` (PR #2246).
+   program found an eight-site same-shape incident (pre-flip comments
+   describing a not-yet-landed state; a ninth candidate was examined
+   and found sound) exactly this way, all trued up in the
+   squash-merged commit `2787623bf` (PR #2246).
 
 ---
 
