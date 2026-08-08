@@ -564,6 +564,7 @@ class _BridgeStats:
     ) -> None:
         with self._lock:
             self._started_epoch_sec = time.time()
+            self._started_monotonic = time.monotonic()
             self._leg_engines = {}
             self._active_capture_plan: dict[str, object] = {}
             self._capture_stream: dict[str, object] = {}
@@ -734,13 +735,14 @@ class _BridgeStats:
             reference_frames_enqueued = self._reference_frames_enqueued
             reference_last_frame_monotonic = self._reference_last_frame_monotonic
             started = self._started_epoch_sec
+            started_monotonic = self._started_monotonic
             now_monotonic = time.monotonic()
         last_frame_age_ms = (
             None
             if reference_last_frame_monotonic is None
             else max(
                 0,
-                round(
+                int(
                     (now_monotonic - reference_last_frame_monotonic) * 1000
                 ),
             )
@@ -761,6 +763,11 @@ class _BridgeStats:
                 "endpoint": reference_endpoint,
                 "frames_enqueued": reference_frames_enqueued,
                 "last_frame_age_ms": last_frame_age_ms,
+                "snapshot_monotonic_ms": max(0, int(now_monotonic * 1000)),
+                "process_age_ms": max(
+                    0,
+                    int((now_monotonic - started_monotonic) * 1000),
+                ),
             },
             "active_capture_plan": active_capture_plan,
             "wake_corpus_plan_id": active_capture_plan.get(

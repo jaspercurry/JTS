@@ -174,6 +174,8 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
         "endpoint": "127.0.0.1:9891",
         "frames_enqueued": 0,
         "last_frame_age_ms": None,
+        "snapshot_monotonic_ms": 100_000,
+        "process_age_ms": 0,
     }
 
 
@@ -203,6 +205,8 @@ def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
     first = aec_bridge._bridge_stats.snapshot()["reference_input"]
     assert first["frames_enqueued"] == 2
     assert first["last_frame_age_ms"] == 0
+    assert first["snapshot_monotonic_ms"] == 100_000
+    assert first["process_age_ms"] == 0
 
     clock.now = 101.25
     assert (
@@ -226,6 +230,8 @@ def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
     latest = aec_bridge._bridge_stats.snapshot()["reference_input"]
     assert latest["frames_enqueued"] == 3
     assert latest["last_frame_age_ms"] == 0
+    assert latest["snapshot_monotonic_ms"] == 101_250
+    assert latest["process_age_ms"] == 1_250
 
 
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
@@ -238,6 +244,8 @@ def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
         "endpoint",
         "frames_enqueued",
         "last_frame_age_ms",
+        "snapshot_monotonic_ms",
+        "process_age_ms",
     }
     assert isinstance(snapshot["counters"], dict)
 

@@ -517,10 +517,12 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
 
 def _reference_input_stats(
     *,
-    now: float = 1_000.0,
+    now_monotonic: float = 1_000.0,
     schema_version: int = 4,
     snapshot_age_sec: float = 0.5,
     process_age_sec: float = 60.0,
+    updated_epoch_sec: float = 50_000.0,
+    started_epoch_sec: float = 40_000.0,
     source: str = "outputd_udp",
     endpoint: str = "127.0.0.1:9891",
     frames_enqueued: int = 100,
@@ -529,13 +531,26 @@ def _reference_input_stats(
 ) -> dict:
     return {
         "schema_version": schema_version,
-        "updated_epoch_sec": now - snapshot_age_sec,
-        "started_epoch_sec": now - process_age_sec,
+        "updated_epoch_sec": updated_epoch_sec,
+        "started_epoch_sec": started_epoch_sec,
+        "active_capture_plan": {
+            "mic_reference_identity": {
+                "ref_source": source,
+                "outputd_ref_udp": endpoint,
+            }
+        },
         "reference_input": {
             "source": source,
             "endpoint": endpoint,
             "frames_enqueued": frames_enqueued,
             "last_frame_age_ms": last_frame_age_ms,
+            "snapshot_monotonic_ms": (
+                now_monotonic - snapshot_age_sec
+            ) * 1000,
+            "process_age_ms": max(
+                0.0,
+                process_age_sec - snapshot_age_sec,
+            ) * 1000,
         },
         "counters": {"ref_starved_frames": ref_starved_frames},
     }
@@ -556,10 +571,10 @@ def _active_outputd_reference_status(
     }
 
 
-def _assess_reference_stats(stats: dict, *, now: float = 1_000.0):
+def _assess_reference_stats(stats: dict, *, now_monotonic: float = 1_000.0):
     return doctor.aec._assess_aec_reference_input_from_stats(
         stats,
-        now,
+        now_monotonic,
         configured_source="outputd_udp",
         expected_endpoint="127.0.0.1:9891",
         outputd_status=_active_outputd_reference_status(),
@@ -630,17 +645,113 @@ def test_assess_reference_input_formerly_nonzero_but_frozen_fails():
 @pytest.mark.parametrize(
     "stats",
     [
+        {},
         _reference_input_stats(schema_version=3),
-        _reference_input_stats(snapshot_age_sec=31.0),
-        {
-            **_reference_input_stats(),
-            "reference_input": {"source": "outputd_udp"},
-        },
+        _reference_input_stats(schema_version=5),
     ],
-    ids=["old-schema", "stale-snapshot", "malformed-current-schema"],
+    ids=["missing-schema", "old-schema", "future-schema"],
 )
-def test_assess_reference_input_untrusted_stats_preserve_fallback(stats):
+def test_assess_reference_input_undeclared_schema_preserves_fallback(stats):
     assert _assess_reference_stats(stats) is None
+
+
+@pytest.mark.parametrize(
+    ("stats", "expected_detail"),
+    [
+        (
+            {
+                **_reference_input_stats(),
+                "reference_input": {"source": "outputd_udp"},
+            },
+            "missing required field",
+        ),
+        (
+            _reference_input_stats(snapshot_age_sec=31.0),
+            "stats writer has not advanced",
+        ),
+        (
+            _reference_input_stats(snapshot_age_sec=-0.1),
+            "is in the future",
+        ),
+    ],
+    ids=["malformed", "writer-stale", "future-monotonic"],
+)
+def test_assess_reference_input_declared_v4_fails_closed(stats, expected_detail):
+    assessed = _assess_reference_stats(stats)
+
+    assert assessed is not None
+    result, startup_grace = assessed
+    assert result.status == "fail"
+    assert startup_grace is False
+    assert expected_detail in result.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("snapshot_monotonic_ms", float("nan")),
+        ("snapshot_monotonic_ms", float("inf")),
+        ("snapshot_monotonic_ms", -1),
+        ("snapshot_monotonic_ms", 10**1000),
+        ("process_age_ms", float("nan")),
+        ("process_age_ms", -1),
+        ("last_frame_age_ms", float("inf")),
+        ("last_frame_age_ms", -1),
+        ("last_frame_age_ms", 10**1000),
+        ("frames_enqueued", 1 << 64),
+    ],
+)
+def test_assess_reference_input_rejects_untrusted_numeric_fields(field, value):
+    stats = _reference_input_stats()
+    stats["reference_input"][field] = value
+
+    assessed = _assess_reference_stats(stats)
+
+    assert assessed is not None
+    result, _startup_grace = assessed
+    assert result.status == "fail"
+    assert "untrustworthy" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("updated_epoch_sec", "started_epoch_sec"),
+    [
+        (10**12, 10**12 - 60),
+        (-10**12, -10**12 - 60),
+    ],
+    ids=["wall-clock-forward", "wall-clock-backward"],
+)
+def test_assess_reference_input_ignores_wall_clock_jumps(
+    updated_epoch_sec,
+    started_epoch_sec,
+):
+    fresh = _assess_reference_stats(
+        _reference_input_stats(
+            updated_epoch_sec=updated_epoch_sec,
+            started_epoch_sec=started_epoch_sec,
+            last_frame_age_ms=100,
+        )
+    )
+    startup = _assess_reference_stats(
+        _reference_input_stats(
+            updated_epoch_sec=updated_epoch_sec,
+            started_epoch_sec=started_epoch_sec,
+            process_age_sec=9.0,
+            frames_enqueued=0,
+            last_frame_age_ms=None,
+        )
+    )
+    stale = _assess_reference_stats(
+        _reference_input_stats(
+            updated_epoch_sec=updated_epoch_sec,
+            started_epoch_sec=started_epoch_sec,
+            last_frame_age_ms=9_000,
+        )
+    )
+
+    assert fresh is not None and fresh[0].status == "ok" and fresh[1] is False
+    assert startup is not None and startup[0].status == "ok" and startup[1] is True
+    assert stale is not None and stale[0].status == "fail"
 
 
 def test_assess_reference_input_young_process_gets_explicit_grace():
@@ -740,23 +851,32 @@ def _install_reference_health_check_fakes(
     monkeypatch,
     tmp_path: Path,
     *,
-    stats: dict,
+    stats: dict | str,
     journal: str,
 ) -> list[list[str]]:
     stats_path = tmp_path / "aec_bridge_stats.json"
-    stats_path.write_text(json.dumps(stats), encoding="utf-8")
+    stats_path.write_text(
+        stats if isinstance(stats, str) else json.dumps(stats),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "outputd_udp")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891")
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
-    monkeypatch.setattr(doctor.aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(doctor.aec.time, "monotonic", lambda: 1_000.0)
+    monkeypatch.setattr(doctor.aec.time, "time", lambda: 50_000.0)
     monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    calls: list[list[str]] = []
+
+    def fake_outputd_status():
+        calls.append(["outputd-status"])
+        return _active_outputd_reference_status()
+
     monkeypatch.setattr(
         doctor.aec,
-        "_read_status_socket",
-        lambda _path: _active_outputd_reference_status(),
+        "_read_outputd_status_for_aec_reference",
+        fake_outputd_status,
     )
-    calls: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
         calls.append(command)
@@ -787,6 +907,7 @@ def test_check_reference_freshness_fails_with_usb_invisible_to_loopback(
     assert result.status == "fail"
     assert "receiver is stale" in result.detail
     assert not any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
 def test_check_reference_freshness_failure_cannot_be_overridden_by_rms(
@@ -809,16 +930,19 @@ def test_check_reference_freshness_failure_cannot_be_overridden_by_rms(
     assert result.status == "fail"
     assert "historical RMS cannot prove current receiver progress" in result.detail
     assert not any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
-def test_check_old_reference_stats_fall_back_to_journal(
+@pytest.mark.parametrize("schema_version", [3, 5])
+def test_check_undeclared_reference_stats_fall_back_to_journal(
     monkeypatch,
     tmp_path: Path,
+    schema_version,
 ):
     calls = _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
-        stats=_reference_input_stats(schema_version=3),
+        stats=_reference_input_stats(schema_version=schema_version),
         journal="",
     )
     monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
@@ -828,6 +952,149 @@ def test_check_old_reference_stats_fall_back_to_journal(
     assert result.status == "ok"
     assert "no recent RMS windows" in result.detail
     assert any(command[0] == "journalctl" for command in calls)
+    assert not any(command[0] == "outputd-status" for command in calls)
+
+
+@pytest.mark.parametrize("snapshot_age_sec", [29.0, 31.0])
+def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
+    monkeypatch,
+    tmp_path: Path,
+    snapshot_age_sec,
+):
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(
+            snapshot_age_sec=snapshot_age_sec,
+            last_frame_age_ms=100,
+        ),
+        journal="",
+    )
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert not any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+def test_check_malformed_declared_v4_fails_without_row_traceback(
+    monkeypatch,
+    tmp_path: Path,
+):
+    stats = _reference_input_stats()
+    del stats["reference_input"]["process_age_ms"]
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=stats,
+        journal="",
+    )
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "missing required field 'process_age_ms'" in result.detail
+    assert not any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+def test_check_oversized_json_integer_preserves_fallback_without_traceback(
+    monkeypatch,
+    tmp_path: Path,
+):
+    oversized = (
+        '{"schema_version":4,"reference_input":'
+        '{"snapshot_monotonic_ms":' + ("9" * 5_000) + "}}"
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=oversized,
+        journal="",
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: False)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "no recent RMS windows" in result.detail
+    assert any(command[0] == "journalctl" for command in calls)
+    assert not any(command[0] == "outputd-status" for command in calls)
+
+
+def test_check_fresh_receiver_still_fails_silent_reference_content(
+    monkeypatch,
+    tmp_path: Path,
+):
+    silent_ref = "\n".join(
+        _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+        for _ in range(5)
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=100),
+        journal=silent_ref,
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "reference path is delivering silence" in result.detail
+    assert any(command[0] == "journalctl" for command in calls)
+    assert sum(command[0] == "outputd-status" for command in calls) == 1
+
+
+def test_check_fresh_receiver_and_one_healthy_rms_window_is_ok(
+    monkeypatch,
+    tmp_path: Path,
+):
+    journal = "\n".join(
+        [
+            *(
+                _rms_log_line(ref=0, mic=2_500, aec=2_400, attn_db=-0.4)
+                for _ in range(5)
+            ),
+            _rms_log_line(ref=900, mic=2_500, aec=180, attn_db=-22.8),
+        ]
+    )
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=100),
+        journal=journal,
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "ref path proven healthy" in result.detail
+    assert "reference receiver current" in result.detail
+    assert not any(command[0] == "outputd-status" for command in calls)
+
+
+def test_check_fresh_receiver_preserves_excessive_drift_warning(
+    monkeypatch,
+    tmp_path: Path,
+):
+    drift_line = "drained 7 stale ref frames (drift)"
+    calls = _install_reference_health_check_fakes(
+        monkeypatch,
+        tmp_path,
+        stats=_reference_input_stats(last_frame_age_ms=100),
+        journal="\n".join([drift_line] * 31),
+    )
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+
+    result = doctor.aec.check_aec_bridge_output_health()
+
+    assert result.status == "warn"
+    assert "ref-drift warnings" in result.detail
+    assert "reference receiver current" in result.detail
+    assert not any(command[0] == "outputd-status" for command in calls)
 
 
 # ----------------------------------------- DTLN-aec engine health assessment

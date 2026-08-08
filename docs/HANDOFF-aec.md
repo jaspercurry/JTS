@@ -276,19 +276,29 @@ same live bridge snapshot source.
 **Reference-input health is receiver-owned.** Bridge stats schema v4 publishes
 one bounded `reference_input` block: the runtime source and endpoint, the
 lifetime count of complete 20 ms frames successfully converted and accepted by
-the bounded AEC reference queue, and monotonic `last_frame_age_ms` (`null`
-before the first frame). Reusing `last_ref_bytes` while the receiver is starved
-does not advance this telemetry. For `outputd_udp`, `jasper-doctor` gives a new
-bridge 10 seconds to start, then fails when no frame has arrived or the newest
-receiver frame is more than 5 seconds old. A fresh current-schema snapshot
-wins over historical RMS and the loopback-activity heuristic, including for USB
-Audio Input, which that heuristic cannot see. Missing, malformed, stale, and
-older snapshots retain the 90-second journal assessment for rolling-deploy
-compatibility; explicit ALSA/custom reference routes retain that journal policy
-as well. Outputd `STATUS` is consulted only to localize a receiver failure
-(target drift, inactive/error state, or a sender claiming activity); UDP send
-success is never treated as receiver proof. This is observability and diagnosis
-only: capture, queue bounds, frame carry-forward, DSP, and routing are unchanged.
+the bounded AEC reference queue, monotonic `last_frame_age_ms` (`null` before
+the first frame), the same-boot monotonic snapshot instant, and process age at
+that instant. Reusing `last_ref_bytes` while the receiver is starved does not
+advance this telemetry. For `outputd_udp`, `jasper-doctor` gives a new bridge
+10 seconds to start, then fails when no frame has arrived or the newest receiver
+frame is more than 5 seconds old. All freshness arithmetic uses the monotonic
+fields, never the retained epoch timestamps, so RTC/NTP steps cannot change a
+verdict.
+
+Precedence is deliberately one-way. A schema-v4 freshness FAIL wins over
+historical RMS and the USB-blind loopback-activity heuristic, so USB Audio Input
+cannot hide a stale/no-frame transport. Freshness OK proves only transport and
+bounded-queue admission; the 90-second journal assessment still owns reference
+signal content and clock drift, so fresh silent/wrong samples still fail and
+excessive drift still warns. Missing, older, and unknown-future schemas retain
+that journal fallback for rolling-deploy compatibility. Exact schema v4 is a
+declared contract: malformed, future-monotonic, or stale v4 telemetry fails
+closed rather than aging into fallback. Explicit ALSA/custom reference routes
+retain the journal policy. Outputd `STATUS` is consulted only to localize a
+receiver failure (target drift, inactive/error state, or a sender claiming
+activity); UDP send success is never receiver proof. This is observability and
+diagnosis only: capture, queue bounds, frame carry-forward, DSP, and routing are
+unchanged.
 
 **CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
 The bridge reads the XVF mic directly and consumes outputd's final-reference
@@ -1482,7 +1492,7 @@ contract. `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` is enough for
 `jasper-aec-bridge` to emit the dedicated `chip_aec_150` and
 `chip_aec_210` UDP legs on `:9887/:9888`; it no longer depends on
 production per-beam wake-device vars being configured. Bridge stats
-schema v3 publishes `active_capture_plan` with the wake-corpus
+schema v4 publishes `active_capture_plan` with the wake-corpus
 `plan_id`, emitted legs, corpus flags, beam plan, ports, and mic /
 reference identity summary, plus the negotiated `capture_stream` geometry.
 The recorder uses that stats payload, not
@@ -3038,7 +3048,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, and lesson #10 only — schema-v4 receiver-side source/endpoint/frame-count/monotonic-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, outputd-STATUS localization-only rule, rolling-deploy journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; the rest of this file was NOT re-verified in that pass. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; the rest of this file was NOT re-verified in that pass. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and

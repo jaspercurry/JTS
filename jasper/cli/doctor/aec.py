@@ -46,7 +46,6 @@ from ._shared import (
     _run,
     _sha256_file,
 )
-from .audio_runtime import _OUTPUTD_STATUS_SOCKET, _read_status_socket
 
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
@@ -625,7 +624,7 @@ def _outputd_reference_localization(
 
 def _assess_aec_reference_input_from_stats(
     stats: dict[str, object],
-    now: float,
+    now_monotonic: float,
     *,
     configured_source: str,
     expected_endpoint: str,
@@ -634,76 +633,127 @@ def _assess_aec_reference_input_from_stats(
 ) -> tuple[CheckResult, bool] | None:
     """Assess current bridge-side reference receiver progress.
 
-    Returns ``(result, startup_grace)`` for a fresh schema that can be trusted.
-    ``None`` preserves the journal assessment for rolling deploys, malformed
-    files, and stale snapshots. The second element lets the caller suppress
-    previous-process journal windows during the explicit startup grace.
+    Returns ``(result, startup_grace)`` for exact schema v4. ``None`` preserves
+    the journal assessment for missing, older, and unknown-future schemas. A
+    malformed or stale declared-v4 snapshot fails closed instead of aging into
+    the legacy fallback. The second element lets the caller suppress previous-
+    process journal windows during the explicit startup grace.
     """
 
     if configured_source != "outputd_udp":
         return None
-    try:
-        schema_version = stats["schema_version"]
-        updated_epoch_sec = float(stats["updated_epoch_sec"])
-        started_epoch_sec = float(stats["started_epoch_sec"])
-        reference_input = stats["reference_input"]
-        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-            return None
-        if schema_version < _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION:
-            return None
-        if not isinstance(reference_input, dict):
-            return None
-        source = reference_input["source"]
-        endpoint = reference_input["endpoint"]
-        frames_enqueued = reference_input["frames_enqueued"]
-        last_frame_age_ms = reference_input["last_frame_age_ms"]
-    except (KeyError, TypeError, ValueError):
-        return None
-
+    schema_version = stats.get("schema_version")
     if (
-        not isinstance(source, str)
-        or not source
-        or not isinstance(endpoint, str)
-        or not endpoint
-        or isinstance(frames_enqueued, bool)
-        or not isinstance(frames_enqueued, int)
-        or frames_enqueued < 0
-        or not all(map(math.isfinite, (updated_epoch_sec, started_epoch_sec, now)))
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION
     ):
         return None
-
-    snapshot_age_sec = now - updated_epoch_sec
-    process_age_sec = now - started_epoch_sec
-    if (
-        snapshot_age_sec < 0
-        or snapshot_age_sec > _BRIDGE_STATS_FRESH_SEC
-        or process_age_sec < 0
-    ):
-        return None
-
-    if frames_enqueued == 0:
-        if last_frame_age_ms is not None:
-            return None
-        receiver_age_sec: float | None = None
-    else:
-        if isinstance(last_frame_age_ms, bool):
-            return None
-        try:
-            receiver_age_sec = float(last_frame_age_ms) / 1000.0
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(receiver_age_sec) or receiver_age_sec < 0:
-            return None
-        # ``last_frame_age_ms`` is measured at snapshot time. Add the bounded
-        # wall-clock snapshot age so even a stats writer that stopped 6 seconds
-        # ago cannot make a frozen zero-age sample look current.
-        receiver_age_sec += snapshot_age_sec
 
     localization = _outputd_reference_localization(
         outputd_status,
         expected_endpoint=expected_endpoint,
         error=outputd_status_error,
     )
+
+    def fail_contract(detail: str) -> tuple[CheckResult, bool]:
+        return (
+            CheckResult(
+                "AEC bridge output", "fail",
+                f"bridge reference freshness schema v4 is untrustworthy: "
+                f"{detail}. {localization}",
+            ),
+            False,
+        )
+
+    def nonnegative_number(value: object, field: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field} is not a number")
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} is not representable") from exc
+        if not math.isfinite(number) or number < 0:
+            raise ValueError(f"{field} must be finite and nonnegative")
+        return number
+
+    reference_input = stats.get("reference_input")
+    if not isinstance(reference_input, dict):
+        return fail_contract("reference_input is missing or not an object")
+    try:
+        source = reference_input["source"]
+        endpoint = reference_input["endpoint"]
+        frames_enqueued = reference_input["frames_enqueued"]
+        last_frame_age_ms = reference_input["last_frame_age_ms"]
+        snapshot_monotonic_ms = nonnegative_number(
+            reference_input["snapshot_monotonic_ms"],
+            "reference_input.snapshot_monotonic_ms",
+        )
+        process_age_ms = nonnegative_number(
+            reference_input["process_age_ms"],
+            "reference_input.process_age_ms",
+        )
+        current_monotonic_sec = nonnegative_number(
+            now_monotonic,
+            "doctor monotonic clock",
+        )
+    except KeyError as exc:
+        return fail_contract(f"missing required field {exc.args[0]!r}")
+    except (TypeError, ValueError, OverflowError) as exc:
+        return fail_contract(str(exc))
+
+    if not isinstance(source, str) or not source:
+        return fail_contract("reference_input.source is not a nonempty string")
+    if not isinstance(endpoint, str) or not endpoint:
+        return fail_contract("reference_input.endpoint is not a nonempty string")
+    if (
+        isinstance(frames_enqueued, bool)
+        or not isinstance(frames_enqueued, int)
+        or frames_enqueued < 0
+        or frames_enqueued > (1 << 64) - 1
+    ):
+        return fail_contract(
+            "reference_input.frames_enqueued is not a nonnegative uint64"
+        )
+
+    snapshot_monotonic_sec = snapshot_monotonic_ms / 1000.0
+    process_age_at_snapshot_sec = process_age_ms / 1000.0
+    snapshot_age_sec = current_monotonic_sec - snapshot_monotonic_sec
+    if snapshot_age_sec < 0:
+        return fail_contract(
+            "reference_input.snapshot_monotonic_ms is in the future"
+        )
+    if process_age_at_snapshot_sec > snapshot_monotonic_sec:
+        return fail_contract(
+            "reference_input.process_age_ms exceeds the same-boot monotonic snapshot"
+        )
+    if snapshot_age_sec > _BRIDGE_STATS_FRESH_SEC:
+        return fail_contract(
+            f"stats writer has not advanced for {snapshot_age_sec:.2f}s "
+            f"(limit {_BRIDGE_STATS_FRESH_SEC:g}s)"
+        )
+
+    process_age_sec = process_age_at_snapshot_sec + snapshot_age_sec
+    if frames_enqueued == 0:
+        if last_frame_age_ms is not None:
+            return fail_contract(
+                "last_frame_age_ms must be null when frames_enqueued is zero"
+            )
+        receiver_age_sec: float | None = None
+    else:
+        try:
+            receiver_age_at_snapshot_sec = nonnegative_number(
+                last_frame_age_ms,
+                "reference_input.last_frame_age_ms",
+            ) / 1000.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            return fail_contract(str(exc))
+        if receiver_age_at_snapshot_sec > process_age_at_snapshot_sec:
+            return fail_contract(
+                "last_frame_age_ms exceeds process_age_ms"
+            )
+        receiver_age_sec = receiver_age_at_snapshot_sec + snapshot_age_sec
+
     if source != configured_source or endpoint != expected_endpoint:
         return (
             CheckResult(
@@ -951,16 +1001,17 @@ def check_aec_bridge_output_health() -> CheckResult:
        wake detector consuming an un-cancelled mic with music
        blasting through it, but `systemctl is-active` says ok.
 
-    A fresh schema-v4 bridge snapshot is authoritative for current
-    outputd-UDP receiver progress. Missing, malformed, stale, and
-    older snapshots retain the bridge's last 90 s of `rms over` log
-    lines + drift warnings as a rolling-deploy fallback. 90 s is
-    chosen to ride past the transient that install.sh produces
-    during a deploy (~30-60 s where an older bridge restarts and ref
-    capture re-converges) without missing a sustained outage (the
-    2026-05-15 dsnoop incident lasted 4 days). Both assessment paths
-    are pure functions so they can be unit-tested without subprocess
-    mocks."""
+    Exact schema-v4 monotonic stats are authoritative for current
+    outputd-UDP receiver progress: a freshness failure returns before
+    RMS or the USB-blind loopback heuristic can hide it. A freshness
+    success proves only transport/queue admission, so journal content
+    and drift assessment still runs. Missing, older, unknown-future,
+    and unreadable schemas retain the bridge's last 90 s of `rms over`
+    lines + drift warnings as a rolling-deploy fallback; malformed or
+    stale declared-v4 stats fail closed. 90 s rides past the transient
+    that install.sh produces during an older-bridge deploy without
+    missing a sustained outage. Both assessment paths are pure
+    functions so they can be unit-tested without subprocess mocks."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "AEC bridge output", "ok",
@@ -985,13 +1036,13 @@ def check_aec_bridge_output_health() -> CheckResult:
         f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_PORT', '9891').strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
-    now = time.time()
+    now_monotonic = time.monotonic()
 
     stats_assessment: tuple[CheckResult, bool] | None = None
     if isinstance(bridge_stats, dict):
         stats_assessment = _assess_aec_reference_input_from_stats(
             bridge_stats,
-            now,
+            now_monotonic,
             configured_source=configured_source,
             expected_endpoint=expected_endpoint,
         )
@@ -1000,7 +1051,7 @@ def check_aec_bridge_output_health() -> CheckResult:
         if stats_result.status == "fail":
             localized = _assess_aec_reference_input_from_stats(
                 bridge_stats,
-                now,
+                now_monotonic,
                 configured_source=configured_source,
                 expected_endpoint=expected_endpoint,
                 outputd_status=_read_outputd_status_for_aec_reference(),
@@ -1031,13 +1082,14 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
         )
 
-    provenance = _bridge_reference_provenance(bridge_stats, now)
+    now_epoch = time.time()
+    provenance = _bridge_reference_provenance(bridge_stats, now_epoch)
     music_chain_active = _loopback_playback_active()
     journal_result = _assess_aec_bridge_output(
         proc.stdout,
         music_chain_active=music_chain_active,
         bridge_stats=bridge_stats,
-        now=now,
+        now=now_epoch,
     )
     if (
         journal_result.status == "fail"
@@ -1049,7 +1101,7 @@ def check_aec_bridge_output_health() -> CheckResult:
             music_chain_active=music_chain_active,
             bridge_stats=bridge_stats,
             outputd_status=_read_outputd_status_for_aec_reference(),
-            now=now,
+            now=now_epoch,
         )
     if stats_assessment is not None:
         journal_result.detail += f"; {stats_assessment[0].detail}"
@@ -1064,7 +1116,7 @@ def _read_bridge_stats_snapshot() -> dict | None:
     ))
     try:
         stats = json.loads(stats_path.read_text())
-    except (OSError, ValueError):
+    except (OSError, UnicodeError, ValueError, OverflowError):
         return None
     return stats if isinstance(stats, dict) else None
 
