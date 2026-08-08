@@ -27,9 +27,10 @@ pub const CHANNELS: u16 = 2;
 /// an i32 sample, so f32 gain math would silently truncate the bottom 7 bits of
 /// every sample it touched.
 ///
-/// The single quantization to the hardware's width happens at the DAC edge, in
-/// `alsa_backend::AlsaBackend::write_dac_period`, and nowhere else on the output
-/// path. Everything upstream of it is this type.
+/// The single quantization to the hardware's width happens at the DAC edge — in
+/// the coherent single sink's `alsa_backend::AlsaBackend::write_dac_period` (and,
+/// on a composite sink, in `alsa_backend::deinterleave_4ch_to_dual_stereo` at the
+/// children's edge) — nowhere upstream. Everything above that edge is this type.
 pub type ProgramSample = i32;
 
 /// The crate's ONE sample-format vocabulary.

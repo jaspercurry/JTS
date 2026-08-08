@@ -806,10 +806,11 @@ def test_outputd_tts_runtime_is_bonded_scoped():
 # another thread's arena lock is a priority inversion, then SIGXCPU, then
 # `StartLimitAction=reboot`.
 #
-# `.resize(` is deliberately NOT in this list: three of these bodies use it
-# behind an `if len != wanted` guard that is a no-op in steady state, which is
-# the crate's documented pattern for a buffer sized once at open. Adding it here
-# would fail the guarded, intended form.
+# `.resize(` is deliberately NOT in this list: FOUR of these bodies use it
+# (everything except `prepare_from_buffered_content`) behind an `if len != wanted`
+# guard that is a no-op in steady state, which is the crate's documented pattern
+# for a buffer sized once at open. Adding it here would fail the guarded,
+# intended form.
 PERIOD_HOT_FUNCTIONS = [
     # (source file, enclosing `impl` block or None, function signature prefix)
     ("alsa_backend.rs", "impl AlsaBackend", "pub fn read_content_available("),
@@ -819,7 +820,21 @@ PERIOD_HOT_FUNCTIONS = [
     ("core.rs", "impl OutputCore", "fn prepare_from_buffered_content("),
 ]
 
-ALLOCATING_TOKENS = ["vec![", "mem::take(", ".to_vec()", "Vec::with_capacity("]
+ALLOCATING_TOKENS = [
+    "vec![",
+    "mem::take(",
+    ".to_vec()",
+    "Vec::with_capacity(",
+    # None of these appear in the five bodies today, so adding them is zero
+    # churn — they are here because they are the OTHER ways an allocation
+    # reaches this thread, and a guard that only knows the four shapes that
+    # happened to exist when it was written invites the next one in.
+    ".clone()",
+    ".collect()",
+    "format!(",
+    "String::from(",
+    "Box::new(",
+]
 
 
 def _non_comment_rust(text: str) -> str:
@@ -836,28 +851,60 @@ def _rust_fn_body(text: str, impl_block: str | None, signature: str) -> str:
     Brace-matched rather than "until the next `fn`" so a nested closure or match
     cannot truncate the body and hide a token past it.
 
-    Known limitation, named rather than hidden: the counter does not know about
-    string literals, so a body containing an UNBALANCED brace inside a string
-    would extract wrong. Every brace in these five bodies today is a balanced
-    format placeholder (`{}`, `{e:#}`), and both failure directions are loud
-    rather than silent — over-extraction pulls in a later function's tokens and
-    fails the guard, under-extraction trips the length assertion at the call site
-    and the content assertions in `test_the_no_allocation_guard_can_actually_fail`.
+    **String literals are blanked before counting** (`_strip_strings`, shared with
+    `test_rust_runtime_panic_freedom.py`). Without that, one unbalanced brace in a
+    string — `let _brace = "}";` — closes the counter early and everything after it
+    escapes the scan. That is not hypothetical: an adversarial review used exactly
+    that line to smuggle a per-period `vec![` past this guard. Counting on the
+    stripped text and slicing the ORIGINAL keeps the returned body faithful while
+    making the count immune to literals.
     """
     start = 0
     if impl_block is not None:
         start = text.index(impl_block)
     sig_at = text.index(signature, start)
     open_at = text.index("{", sig_at)
+    # Blank string literals for COUNTING only; offsets are preserved because
+    # `_strip_strings` replaces each literal with `""`… which is shorter. So
+    # strip per-character instead, keeping length identical.
+    countable = _blank_string_literals(text)
     depth = 0
     for i in range(open_at, len(text)):
-        if text[i] == "{":
+        c = countable[i]
+        if c == "{":
             depth += 1
-        elif text[i] == "}":
+        elif c == "}":
             depth -= 1
             if depth == 0:
                 return text[open_at : i + 1]
     raise AssertionError(f"unbalanced braces after {signature!r}")
+
+
+def _blank_string_literals(text: str) -> str:
+    """Replace every character inside a Rust string literal with a space,
+    preserving the text's LENGTH so offsets stay valid.
+
+    `_strip_strings` in `test_rust_runtime_panic_freedom.py` collapses literals to
+    `""`, which is the right shape for line-by-line scanning but shifts offsets —
+    and this function slices the original text by index. Same intent, offset-safe:
+    escapes are honoured so `"\\"` does not look like an unterminated literal.
+    """
+    out = list(text)
+    in_string = False
+    escaped = False
+    for i, c in enumerate(text):
+        if in_string:
+            out[i] = " "
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                out[i] = '"'
+                in_string = False
+        elif c == '"':
+            in_string = True
+    return "".join(out)
 
 
 def test_outputd_period_hot_functions_do_not_allocate():

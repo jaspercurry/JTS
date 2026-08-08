@@ -668,18 +668,39 @@ impl AlsaBackend {
         };
         // `content_format` is `Some` here by construction: `new` sets it to `None`
         // only on the path that leaves `content` `None` too, and the `?` above
-        // already returned in that case. Bail rather than default, using the same
-        // idiom the line above uses, because the wrong arm is worse than no arm:
-        // silently choosing S16 on a lane that is actually S32 hands `io_i16()` a
-        // buffer of half-samples and the speaker plays loud garbage, whereas this
-        // refusal is one legible startup-class error. There is no width to guess.
-        let Some(lane_format) = self.content_format else {
-            anyhow::bail!(
-                "outputd content PCM {} is open but its negotiated format is \
-                 unknown; refusing to guess the ingest width",
-                self.content_pcm
-            );
-        };
+        // already returned in that case. Refuse rather than default, because the
+        // wrong arm is worse than no arm: silently choosing S16 on a lane that is
+        // actually S32 hands `io_i16()` a buffer of half-samples and the speaker
+        // plays loud garbage. There is no width to guess.
+        //
+        // `final_sink_startup` is load-bearing on this line, not decoration. A
+        // bare bail here would be ordinary-error class — exit 1, which on this
+        // unit means restart, and eventually `StartLimitAction=reboot`. That is
+        // the exact chain the retired i16-only ingest guard existed to prevent, so
+        // refusing a format outputd cannot resolve must PARK at EX_CONFIG 78,
+        // where an operator sees it, rather than reboot-loop against a condition
+        // no restart can change.
+        //
+        // Park-class is right even though this is a PER-PERIOD call, not a startup
+        // one, and that is the whole justification for borrowing a marker named
+        // for startup: the condition is a static property of the struct (set once
+        // in `new`, never mutated), so it cannot be transient. If it were ever
+        // true it would be true on every period and on every restart alike —
+        // precisely the case the marker exists to park rather than retry. The
+        // transient content-lane failures on this path stay unmarked, as before.
+        // A `&'static str` context, not a `format!`-ed one naming the PCM. Two
+        // reasons: it matches the idiom of every other error this function
+        // produces (the io-handle contexts are static too), and it keeps the
+        // period-hot body free of allocating tokens —
+        // `test_outputd_period_hot_functions_do_not_allocate` forbids `format!(`
+        // here, and although a `with_context` closure is lazy and would never run
+        // per period, a guard that has to reason about laziness is a guard that
+        // gets argued with. The PCM name is already on the open-time
+        // `event=outputd.alsa.opened` line and in STATUS.
+        let lane_format = final_sink_startup(self.content_format.context(
+            "outputd content PCM is open but its negotiated format is unknown; \
+             refusing to guess the ingest width",
+        ))?;
         match lane_format {
             SampleFormat::S32Le => {
                 let io = content

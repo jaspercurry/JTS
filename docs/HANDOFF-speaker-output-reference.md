@@ -58,8 +58,11 @@ Conversion primitives live in `jasper-resampler`
 appear on an output path. Every wire that crosses outputd's boundary keeps its own
 declared width, and converts exactly once, at that boundary. **Egress** narrows:
 the :9891 reference datagrams, the chip-reference leg, the composite children.
-**Ingress** widens: the S16 content lane, the SHM ring, and the snapclient
-round-trip FIFO (which is a *source* — snapclient writes it, outputd reads it).
+**Ingress** widens: the S16 content lane, the SHM ring, the snapclient round-trip
+FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
+TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
+application in `assistant_source::read_period_into` rather than at enqueue, so a
+queued reply does not double its resident bytes under `mlockall`.
 
 The production paths converge inside `jasper-fanin`, pass through
 CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
