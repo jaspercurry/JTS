@@ -321,15 +321,18 @@ pub struct AlsaBackend {
     /// value STATUS reports can disagree with the ring's real width, because
     /// nothing here reads or verifies the ring (the ring wire is S16 by
     /// contract, and `jasper_ring::Geometry::validate_self` hard-rejects
-    /// anything else). What WILL keep the pair coherent is upstream, not here:
-    /// wide-output-path PR-1 (#2226) adds a coupling-reconciler gate that refuses
-    /// to arm `shm_ring` when the emitted lane format is wider than the ring
-    /// wire. Until that lands, NOTHING refuses the pairing —
-    /// `default_ring_gates()` has no format axis and `RING_WIRE_FORMAT` is never
-    /// compared against anything — and the unattended auto path can arm the ring
-    /// on an eligible stereo box by itself, so reaching the disagreement takes
-    /// one hand-set `JASPER_OUTPUTD_CONTENT_FORMAT` rather than a fully
-    /// hand-built lab config. `content.source` sits immediately before
+    /// anything else). What keeps the pair coherent is upstream, not here:
+    /// `jasper.fanin.coupling_reconcile.ring_edge_width_ready` (wide-output-path PR-1,
+    /// #2226) runs FIRST in both the unattended auto-arm gate list
+    /// (`default_ring_gates()`) and the manual-arm chain. Reworked by PR-6 when
+    /// the box-wide default widened — comparing `RING_WIRE_FORMAT` against that
+    /// default directly would have refused the ring on every eligible box,
+    /// including the certified-latency jts.local canary — it now verifies the
+    /// coupling-kwargs OVERRIDE CONTRACT instead: arming `shm_ring` forces both
+    /// ring ends to `RING_WIRE_FORMAT`, and the audio-hardware reconciler emits
+    /// outputd's matching `JASPER_OUTPUTD_CONTENT_FORMAT` from that same
+    /// source, so a ring box gets a coherent narrow lane automatically — no
+    /// hand-set config needed. `content.source` sits immediately before
     /// `content.format` in STATUS so a reader can always see which source the
     /// format describes.
     content_format: Option<SampleFormat>,
@@ -539,6 +542,20 @@ impl AlsaBackend {
                 },
             )
         } else {
+            // This whole content-lane open (through the plain `.with_context`
+            // calls below, deliberately NOT `final_sink_startup`) is exit-1 /
+            // restart-loop class, never the EX_CONFIG 78 park — see
+            // `FinalSinkStartupConfigError`'s doc above for why an ordinary
+            // content-lane open failure is a routine transient (CamillaDSP has
+            // not yet opened its half of the snd-aloop pair) on every boot and
+            // every deploy, not a fault a restart cannot fix. Marking it
+            // park-class would convert that routine wait into a no-retry
+            // silent speaker. The one case this open actually races a WIDTH
+            // change, not just ordering, is guarded on the deploy side
+            // instead: `release_camilla_content_lane_for_format_flip` in
+            // `deploy/lib/install/systemd-units.sh` stops the old CamillaDSP
+            // before outputd restarts, exactly when the content lane's format
+            // is about to move under it.
             let content =
                 PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
                     format!("opening outputd content capture PCM {}", config.content_pcm)
@@ -552,8 +569,12 @@ impl AlsaBackend {
                 channels: config.content_channels,
                 // Camilla's post-DSP loopback lane — its own declared hop, NOT
                 // the hardware edge and not outputd's internal program width.
-                // Defaults to S16_LE (every box today); `configure_pcm`'s
-                // content readback proves what the lane installed.
+                // Every box now declares S32_LE here unless its fan-in
+                // coupling is shm_ring, or it carries the i16-only rate_match
+                // content bridge (jasper-audio-hardware-reconcile emits this
+                // per coupling, narrowing for either case); unset/blank still
+                // falls back to S16_LE. `configure_pcm`'s content readback
+                // proves what the lane installed.
                 format: config.content_format,
                 buffer_frames: config.content_buffer_frames,
                 manual_start: false,
@@ -1477,12 +1498,14 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // a genuine second proof of what got installed.
         //
         // The PASSIVE lane (`outputd_content_*`) is `type plug` over a slave
-        // that pins `format S16_LE` today, so this readback proves the CLIENT
+        // that pins `format S32_LE` now, so this readback proves the CLIENT
         // EDGE ONLY: a plug installs the client's own request client-side and
         // converts on the slave side, so it agrees BY CONSTRUCTION and cannot
-        // see the slave's width. Re-pinning those slaves is a later step of the
-        // wide-output-path program; the slave-edge proof is the asound wiring
-        // test over there, not this Rust check.
+        // see the slave's width. The slaves ARE re-pinned (the earlier "later
+        // step of the wide-output-path program" is done); the slave-edge proof
+        // is `tests/test_outputd_wiring.py::
+        // test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop`, not
+        // this Rust check.
         //
         // ONE `final_sink_startup` covers the WHOLE readback — the hw_params and
         // format reads as well as the comparison. Marking only the comparison

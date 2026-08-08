@@ -62,10 +62,14 @@ pub struct OutputdState {
     content_pcm: String,
     /// The DECLARED format of the post-DSP content lane — what the box says
     /// outputd should ask CamillaDSP's snd-aloop lane for (`Config::
-    /// content_format`; today always its `S16_LE` default, since no writer
-    /// emits the name yet). It is what `content.format` reports only UNTIL
-    /// outputd opens that lane; the fake backend and the SHM-ring source never
-    /// do, so there it is the whole answer.
+    /// content_format`, set from `config.content_format.as_str()`). The
+    /// reconciler (`jasper-audio-hardware-reconcile`) emits this key per
+    /// coupling now — `S32_LE` on `loopback`, `S16_LE` on `shm_ring` or a
+    /// `rate_match` content bridge — so `S16_LE` remains the value here for
+    /// an unreconciled box, the ring, or that bridge, not "today always". It
+    /// is what `content.format` reports only UNTIL outputd opens that lane;
+    /// the fake backend and the SHM-ring source never do, so there it is the
+    /// whole answer.
     declared_content_format: String,
     /// The format the content lane actually NEGOTIATED, read back from the
     /// installed `hw_params` (`SampleFormat::as_str`, hence `&'static str`).

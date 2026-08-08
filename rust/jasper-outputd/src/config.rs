@@ -146,11 +146,16 @@ pub struct Config {
     /// one axis off the other would silently mis-declare whichever hop the box
     /// did not name.
     ///
-    /// Unset or blank == the historical `S16_LE` lane, which is EVERY box
-    /// today: nothing writes `JASPER_OUTPUTD_CONTENT_FORMAT` yet (the
-    /// reconciler emit and the asound slave re-pin land together, later in the
-    /// wide-output-path program), so absence is the byte-identical default and
-    /// the only value any live speaker resolves.
+    /// Unset or blank falls back to `S16_LE` — the pre-flip default, not the
+    /// live value on a reconciled box.
+    /// `deploy/bin/jasper-audio-hardware-reconcile` emits this key on every
+    /// box, ahead of the per-hardware branches, resolved per coupling by
+    /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` on
+    /// the `loopback` coupling (the passive lane's slaves are re-pinned to
+    /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring` or
+    /// when the box carries the i16-only `rate_match` content bridge.
+    /// Absence now means a box that has not yet reconciled (fresh install) or
+    /// whose probe could not run — not "every box".
     pub content_format: SampleFormat,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind
@@ -448,10 +453,13 @@ impl Config {
         // hardware edge's, and the two are independent by design (an S32
         // content lane into an S16-only dongle edge is a supported shape).
         //
-        // Unset or blank == the historical S16_LE lane. That is every live box
-        // today: no writer emits this name yet, so the default is what every
-        // speaker resolves and this whole axis is byte-identical until the
-        // reconciler starts declaring it.
+        // Unset or blank falls back to the historical S16_LE lane, but that is
+        // no longer every live box: jasper-audio-hardware-reconcile emits this
+        // name on every box now, resolved per coupling (S32_LE on loopback,
+        // S16_LE on shm_ring or a rate_match content bridge — see
+        // jasper.fanin_coupling.content_lane_format_for_coupling). The axis is
+        // no longer byte-identical on deploy; absence now means unreconciled
+        // or probe-unavailable, not "nothing writes it".
         let content_format = match env_str("JASPER_OUTPUTD_CONTENT_FORMAT", "").trim() {
             "" | "S16_LE" => SampleFormat::S16Le,
             "S32_LE" => SampleFormat::S32Le,
@@ -629,11 +637,20 @@ impl Config {
         // EXACT — the samples were widened from S16 in the first place — but on a
         // wide lane it would be a real requantization, a SECOND quantization on a
         // path whose whole contract is that there is exactly one, at the DAC edge.
-        // Refuse the pairing at startup rather than lose bits quietly. (Not a
-        // reachable production combination: `rate_match` is opt-in and no writer
-        // emits a wide content format yet. It is refused anyway because the
-        // alternative is a silent quality regression whose only symptom would be
-        // sound.)
+        // Refuse the pairing at startup rather than lose bits quietly. No
+        // AUTOMATED writer constructs this pair: jasper-audio-hardware-
+        // reconcile narrows the content format to S16_LE itself whenever it
+        // finds `rate_match` armed, any of its four accepted spellings
+        // (`event=...content_format_narrowed`). But jasper-outputd.service has
+        // no ExecStartPre reconcile, so an operator who hand-sets
+        // JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match on a box still holding a
+        // wide JASPER_OUTPUTD_CONTENT_FORMAT and runs a direct `systemctl
+        // restart jasper-outputd` DOES construct the pair. This bail is what
+        // catches that (exit 78, EX_CONFIG); jasper-outputd-failure-reconcile's
+        // ExecStopPost matches status 78, runs one rate-limited reconcile that
+        // narrows the format for all four rate_match spellings, and restarts —
+        // so this bail guards a real hand-edit path, not dead code, and the
+        // exit-78 path is what heals it.
         if content_bridge_mode == ContentBridgeMode::RateMatch
             && content_format != SampleFormat::S16Le
         {
@@ -1561,10 +1578,13 @@ mod tests {
 
     #[test]
     fn content_format_defaults_to_s16_when_unset_or_blank() {
-        // Unset is EVERY live box: no writer emits this name yet. Explicit-empty
-        // is the shape a future writer uses when it has nothing to declare, so
-        // both resolve to the historical S16_LE content lane — this default is
-        // what makes the whole axis byte-identical on deploy.
+        // Unset/explicit-empty is the pre-flip fallback, not every live box:
+        // jasper-audio-hardware-reconcile now emits a definitive value (S32_LE
+        // or S16_LE, per coupling) on every reconciled box. This default is
+        // what an unreconciled box (fresh install) or a failed-probe pass (key
+        // left alone — event=audio_hardware_reconcile.content_format_skip)
+        // resolves to. The test itself is still correct — the default really
+        // is S16 — only the old "every box" framing was wrong.
         for value in [None, Some(""), Some("   ")] {
             with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", value)], || {
                 let cfg = Config::from_env().unwrap();
