@@ -83,7 +83,11 @@ def probe_aec_ref_path() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — renderers idle", "ok", f"active_source={active!r}"
         ))
-    except (control.ControlError, json.JSONDecodeError) as exc:
+    except (
+        control.ControlError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as exc:
         results.append(CheckResult(
             "probe — renderers idle", "fail",
             f"jasper-control /state unavailable or malformed ({exc}); "

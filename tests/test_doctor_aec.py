@@ -96,8 +96,9 @@ def _active_probe_run_recorder():
     [
         doctor.aec_probe.control.ControlError("connection refused"),
         json.JSONDecodeError("invalid JSON", "not-json", 0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
     ],
-    ids=["control-unreachable", "malformed-json"],
+    ids=["control-unreachable", "malformed-json", "invalid-utf8"],
 )
 def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error):
     calls, fake_run = _active_probe_run_recorder()
