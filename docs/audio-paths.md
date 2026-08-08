@@ -611,12 +611,16 @@ rather than being pre-verified if unsupported. Declaring it lets outputd's
 i32 program spine reach the DAC with zero narrowing where an undithered
 16-bit requantization used to crackle on decay tails. DAC8x Studio's
 registry entry declares `S16_LE`, unchanged: it shares
-the base DAC8x's `dtoverlay` and DAC-chip family, but no lab unit exists to
+the base DAC8x's DAC-chip family, but no lab unit exists to
 run the same hardware probe, so the registry does not flip it on inference
-alone — though a Studio board sharing the base profile's card label is
-classified `hifiberry_dac8x` and inherits `S32_LE` regardless (a
-driver-derived-label routing gap, tracked as a follow-up): the declaration
-is the program's norm, not a routing guarantee. For every declaring
+alone. The two boards do NOT share an overlay or a driver — the Studio has
+its own `hifiberry-studio-dac8x` overlay and machine driver (raspberrypi/linux,
+2026-01-15) — and the base profile now matches only the one card name its
+own driver emits, so Studio silicon is no longer classified `hifiberry_dac8x`
+and no longer inherits `S32_LE` (#2250). Two residuals stay documented: a
+Studio board configured with the base overlay is genuinely indistinguishable,
+and on rpi-6.18.y and later the Studio family shares one card name, so a
+Studio DAC8x parks as `unknown` (#2258). For every declaring
 profile, outputd requests that format directly
 on the raw `hw:` open and writes its i32 program straight through at that
 edge (its internal program spine is i32, so an S32 edge converts nothing);
@@ -746,7 +750,12 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-08 (the DAC8x final-edge paragraph corrected: the
+Last verified: 2026-08-08 (DAC8x Studio routing corrected against the kernel —
+the Studio board has its own `hifiberry-studio-dac8x` overlay and machine
+driver, not the base board's, and the base profile's card-label regexes were
+narrowed to the one name its driver emits so Studio silicon no longer inherits
+the base row's `S32_LE` edge and approved chip-AEC status, #2250; the DAC8x
+final-edge paragraph corrected: the
 base HiFiBerry DAC8x now also declares an `S32_LE` edge alongside InnoMaker
 — wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware probe
 2026-08-07 — and DAC8x Studio's deliberate non-flip re-stated against the

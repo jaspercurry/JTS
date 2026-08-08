@@ -388,11 +388,23 @@ HIFIBERRY_DAC8X = DacProfile(
     clock_domain_contract="single_device",
     outputd_sink="alsa",
     connection="i2s",
-    supported_card_matches=(
-        "snd_rpi_hifiberry_dac8x(?!.*studio)",
-        "hifiberry.*dac8x(?!.*studio)",
-        r"\bdac8x\b(?!.*studio)",
-    ),
+    # Exactly the one string the kernel emits for this board, and nothing
+    # fuzzier. `rpi-simple-soundcard.c` binds compatible
+    # `hifiberry,hifiberry-dac8x` to `drvdata_hifiberry_dac8x`, whose
+    # `.card_name` is this literal; the ADC8x-detected path renames only the
+    # DAI, never the card. So no kernel produces a bare "DAC8x" or a loose
+    # "hifiberry … dac8x" card label for this profile.
+    #
+    # The previous family patterns (`hifiberry.*dac8x`, `\bdac8x\b`) matched
+    # labels no driver emits while swallowing every real Studio label: a
+    # trailing `(?!.*studio)` only excludes "studio" AFTER the match, and the
+    # kernel puts "Studio" BEFORE "DAC8x" ("HiFiBerry Studio DAC8x"). That
+    # ordering mismatch is what routed real Studio silicon into this profile
+    # and silently handed it this row's `chip_aec_qualification="approved"`
+    # and `final_edge_format="S32_LE"` (#2250). Narrowing to the emitted
+    # literal removes the whole fuzzy-family class rather than adding a
+    # second lookahead to it.
+    supported_card_matches=(r"\bsnd_rpi_hifiberry_dac8x\b",),
     # The DAC-agnostic active-output transport (Stage 1) can now carry a
     # coherent single DAC of any width, so the 8-channel DAC8x rides the
     # active-crossover lane end-to-end. The transport builds an identity
@@ -448,9 +460,24 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     clock_domain_contract="single_device",
     outputd_sink="alsa",
     connection="i2s",
+    # Both token orders, because the kernel and HiFiBerry disagree on it: the
+    # driver emits "HiFiBerry Studio DAC8x" (studio first) while HiFiBerry's
+    # own product naming is "DAC8x Studio". Deliberately NOT `\b`-bounded
+    # around the tokens, so the run-together slug forms both match
+    # ("StudioDAC8x", "DAC8XStudio") — an ALSA card id is stripped to
+    # alphanumerics, so a slug is a shape this really can present in.
+    #
+    # `(?!.*\bpro\b)` excludes the Studio DAC8x PRO on purpose. The Pro is a
+    # different board with its own overlay (`hifiberry-studio-dac8x-pro`) and
+    # the OPPOSITE clock role — its overlay targets `i2s_clk_consumer` and
+    # sets `clk-provider`, so the CARD drives the I2S clocks rather than the
+    # Pi. Matching it here would hand it this row's clock-domain contract and
+    # overlay, which is the same silent-inheritance defect as #2250 one board
+    # over. No Pro exists in the fleet, so it routes to "unknown" and parks
+    # loudly instead of being quietly approximated.
     supported_card_matches=(
-        "dac8x.*studio",
-        "hifiberry.*dac8x.*studio",
+        r"^(?!.*\bpro\b).*studio.*dac8x",
+        r"^(?!.*\bpro\b).*dac8x.*studio",
     ),
     # Same active-lane shape as the base DAC8x: a coherent 8-channel single
     # device on the DAC-agnostic transport (Stage 1). dac_channel_map None =>
@@ -462,47 +489,59 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing "
         "calibration before arming production chip AEC"
     ),
-    dtoverlay="hifiberry-dac8x",
+    # The Studio has its OWN overlay — it does not share the base DAC8x's.
+    # `hifiberry-studio-dac8x-overlay.dts` binds compatible
+    # `hifiberry,hifiberry-studio-dac8x` to a dedicated machine driver
+    # (`sound/soc/bcm/hifiberry_studio_dac8x.c`), both added to
+    # raspberrypi/linux on 2026-01-15. HiFiBerry's own StudioDAC8x datasheet
+    # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
+    # the kernel is the authority for what a board actually presents.
+    #
+    # This field is read, not written: nothing here writes config.txt for a
+    # HiFiBerry (`render_i2s_hat_boot_config` is InnoMaker-only). It feeds
+    # `configured_i2s_overlays()`, the registered-overlay set USB port-role
+    # resolution intersects config.txt against — so with the wrong value a
+    # correctly-configured Studio box read as "no I2S HAT present".
+    dtoverlay="hifiberry-studio-dac8x",
     # NOT flipped to S32_LE alongside the base DAC8x above (wide-output-path
-    # PR-7), deliberately. HiFiBerry's published datasheets describe both
-    # boards as four 192kHz/24-bit Burr-Brown DAC chips on the SAME
-    # `dtoverlay=hifiberry-dac8x` kernel driver — they differ only in the
-    # analog output stage (balanced DB25 vs unbalanced RCA) and an added
-    # hardware volume-control chip, neither of which touches the digital I2S
-    # format this field declares. That makes the flip PLAUSIBLE but not
-    # PROVEN: the base DAC8x's S32 capability was confirmed by an
-    # `aplay --dump-hw-params` open test on real jts3 hardware (2026-08-07,
-    # wide-output-path plan §2 evidence base — NOT gate G0b, which is the
-    # separate snd-aloop `hw:Loopback` pair test); no DAC8x Studio unit
-    # exists in the lab fleet to run that same probe, and this program's own
-    # norm (see PR-8, D9) is a hardware gate before a format declaration,
-    # not inference from a shared overlay name. Flip this once that probe
-    # passes on real Studio hardware.
+    # PR-7), deliberately. The two boards share a DAC-chip family — HiFiBerry's
+    # datasheets describe both as four 192kHz/24-bit Burr-Brown DACs, differing
+    # in the analog output stage (balanced DB25 vs unbalanced RCA) and an added
+    # hardware volume-control chip, none of which touches the digital I2S format
+    # this field declares. That makes the flip PLAUSIBLE but not PROVEN: the base
+    # DAC8x's S32 capability was confirmed by an `aplay --dump-hw-params` open
+    # test on real jts3 hardware (2026-08-07, wide-output-path plan §2 evidence
+    # base — NOT gate G0b, which is the separate snd-aloop `hw:Loopback` pair
+    # test); no DAC8x Studio unit exists in the lab fleet to run that same probe,
+    # and this program's own norm (see PR-8, D9) is a hardware gate before a
+    # format declaration. Flip this once that probe passes on real Studio
+    # hardware. Note the boards do NOT share a driver, so a shared-family
+    # argument is now the only inference available — weaker than it looked when
+    # they were believed to share an overlay.
     #
-    # This is a stance on DECLARATION, not a guarantee about ROUTING — and
-    # the gap is not hypothetical. `profile_for_card_label` selects by regex
-    # against a DRIVER-DERIVED label (`output_hardware.py`:
-    # `label = product or proc_description or card_id`); an I2S HAT has no
-    # USB `product`, so this falls to the ALSA proc/card description, and
-    # both profiles share `dtoverlay="hifiberry-dac8x"` — nothing in that
-    # path is HiFiBerry's own "Studio DAC8x" naming order. REGISTRY tries
-    # the base profile first, and its regexes only exclude a label with
-    # "studio" AFTER "dac8x". Every label this repo already banks for this
-    # hardware (this file's own `supported_card_matches`,
-    # `docs/CHIP-AEC-EXPERIMENT.md`'s recorded identity,
-    # `tests/test_output_hardware.py`'s fixture) carries no "studio" token
-    # at all — the realistic driver-derived label WILL classify as
-    # `hifiberry_dac8x`, not this profile, and inherit S32_LE. It also
-    # inherits `chip_aec_qualification="approved"` from the base profile,
-    # silently dropping the needs-calibration flag declared below.
+    # KNOWN LIMITATION, dated 2026-08-08 (tracked as #2258): this profile is
+    # reachable by auto-detection on Trixie's rpi-6.12.y kernel, where the
+    # driver names the card "HiFiBerry Studio DAC8x". It is NOT reachable on
+    # rpi-6.18.y and later: commit 99c9dcd72 (2026-07-13) renamed that driver to
+    # `hifiberry_studio.c` and 8905174a9 gave it multi-card/Digi support, after
+    # which every board in the Studio family — the 8-channel Studio DAC8x and
+    # the 2-channel Studio Digi/AES alike — presents the single card name
+    # "Hifiberry Studio Soundcard", carrying no DAC8x token and no width. The
+    # kernel separates them only by an EEPROM UUID it never surfaces in the
+    # label. Matching that shared name here would let a 2-channel Digi be
+    # classified as this 8-channel profile, so this profile deliberately does
+    # not claim it: on those kernels a Studio DAC8x resolves to "unknown" and
+    # parks. Closing that needs a non-label discriminator (HAT EEPROM or the DT
+    # compatible), which is #2258's subject, not this row's.
     #
-    # No physical board is needed to resolve this: it is a question about
-    # the `dtoverlay`/label fields already in this file. Either
-    # `supported_card_matches` above is provably unreachable by
-    # auto-detection today (this profile only ever applies via a manual
-    # override), or that is the defect — the conductor is filing the
-    # detection-regex fix as a follow-up (whole-profile scope), not bundled
-    # into this data PR.
+    # One residual is irreducible by label matching: a Studio board configured
+    # with `dtoverlay=hifiberry-dac8x` (what HiFiBerry's datasheet still says)
+    # loads the base driver and presents the base card name, so it classifies as
+    # `hifiberry_dac8x` and inherits that row's S32_LE and approved chip-AEC.
+    # Nothing in a card label can distinguish that case — the box genuinely IS
+    # running the base driver. The base profile's own `supported_card_matches`
+    # comment records why the fuzzy matching that made this the DEFAULT outcome
+    # is gone.
     #
     # The misroute is not symmetric. Studio hardware classified as the base
     # profile declares S32_LE: outputd's `final_sink_startup` wrapper

@@ -476,11 +476,16 @@ What exists:
   DAC with zero narrowing where the crackle-causing undithered 16-bit
   requantization used to happen. DAC8x Studio's registry entry stays at the
   S16_LE default — no lab unit exists to run the same hardware probe, so
-  this program does not flip it on inference from the shared `dtoverlay`
-  alone — though a Studio board sharing the base profile's card label is
-  classified `hifiberry_dac8x` and inherits `S32_LE` regardless (a
-  driver-derived-label routing gap, tracked as a follow-up): the
-  declaration is the program's norm, not a routing guarantee. outputd
+  this program does not flip it on inference from a shared DAC-chip family
+  alone. The two boards do NOT share an overlay or a driver: the Studio has
+  its own `hifiberry-studio-dac8x` overlay and its own machine driver, added
+  to raspberrypi/linux 2026-01-15, and the base profile's regexes were
+  narrowed to the one card name its driver emits so Studio silicon can no
+  longer be classified `hifiberry_dac8x` and inherit `S32_LE` (#2250).
+  Two residuals are documented rather than closed: a Studio board configured
+  with the base overlay presents the base card name and is genuinely
+  indistinguishable, and on rpi-6.18.y and later the whole Studio family
+  shares one card name, so a Studio DAC8x parks as `unknown` (#2258). outputd
   REQUESTS the declared format on the raw `hw:` PCM and fails closed unless
   the installed `hw_params` report it, and writes its i32 program spine
   straight through at that edge (nothing is converted — an S32 edge is the
@@ -1757,7 +1762,14 @@ path — wide-output-path PR-8 — with the edge-conversion paragraph and the
 composite-egress sentence re-stated against the code, including that NO
 profile declares that width and that a composite refuses it; no live box
 resolves it, so it is vocabulary rather than a fleet change, and its hardware
-open-proof is owed; prior 2026-08-08 pass: the snd-aloop content lane widened to `S32_LE` — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`, the cutover seed, the `content_in` port shape, the INGRESS half of the boundary paragraph (its egress half is PR-5's composite-declared-width correction, merged the same day and carried through unchanged), the `rate_match` coherence emission and the plug-narrowing it introduces on a soak box, the NOT-rollback-symmetric rule for a flipped active-lane box (Current Outputd State), and the retained `S16_LE` v1.yml rollback path all re-stated against the code; an armed SHM ring keeps this hop at the ring's own `S16_LE` wire format; prior 2026-08-07 pass: outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+open-proof is owed. (3) DAC8x Studio ROUTING corrected against the kernel: the
+Studio board has its own `hifiberry-studio-dac8x` overlay and machine driver
+rather than the base board's, so the base profile's card-label regexes were
+narrowed to the single name its own driver emits and Studio silicon no longer
+inherits the base row's `S32_LE` edge or its approved chip-AEC status (#2250);
+two residuals stay documented rather than closed — a Studio board configured
+with the base overlay, and the shared Studio-family card name on rpi-6.18.y and
+later (#2258). Prior 2026-08-08 pass: the snd-aloop content lane widened to `S32_LE` — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`, the cutover seed, the `content_in` port shape, the INGRESS half of the boundary paragraph (its egress half is PR-5's composite-declared-width correction, merged the same day and carried through unchanged), the `rate_match` coherence emission and the plug-narrowing it introduces on a soak box, the NOT-rollback-symmetric rule for a flipped active-lane box (Current Outputd State), and the retained `S16_LE` v1.yml rollback path all re-stated against the code; an armed SHM ring keeps this hop at the ring's own `S16_LE` wire format; prior 2026-08-07 pass: outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the
