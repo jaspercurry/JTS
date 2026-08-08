@@ -346,9 +346,11 @@ def outputd_main_start_realtime(
       probe itself failed on what is a systemd host — WARN-logged, same as the
       two above.
 
-    Three of the four are anomalies rather than states, so they are logged: an
-    inert guard is otherwise invisible, and silence would look exactly like
-    success.
+    The middle two are unconditionally anomalies; the fourth splits between a
+    quiet branch (``FileNotFoundError``, a state like the first) and a
+    WARN-logged one (any other ``OSError``).  Every anomalous branch is
+    logged: an inert guard is otherwise invisible, and silence would look
+    exactly like success.
 
     The asymmetry against `_SystemctlTimeout` is deliberate.  A timeout means
     systemctl is unanswerable *while the flag is known-supported*, so there is no

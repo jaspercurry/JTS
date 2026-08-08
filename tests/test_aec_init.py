@@ -539,10 +539,11 @@ def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
 ) -> None:
     # Unlike FileNotFoundError above (no systemctl binary at all — not a
     # systemd host), a PermissionError means systemctl IS present but exec'ing
-    # it failed some other way on what IS a systemd host — one of the five
-    # OSError subtypes (EACCES here; also ENOEXEC/EAGAIN/ENOMEM) that a prior
-    # blanket `except OSError` swallowed silently (PR #2225 round-3 nit). This
-    # is worth surfacing, same as the other two WARN-logged anomalies.
+    # it failed some other way on what IS a systemd host — one of the
+    # non-ENOENT OSError subtypes (EACCES here; also ENOEXEC/EAGAIN/ENOMEM,
+    # ...) that a prior blanket `except OSError` swallowed silently (PR #2225
+    # round-3 nit). This is worth surfacing, same as the other two
+    # WARN-logged anomalies.
     def fake_run(_args, **_kwargs):
         raise PermissionError("systemctl")
 
