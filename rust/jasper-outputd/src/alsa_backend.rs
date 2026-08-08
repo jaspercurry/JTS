@@ -43,9 +43,9 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 /// whatever `Config` does: the match is over `SampleFormat`, so Rust requires an
 /// arm here, and the only alternatives to a loud refusal are a silent wrong arm
 /// (S16 read of a 3-byte lane — loud garbage at the speaker) or an `unreachable!`
-/// panic on the audio path, which this crate bans. Given the arm must exist and
-/// must bail, a second guard upstream would be a second owner of the same rule
-/// rather than a replacement for this one. And keeping the vocabulary's ONE parse
+/// panic on the audio path, which this crate's panic-freedom invariant forbids.
+/// Given the arm must exist and must bail, a second guard upstream would be a
+/// second owner of the same rule rather than a replacement for this one. And keeping the vocabulary's ONE parse
 /// point axis-symmetric is deliberate (see `config.rs`'s content-axis comment);
 /// making `from_env` reject per-axis would put format policy back into the parser
 /// that the enum exists to keep out of it. If a future reader disagrees, the thing
