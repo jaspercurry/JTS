@@ -35,9 +35,14 @@ from jasper.audio_hardware import dac as dac_registry
 # EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
+    QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
+    QueueMovedFromCommissioned,
     load_artifact,
     median_samples,
+    queue_median_drift,
+    queue_window_is_stable,
+    required_queue_samples,
     runtime_sys_delay,
 )
 from jasper.log_event import log_event
@@ -71,6 +76,52 @@ OUTPUTD_ENV_SETTLE_SEC = 10.0
 # as unknown: an unanswerable systemctl is not evidence that outputd is current.
 SYSTEMCTL_QUERY_TIMEOUT_SEC = 5.0
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
+# How many mix periods outputd may legitimately have in flight to the
+# chip-reference writer at the instant STATUS is read.  One write carries
+# exactly one mix period of audio at the chip's own rate, so in steady state it
+# cannot span more than one period of wall time: the writer holds at most the
+# period it is writing, and outputd can publish the next one before the writer
+# dequeues it.  This is a pipelining depth, not a cadence — it is the same at
+# every mix period, which is why a coarse cadence (where a write blocks for most
+# of a period, so STATUS lands mid-write about half the time) reads a lag of one
+# as often as zero.  A deeper backlog means the writer is losing ground on a
+# rate-locked producer, which the error counters and write ages then confirm.
+MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
+# Where the writer's own recent per-write observations live in STATUS, and the
+# keys one entry carries.  outputd publishes raw observations; every acceptance
+# rule over them is here and in jasper/chip_aec_alignment.py.
+RECENT_WRITES_KEY = "recent_writes"
+# How long to wait between STATUS reads.  Polling harder buys nothing: outputd's
+# state server is one thread that sleeps 500 ms between accepts and answers one
+# command per connection, so a sequential reader gets about two reads a second
+# whatever it asks for (measured on jts3: 11 reads in 5.14 s).  What makes a
+# window reachable at that rate is the ring — each read carries every write
+# since the last one, rather than the single latest reading.
+QUEUE_POLL_INTERVAL_SEC = 0.25
+# How long the reference queue has to hold still, independent of how many
+# readings that takes.  Sample count alone bounds the median's precision but
+# says nothing about drift: a queue walking steadily away from its start can
+# hold a narrow spread across a short window and still be worthless to K, which
+# is measured once and reused for months.  1.75 s is the span the pre-#2253
+# window covered (eight readings at its fixed 0.25 s poll leaves seven
+# intervals), rounded up, so the drift a fine-cadence box had to survive is
+# unchanged.
+QUEUE_MIN_WINDOW_SEC = 2.0
+# How far back the window reaches.  The window SLIDES: readings older than this
+# are dropped on every pass, so one outlier write ages out instead of holding
+# the spread — and with it the required reading count — up for the whole
+# collection budget.  Eight seconds is four times the minimum window, so a box
+# always has a window to offer, and it bounds the retained readings at the
+# finest cadence in the fleet (375 writes/s x 8 s = 3000 entries).
+#
+# It is also what caps how wide a spread a box can answer for, since the
+# retained count is cadence x this horizon: 375 readings at jts3's 46.9
+# writes/s supports a spread up to 109 frames against the 86 it measures, and
+# 3000 at jts.local's 375 writes/s supports 309 against 11.  A box past its cap
+# spends the whole collection budget and then fails with its own numbers —
+# naming the ceiling, not a reading shortfall a longer budget could close —
+# rather than quietly publishing a median it did not earn.
+QUEUE_WINDOW_MAX_SEC = 8.0
 REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
     "retry_count",
@@ -105,11 +156,25 @@ class _SystemctlTimeout(RuntimeError):
 
 
 @dataclass(frozen=True)
-class ReferenceSample:
+class ReferenceWrite:
+    """One completed chip-reference write, as outputd's writer observed it."""
+
     delay: int
+    # Cumulative frames_written AFTER this write, so it is strictly increasing
+    # across the ring and is the entry's identity.  The writer's priming write
+    # at PCM open carries no reference sequence, which is why the sequence is
+    # not the key.
     frames: int
-    sequence: int
+    sequence: int | None
+    age_ms: int
+
+
+@dataclass(frozen=True)
+class ReferenceSnapshot:
+    """What one STATUS read says about the chip-reference writer."""
+
     counters: tuple[int, ...]
+    writes: tuple[ReferenceWrite, ...]
 
 
 def _truthy(name: str) -> bool:
@@ -135,9 +200,61 @@ def _integer(value: object, name: str, *, positive: bool = False) -> int:
     return value
 
 
+def _reference_writes(writer: Mapping[str, Any]) -> tuple[ReferenceWrite, ...]:
+    """Parse the writer's recent per-write observations out of STATUS.
+
+    An outputd too old to publish the ring omits the key entirely.  Never
+    substitute the single latest reading for it: a reader capped at two STATUS
+    reads a second cannot assemble a window that way on any box, so guessing
+    would trade a loud refusal for a boot that burns its whole budget and then
+    blames the queue.  Same shape as `build_identity`'s `dac.format` refusal —
+    the box needs a newer outputd, and says so.
+
+    An EMPTY ring is not that: a writer that has just opened its PCM has
+    nothing to report yet, and the next read will.
+    """
+
+    entries = writer.get(RECENT_WRITES_KEY)
+    if not isinstance(entries, list):
+        raise ChipInitError(
+            "outputd STATUS has no chip-ref sample ring — deploy an outputd "
+            "that reports it before commissioning chip AEC"
+        )
+    writes: list[ReferenceWrite] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ChipInitError("outputd STATUS chip-ref sample ring is malformed")
+        sequence = entry.get("reference_sequence")
+        if sequence is not None and (type(sequence) is not int or sequence < 0):
+            raise ChipInitError(
+                "outputd STATUS chip-ref sample ring has an invalid reference_sequence"
+            )
+        writes.append(
+            ReferenceWrite(
+                _integer(
+                    entry.get("snd_pcm_delay_frames"),
+                    f"{RECENT_WRITES_KEY}.snd_pcm_delay_frames",
+                ),
+                _integer(
+                    entry.get("frames_written"),
+                    f"{RECENT_WRITES_KEY}.frames_written",
+                    positive=True,
+                ),
+                sequence,
+                _integer(entry.get("age_ms"), f"{RECENT_WRITES_KEY}.age_ms"),
+            )
+        )
+    if any(
+        later.frames <= earlier.frames
+        for earlier, later in zip(writes, writes[1:], strict=False)
+    ):
+        raise ChipInitError("outputd STATUS chip-ref sample ring is not in write order")
+    return tuple(writes)
+
+
 def validate_reference_status(
     status: Mapping[str, Any], *, expected_pcm: str
-) -> ReferenceSample:
+) -> ReferenceSnapshot:
     if status.get("backend") != "alsa":
         raise ChipInitError("outputd ALSA backend is not active")
     refs = _mapping(status.get("reference_outputs"), "reference_outputs")
@@ -161,21 +278,22 @@ def validate_reference_status(
         writer.get("desired") is not True
         or writer.get("active") is not True
         or writer.get("status") != "active"
-        or writer.get("reference_sequence_lag") != 0
     ):
         raise ChipInitError("native chip-reference writer is not current and active")
+    lag = _integer(writer.get("reference_sequence_lag"), "reference_sequence_lag")
+    if lag > MAX_REFERENCE_PERIODS_IN_FLIGHT:
+        raise ChipInitError(
+            f"native chip-reference writer is {lag} mix periods behind outputd"
+        )
     for name in ("snd_pcm_delay_sample_age_ms", "last_write_age_ms"):
         if _integer(writer.get(name), name) > 250:
             raise ChipInitError(f"native chip-reference writer {name} is stale")
-    mix = _mapping(status.get("mix"), "mix")
-    return ReferenceSample(
-        _integer(writer.get("snd_pcm_delay_frames"), "snd_pcm_delay_frames"),
-        _integer(writer.get("frames_written"), "frames_written", positive=True),
-        _integer(mix.get("reference_sequence"), "reference_sequence", positive=True),
+    return ReferenceSnapshot(
         tuple(
             _integer(writer.get(name), name)
             for name in REFERENCE_WRITER_COUNTER_NAMES
         ),
+        _reference_writes(writer),
     )
 
 
@@ -382,14 +500,77 @@ def require_outputd_env_loaded(
         time.sleep(interval)
 
 
+def _merge_writes(
+    window: list[tuple[float, ReferenceWrite]],
+    writes: Sequence[ReferenceWrite],
+    now: float,
+    floor: float,
+) -> list[tuple[float, ReferenceWrite]]:
+    """Fold one read's ring into the sliding window and drop what aged out.
+
+    Each observation is placed on the local monotonic clock from the age STATUS
+    reported for it.  Within one read those ages share a snapshot instant, so
+    the relative spacing is exact; across reads the only error is how long the
+    read itself took, which is milliseconds against a window measured in
+    seconds.
+
+    ``floor`` is the instant the window may reach back to.  It matters because
+    the ring is HISTORY: clearing the window after a seam (a moved error
+    counter, a restarted writer) would otherwise be undone by the very next
+    read, which hands back the same pre-seam observations.  The floor is set to
+    the instant a seam was seen, so what rebuilds the window is only what the
+    writer produced after it.
+
+    A ring whose newest write is older than the window's newest means the
+    writer's cumulative frame counter went backwards — outputd restarted and
+    built a new state under the poll, so readings from before and after belong
+    to different processes and no median spans them.
+    """
+
+    if writes and window and writes[-1].frames < window[-1][1].frames:
+        raise ChipInitError("chip-reference writer did not progress cleanly")
+    merged = list(window)
+    for write in writes:
+        # Entries at or below the newest already in the window were folded in by
+        # an earlier read; the rings of two reads overlap by design.
+        if merged and write.frames <= merged[-1][1].frames:
+            continue
+        merged.append((now - write.age_ms / 1_000, write))
+    # One filter, both jobs: nothing older than the sliding horizon, and nothing
+    # from before the floor.
+    horizon = max(now - QUEUE_WINDOW_MAX_SEC, floor)
+    return [item for item in merged if item[0] >= horizon]
+
+
 def collect_reference_queue(
     expected_pcm: str,
     *,
     socket_path: str = OUTPUTD_STATUS_SOCKET,
-    interval: float = 0.25,
+    interval: float = QUEUE_POLL_INTERVAL_SEC,
     timeout: float = 30.0,
 ) -> tuple[dict[str, Any], tuple[int, ...]]:
-    """Collect eight progressing samples with stable counters and queue."""
+    """Collect a run of per-write queue readings precise enough to carry K.
+
+    outputd records ``snd_pcm_delay`` once per completed chip-reference write
+    and publishes the recent ones as a ring, so a window is assembled from the
+    WRITER's observations rather than from however often this loop manages to
+    ask.  That is what makes the window reachable: outputd answers about two
+    STATUS reads a second, while its writer writes 47-375 times a second
+    depending on the mix cadence.
+
+    The window slides.  Every read folds in the fresh entries and drops anything
+    older than `QUEUE_WINDOW_MAX_SEC`, so a single outlier write leaves the
+    window on its own instead of holding the spread up until the budget runs
+    out.  It is accepted once it has spanned `QUEUE_MIN_WINDOW_SEC` AND
+    `queue_window_is_stable` holds — the median estimated as precisely as the
+    reference window's, and the two halves agreeing that it did not move.  Both
+    this acceptance and `runtime_sys_delay`'s re-validation call that one rule,
+    so boot cannot reject the window commissioning accepted.
+
+    A queue that will not settle fails inside the budget with its own numbers,
+    and logs them: a reference queue that cannot hold still cannot carry K, and
+    the operator needs to see which of the three conditions it missed.
+    """
 
     # Both consumers of a live STATUS — this oneshot and jasper-aec-commission —
     # funnel through here, and the queue positions returned below are as
@@ -400,31 +581,155 @@ def collect_reference_queue(
     require_outputd_env_loaded()
 
     deadline = time.monotonic() + timeout
-    accepted: list[ReferenceSample] = []
+    window: list[tuple[float, ReferenceWrite]] = []
+    # The counter baseline and the instant it was taken, as ONE value — the
+    # window's floor is that instant and nothing else, so the two cannot drift
+    # apart and there is no floor to plant before a baseline exists.
+    #
+    # It has to be the baseline instant rather than the collection's start.
+    # The ring is history: its oldest entries predate this read, and the error
+    # counters are cumulative, so a seam anywhere before the baseline was taken
+    # is one nothing can see — a reading admitted from before it would sit in
+    # an interval this loop never watched both ends of, and a step at the
+    # leading edge is invisible to the split-half drift bound by construction.
+    # With the floor here the invariant is exact: every retained reading lies
+    # between two instants at which the counters were observed equal, and a
+    # cumulative counter cannot tick in between and come back.  What the ring
+    # buys is not reach into the past — it is that no write made WHILE watching
+    # is missed at two reads a second.
+    baseline: tuple[tuple[int, ...], float] | None = None
+    status_reads = 0
     last_error = "no STATUS response"
     while time.monotonic() < deadline:
         try:
             status = read_status_socket(socket_path)
-            sample = validate_reference_status(status, expected_pcm=expected_pcm)
-            if accepted and (
-                sample.frames <= accepted[-1].frames
-                or sample.sequence <= accepted[-1].sequence
-                or sample.counters != accepted[0].counters
-            ):
-                raise ChipInitError("chip-reference writer did not progress cleanly")
+            # Sampled AFTER the read on purpose.  outputd's state server sleeps
+            # up to its accept poll BEFORE it takes the snapshot, so that wait
+            # precedes the observation rather than following it; what separates
+            # this instant from the snapshot is only building, writing and
+            # reading the reply.  Sampling before the read would carry the whole
+            # accept wait into the placement instead, and would move the floor
+            # EARLIER — the loosening direction on both counts.  The bias is
+            # measured in tests/test_aec_init.py against a fixture that models
+            # the server's real order (accept wait, snapshot, reply).
+            now = time.monotonic()
+            status_reads += 1
+            snapshot = validate_reference_status(status, expected_pcm=expected_pcm)
+            if baseline is None:
+                baseline = (snapshot.counters, now)
+                window = []
+            elif snapshot.counters != baseline[0]:
+                raise ChipInitError("chip-reference writer error counters moved")
+            window = _merge_writes(window, snapshot.writes, now, baseline[1])
         except (OSError, ValueError, ChipInitError) as exc:
-            accepted.clear()
+            # An xrun, a reopen, or a restart splits the readings on either side
+            # of it into different pipeline states, so the window starts over
+            # and waits for a fresh baseline — which carries the floor past the
+            # seam, or the next read's ring would hand the discarded pre-seam
+            # observations straight back.
+            window = []
+            baseline = None
             last_error = str(exc)
         else:
-            accepted.append(sample)
-            if len(accepted) == 8:
-                delays = tuple(item.delay for item in accepted)
-                if max(delays) - min(delays) <= 16:
-                    return status, delays
-                accepted.clear()
-                last_error = "chip-reference queue is unstable"
+            delays = tuple(item.delay for _at, item in window)
+            held = _window_span(window)
+            if held >= QUEUE_MIN_WINDOW_SEC and queue_window_is_stable(delays):
+                _log_reference_queue(
+                    "stable",
+                    delays=delays,
+                    held=held,
+                    status_reads=status_reads,
+                    interval=interval,
+                )
+                return status, delays
+            last_error = _queue_shortfall(delays, held)
         time.sleep(interval)
+    _log_reference_queue(
+        "unstable",
+        delays=tuple(item.delay for _at, item in window),
+        held=_window_span(window),
+        status_reads=status_reads,
+        interval=interval,
+        # The reason travels in the event too: a refusal whose numbers are all
+        # zero (an outputd with no ring, a writer that never went active) is
+        # indistinguishable from any other under the instrument otherwise.
+        reason=last_error,
+        level=logging.WARNING,
+    )
     raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
+
+
+def _window_span(window: Sequence[tuple[float, ReferenceWrite]]) -> float:
+    """How long the retained readings span, on the local monotonic clock."""
+
+    if not window:
+        return 0.0
+    instants = [at for at, _write in window]
+    return max(instants) - min(instants)
+
+
+def _log_reference_queue(
+    outcome: str,
+    *,
+    delays: Sequence[int],
+    held: float,
+    status_reads: int,
+    interval: float,
+    reason: str = "",
+    level: int = logging.INFO,
+) -> None:
+    """Record the window one collection closed on — including the ones it did not.
+
+    A refusal is the case this instrument was built for, and it needs the
+    covariate that separates "the queue would not hold still" from "the reader
+    could not sample it": how many STATUS reads it actually got, at what poll
+    interval, for how many readings.
+    """
+
+    spread = max(delays) - min(delays) if delays else 0
+    fields: dict[str, Any] = {
+        "outcome": outcome,
+        "samples": len(delays),
+        "spread": spread,
+        "required": required_queue_samples(spread) if delays else 0,
+        "median": median_samples(delays) if delays else 0,
+        "median_drift": queue_median_drift(delays),
+        "held_sec": round(held, 2),
+        "status_reads": status_reads,
+        "poll_interval_ms": round(interval * 1_000, 1),
+    }
+    if reason:
+        fields["reason"] = reason
+    log_event(logger, "chip_aec_init.reference_queue", level=level, **fields)
+
+
+def _queue_shortfall(delays: Sequence[int], held: float) -> str:
+    if not delays:
+        return "chip-reference writer has published no queue readings yet"
+    spread = max(delays) - min(delays)
+    required = required_queue_samples(spread)
+    # The window slides, so the readings it can ever hold are this box's write
+    # rate times the retention horizon — no matter how much budget is left.
+    # Reporting a plain reading shortfall when the required count is past that
+    # ceiling would send an operator looking for a longer budget that can never
+    # close it: the queue is simply wider than this output cadence can carry K
+    # at.  The rate comes from the window's own readings, so no cadence is
+    # assumed here.
+    reachable = len(delays) / held * QUEUE_WINDOW_MAX_SEC if held > 0 else 0.0
+    if reachable and required > reachable:
+        return (
+            f"chip-reference queue spread {spread} needs {required} readings, "
+            f"more than the {reachable:.0f} this cadence produces inside the "
+            f"{QUEUE_WINDOW_MAX_SEC:g}s retention window; the queue is wider "
+            "than this output cadence can carry K at"
+        )
+    return (
+        f"chip-reference queue spread {spread} needs "
+        f"{required} readings over "
+        f"{QUEUE_MIN_WINDOW_SEC:g}s with its halves within "
+        f"{QUEUE_MAX_MEDIAN_DRIFT} frames; held {len(delays)} over "
+        f"{held:.1f}s with halves {queue_median_drift(delays)} apart"
+    )
 
 
 def _chip_text(dev, name: str) -> str:
@@ -640,7 +945,19 @@ def main() -> int:
             if artifact.identity != identity:
                 raise CommissionRequired("artifact identity does not match live hardware")
             try:
-                delay = runtime_sys_delay(artifact.k_samples, queue)
+                delay = runtime_sys_delay(
+                    artifact.k_samples,
+                    queue,
+                    commissioned_sys_delay=artifact.sys_delay,
+                )
+            except QueueMovedFromCommissioned as exc:
+                # Not a fault to inspect: the live reference queue no longer
+                # sits where it did when this artifact was measured, so the
+                # artifact does not describe this box any more. That is the
+                # recommission case, and it is already a recoverable park —
+                # sending the household at "inspect jasper-aec-init and
+                # outputd" would be sending them at a healthy daemon.
+                raise CommissionRequired(str(exc)) from exc
             except ValueError as exc:
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)
@@ -649,9 +966,11 @@ def main() -> int:
                 "chip_aec_init",
                 outcome="ready",
                 sys_delay=delay,
+                commissioned_sys_delay=artifact.sys_delay,
                 k_samples=artifact.k_samples,
                 queue_median=median_samples(queue),
                 queue_spread=max(queue) - min(queue),
+                queue_samples=len(queue),
             )
         elif mode == "corpus":
             plan = xvf3800.chip_beam_plan_from_env(os.environ)

@@ -203,6 +203,42 @@ def test_outputd_status_exposes_aec_timing_observability_keys():
         assert key in emitted, f"outputd STATUS no longer emits {key!r}"
 
 
+def test_outputd_publishes_the_chip_ref_sample_ring_aec_init_needs():
+    """The chip-ref writer's per-write observation ring (#2253).
+
+    This is the one STATUS surface whose ABSENCE is a hard refusal rather than
+    a blank card: `jasper-aec-init` cannot assemble a K window from the single
+    latest reading at outputd's ~2 reads/s, so a missing ring parks the box
+    with "deploy an outputd that reports it". That makes the seam load-bearing
+    in both directions — the key names, and the ring capacity the Python-side
+    test fixtures model outputd with.
+    """
+
+    state_rs = OUTPUTD_STATE_RS.read_text()
+    aec_init = (REPO / "jasper" / "cli" / "aec_init.py").read_text()
+    emitted = _rust_emitted_json_keys(OUTPUTD_STATE_RS)
+    for key in ("recent_writes", "recent_writes_capacity", "age_ms"):
+        assert key in emitted, f"outputd STATUS no longer emits {key!r}"
+    for key in ("age_ms", "frames_written", "snd_pcm_delay_frames"):
+        assert f'"{key}"' in aec_init, f"aec_init no longer reads {key!r}"
+    assert 'RECENT_WRITES_KEY = "recent_writes"' in aec_init
+
+    capacity = re.search(
+        r"pub const CHIP_REF_RECENT_WRITES: usize = (\d+);", state_rs
+    )
+    assert capacity, "outputd no longer declares its chip-ref ring capacity"
+    fixture = re.search(
+        r"^RING_CAPACITY = (\d+)$",
+        (REPO / "tests" / "test_aec_init.py").read_text(),
+        re.MULTILINE,
+    )
+    assert fixture, "tests/test_aec_init.py no longer models the ring capacity"
+    assert capacity.group(1) == fixture.group(1), (
+        "tests/test_aec_init.py stands in for outputd; its ring capacity must "
+        "match rust/jasper-outputd/src/state.rs CHIP_REF_RECENT_WRITES"
+    )
+
+
 def test_fanin_control_command_vocabulary_matches_mux():
     """mux drives fan-in's source gate over the UDS with a one-line text
     command. Pin the verbs on both sides, plus the error-shape key mux

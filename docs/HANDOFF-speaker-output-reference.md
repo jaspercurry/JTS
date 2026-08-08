@@ -850,7 +850,18 @@ What exists:
   `reference_outputs.chip_ref_writer.*` report DAC presentation delay,
   chip-ref queue depth, ALSA write progress/delay, drop/xrun/recovery
   counts, and reference-sequence lag. Details and field units live in
-  [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md). The
+  [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md).
+  `chip_ref_writer.recent_writes` is the one field there a consumer
+  cannot degrade past: a bounded ring (`recent_writes_capacity`, 256)
+  of the writer's own recent per-write observations —
+  `frames_written`, `snd_pcm_delay_frames`, `reference_sequence`,
+  `age_ms`, oldest first. `jasper-aec-init` resolves the chip-AEC
+  `SYS_DELAY` from a run of those readings and cannot assemble one from
+  the single latest value at this thread's ~2 reads/s, so an outputd
+  that does not publish it parks the box by name. outputd reports raw
+  observations only; every acceptance rule over them lives in
+  `jasper/cli/aec_init.py` and `jasper/chip_aec_alignment.py`. See
+  [HANDOFF-aec.md](HANDOFF-aec.md) "K lifecycle". The
   optional `JASPER_OUTPUTD_CHIP_REF_TEE_PATH` raw-sample tee is
   diagnostic only, should point under `/run/jasper-outputd` or
   `/var/lib/jasper` in the packaged systemd sandbox, and must not be
@@ -1781,14 +1792,20 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-08 (SCOPED — the most recent pass re-read only the four
-passages the content-lane park touches: the restart-policy paragraph, the
-width-mismatch and initial-final-sink-failure failure-mode bullets, and the
-pre-flip rollback runbook's stated consequence, re-stated against
+Last verified: 2026-08-08 (SCOPED — the most recent pass re-read only the
+STATUS-payload passage, which now also documents the chip-reference writer's
+bounded per-write observation ring `chip_ref_writer.recent_writes`: the one
+STATUS field whose absence is a hard refusal rather than a blank surface, since
+`jasper-aec-init` resolves chip-AEC `SYS_DELAY` from it (#2253). Re-stated
+against `rust/jasper-outputd/src/state.rs` and `jasper/cli/aec_init.py`;
+nothing else in the file was re-read in that pass. A prior same-day pass
+re-read only the four passages the content-lane park touches: the
+restart-policy paragraph, the width-mismatch and
+initial-final-sink-failure failure-mode bullets, and the pre-flip rollback
+runbook's stated consequence, re-stated against
 `deploy/bin/jasper-outputd-failure-reconcile` and
-`deploy/systemd/jasper-outputd.service`. Nothing else in the file was re-read
-in that pass; the same-day entries below stand on their own. Two changes to the
-FINAL-EDGE hop landed the same
+`deploy/systemd/jasper-outputd.service`; the same-day entries below stand on
+their own. Two changes to the FINAL-EDGE hop landed the same
 day — a SEPARATE hop and a separate env var [`JASPER_OUTPUTD_DAC_FORMAT`] from
 the content-lane `S32_LE` flip described below
 [`JASPER_OUTPUTD_CONTENT_FORMAT`]. (1) The DAC output paragraph corrected: the

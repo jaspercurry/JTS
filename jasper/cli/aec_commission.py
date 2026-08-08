@@ -193,12 +193,23 @@ def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, A
             product = io.product(
                 dev, hardware, choice.sys_delay, stimulus, active, directory
             )
-            artifact = AlignmentArtifact(identity, choice.sys_delay + queue_median)
+            artifact = AlignmentArtifact(
+                identity, choice.sys_delay + queue_median, choice.sys_delay
+            )
             evidence: dict[str, Any] = {
                 "sys_delay": choice.sys_delay,
                 "k_samples": artifact.k_samples,
                 "queue_median": queue_median,
+                # The window taken BEFORE the final timing, and how far the
+                # median moved between the two.  The +/-2 check above is the
+                # only place K's median term is cross-checked against a second
+                # measurement, so its actual margin has to be in the record —
+                # a spread means nothing without the count it came from, and a
+                # tolerance means nothing without the delta it passed by.
+                "queue_median_before": before_median,
+                "queue_median_delta": queue_median - before_median,
                 "queue_spread": max(after.samples) - min(after.samples),
+                "queue_samples": len(after.samples),
                 "lags": lags,
                 "center": center,
                 "worst_edge_margin": margin,

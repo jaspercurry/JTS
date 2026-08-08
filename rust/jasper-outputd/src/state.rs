@@ -55,6 +55,91 @@ pub struct ChipRefWrite {
     pub write_failed: bool,
 }
 
+/// How many of the chip-reference writer's most recent completed writes STATUS
+/// reports under `reference_outputs.chip_ref_writer.recent_writes`.
+///
+/// The reader is `jasper-aec-init`, which needs a RUN of per-write
+/// `snd_pcm_delay` readings to resolve `SYS_DELAY = K - median(live queue)`.
+/// It cannot get that run by polling: this state server is a single thread that
+/// sleeps `ACCEPT_POLL_INTERVAL` between accepts and answers one command per
+/// connection, which caps a sequential reader at about two reads a second
+/// (measured on jts3: 11 reads in 5.14 s). Publishing the writer's own recent
+/// observations decouples how fast the reader polls from how many readings it
+/// sees, so one read carries seconds of history.
+///
+/// What the ring has to cover is the GAP BETWEEN two reads, since the reader
+/// only counts writes made while it was watching. 256 covers it at both ends of
+/// the fleet's mix cadences: 5.5 s at jts3's 1024-frame period (46.9 writes/s)
+/// and 0.68 s at jts.local's 128-frame period (375 writes/s), against a poll
+/// gap near 0.5 s. A reader that falls further behind than that thins its
+/// window rather than corrupting it — the cumulative error counters it compares
+/// read to read still span every gap. The ring is a fixed array inside the
+/// state object (256 x 32 B = 8 KiB, allocated once at construction), because
+/// outputd runs under `mlockall` and must not grow its resident set at runtime.
+pub const CHIP_REF_RECENT_WRITES: usize = 256;
+
+/// One completed chip-reference write, as the writer thread observed it.
+///
+/// Raw observations only: outputd reports what it saw and `jasper-aec-init`
+/// owns every acceptance rule over them. Duplicating the statistics here would
+/// give the window two definitions.
+#[derive(Debug, Clone, Copy)]
+struct ChipRefObservation {
+    /// outputd uptime at write completion. Published as an age relative to the
+    /// snapshot instant, which is the vocabulary the rest of this block uses.
+    uptime_ms: u64,
+    /// `snd_pcm_delay` read when this write returned.
+    delay_frames: u64,
+    /// Cumulative `frames_written` AFTER this write. Strictly increasing across
+    /// entries, so it is the writer's own identity for an observation — the
+    /// priming write at PCM open carries no reference sequence, so this is the
+    /// key that is always present.
+    frames_written: u64,
+    /// The mix period this write carried, or `OPTIONAL_U64_NONE` for the
+    /// priming write.
+    reference_sequence: u64,
+}
+
+/// Bounded ring of the most recent [`ChipRefObservation`]s, oldest first.
+struct ChipRefWriteRing {
+    entries: [ChipRefObservation; CHIP_REF_RECENT_WRITES],
+    len: usize,
+    next: usize,
+}
+
+impl ChipRefWriteRing {
+    fn new() -> Self {
+        Self {
+            entries: [ChipRefObservation {
+                uptime_ms: 0,
+                delay_frames: 0,
+                frames_written: 0,
+                reference_sequence: OPTIONAL_U64_NONE,
+            }; CHIP_REF_RECENT_WRITES],
+            len: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, observation: ChipRefObservation) {
+        self.entries[self.next] = observation;
+        self.next = (self.next + 1) % CHIP_REF_RECENT_WRITES;
+        if self.len < CHIP_REF_RECENT_WRITES {
+            self.len += 1;
+        }
+    }
+
+    /// Append the ring oldest-first. `out` must already own its capacity: this
+    /// runs under the ring lock, and the writer thread must never wait on the
+    /// state thread's heap allocator.
+    fn copy_into(&self, out: &mut Vec<ChipRefObservation>) {
+        let start = (self.next + CHIP_REF_RECENT_WRITES - self.len) % CHIP_REF_RECENT_WRITES;
+        for offset in 0..self.len {
+            out.push(self.entries[(start + offset) % CHIP_REF_RECENT_WRITES]);
+        }
+    }
+}
+
 pub struct OutputdState {
     started_at: Instant,
     backend: String,
@@ -190,6 +275,20 @@ pub struct OutputdState {
     chip_ref_tee_active: AtomicBool,
     chip_ref_tee_open_error_count: AtomicU64,
     chip_ref_tee_write_error_count: AtomicU64,
+    // The writer's own recent per-write observations (see
+    // `CHIP_REF_RECENT_WRITES`). Mutex on the same grounds as `sro_estimator`
+    // below: a small fixed struct with one writer (the chip-ref writer thread)
+    // and one reader (the state server), so the lock is uncontended and neither
+    // side allocates while holding it.
+    //
+    // It is NOT the same duty cycle, and that is the part worth stating: the
+    // SRO estimator is fed at ~1 Hz (decimated), this is pushed once per
+    // completed write — 47 Hz at a 1024-frame mix period, 375 Hz at 128, i.e.
+    // 50-375x more often. What keeps that fine is that the critical section is
+    // a 32-byte store into a fixed array with no allocation and no syscall,
+    // and the only contender is a /state read a couple of times a second which
+    // copies out and releases before it formats anything.
+    chip_ref_writes: Mutex<ChipRefWriteRing>,
     // Observe-only label (chip-AEC Layer 0): true when the reconciler armed
     // the chip-ref writer purely to MEASURE drift on the DAC playout clock (vs nominal)
     // (not for production chip-AEC). Set once at construction from config;
@@ -383,6 +482,7 @@ impl OutputdState {
             chip_ref_tee_active: AtomicBool::new(false),
             chip_ref_tee_open_error_count: AtomicU64::new(0),
             chip_ref_tee_write_error_count: AtomicU64::new(0),
+            chip_ref_writes: Mutex::new(ChipRefWriteRing::new()),
             chip_ref_observe: config.chip_ref_observe,
             sro_estimator: Mutex::new(SroEstimator::new()),
             sro_last_fed_chip_ref_frames: AtomicU64::new(0),
@@ -632,6 +732,20 @@ impl OutputdState {
                     .store(delay_frames, Ordering::Relaxed);
                 self.chip_ref_snd_pcm_delay_sample_ms
                     .store(uptime_ms, Ordering::Relaxed);
+                // Keep the observation itself, not just the latest value. A
+                // reader capped at ~2 STATUS reads/s cannot otherwise see a run
+                // of per-write readings on a box whose writer runs at 47-375 Hz
+                // (see `CHIP_REF_RECENT_WRITES`). Only writes that produced a
+                // delay reading are recorded — a write without one carries no
+                // observation. Uncontended lock, fixed array, no allocation.
+                if let Ok(mut ring) = self.chip_ref_writes.lock() {
+                    ring.push(ChipRefObservation {
+                        uptime_ms,
+                        delay_frames,
+                        frames_written: self.chip_ref_frames_written.load(Ordering::Relaxed),
+                        reference_sequence: reference_sequence.unwrap_or(OPTIONAL_U64_NONE),
+                    });
+                }
                 // Tick the passive SRO estimator here — the chip-ref delay is
                 // freshly sampled. Read the already-stored DAC counters; this
                 // never touches the audio path. A fresh chip-ref consumed
@@ -812,7 +926,10 @@ impl OutputdState {
     }
 
     pub fn snapshot_json(&self) -> String {
-        let mut buf = String::with_capacity(1024);
+        // Sized for the payload this actually builds: the chip-reference
+        // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
+        // a chip-AEC box, and 1 KiB meant a dozen reallocations per read.
+        let mut buf = String::with_capacity(32 * 1024);
         let uptime_ms = self.uptime_ms();
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
@@ -1530,6 +1647,21 @@ impl OutputdState {
         };
         let chip_ref_sequence_lag = chip_ref_last_written_sequence
             .map(|written| reference_sequence.saturating_sub(written));
+        // Reserve first, then copy under the lock: the chip-ref writer thread
+        // must never wait on this thread's allocator (same rule the SRO block
+        // below states for its own snapshot). The 8 KiB reservation is skipped
+        // entirely when the writer is not desired, which is every box that
+        // does not run chip AEC.
+        let mut chip_ref_recent_writes: Vec<ChipRefObservation> = if chip_ref_desired {
+            Vec::with_capacity(CHIP_REF_RECENT_WRITES)
+        } else {
+            Vec::new()
+        };
+        if chip_ref_desired {
+            if let Ok(ring) = self.chip_ref_writes.lock() {
+                ring.copy_into(&mut chip_ref_recent_writes);
+            }
+        }
         buf.push_str(r#""chip_ref_writer":{"#);
         push_kv_bool(&mut buf, "desired", chip_ref_desired);
         buf.push(',');
@@ -1677,6 +1809,39 @@ impl OutputdState {
             "diagnostic_tee_write_error_count",
             self.chip_ref_tee_write_error_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "recent_writes_capacity",
+            CHIP_REF_RECENT_WRITES as u64,
+        );
+        buf.push(',');
+        // Oldest first. Ages are relative to THIS snapshot, so the reader can
+        // place every observation on its own clock from one read.
+        buf.push_str(r#""recent_writes":["#);
+        for (index, observation) in chip_ref_recent_writes.iter().enumerate() {
+            if index > 0 {
+                buf.push(',');
+            }
+            buf.push('{');
+            push_kv_u64(&mut buf, "frames_written", observation.frames_written);
+            buf.push(',');
+            push_kv_u64(&mut buf, "snd_pcm_delay_frames", observation.delay_frames);
+            buf.push(',');
+            push_kv_u64_opt(
+                &mut buf,
+                "reference_sequence",
+                unpack_optional_u64(observation.reference_sequence),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "age_ms",
+                uptime_ms.saturating_sub(observation.uptime_ms),
+            );
+            buf.push('}');
+        }
+        buf.push(']');
         buf.push('}');
         buf.push(',');
         push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
@@ -3047,6 +3212,148 @@ mod tests {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
         assert!(!j.contains(r#""last_write_age_ms":null"#), "{j}");
+    }
+
+    #[test]
+    fn snapshot_json_reports_the_chip_ref_writers_recent_observations() {
+        // jasper-aec-init resolves SYS_DELAY from a RUN of per-write
+        // snd_pcm_delay readings, and this state server answers about twice a
+        // second — far slower than the writer writes. The ring is how one read
+        // carries a run. Raw observations only: every acceptance rule over them
+        // lives in jasper/cli/aec_init.py.
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_chip_ref_writer_active(true);
+        // The priming write at PCM open carries no reference sequence, which is
+        // why `frames_written` and not the sequence is the entry's identity.
+        state.mark_chip_ref_write(ChipRefWrite {
+            frames_written: 128,
+            delay_frames: Some(400),
+            ..ChipRefWrite::default()
+        });
+        for sequence in 1..=3u64 {
+            state.mark_chip_ref_write(ChipRefWrite {
+                frames_written: 128,
+                delay_frames: Some(400 + sequence),
+                reference_sequence: Some(sequence),
+                ..ChipRefWrite::default()
+            });
+        }
+        // A write with no delay reading is no observation, so it must not
+        // become a ring entry.
+        state.mark_chip_ref_write(ChipRefWrite {
+            frames_written: 128,
+            delay_frames: None,
+            reference_sequence: Some(4),
+            ..ChipRefWrite::default()
+        });
+
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(&format!(
+                r#""recent_writes_capacity":{CHIP_REF_RECENT_WRITES}"#
+            )),
+            "{j}"
+        );
+        // Oldest first, cumulative frames_written strictly increasing.
+        assert!(
+            j.contains(
+                r#""recent_writes":[{"frames_written":128,"snd_pcm_delay_frames":400,"reference_sequence":null,"age_ms":"#
+            ),
+            "{j}"
+        );
+        assert!(
+            j.contains(r#""frames_written":256,"snd_pcm_delay_frames":401,"reference_sequence":1"#),
+            "{j}"
+        );
+        assert!(
+            j.contains(r#""frames_written":512,"snd_pcm_delay_frames":403,"reference_sequence":3"#),
+            "{j}"
+        );
+        // Four writes produced a delay reading, so the ring holds four entries
+        // — the fifth write had none and is therefore no observation.
+        let entries = j.matches(r#","age_ms":"#).count();
+        assert_eq!(entries, 4, "{j}");
+
+        // `age_ms` is relative to THIS snapshot, and the reader places every
+        // observation on its own clock from it. The load-bearing half of that
+        // is WHICH instant it is relative to, and there is an independent
+        // witness right beside it: the writer-level
+        // `snd_pcm_delay_sample_age_ms` is the age of the last write that
+        // produced a delay reading, which is the ring's newest entry (the
+        // fifth write above produced none). Both are `uptime_ms` minus the
+        // same stored instant, so they must be EQUAL — an age computed from
+        // any other base breaks this and nothing else here would notice.
+        //
+        // The oldest-first ordering is also asserted, but honestly: these four
+        // writes land inside one millisecond, so it is a shape check on the
+        // emission order rather than a timing one.
+        let ages = scan_u64_fields(&j, r#","age_ms":"#);
+        assert_eq!(ages.len(), 4, "{j}");
+        for pair in ages.windows(2) {
+            assert!(pair[0] >= pair[1], "ages must run oldest-first: {ages:?}");
+        }
+        // Scoped to the writer block: the DAC reports a field of the same name
+        // earlier in the snapshot, and it is `null` here because this test
+        // never marks a DAC delay.
+        let writer_block = &j[j.find(r#""chip_ref_writer":"#).unwrap()..];
+        let writer_age = scan_u64_fields(writer_block, r#""snd_pcm_delay_sample_age_ms":"#);
+        assert_eq!(writer_age.len(), 1, "{j}");
+        assert_eq!(
+            writer_age[0],
+            *ages.last().unwrap(),
+            "the newest ring entry and the writer-level delay sample are the \
+             same write, so their ages share one base: {j}"
+        );
+    }
+
+    /// Every `<needle><digits>` value in `text`, in order.
+    ///
+    /// Scans to the first non-digit rather than to a closing brace: a brace
+    /// CHAR literal is not a string literal, so the panic-freedom scanner's
+    /// brace counting would read one as ending this `#[cfg(test)]` module.
+    fn scan_u64_fields(text: &str, needle: &str) -> Vec<u64> {
+        text.match_indices(needle)
+            .map(|(at, found)| {
+                let rest = &text[at + found.len()..];
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                rest[..end].parse::<u64>().unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_chip_ref_write_ring_keeps_the_newest_entries_and_never_grows() {
+        // Fixed allocation is the contract: outputd runs under mlockall, so the
+        // ring evicts rather than growing. Eviction is also what keeps one
+        // outlier from sitting in the reader's window forever.
+        let mut ring = ChipRefWriteRing::new();
+        for index in 0..(CHIP_REF_RECENT_WRITES as u64 * 2 + 7) {
+            ring.push(ChipRefObservation {
+                uptime_ms: index,
+                delay_frames: index,
+                frames_written: index,
+                reference_sequence: index,
+            });
+        }
+        let mut out = Vec::with_capacity(CHIP_REF_RECENT_WRITES);
+        ring.copy_into(&mut out);
+
+        assert_eq!(out.len(), CHIP_REF_RECENT_WRITES);
+        let newest = CHIP_REF_RECENT_WRITES as u64 * 2 + 6;
+        assert_eq!(out[CHIP_REF_RECENT_WRITES - 1].frames_written, newest);
+        assert_eq!(
+            out[0].frames_written,
+            newest - CHIP_REF_RECENT_WRITES as u64 + 1
+        );
+        for pair in out.windows(2) {
+            assert!(pair[0].frames_written < pair[1].frames_written);
+        }
     }
 
     #[test]

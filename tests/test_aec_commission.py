@@ -87,9 +87,23 @@ class _FakeIO:
     def start_outputd(self) -> None:
         self.events.append("outputd_started")
 
+    # Three windows, all DISTINCT: preflight, the one taken before the final
+    # timing, and the one K is built from. Degenerate windows (identical
+    # before/after, both length 8) let a constant-zero delta, a sign flip, and
+    # a before-echoes-after all read as correct — the +/-2 cross-check is the
+    # only place K's median term meets a second measurement, so its
+    # instrumentation has to be pinned by value.
+    PREFLIGHT_SAMPLES = (282,) * 9
+    BEFORE_SAMPLES = (282, 283, 284, 283, 283, 283, 283, 282, 284, 283, 283)
+    AFTER_SAMPLES = (284, 285, 286, 285, 285, 285, 285, 284, 286, 285, 285, 285, 285)
+
     def queue(self, _hardware):
         self.queue_calls += 1
-        samples = (282,) * 8 if self.queue_calls == 1 else (283,) * 8
+        samples = (
+            self.PREFLIGHT_SAMPLES,
+            self.BEFORE_SAMPLES,
+            self.AFTER_SAMPLES,
+        )[min(self.queue_calls, 3) - 1]
         return aec_commission.QueueWindow(_status(), samples)
 
     def identity(self, _dev, _hardware, _status):
@@ -147,7 +161,8 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
         effective_uid=0,
     )
 
-    assert artifact.k_samples == 245
+    # K = commissioned SYS_DELAY + median(the window K is built from).
+    assert artifact.k_samples == -38 + 285
     assert f"apply:{xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT}:0" in io.events
     assert io.events.count("discarded_warmup") == 1
     timing = [event for event in io.events if event.startswith("timing:")]
@@ -162,6 +177,44 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
     assert io.events[-1] == "reconciled"
     assert not marker.exists()
     assert artifact_from_dict(__import__("json").loads(artifact_path.read_text())) == artifact
+
+
+def test_passed_evidence_records_the_queue_cross_check_margin(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    # `abs(queue_median - before_median) > 2` is the only place K's median term
+    # is cross-checked against a second measurement, and it is the tightest
+    # tolerance in the run. A spread means nothing without the count it came
+    # from, and a tolerance means nothing without the margin it passed by — so
+    # the record has to carry both windows' medians and their difference.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    io = _FakeIO()
+
+    artifact = aec_commission.run_commissioning(
+        io,
+        marker_path=tmp_path / "active",
+        artifact_path=tmp_path / "alignment.json",
+        effective_uid=0,
+    )
+
+    assert "event=chip_aec_commission.passed" in caplog.text
+    # VALUES, including the sign of the delta: a constant zero, a flipped sign,
+    # and a before that echoes the after all satisfy a label-only assertion,
+    # and all three would misreport the one margin this check passed by.
+    for field in (
+        "queue_median=285",
+        "queue_median_before=283",
+        "queue_median_delta=2",
+        f"queue_samples={len(_FakeIO.AFTER_SAMPLES)}",
+        "queue_spread=2",
+    ):
+        assert field in caplog.text, field
+    assert "queue_median_delta=-2" not in caplog.text
+    assert len(_FakeIO.AFTER_SAMPLES) != len(_FakeIO.BEFORE_SAMPLES)
+    # The commissioned delay travels in the artifact so boot can bound against
+    # it; it is the same number the evidence reports.
+    assert artifact.sys_delay == -38
+    assert f"sys_delay={artifact.sys_delay}" in caplog.text
 
 
 def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
