@@ -332,16 +332,25 @@ def outputd_main_start_realtime(
     ``@<seconds>`` instead of a locale-formatted string; the exact rendering is
     load-bearing, so it is pinned against hardware in tests/test_aec_init.py.
 
-    None means three things, all of which leave the guard inert:
+    None means four things, all of which leave the guard inert:
 
     * The unit has never started this boot.  systemd prints an EMPTY value for
       that (probed on jts3/jts4, systemd 257) — quiet, because it is legitimate.
     * ``systemctl`` exited non-zero.  That is the unsupported-``--timestamp=unix``
       class (added in 247; Trixie ships 257, so it is theoretical).  WARN-logged.
     * The value was non-empty but did not parse.  WARN-logged.
+    * ``systemctl`` could not even be exec'd.  A missing binary
+      (``FileNotFoundError``) means this box could never run outputd anyway —
+      quiet, same as the never-started case.  Any other ``OSError`` (``EACCES``,
+      ``ENOEXEC``, ``EAGAIN``, ``ENOMEM``, ...) means the binary IS there but the
+      probe itself failed on what is a systemd host — WARN-logged, same as the
+      two above.
 
-    The last two are anomalies rather than states, so they are logged: an inert
-    guard is otherwise invisible, and silence would look exactly like success.
+    The middle two are unconditionally anomalies; the fourth splits between a
+    quiet branch (``FileNotFoundError``, a state like the first) and a
+    WARN-logged one (any other ``OSError``).  Every anomalous branch is
+    logged: an inert guard is otherwise invisible, and silence would look
+    exactly like success.
 
     The asymmetry against `_SystemctlTimeout` is deliberate.  A timeout means
     systemctl is unanswerable *while the flag is known-supported*, so there is no
@@ -378,9 +387,18 @@ def outputd_main_start_realtime(
         )
     except subprocess.TimeoutExpired as exc:
         raise _SystemctlTimeout(str(exc)) from exc
-    except OSError:
+    except FileNotFoundError:
         # No systemctl at all: not a systemd host (tests, dev shells). Not an
         # anomaly worth a WARN on a box where the daemon could never run anyway.
+        return None
+    except OSError as exc:
+        # systemctl IS present but exec'ing it failed some other way (EACCES,
+        # ENOEXEC, EAGAIN, ENOMEM, ...) on what is a systemd host — unlike the
+        # missing-binary case above, that is worth surfacing rather than
+        # silently treating this box as one where the daemon could never run.
+        _log_ordering_probe_anomaly(
+            "systemctl_oserror", returncode=-1, value=str(exc)
+        )
         return None
     raw = result.stdout.strip()
     if result.returncode:
