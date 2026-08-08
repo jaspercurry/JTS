@@ -40,6 +40,32 @@ from jasper.audio_measurement import analysis, deconv, quality, sweep
 from jasper.audio_measurement.quality_model import DRIVER, RAMP, ROOM, QualityModel
 
 SR = 48000
+SMOOTH_EQUIVALENCE_ATOL_DB = 2e-9
+
+
+def _scalar_smooth_fractional_octave(freqs, magnitude_db, fraction=48):
+    """Independent reference matching the shipped per-bin definition."""
+    if fraction <= 0:
+        raise ValueError(f"fraction must be positive, got {fraction}")
+    if len(freqs) != len(magnitude_db):
+        raise ValueError(
+            f"length mismatch: freqs={len(freqs)} magnitude={len(magnitude_db)}"
+        )
+    power = 10.0 ** (magnitude_db / 10.0)
+    factor = 2.0 ** (1.0 / (2.0 * fraction))
+    smoothed = np.empty_like(power)
+    n = len(freqs)
+    for i in range(n):
+        f = freqs[i]
+        if f <= 0:
+            smoothed[i] = power[i]
+            continue
+        lo_idx = int(np.searchsorted(freqs, f / factor, side="left"))
+        hi_idx = int(np.searchsorted(freqs, f * factor, side="right"))
+        lo_idx = max(0, lo_idx)
+        hi_idx = max(lo_idx + 1, min(n, hi_idx))
+        smoothed[i] = float(np.mean(power[lo_idx:hi_idx]))
+    return 10.0 * np.log10(np.maximum(smoothed, 1e-12))
 
 
 # ---------- 1. Golden pipeline freeze --------------------------------------
@@ -136,6 +162,128 @@ def test_magnitude_and_smoothing_golden():
         idx = int(np.argmin(np.abs(freqs - probe_hz)))
         assert float(smoothed[idx]) == pytest.approx(golden, abs=1e-4)
     assert float(np.mean(smoothed)) == pytest.approx(-11.391156, abs=1e-4)
+
+
+@pytest.mark.parametrize("size", [1, 2, 31, 257, 2049])
+@pytest.mark.parametrize("fraction", [2, 3, 6, 24, 48])
+def test_fractional_octave_smoothing_matches_scalar_reference(size, fraction):
+    """Prefix sums preserve every scalar window on linear FFT-like grids."""
+    freqs = np.linspace(0.0, 24000.0, size, dtype=np.float64)
+    magnitude_db = np.random.default_rng(size * 100 + fraction).uniform(
+        -45.0, 12.0, size
+    )
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, fraction)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, fraction)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    # Prefix accumulation changes floating-point addition order. 2e-9 dB is
+    # tight enough to catch a boundary/mean-domain change while remaining far
+    # below any acoustically meaningful or persisted display precision.
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+
+
+def test_fractional_octave_smoothing_matches_incident_sized_reference():
+    """The 2^19-point VERIFY FFT shape stays numerically equivalent."""
+    freqs = np.linspace(0.0, 24000.0, 524_289, dtype=np.float64)
+    magnitude_db = (
+        -18.0
+        + 7.0 * np.sin(2.0 * np.pi * freqs / 3179.0)
+        + 2.0 * np.cos(2.0 * np.pi * freqs / 431.0)
+    )
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 6)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 6)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+
+
+@pytest.mark.parametrize("quiet_db", [-100.0, -110.0])
+def test_fractional_octave_smoothing_preserves_quiet_tail_after_loud_band(quiet_db):
+    """Global-prefix cancellation must not corrupt a later quiet window."""
+    freqs = np.linspace(0.0, 24000.0, 4097, dtype=np.float64)
+    magnitude_db = np.full(freqs.shape, quiet_db)
+    magnitude_db[: len(freqs) // 2] = 20.0
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 48)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 48)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+    assert actual[-1] == pytest.approx(quiet_db, abs=SMOOTH_EQUIVALENCE_ATOL_DB)
+
+
+def test_fractional_octave_smoothing_preserves_quiet_band_between_loud_bands():
+    """Scalar fallback protects windows ill-conditioned in both directions."""
+    freqs = np.linspace(0.0, 24000.0, 4097, dtype=np.float64)
+    magnitude_db = np.full(freqs.shape, 20.0)
+    magnitude_db[len(freqs) // 4:3 * len(freqs) // 4] = -100.0
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 48)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 48)
+    max_error_db = float(np.max(np.abs(actual - expected)))
+    assert max_error_db <= SMOOTH_EQUIVALENCE_ATOL_DB, max_error_db
+    assert actual[len(freqs) // 2] == pytest.approx(
+        -100.0, abs=SMOOTH_EQUIVALENCE_ATOL_DB
+    )
+
+
+def test_fractional_octave_smoothing_preserves_zero_and_nonfinite_edges():
+    all_zero = np.full(7, -np.inf)
+    freqs = np.array([-2.0, 0.0, 1.0, 2.0, 4.0, 8.0, 16.0])
+    assert np.array_equal(
+        analysis.smooth_fractional_octave(freqs, all_zero, 3),
+        np.full(7, -120.0),
+    )
+
+    # NaN/+inf use the scalar fallback because prefix subtraction would
+    # contaminate later windows that do not contain the non-finite bin.
+    magnitude_db = np.array([-np.inf, -12.0, np.inf, np.nan, -6.0, -3.0, 0.0])
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 3)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 3)
+    assert np.array_equal(actual, expected, equal_nan=True)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_fractional_octave_smoothing_preserves_dtype_and_shape(dtype):
+    freqs = np.linspace(0.0, 24000.0, 129, dtype=dtype)
+    magnitude_db = np.linspace(-30.0, 6.0, 129, dtype=dtype)
+    expected = _scalar_smooth_fractional_octave(freqs, magnitude_db, 6)
+    actual = analysis.smooth_fractional_octave(freqs, magnitude_db, 6)
+    assert actual.shape == magnitude_db.shape
+    assert actual.dtype == expected.dtype
+    assert np.allclose(actual, expected, rtol=2e-6, atol=2e-6)
+
+
+def test_fractional_octave_smoothing_preserves_validation_and_empty_result():
+    with pytest.raises(ValueError, match="fraction must be positive, got 0"):
+        analysis.smooth_fractional_octave(np.arange(2.0), np.arange(2.0), 0)
+    with pytest.raises(ValueError, match="length mismatch: freqs=2 magnitude=1"):
+        analysis.smooth_fractional_octave(np.arange(2.0), np.arange(1.0))
+    empty = analysis.smooth_fractional_octave(
+        np.array([], dtype=np.float64), np.array([], dtype=np.float32)
+    )
+    assert empty.shape == (0,)
+    assert empty.dtype == np.float32
+
+
+def test_fractional_octave_smoothing_uses_bulk_prefix_operations(monkeypatch):
+    """Finite input is O(N log N) boundary search plus one O(N) prefix sum."""
+    freqs = np.linspace(0.0, 24000.0, 4097)
+    magnitude_db = np.sin(freqs / 1000.0)
+    search_shapes = []
+    cumsum_shapes = []
+    original_searchsorted = np.searchsorted
+    original_cumsum = np.cumsum
+
+    def counted_searchsorted(a, values, *args, **kwargs):
+        search_shapes.append(np.shape(values))
+        return original_searchsorted(a, values, *args, **kwargs)
+
+    def counted_cumsum(a, *args, **kwargs):
+        cumsum_shapes.append(np.shape(a))
+        return original_cumsum(a, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.np, "searchsorted", counted_searchsorted)
+    monkeypatch.setattr(analysis.np, "cumsum", counted_cumsum)
+    analysis.smooth_fractional_octave(freqs, magnitude_db, 6)
+
+    assert search_shapes == [(4096,), (4096,)]
+    assert cumsum_shapes == [(4097,), (4097,)]
 
 
 # ---------- 2. QualityModel value contract ---------------------------------
