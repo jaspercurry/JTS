@@ -2308,10 +2308,11 @@ mod tests {
     // runs on ubuntu-latest and is the authority; the test runs there
     // unaffected. jasper-outputd's hard `alsa` dependency also does not
     // build on macOS at all via the usual Homebrew path (a separate,
-    // already-documented limitation in AGENTS.md), and the run is
-    // lib-scoped (`cargo test --lib`); a full `cargo test` on macOS fails
-    // earlier compiling main.rs's test module (`libc::SOCK_CLOEXEC` is
-    // Linux/BSD-only).
+    // already-documented limitation in AGENTS.md); this `ignore`
+    // therefore only bites when ALSA is available locally *and* the run
+    // is lib-scoped (`cargo test --lib`) — a full `cargo test` on
+    // macOS fails earlier compiling main.rs's test module
+    // (`libc::SOCK_CLOEXEC` is Linux/BSD-only).
     #[test]
     #[cfg_attr(
         target_os = "macos",
