@@ -543,7 +543,20 @@ def test_outputd_composite_children_take_the_declared_edge_width():
     assert "config.content_format" not in child_periods_call
     # ...and it is park-class: a refused child width must not restart-loop into
     # `StartLimitAction=reboot`.
-    assert "final_sink_startup(ChildPeriods::new(" in alsa_rs
+    #
+    # Scoped to the extracted PRODUCTION slice, not the whole file. Whole-file was
+    # a guard that could not fail: `final_sink_startup(ChildPeriods::new(` occurs
+    # twice in `alsa_backend.rs` — the production site and the park-class TEST that
+    # exercises it — so unwrapping production left the substring present and this
+    # assertion green. `startswith` rather than `in`, because the wrapper has to be
+    # the OUTERMOST call: a `ChildPeriods::new(...)` whose `?` fires before
+    # `final_sink_startup` ever sees it is exit-1/reboot class, which is exactly
+    # what the wrapper exists to prevent.
+    assert child_periods_call.strip().startswith("final_sink_startup(ChildPeriods::new("), (
+        f"the composite child-width construction must be wrapped in "
+        f"final_sink_startup so a refused width parks at EX_CONFIG 78 instead of "
+        f"restart-looping into StartLimitAction=reboot; got {child_periods_call!r}"
+    )
     assert "Self::Composite(sink) => sink.dac_format()," in main_rs
     dac_format_fn = main_rs.split("fn dac_format(&self) -> SampleFormat {", 1)[1].split(
         "\n    }", 1
