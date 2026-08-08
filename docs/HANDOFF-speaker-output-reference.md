@@ -458,9 +458,13 @@ What exists:
   being pre-verified if the pairing turns out not to be jointly
   satisfiable. Declaring it lets outputd's i32 program spine reach the
   DAC with zero narrowing where the crackle-causing undithered 16-bit
-  requantization used to happen. DAC8x Studio stays at the S16_LE default —
-  no lab unit exists to run the same hardware probe, so this program does
-  not flip it on inference from the shared `dtoverlay` alone. outputd
+  requantization used to happen. DAC8x Studio's registry entry stays at the
+  S16_LE default — no lab unit exists to run the same hardware probe, so
+  this program does not flip it on inference from the shared `dtoverlay`
+  alone — though a Studio board sharing the base profile's card label is
+  classified `hifiberry_dac8x` and inherits `S32_LE` regardless (a
+  driver-derived-label routing gap, tracked as a follow-up): the
+  declaration is the program's norm, not a routing guarantee. outputd
   REQUESTS the declared format on the raw `hw:` PCM and fails closed unless
   the installed `hw_params` report it, and writes its i32 program spine
   straight through at that edge (nothing is converted — an S32 edge is the

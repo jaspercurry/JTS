@@ -138,6 +138,17 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
 
 
 def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
+    # All three labels below put "dac8x" before "studio" — the one ordering
+    # HIFIBERRY_DAC8X's negative-lookahead regexes correctly exclude. The
+    # realistic driver-derived label (see HIFIBERRY_DAC8X_STUDIO's own
+    # profile comment: output_hardware.py's `product or proc_description or
+    # card_id`, an I2S HAT with no USB `product`, both profiles sharing
+    # `dtoverlay="hifiberry-dac8x"`) carries no "studio" token in the
+    # observed proc/card description at all, in EITHER order — that case is
+    # unrepresented here and routes to the base profile instead, per the
+    # wide-output-path panel record. This test intentionally does not
+    # change to cover it: the fix is a detection-regex change tracked as a
+    # follow-up, not a same-PR test-and-fix.
     base_label = "snd_rpi_hifiberry_dac8x, HiFiBerry DAC8x"
     studio_label = "HiFiBerry DAC8x Studio, USB Audio"
     studio_kernel_label = "snd_rpi_hifiberry_dac8x_studio"

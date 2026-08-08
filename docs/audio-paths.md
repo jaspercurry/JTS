@@ -609,11 +609,15 @@ opens cleanly (2026-08-07); jts3's production graph is 6-channel active, and
 that specific pairing has not been separately probed, so it fails closed
 rather than being pre-verified if unsupported. Declaring it lets outputd's
 i32 program spine reach the DAC with zero narrowing where an undithered
-16-bit requantization used to crackle on decay tails. DAC8x Studio is
-unchanged at `S16_LE`: it shares
+16-bit requantization used to crackle on decay tails. DAC8x Studio's
+registry entry declares `S16_LE`, unchanged: it shares
 the base DAC8x's `dtoverlay` and DAC-chip family, but no lab unit exists to
 run the same hardware probe, so the registry does not flip it on inference
-alone. For every declaring profile, outputd requests that format directly
+alone — though a Studio board sharing the base profile's card label is
+classified `hifiberry_dac8x` and inherits `S32_LE` regardless (a
+driver-derived-label routing gap, tracked as a follow-up): the declaration
+is the program's norm, not a routing guarantee. For every declaring
+profile, outputd requests that format directly
 on the raw `hw:` open and writes its i32 program straight through at that
 edge (its internal program spine is i32, so an S32 edge converts nothing);
 because there is no conversion layer in front of the card, outputd's own
