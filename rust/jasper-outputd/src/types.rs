@@ -63,13 +63,15 @@ pub type ProgramSample = i32;
 /// now, and `alsa_backend::alsa_format` is the single mapping into ALSA's own
 /// `Format`.
 ///
-/// `S24_3Le` is **not declared by any DAC profile today**, so no live box
-/// resolves it: the registry accepts the value and nothing emits it. It exists
-/// here because outputd must be able to PARSE what the reconciler may one day
-/// write, and Rust ships first so the daemon is never the thing that has to catch
-/// up (wide-output-path D9). Its write path is genuinely different — three packed
-/// bytes per sample, so no `IO<'_, S>` sample type can carry it — which is the
-/// other reason it lands on its own rather than riding a registry flip.
+/// `S24_3Le` is **declared by the single Apple USB-C dongle profile**, so a
+/// single-dongle box resolves it at its DAC edge — that adapter advertises only
+/// `S16_LE` and `S24_3LE` at 48 kHz, making the packed edge its widest wire.
+/// The `dual_apple_usb_c_dac_4ch` composite does **not** declare it: the paired
+/// sink has no packed-24 child write path and refuses that width at open (see
+/// `alsa_backend::ChildPeriods::new`); jaspercurry/JTS#2257 is the unlock. Its
+/// write path is genuinely different — three packed bytes per sample, so no
+/// `IO<'_, S>` sample type can carry it — which is why it landed on its own
+/// ahead of the registry flip (wide-output-path D9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleFormat {
     S16Le,
@@ -163,10 +165,10 @@ pub fn narrow_period(samples: &[ProgramSample], out: &mut [i16]) -> Result<()> {
 /// pinned by a test, because "there is nothing else to reach for" is not the same
 /// as "the rounding term cannot be deleted".
 ///
-/// **Dormant on every live box today** — no DAC profile declares an `S24_3Le`
-/// edge, so nothing calls this in production. The message names both sizes for
-/// the same reason its siblings do: a mismatch here would write a short or torn
-/// period at a speaker.
+/// **Live on every single-Apple-dongle box** — that profile declares an
+/// `S24_3Le` edge, so this runs on the production period path there. The message
+/// names both sizes for the same reason its siblings do: a mismatch here would
+/// write a short or torn period at a speaker.
 pub fn narrow_period_i24_le(samples: &[ProgramSample], out: &mut [u8]) -> Result<()> {
     if !jasper_resampler::narrow_i32_to_i24_le_slice(samples, out) {
         anyhow::bail!(

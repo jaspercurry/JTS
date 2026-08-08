@@ -766,7 +766,15 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     # different one. STATUS dac.format then reports what outputd's client edge
     # negotiated (not an echo of this value), and the chip-AEC alignment
     # identity records that.
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    #
+    # wide-output-path PR-8 b3: the packed 24-bit edge, which the dongle's USB
+    # descriptor advertises (`aplay -D hw:A --dump-hw-params` -> S16_LE S24_3LE)
+    # and a live `aplay -D hw:A -f S24_3LE` open confirmed on jts.local
+    # (2026-08-08). This is the SINGLE-dongle arm; the dual-Apple composite arm
+    # emits its own S16_LE declaration instead, asserted in
+    # test_reconcile_dual_apple_pins_pcm_order_from_saved_topology (the one
+    # test that already drives the composite emit arm end to end).
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
@@ -929,8 +937,9 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so a second reconcile is a true no-op.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so a second reconcile is a true no-op. The Apple dongle's
+        # steady state is the packed S24_3LE edge (wide-output-path PR-8 b3).
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         # The single stereo path now also manages the wide-lane width knob,
         # cleared so a stale active width can't mis-size the stereo lane.
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
@@ -1123,6 +1132,17 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
+    # The composite's OWN declaration reaches outputd, not its children's. Both
+    # children of this composite are the Apple dongle profile, which declares
+    # the packed S24_3LE edge (wide-output-path PR-8 b3) — and outputd's paired
+    # composite sink has NO packed-24 child write path: `ChildPeriods::new`
+    # refuses that width and `PairedCompositeSink::new` parks the unit at
+    # EX_CONFIG 78 before either dongle opens (#2249). So an S24_3LE emitted
+    # here is a silent speaker on every dual-Apple box. This assertion is the
+    # tripwire for the whole single-vs-composite split model: it fails the
+    # moment the emission starts resolving through child_profile_ids.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" not in outputd_env
     # A wide composite sink (4ch) is already fenced off outputd's stereo-only
     # features by its channel width, so the reconciler does NOT set the 2-ch
     # active-lane marker here — it stays cleared.
@@ -1595,8 +1615,12 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so the floor stays the sole delta.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so the floor stays the sole delta. The Apple dongle's steady
+        # state is the packed S24_3LE edge (wide-output-path PR-8 b3); seeding
+        # the old S16_LE here would leave the format as a SECOND delta and
+        # quietly falsify this fixture's "floor-only" premise while the
+        # assertions below still passed.
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
@@ -1743,8 +1767,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
-        # seed it so nothing commits.
-        "JASPER_OUTPUTD_DAC_FORMAT=S16_LE\n"
+        # seed it so nothing commits. The Apple dongle's steady state is the
+        # packed S24_3LE edge (wide-output-path PR-8 b3).
+        "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
@@ -2763,8 +2788,9 @@ def test_reconcile_emits_the_wide_content_format_on_a_loopback_box(tmp_path: Pat
     assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
     # The content lane and the DAC edge are separate hops with separate
     # declarations, and on this box they legitimately differ: an S32 lane into
-    # the Apple dongle's S16 edge.
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    # the Apple dongle's packed S24_3LE edge, the widest width that device
+    # advertises.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
     assert "content_format=S32_LE" in result.stderr
 
 
@@ -2935,3 +2961,176 @@ def test_reconcile_leaves_content_format_alone_when_the_policy_probe_is_absent(
     assert "event=audio_hardware_reconcile.content_format_skip" in result.stderr
     assert "reason=coupling_probe_unavailable" in result.stderr
     assert "content_format=unset" in result.stderr
+
+
+def _python_shim_that_cannot_answer_the_edge_format(tmp_path: Path) -> Path:
+    """The DAC-axis twin of the coupling shim above: forwards every call to the
+    real interpreter EXCEPT the final-edge-format probe, which it fails.
+
+    Same fault-injection reasoning — removing the interpreter outright aborts the
+    reconcile before the DAC axis is reached and would prove nothing here."""
+    shim = tmp_path / "python-no-edge-format"
+    shim.write_text(
+        "#!/bin/bash\n"
+        'script="$(cat)"\n'
+        'if [[ "$script" == *final_edge_format_for* ]]; then\n'
+        '  echo "simulated: DAC registry probe unavailable" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'printf "%s" "$script" | exec {sys.executable} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absent(
+    tmp_path: Path,
+):
+    """A lost probe must not commit an empty edge format.
+
+    Empty is a MEANINGFUL value on this key — outputd reads it as S16_LE — so
+    writing it here would silently NARROW this box's declared S24_3LE edge with
+    no error anywhere, and because the edge format is a chip-AEC alignment
+    identity input it would also invalidate the box's commissioned artifact.
+    Nothing about the hardware changed on a lost probe, so the previous value is
+    still the right one: keep it and log the skip.
+
+    The recognized-DAC path only. The deliberate explicit-empty write for a
+    DAC with no queryable profile is a different branch, where emptiness IS the
+    answer — asserted in
+    test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _python_shim_that_cannot_answer_the_edge_format(tmp_path)
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Preserved, not cleared — and specifically NOT the explicit-empty spelling
+    # the unrecognized-DAC branch writes.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" not in outputd_env
+    assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
+    assert "reason=registry_probe_unavailable" in result.stderr
+    assert "dac_id=apple_usb_c_dongle" in result.stderr
+
+
+def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_probe_is_absent(
+    tmp_path: Path,
+):
+    """The dual-Apple composite arm's call to emit_dac_format_for_recognized,
+    inside apply_audio_runtime_env's `mode=dual_apple` branch, is the
+    single-arm test's twin. It shares the same helper, but until this test
+    existed that call site was unpinned — a revert to write-through form
+    there would still pass the whole suite.
+
+    The value seeded here (S24_3LE) is the stale single-Apple-dongle format a
+    box would carry across a single -> dual upgrade: outputd's composite sink
+    has no packed-24 child write path, so S24_3LE is wrong for the composite
+    id even though it was right for the prior single id. A lost probe must
+    still SKIP rather than guess — committing empty would be read as S16_LE
+    (arguably the right answer here) purely by accident, and the skip
+    contract has to hold independent of whether the stale value happens to be
+    survivable.
+    """
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="B",
+        usb_path="1-1",
+        serial="right",
+    )
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="A",
+        usb_path="1-2",
+        serial="left",
+    )
+    topology_path = tmp_path / "output_topology.json"
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("stereo", "active_2_way").to_dict()
+    topology["topology_id"] = "dual_apple"
+    topology["name"] = "Dual Apple"
+    topology["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "left",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "right",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "unit-test-dual-apple-composite-skip",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": 0,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": ["left", "right"],
+        },
+    }
+    topology_path.write_text(
+        json.dumps(topology),
+        encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n",
+        extra_env={
+            "JASPER_SYS_CLASS_SOUND": str(sys_class),
+            "JASPER_PROC_ASOUND": str(proc_asound),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _python_shim_that_cannot_answer_the_edge_format(tmp_path)
+            ),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # Unchanged (skip, not empty) — the composite arm gets the same protection
+    # as the single arm.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" not in outputd_env
+    assert "event=audio_hardware_reconcile.dac_format_skip" in result.stderr
+    assert "reason=registry_probe_unavailable" in result.stderr
+    assert "dac_id=dual_apple_usb_c_dac_4ch" in result.stderr
+    # The value left in place is named on the skip line, and the runtime_env
+    # summary line carries it under the same dac_format= key its
+    # content_format= sibling already used.
+    assert "preserved=S24_3LE" in result.stderr
+    assert "event=audio_hardware_reconcile.runtime_env" in result.stderr
+    assert "mode=dual_apple" in result.stderr
+    assert "dac_format=S24_3LE" in result.stderr

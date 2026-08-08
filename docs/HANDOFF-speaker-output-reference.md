@@ -60,10 +60,15 @@ which for S16 content at unity gain is bit-identical to the pre-spine path. An
 `IO<'_, S>` sample type can carry a 3-byte format, so the arm stages bytes and
 writes through alsa-rs's `io_bytes()` while sharing the one xrun policy
 (`write_dac_frames`, whose frame stride is in ELEMENTS — bytes on this path,
-samples on the other two). **No DAC profile declares `S24_3LE` today**, so that
-arm is dormant on the whole fleet; it exists so the daemon already on a box can
-read the declaration whenever a profile does flip. ALSA's 4-byte-word `S24_LE` is
-a different format and is NOT in the vocabulary. Conversion primitives live in
+samples on the other two). **The Apple USB-C dongle profile declares `S24_3LE`**
+— that device's USB descriptor advertises exactly `S16_LE` and `S24_3LE` at
+48 kHz/2ch and no 32-bit width at all, so the packed edge is the widest wire this
+silicon has (`aplay -D hw:A -f S24_3LE` open-proof on jts.local, 2026-08-08). It
+is the **single-DAC sink only**: the paired composite sink has no packed-24 child
+write path, so the dual-Apple composite declares `S16_LE` even though both its
+children are that same dongle profile (see the composite-egress paragraph below).
+ALSA's 4-byte-word `S24_LE` is a different format and is NOT in the vocabulary.
+Conversion primitives live in
 `jasper-resampler` (`widen_i16_to_i32` / `narrow_i32_to_i16_round` /
 `narrow_i32_to_i24_round` + `narrow_i32_to_i24_le_slice`); the truncating
 `s32_high_word_to_s16` beside them is UAC2 *capture* semantics and must never
@@ -76,8 +81,21 @@ one registered composite profile today, so both Apple children narrow. A composi
 declaring `S32_LE` would split the period to its children with no conversion at
 all, exactly as a single `S32_LE` edge does. A composite declaring `S24_3LE` is
 **refused** at open (park, EX_CONFIG 78) rather than silently narrowed: the paired
-transport has no packed child write path, and a composite's children move width
-only when the composite's own declaration moves — together, or not at all.
+transport has no packed child write path.
+
+That refusal is why **a composite profile and a child profile may declare
+different widths**, and the dual-Apple pair is the live case — the composite
+declares `S16_LE`, its `apple_usb_c_dongle` child declares `S24_3LE`. The two are
+facts about two different armed configurations, not one fact stated twice: the
+reconciler resolves `JASPER_OUTPUTD_DAC_FORMAT` **by id**, off whichever profile
+is armed (`final_edge_format_for` → `by_id`, which never walks
+`child_profile_ids`), and outputd asks BOTH children for that one value. So an
+armed composite opens both dongles at `S16_LE` regardless of what the child
+profile declares for its own single-dongle case, and a single armed dongle opens
+at `S24_3LE`. What collapses the divergence is a packed-24 child write path in
+the paired sink; until then the invariant the registry enforces is the narrower
+one — no composite declares a width its transport refuses.
+
 **Ingress** widens whatever arrives narrow: the SHM ring (pinned `S16_LE` by
 `jasper_ring::Geometry::validate_self` until ring v2), the snapclient round-trip
 FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
@@ -373,6 +391,26 @@ therefore cannot disable, the outputd unit.
 > deletion — deleting first leaves a window where a CamillaDSP re-exec locks S16
 > and fires the ladder. A canary STOP does not by itself imply rollback:
 > diagnose first.
+>
+> **`JASPER_OUTPUTD_DAC_FORMAT` is the second persistent width key in the same
+> file, and it IS rollback-symmetric — it needs no pre-step.** It escapes both
+> properties that make the content key asymmetric. First, a deploy stops
+> `jasper-outputd` BEFORE the reconciler rewrites the key —
+> `park_audio_clients_for_core_graph_restart` walks
+> `JASPER_CORE_GRAPH_PARK_UNITS` (which lists `jasper-outputd.service`) and runs
+> immediately ahead of `jasper-audio-hardware-reconcile --reason install` in
+> `deploy/lib/install/systemd-units.sh` — so no live daemon is holding a width
+> across the rewrite. Second, this key is
+> re-emitted from the DAC registry on **every** reconcile pass that can reach
+> the registry, so a rolled-back reconciler writes its OWN registry's value on
+> that same pass rather than inheriting the newer one — a box rolled back past
+> the Apple dongle's `S24_3LE` declaration is re-emitted `S16_LE` and opens
+> there. (The content key has no such
+> self-correction: old code cannot rewrite a key it does not know exists.) The one
+> way to strand a half-flipped value is an abnormal termination mid-install, which
+> is why the deploy should run uninterrupted — and even then outputd's open-time
+> readback parks at exit 78 rather than playing a width the device did not
+> install.
 
 What exists:
 
@@ -1757,12 +1795,16 @@ the content-lane `S32_LE` flip described below
 base HiFiBerry DAC8x now also declares an `S32_LE` final edge alongside
 InnoMaker — wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware
 probe 2026-08-07 — and DAC8x Studio's deliberate non-flip re-stated against
-the registry comment. (2) The edge gained a dormant packed `S24_3LE` write
-path — wide-output-path PR-8 — with the edge-conversion paragraph and the
-composite-egress sentence re-stated against the code, including that NO
-profile declares that width and that a composite refuses it; no live box
-resolves it, so it is vocabulary rather than a fleet change, and its hardware
-open-proof is owed. Separately — a DAC8x Studio ROUTING fix, not a third
+the registry comment. (2) The packed `S24_3LE` edge landed and then went LIVE on
+the Apple USB-C dongle profile — wide-output-path PR-8, `aplay -D hw:A -f
+S24_3LE` open-proof on jts.local 2026-08-08, so the open-proof previously owed
+here is now banked — with the edge-conversion paragraph and the composite-egress
+paragraph re-stated against the code, including the new single-vs-composite
+split: the dual-Apple composite stays `S16_LE` because the paired sink has no
+packed-24 child write path and refuses that width at open, so a composite and its
+child profile now legitimately declare different widths and the emission resolves
+by armed-profile id; single-dongle boxes need a chip-AEC recommission.
+Separately — a DAC8x Studio ROUTING fix, not a third
 FINAL-EDGE-hop change — the registry was corrected against the kernel: the
 Studio board has its own `hifiberry-studio-dac8x` overlay and machine driver
 rather than the base board's, so the base profile's card-label regexes were

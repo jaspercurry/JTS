@@ -425,7 +425,9 @@ impl Config {
         // REQUESTS this format at the edge and verifies the installed
         // hw_params match. It does not change the internal program's width —
         // that is always `ProgramSample` (i32) — it decides whether the edge
-        // converts at all: S32 writes the spine through untouched, S16 narrows.
+        // converts at all, and how: S32 writes the spine through untouched, S16
+        // narrows to 16 bits, S24_3LE narrows to 24 significant bits and packs
+        // three little-endian bytes per sample.
         //
         // Unset or blank == the historical S16_LE default: the reconciler
         // writes an explicit EMPTY value for an unrecognized DAC (it has no
@@ -437,11 +439,12 @@ impl Config {
         // itself drift worth surfacing.
         //
         // `S24_3LE` is accepted and has a full write path (a packed 3-byte edge,
-        // `alsa_backend::write_dac_period`'s third arm), but NO DAC profile
-        // declares it, so no reconciler emits it and no live box resolves it. It
-        // is parsed here because outputd must be able to read what the registry
-        // may later declare — Rust ships ahead of the profile flip on purpose
-        // (wide-output-path D9).
+        // `alsa_backend::write_dac_period`'s third arm). The single Apple USB-C
+        // dongle profile declares it, so the reconciler emits it and a
+        // single-dongle box resolves it here. The `dual_apple_usb_c_dac_4ch`
+        // composite does NOT: the paired sink has no packed-24 child write path
+        // and refuses that width at open (jaspercurry/JTS#2257 is the unlock),
+        // so this name reaching a composite is registry/transport drift.
         let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {
             "" | "S16_LE" => SampleFormat::S16Le,
             "S24_3LE" => SampleFormat::S24_3Le,
@@ -1567,11 +1570,11 @@ mod tests {
 
     #[test]
     fn declared_dac_format_parses_every_registry_value() {
-        // `S24_3LE` is in the vocabulary and no profile declares it yet — outputd
-        // parses ahead of the registry on purpose, so that when a profile does
-        // flip, the daemon already on the box can read it (wide-output-path D9).
-        // The round trip through `as_str` is asserted too: that string is the
-        // STATUS wire value and a chip-AEC identity input.
+        // Every value the registry can emit, including the `S24_3LE` the single
+        // Apple dongle profile declares. The round trip through `as_str` is
+        // asserted too: that string is the STATUS wire value and a chip-AEC
+        // identity input, so a respelling silently invalidates commissioned
+        // alignment artifacts.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),
             ("S24_3LE", SampleFormat::S24_3Le),

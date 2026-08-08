@@ -2532,10 +2532,11 @@ mod tests {
         // declaration echoed before any sink opens, and the readback once one
         // has. Neither path may collapse an unfamiliar width to a familiar one.
         //
-        // No profile declares this edge today, so this is the only place in the
-        // tree that proves the wire spelling for it. If it ever prints `S243LE`
-        // (alsa-rs's own enum spelling) or `S24_LE`, a future commissioning run
-        // would certify against a name nothing else in the fleet uses.
+        // The single Apple USB-C dongle profile declares this edge, so the
+        // spelling is live on real hardware rather than hypothetical. If it ever
+        // prints `S243LE` (alsa-rs's own enum spelling) or `S24_LE`, every
+        // commissioning run on that hardware certifies against a name nothing
+        // else in the fleet uses.
         let declared = OutputdState::new(&Config {
             declared_dac_format: SampleFormat::S24_3Le,
             content_format: SampleFormat::S24_3Le,

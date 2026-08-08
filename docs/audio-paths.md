@@ -619,10 +619,21 @@ own driver emits, so Studio silicon is no longer classified `hifiberry_dac8x`
 and no longer inherits `S32_LE` (#2250). Two residuals stay documented: a
 Studio board configured with the base overlay is genuinely indistinguishable,
 and on rpi-6.18.y and later the Studio family shares one card name, so a
-Studio DAC8x parks as `unknown` (#2258). For every declaring
-profile, outputd requests that format directly
+Studio DAC8x parks as `unknown` (#2258). The Apple USB-C dongle
+declares the packed 24-bit `S24_3LE` edge (wide-output-path PR-8) for a third
+reason: that device advertises exactly `S16_LE` and `S24_3LE` at
+48 kHz/2ch and no 32-bit width at all, so the packed edge is simply the widest
+wire the silicon has (`aplay -D hw:A -f S24_3LE` open-proof on jts.local,
+2026-08-08). That declaration covers a **single** armed dongle; the dual-Apple
+composite still declares `S16_LE`, because outputd's paired composite sink has
+no packed-24 child write path and refuses that width at open — so a composite
+and its child profile legitimately differ, and the reconciler resolves the
+emitted format by ARMED-profile id rather than through `child_profile_ids`.
+For every declaring profile, outputd requests that format directly
 on the raw `hw:` open and writes its i32 program straight through at that
-edge (its internal program spine is i32, so an S32 edge converts nothing);
+edge (its internal program spine is i32, so an S32 edge converts nothing,
+while the packed 24-bit edge narrows once to 24 significant bits and packs
+three little-endian bytes per sample through its own write path);
 because there is no conversion layer in front of the card, outputd's own
 client-edge readback is now the hardware-edge proof — the pinned-slave
 `plug` that used to own that guarantee is gone. InnoMaker's profile also
@@ -753,12 +764,16 @@ Last verified: 2026-08-08 (DAC8x Studio routing corrected against the kernel —
 the Studio board has its own `hifiberry-studio-dac8x` overlay and machine
 driver, not the base board's, and the base profile's card-label regexes were
 narrowed to the one name its driver emits so Studio silicon no longer inherits
-the base row's `S32_LE` edge and approved chip-AEC status, #2250; the DAC8x
-final-edge paragraph corrected: the
-base HiFiBerry DAC8x now also declares an `S32_LE` edge alongside InnoMaker
-— wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware probe
-2026-08-07 — and DAC8x Studio's deliberate non-flip re-stated against the
-registry comment; prior 2026-08-07 pass: the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
+the base row's `S32_LE` edge and approved chip-AEC status, #2250; the final-edge paragraph corrected twice the same
+day: the base HiFiBerry DAC8x now also declares an `S32_LE` edge alongside
+InnoMaker — wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware probe
+2026-08-07 — with DAC8x Studio's deliberate non-flip re-stated against the
+registry comment; and the Apple USB-C dongle now declares the packed `S24_3LE`
+edge — wide-output-path PR-8, jts.local `aplay -D hw:A -f S24_3LE` open-proof
+2026-08-08 — with the single-vs-composite split stated: the dual-Apple composite
+stays `S16_LE` because the paired sink refuses a packed-24 child edge, so the
+emitted format resolves by armed-profile id, not through `child_profile_ids`;
+prior 2026-08-07 pass: the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
 from `jasper-asound-render.sh`, PR-4 format-foundation — every registered
 single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
 `type hw` alias, and the S32_LE hardware-edge proof moved from the render's

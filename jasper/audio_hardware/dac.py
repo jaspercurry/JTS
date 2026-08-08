@@ -174,13 +174,22 @@ class DacProfile:
     # now parks the speaker instead of being silently converted, so this field
     # is load-bearing.
     #
-    # S24_3LE (24 bits in three PACKED bytes — not ALSA's 4-byte-word S24_LE,
-    # which is NOT accepted) is in the vocabulary but declared by NO profile
-    # today. outputd's packed write path shipped first on purpose, so that
-    # whichever profile flips next is read correctly by the daemon already on the
-    # box (wide-output-path D9). A composite and its children must move width
-    # TOGETHER — see test_a_composite_declares_the_same_edge_format_as_every_child,
-    # and outputd's paired transport refuses a packed child edge outright.
+    # S24_3LE is 24 bits in three PACKED bytes — not ALSA's 4-byte-word S24_LE,
+    # which is NOT accepted. outputd carries it on the coherent single-DAC sink
+    # only: `AlsaBackend::write_dac_period`'s packed arm stages bytes and writes
+    # through `io_bytes()`. The paired COMPOSITE sink has no packed-24 child
+    # write path, so `ChildPeriods::new` refuses an S24_3LE child edge and parks
+    # the unit at EX_CONFIG 78 before any PCM opens (#2249).
+    #
+    # That capability gap is why a composite profile and a child profile may
+    # declare DIFFERENT widths, and why that divergence is safe rather than a
+    # registry lie: this value is read by id, off whichever profile is ARMED
+    # (final_edge_format_for -> by_id, emitted once as JASPER_OUTPUTD_DAC_FORMAT),
+    # so a composite's own declaration is what outputd asks BOTH its children
+    # for — a child profile's declaration is never consulted while the composite
+    # is armed, and vice versa. The invariant that survives is narrower than
+    # equality: no composite declares a width its transport refuses. Pinned by
+    # test_a_composite_never_declares_a_width_its_transport_refuses.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
@@ -376,6 +385,28 @@ APPLE_USB_C_DONGLE = DacProfile(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
+    # Hardware evidence: on jts.local's Apple dongle,
+    # `aplay -D hw:A --dump-hw-params` reports FORMAT `S16_LE S24_3LE` at
+    # CHANNELS 2 / RATE 48000 — the device advertises exactly two widths and
+    # S24_3LE is the wider — and a live `aplay -D hw:A -f S24_3LE -c 2 -r 48000`
+    # open succeeded, with outputd stopped for the probe and recovering active
+    # afterwards at zero DAC xruns (banked 2026-08-08, wide-output-path PR-8 b3).
+    # The dongle exposes no 32-bit width at all, so S24_3LE is the widest edge
+    # this silicon has: declaring it moves outputd's i32 program spine to within
+    # 8 bits of the wire instead of 16, quantizing once to 24 significant bits
+    # (round-to-nearest, saturating) rather than to 16.
+    #
+    # This declaration governs a SINGLE armed dongle only. The dual-dongle
+    # composite that lists this profile as its child declares its own width and
+    # stays where its transport can drive it — see DUAL_APPLE_USB_C_DAC_4CH.
+    #
+    # Consequence: this field is part of the chip-AEC alignment identity
+    # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
+    # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the identity
+    # force-recommissions the fleet"), so every artifact commissioned against
+    # the old S16_LE edge on a single-dongle box is now invalid and needs a
+    # foreground `sudo jasper-aec-commission` (~2 minutes of audible sweeps).
+    final_edge_format="S24_3LE",
 )
 
 HIFIBERRY_DAC8X = DacProfile(
@@ -639,6 +670,28 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
         "dual Apple dongle profile has a measured-sync contract and needs "
         "calibration before arming production chip AEC"
     ),
+    # Stays at the S16_LE default while its child profile
+    # (APPLE_USB_C_DONGLE, same silicon) declares S24_3LE, and the divergence is
+    # a TRANSPORT fact, not a hardware one. outputd's paired composite sink has
+    # no packed-24 child write path: `ChildPeriods` holds an i16 pair or an i32
+    # pair, `deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>` is generic over
+    # the sample type, and Rust has no 3-byte integer for `T` to be. So
+    # `ChildPeriods::new` refuses an S24_3LE child edge outright and
+    # `PairedCompositeSink::new` parks the unit at EX_CONFIG 78 before opening
+    # either dongle (#2249). Declaring the packed edge here would ship a profile
+    # this daemon cannot run — a silent speaker on every dual-Apple box.
+    #
+    # Nothing leaks across that boundary: the reconciler emits
+    # JASPER_OUTPUTD_DAC_FORMAT from the ARMED profile's own id
+    # (final_edge_format_for -> by_id), and outputd asks both children for that
+    # one value, so an armed composite opens both dongles here at S16_LE
+    # regardless of what the child profile declares for its own single-dongle
+    # case.
+    #
+    # What moves this: a packed-24 child write path in the paired sink (#2257).
+    # Until then the surviving invariant is the narrower one stated on
+    # final_edge_format's doc: no composite declares a width its transport
+    # refuses.
 )
 
 

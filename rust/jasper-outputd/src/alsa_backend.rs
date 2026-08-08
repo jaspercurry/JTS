@@ -408,8 +408,9 @@ pub struct AlsaBackend {
     /// distinct means an edge can only ever be handed the buffer its own arm
     /// filled. Exactly one of the two is non-empty on any box.
     ///
-    /// **Dormant on the whole fleet today** — no DAC profile declares an
-    /// `S24_3Le` edge, so this is `Vec::new()` on every live speaker.
+    /// **Non-empty on every single-Apple-dongle box** — that profile declares an
+    /// `S24_3Le` edge, so this holds one period there and `dac_narrow_buf` is the
+    /// empty one instead. It stays `Vec::new()` at the `S16Le` and `S32Le` edges.
     dac_pack_buf: Vec<u8>,
     /// Reused i16 staging for an `S16Le` CONTENT lane — allocated once, at open.
     /// Empty (zero bytes) on an `S32Le` lane, and empty under the SHM-ring source
@@ -524,12 +525,17 @@ impl ChildPeriods {
     /// One stereo period per child, at `format`. `CHANNELS` (not the sink's
     /// 4-channel content width): each child is a stereo DAC.
     ///
-    /// **Fallible, and only because of `S24_3Le`.** There is no packed-24 variant:
-    /// the composite's children move to a new width only when the composite
-    /// profile's own declaration moves, and per wide-output-path D9 that is one
-    /// change, not two — the children and the composite move together or not at
-    /// all. So an `S24_3Le` declaration reaching a composite means the registry
-    /// and this transport disagree, and the ONLY safe answer is to refuse.
+    /// **Fallible, and only because of `S24_3Le`.** There is no packed-24
+    /// variant, because this transport has no packed-24 child write path: the
+    /// arms below hold an i16 pair or an i32 pair, and
+    /// [`deinterleave_4ch_to_dual_stereo`] is generic over the sample TYPE —
+    /// Rust has no 3-byte integer for it to be. So an `S24_3Le` declaration
+    /// reaching a composite means the registry and this transport disagree, and
+    /// the ONLY safe answer is to refuse. The registry holds every composite off
+    /// this width, pinned by
+    /// tests/test_dac_profiles.py::test_a_composite_never_declares_a_width_its_transport_refuses;
+    /// jaspercurry/JTS#2257 tracks adding the packed child write path that would
+    /// let a composite declare it.
     ///
     /// Refuse rather than fall back to `S16`, which is what a `_ =>` arm would
     /// have done: outputd would then have asked BOTH children for `S24_3LE` at
@@ -551,8 +557,8 @@ impl ChildPeriods {
             SampleFormat::S24_3Le => anyhow::bail!(
                 "outputd composite sink cannot drive an {} child edge: the paired \
                  transport has no packed-24 child write path, so a composite must \
-                 declare S16_LE or S32_LE (its children move width with it, or not \
-                 at all)",
+                 declare S16_LE or S32_LE (a child profile may still declare the \
+                 packed edge for its own single-DAC case; see jaspercurry/JTS#2257)",
                 format.as_str()
             ),
         })
@@ -971,8 +977,10 @@ impl AlsaBackend {
         let channels = self.channels as usize;
         let frames_total = samples.len() / channels;
         match self.dac_format {
-            // DEFAULT PATH — every S16_LE edge, which is every commissioned
-            // box today. The one place on the output path where resolution is
+            // DEFAULT PATH — every S16_LE edge, which is every box whose DAC
+            // profile declares no wider one (the dual-Apple composite, DAC8x
+            // Studio, and any unrecognized card, which resolves to this
+            // default). The one place on the output path where resolution is
             // deliberately given up, and it is given up ONCE: round-to-nearest,
             // not the truncating capture conversion. For content that arrived as
             // S16 at unity gain this is bit-identical to the pre-spine path (see
@@ -1000,9 +1008,9 @@ impl AlsaBackend {
                     &mut self.counters.dac_xrun_count,
                 )?;
             }
-            // THE PACKED EDGE (dormant — no profile declares it). Quantize to 24
-            // significant bits and pack three little-endian bytes per sample, then
-            // hand ALSA the BYTES.
+            // THE PACKED EDGE — live wherever a single Apple USB-C dongle is the
+            // armed DAC. Quantize to 24 significant bits and pack three
+            // little-endian bytes per sample, then hand ALSA the BYTES.
             //
             // `io_bytes()` is alsa-rs's documented mechanism for exactly this
             // case: "Call this if you have an unusual format, not supported by the
@@ -1164,9 +1172,14 @@ impl PairedCompositeSink {
                 // dac_b_negotiated` check below: `NegotiatedPcm` carries
                 // sample_rate/period_frames/buffer_frames and no format at all,
                 // so two children running different widths compare equal there.
-                // The registry-side guard is
-                // tests/test_dac_profiles.py::test_a_composite_declares_the_same_edge_format_as_every_child,
-                // which fails at build time instead of on a household's speaker.
+                // The registry-side guards are
+                // tests/test_dac_profiles.py::test_a_composite_never_declares_a_width_its_transport_refuses
+                // and ::test_a_composite_may_diverge_from_its_child_only_at_that_capability_gap,
+                // which fail at build time instead of on a household's speaker.
+                // They no longer require a composite to match its child profile:
+                // the Apple dongle declares `S24_3LE` for its own single-DAC
+                // case while this composite stays `S16_LE`, because the emitted
+                // format is resolved from the ARMED profile's id.
                 format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
                 manual_start: true,
@@ -3028,10 +3041,12 @@ mod tests {
 
     #[test]
     fn a_composite_child_edge_of_packed_24_is_refused_not_silently_narrowed() {
-        // The composite has no packed-24 child write path, and per
-        // wide-output-path D9 its children move width only when the composite
-        // profile's own declaration moves — together, or not at all. So this
-        // declaration means the registry and this transport disagree.
+        // The composite has no packed-24 child write path, so this declaration
+        // means the registry and this transport disagree. A CHILD PROFILE may
+        // legitimately declare the packed edge for its own single-DAC case — the
+        // Apple dongle does — because the emitted format is resolved from the
+        // ARMED profile's id; what must never reach here is a COMPOSITE
+        // declaring it. jaspercurry/JTS#2257 is the unlock.
         //
         // What a `_ => Self::S16 {..}` fallback would have done instead is the
         // whole reason this is fallible: `configure_pcm` reads the SAME
