@@ -1527,6 +1527,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (proposal) proposal.innerHTML = renderCrossoverPreviewCardBody(topology);
     var footer = el('view-body').querySelector('[data-driver-research-footer]');
     if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml(topology);
+    var echo = el('view-body').querySelector('[data-driver-echo]');
+    if (echo) echo.innerHTML = renderDriverEchoBack(topology);
   }
   // A delay entered without picking which driver it applies to would silently
   // mis-shape the saved candidate (manualSettingsPayload omits both delay_ms
@@ -3127,6 +3129,270 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }).join('') + '</div>';
   }
+  // --- "Here's what we got — here's what we're running with" (#2195) --------
+  //
+  // The research assistant is now asked for its BEST number rather than a
+  // timid one, declared as published-or-estimated with one citation. That
+  // trade only works if the household can arbitrate, so every value JTS
+  // consumed is echoed back with its badge and its source before anything is
+  // confirmed. This panel replaced a bare tally ("2 of these limits came from
+  // the research reply as estimates"), which told the operator how many
+  // numbers to distrust without saying which.
+  //
+  // Two rules keep it honest:
+  //   * The badge is DERIVED from confidence, which stays the single stored
+  //     writer of published-vs-estimated (there is no `state` key on the
+  //     wire — see driver_safety._normalise_field_provenance).
+  //   * Only "high"/"medium" assert a published figure. Silence is not a
+  //     publication claim, so a value with no provenance entry at all reads
+  //     "estimated" rather than being quietly promoted.
+  function driverProvenanceState(entry) {
+    var confidence = String((entry && entry.confidence) || '');
+    return (confidence === 'high' || confidence === 'medium')
+      ? 'confirmed' : 'estimated';
+  }
+  // One citation, linkified only when it really is a web address. `source` is
+  // a free string by design (a datasheet is often a NAME, not a URL), so the
+  // http(s) test is what decides; everything else renders as escaped text.
+  // Both branches escape — this string came from an LLM reply the operator
+  // pasted, which is untrusted input.
+  function provenanceSourceHtml(entry) {
+    var sources = (entry && Array.isArray(entry.sources)) ? entry.sources : [];
+    var raw = (entry && entry.source) || sources[0] || '';
+    var source = String(raw == null ? '' : raw).trim();
+    if (!source) {
+      return '<span class="driver-echo__source driver-echo__source--empty">' +
+        'no source given</span>';
+    }
+    // target="_blank" because this panel renders BEFORE anything is saved:
+    // following a citation in this tab would navigate away from the pasted
+    // JSON the operator is checking. Same convention as every other external
+    // link in the management UI; rel guards the opener either way.
+    if (/^https?:\/\/[^\s]+$/i.test(source)) {
+      return '<a class="driver-echo__source" href="' + escapeHtml(source) +
+        '" target="_blank" rel="noreferrer noopener">' +
+        escapeHtml(source) + '</a>';
+    }
+    return '<span class="driver-echo__source">' + escapeHtml(source) + '</span>';
+  }
+  // Code-owned protection bounds for one target, straight from the server
+  // (design draft `driver_protection_policy_view`, re-derived on every load
+  // that knows the topology — which the /sound/ endpoint always does). The
+  // page deliberately keeps NO copy of max_auto_level_dbfs or the absolute
+  // measurement ceiling: both are policy, and a second copy here would drift.
+  function driverProtectionPolicy() {
+    var policy = (driverResearch.designDraft || {}).driver_protection_policy_view;
+    return (policy && typeof policy === 'object') ? policy : null;
+  }
+  function driverProtectionPolicyForTarget(targetId) {
+    var policy = driverProtectionPolicy();
+    var targets = (policy && Array.isArray(policy.targets)) ? policy.targets : [];
+    return targets.filter(function(item) {
+      return item && item.target_id === targetId;
+    })[0] || null;
+  }
+  function echoBandText(setting, prefix) {
+    var low = manualNumberValue(setting[prefix + '_min_hz']);
+    var high = manualNumberValue(setting[prefix + '_max_hz']);
+    if (low == null || high == null) return '';
+    return fmtFreq(low) + ' to ' + fmtFreq(high);
+  }
+  function echoFilterText(setting) {
+    return ['highpass', 'lowpass'].map(function(kind) {
+      var cutoff = manualNumberValue(setting['required_' + kind + '_cutoff_hz']);
+      var slope = manualNumberValue(
+        setting['required_' + kind + '_min_slope_db_per_octave']
+      );
+      if (cutoff == null) return '';
+      return (kind === 'highpass' ? 'high-pass ' : 'low-pass ') + fmtFreq(cutoff) +
+        (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
+    }).filter(Boolean).join('; ');
+  }
+  // Cabinet GEOMETRY only. enclosure_kind is an operator-declared installation
+  // choice the research ask is forbidden to infer, and the import boundary
+  // strips it out of a reply's cabinet before applying it -- so it is not one
+  // of "the values the research reply gave us" and does not belong in a panel
+  // that says it is.
+  function echoCabinetText(setting) {
+    var parts = [];
+    var count = manualNumberValue(setting.radiator_count);
+    var diameter = manualNumberValue(setting.effective_radiating_diameter_mm);
+    var baffle = manualNumberValue(setting.baffle_width_mm);
+    if (count != null) parts.push(count + (count === 1 ? ' radiator' : ' radiators'));
+    if (diameter != null) parts.push(diameter + ' mm effective diameter');
+    if (baffle != null) parts.push(baffle + ' mm baffle');
+    return parts.join(', ');
+  }
+  function echoLevelText(setting) {
+    var parts = [];
+    var peak = manualNumberValue(setting.max_effective_peak_dbfs);
+    var sweep = manualNumberValue(setting.max_sweep_duration_s);
+    var repeats = manualNumberValue(setting.max_repeat_count);
+    var cooldown = manualNumberValue(setting.minimum_cooldown_s);
+    if (peak != null) parts.push(fmtDb(peak) + ' dBFS peak');
+    if (sweep != null) parts.push('sweeps up to ' + sweep + ' s');
+    if (repeats != null) parts.push(repeats + ' repeats');
+    if (cooldown != null) parts.push(cooldown + ' s cooldown');
+    return parts.join(', ');
+  }
+  // Exactly the union of two server-owned sets, in the order they matter to a
+  // household reading the panel:
+  //   * the five keys the research ask requires a source for
+  //     (driver_safety._PROMPT_PROVENANCE_KEYS), and
+  //   * the six fields _profile_core FREEZES into the confirmed safety profile
+  //     (its `safety_field_names`).
+  // Eight keys, because three overlap. The panel headline states that union as
+  // its completeness claim, so the two must not drift apart: the tripwire is
+  // tests/test_sound_profile_echo_back_contract.py, which also pins every key
+  // here inside _V2_RESEARCH_COMPARABLE_FIELDS.
+  //
+  // Each entry reads the value JTS is actually RUNNING WITH out of the working
+  // setting, not the number in the reply — those are the same until the
+  // operator edits one, and the setting is what gets frozen.
+  function driverEchoBackFields() {
+    return [
+      {
+        key: 'hard_excitation_band_hz',
+        label: 'Never test outside',
+        read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
+      },
+      {
+        key: 'do_not_test_below_hz',
+        label: 'Never test below',
+        read: function(setting) {
+          var value = manualNumberValue(setting.do_not_test_below_hz);
+          return value == null ? '' : fmtFreq(value);
+        }
+      },
+      {
+        key: 'required_protection_filters',
+        label: 'Protection filter',
+        read: echoFilterText
+      },
+      {
+        key: 'measurement_band_hz',
+        label: 'Measure inside',
+        read: function(setting) { return echoBandText(setting, 'measurement'); }
+      },
+      {
+        key: 'crossover_search_band_hz',
+        label: 'Try crossovers inside',
+        read: function(setting) { return echoBandText(setting, 'crossover_search'); }
+      },
+      {
+        key: 'level_duration_limits',
+        label: 'Test level and duration',
+        read: echoLevelText
+      },
+      {
+        key: 'sensitivity_db_2v83_1m',
+        label: 'Sensitivity',
+        read: function(setting) {
+          var value = manualNumberValue(setting.sensitivity_db_2v83_1m);
+          return value == null ? '' : fmtDb(value) + ' dB';
+        }
+      },
+      {
+        key: 'cabinet',
+        label: 'Cabinet geometry',
+        read: echoCabinetText
+      }
+    ];
+  }
+  // The delegation sentinel, disclosed (#2192, folded into #2195). A
+  // high-frequency target left sitting exactly on its class ceiling is read by
+  // resolve_driver_excitation_ceilings as "no driver-specific level intent",
+  // and the measurement level is then DERIVED — up to the absolute ceiling the
+  // server hands us. Confirming that number without this line would tell the
+  // household they had capped something they had actually delegated. The bound
+  // is never hardcoded here; no bound from the server means no sentence.
+  function driverEchoSentinelText(targetId, setting) {
+    var policy = driverProtectionPolicyForTarget(targetId);
+    var bound = manualNumberValue(
+      (driverProtectionPolicy() || {}).hf_measurement_abs_ceiling_dbfs
+    );
+    if (!policy || policy.role_class !== 'high_frequency' || bound == null) return '';
+    var ceiling = manualNumberValue(policy.max_auto_level_dbfs);
+    var peak = manualNumberValue(setting.max_effective_peak_dbfs);
+    if (ceiling == null || peak == null || peak !== ceiling) return '';
+    return 'Test level here is left to JTS. It picks the level once a ' +
+      'protective high-pass is in place, and never goes above ' +
+      fmtDb(bound) + ' dBFS.';
+  }
+  function driverEchoBackRowsHtml(targetId, driver) {
+    var setting = driverSetting(targetId);
+    var provenance = (driver && driver.field_provenance) || {};
+    var rows = driverEchoBackFields().map(function(field) {
+      if (!driver || driver[field.key] == null) return '';
+      var value = field.read(setting);
+      var entry = provenance[field.key];
+      return '<div class="driver-echo__row">' +
+        '<dt>' + escapeHtml(field.label) + '</dt>' +
+        '<dd>' +
+          '<span class="driver-echo__value">' +
+            escapeHtml(value || 'not set') + '</span>' +
+          '<span class="status-pill' +
+            (driverProvenanceState(entry) === 'confirmed' ?
+              ' status-pill--ready' : '') + '">' +
+            escapeHtml(driverProvenanceState(entry)) + '</span>' +
+          provenanceSourceHtml(entry) +
+        '</dd>' +
+      '</div>';
+    }).filter(Boolean).join('');
+    var sentinel = driverEchoSentinelText(targetId, setting);
+    return (rows ? '<dl class="driver-echo__rows">' + rows + '</dl>' : '') +
+      (sentinel ? '<p class="setting-row__hint">' +
+        escapeHtml(sentinel) + '</p>' : '');
+  }
+  function renderDriverEchoBack(topology) {
+    var payload = driverResearch.importedPayload;
+    if (!payload || !Array.isArray(payload.drivers)) return '';
+    // A v2 packet whose binding a visible edit invalidated is not describing
+    // this speaker any more. Same currency rule driverEvidenceForTarget uses.
+    if (Number(payload.artifact_schema_version || 1) === 2 &&
+        !driverResearch.researchRequest) {
+      return '';
+    }
+    var blocks = driverResearchTargets(topology).map(function(target) {
+      var driver = payload.drivers.filter(function(item) {
+        return item && String(item.target_id || '') === target.target_id;
+      })[0];
+      if (!driver) return '';
+      // Once the operator edits a target's values, the reply's badges stop
+      // describing them. Suppress rather than mislabel -- the same call
+      // driverEvidenceForTarget makes for the Advanced evidence block.
+      if (driverResearch.editedDriverTargets[target.target_id]) {
+        return '<section class="driver-echo__driver">' +
+          '<h4 class="setting-row__title">' +
+            escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
+          '<p class="setting-row__hint">You changed these values, so the ' +
+            'research reply no longer describes them.</p>' +
+        '</section>';
+      }
+      var rows = driverEchoBackRowsHtml(target.target_id, driver);
+      if (!rows) return '';
+      return '<section class="driver-echo__driver">' +
+        '<h4 class="setting-row__title">' +
+          escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
+        rows +
+      '</section>';
+    }).filter(Boolean).join('');
+    if (!blocks) return '';
+    return '<div class="driver-research__panel driver-echo">' +
+      // The completeness claim is scoped to the set driverEchoBackFields
+      // actually renders, and it has to stay that way: an earlier draft said
+      // "every value the research reply gave us" while three frozen fields
+      // went unechoed, which is the one thing a check-before-you-confirm
+      // surface cannot be wrong about.
+      '<div><p class="setting-row__title">3. What JTS is running with</p>' +
+        '<p class="setting-row__hint">Every value the research reply gave us ' +
+        'that JTS asked it to source, or that gets frozen into this ' +
+        'speaker&rsquo;s safety limits. Each one shows whether it was a ' +
+        'published figure or an estimate. Check anything that looks wrong ' +
+        'before you confirm.</p></div>' +
+      blocks +
+    '</div>';
+  }
   function renderDriverResearchAiHelper(topology) {
     var promptReady = driverResearchPromptReady(topology);
     var promptSelected = driverResearch.promptSelected && !driverResearch.promptCopied;
@@ -3165,6 +3431,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<div id="driver-research-import-summary">' + renderDriverResearchSummary() + '</div>' +
         '</div>' +
       '</div>' +
+      // Stable container so a manual edit can repaint just this panel. A
+      // number input's own keystrokes must not trigger a full render (focus
+      // loss), but leaving the echo showing a value the operator has already
+      // changed is the exact dishonesty this panel exists to end -- so it gets
+      // the same targeted refresh [data-driver-proposal] has.
+      '<div data-driver-echo>' + renderDriverEchoBack(topology) + '</div>' +
     '</section>';
   }
   // Issue #1820 defect 3. The ONE control that clears a needs-confirmation
@@ -3229,58 +3501,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'limits. Changing a driver detail clears the confirmation, so confirm ' +
       'again after any edit.';
   }
-  // The keys this callout is allowed to describe as "limits". field_provenance
-  // legitimately carries entries for sensitivity (a gain trim) and for cabinet
-  // geometry, and counting those inflated the number at the confirmation gate
-  // -- the operator is being asked to freeze LIMITS, so only limit-bearing keys
-  // belong in the count. Mirrors the safety fields _profile_core freezes.
-  var DRIVER_SAFETY_LIMIT_PROVENANCE_KEYS = [
-    'hard_excitation_band_hz',
-    'required_protection_filters',
-    'measurement_band_hz',
-    'crossover_search_band_hz',
-    'level_duration_limits',
-    'do_not_test_below_hz'
-  ];
-  // How many limit-setting values the research reply marked as estimates
-  // rather than published figures. Under the estimate contract (#2186) an
-  // unpublished number comes back as a conservative estimate tagged
-  // confidence:"low", so this is the count the operator should eyeball before
-  // freezing the profile. Deliberately a property of the REPLY, not of the
-  // final values -- that stays true however the operator edits them after.
-  function driverSafetyEstimateCount() {
-    var payload = driverResearch.importedPayload;
-    if (!payload || Number(payload.artifact_schema_version) !== 2) return 0;
-    return (Array.isArray(payload.drivers) ? payload.drivers : [])
-      .reduce(function(count, driver) {
-        var provenance = (driver && driver.field_provenance) || {};
-        return count + DRIVER_SAFETY_LIMIT_PROVENANCE_KEYS.filter(function(key) {
-          return (provenance[key] || {}).confidence === 'low';
-        }).length;
-      }, 0);
-  }
-  function driverSafetyEstimateNote() {
-    var estimates = driverSafetyEstimateCount();
-    if (!estimates) return '';
-    if (estimates === 1) {
-      return 'One of these limits came from the research reply as an estimate, ' +
-        'not a published figure. Check it before confirming.';
-    }
-    return estimates + ' of these limits came from the research reply as ' +
-      'estimates, not published figures. Check them before confirming.';
-  }
   function renderDriverSafetyConfirmCallout(topology) {
     var state = driverSafetyConfirmState(topology);
     if (!state.needsConfirmation) return '';
     var saveDisabled = driverResearch.saving || outputTopology.dirty || !topology;
-    var estimateNote = driverSafetyEstimateNote();
+    // No estimate COUNT here any more (#2195). A tally told the operator how
+    // many numbers to distrust without saying which, so it could only produce
+    // unease. "Here's what we're running with" below the paste box names every
+    // value, its published/estimated badge, and its source instead.
     return '<div class="driver-research__section driver-research__confirm" id="' +
         CONFIRM_SAFETY_ANCHOR_ID + '">' +
       '<div><h3 class="setting-row__title">Confirm the safety limits</h3>' +
         '<p class="setting-row__hint">' +
           escapeHtml(driverSafetyConfirmHint(state)) + '</p>' +
-        (estimateNote ?
-          '<p class="setting-row__hint">' + escapeHtml(estimateNote) + '</p>' : '') +
         '</div>' +
       (state.canConfirm ?
         '<div class="driver-research__actions">' +

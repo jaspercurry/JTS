@@ -1930,8 +1930,14 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
         assert driver["level_duration_limits"].get(field) is not None
 
 
-def test_prompt_orders_published_first_then_conservative_estimate() -> None:
-    """The ask ranks its own answers instead of stonewalling on null."""
+def test_prompt_asks_for_a_best_estimate_declared_with_a_source() -> None:
+    """The ask ranks its own answers instead of stonewalling on null.
+
+    #2195 changed the *kind* of estimate asked for.  "Conservative" is gone:
+    safety lives in the clamps below, and prompt-level lowballing only costs
+    performance.  What replaces it is best-number-plus-declaration-plus-source,
+    so the operator can arbitrate rather than inherit a timid guess.
+    """
 
     prompt = _mono_prompt()
 
@@ -1940,10 +1946,15 @@ def test_prompt_orders_published_first_then_conservative_estimate() -> None:
     assert "Never estimate from a similar model" not in prompt
     assert "null is a correct answer, not a failure" not in prompt
 
-    assert "give a conservative engineering estimate" in prompt
+    # The retired #2186 posture. Both sentences are gone, not reworded:
+    # "conservative" must not survive anywhere in the ask.
+    assert "conservative" not in prompt.lower()
+
+    assert "best reality-grounded engineering estimate" in prompt
+    assert "from the driver's published facts and physics" in prompt
     assert 'Tag it confidence "low"' in prompt
     assert "an estimate should look like one" in prompt
-    assert "Conservative means the safer side of the guess" in prompt
+    assert "Declare every estimate as an estimate and name one source" in prompt
     assert "Use null only for a field with no engineering basis at all" in prompt
 
     # Operator authority over installation choices is NOT part of the ruling
@@ -1963,6 +1974,247 @@ def test_prompt_orders_published_first_then_conservative_estimate() -> None:
         for entry in provenance.values()
         if entry["confidence"] == "low"
     )
+    # Both eras of entry carry the citation -- the ask says "either way", and a
+    # template that only sourced the published field would teach otherwise.
+    assert all(entry.get("source") for entry in provenance.values()), provenance
+
+
+def test_prompt_template_provenance_is_a_subset_of_what_the_parser_accepts() -> None:
+    """ask ⊂ accept: every key the template teaches must normalise.
+
+    The #2186 postmortem's leg 1 was exactly this — the RESULT SHAPE taught a
+    shape the gate refused — so the new ``source`` key gets the same mechanical
+    check rather than an argument that it is fine.
+    """
+
+    from jasper.active_speaker.driver_safety import _normalise_field_provenance
+
+    provenance = _prompt_json_example(_mono_prompt())["drivers"][0][
+        "field_provenance"
+    ]
+    normalised = _normalise_field_provenance(provenance, "driver.field_provenance")
+
+    assert set(normalised) == set(provenance)
+    for key, entry in normalised.items():
+        assert entry["source"] == provenance[key]["source"]
+        assert entry["confidence"] == provenance[key]["confidence"]
+
+
+def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> None:
+    """``source`` is optional and absent means absent, never ``None``.
+
+    A stored safety profile is re-normalised and compared as canonical JSON
+    (``_validate_driver_safety_profile_shape``).  If a pre-#2195 provenance
+    entry gained a ``"source": null`` key on the way through, every already-
+    confirmed profile on a deployed box would read back as noncanonical and
+    lose its confirmation.  This pins the omission.
+    """
+
+    from jasper.active_speaker.driver_safety import (
+        MAX_PROVENANCE_SOURCE_CHARS,
+        _canonical_json,
+        _normalise_field_provenance,
+    )
+
+    legacy = {
+        "do_not_test_below_hz": {
+            "confidence": "high",
+            "basis": "datasheet minimum crossover",
+            "sources": ["https://example.test/t1"],
+        }
+    }
+    normalised_legacy = _normalise_field_provenance(legacy, "driver.field_provenance")
+    assert _canonical_json(normalised_legacy) == _canonical_json(legacy)
+    assert "source" not in normalised_legacy["do_not_test_below_hz"]
+
+    sourced = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated: protocol default",
+            "source": "  Dayton   CX120-8 datasheet, p.2 ",
+            "sources": [],
+        }
+    }
+    entry = _normalise_field_provenance(sourced, "driver.field_provenance")[
+        "level_duration_limits"
+    ]
+    # Whitespace-collapsed like every other free string on this contract.
+    assert entry["source"] == "Dayton CX120-8 datasheet, p.2"
+
+    # Length-capped, and the cap names the field so an operator can find it.
+    too_long = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated",
+            "source": "x" * (MAX_PROVENANCE_SOURCE_CHARS + 1),
+        }
+    }
+    with pytest.raises(DriverSafetyProfileError) as excinfo:
+        _normalise_field_provenance(too_long, "driver.field_provenance")
+    assert "level_duration_limits.source" in str(excinfo.value)
+
+    # The citation slot must hold any URL the `sources` list holds. They are
+    # separate budgets, but a datasheet URL is a legal citation, so a cap that
+    # accepted a URL in the list and refused the SAME URL in `source` would
+    # reject a correct reply for a reason no researcher could have anticipated.
+    # Pinned behaviourally in both slots rather than by comparing constants,
+    # because what matters is that the promotion works, not how it is spelled.
+    long_url = "https://example.test/datasheets/" + "d" * 280
+    both_slots = {
+        "hard_excitation_band_hz": {
+            "confidence": "high",
+            "basis": "datasheet usable range",
+            "source": long_url,
+            "sources": [long_url],
+        }
+    }
+    promoted = _normalise_field_provenance(both_slots, "driver.field_provenance")[
+        "hard_excitation_band_hz"
+    ]
+    assert promoted["sources"] == [long_url]
+    assert promoted["source"] == long_url, (
+        "a URL the sources list accepts must be promotable verbatim into the "
+        "single citation slot"
+    )
+
+    # And the pre-#2233 cap is genuinely gone: 161 characters used to raise.
+    formerly_refused = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated",
+            "source": "y" * 161,
+        }
+    }
+    assert (
+        _normalise_field_provenance(formerly_refused, "driver.field_provenance")[
+            "level_duration_limits"
+        ]["source"]
+        == "y" * 161
+    )
+
+
+@pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
+def test_protection_policy_view_reads_policy_never_restates_it(
+    style: str,
+    expected_floor: float,
+) -> None:
+    """The page's policy echo is derived, per target, from the one owner.
+
+    Nine registered styles with five distinct floors: a hand-written constant
+    cannot satisfy all of them, so this fails the moment the view stops calling
+    ``driver_protection_profile``.  ``role_class`` travels too, so /sound/ never
+    keeps its own copy of which roles are high-frequency.
+    """
+
+    from jasper.active_speaker.driver_protection import (
+        HF_MEASUREMENT_ABS_CEILING_DBFS,
+        driver_protection_profile,
+    )
+    from jasper.active_speaker.driver_safety import driver_protection_policy_view
+
+    view = driver_protection_policy_view(_topology_with_tweeter_style(style))
+
+    assert view["hf_measurement_abs_ceiling_dbfs"] == HF_MEASUREMENT_ABS_CEILING_DBFS
+    by_target = {entry["target_id"]: entry for entry in view["targets"]}
+    assert set(by_target) == {"mono:woofer", "mono:tweeter"}
+
+    tweeter = by_target["mono:tweeter"]
+    policy = driver_protection_profile("tweeter", driver_style=style)
+    assert tweeter["role_class"] == "high_frequency"
+    assert tweeter["min_highpass_hz"] == expected_floor == policy.min_highpass_hz
+    assert tweeter["max_auto_level_dbfs"] == policy.max_auto_level_dbfs
+
+    woofer = by_target["mono:woofer"]
+    assert woofer["role_class"] == "low_frequency"
+    assert woofer["min_highpass_hz"] is None
+
+    # The emitted per-target shape, pinned. `role` is deliberately absent --
+    # role_class answers every question the page asks, and a field with no
+    # reader is a field that drifts unnoticed. `min_highpass_hz` stays because
+    # it is the only value here that DISCRIMINATES between HF styles (they all
+    # share max_auto_level_dbfs), so it is what the parametrisation above uses
+    # to prove this view is derived rather than restated.
+    assert set(tweeter) == {
+        "target_id",
+        "role_class",
+        "max_auto_level_dbfs",
+        "min_highpass_hz",
+    }
+    assert set(view) == {"policy_version", "hf_measurement_abs_ceiling_dbfs", "targets"}
+
+
+def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
+    tmp_path: Path,
+) -> None:
+    """A saved policy echo is never read back as current policy.
+
+    Same contract as ``driver_safety_profile_evaluation``: the value on disk
+    was right for the code and topology in force when it was written, and both
+    move underneath it.  A stale ``max_auto_level_dbfs`` here would mislabel the
+    delegation sentinel on the /sound/ echo-back panel.
+
+    Scoped to a topology-supplied load on purpose -- that is the only kind that
+    can re-derive anything, and it is what the /sound/ endpoint always does.
+    ``load_design_draft`` with no topology returns the disk copy untouched.
+    """
+
+    from jasper.active_speaker.driver_safety import driver_protection_policy_view
+
+    topology = _topology_with_tweeter_style("dome_tweeter")
+    path = tmp_path / "design_draft.json"
+    saved = save_design_draft(
+        topology,
+        manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(),
+        path=path,
+    )
+    assert saved["driver_protection_policy_view"] == driver_protection_policy_view(
+        topology
+    )
+
+    # Poison the persisted copy the way a policy change would.
+    raw = json.loads(path.read_text())
+    raw["driver_protection_policy_view"]["hf_measurement_abs_ceiling_dbfs"] = -99.0
+    raw["driver_protection_policy_view"]["targets"] = []
+    path.write_text(json.dumps(raw))
+
+    loaded = load_design_draft(path, topology=topology)
+    assert loaded["driver_protection_policy_view"] == driver_protection_policy_view(
+        topology
+    )
+
+    # The name is load-bearing: excitation_safety_plan already hashes a
+    # DIFFERENT shape under `driver_protection_policy` inside the protection-
+    # requirement fingerprint, so the draft key must not collide with it.
+    assert "driver_protection_policy" not in saved
+
+
+def test_provenance_has_no_second_writer_for_published_versus_estimated() -> None:
+    """``state`` is derived from ``confidence``, never a second stored fact.
+
+    The #2195 ruling lists ``state`` among the facts a value carries, and in
+    the same breath defines it as a *mapping* of the existing vocabulary
+    (``low -> estimated``, ``medium/high -> confirmed``).  Deriving it is
+    therefore what the ruling describes; storing it as well would give one
+    fact two writers that can disagree, and the reply is the untrusted side.
+    ``confidence`` stays the single writer and the badge is derived at display
+    time, so this key is refused by name.
+    """
+
+    from jasper.active_speaker.driver_safety import _normalise_field_provenance
+
+    with pytest.raises(DriverSafetyProfileError) as excinfo:
+        _normalise_field_provenance(
+            {
+                "level_duration_limits": {
+                    "confidence": "high",
+                    "basis": "datasheet",
+                    "state": "estimated",
+                }
+            },
+            "driver.field_provenance",
+        )
+    assert "state" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
@@ -2013,8 +2265,9 @@ def test_protection_filter_without_numbers_is_refused_by_name() -> None:
 
     The old message named the two missing keys but not the fix, and the
     browser dropped the whole packet before the operator ever saw it.  Under
-    the estimate contract the honest answer to an unpublished protective
-    cutoff is a conservative estimate, so the refusal says that out loud.
+    the best-estimate contract (#2195) the honest answer to an unpublished
+    protective cutoff is the researcher's best estimate, so the refusal says
+    that out loud.
     """
 
     from jasper.active_speaker.driver_safety import _normalise_protection_filters
@@ -2030,7 +2283,7 @@ def test_protection_filter_without_numbers_is_refused_by_name() -> None:
 
     message = str(excinfo.value)
     assert "cutoff_hz and minimum_slope_db_per_octave" in message
-    assert "conservative estimate, not null" in message
+    assert "best engineering estimate, not null" in message
     # Naming the entry is what lets the operator find it among several drivers.
     assert "driver.required_protection_filters[0]" in message
 
@@ -2240,7 +2493,7 @@ def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
 
     message = str(excinfo.value)
     assert "required_protection_filters" in message
-    assert "conservative estimate, not null" in message
+    assert "best engineering estimate, not null" in message
 
 
 def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:

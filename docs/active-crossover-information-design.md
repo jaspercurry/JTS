@@ -450,25 +450,51 @@ allowed to be, and the two are settled independently. Most of them —
 slope — appear in essentially no consumer datasheet, so an ask that forbade
 estimating deadlocked most real drivers and left nine hand-typed fields as the
 only route through. The research ask therefore ranks its own answers: the
-published value first, then a **conservative engineering estimate** derived from
-the driver's type and size, tagged `confidence: "low"` with its derivation in
-`basis`, and `null` only where there is no engineering basis at all. The ask
-also names, per target, the code-owned bounds the reply must clear, and its
+published value first, then the researcher's **best reality-grounded
+engineering estimate** from the driver's published facts and physics, tagged
+`confidence: "low"` with its derivation in `basis`, and `null` only where there
+is no engineering basis at all. The estimate asked for is deliberately not a
+timid one: safety never lived in a number's modesty but in the bounds below,
+the per-style high-pass floor, the peak ceiling, and the quiet-start ramp,
+while prompt-level lowballing costs real performance — a needlessly high cutoff
+robs usable range, a needlessly low level under-drives the measurement. Every
+estimate is therefore declared as an estimate and carries one citation in its
+provenance `source`: the datasheet or measurement for a published number, and
+for an estimate the single fact it leaned on. The ask also names, per target,
+the code-owned bounds the reply must clear, and its
 worked example fills itself in from those same bounds — both read from
 `driver_protection_profile` rather than restated, so an estimate can land on
 the first try and the example is never a worked answer the gate refuses for the
 tweeter style actually installed. What did not move is the bound itself: `_target_issues` refuses
 an out-of-bounds value however impeccable its provenance, and refuses it **by
 name** rather than silently clamping it, so the operator sees the bound and
-decides. The confirm callout states how many of the limits arrived as estimates
-rather than published figures. Owner ruling, 2026-08-06 (issue #2186).
+decides.
+
+The operator is the arbiter, so `/sound/` echoes the reply back before anything
+is confirmed: "What JTS is running with" names every value the ask required a
+source for **and** every value `_profile_core` freezes into the safety profile
+— the union of the two sets — badges each `confirmed` or `estimated`, and shows
+its single source, linkified only when it really is a URL. The panel says
+exactly that much and no more: a completeness claim on the one screen whose
+job is accuracy has to be literally true, so the rendered set and the
+sentence above it are pinned together in
+`tests/test_sound_profile_echo_back_contract.py`. That per-value truth replaced
+a bare tally of how many limits arrived as estimates — a count told the
+operator how many numbers to distrust without saying which. The badge is
+derived from `confidence`, which stays the single stored writer of
+published-versus-estimated; there is deliberately no second `state` key on
+the wire that could disagree with it. Owner rulings, 2026-08-06 (issues
+#2186 and #2195, the latter superseding the former's conservative-estimate
+half and absorbing #2192).
 
 One of those bounds is also a **sentinel**, and the ask lands on it deliberately.
 For a high-frequency role on the proven-high-pass path,
 `resolve_driver_excitation_ceilings` reads a declared
 `max_effective_peak_dbfs` that exactly equals the class default as "no
 driver-specific level intent was expressed" and supersedes it with the
-sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS`; any
+sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS` — a
+hearing-safety bound, not derived from any driver's declared data, and
+provisional pending W6 bench validation; any
 other declared value is honoured literally. So a tweeter declared at the class
 default can be measured up to 30 dB louder than that number suggests, while one
 declared a single dB quieter is taken at face value. That discontinuity predates
@@ -476,7 +502,15 @@ the estimate contract, but the research ask is now its first automated writer,
 so the ask tells the assistant what declaring the ceiling actually delegates,
 and the template value, the class default, and the equality comparison are
 pinned as one three-link chain in
-`tests/test_active_speaker_driver_safety.py`.
+`tests/test_active_speaker_driver_safety.py`. That disclosure is no longer only
+assistant-facing: when an echoed peak sits exactly on its class ceiling, the
+echo-back panel says so in the operator's own words — the level is left to JTS,
+picked once a protective high-pass is in place, and never above
+`HF_MEASUREMENT_ABS_CEILING_DBFS`. Both that bound and the per-target class
+default reach the page from `driver_protection_policy_view`, re-stamped on
+every design-draft load so a persisted copy can never be read back as current
+policy; the page keeps no copy of either. A missing bound produces no sentence
+rather than a fabricated number (issue #2192, folded into #2195).
 
 ### Step 3A: manual crossover
 

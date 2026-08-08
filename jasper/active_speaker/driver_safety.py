@@ -27,6 +27,7 @@ from jasper.output_topology import OutputTopology
 
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
+    HF_MEASUREMENT_ABS_CEILING_DBFS,
     HIGH_FREQUENCY_ROLES,
     driver_protection_profile,
 )
@@ -54,6 +55,13 @@ SUPPORTED_FIELD_CONFIDENCE = {"low", "medium", "high", "unknown"}
 MAX_UNKNOWNS = 32
 MAX_PROVENANCE_FIELDS = 32
 MAX_PROVENANCE_SOURCES = 8
+#: Cap for a provenance entry's single free-text ``source`` citation. Deliberately
+#: the same budget as a ``sources[]`` URL (320): the citation slot legitimately
+#: holds a datasheet URL, so any URL the list accepts must be promotable here
+#: verbatim. A tighter cap would refuse a legal source for being long, and the
+#: /sound/ echo-back panel wraps a long citation rather than depending on it
+#: fitting one line.
+MAX_PROVENANCE_SOURCE_CHARS = 320
 
 _MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates"}
 _MANUAL_DRIVER_FIELDS = {
@@ -162,6 +170,79 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
                 continue
             targets.append(physical_driver_target(topology, group, channel))
     return targets
+
+
+def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
+    """Return the code-owned protection bounds /sound/ needs to *explain* itself.
+
+    Display-only, derived, never persisted-authoritative: every design-draft
+    load that knows the topology re-stamps it, the same way
+    ``driver_safety_profile_evaluation`` is re-stamped, so a saved copy can
+    never be read back as current policy.  (``load_design_draft`` without a
+    topology cannot re-derive either one and returns the disk copy untouched;
+    the /sound/ page always loads with a topology.)
+
+    It exists because the browser has to answer two questions before anything
+    is saved, and both are policy the browser must not own a second copy of:
+
+    * *Is this target's declared peak sitting on the delegation sentinel?* —
+      needs that target's ``max_auto_level_dbfs``.  The confirmed safety
+      profile carries the same number in ``code_owned_policy``, but only
+      **after** a save; the echo-back panel renders straight after a paste.
+    * *What bounds the level protection then picks?* — needs
+      ``HF_MEASUREMENT_ABS_CEILING_DBFS``, which no artifact carries at all.
+
+    ``role_class`` travels with each target so the page never has to keep its
+    own copy of which roles are high-frequency.
+
+    Two fields here have no reader on the page yet and are kept deliberately.
+    ``policy_version`` is staleness detection on a view whose whole contract is
+    that it gets re-stamped: without it, a copy captured under an older policy
+    is indistinguishable from a current one.  ``min_highpass_hz`` is the only
+    field that *discriminates* — every high-frequency style shares
+    ``max_auto_level_dbfs = -65``, so it is what proves this view was derived
+    from ``driver_protection_profile`` rather than restated from a constant,
+    and it is the natural next panel field ("protected above N Hz") the
+    sentinel sentence already alludes to.  ``role`` had neither property and is
+    not emitted: ``role_class`` answers every question the page asks.
+    """
+
+    return {
+        "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
+        "hf_measurement_abs_ceiling_dbfs": HF_MEASUREMENT_ABS_CEILING_DBFS,
+        "targets": [
+            {
+                "target_id": str(target["target_id"]),
+                "role_class": policy.role_class,
+                "max_auto_level_dbfs": policy.max_auto_level_dbfs,
+                "min_highpass_hz": policy.min_highpass_hz,
+            }
+            for target in driver_research_targets(topology)
+            for policy in (
+                driver_protection_profile(
+                    target.get("role"),
+                    driver_style=_topology_driver_style(
+                        topology, str(target["target_id"])
+                    ),
+                ),
+            )
+        ],
+    }
+
+
+def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
+    """The topology-owned driver style for one physical target, or None.
+
+    ``target_id`` is ``f"{group.id}:{channel.role}"`` throughout this module;
+    keep that shape here so this stays the same lookup ``_profile_core`` and
+    ``build_driver_research_request`` build inline.
+    """
+
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            if f"{group.id}:{channel.role}" == target_id:
+                return channel.driver_style
+    return None
 
 
 def _is_sha256(value: Any) -> bool:
@@ -324,16 +405,16 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
         if cutoff is None or slope is None:
             # "This filter is required but its numbers are unpublished" has no
             # encoding here, and deliberately still does not get one: under the
-            # estimate contract (see ``build_driver_research_prompt``) the
-            # honest answer to an unpublished protective cutoff is a
-            # conservative estimate an operator can see and correct, not a
-            # marker that leaves the driver unprotected-but-declared. The
-            # message says that out loud because the refusal is what the
-            # operator reads.
+            # best-estimate contract (see ``build_driver_research_prompt``) the
+            # honest answer to an unpublished protective cutoff is the
+            # researcher's best engineering estimate, declared as one, that an
+            # operator can see and correct -- not a marker that leaves the
+            # driver unprotected-but-declared. The message says that out loud
+            # because the refusal is what the operator reads.
             raise DriverSafetyProfileError(
                 f"{prefix} requires cutoff_hz and minimum_slope_db_per_octave; "
                 "a required filter whose numbers are unpublished takes a "
-                "conservative estimate, not null"
+                "best engineering estimate, not null"
             )
         if slope > 96:
             raise DriverSafetyProfileError(
@@ -490,6 +571,28 @@ def _normalise_unknowns(value: Any, field_name: str) -> list[str]:
 
 
 def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
+    """Normalize per-field provenance assertions.
+
+    **The provenance contract (owner ruling, issue #2195).**  A value carries
+    three facts: the number itself, whether it is a published figure or the
+    researcher's best engineering estimate, and one citation either way.
+
+    ``source`` is that citation, and it is a short *free string* rather than a
+    URL because the honest answer is often a name -- "Dayton CX120-8 datasheet,
+    p.2" -- and for an estimate it is the one fact the estimate leaned on.  It
+    is separate from ``sources`` (a URL list) for that reason, and it is
+    **optional**: this is a tinker box, and a reply that gives a number without
+    a citation must still land rather than be stonewalled.  The absent key is
+    omitted from the output rather than stored as ``None``, so a provenance
+    entry written before this key existed normalises byte-identically and an
+    already-confirmed safety profile stays canonical.
+
+    There is deliberately no ``state`` key.  ``confidence`` is the single
+    writer of "published or estimated"; display derives the badge from it (see
+    ``deploy/assets/sound-profile/js/main.js``, ``driverProvenanceState``).
+    Accepting both would give one fact two owners that can disagree.
+    """
+
     if value is None:
         return {}
     if not isinstance(value, Mapping):
@@ -506,7 +609,7 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
         _reject_unknown_keys(
             raw_assertion,
             f"{field_name}.{key}",
-            {"confidence", "basis", "sources"},
+            {"confidence", "basis", "source", "sources"},
         )
         confidence = (
             _text(
@@ -526,6 +629,14 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
             required=True,
             max_chars=240,
         )
+        # `citation`, not `source`: the loop below already binds `source` per
+        # URL, and reusing the name silently overwrote this one with the last
+        # URL in `sources`.
+        citation = _text(
+            raw_assertion.get("source"),
+            f"{field_name}.{key}.source",
+            max_chars=MAX_PROVENANCE_SOURCE_CHARS,
+        )
         sources: list[str] = []
         for index, raw_source in enumerate(
             _sequence(
@@ -542,11 +653,17 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
             )
             if source and source not in sources:
                 sources.append(source)
-        out[str(key)] = {
+        assertion: dict[str, Any] = {
             "confidence": confidence,
             "basis": basis,
             "sources": sources,
         }
+        # Omitted, never null: see this function's docstring -- a pre-#2195
+        # provenance entry has to normalise to the exact bytes it used to, or
+        # every stored profile that carries one is refused as noncanonical.
+        if citation is not None:
+            assertion["source"] = citation
+        out[str(key)] = assertion
     return out
 
 
@@ -1213,9 +1330,22 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     essentially no consumer datasheet, while ``_target_issues`` requires them —
     so honest research plus a strict gate deadlocked most real drivers, and the
     only way through was nine hand-typed numbers most people do not have.  The
-    ask now orders the answer: published value first, then a *conservative
-    engineering estimate* tagged ``confidence: "low"`` with its derivation in
-    ``basis``, and null only for the genuinely unknowable.
+    ask now orders the answer: published value first, then an engineering
+    estimate tagged ``confidence: "low"`` with its derivation in ``basis``, and
+    null only for the genuinely unknowable.
+
+    **Best estimate, declared, with a source (owner ruling, issue #2195).**
+    The ask no longer requests a *conservative* estimate.  It asks for the
+    researcher's best reality-grounded number from the driver's published facts
+    and physics, declared as an estimate, with one citation.  Safety never
+    lived in a number's timidity: it lives in ``_target_issues`` (below), the
+    per-style high-pass floor, the peak ceiling, and the quiet-start ramp.  A
+    wrong best-estimate degrades a measurement; it cannot blow a driver, while
+    prompt-level lowballing costs real performance — a needlessly high cutoff
+    robs usable range, a needlessly low level under-drives the measurement —
+    and buys nothing the clamps do not already guarantee.  The operator is the
+    arbiter: /sound/ echoes every consumed value back with its published or
+    estimated badge and its source before anything is confirmed.
 
     What did **not** move is the protection itself.  ``_target_issues`` still
     refuses an estimate that lands outside code policy — the per-style
@@ -1272,8 +1402,8 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "",
             "ACCURACY",
             'When a datasheet or a reputable independent measurement gives the number, report that number, with provenance confidence "high" for a datasheet and "medium" for a measurement.',
-            'When the number is not published, give a conservative engineering estimate from the driver\'s type, size, and published facts. Tag it confidence "low", say in basis how you derived it (for example "estimated: 25 mm soft dome, Fs unpublished"), and round it — an estimate should look like one.',
-            "Conservative means the safer side of the guess: a higher high-pass cutoff, a steeper slope, a narrower band, a lower level, a shorter burst.",
+            'When the number is not published, give your best reality-grounded engineering estimate from the driver\'s published facts and physics. Tag it confidence "low", say in basis how you derived it (for example "estimated: 25 mm soft dome, Fs unpublished"), and round it — an estimate should look like one.',
+            "Declare every estimate as an estimate and name one source in that field's provenance either way: the datasheet or measurement for a published number, and for an estimate the one fact or document it leaned on.",
             "Use null only for a field with no engineering basis at all, and add one entry to that driver's unknowns saying which fact is missing.",
             "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
@@ -1317,7 +1447,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
             '    "unknowns": ["facts that could not be established"],',
-            '    "field_provenance": {"do_not_test_below_hz":{"confidence":"high","basis":"datasheet minimum crossover","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","sources":[]}},',
+            '    "field_provenance": {"do_not_test_below_hz":{"confidence":"high","basis":"datasheet minimum crossover","source":"manufacturer datasheet","sources":["https://..."]},"level_duration_limits":{"confidence":"low","basis":"estimated: protocol default, no published limit","source":"measurement protocol, no published limit","sources":[]}},',
             '    "notes": "one short sentence",',
             '    "sources": ["https://..."]',
             "  }],",
@@ -1333,7 +1463,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '- Confidence vocabulary is "low", "medium", "high", or "unknown".',
             "- field_provenance covers only these five keys: "
             + ", ".join(_PROMPT_PROVENANCE_KEYS)
-            + ". Each entry is confidence + basis (12 words or fewer) + at most 2 source URLs.",
+            + ". Each entry is confidence + basis (12 words or fewer) + source (one citation, 12 words or fewer) + at most 2 source URLs.",
             "- sources: at most 3 URLs you actually consulted for that driver.",
             "- notes: one sentence, 15 words or fewer.",
             "- crossover_candidates[].rationale: 15 words or fewer.",
