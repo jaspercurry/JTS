@@ -3278,26 +3278,52 @@ mod tests {
         assert_eq!(entries, 4, "{j}");
 
         // `age_ms` is relative to THIS snapshot, and the reader places every
-        // observation on its own clock from it — so it must decrease from the
-        // oldest entry to the newest, and the newest must be no older than the
-        // writer-level delay-sample age reported beside it.
-        // Scan to the first non-digit rather than to a closing brace: a brace
-        // CHAR literal is not a string literal, so the panic-freedom scanner's
-        // brace counting would read it as ending this #[cfg(test)] module.
-        let ages: Vec<u64> = j
-            .match_indices(r#","age_ms":"#)
-            .map(|(at, needle)| {
-                let rest = &j[at + needle.len()..];
+        // observation on its own clock from it. The load-bearing half of that
+        // is WHICH instant it is relative to, and there is an independent
+        // witness right beside it: the writer-level
+        // `snd_pcm_delay_sample_age_ms` is the age of the last write that
+        // produced a delay reading, which is the ring's newest entry (the
+        // fifth write above produced none). Both are `uptime_ms` minus the
+        // same stored instant, so they must be EQUAL — an age computed from
+        // any other base breaks this and nothing else here would notice.
+        //
+        // The oldest-first ordering is also asserted, but honestly: these four
+        // writes land inside one millisecond, so it is a shape check on the
+        // emission order rather than a timing one.
+        let ages = scan_u64_fields(&j, r#","age_ms":"#);
+        assert_eq!(ages.len(), 4, "{j}");
+        for pair in ages.windows(2) {
+            assert!(pair[0] >= pair[1], "ages must run oldest-first: {ages:?}");
+        }
+        // Scoped to the writer block: the DAC reports a field of the same name
+        // earlier in the snapshot, and it is `null` here because this test
+        // never marks a DAC delay.
+        let writer_block = &j[j.find(r#""chip_ref_writer":"#).unwrap()..];
+        let writer_age = scan_u64_fields(writer_block, r#""snd_pcm_delay_sample_age_ms":"#);
+        assert_eq!(writer_age.len(), 1, "{j}");
+        assert_eq!(
+            writer_age[0],
+            *ages.last().unwrap(),
+            "the newest ring entry and the writer-level delay sample are the \
+             same write, so their ages share one base: {j}"
+        );
+    }
+
+    /// Every `<needle><digits>` value in `text`, in order.
+    ///
+    /// Scans to the first non-digit rather than to a closing brace: a brace
+    /// CHAR literal is not a string literal, so the panic-freedom scanner's
+    /// brace counting would read one as ending this `#[cfg(test)]` module.
+    fn scan_u64_fields(text: &str, needle: &str) -> Vec<u64> {
+        text.match_indices(needle)
+            .map(|(at, found)| {
+                let rest = &text[at + found.len()..];
                 let end = rest
                     .find(|c: char| !c.is_ascii_digit())
                     .unwrap_or(rest.len());
                 rest[..end].parse::<u64>().unwrap()
             })
-            .collect();
-        assert_eq!(ages.len(), 4);
-        for pair in ages.windows(2) {
-            assert!(pair[0] >= pair[1], "ages must run oldest-first: {ages:?}");
-        }
+            .collect()
     }
 
     #[test]

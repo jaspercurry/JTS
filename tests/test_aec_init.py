@@ -1031,8 +1031,11 @@ class _WriterStream:
         self.reply_latency = reply_latency
         self.reads = 0
         # When each reply's snapshot was taken, so a test can compare the
-        # instant the collector placed an observation at against the truth.
+        # instant the collector placed an observation at against the truth,
+        # and how many writes the writer had completed by then, so a test can
+        # bound the window without reasoning about elapsed time.
         self.snapshot_instants: list[float] = []
+        self.writes_at_snapshot: list[int] = []
         self.counters = dict.fromkeys(aec_init.REFERENCE_WRITER_COUNTER_NAMES, 0)
 
     def _writes_completed(self) -> int:
@@ -1059,6 +1062,7 @@ class _WriterStream:
         self.clock.now += self.accept_wait
         self.snapshot_instants.append(self.clock.now)
         writes = self._writes_completed()
+        self.writes_at_snapshot.append(writes)
         age_ms = int((self.clock.now - (writes - 1) * self.period_seconds) * 1_000)
         writer = {
             "desired": True,
@@ -1462,16 +1466,43 @@ def test_a_ring_out_of_write_order_is_refused(monkeypatch) -> None:
 def test_overlapping_reads_are_folded_in_once(monkeypatch) -> None:
     # Consecutive reads return overlapping rings by design — that overlap is
     # what makes a slow reader lossless. Counting an entry twice would let a
-    # window "stabilise" on far fewer real observations than it claims.
+    # window "stabilise" on more readings than the writer ever produced, and so
+    # on less precision than the count it reports claims to have bought.
+    #
+    # Asserted on the window's OWN contents, not on elapsed time. An
+    # elapsed-time proxy is not this property: duplicates scale with the number
+    # of READS while the time headroom scales with the clock, so charging a
+    # realistic cost per read silently dissolves the margin and the assertion
+    # stops discriminating.
     clock = _FakeClock()
     stream = _WriterStream(clock, mix_period_frames=1024, delays=(400,))
     _install_queue_stream(monkeypatch, stream, clock)
 
+    placed: list[list[tuple[float, aec_init.ReferenceWrite]]] = []
+    real_merge = aec_init._merge_writes
+    monkeypatch.setattr(
+        aec_init,
+        "_merge_writes",
+        lambda w, r, now, floor: placed.append(real_merge(w, r, now, floor))
+        or placed[-1],
+    )
+
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
 
-    # One reading per mix period is the ceiling, so a double-counted overlap
-    # would let the window close in less wall time than that many writes take.
-    assert clock.now >= (len(queue) - 1) * 1024 / DAC_RATE
+    # `frames_written` is cumulative and strictly increasing across the ring —
+    # it IS an observation's identity — so a window holding the same write
+    # twice is exactly what a broken dedup produces.
+    frames = [write.frames for _at, write in placed[-1]]
+    assert len(frames) == len(queue)
+    assert len(set(frames)) == len(frames), "the same write was folded in twice"
+    assert frames == sorted(frames)
+    # Independently: the writer cannot have produced more readings than it
+    # completed writes between the baseline snapshot and the last one.
+    produced = stream.writes_at_snapshot[-1] - stream.writes_at_snapshot[0]
+    assert len(queue) <= produced, (
+        f"{len(queue)} readings from {produced} writes the writer made"
+    )
+    # The reads really did overlap, or nothing above is exercised.
     assert stream.reads * RING_CAPACITY > len(queue)
 
 
@@ -1721,7 +1752,10 @@ class _LiveClock:
 
     Writes are absorbed rather than rejected: `_WriterStream` advances its
     clock to model a server's accept wait, and against a real server that time
-    is spent for real. Tests using this clock pass zero for both.
+    is spent for real. Tests using this clock pass zero for both — and the
+    setter checks that, so a future non-zero accept_wait against a live server
+    fails loudly instead of being silently discarded (which would make the
+    fixture model a delay it is not actually spending).
     """
 
     def __init__(self) -> None:
@@ -1732,8 +1766,14 @@ class _LiveClock:
         return time.monotonic() - self._started
 
     @now.setter
-    def now(self, _value: float) -> None:
-        return
+    def now(self, value: float) -> None:
+        # `clock.now += 0.0` reads then writes the same instant, microseconds
+        # apart; 50 ms tolerates that with room to spare while still catching
+        # the smallest advance any caller would plausibly ask for.
+        assert value == pytest.approx(self.now, abs=0.05), (
+            "_LiveClock cannot be advanced: a real server spends this time "
+            "itself, so pass accept_wait=0/reply_latency=0 with it"
+        )
 
 
 class _ThrottledStatusServer:

@@ -305,9 +305,24 @@ async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
     # The cap is a safety bound on a hostile or wedged local daemon. Past it
     # the reader returns None: a truncated object is not a smaller answer, it
     # is a wrong one, and a caller that parsed a prefix would act on it.
+    #
+    # Asserted against `read_status_body` itself. Through `_local_status_json`
+    # a returned PREFIX also comes out as None — `json.loads` refuses it — so
+    # that surface cannot tell refusing from truncating, which is the whole
+    # distinction here.
     payload = b'{"x":"' + b"y" * (uds.MAX_STATUS_BYTES + 1) + b'"}'
     server = await _serve_once(short_sock_path, payload)
     try:
+        reader, writer = await asyncio.open_unix_connection(short_sock_path)
+        try:
+            writer.write(b"STATUS\n")
+            await writer.drain()
+            assert await uds.read_status_body(reader, timeout=5.0) is None
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+        # And the caller built on it degrades the same way.
         assert await uds._local_status_json(short_sock_path, timeout=5.0) is None
     finally:
         server.close()
