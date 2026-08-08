@@ -534,6 +534,28 @@ def test_outputd_start_instant_survives_a_host_without_systemctl(
     assert "ordering_probe" not in caplog.text
 
 
+def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
+    monkeypatch, caplog
+) -> None:
+    # Unlike FileNotFoundError above (no systemctl binary at all — not a
+    # systemd host), a PermissionError means systemctl IS present but exec'ing
+    # it failed some other way on what IS a systemd host — one of the five
+    # OSError subtypes (EACCES here; also ENOEXEC/EAGAIN/ENOMEM) that a prior
+    # blanket `except OSError` swallowed silently (PR #2225 round-3 nit). This
+    # is worth surfacing, same as the other two WARN-logged anomalies.
+    def fake_run(_args, **_kwargs):
+        raise PermissionError("systemctl")
+
+    monkeypatch.setattr(aec_init.subprocess, "run", fake_run)
+    caplog.set_level("WARNING", logger="jasper.aec_init")
+
+    assert aec_init.outputd_main_start_realtime() is None
+
+    assert "event=chip_aec_init.ordering_probe" in caplog.text
+    assert "outcome=systemctl_oserror" in caplog.text
+    assert "ordering guard is inert" in caplog.text
+
+
 def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
     tmp_path, monkeypatch
 ) -> None:
