@@ -33,6 +33,37 @@ def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
     )
 
 
+def _bridge_reference_stats(
+    source: str,
+    *,
+    now: float = 1_000.0,
+    age_sec: float = 1.0,
+    endpoint: str = "127.0.0.1:9891",
+) -> dict:
+    identity = {"ref_source": source}
+    if source == "outputd_udp":
+        identity["outputd_ref_udp"] = endpoint
+    return {
+        "updated_epoch_sec": now - age_sec,
+        "active_capture_plan": {"mic_reference_identity": identity},
+    }
+
+
+def _outputd_reference_status(
+    *,
+    target: object = "127.0.0.1:9891",
+    active: bool = True,
+    error_count: int = 0,
+) -> dict:
+    return {
+        "reference_outputs": {
+            "udp_target": target,
+            "udp_active": active,
+            "udp_error_count": error_count,
+        },
+    }
+
+
 def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):
     monkeypatch.setattr(
         doctor.aec_probe,
@@ -74,7 +105,249 @@ def test_assess_aec_output_silent_ref_with_no_healthy_window_fails():
     r = doctor._assess_aec_bridge_output("\n".join(lines))
     assert r.status == "fail"
     assert "reference path is delivering silence" in r.detail
-    assert "Lessons learned" in r.detail  # actionable doc link
+    assert "Runtime reference provenance is unavailable" in r.detail
+    assert "pcm.jasper_capture" not in r.detail
+    assert "/etc/asound.conf" not in r.detail
+
+
+def test_assess_aec_output_outputd_remediation_uses_runtime_status():
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats("outputd_udp"),
+        outputd_status=_outputd_reference_status(error_count=3),
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "source=outputd_udp at 127.0.0.1:9891" in result.detail
+    assert "reference_outputs.udp_target='127.0.0.1:9891'" in result.detail
+    assert "udp_active=True" in result.detail
+    assert "udp_error_count=3" in result.detail
+    assert "jasper-aec-bridge" in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+    assert "jasper_ref" not in result.detail
+
+
+def test_assess_aec_output_outputd_endpoint_mismatch_reconciles_both_hops():
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats(
+            "outputd_udp",
+            endpoint="127.0.0.1:9891",
+        ),
+        outputd_status=_outputd_reference_status(
+            target="127.0.0.1:9999",
+            active=False,
+            error_count=4,
+        ),
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "publisher target and bridge receiver do not match" in result.detail
+    assert "jasper-aec-reconcile" in result.detail
+    assert "restart jasper-outputd and jasper-aec-bridge" in result.detail
+    assert "127.0.0.1:9999" in result.detail
+
+
+@pytest.mark.parametrize(
+    "outputd_status",
+    [
+        {
+            "reference_outputs": {
+                "udp_active": True,
+                "udp_error_count": 0,
+            },
+        },
+        _outputd_reference_status(target=9891),
+        _outputd_reference_status(target="not-an-endpoint"),
+    ],
+    ids=["missing", "non-string", "malformed"],
+)
+def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
+    outputd_status,
+):
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats("outputd_udp"),
+        outputd_status=outputd_status,
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "source=outputd_udp" in result.detail
+    assert "no comparable UDP target" in result.detail
+    assert "cannot declare an endpoint match or mismatch" in result.detail
+    assert "publisher target and bridge receiver do not match" not in result.detail
+    assert "jasper-aec-reconcile" in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+
+
+def test_assess_aec_output_alsa_remediation_retains_asound_advice():
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats("alsa"),
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "source=alsa" in result.detail
+    assert "/etc/asound.conf" in result.detail
+    assert "pcm.jasper_capture" in result.detail
+    assert "jasper_ref" in result.detail
+
+
+@pytest.mark.parametrize(
+    "stats",
+    [
+        _bridge_reference_stats("future_transport"),
+        {
+            "updated_epoch_sec": 999.0,
+            "active_capture_plan": {"mic_reference_identity": "malformed"},
+        },
+    ],
+)
+def test_assess_aec_output_unknown_or_malformed_provenance_is_neutral(stats):
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=stats,
+        outputd_status=_outputd_reference_status(),
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "cannot safely name the failed hop" in result.detail
+    assert "source=outputd_udp" not in result.detail
+    assert "source=alsa" not in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+
+
+def test_assess_aec_output_stale_reference_stats_are_ignored():
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+
+    result = doctor._assess_aec_bridge_output(
+        "\n".join(lines),
+        bridge_stats=_bridge_reference_stats(
+            "outputd_udp",
+            age_sec=31.0,
+        ),
+        outputd_status=_outputd_reference_status(),
+        now=1_000.0,
+    )
+
+    assert result.status == "fail"
+    assert "unavailable, malformed, stale, or unknown" in result.detail
+    assert "source=outputd_udp" not in result.detail
+    assert "pcm.jasper_capture" not in result.detail
+    assert "/etc/asound.conf" not in result.detail
+
+
+def test_reference_provenance_rejects_json_valid_oversized_timestamp():
+    huge_json_integer = "1" + ("0" * 4_000)
+    stats = json.loads(
+        '{"updated_epoch_sec":'
+        + huge_json_integer
+        + ',"active_capture_plan":{"mic_reference_identity":'
+        '{"ref_source":"outputd_udp",'
+        '"outputd_ref_udp":"127.0.0.1:9891"}}}'
+    )
+
+    detail = doctor.aec._aec_reference_failure_remediation(
+        bridge_stats=stats,
+        outputd_status=_outputd_reference_status(),
+        now=1_000.0,
+    )
+
+    assert "cannot safely name the failed hop" in detail
+    assert "source=outputd_udp" not in detail
+
+
+def test_reference_provenance_rejects_future_timestamp():
+    stats = _bridge_reference_stats(
+        "outputd_udp",
+        now=1_000.0,
+        age_sec=-1.0,
+    )
+
+    assert doctor.aec._bridge_reference_provenance(stats, 1_000.0) is None
+
+
+def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch):
+    journal = "\n".join(
+        _rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        return SimpleNamespace(stdout=journal, stderr="", returncode=0)
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_read_bridge_stats_snapshot",
+        lambda: _bridge_reference_stats("outputd_udp", now=1_000.0),
+    )
+    monkeypatch.setattr(doctor.aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_read_outputd_status_for_aec_reference",
+        lambda: _outputd_reference_status(error_count=7),
+    )
+
+    result = doctor.check_aec_bridge_output_health()
+
+    assert result.status == "fail"
+    assert "reference_outputs.udp_target='127.0.0.1:9891'" in result.detail
+    assert "udp_error_count=7" in result.detail
+
+
+def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
+    monkeypatch,
+):
+    journal = "\n".join(
+        _rms_log_line(ref=1200, mic=2400, aec=150, attn_db=-24.1) for _ in range(8)
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        return SimpleNamespace(stdout=journal, stderr="", returncode=0)
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_loopback_playback_active", lambda: True)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_read_bridge_stats_snapshot",
+        lambda: _bridge_reference_stats("outputd_udp", now=1_000.0),
+    )
+    monkeypatch.setattr(doctor.aec.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_read_outputd_status_for_aec_reference",
+        lambda: pytest.fail("healthy passive check must not probe outputd STATUS"),
+    )
+
+    result = doctor.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert "real AEC work" in result.detail
 
 
 def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
@@ -585,12 +858,10 @@ def test_aec_bridge_reports_deferred_outputd_park_without_blaming_the_bridge(
     assert "intentionally parked" in result.detail
     # The reconciler's reason and action, verbatim.
     assert (
-        "jasper-outputd has not loaded the current output declaration"
-        in result.detail
+        "jasper-outputd has not loaded the current output declaration" in result.detail
     )
     assert (
-        "Wait for jasper-outputd to restart, then run the reconciler"
-        in result.detail
+        "Wait for jasper-outputd to restart, then run the reconciler" in result.detail
     )
     # None of the bridge-failure remedy leaks through.
     assert "journalctl -u jasper-aec-bridge" not in result.detail

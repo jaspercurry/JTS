@@ -11,6 +11,7 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -572,6 +573,10 @@ _AEC_DRIFT_WARN_THRESHOLD = 30  # in 90 s
 def _assess_aec_bridge_output(
     journal_text: str,
     music_chain_active: bool | None = None,
+    *,
+    bridge_stats: dict | None = None,
+    outputd_status: dict | None = None,
+    now: float | None = None,
 ) -> CheckResult:
     """Pure-function assessment of the bridge's `rms over` log
     output. Split out from `check_aec_bridge_output_health` so the
@@ -672,12 +677,12 @@ def _assess_aec_bridge_output(
             f"RMS with ref<{_AEC_REF_SILENT_THRESHOLD} RMS and zero windows show "
             f"ref signal — bridge's reference path is delivering silence "
             f"while the mic captures audio. AEC can't cancel without a "
-            f"reference. In the fan-in topology, first verify "
-            f"/etc/asound.conf maps pcm.jasper_capture to hw:Loopback,1,7 "
-            f"(jasper-fanin's summed output) and that jasper-fanin is "
-            f"active. A stale dmix-era capture tap on substream 0 can make "
-            f"jasper_ref busy or silent. See docs/HANDOFF-aec.md "
-            f"Lessons learned for the original silent-ref failure mode.",
+            f"reference. "
+            + _aec_reference_failure_remediation(
+                bridge_stats=bridge_stats,
+                outputd_status=outputd_status,
+                now=time.time() if now is None else now,
+            ),
         )
 
     # Failure mode 2 — continuous drift warnings = severe clock skew
@@ -797,15 +802,184 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
         )
 
+    bridge_stats = _read_bridge_stats_snapshot()
+    now = time.time()
+    provenance = _bridge_reference_provenance(bridge_stats, now)
+    music_chain_active = _loopback_playback_active()
+    result = _assess_aec_bridge_output(
+        proc.stdout,
+        music_chain_active=music_chain_active,
+        bridge_stats=bridge_stats,
+        now=now,
+    )
+    if result.status != "fail" or provenance is None:
+        return result
+    if provenance[0] != "outputd_udp":
+        return result
     return _assess_aec_bridge_output(
         proc.stdout,
-        music_chain_active=_loopback_playback_active(),
+        music_chain_active=music_chain_active,
+        bridge_stats=bridge_stats,
+        outputd_status=_read_outputd_status_for_aec_reference(),
+        now=now,
     )
 
 # How stale the bridge stats snapshot may be before the doctor falls
 # back to journal parsing. The bridge rewrites it every 0.5 s, so 30 s
 # of staleness means the snapshot belongs to a dead/old process.
 _BRIDGE_STATS_FRESH_SEC = 30.0
+
+
+def _read_bridge_stats_snapshot() -> dict | None:
+    """Read the bridge's one live stats snapshot source."""
+    stats_path = Path(os.environ.get(
+        "JASPER_AEC_BRIDGE_STATS_PATH",
+        "/run/jasper/aec_bridge_stats.json",
+    ))
+    try:
+        stats = json.loads(stats_path.read_text())
+    except (OSError, ValueError):
+        return None
+    return stats if isinstance(stats, dict) else None
+
+
+def _bridge_reference_provenance(
+    stats: dict | None,
+    now: float,
+) -> tuple[str, str | None] | None:
+    """Return trusted applied reference source/endpoint from fresh stats."""
+    if not isinstance(stats, dict):
+        return None
+    try:
+        updated = float(stats["updated_epoch_sec"])
+        identity = stats["active_capture_plan"]["mic_reference_identity"]
+        source = identity["ref_source"]
+    except (KeyError, OverflowError, TypeError, ValueError):
+        return None
+    age = now - updated
+    if not math.isfinite(updated) or age < 0 or age > _BRIDGE_STATS_FRESH_SEC:
+        return None
+    if source == "alsa":
+        return source, None
+    if source != "outputd_udp":
+        return None
+    endpoint = identity.get("outputd_ref_udp")
+    if not _valid_udp_endpoint(endpoint):
+        return None
+    return source, endpoint
+
+
+def _valid_udp_endpoint(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    host, separator, raw_port = value.rpartition(":")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return False
+    return bool(separator and host and 0 < port <= 65535)
+
+
+def _read_outputd_status_for_aec_reference() -> dict | None:
+    """Reuse outputd doctor's bounded STATUS reader with fail-soft policy."""
+    from .audio_runtime import _outputd_status_payload
+
+    status = _outputd_status_payload()
+    return status if isinstance(status, dict) else None
+
+
+def _aec_reference_failure_remediation(
+    *,
+    bridge_stats: dict | None,
+    outputd_status: dict | None,
+    now: float,
+) -> str:
+    provenance = _bridge_reference_provenance(bridge_stats, now)
+    if provenance is None:
+        return (
+            "Runtime reference provenance is unavailable, malformed, stale, "
+            "or unknown, so doctor cannot safely name the failed hop. Inspect "
+            "a fresh /run/jasper/aec_bridge_stats.json to identify ref_source, "
+            "then inspect that producer; run `sudo systemctl start "
+            "jasper-aec-reconcile` and restart jasper-aec-bridge before "
+            "re-running doctor with program audio. See docs/HANDOFF-aec.md "
+            "Lessons learned for the original silent-ref failure mode."
+        )
+
+    source, bridge_endpoint = provenance
+    if source == "alsa":
+        return (
+            "Bridge runtime provenance reports source=alsa. In the fan-in "
+            "topology, first verify /etc/asound.conf maps pcm.jasper_capture "
+            "to hw:Loopback,1,7 (jasper-fanin's summed output) and that "
+            "jasper-fanin is active. A stale dmix-era capture tap on "
+            "substream 0 can make jasper_ref busy or silent. See "
+            "docs/HANDOFF-aec.md Lessons learned for the original silent-ref "
+            "failure mode."
+        )
+
+    references = (
+        outputd_status.get("reference_outputs")
+        if isinstance(outputd_status, dict)
+        else None
+    )
+    if not isinstance(references, dict):
+        return (
+            "Bridge runtime provenance reports source=outputd_udp at "
+            f"{bridge_endpoint}, but outputd STATUS/reference_outputs is "
+            "unavailable, so the publisher endpoint and health cannot be "
+            "compared. Run `sudo systemctl start jasper-aec-reconcile`, "
+            "restart jasper-outputd and jasper-aec-bridge, and inspect both "
+            "service journals if the reference remains silent."
+        )
+
+    outputd_target = references.get("udp_target")
+    udp_active = references.get("udp_active")
+    udp_error_count = references.get("udp_error_count")
+    target_text = outputd_target if isinstance(outputd_target, str) else "unknown"
+    active_text = str(udp_active) if isinstance(udp_active, bool) else "unknown"
+    error_text = (
+        str(udp_error_count)
+        if isinstance(udp_error_count, int)
+        and not isinstance(udp_error_count, bool)
+        and udp_error_count >= 0
+        else "unknown"
+    )
+    observed = (
+        f"Bridge runtime provenance reports source=outputd_udp at "
+        f"{bridge_endpoint}; outputd STATUS reports "
+        f"reference_outputs.udp_target={target_text!r}, "
+        f"udp_active={active_text}, udp_error_count={error_text}. "
+    )
+    if not _valid_udp_endpoint(outputd_target):
+        return observed + (
+            "outputd STATUS has no comparable UDP target, so doctor cannot "
+            "declare an endpoint match or mismatch. Run `sudo systemctl start "
+            "jasper-aec-reconcile`, restart jasper-outputd and "
+            "jasper-aec-bridge, and inspect outputd's STATUS/journal if the "
+            "target remains unavailable."
+        )
+    if outputd_target != bridge_endpoint:
+        return observed + (
+            "The publisher target and bridge receiver do not match. Run "
+            "`sudo systemctl start jasper-aec-reconcile`, then restart "
+            "jasper-outputd and jasper-aec-bridge so both ends load the same "
+            "endpoint."
+        )
+    if udp_active is not True:
+        return observed + (
+            "The configured endpoint matches, but outputd does not report its "
+            "UDP publisher active. Reconcile the reference route and restart "
+            "jasper-outputd; restart jasper-aec-bridge too if the receiver "
+            "still sees silence."
+        )
+    return observed + (
+        "The endpoint matches and outputd reports the publisher active; a UDP "
+        "send does not prove the receiver consumed it. Restart "
+        "jasper-aec-bridge to rebind the receiver, then reconcile/restart "
+        "jasper-outputd if silence persists. udp_error_count is cumulative; "
+        "inspect the outputd journal if it is increasing."
+    )
 
 
 def _assess_dtln_engine_from_stats(
@@ -941,15 +1115,8 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     # Prefer the bridge's live stats snapshot — authoritative and not
     # journal-window-limited (a load failure at a bridge start >10 min
     # ago is invisible to the journal path below).
-    stats_path = Path(os.environ.get(
-        "JASPER_AEC_BRIDGE_STATS_PATH",
-        "/run/jasper/aec_bridge_stats.json",
-    ))
-    try:
-        stats = json.loads(stats_path.read_text())
-    except (OSError, ValueError):
-        stats = None
-    if isinstance(stats, dict):
+    stats = _read_bridge_stats_snapshot()
+    if stats is not None:
         result = _assess_dtln_engine_from_stats(stats, time.time())
         if result is not None:
             return result

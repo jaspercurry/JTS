@@ -263,6 +263,16 @@ consumes outputd's 48 kHz monitor and runs AEC3. The optional v2/BEST_A
 delivery lifecycle remains owned by
 [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
 
+When `jasper-doctor` detects a sustained silent reference, its remediation is
+bound to the bridge's applied runtime provenance in the fresh
+`/run/jasper/aec_bridge_stats.json` snapshot. An `outputd_udp` bridge is
+diagnosed against outputd STATUS (`reference_outputs.udp_target`,
+`udp_active`, and `udp_error_count`); only an applied `alsa` bridge receives
+the `pcm.jasper_capture` / `jasper_ref` advice. Missing, stale, malformed, or
+unknown provenance stays source-neutral rather than guessing a legacy path.
+The reader is shared with the DTLN doctor check, so both checks identify the
+same live bridge snapshot source.
+
 **CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
 The bridge reads the XVF mic directly and consumes outputd's final-reference
 UDP stream; its explicit ALSA fallback is the pre-Camilla `pcm.jasper_ref`
@@ -3008,7 +3018,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-08 (scope: the K-lifecycle section only — the chip-reference window now comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`; the rest of this file was NOT re-verified in that pass. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-08 (scope: the silent-reference doctor remediation was rechecked against the bridge stats provenance, outputd STATUS fields, and `jasper/cli/doctor/aec.py`; the rest of this file was NOT re-verified in that pass. Earlier 2026-08-08: the K-lifecycle section only — the chip-reference window now comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`; the rest of this file was NOT re-verified in that pass. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and
