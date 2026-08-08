@@ -603,10 +603,14 @@ S24_LE/S32_LE at continuous 44.1-192 kHz rates (a driver-advertisement
 limit, not a documented silicon one), so its registry profile declares an
 `S32_LE` final edge. The base HiFiBerry DAC8x now declares the same
 `S32_LE` edge (wide-output-path PR-7) for a different reason: it is the
-horn-lane fix — an `aplay --dump-hw-params` open test on jts3 confirmed the
-S32 edge (2026-08-07), and outputd's i32 program spine now reaches the DAC
-with zero narrowing where an undithered 16-bit requantization used to
-crackle on decay tails. DAC8x Studio is unchanged at `S16_LE`: it shares
+intended horn-lane fix (acoustic verdict pending — see plan §6 PR-7) — a
+2-channel `aplay --dump-hw-params` open test on jts3 confirmed the S32 edge
+opens cleanly (2026-08-07); jts3's production graph is 6-channel active, and
+that specific pairing has not been separately probed, so it fails closed
+rather than being pre-verified if unsupported. Declaring it lets outputd's
+i32 program spine reach the DAC with zero narrowing where an undithered
+16-bit requantization used to crackle on decay tails. DAC8x Studio is
+unchanged at `S16_LE`: it shares
 the base DAC8x's `dtoverlay` and DAC-chip family, but no lab unit exists to
 run the same hardware probe, so the registry does not flip it on inference
 alone. For every declaring profile, outputd requests that format directly

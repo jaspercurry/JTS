@@ -400,10 +400,14 @@ HIFIBERRY_DAC8X = DacProfile(
     # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
     # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
     # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
-    # 2026-08-07, wide-output-path program gate G0b). Declaring S32_LE here
-    # lets outputd's i32 program spine reach the DAC edge with zero
-    # narrowing (wide-output-path PR-7) — the fix for the horn-lane
-    # undithered-16-bit-requantization crackle; see
+    # 2026-08-07, wide-output-path program gate G0b). jts3's production
+    # graph is 6-channel active; that (S32_LE, 6ch) combination has not
+    # been separately hardware-probed, so it fails closed rather than being
+    # pre-verified if the pairing turns out not to be jointly satisfiable.
+    # Declaring S32_LE here lets outputd's i32 program spine reach the DAC
+    # edge with zero narrowing (wide-output-path PR-7) — the intended fix
+    # for the horn-lane undithered-16-bit-requantization crackle (acoustic
+    # verdict pending the conductor's post-merge listen); see
     # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
     #
     # Consequence: this field is part of the chip-AEC alignment identity
@@ -411,11 +415,12 @@ HIFIBERRY_DAC8X = DacProfile(
     # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the
     # identity force-recommissions the fleet"), so every artifact
     # commissioned against the old S16_LE edge is now invalid. jts3 — the
-    # only commissioned box on this profile — parks its managed-XVF stack
-    # (voice stopped, wake gated off via /var/lib/jasper/voice-input-absent)
-    # until a human runs `sudo jasper-aec-commission` in the foreground
-    # (~2 minutes of audible sweeps). See plan captures/PLAN-wide-output-path-2026-08-07.md
-    # §6 PR-7 for the recommission drill.
+    # only commissioned box on this profile at the time of writing — parks
+    # its managed-XVF stack (voice stopped, wake gated off via
+    # /var/lib/jasper/voice-input-absent) until a human runs
+    # `sudo jasper-aec-commission` in the foreground (~2 minutes of audible
+    # sweeps). See plan captures/PLAN-wide-output-path-2026-08-07.md §6
+    # PR-7 for the recommission drill.
     final_edge_format="S32_LE",
 )
 
@@ -457,9 +462,21 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # that same probe, and this program's own norm (see PR-8, D9) is a
     # hardware gate before a format declaration, not inference from a shared
     # overlay name. Flip this once that probe passes on real Studio
-    # hardware — until then it stays at the safe S16_LE default. A wrong
-    # guess here would only park the box (outputd's own client-edge readback
-    # fails closed on an unsupported format), not damage it.
+    # hardware.
+    #
+    # This is a stance on DECLARATION, not a guarantee about ROUTING.
+    # `profile_for_card_label` selects a profile by regex against the
+    # observed ALSA card label, base DAC8x tried first (REGISTRY order),
+    # and the base profile's `supported_card_matches` only exclude a label
+    # with "studio" AFTER "dac8x" — the reverse of HiFiBerry's own "Studio
+    # DAC8x" product naming. A real Studio board sharing this overlay may
+    # therefore surface a card label the base profile's regexes accept, in
+    # which case it is classified `hifiberry_dac8x` and inherits S32_LE
+    # anyway, not the S16_LE declared here. Fixing that routing gap (if a
+    # real board proves it live) is a detection-regex change, out of scope
+    # for this data PR. Either misroute direction still fails closed:
+    # outputd's client-edge readback parks (exit 78) rather than damaging
+    # hardware on an unsupported format request.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(

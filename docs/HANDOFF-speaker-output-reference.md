@@ -449,9 +449,14 @@ What exists:
   InnoMaker, because the kernel DAI (`ma120x0p.c`) advertises only
   S24_LE/S32_LE at continuous 44.1-192 kHz rates — a driver-advertisement
   limit, not a documented silicon one — and the base HiFiBerry DAC8x
-  (wide-output-path PR-7), because that is the horn-lane crackle fix: an
-  `aplay --dump-hw-params` open test on jts3 confirmed the S32 edge
-  (2026-08-07), and declaring it lets outputd's i32 program spine reach the
+  (wide-output-path PR-7), because that is the intended horn-lane crackle
+  fix (acoustic verdict pending the conductor's post-merge listen — see
+  plan §6 PR-7): a 2-channel `aplay --dump-hw-params` open test on jts3
+  confirmed the S32 edge opens cleanly (2026-08-07). jts3's production
+  graph is 6-channel active; that specific (S32_LE, 6ch) combination has
+  not been separately hardware-probed, so it fails closed rather than
+  being pre-verified if the pairing turns out not to be jointly
+  satisfiable. Declaring it lets outputd's i32 program spine reach the
   DAC with zero narrowing where the crackle-causing undithered 16-bit
   requantization used to happen. DAC8x Studio stays at the S16_LE default —
   no lab unit exists to run the same hardware probe, so this program does
@@ -463,7 +468,7 @@ What exists:
   Because there is no conversion layer between outputd and the card, its
   own client-edge readback IS the hardware-edge proof here — the plug that
   used to pin a `format S32_LE` slave (and own that guarantee instead) is
-  gone. Active-output mode is reachable for this profile:
+  gone. Active-output mode is reachable for InnoMaker's profile:
   `active_outputd_lane_channels_for` returns `2`
   (`supports_active_outputd_lane=True`), so
   `jasper-audio-hardware-reconcile`'s active-graph gate is consulted like it
