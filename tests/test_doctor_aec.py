@@ -78,14 +78,14 @@ def test_assess_aec_output_silent_ref_with_no_healthy_window_fails():
 
 
 def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
-    """Same mic-loud + ref-silent shape as the rate-lock fail, but the
-    music chain isn't active (no renderer writing the loopback). In
-    that case ref MUST be silent — snd-aloop produces zeros without a
-    producer — and the mic-loud bursts are most likely room voice or
-    ambient noise. Downgrade to OK with the diagnosis so a pure-voice
-    session doesn't show as a degraded AEC bridge. The message must
-    also disclose the gate's coverage limit: it sees only the loopback
-    renderer lanes, so a USB Audio Input stream is invisible to it."""
+    """Same mic-loud + ref-silent shape as the rate-lock fail, but no
+    renderer is writing the loopback. A silent ref is then expected
+    rather than suspicious, and the mic-loud bursts are most likely
+    room voice or ambient noise. Downgrade to OK with the diagnosis so
+    a pure-voice session doesn't show as a degraded AEC bridge. The
+    message must also disclose the gate's coverage limit: it sees only
+    the loopback renderer lanes, so a USB Audio Input stream is
+    invisible to it."""
     lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
     r = doctor._assess_aec_bridge_output(
         "\n".join(lines),
@@ -93,7 +93,7 @@ def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
     )
     assert r.status == "ok"
     assert "loopback playback is closed" in r.detail
-    assert "USB Audio Input plays without opening one" in r.detail
+    assert "USB Audio Input is invisible here" in r.detail
     # Counterpart: when music chain IS active, same input still fails —
     # the guard only relaxes the FAIL when we have positive evidence
     # the loopback is idle, not on uncertainty.
@@ -146,6 +146,7 @@ def test_doctor_never_explains_ref_silence_with_the_retired_tts_bypass():
     # forever by matching nothing.
     assert RETIRED_TTS_BYPASS_RE.search("pcm.jasper_out")
     assert not RETIRED_TTS_BYPASS_RE.search("jasper-outputd")
+    assert not RETIRED_TTS_BYPASS_RE.search("jasper_outputd")
     assert not RETIRED_TTS_BYPASS_RE.search("JASPER_OUTPUTD_TTS_SOCKET")
     doctor_dir = Path(doctor.aec.__file__).resolve().parent
     modules = sorted(doctor_dir.glob("*.py"))

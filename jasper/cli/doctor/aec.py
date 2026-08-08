@@ -647,12 +647,12 @@ def _assess_aec_bridge_output(
     # which is the 2026-05-16 false-positive mode.
     if silent_ref_count >= 5 and healthy_ref_windows == 0:
         # Second false-positive guard: if the music chain isn't
-        # currently active (no renderer writing the loopback), every
-        # ref sample is correctly silent. The mic-loud bursts are
-        # most likely room voice or ambient noise — though this gate
-        # only sees loopback renderer lanes, so it cannot prove the
-        # speaker was silent. Either way ref-silent proves nothing
-        # about the reference chain here.
+        # currently active (no renderer writing the loopback), a
+        # silent ref is expected rather than suspicious. The mic-loud
+        # bursts are most likely room voice or ambient noise — though
+        # this gate only sees loopback renderer lanes, so it cannot
+        # prove the speaker was silent. Either way ref-silent proves
+        # nothing about the reference chain here.
         if music_chain_active is False:
             return CheckResult(
                 "AEC bridge output", "ok",
@@ -660,9 +660,9 @@ def _assess_aec_bridge_output(
                 f"ref<{_AEC_REF_SILENT_THRESHOLD} but loopback playback is "
                 f"closed (no loopback renderer writing music) — mic-loud "
                 f"bursts are most likely room voice or ambient noise. This "
-                f"gate sees only the loopback renderer lanes: USB Audio "
-                f"Input plays without opening one, so if the speaker IS "
-                f"playing, a silent ref is unexplained — check outputd's "
+                f"gate sees only the loopback renderer lanes. If the "
+                f"speaker WAS playing — USB Audio Input is invisible "
+                f"here — the silent ref is unexplained; check outputd's "
                 f"reference publisher. Re-run doctor with loopback music "
                 f"playing to exercise the ref path; drift={drift_count}",
             )

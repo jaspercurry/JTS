@@ -2028,14 +2028,17 @@ Captured here so future sessions don't repeat the mistakes.
     where the entire assessment window has no music at all (a
     pure-voice session). Even with `healthy_ref_windows = 0`, the
     silent-ref + mic-loud pattern proves nothing when no renderer
-    is writing the loopback — every ref sample is correctly silent
-    and the mic-loud bursts come from room voice or ambient noise
-    (not from TTS, which rides the reference; see above). Added a
-    `music_chain_active` gate that reads
-    `/proc/asound/Loopback/pcm0p/sub*/status`; when every sub is
-    `closed`, the FAIL demotes to OK with a "re-run doctor while
-    music is playing" hint. The rate-lock catch from PR #75 still
-    fires when a renderer is actively writing the loopback.
+    is writing the loopback — a silent ref is expected rather than
+    suspicious there, and the mic-loud bursts are most likely room
+    voice or ambient noise (not from TTS, which rides the
+    reference; see above). Added a `music_chain_active` gate that
+    reads `/proc/asound/Loopback/pcm0p/sub*/status`; when every
+    sub is `closed`, the FAIL demotes to OK with a "Re-run doctor
+    with loopback music playing" hint. That gate sees only the
+    loopback renderer lanes, so it cannot prove the speaker is
+    silent — USB Audio Input plays without opening one. The
+    rate-lock catch from PR #75 still fires when a renderer is
+    actively writing the loopback.
 
 A smart speaker that **plays music** and **listens for a wake word**
 in the same physical box has a fundamental signal-processing
