@@ -53,7 +53,7 @@ At 0%, the coordinator also asserts CamillaDSP `main_mute` so content
 mute is actual silence. CamillaDSP `main_volume` is otherwise reserved
 for the daemon's ducking and for camilla-master user volume
 (IDLE/AirPlay/USB) per the VolumeCoordinator. The `master_gain` mixer
-in v1.yml is identity and not the ducker.
+in outputd-cutover.yml is identity and not the ducker.
 
 ### 2. Transport (next / previous / pause / resume)
 

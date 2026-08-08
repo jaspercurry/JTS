@@ -186,7 +186,7 @@ mixer, a second output device, or a new volume model.
    label stable: mux uses that label when it asks fan-in to pass one
    selected source lane.
 3. **Wire the source daemon to the alias.** Its systemd unit should
-   write to the alias, not to `jasper_capture`, `jasper_out`,
+   write to the alias, not to `jasper_capture`,
    `outputd_content_*`, or raw `hw:Loopback,*` names. Renderer units
    should order after
    `jasper-fanin.service` and use the same hardening/resource patterns
@@ -266,9 +266,9 @@ mixer, a second output device, or a new volume model.
 
 Renderer and TTS legs converge inside `jasper-fanin`, then pass through
 CamillaDSP and into `jasper-outputd`, which owns the direct DAC writer
-on current main. The legacy `pcm.jasper_out` dmix remains in
-`/etc/asound.conf` as the pre-outputd rollback path, not as the active
-convergence point here.
+on current main. The legacy `pcm.jasper_out` dmix and its `v1.yml`
+CamillaDSP config were retired (issue #2240); rollback to the
+pre-outputd topology is git history plus a redeploy of an older build.
 
 ## Volume knobs and which path each affects
 
@@ -572,9 +572,8 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 Goes through CamillaDSP, so `main_volume` applies.
 
 **Test the TTS chain**: use `jasper-voice`/cue playback or the canonical
-local TTS socket, `/run/jasper-fanin/tts.sock`. Direct `jasper_out`
-playback exercises only the pre-outputd rollback dmix and bypasses
-CamillaDSP and outputd.
+local TTS socket, `/run/jasper-fanin/tts.sock`. (The `jasper_out`
+pre-outputd rollback dmix was retired — issue #2240.)
 
 On Apple-dongle installs, the dongle `Headphone` control is pinned at
 100% by `jasper-dac-init`, watched by `jasper-headphone-monitor`, and

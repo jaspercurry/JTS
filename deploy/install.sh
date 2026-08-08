@@ -981,11 +981,10 @@ install_camilladsp() {
     systemctl disable camilladsp.service 2>/dev/null || true
 
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
-    # State + emitted-correction-config dirs. The legacy/pre-outputd
-    # Camilla unit uses /var/lib/camilladsp/statefile.yml so corrections
-    # survive Pi restarts; outputd uses outputd-statefile.yml and
-    # preserves the normal statefile for rollback. The room-correction
-    # wizard writes correction_<id>_<unixtime>.yml under configs/.
+    # State + emitted-correction-config dirs. outputd uses
+    # outputd-statefile.yml so corrections survive Pi restarts. The
+    # room-correction wizard writes correction_<id>_<unixtime>.yml
+    # under configs/.
     install -d -m 0755 /var/lib/camilladsp
     # configs/ is written atomically (temp file in-dir + rename) by the non-root
     # jasper-web user (WS1 privilege drop) for active-speaker staging and
@@ -1013,35 +1012,6 @@ install_camilladsp() {
         /var/lib/jasper/correction/calibration_mics \
         /var/lib/jasper/correction/tones
 
-    # Seed the statefile if missing. The unit's ExecStart deliberately
-    # has NO positional CONFIGFILE — CamillaDSP would clobber the
-    # statefile with the positional path on every start, defeating
-    # the whole persistence story. Instead, on first install, we
-    # write a minimal statefile pointing at v1.yml. Subsequent
-    # `set_config_file_path()` calls from the room-correction wizard
-    # update this file in place; future restarts read it back.
-    # NOTE: this block is idempotent — we never overwrite an existing
-    # statefile, so a user who's applied a correction won't have it
-    # silently reset by a re-run of install.sh.
-    if [[ ! -f /var/lib/camilladsp/statefile.yml ]]; then
-        cat > /var/lib/camilladsp/statefile.yml <<'EOF'
-config_path: /etc/camilladsp/v1.yml
-mute:
-- false
-- false
-- false
-- false
-- false
-volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-EOF
-        chmod 0644 /var/lib/camilladsp/statefile.yml
-        echo "  Seeded /var/lib/camilladsp/statefile.yml → v1.yml (no correction yet)"
-    fi
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
         local tmpdir
         tmpdir="$(mktemp -d)"
@@ -1058,15 +1028,11 @@ EOF
     fi
 
     # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7).
-    # v1.yml writes to pcm.jasper_out for pre-outputd rollback. The flat
-    # outputd startup graph is copied here as a fallback/template, then
-    # regenerated after the Python package is installed and the current output
-    # hardware state has been observed so the active DAC's latency floor reaches
-    # fresh first boot. install_alsa() handles the dongle name in
-    # /etc/asound.conf.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/camilladsp/v1.yml" \
-        "${CAMILLA_CONF}/v1.yml"
+    # The flat outputd startup graph is copied here as a fallback/template,
+    # then regenerated after the Python package is installed and the current
+    # output hardware state has been observed so the active DAC's latency
+    # floor reaches fresh first boot. install_alsa() handles the dongle name
+    # in /etc/asound.conf.
     install -m 0644 \
         "${REPO_DIR}/deploy/camilladsp/outputd-cutover.yml" \
         "${CAMILLA_CONF}/outputd-cutover.yml"
@@ -1316,8 +1282,7 @@ install_alsa() {
     select_audio_hardware_roles
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions
-    # (per-renderer fan-in lanes, jasper_capture, outputd lanes,
-    # jasper_out rollback path, etc.).
+    # (per-renderer fan-in lanes, jasper_capture, outputd lanes, etc.).
     #
     # Location matters: this file MUST be world-readable so that
     # renderer processes running as non-root users (shairport-sync as
@@ -1378,7 +1343,7 @@ install_alsa() {
     /usr/local/sbin/jasper-render-asound-conf
     ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
     chmod 0644 /var/lib/jasper-asound/asound.conf
-    echo "  Wrote /etc/asound.conf with fan-in, outputd lanes, and jasper_out rollback path"
+    echo "  Wrote /etc/asound.conf with fan-in and outputd lanes"
 }
 
 # Resolve the short build SHA for THIS install run, with the same

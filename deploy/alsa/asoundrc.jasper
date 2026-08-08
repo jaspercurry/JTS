@@ -19,8 +19,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 
 # /etc/asound.conf — installed by deploy/install.sh with outputd_dac blocks
 # rendered by deploy/lib/jasper-asound-render.sh for the selected final-output
-# role, and __DONGLE_CARD__ substituted by the detected USB-C dongle name for
-# legacy rollback / mixer-control paths.
+# role.
 #
 # Location: /etc/asound.conf (NOT /root/.asoundrc). The system-wide
 # location is required so non-root renderer users (shairport-sync as
@@ -49,8 +48,6 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     of `outputd_content_capture` and the only normal writer to
 #     `outputd_dac`. Assistant TTS enters jasper-fanin before
 #     CamillaDSP, then reaches outputd as part of post-DSP content.
-#   - `pcm.jasper_out` remains defined as the pre-outputd rollback
-#     dmix path, but it is not the active convergence point.
 #
 # Topology:
 #
@@ -343,27 +340,4 @@ pcm.jasper_ref {
 ctl.jasper_capture {
     type hw
     card Loopback
-}
-
-pcm.jasper_out {
-    type dmix
-    ipc_key 7777
-    ipc_perm 0666
-    slave {
-        pcm "hw:CARD=__DONGLE_CARD__,DEV=0"
-        rate 48000
-        channels 2
-        format S16_LE
-        period_size 1024
-        buffer_size 4096
-    }
-    bindings {
-        0 0
-        1 1
-    }
-}
-
-ctl.jasper_out {
-    type hw
-    card __DONGLE_CARD__
 }

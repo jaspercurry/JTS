@@ -455,7 +455,7 @@ capability unsupported and return a clear user-facing result.
 
 - A provider plugin that owns fan-in, mux, volume, transport, and
   metadata all at once.
-- A new source that writes directly to `jasper_out` and bypasses
+- A new source that writes directly to a DAC/dmix alias and bypasses
   CamillaDSP unless it is explicitly assistant-owned audio like TTS.
 - A new push-volume source without an observation or health story.
 - A source-specific `if provider == ...` branch in `VolumeCoordinator`.

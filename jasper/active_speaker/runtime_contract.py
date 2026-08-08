@@ -127,7 +127,6 @@ DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
 # outputd-cutover.yml. The graph selector picks between the two by the persisted
 # coupling (see ``safe_graph_for_current_topology``'s ``coupling`` argument).
 DEFAULT_RING_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp") / RING_FLAT_CONFIG_NAME
-DEFAULT_LEGACY_FLAT_CONFIG = Path("/etc/camilladsp/v1.yml")
 DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
 GRAPH_FLAT_FULL_RANGE = "flat_full_range"

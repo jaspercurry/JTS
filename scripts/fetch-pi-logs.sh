@@ -302,9 +302,14 @@ remote "sudo sh -c 'for f in \
     > "$OUT/jasper.env-${TS}.txt" 2>/dev/null || true
 ln -sf "jasper.env-${TS}.txt" "$OUT/jasper.env-latest.txt" 2>/dev/null || true
 
-remote "cat /etc/camilladsp/v1.yml 2>/dev/null" \
+# Shipped baseline, not necessarily the truly active config — see
+# /var/lib/camilladsp/outputd-statefile.yml's config_path for that.
+remote "cat /etc/camilladsp/outputd-cutover.yml 2>/dev/null" \
     > "$OUT/camilladsp-${TS}.yml" 2>/dev/null || true
 ln -sf "camilladsp-${TS}.yml" "$OUT/camilladsp-latest.yml" 2>/dev/null || true
+remote "sudo cat /var/lib/camilladsp/outputd-statefile.yml 2>/dev/null" \
+    > "$OUT/camilladsp-statefile-${TS}.yml" 2>/dev/null || true
+ln -sf "camilladsp-statefile-${TS}.yml" "$OUT/camilladsp-statefile-latest.yml" 2>/dev/null || true
 
 # /etc/asound.conf since 2026-05-23 (PR #223) — moved from
 # /root/.asoundrc so non-root renderer users (shairport-sync, pi)

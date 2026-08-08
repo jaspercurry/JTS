@@ -54,7 +54,10 @@ dmesg -T --since "$since" 2>/dev/null | redact_jasper_diagnostics \
         cat "$f"
     done
 } | redact_jasper_diagnostics > "$DIR/jasper.env.txt" 2>/dev/null || true
-cp /etc/camilladsp/v1.yml "$DIR/camilladsp.yml" 2>/dev/null || true
+# Shipped baseline, not necessarily the truly active config — see
+# /var/lib/camilladsp/outputd-statefile.yml's config_path for that.
+cp /etc/camilladsp/outputd-cutover.yml "$DIR/camilladsp.yml" 2>/dev/null || true
+cp /var/lib/camilladsp/outputd-statefile.yml "$DIR/camilladsp-statefile.yml" 2>/dev/null || true
 # /etc/asound.conf since PR #223 (2026-05-23); fall back to the
 # legacy /root/.asoundrc for older Pis.
 cp /etc/asound.conf "$DIR/asoundrc" 2>/dev/null \

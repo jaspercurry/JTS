@@ -10,7 +10,7 @@ policy) or silently wipe a user's room correction on reboot (--statefile).
 
 These tests are a defensive moat around regressions like:
   - "we tweaked ExecStart and accidentally dropped --statefile" →
-    every reboot reverts to v1.yml, correction lost
+    every reboot loses the loaded config, correction lost
   - "we removed Restart=always to make systemd less aggressive" →
     a clean exit leaves audio dead until manual intervention
     (real 2026-05-07 incident in the unit header comment)
@@ -105,9 +105,9 @@ def test_unit_has_no_positional_configfile():
     """CamillaDSP behavior we hit on first cutover: when both a
     positional CONFIGFILE and --statefile are given, the positional
     WINS on startup AND clobbers the statefile with the positional
-    path on every start. So having `/etc/camilladsp/v1.yml` as a
-    positional arg here defeats the entire persistence feature.
-    Fresh installs are handled by install.sh seeding the statefile.
+    path on every start. So having a config path as a positional arg
+    here defeats the entire persistence feature. Fresh installs are
+    handled by install.sh seeding the statefile.
     Pin the absence so this doesn't quietly come back."""
     body = UNIT_PATH.read_text()
     # The positional arg would appear on its own line after the
@@ -228,21 +228,6 @@ def test_install_sh_repairs_dsp_apply_lock_for_web_commissioning():
     assert "/var/lib/camilladsp/configs/.dsp_apply.lock" in body
     assert "chgrp jasper /var/lib/camilladsp/configs/.dsp_apply.lock" in body
     assert "chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock" in body
-
-
-def test_install_sh_seeds_statefile_when_missing():
-    """Because the unit's ExecStart has no positional CONFIGFILE,
-    a fresh install with no statefile would leave CamillaDSP with
-    nothing to load. install.sh seeds the statefile to point at
-    v1.yml on first install — and importantly, never overwrites an
-    existing statefile (idempotent), so re-running install.sh on a
-    speaker with an applied correction doesn't silently reset it."""
-    body = INSTALL_SH.read_text()
-    assert "/var/lib/camilladsp/statefile.yml" in body
-    # The idempotency guard — must check existence first.
-    assert "if [[ ! -f /var/lib/camilladsp/statefile.yml ]]" in body
-    # The seed contents point at v1.yml (so first-boot has a config).
-    assert "config_path: /etc/camilladsp/v1.yml" in body
 
 
 def test_install_sh_routes_outputd_statefile_through_runtime_contract():

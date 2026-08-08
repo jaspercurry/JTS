@@ -3,8 +3,8 @@
 #
 # Camilla writes post-DSP content to snd-aloop substream 6, and
 # jasper-outputd is the only reader of that lane and the only writer to
-# the physical DAC. The legacy/pre-outputd topology uses
-# deploy/camilladsp/v1.yml and /var/lib/camilladsp/statefile.yml.
+# the physical DAC. The legacy pre-outputd topology (deploy/camilladsp/v1.yml
+# and /var/lib/camilladsp/statefile.yml) was retired (issue #2240).
 #
 # WARNING: This flat graph maps full-range stereo directly to DAC outputs.
 # It is illegal when saved output topology assigns any physical output to
