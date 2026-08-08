@@ -3295,17 +3295,13 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
     or `git fetch` then compare `git rev-parse origin/<branch>` against
     `git rev-parse HEAD`) — a successful push command is not the same as
     confirming it landed where you think. This is conductor/session
-    discipline: the gate/review agents never push, so it does not belong in
-    their definitions. Recorded alongside the merged-state rule below in the
-    [#2161](https://github.com/jaspercurry/JTS/issues/2161) close-out.
+    discipline: the gate/review agents never push, merge, or delete
+    branches, so neither this nor item 11 belongs in their definitions.
 
 11. **Verify a PR's state is `MERGED` before deleting its branch.** Never
     chain merge-then-delete on trust — re-check the PR's actual `state`
     (`gh pr view <n> --json state`) before removing its branch. Same
-    reasoning as item 10: this is conductor/session discipline, not
-    something the gate/review agents do, since their charter forbids
-    merging, pushing, or deleting branches at all. Recorded alongside the
-    ref-check rule in the same
+    reasoning as item 10. Both recorded in the
     [#2161](https://github.com/jaspercurry/JTS/issues/2161) close-out.
 
 

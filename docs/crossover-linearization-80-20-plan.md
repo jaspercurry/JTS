@@ -577,8 +577,9 @@ R14 -> R15 -> fixed-2-kHz hardware checkpoint (passed) -> Gate 0 (ratified)
     -> R18 -> R16 + R17 (one vertical, two PRs)
 ```
 
-R19 and R20 keep their prior standing. A contradiction or a cap forecast in any
-of these rounds still stops for owner re-ratification.
+R19 and R20 keep their prior standing in this dependency graph. A
+contradiction or a cap forecast in any of these rounds still stops for owner
+re-ratification.
 
 ## 12. Agent topology and landing protocol
 
