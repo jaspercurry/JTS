@@ -377,12 +377,12 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
 
     assert [
         dep for dep in data["dependency-groups"]["dev"] if dep.startswith("mypy")
-    ] == ["mypy>=2.1,<2.2"]
+    ] == ["mypy>=2.3.0,<2.4"]
     assert [
         dep
         for dep in data["project"]["optional-dependencies"]["dev"]
         if dep.startswith("mypy")
-    ] == ["mypy>=2.1,<2.2"]
+    ] == ["mypy>=2.3.0,<2.4"]
     assert data["tool"]["mypy"]["files"] == ["jasper"]
     assert data["tool"]["mypy"]["ignore_missing_imports"] is True
     assert {
