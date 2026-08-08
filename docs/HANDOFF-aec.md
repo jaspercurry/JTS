@@ -250,10 +250,11 @@ caught, not ignored.** systemd retains `ExecMainStartTimestamp` after a unit
 stops, so a stopped outputd that ran this boot still reports its old instant and a
 newer declaration reads as stale; only a unit that never started this boot reports
 an empty value and leaves the guard inert, where `collect_reference_queue`'s
-writer-not-ready path owns the diagnosis. **An inert guard is logged.** The two
-anomalous inert paths — `systemctl` exiting non-zero, or a non-empty value that
-does not parse — emit `event=chip_aec_init.ordering_probe` at WARN, because a
-guard that silently does not run looks identical to one that passed.
+writer-not-ready path owns the diagnosis. **An inert guard is logged.** The
+three anomalous inert paths — `systemctl` exiting non-zero, a non-empty value
+that does not parse, or `systemctl` raising a non-`ENOENT` `OSError` — emit
+`event=chip_aec_init.ordering_probe` at WARN, because a guard that silently
+does not run looks identical to one that passed.
 
 The `jasper-aec-bridge` remains a shared mic-to-voice carrier, not synonymous
 with WebRTC AEC3. With commissioned chip AEC it forwards the selected hardware
