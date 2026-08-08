@@ -586,9 +586,79 @@ def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
 
 def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
     for profile in dac.all_profiles():
-        assert profile.final_edge_format in ("S16_LE", "S32_LE"), (
+        assert profile.final_edge_format in ("S16_LE", "S24_3LE", "S32_LE"), (
             f"{profile.id}: {profile.final_edge_format!r}"
         )
+
+
+def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> None:
+    """The accepted SET itself, not just "every profile is inside it".
+
+    That distinction is what keeps this non-vacuous: no profile declares
+    ``S24_3LE`` today, so removing it from ``DacProfile.__post_init__``'s tuple
+    would leave every other assertion in this file green while silently making the
+    registry unable to express the width outputd's packed write path exists for.
+    The reverse mistake — the tuple growing a value outputd's config parser
+    rejects — would emit an env value that parks the final-output owner at exit
+    78, which is why the two are asserted as one exact set.
+
+    The literal mirror on the Rust side is ``config.rs``'s
+    ``JASPER_OUTPUTD_DAC_FORMAT`` match arms.
+    """
+    accepted = ("S16_LE", "S24_3LE", "S32_LE")
+
+    for value in accepted:
+        # Constructed, not asserted about: __post_init__ is the gate.
+        profile = DacProfile(
+            id="accepted_final_edge_format",
+            label="Accepted",
+            kind="single",
+            physical_output_count=2,
+            coherent_clock_domain=True,
+            clock_domain_label="Accepted clock",
+            clock_domain_contract="single_device",
+            outputd_sink="alsa",
+            supported_card_matches=("accepted",),
+            final_edge_format=value,
+        )
+        assert profile.final_edge_format == value
+
+    # And nothing adjacent sneaks in. `S24_LE` is the sharp one: same 24 bits in a
+    # FOUR-byte word, one character from the accepted packed spelling, and a
+    # stride outputd's packed staging is not built at.
+    for rejected in ("S24_LE", "S24_3BE", "s24_3le", "S32_BE", "FLOAT_LE"):
+        assert rejected not in accepted
+        with pytest.raises(ValueError, match="unsupported final_edge_format"):
+            DacProfile(
+                id="rejected_final_edge_format",
+                label="Rejected",
+                kind="single",
+                physical_output_count=2,
+                coherent_clock_domain=True,
+                clock_domain_label="Rejected clock",
+                clock_domain_contract="single_device",
+                outputd_sink="alsa",
+                supported_card_matches=("rejected",),
+                final_edge_format=rejected,
+            )
+
+
+def test_no_profile_declares_the_packed_24_edge_yet() -> None:
+    """``S24_3LE`` is vocabulary, not a live declaration — and that is the point.
+
+    outputd's packed write path ships ahead of any profile flip (wide-output-path
+    D9), so this PR is dormant by construction: every live speaker keeps the edge
+    format it already had. This assertion is the tripwire for that claim. When the
+    dongle profile(s) DO flip, this test is the one that must be deleted in the
+    same PR — deliberately, with the hardware open-proof and the forced chip-AEC
+    recommission called out in its release note.
+    """
+    declaring = [p.id for p in dac.all_profiles() if p.final_edge_format == "S24_3LE"]
+    assert declaring == [], (
+        f"{declaring} declare S24_3LE; that flip forces a chip-AEC recommission "
+        f"on affected commissioned boxes and needs an `aplay -D hw:<card> -f "
+        f"S24_3LE` open proof first"
+    )
 
 
 def test_final_edge_format_matches_known_hardware() -> None:
@@ -643,6 +713,13 @@ def test_a_composite_declares_the_same_edge_format_as_every_child() -> None:
 
 
 def test_final_edge_format_rejects_unsupported_value() -> None:
+    # The sentinel is `FLOAT_LE`, not the `S24_LE` this used to use. With the
+    # packed `S24_3LE` now accepted, a 24-bit sentinel here reads as though the
+    # accepted 24-bit width were being rejected — confusing at a glance and easy to
+    # "fix" wrongly. `FLOAT_LE` is unambiguously outside the vocabulary (outputd's
+    # is integer-only). `S24_LE` is still covered, in
+    # test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses, where
+    # the contrast with `S24_3LE` is the explicit subject.
     with pytest.raises(ValueError, match="unsupported final_edge_format"):
         DacProfile(
             id="bad_final_edge_format",
@@ -654,7 +731,7 @@ def test_final_edge_format_rejects_unsupported_value() -> None:
             clock_domain_contract="single_device",
             outputd_sink="alsa",
             supported_card_matches=("bad",),
-            final_edge_format="S24_LE",
+            final_edge_format="FLOAT_LE",
         )
 
 
@@ -662,3 +739,10 @@ def test_final_edge_format_for_round_trips_for_bash() -> None:
     assert dac.final_edge_format_for(INNOMAKER_HIFI_AMP_PRO_ID) == "S32_LE"
     assert dac.final_edge_format_for(APPLE_USB_C_DONGLE_ID) == "S16_LE"
     assert dac.final_edge_format_for("no_such_dac") is None
+    # Whatever it prints, `jasper-audio-hardware-reconcile` writes verbatim into
+    # JASPER_OUTPUTD_DAC_FORMAT, so every reachable answer must be a value
+    # outputd's config parser accepts — or the emit parks the final-output owner
+    # at exit 78. Enumerated over the whole registry, not just the two named
+    # above, so a new profile cannot introduce an unparseable value.
+    for profile in dac.all_profiles():
+        assert dac.final_edge_format_for(profile.id) in ("S16_LE", "S24_3LE", "S32_LE")

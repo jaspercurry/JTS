@@ -435,12 +435,20 @@ impl Config {
         // is exact (trim only, no case folding): ALSA spells these uppercase
         // and the only writer emits the registry literal, so a case variant is
         // itself drift worth surfacing.
+        //
+        // `S24_3LE` is accepted and has a full write path (a packed 3-byte edge,
+        // `alsa_backend::write_dac_period`'s third arm), but NO DAC profile
+        // declares it, so no reconciler emits it and no live box resolves it. It
+        // is parsed here because outputd must be able to read what the registry
+        // may later declare — Rust ships ahead of the profile flip on purpose
+        // (wide-output-path D9).
         let declared_dac_format = match env_str("JASPER_OUTPUTD_DAC_FORMAT", "").trim() {
             "" | "S16_LE" => SampleFormat::S16Le,
+            "S24_3LE" => SampleFormat::S24_3Le,
             "S32_LE" => SampleFormat::S32Le,
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_DAC_FORMAT must be one of S16_LE, S32_LE \
+                    "JASPER_OUTPUTD_DAC_FORMAT must be one of S16_LE, S24_3LE, S32_LE \
                      (or empty for the S16_LE default); got {:?}",
                     other
                 )
@@ -460,12 +468,22 @@ impl Config {
         // jasper.fanin_coupling.content_lane_format_for_coupling). The axis is
         // no longer byte-identical on deploy; absence now means unreconciled
         // or probe-unavailable, not "nothing writes it".
+        //
+        // `S24_3LE` parses on this axis too, for ONE vocabulary rather than two:
+        // both hops read the same `SampleFormat`, and an axis-asymmetric parser
+        // would be a second, silently narrower spelling of the same enum. It is
+        // NOT an ingestible lane width — outputd has no packed-24 READ path, and
+        // `alsa_backend`'s ingest refuses it park-class, at the same exit 78 an
+        // unknown value takes here. Nor can the reconciler emit it: the
+        // per-coupling policy named above answers only S16_LE or S32_LE, so a
+        // hand-set value is the only way to reach that refusal.
         let content_format = match env_str("JASPER_OUTPUTD_CONTENT_FORMAT", "").trim() {
             "" | "S16_LE" => SampleFormat::S16Le,
+            "S24_3LE" => SampleFormat::S24_3Le,
             "S32_LE" => SampleFormat::S32Le,
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_CONTENT_FORMAT must be one of S16_LE, S32_LE \
+                    "JASPER_OUTPUTD_CONTENT_FORMAT must be one of S16_LE, S24_3LE, S32_LE \
                      (or empty for the S16_LE default); got {:?}",
                     other
                 )
@@ -1548,9 +1566,15 @@ mod tests {
     }
 
     #[test]
-    fn declared_dac_format_parses_the_two_registry_values() {
+    fn declared_dac_format_parses_every_registry_value() {
+        // `S24_3LE` is in the vocabulary and no profile declares it yet — outputd
+        // parses ahead of the registry on purpose, so that when a profile does
+        // flip, the daemon already on the box can read it (wide-output-path D9).
+        // The round trip through `as_str` is asserted too: that string is the
+        // STATUS wire value and a chip-AEC identity input.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),
+            ("S24_3LE", SampleFormat::S24_3Le),
             ("S32_LE", SampleFormat::S32Le),
         ] {
             with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", Some(raw))], || {
@@ -1567,11 +1591,22 @@ mod tests {
         // reconciler drift; guessing an edge format would silently mis-declare
         // what the alignment identity is commissioned against. Case variants
         // are drift too — the only writer emits the uppercase registry literal.
-        for bad in ["S24_LE", "s32_le", "S32_BE", "float32"] {
+        //
+        // `S24_LE` stays in this list DELIBERATELY, and it is the sharpest vector
+        // here now: it is the 4-byte-word 24-bit ALSA format, one character from
+        // the accepted packed `S24_3LE`, and accepting it would ask ALSA for a
+        // stride the packed staging is not built at. `S24_3BE` is the
+        // wrong-endian packed twin, refused for the same reason.
+        for bad in [
+            "S24_LE", "S24_3BE", "s24_3le", "s32_le", "S32_BE", "float32",
+        ] {
             with_env(&[("JASPER_OUTPUTD_DAC_FORMAT", Some(bad))], || {
                 let err = Config::from_env().unwrap_err().to_string();
                 assert!(err.contains("JASPER_OUTPUTD_DAC_FORMAT"), "{err}");
                 assert!(err.contains(bad), "{err}");
+                // The message has to enumerate what IS accepted, or an operator
+                // reading a parked unit's journal cannot tell what to write.
+                assert!(err.contains("S16_LE, S24_3LE, S32_LE"), "{err}");
             });
         }
     }
@@ -1595,9 +1630,16 @@ mod tests {
     }
 
     #[test]
-    fn content_format_parses_both_lane_values() {
+    fn content_format_parses_every_vocabulary_value() {
+        // ONE vocabulary for both hops: this axis parses `S24_3LE` because the
+        // enum does, not because a lane can be read at that width. It cannot —
+        // `alsa_backend`'s ingest refuses it park-class, and no writer can emit it
+        // (`jasper.fanin_coupling` answers only S16_LE or S32_LE). The parse and
+        // the refusal are separate layers on purpose; an axis-asymmetric parser
+        // would be a second, silently narrower spelling of the same enum.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),
+            ("S24_3LE", SampleFormat::S24_3Le),
             ("S32_LE", SampleFormat::S32Le),
         ] {
             with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", Some(raw))], || {
@@ -1614,13 +1656,36 @@ mod tests {
         // only be writer drift, and guessing a lane format would silently
         // mis-declare what outputd asks snd-aloop for. Case variants are drift
         // too — the only writer emits the uppercase ALSA literal.
-        for bad in ["S24_LE", "s32_le", "S32_BE", "float32"] {
+        for bad in [
+            "S24_LE", "S24_3BE", "s24_3le", "s32_le", "S32_BE", "float32",
+        ] {
             with_env(&[("JASPER_OUTPUTD_CONTENT_FORMAT", Some(bad))], || {
                 let err = Config::from_env().unwrap_err().to_string();
                 assert!(err.contains("JASPER_OUTPUTD_CONTENT_FORMAT"), "{err}");
                 assert!(err.contains(bad), "{err}");
+                assert!(err.contains("S16_LE, S24_3LE, S32_LE"), "{err}");
             });
         }
+    }
+
+    #[test]
+    fn a_packed_24_content_lane_is_still_refused_by_the_rate_match_pairing_guard() {
+        // The rate-match bridge is an i16 algorithm and refuses ANY non-S16 lane.
+        // That guard predates `S24_3LE` and is written as `!= S16Le`, so it covers
+        // the new value for free — asserted rather than assumed, because a later
+        // rewrite into an explicit `== S32Le` would silently let the packed value
+        // through into a second quantization ahead of the edge.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S24_3LE")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("rate_match"), "{err}");
+                assert!(err.contains("S24_3LE"), "{err}");
+            },
+        );
     }
 
     #[test]

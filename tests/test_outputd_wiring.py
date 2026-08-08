@@ -530,7 +530,20 @@ def test_outputd_composite_children_take_the_declared_edge_width():
     # Child period buffers carry the width, and STATUS reads it from them —
     # `RuntimeAlsaSink::dac_format` must NOT answer with a constant for the
     # composite arm, which is what it did before the child width was declared.
-    assert "ChildPeriods::new(config.declared_dac_format, config.period_frames)" in alsa_rs
+    #
+    # Matched on the construction's ARGUMENTS rather than one exact line: the call
+    # became fallible (a packed-24 child edge is refused, not silently narrowed)
+    # and rustfmt now wraps it across four lines. Both arguments and the callee are
+    # still pinned, so a construction that reads a literal width — or the OTHER hop
+    # — still fails here.
+    child_periods_call = alsa_rs.split("let periods = ", 1)[1].split(";", 1)[0]
+    assert "ChildPeriods::new(" in child_periods_call
+    assert "config.declared_dac_format" in child_periods_call
+    assert "config.period_frames" in child_periods_call
+    assert "config.content_format" not in child_periods_call
+    # ...and it is park-class: a refused child width must not restart-loop into
+    # `StartLimitAction=reboot`.
+    assert "final_sink_startup(ChildPeriods::new(" in alsa_rs
     assert "Self::Composite(sink) => sink.dac_format()," in main_rs
     dac_format_fn = main_rs.split("fn dac_format(&self) -> SampleFormat {", 1)[1].split(
         "\n    }", 1
@@ -918,6 +931,14 @@ PERIOD_HOT_FUNCTIONS = [
     # sink, so it inherits the same reboot-class consequence.
     ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn write_dual_period("),
     ("alsa_backend.rs", None, "fn deinterleave_4ch_to_dual_stereo<"),
+    # The packed-24 edge's conversion. Added with the S24_3LE write path: it is
+    # the one edge whose staging is BYTES (`samples.len() * 3`), which is exactly
+    # the shape someone "just allocates here" instead of reusing the buffer sized
+    # at open — and it runs on the same SCHED_FIFO playout thread as its i16 twin.
+    # `narrow_period` / `widen_period` are its siblings and are covered
+    # transitively by their callers above; this one is listed by name because its
+    # length arithmetic makes a local `vec![0u8; n]` look reasonable.
+    ("types.rs", None, "pub fn narrow_period_i24_le("),
     ("main.rs", "impl ReferenceSideOutputs", "fn publish("),
     ("core.rs", "impl OutputCore", "fn prepare_from_buffered_content("),
 ]
@@ -1064,3 +1085,61 @@ def test_the_no_allocation_guard_can_actually_fail():
     chip = _rust_fn_body(main_rs, "impl ChipRefDownsampler", "fn process(")
     assert "Vec::with_capacity(" in chip
     assert "KNOWN ALLOCATION EXCEPTION" in main_rs
+
+    # And the same tripwire for the packed-24 entry added with the S24_3LE write
+    # path: a `None` impl_block in a file the guard had never read before is
+    # exactly where a silently-empty extraction would hide.
+    types_rs = (REPO / "rust" / "jasper-outputd" / "src" / "types.rs").read_text()
+    packed = _rust_fn_body(types_rs, None, "pub fn narrow_period_i24_le(")
+    assert "narrow_i32_to_i24_le_slice(" in packed
+    assert "I24_LE_BYTES_PER_SAMPLE" in packed
+    poisoned = _non_comment_rust(
+        packed.replace("if !jasper_resampler", "let _x = vec![0u8; 8]; if !jasper_resampler")
+    )
+    assert any(token in poisoned for token in ALLOCATING_TOKENS)
+
+
+def test_the_packed_24_edge_writes_bytes_with_a_byte_frame_stride():
+    """The `S24_3LE` arm's ALSA wiring, pinned at the source.
+
+    Three facts, none of which any runnable test in the tree can reach (they need
+    a live PCM), and each of which is silently catastrophic if wrong:
+
+    1. **The handle is `io_bytes()`.** alsa-rs has no `io_*` for a 3-byte format;
+       the typed handles would refuse the PCM (or, worse, accept a slice of the
+       wrong element type).
+    2. **The frame stride passed to the shared writer is `channels * 3`, not
+       `channels`.** `write_dac_frames` advances `frames_done * elements_per_frame`
+       through the slice, and one element on this path is a BYTE. Passing
+       `channels` would compute three times the real frame count and step forward
+       at a third of the right rate — re-sending most of every period as
+       overlapping garbage.
+    3. **The stride parameter is not called `channels`.** The name is what stops a
+       future reader from "simplifying" the call site back to the channel count;
+       for the two typed edges the two values are equal, so the mistake is
+       invisible at those call sites.
+    """
+    backend = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+
+    writer = _rust_fn_body(backend, None, "fn write_dac_frames<")
+    assert "elements_per_frame" in writer, (
+        "write_dac_frames' frame stride must be named `elements_per_frame`: at the "
+        "packed edge one element is a byte, not a sample"
+    )
+    assert "samples.len() / elements_per_frame" in _non_comment_rust(writer)
+    assert "frames_done * elements_per_frame" in _non_comment_rust(writer)
+
+    arm = _rust_fn_body(backend, "impl AlsaBackend", "pub fn write_dac_period(")
+    code = _non_comment_rust(arm)
+    # The packed arm exists, converts through the packed wrapper, and hands ALSA
+    # bytes.
+    assert "SampleFormat::S24_3Le =>" in code
+    assert "narrow_period_i24_le(samples, &mut self.dac_pack_buf)" in code
+    assert "self.dac.io_bytes()" in code
+    # The byte stride, spelled from the shared constant rather than a literal 3.
+    assert "channels * jasper_resampler::I24_LE_BYTES_PER_SAMPLE" in code, (
+        "the packed arm must pass a BYTE frame stride to write_dac_frames"
+    )
+    # And the two typed arms still pass the bare channel count, so the stride
+    # rename did not quietly change the S16/S32 edges.
+    assert code.count("\n                    channels,\n") == 2, code

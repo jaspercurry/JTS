@@ -15,10 +15,28 @@ use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::types::{
-    narrow_period, widen_period, ProgramSample, SampleFormat, CHANNELS, SAMPLE_RATE,
+    narrow_period, narrow_period_i24_le, widen_period, ProgramSample, SampleFormat, CHANNELS,
+    SAMPLE_RATE,
 };
 
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
+
+/// Why a content lane declared `S24_3LE` is refused rather than read.
+///
+/// One `&'static str` shared by both ingest entry points (the coherent single lane
+/// and the composite's active lane) so the two cannot drift into explaining it
+/// differently — and `&'static str` specifically because both call sites are
+/// period-hot and `test_outputd_period_hot_functions_do_not_allocate` forbids a
+/// `format!` there.
+///
+/// The asymmetry is real and intended: `S24_3LE` is an OUTPUT width in this
+/// vocabulary. The DAC edge has a packed write path; ingest has no packed read
+/// path, because nothing writes such a lane — the reconciler's content axis comes
+/// from `jasper.fanin_coupling`, which answers only `S16_LE` or `S32_LE`. Reaching
+/// this needs a hand-set `JASPER_OUTPUTD_CONTENT_FORMAT`.
+const PACKED_CONTENT_LANE_UNSUPPORTED: &str =
+    "outputd content lane declares S24_3LE, which it has no packed read path for; \
+     the lane must be S16_LE or S32_LE (S24_3LE is an output-edge width only)";
 
 /// The single mapping from outputd's format vocabulary into ALSA's own.
 ///
@@ -26,9 +44,15 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 /// that knows what ALSA calls it. `S16Le` maps to the same `Format::S16LE` the
 /// retired module-level `FORMAT` const held, so an S16 edge asks ALSA for
 /// exactly what it always asked for.
+///
+/// `S24_3Le` maps to `Format::S243LE` — alsa-rs's spelling of
+/// `SND_PCM_FORMAT_S24_3LE`, 24 bits in three packed bytes. **Not**
+/// `Format::S24LE`, which is the same 24 bits inside a 4-byte word and is a
+/// different wire; that pair is one typo apart, so the mapping is pinned by test.
 fn alsa_format(format: SampleFormat) -> Format {
     match format {
         SampleFormat::S16Le => Format::S16LE,
+        SampleFormat::S24_3Le => Format::S243LE,
         SampleFormat::S32Le => Format::S32LE,
     }
 }
@@ -346,7 +370,8 @@ pub struct AlsaBackend {
     dac_format: SampleFormat,
     /// Reused NARROWING staging for an `S16Le` edge — allocated once, at open,
     /// and never on the audio path. Empty (zero bytes) on an `S32Le` edge, which
-    /// takes the program spine straight through with no staging at all.
+    /// takes the program spine straight through with no staging at all, and on an
+    /// `S24_3Le` edge, which stages into [`Self::dac_pack_buf`] instead.
     ///
     /// This is the inverse of what stood here before the i32 spine: the staging
     /// used to be an `S32Le` edge's WIDENING buffer, because the program was i16
@@ -354,6 +379,22 @@ pub struct AlsaBackend {
     /// edge is the one that converts — the same "only the mismatched edge pays"
     /// rule, with the mismatch on the other side.
     dac_narrow_buf: Vec<i16>,
+    /// Reused PACKING staging for an `S24_3Le` edge: one period as packed
+    /// little-endian 24-bit BYTES, allocated once at open. Empty (zero bytes) at
+    /// every other edge width, so a box that does not declare `S24_3LE` pays
+    /// nothing for this field's existence — the same conditional-allocation rule
+    /// [`ChildPeriods`] follows, and the reason this is a second buffer rather
+    /// than a widened `dac_narrow_buf`.
+    ///
+    /// A separate field from `dac_narrow_buf` rather than one buffer reinterpreted,
+    /// because the element TYPE is what makes the two edges different: an i16
+    /// staging can be handed to `io_i16()` and a byte staging cannot. Keeping them
+    /// distinct means an edge can only ever be handed the buffer its own arm
+    /// filled. Exactly one of the two is non-empty on any box.
+    ///
+    /// **Dormant on the whole fleet today** — no DAC profile declares an
+    /// `S24_3Le` edge, so this is `Vec::new()` on every live speaker.
+    dac_pack_buf: Vec<u8>,
     /// Reused i16 staging for an `S16Le` CONTENT lane — allocated once, at open.
     /// Empty (zero bytes) on an `S32Le` lane, and empty under the SHM-ring source
     /// (no ALSA content PCM is opened at all, so nothing ever reads through here).
@@ -466,9 +507,23 @@ enum ChildPeriods {
 impl ChildPeriods {
     /// One stereo period per child, at `format`. `CHANNELS` (not the sink's
     /// 4-channel content width): each child is a stereo DAC.
-    fn new(format: SampleFormat, period_frames: u32) -> Self {
+    ///
+    /// **Fallible, and only because of `S24_3Le`.** There is no packed-24 variant:
+    /// the composite's children move to a new width only when the composite
+    /// profile's own declaration moves, and per wide-output-path D9 that is one
+    /// change, not two — the children and the composite move together or not at
+    /// all. So an `S24_3Le` declaration reaching a composite means the registry
+    /// and this transport disagree, and the ONLY safe answer is to refuse.
+    ///
+    /// Refuse rather than fall back to `S16`, which is what a `_ =>` arm would
+    /// have done: outputd would then have asked BOTH children for `S24_3LE` at
+    /// open (`configure_pcm` reads the same declaration), passed their readbacks,
+    /// and written i16 half-samples into a 3-byte wire — full-scale garbage at two
+    /// speakers, with `/state` reporting `S24_3LE` because
+    /// [`Self::format`] reads the buffers. Loud beats plausible.
+    fn new(format: SampleFormat, period_frames: u32) -> Result<Self> {
         let samples = (period_frames as usize) * (CHANNELS as usize);
-        match format {
+        Ok(match format {
             SampleFormat::S16Le => Self::S16 {
                 a: vec![0i16; samples],
                 b: vec![0i16; samples],
@@ -477,7 +532,14 @@ impl ChildPeriods {
                 a: vec![0 as ProgramSample; samples],
                 b: vec![0 as ProgramSample; samples],
             },
-        }
+            SampleFormat::S24_3Le => anyhow::bail!(
+                "outputd composite sink cannot drive an {} child edge: the paired \
+                 transport has no packed-24 child write path, so a composite must \
+                 declare S16_LE or S32_LE (its children move width with it, or not \
+                 at all)",
+                format.as_str()
+            ),
+        })
     }
 
     /// The children's edge width, read off the buffers themselves.
@@ -677,6 +739,13 @@ impl AlsaBackend {
                 config.period_frames,
                 config.content_channels,
             ),
+            // The `S24_3Le` twin of the line above, and mutually exclusive with
+            // it: at most one of the two edge stagings is ever non-empty.
+            dac_pack_buf: i24_packed_staging(
+                config.declared_dac_format,
+                config.period_frames,
+                config.content_channels,
+            ),
             // No ALSA content lane opened ⇒ no ingest staging, whatever the
             // declaration says. The SHM-ring source feeds `content_buf` directly
             // and the ring wire is S16 by contract (D5), so its widening happens
@@ -813,6 +882,16 @@ impl AlsaBackend {
              refusing to guess the ingest width",
         ))?;
         match lane_format {
+            // Refused, not read, and PARK-class for the same reason the
+            // unknown-width refusal above is: the declaration is a static property
+            // of this struct (set once in `new`), so it would be true on every
+            // period and on every restart alike. Exiting 1 here would restart-loop
+            // into `StartLimitAction=reboot`; exit 78 puts it where an operator
+            // sees it. See `PACKED_CONTENT_LANE_UNSUPPORTED` for why the ingest
+            // side has no packed path.
+            SampleFormat::S24_3Le => {
+                final_sink_startup(Err(anyhow::anyhow!(PACKED_CONTENT_LANE_UNSUPPORTED)))
+            }
             SampleFormat::S32Le => {
                 let io = content
                     .io_i32()
@@ -864,7 +943,10 @@ impl AlsaBackend {
     /// An `S32Le` edge takes the spine STRAIGHT THROUGH — this is the payoff of
     /// the wide spine, and the reason the widening staging that used to live here
     /// is gone: there is nothing left to convert. An `S16Le` edge narrows once,
-    /// round-to-nearest, into `dac_narrow_buf`.
+    /// round-to-nearest, into `dac_narrow_buf`. An `S24_3Le` edge narrows once to
+    /// 24 significant bits and PACKS into `dac_pack_buf` — three bytes per sample,
+    /// which is why it needs its own arm and its own ALSA handle rather than one
+    /// more monomorphisation of the shared writer (wide-output-path D9).
     pub fn write_dac_period(&mut self, samples: &[ProgramSample]) -> Result<()> {
         let channels = self.channels as usize;
         let frames_total = samples.len() / channels;
@@ -895,6 +977,55 @@ impl AlsaBackend {
                     &self.dac_pcm,
                     &self.dac_narrow_buf,
                     channels,
+                    &mut self.counters.dac_xrun_count,
+                )?;
+            }
+            // THE PACKED EDGE (dormant — no profile declares it). Quantize to 24
+            // significant bits and pack three little-endian bytes per sample, then
+            // hand ALSA the BYTES.
+            //
+            // `io_bytes()` is alsa-rs's documented mechanism for exactly this
+            // case: "Call this if you have an unusual format, not supported by the
+            // regular access methods (io_i16 etc)" (alsa-0.11.0 `src/pcm.rs`). It
+            // returns `IO<'_, u8>`, and `IO::writei` computes its frame count via
+            // `snd_pcm_bytes_to_frames` on the slice's BYTE length — so on a PCM
+            // whose installed format is `S24_3LE` the frame arithmetic is
+            // alsa-lib's own, and the shared writer's xrun accounting, recovery
+            // budget and `event=outputd.xrun` line are byte-for-byte the ones the
+            // S16 and S32 edges get.
+            //
+            // Two honest differences from the typed handles, both deliberate:
+            //
+            // * `io_bytes()` does NOT verify the installed format (the typed
+            //   `io_i16`/`io_i32` do, via `io_checked`). That per-period check is
+            //   not what this path relies on and never was the real proof: the
+            //   OPEN-time `verify_dac_format` readback compares the installed
+            //   `hw_params` format against the request, names both, and parks at
+            //   EX_CONFIG 78 — strictly stronger than an opaque per-period
+            //   `unsupported io_xx`. An `S24_3LE` box cannot reach this arm without
+            //   having passed that readback.
+            // * The writer advances by ELEMENTS, and one element here is a byte,
+            //   not a sample — so it is handed `channels * 3`, not `channels`. That
+            //   is the whole reason `write_dac_frames`'s parameter is named
+            //   `elements_per_frame`; passing `channels` would advance the slice at
+            //   a third of the right rate and re-send most of every period.
+            SampleFormat::S24_3Le => {
+                let packed_len = samples.len() * jasper_resampler::I24_LE_BYTES_PER_SAMPLE;
+                if self.dac_pack_buf.len() != packed_len {
+                    // Steady state never resizes: `new` sized this for the run
+                    // loop's period. A geometry that ever differs reallocates
+                    // once and then stays put — it must not silently write a
+                    // short or stale period.
+                    self.dac_pack_buf.resize(packed_len, 0);
+                }
+                narrow_period_i24_le(samples, &mut self.dac_pack_buf)?;
+                let io = self.dac.io_bytes();
+                write_dac_frames(
+                    &io,
+                    &self.dac,
+                    &self.dac_pcm,
+                    &self.dac_pack_buf,
+                    channels * jasper_resampler::I24_LE_BYTES_PER_SAMPLE,
                     &mut self.counters.dac_xrun_count,
                 )?;
             }
@@ -938,6 +1069,19 @@ impl PairedCompositeSink {
             .as_ref()
             .context("dual Apple sink missing DAC B PCM")?
             .clone();
+
+        // The children's period buffers are built FIRST, before any PCM is
+        // opened, because building them is also the check that this transport can
+        // drive the declared child width at all (see `ChildPeriods::new`). A width
+        // it cannot drive is a permanent registry/transport disagreement, so it
+        // parks at EX_CONFIG 78 — and it does so without first opening two USB
+        // DACs and a snd-aloop lane for a configuration that was never going to
+        // run. It reads `config.period_frames`, not a negotiated value, so nothing
+        // here depends on the opens below.
+        let periods = final_sink_startup(ChildPeriods::new(
+            config.declared_dac_format,
+            config.period_frames,
+        ))?;
 
         let content =
             PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
@@ -1094,9 +1238,10 @@ impl PairedCompositeSink {
             max_delay_delta_frames: config.dual_max_delay_delta_frames,
             // `configure_pcm`'s final-edge readback checked the installed
             // client-side format on BOTH children against this requested one, so
-            // building the buffers at the request builds them at what outputd is
-            // running — neither child reached here otherwise.
-            periods: ChildPeriods::new(config.declared_dac_format, config.period_frames),
+            // buffers built at the request are buffers at what outputd is running
+            // — neither child reached here otherwise. Built at the top of this
+            // function (see there for why it happens before the opens).
+            periods,
             content_format: config.content_format,
             // The active content lane is 4-channel, so its ingest staging is
             // wider than the per-child period buffers above.
@@ -1186,6 +1331,11 @@ impl PairedCompositeSink {
             role: ContentPcmRole::ActiveContent,
         };
         let classified = match self.content_format {
+            // Same park-class refusal as the coherent lane's, same reason, same
+            // shared message — see `PACKED_CONTENT_LANE_UNSUPPORTED`.
+            SampleFormat::S24_3Le => {
+                return final_sink_startup(Err(anyhow::anyhow!(PACKED_CONTENT_LANE_UNSUPPORTED)));
+            }
             SampleFormat::S32Le => {
                 let io = self
                     .content
@@ -1682,18 +1832,43 @@ fn verify_installed_format(
 
 /// The i16 staging one period needs at `format` — for BOTH directions.
 ///
-/// The program spine is i32, so only an `S16Le` hop needs a staging buffer at
-/// all: an `S16Le` DAC edge narrows into one before writing, and an `S16Le`
-/// content lane reads into one before widening. An `S32Le` hop moves the spine's
-/// own samples and holds an EMPTY vec — zero bytes.
+/// The program spine is i32, so only an `S16Le` hop needs an i16 staging buffer:
+/// an `S16Le` DAC edge narrows into one before writing, and an `S16Le` content
+/// lane reads into one before widening. An `S32Le` hop moves the spine's own
+/// samples and holds an EMPTY vec — zero bytes. So does an `S24_3Le` hop, whose
+/// staging is BYTES, not i16 — [`i24_packed_staging`] owns that one.
 ///
-/// One function for both because the shape is identical (period × channels of
-/// i16) and because a second copy would be a twin that drifts. It is called
-/// once per hop, at open, never on the audio path.
+/// One function for both directions because the shape is identical (period ×
+/// channels of i16) and because a second copy would be a twin that drifts. It is
+/// called once per hop, at open, never on the audio path.
 fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i16> {
     match format {
         SampleFormat::S16Le => vec![0i16; (period_frames as usize) * (channels as usize)],
-        SampleFormat::S32Le => Vec::new(),
+        SampleFormat::S24_3Le | SampleFormat::S32Le => Vec::new(),
+    }
+}
+
+/// The PACKED-BYTE staging one period needs at `format`: `period × channels × 3`
+/// bytes at an `S24_3Le` edge, an EMPTY vec at every other width.
+///
+/// The byte-shaped sibling of [`s16_staging`], and separate from it for the same
+/// reason the two backend fields are separate — the element type is the whole
+/// difference, and a single function cannot return both. Same discipline
+/// otherwise: called once, at open, never on the audio path, and it reserves
+/// nothing at a width that does not use it.
+///
+/// The 3 comes from `jasper_resampler::I24_LE_BYTES_PER_SAMPLE`, the same
+/// constant the packing primitive's length contract reads, so the staging and the
+/// conversion cannot disagree about the stride.
+fn i24_packed_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<u8> {
+    match format {
+        SampleFormat::S24_3Le => vec![
+            0u8;
+            (period_frames as usize)
+                * (channels as usize)
+                * jasper_resampler::I24_LE_BYTES_PER_SAMPLE
+        ],
+        SampleFormat::S16Le | SampleFormat::S32Le => Vec::new(),
     }
 }
 
@@ -1788,28 +1963,43 @@ fn deinterleave_4ch_to_dual_stereo<T: ChildEdgeSample>(
     Ok(())
 }
 
-/// The coherent single DAC's period write loop, over whatever sample type the
+/// The coherent single DAC's period write loop, over whatever element type the
 /// negotiated edge takes.
 ///
 /// One loop, not one per format: the xrun accounting, the bounded recovery
 /// budget, and the `event=outputd.xrun` line are the audio path's fail-closed
-/// behaviour and must not be able to drift between an S16 and an S32 edge.
-/// Monomorphised for `i16` this is instruction-for-instruction the pre-native-
-/// format writer.
+/// behaviour and must not be able to drift between an S16, an S24_3LE and an S32
+/// edge. Monomorphised for `i16` this is instruction-for-instruction the
+/// pre-native-format writer.
+///
+/// `elements_per_frame` is the stride of ONE FRAME in units of `S`, and it is
+/// deliberately not called `channels`:
+///
+/// * At a TYPED edge (`IO<i16>`, `IO<i32>`) one element is one sample, so the
+///   stride IS the channel count — every existing caller passes exactly that and
+///   is unchanged.
+/// * At the PACKED `S24_3LE` edge the handle is `IO<u8>` and one element is one
+///   BYTE, so the stride is `channels * 3`. Passing `channels` there would slice
+///   forward at a third of the right rate and re-send most of every period as the
+///   loop chased `frames_total`.
+///
+/// The parameter carries the difference so the loop body does not have to know
+/// which kind of edge it is serving — which is what keeps ONE xrun policy for all
+/// three widths.
 fn write_dac_frames<S: Copy>(
     io: &IO<'_, S>,
     pcm: &PCM,
     pcm_name: &str,
     samples: &[S],
-    channels: usize,
+    elements_per_frame: usize,
     xrun_count: &mut u64,
 ) -> Result<()> {
-    let frames_total = samples.len() / channels;
+    let frames_total = samples.len() / elements_per_frame;
     let mut frames_done = 0usize;
     let mut recoveries = 0u32;
 
     while frames_done < frames_total {
-        let offset = frames_done * channels;
+        let offset = frames_done * elements_per_frame;
         match io.writei(&samples[offset..]) {
             Ok(n) => {
                 frames_done += n;
@@ -2179,10 +2369,17 @@ mod tests {
         // S16 box silently changes its electrical edge — so pin the literal.
         assert_eq!(alsa_format(SampleFormat::S16Le), Format::S16LE);
         assert_eq!(alsa_format(SampleFormat::S32Le), Format::S32LE);
+        // `S243LE` is 24 bits in THREE PACKED BYTES. `S24LE` — one character
+        // apart in alsa-rs's spelling — is the same 24 bits inside a 4-byte word,
+        // a different wire and NOT in this vocabulary. Requesting the wrong one
+        // would make ALSA's own frame arithmetic disagree with the packed staging
+        // by 4/3, so the literal is pinned and the wrong neighbour is named.
+        assert_eq!(alsa_format(SampleFormat::S24_3Le), Format::S243LE);
+        assert_ne!(alsa_format(SampleFormat::S24_3Le), Format::S24LE);
     }
 
     #[test]
-    fn only_the_s16_hop_stages_and_it_stages_one_whole_period() {
+    fn only_the_s16_hop_stages_i16_and_it_stages_one_whole_period() {
         // The INVERSE of what this asserted before the i32 program spine, and
         // that inversion is the payoff: an `S32Le` hop moves the spine's own
         // samples, so it stages nothing at all, while an `S16Le` hop is the one
@@ -2199,6 +2396,71 @@ mod tests {
 
         // Width is carried as data: a wide sink's period is channels x frames.
         assert_eq!(s16_staging(SampleFormat::S16Le, 1024, 8).len(), 8192);
+
+        // An `S24_3Le` hop converts too, but into BYTES — so it takes no i16
+        // staging either. If this ever returns a non-empty vec, an S24_3LE box
+        // holds two full period buffers where one is used.
+        let packed = s16_staging(SampleFormat::S24_3Le, 1024, 2);
+        assert!(packed.is_empty(), "a packed hop stages bytes, not i16");
+        assert_eq!(packed.capacity(), 0, "and must not reserve bytes for one");
+    }
+
+    #[test]
+    fn only_the_packed_24_edge_stages_bytes_and_it_stages_three_per_sample() {
+        // The byte-staging twin of the test above, and the size is the point: the
+        // packed period is `frames x channels x 3`. At the 4-byte `S24_LE` stride
+        // it would be 4/3 too long and ALSA would be handed a third of a period
+        // more than the frame count claims; at a 2-byte stride it would be a
+        // partial period every time.
+        let packed = i24_packed_staging(SampleFormat::S24_3Le, 1024, 2);
+        assert_eq!(packed.len(), 1024 * 2 * 3);
+        assert!(packed.iter().all(|&b| b == 0));
+
+        // Width is carried as data here too, exactly as it is for the i16 hop.
+        assert_eq!(
+            i24_packed_staging(SampleFormat::S24_3Le, 1024, 8).len(),
+            1024 * 8 * 3
+        );
+
+        // And EVERY other edge width reserves nothing — a box that does not
+        // declare S24_3LE must not pay mlocked bytes for this field.
+        for format in [SampleFormat::S16Le, SampleFormat::S32Le] {
+            let unused = i24_packed_staging(format, 1024, 8);
+            assert!(
+                unused.is_empty(),
+                "{} needs no byte staging",
+                format.as_str()
+            );
+            assert_eq!(unused.capacity(), 0, "{}", format.as_str());
+        }
+    }
+
+    #[test]
+    fn exactly_one_edge_staging_is_allocated_at_any_declared_width() {
+        // The two edge stagings are mutually exclusive by construction, and that
+        // is what makes a second buffer cheap rather than a doubling: at most one
+        // of them is ever non-empty on a given box. Enumerated over the whole
+        // vocabulary so a future width cannot quietly allocate both, or neither
+        // while still converting.
+        for (format, wants_staging) in [
+            (SampleFormat::S16Le, true),
+            (SampleFormat::S24_3Le, true),
+            (SampleFormat::S32Le, false),
+        ] {
+            let i16_bytes = s16_staging(format, 1024, 2).len() * 2;
+            let byte_bytes = i24_packed_staging(format, 1024, 2).len();
+            assert!(
+                i16_bytes == 0 || byte_bytes == 0,
+                "{} allocates BOTH edge stagings",
+                format.as_str()
+            );
+            assert_eq!(
+                (i16_bytes + byte_bytes) > 0,
+                wants_staging,
+                "{} staging presence",
+                format.as_str()
+            );
+        }
     }
 
     #[test]
@@ -2224,9 +2486,41 @@ mod tests {
 
     #[test]
     fn dac_format_readback_rejects_an_edge_outside_the_vocabulary() {
-        let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S16Le, Format::S24LE)
+        // The sentinel is `FloatLE`, not the `S24LE` this used to use. `S24_3LE`
+        // is IN the vocabulary now, and a reader meeting `S24LE` beside it would
+        // reasonably wonder whether the test was asserting the accepted 24-bit
+        // width is rejected. `FloatLE` is unambiguously outside — outputd's
+        // vocabulary is integer-only — so the assertion says what it means.
+        let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S16Le, Format::FloatLE)
             .unwrap_err();
-        assert!(err.to_string().contains("S24LE"), "{err}");
+        assert!(err.to_string().contains("FloatLE"), "{err}");
+
+        // The 4-byte 24-bit spelling is also still outside it, and THAT is now the
+        // interesting case: it is one character from the accepted `S243LE`, so a
+        // device installing it against an `S24_3LE` request has to be caught.
+        let err = verify_dac_format("dac", "outputd_dac", SampleFormat::S24_3Le, Format::S24LE)
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("S24LE"), "{text}");
+        assert!(text.contains("S24_3LE"), "{text}");
+    }
+
+    #[test]
+    fn dac_format_readback_accepts_a_packed_24_edge_that_installed_what_it_asked_for() {
+        // The readback round-trips the new variant: `alsa_format` maps it to
+        // `Format::S243LE`, and an honest device reporting that must pass. This is
+        // the only format proof the packed write path has — `io_bytes()` does no
+        // per-period verification, unlike the typed `io_i16`/`io_i32` handles — so
+        // it has to hold for both the single DAC and both composite children.
+        for role in ["dac", "dual_dac_a", "dual_dac_b"] {
+            verify_dac_format(
+                role,
+                "hw:CARD=A,DEV=0",
+                SampleFormat::S24_3Le,
+                Format::S243LE,
+            )
+            .unwrap();
+        }
     }
 
     #[test]
@@ -2377,14 +2671,17 @@ mod tests {
 
     #[test]
     fn content_format_readback_rejects_an_edge_outside_the_vocabulary() {
+        // Sentinel moved off `S24LE` for the same reason the DAC readback's did:
+        // with `S24_3LE` in the vocabulary, a 24-bit sentinel here reads as if the
+        // accepted width were being rejected. `FloatLE` is unambiguously outside.
         let err = verify_content_format(
             "content",
             "outputd_content_capture",
             SampleFormat::S16Le,
-            Format::S24LE,
+            Format::FloatLE,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("S24LE"), "{err}");
+        assert!(err.to_string().contains("FloatLE"), "{err}");
     }
 
     #[test]
@@ -2675,7 +2972,7 @@ mod tests {
         // sink's 4-channel content width. A pair sized at 4 channels would be
         // twice the mlocked bytes it needs; a pair sized at 1 would let the split
         // hit its own bounds check every period.
-        let narrow = ChildPeriods::new(SampleFormat::S16Le, 1024);
+        let narrow = ChildPeriods::new(SampleFormat::S16Le, 1024).unwrap();
         match &narrow {
             ChildPeriods::S16 { a, b } => {
                 assert_eq!(a.len(), 2048);
@@ -2685,7 +2982,7 @@ mod tests {
             ChildPeriods::S32 { .. } => panic!("S16Le children must hold i16 buffers"),
         }
 
-        let wide = ChildPeriods::new(SampleFormat::S32Le, 1024);
+        let wide = ChildPeriods::new(SampleFormat::S32Le, 1024).unwrap();
         match &wide {
             ChildPeriods::S32 { a, b } => {
                 assert_eq!(a.len(), 2048);
@@ -2705,7 +3002,51 @@ mod tests {
         // the lie the old hardcoded `SampleFormat::S16Le` in
         // `RuntimeAlsaSink::dac_format` was.
         for format in [SampleFormat::S16Le, SampleFormat::S32Le] {
-            assert_eq!(ChildPeriods::new(format, 64).format(), format);
+            assert_eq!(ChildPeriods::new(format, 64).unwrap().format(), format);
         }
+    }
+
+    #[test]
+    fn a_composite_child_edge_of_packed_24_is_refused_not_silently_narrowed() {
+        // The composite has no packed-24 child write path, and per
+        // wide-output-path D9 its children move width only when the composite
+        // profile's own declaration moves — together, or not at all. So this
+        // declaration means the registry and this transport disagree.
+        //
+        // What a `_ => Self::S16 {..}` fallback would have done instead is the
+        // whole reason this is fallible: `configure_pcm` reads the SAME
+        // declaration, so both children would have been asked for `S24_3LE` and
+        // passed their readbacks, and then the write path would have handed a
+        // 3-byte wire i16 half-samples — full-scale garbage at two speakers, while
+        // `/state` reported `S24_3LE` because `format()` reads the buffers.
+        // `match` rather than `unwrap_err()`: `ChildPeriods` deliberately has no
+        // `Debug` (it holds two whole period buffers), and adding one just so a
+        // test could print them is the tail wagging the dog.
+        let err = match ChildPeriods::new(SampleFormat::S24_3Le, 1024) {
+            Ok(_) => panic!("a packed-24 child edge must be refused, not built"),
+            Err(err) => err,
+        };
+        let text = err.to_string();
+        assert!(text.contains("S24_3LE"), "{text}");
+        assert!(text.contains("no packed-24 child write path"), "{text}");
+        // The other two widths still build, so the refusal is not a blanket one.
+        assert!(ChildPeriods::new(SampleFormat::S16Le, 1024).is_ok());
+        assert!(ChildPeriods::new(SampleFormat::S32Le, 1024).is_ok());
+    }
+
+    #[test]
+    fn a_packed_24_composite_declaration_parks_the_unit_instead_of_restart_looping() {
+        // `PairedCompositeSink::new` wraps the construction in
+        // `final_sink_startup`, so the refusal above has to carry the marker
+        // `main()` turns into EX_CONFIG 78. A restart cannot change a registry
+        // declaration, and this unit's restart loop escalates to
+        // `StartLimitAction=reboot`.
+        let error = match final_sink_startup(ChildPeriods::new(SampleFormat::S24_3Le, 1024)) {
+            Ok(_) => panic!("a packed-24 child edge must be refused, not built"),
+            Err(error) => error,
+        };
+        assert!(error
+            .downcast_ref::<FinalSinkStartupConfigError>()
+            .is_some());
     }
 }

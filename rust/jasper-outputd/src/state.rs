@@ -2503,6 +2503,44 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_json_carries_the_packed_24_edge_on_both_the_declared_and_negotiated_paths() {
+        // `dac.format` is a chip-AEC alignment identity input, so the new variant
+        // has to reach the wire spelled `S24_3LE` through BOTH paths — the
+        // declaration echoed before any sink opens, and the readback once one
+        // has. Neither path may collapse an unfamiliar width to a familiar one.
+        //
+        // No profile declares this edge today, so this is the only place in the
+        // tree that proves the wire spelling for it. If it ever prints `S243LE`
+        // (alsa-rs's own enum spelling) or `S24_LE`, a future commissioning run
+        // would certify against a name nothing else in the fleet uses.
+        let declared = OutputdState::new(&Config {
+            declared_dac_format: SampleFormat::S24_3Le,
+            content_format: SampleFormat::S24_3Le,
+            ..test_config()
+        });
+        let j = declared.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S24_3LE""#),
+            "declared S24_3LE edge missing from {j}"
+        );
+        assert!(
+            j.contains(r#""format":"S24_3LE""#),
+            "declared S24_3LE content lane missing from {j}"
+        );
+
+        let negotiated = OutputdState::new(&test_config());
+        negotiated.set_dac_format(SampleFormat::S24_3Le);
+        negotiated.set_content_format(SampleFormat::S24_3Le);
+        let j = negotiated.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S24_3LE""#),
+            "negotiated S24_3LE edge missing from {j}"
+        );
+    }
+
+    #[test]
     fn negotiated_dac_format_is_recorded_once_and_never_moves_under_a_reader() {
         // `dac.format` is an identity input. There is exactly one negotiation,
         // so a later call is ignored rather than allowed to change the answer
