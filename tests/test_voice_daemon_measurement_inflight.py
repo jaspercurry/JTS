@@ -37,6 +37,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import threading
 
 import pytest
 
@@ -435,6 +436,10 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         "_FakeAsyncio",
         (),
         {
+            "CancelledError": asyncio.CancelledError,
+            "create_task": staticmethod(asyncio.create_task),
+            "current_task": staticmethod(asyncio.current_task),
+            "shield": staticmethod(asyncio.shield),
             "to_thread": staticmethod(asyncio.to_thread),
             "sleep": staticmethod(fake_drain_sleep),
         },
@@ -470,6 +475,77 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
 
     release_drain.set()
     await click
+    assert await asyncio.wait_for(pause, timeout=1.0) == {
+        "result": "ok",
+        "drained": True,
+    }
+    await _close_window(wl)
+
+
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
+    tts_socket: str,
+) -> None:
+    """Cancellation cannot outrun an uncancellable socket-write worker."""
+    from jasper.audio_io import OutputdTtsPlayout
+
+    write_started = threading.Event()
+    release_write = threading.Event()
+    write_returned = threading.Event()
+
+    class _BlockingWrite:
+        def set_gain_db(self, _db: float) -> None:
+            return None
+
+        def start_segment(self, **_kwargs) -> None:
+            return None
+
+        def write(self, _data: bytes) -> None:
+            write_started.set()
+            if not release_write.wait(timeout=2.0):
+                raise TimeoutError("test did not release AUDIO write")
+            write_returned.set()
+
+        def pause_content_meter(self) -> None:
+            return None
+
+        def resume_content_meter(self) -> None:
+            return None
+
+    tts = OutputdTtsPlayout(
+        socket_path=tts_socket,
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.2,
+    )
+    tts._stream = _BlockingWrite()  # type: ignore[assignment]
+    wl = WakeLoop.for_tests()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._tts = tts
+    wl._mute_click_on_pcm = b"\x01\x00" * 5
+
+    click = asyncio.create_task(wl._play_mute_click(going_on=True))
+    assert await asyncio.to_thread(write_started.wait, 1.0)
+    click.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not click.done(), tts_socket
+    assert wl._output_gate.active_kind == "feedback"
+
+    pause = asyncio.create_task(wl.measurement_pause_response())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not pause.done(), tts_socket
+
+    release_write.set()
+    assert await asyncio.to_thread(write_returned.wait, 1.0)
+    while tts._ring_end_monotonic is None:
+        await asyncio.sleep(0)
+    assert not click.done(), "accepted AUDIO tail must still hold feedback gate"
+    assert not pause.done(), "PAUSE must still be draining feedback ownership"
+
+    with pytest.raises(asyncio.CancelledError):
+        await click
     assert await asyncio.wait_for(pause, timeout=1.0) == {
         "result": "ok",
         "drained": True,

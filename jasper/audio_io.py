@@ -826,6 +826,35 @@ def _outputd_audio_chunks(data: bytes):
         yield data[i:i + chunk_size]
 
 
+async def _send_outputd_audio_chunk(stream, chunk: bytes) -> bool:
+    """Wait for one thread-backed write to reach a known outcome.
+
+    ``asyncio.to_thread`` cancellation cannot stop a blocking ``sendall``.
+    Defer cancellation until that worker returns so the caller can commit the
+    accepted chunk to its physical-drain ledger before cancellation unwinds.
+    Returns whether cancellation arrived while the worker was in flight.
+    """
+
+    write_task = asyncio.create_task(asyncio.to_thread(stream.write, chunk))
+    cancelled = False
+    current = asyncio.current_task()
+    while not write_task.done():
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            cancelled = True
+            if current is not None:
+                current.uncancel()
+    if write_task.cancelled():
+        raise asyncio.CancelledError
+    error = write_task.exception()
+    if error is not None:
+        if cancelled:
+            raise asyncio.CancelledError from None
+        raise error
+    return cancelled
+
+
 def _outputd_segment_kind(kind: str) -> str:
     if kind in {"assistant", "cue", "chirp"}:
         return kind
@@ -1369,7 +1398,7 @@ class OutputdTtsPlayout(TtsPlayout):
                 paced_sec += pace_excess
                 self._paced_total_sec += pace_excess
             try:
-                await asyncio.to_thread(stream.write, chunk)
+                cancelled = await _send_outputd_audio_chunk(stream, chunk)
             except OSError:
                 if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
                     log_event(
@@ -1392,6 +1421,8 @@ class OutputdTtsPlayout(TtsPlayout):
                 self._output_rate * _OUTPUTD_AUDIO_FRAME_BYTES
             )
             self._ring_end_monotonic = committed_end
+            if cancelled:
+                raise asyncio.CancelledError
         queued_at = time.monotonic()
         # Exclude deliberate pacing sleeps so the warning keeps meaning
         # "the IPC itself is slow", not "the writer paced as designed".
