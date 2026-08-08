@@ -2294,7 +2294,30 @@ mod tests {
         assert_eq!(unknown["received"].as_str(), Some("NOT_A_COMMAND"));
     }
 
+    // Pre-existing macOS-only artifact, localized to the abandoned-client
+    // block at the end of this test (the `drop(abandoned)` case): once a
+    // UnixStream::pair() peer has both directions closed, XNU's
+    // sosetopt(SO_RCVTIMEO) -- reached from read_bounded_command's
+    // per-loop set_read_timeout call -- returns EINVAL. Every earlier
+    // exchange in this test only closes the write half
+    // (`shutdown(Write)`) and passes; a future fixer restructuring this
+    // block should start there rather than re-deriving the mechanism.
+    // Re-verified against pristine origin/main sources in three
+    // wide-output-path PRs (#2224, #2230, #2236) and confirmed by #2230's
+    // adversarial panel (resilience lens, 2026-08-07). CI's `rust` job
+    // runs on ubuntu-latest and is the authority; the test runs there
+    // unaffected. jasper-outputd's hard `alsa` dependency also does not
+    // build on macOS at all via the usual Homebrew path (a separate,
+    // already-documented limitation in AGENTS.md); this `ignore`
+    // therefore only bites when ALSA is available locally *and* the run
+    // is lib-scoped (`cargo test --lib`) — a full `cargo test` on
+    // macOS fails earlier compiling main.rs's test module
+    // (`libc::SOCK_CLOEXEC` is Linux/BSD-only).
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "pre-existing AF_UNIX EINVAL on macOS (abandoned-client SO_RCVTIMEO); CI (Linux) is authoritative -- see comment above"
+    )]
     fn state_server_command_cap_is_exact_and_errors_stay_bounded() {
         let server = test_state_server(Arc::new(OutputdState::new(&test_config())));
 
