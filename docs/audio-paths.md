@@ -597,17 +597,25 @@ The old DAC8x final-output alias route has been removed. `outputd_dac`
 renders directly to an ordinary recognized final-output card for every
 registered single DAC profile — no profile gets a converting `plug` in
 front of it (PR-4, format-foundation, deleted the last one). The
-InnoMaker HiFi AMP Pro is still the sole profile-scoped
+InnoMaker HiFi AMP Pro was the first profile-scoped
 *format* exception: the kernel DAI (`ma120x0p.c`) advertises only
 S24_LE/S32_LE at continuous 44.1-192 kHz rates (a driver-advertisement
 limit, not a documented silicon one), so its registry profile declares an
-`S32_LE` final edge. outputd requests that format directly on the raw
-`hw:` open and writes its i32 program straight through at that edge (its
-internal program spine is i32, so an S32 edge converts nothing); because
-there is no conversion layer in front of the card, outputd's own
+`S32_LE` final edge. The base HiFiBerry DAC8x now declares the same
+`S32_LE` edge (wide-output-path PR-7) for a different reason: it is the
+horn-lane fix — an `aplay --dump-hw-params` open test on jts3 confirmed the
+S32 edge (2026-08-07), and outputd's i32 program spine now reaches the DAC
+with zero narrowing where an undithered 16-bit requantization used to
+crackle on decay tails. DAC8x Studio is unchanged at `S16_LE`: it shares
+the base DAC8x's `dtoverlay` and DAC-chip family, but no lab unit exists to
+run the same hardware probe, so the registry does not flip it on inference
+alone. For every declaring profile, outputd requests that format directly
+on the raw `hw:` open and writes its i32 program straight through at that
+edge (its internal program spine is i32, so an S32 edge converts nothing);
+because there is no conversion layer in front of the card, outputd's own
 client-edge readback is now the hardware-edge proof — the pinned-slave
-`plug` that used to own that guarantee is gone. That profile now declares a
-width-2 active-output lane, so `jasper-audio-hardware-reconcile`'s
+`plug` that used to own that guarantee is gone. InnoMaker's profile also
+declares a width-2 active-output lane, so `jasper-audio-hardware-reconcile`'s
 active-graph gate is consulted for it like any other coherent single DAC;
 `OUTPUTD_ACTIVE_MODE` still only reaches the render as `1` once a legal
 active graph is the live CamillaDSP config, so an uncommissioned box stays
@@ -730,7 +738,11 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-07 (the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
+Last verified: 2026-08-08 (the DAC8x final-edge paragraph corrected: the
+base HiFiBerry DAC8x now also declares an `S32_LE` edge alongside InnoMaker
+— wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware probe
+2026-08-07 — and DAC8x Studio's deliberate non-flip re-stated against the
+registry comment; prior 2026-08-07 pass: the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
 from `jasper-asound-render.sh`, PR-4 format-foundation — every registered
 single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
 `type hw` alias, and the S32_LE hardware-edge proof moved from the render's

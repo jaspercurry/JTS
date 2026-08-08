@@ -1238,6 +1238,12 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
+    # wide-output-path PR-7: the registry-declared final-edge format is LIVE
+    # (outputd reads it, requests it on the DAC PCM, and parks at exit 78 on
+    # a mismatch) — see the fuller comment in
+    # test_reconcile_apple_role_enables_apple_helpers_and_renders. DAC8x
+    # declares S32_LE now, unlike the Apple dongle's S16_LE default.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
     assert "single_alsa_active" not in result.stderr
     assert not (tmp_path / "tts.env").exists()
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
@@ -1277,6 +1283,10 @@ def test_reconcile_dac8x_active_graph_wide_profile_emits_that_width(tmp_path: Pa
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=6" in outputd_env
     assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
+    # The declared final-edge format is unchanged by arming the lane (mirrors
+    # test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph
+    # above).
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
     assert "mode=single_alsa_active active_channels=6 active_lane_cap=8" in result.stderr
 
 

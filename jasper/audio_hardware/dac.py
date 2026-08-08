@@ -397,6 +397,26 @@ HIFIBERRY_DAC8X = DacProfile(
     chip_aec_qualification="approved",
     chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",
     dtoverlay="hifiberry-dac8x",
+    # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
+    # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
+    # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
+    # 2026-08-07, wide-output-path program gate G0b). Declaring S32_LE here
+    # lets outputd's i32 program spine reach the DAC edge with zero
+    # narrowing (wide-output-path PR-7) — the fix for the horn-lane
+    # undithered-16-bit-requantization crackle; see
+    # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
+    #
+    # Consequence: this field is part of the chip-AEC alignment identity
+    # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
+    # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the
+    # identity force-recommissions the fleet"), so every artifact
+    # commissioned against the old S16_LE edge is now invalid. jts3 — the
+    # only commissioned box on this profile — parks its managed-XVF stack
+    # (voice stopped, wake gated off via /var/lib/jasper/voice-input-absent)
+    # until a human runs `sudo jasper-aec-commission` in the foreground
+    # (~2 minutes of audible sweeps). See plan captures/PLAN-wide-output-path-2026-08-07.md
+    # §6 PR-7 for the recommission drill.
+    final_edge_format="S32_LE",
 )
 
 HIFIBERRY_DAC8X_STUDIO = DacProfile(
@@ -424,6 +444,22 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         "calibration before arming production chip AEC"
     ),
     dtoverlay="hifiberry-dac8x",
+    # NOT flipped to S32_LE alongside the base DAC8x above (wide-output-path
+    # PR-7), deliberately. HiFiBerry's published datasheets describe both
+    # boards as four 192kHz/24-bit Burr-Brown DAC chips on the SAME
+    # `dtoverlay=hifiberry-dac8x` kernel driver — they differ only in the
+    # analog output stage (balanced DB25 vs unbalanced RCA) and an added
+    # hardware volume-control chip, neither of which touches the digital I2S
+    # format this field declares. That makes the flip PLAUSIBLE but not
+    # PROVEN: the base DAC8x's S32 capability was confirmed by an
+    # `aplay --dump-hw-params` open test on real jts3 hardware (2026-08-07,
+    # program gate G0b); no DAC8x Studio unit exists in the lab fleet to run
+    # that same probe, and this program's own norm (see PR-8, D9) is a
+    # hardware gate before a format declaration, not inference from a shared
+    # overlay name. Flip this once that probe passes on real Studio
+    # hardware — until then it stays at the safe S16_LE default. A wrong
+    # guess here would only park the box (outputd's own client-edge readback
+    # fails closed on an unsupported format), not damage it.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(

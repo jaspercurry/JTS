@@ -582,7 +582,15 @@ def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
 
 def test_final_edge_format_matches_known_hardware() -> None:
     assert APPLE_USB_C_DONGLE.final_edge_format == "S16_LE"
-    assert HIFIBERRY_DAC8X.final_edge_format == "S16_LE"
+    # wide-output-path PR-7: HiFiBerry DAC8x is a measured S32 edge (jts3
+    # `aplay --dump-hw-params` open test, 2026-08-07) — declaring it moves
+    # outputd's i32 program spine straight through with zero narrowing.
+    assert HIFIBERRY_DAC8X.final_edge_format == "S32_LE"
+    # DAC8x Studio stays at the safe default: same DAC-chip family and
+    # dtoverlay as the base DAC8x above, but no lab unit exists to run the
+    # same hardware open-test, so this program does not flip it on inference
+    # alone. See the profile's own comment in jasper/audio_hardware/dac.py
+    # for exactly what evidence would flip it.
     assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
     assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
     # The composite's declaration became load-bearing when outputd started
