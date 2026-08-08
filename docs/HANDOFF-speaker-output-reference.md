@@ -328,6 +328,36 @@ or rollback branch, and run the helper again if the DAC is still busy.
 The helper is necessary because older code does not know about, and
 therefore cannot disable, the outputd unit.
 
+> **ROLLBACK RULE — the content-lane width flip is NOT rollback-symmetric.**
+> `JASPER_OUTPUTD_CONTENT_FORMAT` is a merge-write into
+> `/var/lib/jasper/outputd.env` (`set_env_file_var_if_changed`; nothing anywhere
+> clears it), and outputd has READ it since the declaration landed. So rolling
+> back or bisecting a **flipped** box to any commit between the declaration and
+> the flip leaves outputd requesting `S32_LE` while the rolled-back emitters
+> render `S16_LE`. On a raw **active** lane that is the deploy-ordering hazard in
+> reverse: whichever opener wins locks a width the other cannot serve, and the
+> racy shape is a `Restart=always` CamillaDSP re-execing onto S16 first, after
+> which outputd walks its `StartLimitAction=reboot` ladder; the other shape is a
+> deterministic CamillaDSP crash-loop and a silent speaker. **Passive/plug boxes
+> are SAFE** — the `outputd_content_*` `plug` converts, so they need no pre-step.
+>
+> There is no code fix: the actor is the OLD code, which cannot know about a key
+> that postdates it. Pre-step for **active-lane** boxes before deploying any
+> pre-flip commit:
+>
+> ```sh
+> ssh <box> 'sudo systemctl stop jasper-camilla.service jasper-outputd.service && \
+>   sudo sed -i "/^[[:space:]]*JASPER_OUTPUTD_CONTENT_FORMAT[[:space:]]*=/d" /var/lib/jasper/outputd.env'
+> JASPER_DEPLOY_ALLOW_DOWNGRADE=1 bash scripts/deploy-to-pi.sh
+> ```
+>
+> Stop CamillaDSP to release the width lock, stop outputd so it cannot re-lock
+> from the stale key before the key is gone, then delete the key so the
+> rolled-back code takes its `S16_LE` default. Both stops must precede the
+> deletion — deleting first leaves a window where a CamillaDSP re-exec locks S16
+> and fires the ladder. A canary STOP does not by itself imply rollback:
+> diagnose first.
+
 What exists:
 
 - Rust crate: `rust/jasper-outputd`.
@@ -357,10 +387,19 @@ What exists:
   `Config::from_env` refuses `rate_match` on a wider one rather than
   requantizing silently ahead of the DAC edge. Since the lane's default width is
   now `S32_LE`, `jasper-audio-hardware-reconcile` emits
-  `JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE` whenever it finds this bridge set, so a
-  routine deploy keeps an operator's lab soak coherent instead of building the
-  pair outputd rejects (exit 78, silent speaker); the lane's `plug` converts, and
-  the lab bridge already accepted that narrowing when it was enabled.
+  `JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE` whenever it finds this bridge set (for
+  every spelling outputd's own parse accepts — `rate_match`, `ratematch`,
+  `rate-matched`, `rate_matched`; a contract test keeps the two alias sets from
+  drifting), so a routine deploy keeps an operator's lab soak coherent instead of
+  building the pair outputd rejects (exit 78 →
+  `RestartPreventExitStatus=78` → parked final-output owner, silent speaker).
+  **A post-flip `rate_match` box therefore gains a conversion it did not have
+  before:** CamillaDSP writes the lane at `S32_LE` and outputd requests `S16_LE`
+  through it, so the `outputd_content_*` `plug` narrows — with ALSA's own linear
+  truncation, NOT the round-to-nearest the DAC edge uses. That is still the right
+  trade against a parked speaker on a lab-soak-only mode whose i16 resampler
+  already imposed the same narrowing, but it is a real difference: do not read a
+  `rate_match` soak's noise floor as representative of the production path.
   Use this for DAC/content-lane clock-slip validation only until it has
   passed long jts3 soaks; it is not a broad DAC abstraction.
   Default lab settings add 4096 frames of content latency (~85 ms at
@@ -1650,7 +1689,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-08 (the snd-aloop content lane widened to `S32_LE` — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`, the cutover seed, the `content_in` port shape, the INGRESS half of the boundary paragraph (its egress half is PR-5's composite-declared-width correction, merged the same day and carried through unchanged), the `rate_match` coherence emission, and the retained `S16_LE` v1.yml rollback path all re-stated against the code; an armed SHM ring keeps this hop at the ring's own `S16_LE` wire format; prior 2026-08-07 pass: outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-08-08 (the snd-aloop content lane widened to `S32_LE` — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`, the cutover seed, the `content_in` port shape, the INGRESS half of the boundary paragraph (its egress half is PR-5's composite-declared-width correction, merged the same day and carried through unchanged), the `rate_match` coherence emission and the plug-narrowing it introduces on a soak box, the NOT-rollback-symmetric rule for a flipped active-lane box (Current Outputd State), and the retained `S16_LE` v1.yml rollback path all re-stated against the code; an armed SHM ring keeps this hop at the ring's own `S16_LE` wire format; prior 2026-08-07 pass: outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the

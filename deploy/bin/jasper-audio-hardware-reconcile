@@ -741,6 +741,18 @@ PY
 # hand-set, deferred lab bridge — is an i16 resampler, so outputd REFUSES to
 # start when it is paired with a wide content lane. That pairing is kept
 # coherent below rather than constructed and then rejected.
+
+# Every spelling outputd's parse accepts for the rate-match content bridge
+# (rust/jasper-outputd/src/config.rs, ContentBridgeMode, after trim +
+# to_ascii_lowercase). Matching only the canonical token would leave a soak box
+# hand-set to any alias unnarrowed: the reconciler would emit a wide lane,
+# outputd would bail (exit 78 -> RestartPreventExitStatus=78 -> parked
+# final-output owner, silent speaker) on a routine deploy — exactly what the
+# narrowing below exists to prevent. This bash list must stay a SUPERSET of the
+# Rust arms; tests/test_audio_hardware_reconcile.py machine-compares the two
+# sides so drift fails a test instead of silencing a speaker (the
+# migrate_transit_config keys-array pattern).
+RATE_MATCH_BRIDGE_ALIASES=(rate_match ratematch rate-matched rate_matched)
 content_format_for_coupling() {
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
         return 0
@@ -761,7 +773,7 @@ PY
 # Prints nothing when the coupling probe could not answer, which the caller
 # reads as "leave the key alone" rather than "write a guess".
 resolved_content_format() {
-    local fmt bridge
+    local fmt bridge alias
     fmt="$(content_format_for_coupling)"
     if [[ -z "$fmt" ]]; then
         return 0
@@ -775,13 +787,16 @@ resolved_content_format() {
     # rule; this keeps the reconciler from writing the pair it would reject, so
     # an operator's lab soak survives a routine deploy. rate_match is
     # passive-lane-only by outputd's own full-range-stereo gate, so the plug
-    # converts and audio keeps playing at the lab bridge's existing width.
-    if [[ "$bridge" == "rate_match" ]]; then
-        log_event "content_format_narrowed" \
-            "reason=rate_match_content_bridge coupling_format=${fmt} emitted=S16_LE"
-        printf 'S16_LE\n'
-        return 0
-    fi
+    # converts (ALSA's linear narrowing, not the round-to-nearest the DAC edge
+    # uses) and audio keeps playing at the lab bridge's existing width.
+    for alias in "${RATE_MATCH_BRIDGE_ALIASES[@]}"; do
+        if [[ "$bridge" == "$alias" ]]; then
+            log_event "content_format_narrowed" \
+                "reason=rate_match_content_bridge bridge=$(jasper_asound_log_token "${bridge:0:32}") coupling_format=${fmt} emitted=S16_LE"
+            printf 'S16_LE\n'
+            return 0
+        fi
+    done
     printf '%s\n' "$fmt"
 }
 

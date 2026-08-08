@@ -821,6 +821,19 @@ release_camilla_content_lane_for_format_flip() {
     # Conditional on a real width change on purpose: an unconditional stop would
     # add a camilla stop/start to every deploy forever, where today's
     # `try-restart` keeps one restart at a place chosen for the ring geometry.
+    #
+    # ONE OTHER DOOR into the released window, deliberately left where it is:
+    # ensure_outputd_camilla_statefile's repair branch (deploy/install.sh) can
+    # `systemctl restart jasper-camilla` before reconcile_sound_dsp_state has
+    # re-rendered the graph. It is closed by default and safe here: it is gated on
+    # JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR=1, which NOTHING in this repo
+    # sets (operator escape hatch only — grep is the proof), it fires only when a
+    # statefile was actually rewritten, and it runs AFTER outputd has already
+    # opened and locked the lane at the new width, so the worst case is a
+    # CamillaDSP that fails its own open and is repaired by the ordinary late
+    # restart below. Moving it after that late restart would be worse, not
+    # better: validating the statefile BEFORE CamillaDSP loads it is the
+    # tweeter-safety gate that call exists for.
     JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
     if ! systemctl is-active --quiet jasper-camilla.service; then
         return 0
