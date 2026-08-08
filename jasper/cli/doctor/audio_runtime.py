@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from ...camilla_config_contract import read_camilla_device_field
 from ...env_load import parse_env_file
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ._registry import doctor_check
@@ -964,29 +965,11 @@ def check_fanin_ring_stall() -> CheckResult:
 def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
     """A field from ``devices.<block>`` in a CamillaDSP config, or None.
 
-    Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
-    its first 4-space ``field:`` value. Quotes are stripped for path fields.
+    Thin path-typed wrapper over the shared scan in
+    ``jasper.camilla_config_contract.read_camilla_device_field`` (the SSOT it
+    shares with the installer's deploy-ordering probe).
     """
-    try:
-        text = config_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    target_block = f"{block}:"
-    target_field = f"{field}:"
-    in_block = False
-    for raw in text.splitlines():
-        is_2space = raw.startswith("  ") and not raw.startswith("   ")
-        if is_2space and raw.strip() == target_block:
-            in_block = True
-            continue
-        if in_block:
-            if raw.startswith("    ") and raw.strip().startswith(target_field):
-                return raw.split(":", 1)[1].strip().strip("\"'")
-            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
-            # the block — never read a sibling block's field.
-            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
-                in_block = False
-    return None
+    return read_camilla_device_field(config_path, block, field)
 
 
 def _loaded_capture_type(config_path: Path) -> str | None:
@@ -1025,13 +1008,13 @@ def check_camilla_playback_format() -> CheckResult:
     (D4) regardless of the general program lane; every other sink (the ALSA
     loopback lane, the SHM ring, every real active-speaker DAC graph)
     expects ``DEFAULT_PLAYBACK_FORMAT``. Without this split, the check would
-    red-line every healthy pipe-sink leader and parked box the day
-    ``DEFAULT_PLAYBACK_FORMAT`` widens (PR-6) — the exact lanes the
+    red-line every healthy pipe-sink leader and parked box now that
+    ``DEFAULT_PLAYBACK_FORMAT`` is wide (PR-6) — the exact lanes the
     wide-output-path program pins narrow — with a remediation string that
-    tells the operator to regenerate a config that is already correct. Green
-    fleet-wide today: every JTS-generated format is still ``S16_LE``
-    regardless of lane, so this only starts discriminating once PR-6 lands.
-    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1.
+    tells the operator to regenerate a config that is already correct. The two
+    constants now genuinely differ (ALSA lane ``S32_LE``, pipe/File sink
+    ``S16_LE``), so the split is load-bearing rather than latent.
+    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1 and PR-6.
     """
     from jasper.camilla_config_contract import (
         DEFAULT_PIPE_SINK_FORMAT,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,22 @@ ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
-DEFAULT_PLAYBACK_FORMAT = "S16_LE"
+# The CamillaDSP→outputd content hop's width on the snd-aloop lanes. S32_LE
+# since the wide-output-path program's flip (PR-6,
+# captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
+# wide all the way to outputd's i32 program spine, so the ONE deliberate output
+# quantization happens at the DAC edge, at the DAC's own declared width. At a
+# ≥24-bit edge that floor sits below the DAC's analog noise; at an S16 edge
+# outputd rounds to nearest once instead of truncating twice.
+#
+# Two things must move with this value, and both are derived rather than
+# restated: ``deploy/alsa/asoundrc.jasper`` pins the PASSIVE lane's snd-aloop
+# slaves to the same format (the active lane is deliberately unpinned — raw
+# `hw`, first-opener-wins, so a mismatch fails the open instead of converting),
+# and the audio-hardware reconciler emits outputd's matching
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
+# ``jasper.fanin_coupling.content_lane_format_for_coupling``.
+DEFAULT_PLAYBACK_FORMAT = "S32_LE"
 # The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
 # axis) and the active-speaker parked graph's /dev/null File sink are pinned
 # to THIS format, independently of DEFAULT_PLAYBACK_FORMAT: snapserver's pipe
@@ -594,3 +610,123 @@ def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | Non
         return None
     parsed = parse_camilla_devices_config(text)
     return parsed or None
+
+
+def read_camilla_device_field(
+    config_path: str | Path | None, block: str, field: str
+) -> str | None:
+    """One field from ``devices.<block>`` of a CamillaDSP config file, or None.
+
+    Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
+    its first 4-space ``field:`` value with quotes stripped. Deliberately
+    narrower than :func:`parse_camilla_devices_config`, which returns a fixed
+    observability subset — this reads an arbitrary named field (``format``,
+    ``type``, ``filename``) that no fixed subset has to grow a key for.
+
+    The SSOT for that scan: ``jasper.cli.doctor.audio_runtime._loaded_device_field``
+    delegates here, and so does the deploy-ordering probe
+    :func:`outputd_content_lane_format_delta`.
+    """
+
+    if not config_path:
+        return None
+    try:
+        text = Path(config_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    target_block = f"{block}:"
+    target_field = f"{field}:"
+    in_block = False
+    for raw in text.splitlines():
+        is_2space = raw.startswith("  ") and not raw.startswith("   ")
+        if is_2space and raw.strip() == target_block:
+            in_block = True
+            continue
+        if in_block:
+            if raw.startswith("    ") and raw.strip().startswith(target_field):
+                return raw.split(":", 1)[1].strip().strip("\"'")
+            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
+            # the block — never read a sibling block's field.
+            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
+                in_block = False
+    return None
+
+
+def read_camilla_statefile_config_path(
+    statefile_path: str | Path | None,
+) -> str | None:
+    """The ``config_path`` a CamillaDSP v4 statefile points at, or None.
+
+    The SSOT for that one-line read;
+    ``jasper.cli.doctor.correction._parse_camilla_statefile_config_path``
+    delegates here.
+    """
+
+    if not statefile_path:
+        return None
+    try:
+        text = Path(statefile_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if match is None:
+        return None
+    return match.group(1).strip().strip("\"'") or None
+
+
+# The two CamillaDSP playback devices that are snd-aloop content lanes into
+# jasper-outputd. Derived from the lane vocabulary above rather than re-listed,
+# so a third lane can only appear in one place.
+_OUTPUTD_ALOOP_PLAYBACK_DEVICES = frozenset(_OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE)
+
+
+def outputd_content_lane_format_delta(
+    statefile_path: str | Path | None,
+) -> tuple[str, str, str] | None:
+    """``(config_path, live_format, emitted_format)`` when the loaded CamillaDSP
+    config holds an outputd snd-aloop content lane at a width JTS no longer
+    emits — else ``None``.
+
+    THE DEPLOY-ORDERING HAZARD this answers (wide-output-path program PR-6):
+    snd-aloop locks a substream pair's rate/format/channels to its FIRST opener.
+    CamillaDSP owns the playback half of the content lane and holds it open for
+    as long as it runs, so a deploy that widens the lane has a window where the
+    STILL-RUNNING previous CamillaDSP holds the pair at the old width while the
+    freshly-restarted jasper-outputd asks for the new one. That open fails at
+    ``snd_pcm_hw_params``, which is an ordinary error rather than outputd's
+    EX_CONFIG park — so ``Restart=on-failure`` retries it, and
+    ``StartLimitBurst=5`` / ``StartLimitAction=reboot`` on
+    ``jasper-outputd.service`` turns a format flip into a REBOOT in the middle
+    of an install. The installer's core bounce releases the lane first when this
+    returns a delta.
+
+    Returns None — no action — in every state that cannot hold an aloop lane at
+    the wrong width:
+
+    - no statefile / no ``config_path`` / unreadable config / no
+      ``devices.playback.format`` (nothing proven, and the loud existing
+      failure path stays the backstop rather than adding a stop to every
+      deploy);
+    - the loaded playback device is not one of the two outputd aloop lanes — a
+      ``shm_ring`` box writes ``jts_ring_playback`` and a bonded leader writes a
+      File/pipe sink, neither of which is an snd-aloop pair;
+    - the live format already equals what JTS emits (the second and every later
+      deploy, so a flipped box pays no churn).
+
+    Compared against :data:`DEFAULT_PLAYBACK_FORMAT` rather than a per-coupling
+    resolve: the device check above is what encodes the coupling, so by the time
+    a device is in the aloop set the emitted width for it IS the program-lane
+    default. Deliberately an equality check, never a width ranking — see
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``.
+    """
+
+    config_path = read_camilla_statefile_config_path(statefile_path)
+    if not config_path:
+        return None
+    device = read_camilla_device_field(config_path, "playback", "device")
+    if device not in _OUTPUTD_ALOOP_PLAYBACK_DEVICES:
+        return None
+    live_format = read_camilla_device_field(config_path, "playback", "format")
+    if not live_format or live_format == DEFAULT_PLAYBACK_FORMAT:
+        return None
+    return (config_path, live_format, DEFAULT_PLAYBACK_FORMAT)

@@ -1422,19 +1422,35 @@ def _block_unsupported_coupling(
 def ring_edge_width_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for wire WIDTH (D5, wide-output-path program).
 
-    Checked BEFORE arming (cheapest gate — a pure constant comparison, no I/O —
-    so it runs first). The SHM ring is pinned to :data:`RING_WIRE_FORMAT`
-    (S16_LE) until ring v2 (S32 slots + a matching ioplug/Rust rewrite;
-    ``captures/PLAN-wide-output-path-2026-08-07.md`` D5). Compares it against
-    the box's emitted loopback-lane playback format
-    (``DEFAULT_PLAYBACK_FORMAT``, ``jasper.camilla_config_contract`` — what
-    every non-ring emitter defaults its ALSA playback to). If that lane's
-    format DIFFERS FROM the ring's fixed wire format, arming the ring would
-    silently mis-transcode every sample CamillaDSP emits on the way into
-    outputd — a requantization-without-dither hazard (in the direction this
-    program's constants can move today) the wide-output-path program exists
-    to remove. Refuse UP FRONT, fail-safe to loopback, with an actionable
-    reason.
+    Checked BEFORE arming (cheapest gate — an in-process contract check with no
+    I/O — so it runs first). The SHM ring is pinned to
+    :data:`RING_WIRE_FORMAT` (S16_LE) until ring v2 (S32 slots + a matching
+    ioplug/Rust rewrite; ``captures/PLAN-wide-output-path-2026-08-07.md`` D5),
+    which ``jasper_ring::Geometry::validate_self`` hard-enforces at attach.
+
+    WHAT MAKES ARMING LEGAL, and therefore what this gate verifies. A ring-armed
+    box does NOT run the box-wide program-lane width: arming installs the
+    coupling's own CamillaDSP kwargs
+    (``jasper.fanin_coupling.capture_kwargs_for_coupling``), which FORCE both
+    ring ends to ``RING_WIRE_FORMAT``, and the audio-hardware reconciler emits
+    outputd's matching ``JASPER_OUTPUTD_CONTENT_FORMAT`` from the same source
+    (``content_lane_format_for_coupling``). The ring is coherently narrow
+    end-to-end, so a wide program-lane default does not endanger it. This gate's
+    job is to verify that OVERRIDE PATH IS INTACT — refuse only if the kwargs
+    ever stop forcing the ring's own width, which is the one way arming could
+    mis-transcode every sample CamillaDSP emits.
+
+    THE RULING BEHIND THAT (wide-output-path PR-6, architect, 2026-08-08).
+    This gate first shipped (PR-1) comparing ``RING_WIRE_FORMAT`` against
+    ``DEFAULT_PLAYBACK_FORMAT``, the box-wide program-lane default. That was
+    correct while the two were equal, but once PR-6 widened the default it would
+    have refused the ring on EVERY ring-eligible box — including jts.local,
+    whose armed ring stays coherently S16 through the kwargs override and which
+    carries a CERTIFIED USB-route latency artifact measured on that ring. That
+    refusal would have traded a proven latency property for a width benefit a
+    ring box cannot use. So: ring-coupled boxes KEEP the ring at coherent S16,
+    and the wide lane is the LOOPBACK path's property until ring v2 (D5's
+    resurrection trigger is unchanged — a ring box that wants the wide lane).
 
     Deliberately an EQUALITY check, never a bit-width ranking: no
     width-comparison primitive exists in-repo for ALSA format strings (see
@@ -1442,22 +1458,27 @@ def ring_edge_width_ready() -> tuple[bool, str]:
     landing as a genuinely different write path later), so this refuses ANY
     mismatch rather than asserting a direction ("wider"/"narrower") the code
     does not independently verify — a claim that would stop being reliably
-    true once a third live format exists. Written against the constant, not
-    a hardcoded ``"S16_LE"`` literal, so this gate's verdict flips
-    automatically the day ``DEFAULT_PLAYBACK_FORMAT`` changes (program
-    PR-6) — today both constants are ``S16_LE``, so this PASSES everywhere
-    (byte-identical release).
+    true once a third live format exists.
     """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+    from jasper.fanin_coupling import content_lane_format_for_coupling
 
-    if DEFAULT_PLAYBACK_FORMAT == RING_WIRE_FORMAT:
+    # The COUNTERFACTUAL the gate is asked: "if we arm shm_ring, what width
+    # would the emitted config carry?" Passed explicitly rather than read from
+    # the persisted coupling, which is still loopback at preflight time — and
+    # which keeps this gate free of I/O.
+    emitted = content_lane_format_for_coupling(COUPLING_SHM_RING)
+    if emitted == RING_WIRE_FORMAT:
         return True, (
-            f"program lane format ({DEFAULT_PLAYBACK_FORMAT}) matches the SHM "
-            f"ring's wire format ({RING_WIRE_FORMAT})"
+            f"the shm_ring coupling forces the emitted program lane to the "
+            f"ring's own wire format ({RING_WIRE_FORMAT}), so arming stays "
+            "coherent end-to-end"
         )
     return False, (
-        f"program lane is {DEFAULT_PLAYBACK_FORMAT}; SHM ring is "
-        f"{RING_WIRE_FORMAT}-only until ring v2 — keeping loopback"
+        f"the shm_ring coupling would emit a {emitted} program lane, but the "
+        f"SHM ring carries {RING_WIRE_FORMAT} only until ring v2 — arming "
+        "would mis-transcode every sample. capture_kwargs_for_coupling "
+        "(jasper.fanin_coupling) must force playback_format to "
+        "RING_WIRE_FORMAT; keeping loopback until it does."
     )
 
 
@@ -1588,10 +1609,11 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     owner makes the dependency one-way while still sharing the exact predicates
     used by a manual arm.  The unattended path deliberately uses the strict
     topology probe so an unreadable topology fails closed.  ``ring_edge_width``
-    (D5, wide-output-path program) runs first — it is a pure constant
-    comparison with no I/O, and today it passes on every box (byte-identical
-    release), so ordering it ahead of the filesystem/topology probes costs
-    nothing and fails fastest once a box's program lane genuinely widens.
+    (D5, wide-output-path program) runs first — it is an in-process contract
+    check with no I/O, and it passes on every box whose shm_ring kwargs still
+    force the ring's own wire format, so ordering it ahead of the
+    filesystem/topology probes costs nothing and fails fastest if that override
+    is ever broken.
     """
     return (
         ("ring_edge_width", ring_edge_width_ready),
@@ -2060,8 +2082,9 @@ def _arm_ring(
 
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
     all pass): (0) wire-width coherence (``ring_edge_width_ready`` — D5,
-    wide-output-path program: the ring's fixed S16 wire must match the box's
-    emitted program lane's format, or arming would silently mis-transcode);
+    wide-output-path program: the shm_ring coupling must still FORCE the emitted
+    program lane to the ring's fixed S16 wire format, or arming would silently
+    mis-transcode);
     (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
     ring platform would strand the realtime path); (2) topology ring-eligible
     (``ring_topology_ready``); (3) conf.d period == outputd period

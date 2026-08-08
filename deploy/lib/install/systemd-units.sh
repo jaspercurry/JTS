@@ -772,6 +772,91 @@ park_audio_clients_for_core_graph_restart() {
     done
 }
 
+# 1 only when release_camilla_content_lane_for_format_flip actually stopped
+# jasper-camilla during THIS install, so the late restart below STARTS what this
+# install took away. Never set for a camilla that was already inactive — a
+# deliberately-stopped camilla must stay stopped, which is exactly why the late
+# step is `try-restart` in every other case.
+JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
+
+# Print "<live> -> <emitted> (<config>)" when the CamillaDSP config currently
+# loaded holds an outputd snd-aloop content lane at a width JTS no longer emits;
+# print nothing otherwise. The whole decision lives in
+# jasper.camilla_config_contract.outputd_content_lane_format_delta (which is
+# where the None-means-no-action cases are enumerated and tested); this is just
+# the shell's window onto it.
+camilla_content_lane_format_delta() {
+    local venv_python="${INSTALL_DIR:-/opt/jasper}/.venv/bin/python"
+    if [[ ! -x "${venv_python}" ]]; then
+        return 0
+    fi
+    "${venv_python}" - <<'PY' 2>/dev/null || true
+import os
+
+from jasper.camilla_config_contract import outputd_content_lane_format_delta
+
+delta = outputd_content_lane_format_delta(
+    os.environ.get(
+        "JASPER_CAMILLA_STATEFILE", "/var/lib/camilladsp/outputd-statefile.yml"
+    )
+)
+if delta:
+    config_path, live_format, emitted_format = delta
+    print(f"{live_format} -> {emitted_format} ({config_path})")
+PY
+}
+
+release_camilla_content_lane_for_format_flip() {
+    # snd-aloop locks a substream pair's rate/format/channels to its FIRST
+    # opener. CamillaDSP owns the playback half of the outputd content lane and
+    # holds it for as long as it runs, so a deploy that changes that lane's WIDTH
+    # has a window where the still-running previous CamillaDSP pins the pair at
+    # the old width while the freshly-restarted jasper-outputd asks for the new
+    # one. That open fails at snd_pcm_hw_params — an ordinary error, NOT
+    # outputd's EX_CONFIG park — so Restart=on-failure retries it, and
+    # jasper-outputd.service's StartLimitBurst=5 / StartLimitAction=reboot turns
+    # a format flip into a REBOOT in the middle of an install. Release the lane
+    # first when (and only when) the width actually moves.
+    #
+    # This deliberately INVERTS the documented normal open order (CamillaDSP
+    # first, outputd matching the locked params — see deploy/alsa/asoundrc.jasper
+    # on substream 5). Safe because both openers are reconciled to the SAME
+    # params before either runs: reconcile_sound_dsp_state re-emits the config
+    # from the same constant the reconciler emits outputd's request from, so
+    # whichever opens first locks what the other is going to ask for.
+    #
+    # Conditional on a real delta on purpose: an unconditional stop would add a
+    # camilla stop/start to every deploy forever, where today's `try-restart`
+    # keeps one restart at a place chosen for the ring geometry.
+    JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
+    if ! systemctl is-active --quiet jasper-camilla.service; then
+        return 0
+    fi
+    local delta
+    delta="$(camilla_content_lane_format_delta)"
+    if [[ -z "${delta}" ]]; then
+        return 0
+    fi
+    echo "  Releasing the outputd content lane before outputd starts: CamillaDSP holds it at ${delta}"
+    systemctl stop jasper-camilla.service 2>/dev/null || true
+    JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=1
+}
+
+restart_core_camilla_after_dsp_reconcile() {
+    # CamillaDSP captures the fan-in output. Restart it only after the DSP state
+    # reconcile so a ring-default deploy cannot start Camilla on a stale
+    # chunk-256 statefile against freshly-created 2-slot ring files.
+    if [[ "${JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP}" == "1" ]]; then
+        # This install stopped it for the width flip; `try-restart` would be a
+        # no-op on a stopped unit and leave the box with no DSP.
+        systemctl start jasper-camilla.service 2>/dev/null || \
+            echo "  WARN: jasper-camilla did not start after the content-lane width flip. Check 'journalctl -u jasper-camilla'."
+        JASPER_CAMILLA_RELEASED_FOR_FORMAT_FLIP=0
+        return
+    fi
+    systemctl try-restart jasper-camilla.service 2>/dev/null || true
+}
+
 # The two always-on core-graph units the install path RESTARTS in place (never
 # parked, because they ARE the graph being restarted). Both carry a
 # StartLimitBurst guard; jasper-fanin escalates to StartLimitAction=reboot.
@@ -1131,6 +1216,7 @@ start_streambox_runtime_units() {
         jasper-control.service jasper-source-intent-reconcile.service
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
+    release_camilla_content_lane_for_format_flip
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
     systemctl restart jasper-fanin.service 2>/dev/null || true
@@ -1138,11 +1224,7 @@ start_streambox_runtime_units() {
         echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
-    # Restart CamillaDSP only after the DSP state reconcile has re-emitted the
-    # active config for the current ring geometry. Restarting it in the gap after
-    # fan-in/outputd recreate fresh ring files can load an old chunk-256 statefile
-    # against the 2-slot ring before the reconcile gets a chance to heal it.
-    systemctl try-restart jasper-camilla.service 2>/dev/null || true
+    restart_core_camilla_after_dsp_reconcile
 
     # Hardware-gated USB management network (composite gadget +
     # device-activated DHCP). Skips cleanly when the resolved role cannot
@@ -1690,6 +1772,7 @@ install_systemd_units() {
     # runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
+    release_camilla_content_lane_for_format_flip
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 
@@ -1708,10 +1791,7 @@ install_systemd_units() {
         echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
-    # CamillaDSP captures the fan-in output. Restart it after the DSP state
-    # reconcile so a ring-default deploy cannot start Camilla on a stale
-    # chunk-256 statefile against freshly-created 2-slot ring files.
-    systemctl try-restart jasper-camilla.service 2>/dev/null || true
+    restart_core_camilla_after_dsp_reconcile
 
     # Mux is core arbitration infrastructure, not a selectable source. Start it
     # on a fresh install as well as enabling boot; its role ExecCondition skips

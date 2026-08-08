@@ -1462,9 +1462,9 @@ def transport_coherence_errors(
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
     contradiction is. Under ``shm_ring`` this also carries a FORMAT axis: the
-    ring's fixed wire format (``RING_WIRE_FORMAT``) must MATCH the box's
-    emitted program lane (``DEFAULT_PLAYBACK_FORMAT``) — see the comment on
-    that check for the wide-output-path program rationale.
+    ring's fixed wire format (``RING_WIRE_FORMAT``) must MATCH the width the
+    shm_ring coupling emits (``content_lane_format_for_coupling``) — see the
+    comment on that check for the wide-output-path program rationale.
     """
 
     outputd_values = dict(outputd_env or {})
@@ -1505,27 +1505,33 @@ def transport_coherence_errors(
                 f"transport plan is shm_ring but Camilla playback={playback_device!r}; "
                 f"expected {expected_playback!r}"
             )
-        # D5 belt-and-suspenders (wide-output-path program): the ring's fixed
-        # wire format must match the box's emitted program lane
-        # (DEFAULT_PLAYBACK_FORMAT). jasper.fanin.coupling_reconcile's
-        # ring_edge_width_ready gate already refuses to ARM a ring on a
-        # mismatched-lane box; this is the standing coherence check for a box
-        # that somehow reached that state anyway (e.g. DEFAULT_PLAYBACK_FORMAT
-        # changed after the ring was already armed). Compared against the
-        # topology's own declared format (RING_WIRE_FORMAT), not a hardcoded
-        # literal, so this flips meaning automatically the same way the gate
-        # does. Today both are S16_LE, so this never fires. Deliberately an
-        # equality check, never a "wider/narrower" claim — see
-        # ring_edge_width_ready's docstring for why: no width-ranking
-        # primitive exists in-repo, and a directional claim would stop being
-        # reliably true once a third live format exists (D9, S24_3LE).
+        # D5 belt-and-suspenders (wide-output-path program): an ARMED ring's
+        # transport must still carry the width the shm_ring coupling actually
+        # emits. jasper.fanin.coupling_reconcile's ring_edge_width_ready gate
+        # refuses to ARM when that override is broken; this is the standing
+        # coherence check for a box already armed.
+        #
+        # Compared against content_lane_format_for_coupling(shm_ring) — what the
+        # coupling's own kwargs force onto the emitted config — NOT against the
+        # box-wide DEFAULT_PLAYBACK_FORMAT. A ring box does not run the
+        # program-lane default: the coupling forces both ring ends to
+        # RING_WIRE_FORMAT, so once PR-6 widened that default, comparing against
+        # it would have red-lined EVERY healthy armed ring box (jts.local
+        # included) in doctor, /state, and audio_health. Deliberately an equality
+        # check, never a "wider/narrower" claim — see ring_edge_width_ready's
+        # docstring for why: no width-ranking primitive exists in-repo, and a
+        # directional claim would stop being reliably true once a third live
+        # format exists (D9, S24_3LE).
+        from jasper.fanin_coupling import content_lane_format_for_coupling
+
         ring_format = str(topology.camilla_to_outputd.get("format") or "")
-        if ring_format and ring_format != DEFAULT_PLAYBACK_FORMAT:
+        emitted_format = content_lane_format_for_coupling(COUPLING_SHM_RING)
+        if ring_format and ring_format != emitted_format:
             errors.append(
                 f"transport plan is shm_ring with wire format={ring_format!r}, "
-                f"which differs from the emitted program lane format "
-                f"{DEFAULT_PLAYBACK_FORMAT!r} — the ring cannot carry it "
-                "without silently mis-transcoding it; see ring_edge_width_ready "
+                f"but the shm_ring coupling emits a {emitted_format!r} program "
+                "lane — the ring cannot carry it without silently "
+                "mis-transcoding it; see ring_edge_width_ready "
                 "(jasper.fanin.coupling_reconcile)"
             )
         return tuple(errors)

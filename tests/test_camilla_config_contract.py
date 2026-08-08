@@ -18,16 +18,18 @@ from jasper.camilla_config_contract import (
 )
 
 
-def test_pipe_sink_format_is_pinned_and_independent_of_playback_format_today():
+def test_pipe_sink_format_stays_narrow_while_the_alsa_lane_is_wide():
     """D4 (wide-output-path program): the pipe/File-sink format is its own
-    constant, separate from the ALSA loopback lane's DEFAULT_PLAYBACK_FORMAT
-    — the two happen to agree today (byte-identical release), but that must
-    be a coincidence of value, not a shared name, or a future
-    DEFAULT_PLAYBACK_FORMAT widening would silently corrupt the snapserver
-    pipe wire (`sampleformat=48000:16:2`,
-    jasper.multiroom.reconcile.snapserver_argv)."""
+    constant, separate from the ALSA loopback lane's DEFAULT_PLAYBACK_FORMAT.
+    PR-1 split them while both still read ``S16_LE``; PR-6 widened the ALSA lane
+    and this is where that split stopped being latent. The pipe sink MUST stay
+    narrow: snapserver's pipe source is a fixed wire contract
+    (`sampleformat=48000:16:2`, jasper.multiroom.reconcile.snapserver_argv), so
+    a shared name here would have silently corrupted every bonded leader's
+    multiroom wire the moment the lane widened."""
     assert DEFAULT_PIPE_SINK_FORMAT == "S16_LE"
-    assert DEFAULT_PIPE_SINK_FORMAT == DEFAULT_PLAYBACK_FORMAT  # true only today
+    assert DEFAULT_PLAYBACK_FORMAT == "S32_LE"
+    assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
 
 
 def test_pipe_sink_format_matches_snapserver_wire_contract():

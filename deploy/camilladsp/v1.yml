@@ -66,6 +66,13 @@ devices:
     type: Alsa
     channels: 2
     device: "jasper_out"
+    # STAYS S16_LE, deliberately, while the outputd content lane goes wide
+    # (wide-output-path program D8): this legacy path writes the pcm.jasper_out
+    # dmix, which is pinned S16_LE in /etc/asound.conf and shared with a
+    # pre-outputd TTS writer. Widening it would mean re-pinning that dmix and
+    # every client of it, for a rollback path the program's exclusion table says
+    # to RETIRE rather than widen. jasper-outputd is not in this chain, so
+    # nothing downstream of here has an i32 spine to keep wide anyway.
     format: S16_LE
 
 filters:

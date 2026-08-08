@@ -916,32 +916,62 @@ def test_arm_shm_ring_succeeds_when_geometry_matches(tmp_path, monkeypatch):
 # --- D5 (wide-output-path program): ring wire-width preflight ----------------
 
 
-def test_ring_edge_width_ready_passes_today_with_no_monkeypatch():
-    """The width gate is a pure constant comparison. RING_WIRE_FORMAT and
-    DEFAULT_PLAYBACK_FORMAT are both S16_LE today, so the gate passes with NO
-    monkeypatching — the byte-identical-release contract PR-1 exists to
-    prove."""
+def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
+    """Simulate the shm_ring coupling losing its narrow-lane override.
+
+    ``playback_format=None`` drops the key entirely (someone deleted the
+    override, so the emitter falls back to the box-wide default); a string sets
+    it to a width the ring cannot carry. Patches the module attribute
+    ``content_lane_format_for_coupling`` actually calls."""
+    import jasper.fanin_coupling as coupling
+
+    real = coupling.capture_kwargs_for_coupling
+
+    def broken(raw):
+        kwargs = dict(real(raw))
+        if not kwargs:
+            return kwargs
+        if playback_format is None:
+            kwargs.pop("playback_format", None)
+        else:
+            kwargs["playback_format"] = playback_format
+        return kwargs
+
+    monkeypatch.setattr(coupling, "capture_kwargs_for_coupling", broken)
+
+
+def test_ring_edge_width_ready_passes_on_a_wide_box_because_the_coupling_narrows():
+    """THE RULING (wide-output-path PR-6): a ring-coupled box keeps its ring at
+    coherent S16 even though the box-wide program lane is now S32, because the
+    shm_ring coupling's kwargs FORCE the emitted lane to RING_WIRE_FORMAT. So
+    the gate must PASS with the two constants genuinely different — the state
+    the pre-PR-6 constant comparison would have refused on every ring-eligible
+    box, including jts.local and its certified USB-route latency artifact."""
     import jasper.camilla_config_contract as contract
     from jasper.fanin_coupling import RING_WIRE_FORMAT
 
-    assert contract.DEFAULT_PLAYBACK_FORMAT == RING_WIRE_FORMAT == "S16_LE"
+    assert contract.DEFAULT_PLAYBACK_FORMAT == "S32_LE"
+    assert RING_WIRE_FORMAT == "S16_LE"
+    assert contract.DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     ok, detail = ring_edge_width_ready()
     assert ok is True
     assert "S16_LE" in detail
 
 
-def test_ring_edge_width_ready_refuses_when_program_lane_widens(monkeypatch):
-    """Simulates the future PR-6 world: DEFAULT_PLAYBACK_FORMAT wider than the
-    ring's fixed S16 wire. Refuses with an actionable reason naming both
-    formats — written against the constant, so this is what flips
-    automatically once PR-6 lands (no code change here needed)."""
-    import jasper.camilla_config_contract as contract
-
-    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+@pytest.mark.parametrize("broken_format", [None, "S32_LE"])
+def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
+    monkeypatch, broken_format
+):
+    """The invariant the gate now guards: if the coupling ever stops forcing the
+    ring's own wire format — the key dropped, or repointed at a wider one —
+    arming would mis-transcode every sample, so refuse with a reason naming both
+    widths AND the function that must do the forcing."""
+    _break_ring_kwargs_override(monkeypatch, playback_format=broken_format)
     ok, detail = ring_edge_width_ready()
     assert ok is False
     assert "S32_LE" in detail
     assert "S16_LE" in detail
+    assert "capture_kwargs_for_coupling" in detail
     assert "keeping loopback" in detail
 
 
@@ -952,15 +982,14 @@ def test_default_ring_gates_registers_edge_width_gate_first():
     assert dict(gates)["ring_edge_width"] is ring_edge_width_ready
 
 
-def test_arm_shm_ring_refused_on_wide_program_lane_recovers_to_loopback(
+def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
     tmp_path, monkeypatch, _ring_assets_present
 ):
-    """The manual-arm chain wiring: a wide DEFAULT_PLAYBACK_FORMAT refuses the
-    arm BEFORE any daemon is bounced and recovers to loopback — the belt to
-    the coupling_auto default-resolution suspender covered above."""
-    import jasper.camilla_config_contract as contract
-
-    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    """The manual-arm chain wiring: a coupling that has lost its narrow-lane
+    override refuses the arm BEFORE any daemon is bounced and recovers to
+    loopback — the belt to the coupling_auto default-resolution suspender
+    covered above."""
+    _break_ring_kwargs_override(monkeypatch, playback_format=None)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()

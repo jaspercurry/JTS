@@ -94,6 +94,32 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
     assert RING_PLAYBACK_DEVICE == "jts_ring_playback"
 
 
+def test_content_lane_format_is_one_definition_for_both_ends_of_the_hop():
+    """wide-output-path PR-6: ONE function answers the CamillaDSP→outputd hop's
+    width, so CamillaDSP's emitted `playback: format:` and outputd's requested
+    JASPER_OUTPUTD_CONTENT_FORMAT cannot disagree.
+
+    loopback answers the box-wide program lane (the emitters' own default, since
+    loopback kwargs are deliberately empty); shm_ring answers the ring's fixed
+    wire format, which is what keeps a ring box coherently narrow on a wide box
+    — the PR-6 ring ruling. Fail-safe values follow resolve_coupling.
+    """
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+    from jasper.fanin_coupling import content_lane_format_for_coupling
+
+    assert content_lane_format_for_coupling("shm_ring") == RING_WIRE_FORMAT
+    assert content_lane_format_for_coupling("loopback") == DEFAULT_PLAYBACK_FORMAT
+    # Unset / empty / typo / the removed transport_pipe all resolve loopback.
+    for raw in (None, "", "   ", "ring", "transport_pipe"):
+        assert content_lane_format_for_coupling(raw) == DEFAULT_PLAYBACK_FORMAT
+    # The ring answer is the kwargs' own value, not a second literal: it tracks
+    # capture_kwargs_for_coupling, which is what actually reaches the emitters.
+    assert (
+        content_lane_format_for_coupling("shm_ring")
+        == capture_kwargs_for_coupling("shm_ring")["playback_format"]
+    )
+
+
 def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
     assert resolve_ring_path(None) == DEFAULT_FANIN_RING_PATH
     assert resolve_ring_path("") == DEFAULT_FANIN_RING_PATH

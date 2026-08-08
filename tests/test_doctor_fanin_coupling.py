@@ -303,24 +303,29 @@ def _run_format_check(monkeypatch, tmp_path, cfg_text):
     return audio.check_camilla_playback_format()
 
 
-def test_playback_format_ok_when_config_matches_default_constant(
+def test_playback_format_ok_when_alsa_lane_matches_the_wide_default(
     monkeypatch, tmp_path
 ):
-    # Green today on every live box: DEFAULT_PLAYBACK_FORMAT is S16_LE and
-    # every JTS emitter is pinned to it (byte-identical release).
-    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
-    assert res.status == "ok"
-    assert "S16_LE" in res.detail
-
-
-def test_playback_format_fails_on_a_deliberately_wide_config(monkeypatch, tmp_path):
-    # Prove the check CAN fail (mutation rule): a config declaring S32_LE
-    # while DEFAULT_PLAYBACK_FORMAT is still S16_LE is a half-flipped box —
-    # a red doctor line instead of silence.
+    # Green on a flipped box: the ALSA content lane carries
+    # DEFAULT_PLAYBACK_FORMAT, S32_LE since PR-6.
     res = _run_format_check(monkeypatch, tmp_path, _S32_PLAYBACK_CFG)
-    assert res.status == "fail"
+    assert res.status == "ok"
     assert "S32_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
+    monkeypatch, tmp_path
+):
+    # Prove the check CAN STILL FAIL in the post-flip world (mutation rule): an
+    # ALSA lane config left at S16_LE after the flip is a half-flipped box — a
+    # stale generated file, or an emitter that regenerated against a different
+    # constant — and on the raw active lane it is what makes outputd's open fail
+    # rather than convert. Red doctor line instead of silence.
+    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
+    assert res.status == "fail"
     assert "S16_LE" in res.detail
+    assert "S32_LE" in res.detail
+    assert "DEFAULT_PLAYBACK_FORMAT" in res.detail
 
 
 def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
@@ -371,18 +376,21 @@ filters:
 """
 
 
-def test_playback_format_ok_for_file_sink_pinned_narrow_even_when_lane_widens(
+def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
     monkeypatch, tmp_path
 ):
     # The bonded-leader pipe sink (and the active-speaker parked graph's
     # /dev/null sink) are pinned to DEFAULT_PIPE_SINK_FORMAT independently of
-    # the general program lane (D4) — so a File-type S16 config must stay
-    # green even after DEFAULT_PLAYBACK_FORMAT is monkeypatched wide (the
-    # future PR-6 world). Without the lane split this would red-line a
-    # perfectly healthy box.
-    import jasper.camilla_config_contract as contract
+    # the general program lane (D4), so a File-type S16 config stays green while
+    # the ALSA lane is S32 — the two constants now genuinely differ, no
+    # monkeypatch needed. Without the lane split this would red-line every
+    # healthy pipe-sink leader and parked box.
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
 
-    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
     res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
     assert res.status == "ok"
     assert "S16_LE" in res.detail
@@ -393,7 +401,8 @@ def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
 ):
     # The lane split must not become "any File type auto-passes": a File
     # sink whose format has genuinely drifted off DEFAULT_PIPE_SINK_FORMAT
-    # (S32 today, no monkeypatch needed) still fails.
+    # (S32 here) still fails — even though S32 is what the ALSA lane wants,
+    # which is exactly the confusion the lane split has to get right.
     res = _run_format_check(monkeypatch, tmp_path, _S32_FILE_PLAYBACK_CFG)
     assert res.status == "fail"
     assert "S32_LE" in res.detail
