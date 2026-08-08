@@ -29,7 +29,30 @@ ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
-DEFAULT_PLAYBACK_FORMAT = "S16_LE"
+# The CamillaDSP→outputd content hop's width on the snd-aloop lanes. S32_LE
+# since the wide-output-path program's flip (PR-6,
+# captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
+# wide all the way to outputd's i32 program spine, so the ONE deliberate output
+# quantization happens at the DAC edge, at the DAC's own declared width. At a
+# ≥24-bit edge that floor sits below the DAC's analog noise, so it stops being
+# audible at all.
+#
+# What changed at an S16 edge is WHERE that single narrowing happens, not how
+# many there are: before the flip there was already exactly one lossy narrowing
+# (CamillaDSP's S16 playback write), and outputd's widen→narrow round trip around
+# it was proven bit-exact. The flip MOVES that narrowing downstream of outputd's
+# mixing, ducking, and trim, which now do their arithmetic on full-resolution
+# content instead of on samples already quantized to 16 bits — which is what makes
+# a −18 dB tweeter trim stop costing three bits of program resolution.
+#
+# Two things must move with this value, and both are derived rather than
+# restated: ``deploy/alsa/asoundrc.jasper`` pins the PASSIVE lane's snd-aloop
+# slaves to the same format (the active lane is deliberately unpinned — raw
+# `hw`, first-opener-wins, so a mismatch fails the open instead of converting),
+# and the audio-hardware reconciler emits outputd's matching
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
+# ``jasper.fanin_coupling.content_lane_format_for_coupling``.
+DEFAULT_PLAYBACK_FORMAT = "S32_LE"
 # The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
 # axis) and the active-speaker parked graph's /dev/null File sink are pinned
 # to THIS format, independently of DEFAULT_PLAYBACK_FORMAT: snapserver's pipe
@@ -594,3 +617,45 @@ def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | Non
         return None
     parsed = parse_camilla_devices_config(text)
     return parsed or None
+
+
+def read_camilla_device_field(
+    config_path: str | Path | None, block: str, field: str
+) -> str | None:
+    """One field from ``devices.<block>`` of a CamillaDSP config file, or None.
+
+    Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
+    its first 4-space ``field:`` value with quotes stripped. Deliberately
+    narrower than :func:`parse_camilla_devices_config`, which returns a fixed
+    observability subset — this reads an arbitrary named field (``format``,
+    ``type``, ``filename``) that no fixed subset has to grow a key for.
+
+    The SSOT for that scan: ``jasper.cli.doctor.audio_runtime._loaded_device_field``
+    delegates here, and the wiring test that pins the shipped flat-cutover seed
+    to :data:`DEFAULT_PLAYBACK_FORMAT` reads it the same way.
+    """
+
+    if not config_path:
+        return None
+    try:
+        text = Path(config_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    target_block = f"{block}:"
+    target_field = f"{field}:"
+    in_block = False
+    for raw in text.splitlines():
+        is_2space = raw.startswith("  ") and not raw.startswith("   ")
+        if is_2space and raw.strip() == target_block:
+            in_block = True
+            continue
+        if in_block:
+            if raw.startswith("    ") and raw.strip().startswith(target_field):
+                return raw.split(":", 1)[1].strip().strip("\"'")
+            # A sibling 2-space key (playback:/resampler:/...) or any dedent ends
+            # the block — never read a sibling block's field.
+            if is_2space or (raw[:1] not in (" ", "") and raw.strip()):
+                in_block = False
+    return None
+
+

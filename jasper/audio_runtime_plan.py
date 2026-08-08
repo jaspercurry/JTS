@@ -78,6 +78,14 @@ DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
+# The width outputd REQUESTS on its snd-aloop content lane. Reconciler-owned
+# (jasper-audio-hardware-reconcile is the single writer, from
+# jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
+# outputd's own documented default — the pre-flip S16 lane every box ran before
+# the wide-output-path program — so this pair reads a live box honestly whether
+# or not the key has been emitted yet.
+OUTPUTD_CONTENT_FORMAT_KEY = "JASPER_OUTPUTD_CONTENT_FORMAT"
+OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
@@ -1088,6 +1096,65 @@ def _route_policy_errors(
     return tuple(errors)
 
 
+def outputd_content_format_change(
+    *,
+    outputd_env_path: str = DEFAULT_OUTPUTD_ENV_PATH,
+    fanin_env_path: str = DEFAULT_FANIN_ENV_PATH,
+) -> tuple[str, str] | None:
+    """``(current, next)`` when this build changes the width outputd REQUESTS on
+    its snd-aloop content lane — else ``None``.
+
+    THE DEPLOY-ORDERING HAZARD this answers (wide-output-path PR-6, survey
+    finding 12): snd-aloop locks a substream pair's rate/format/channels to its
+    FIRST opener. CamillaDSP owns the playback half of the content lane and holds
+    it for as long as it runs, so a deploy that changes the width has a window
+    where the still-running PREVIOUS CamillaDSP pins the pair at the old width
+    while the freshly-restarted jasper-outputd asks for the new one. That open
+    fails at ``snd_pcm_hw_params``, which is an ordinary error rather than
+    outputd's EX_CONFIG park — so ``Restart=on-failure`` retries it, and
+    ``StartLimitBurst=5`` / ``StartLimitAction=reboot`` on
+    ``jasper-outputd.service`` turns a format flip into a REBOOT in the middle of
+    an install. The installer's core bounce releases the lane first when this
+    returns a change.
+
+    Both sides come from reconciler-owned env, never from a CamillaDSP config
+    file, and that is the point: install re-renders the flat cutover config (and
+    later regenerates the sound graph) BEFORE the bounce, so a config file read at
+    bounce time can already show the NEW width while the running CamillaDSP still
+    holds the lane at the old one — a stale read in the one direction that
+    matters. ``outputd.env`` is only written by the audio-hardware reconciler,
+    which runs AFTER the release, so at probe time it still names the width the
+    RUNNING outputd successfully opened, i.e. the width the lane is actually
+    locked at.
+
+    - *current*: ``JASPER_OUTPUTD_CONTENT_FORMAT`` from ``outputd.env``. Absent,
+      empty, or unreadable reads as ``S16_LE`` — outputd's own documented default
+      for that env (``config.rs``), which is what every pre-flip box ran.
+    - *next*: :func:`jasper.fanin_coupling.content_lane_format_for_coupling` for
+      the persisted coupling — the exact value the reconciler is about to write.
+
+    Deliberately an EQUALITY check, never a width ranking — see
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``. A ring-coupled box
+    answers ``None`` on both sides of the flip (the coupling forces the ring's own
+    narrow width, and such a box's outputd never opens an ALSA content lane at
+    all), so it pays no churn.
+    """
+
+    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin_coupling import content_lane_format_for_coupling
+
+    outputd = read_env_file_state(outputd_env_path)
+    current = str(outputd.values.get(OUTPUTD_CONTENT_FORMAT_KEY, "") or "").strip()
+    if not current:
+        current = OUTPUTD_DEFAULT_CONTENT_FORMAT
+    upcoming = content_lane_format_for_coupling(
+        read_persisted_coupling(fanin_env_path)
+    )
+    if current == upcoming:
+        return None
+    return (current, upcoming)
+
+
 def build_audio_runtime_plan_from_system(
     *,
     base_env_path: str = DEFAULT_BASE_ENV_PATH,
@@ -1462,9 +1529,9 @@ def transport_coherence_errors(
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
     contradiction is. Under ``shm_ring`` this also carries a FORMAT axis: the
-    ring's fixed wire format (``RING_WIRE_FORMAT``) must MATCH the box's
-    emitted program lane (``DEFAULT_PLAYBACK_FORMAT``) — see the comment on
-    that check for the wide-output-path program rationale.
+    ring's fixed wire format (``RING_WIRE_FORMAT``) must MATCH the width the
+    shm_ring coupling emits (``content_lane_format_for_coupling``) — see the
+    comment on that check for the wide-output-path program rationale.
     """
 
     outputd_values = dict(outputd_env or {})
@@ -1505,27 +1572,33 @@ def transport_coherence_errors(
                 f"transport plan is shm_ring but Camilla playback={playback_device!r}; "
                 f"expected {expected_playback!r}"
             )
-        # D5 belt-and-suspenders (wide-output-path program): the ring's fixed
-        # wire format must match the box's emitted program lane
-        # (DEFAULT_PLAYBACK_FORMAT). jasper.fanin.coupling_reconcile's
-        # ring_edge_width_ready gate already refuses to ARM a ring on a
-        # mismatched-lane box; this is the standing coherence check for a box
-        # that somehow reached that state anyway (e.g. DEFAULT_PLAYBACK_FORMAT
-        # changed after the ring was already armed). Compared against the
-        # topology's own declared format (RING_WIRE_FORMAT), not a hardcoded
-        # literal, so this flips meaning automatically the same way the gate
-        # does. Today both are S16_LE, so this never fires. Deliberately an
-        # equality check, never a "wider/narrower" claim — see
-        # ring_edge_width_ready's docstring for why: no width-ranking
-        # primitive exists in-repo, and a directional claim would stop being
-        # reliably true once a third live format exists (D9, S24_3LE).
+        # D5 belt-and-suspenders (wide-output-path program): an ARMED ring's
+        # transport must still carry the width the shm_ring coupling actually
+        # emits. jasper.fanin.coupling_reconcile's ring_edge_width_ready gate
+        # refuses to ARM when that override is broken; this is the standing
+        # coherence check for a box already armed.
+        #
+        # Compared against content_lane_format_for_coupling(shm_ring) — what the
+        # coupling's own kwargs force onto the emitted config — NOT against the
+        # box-wide DEFAULT_PLAYBACK_FORMAT. A ring box does not run the
+        # program-lane default: the coupling forces both ring ends to
+        # RING_WIRE_FORMAT, so once PR-6 widened that default, comparing against
+        # it would have red-lined EVERY healthy armed ring box (jts.local
+        # included) in doctor, /state, and audio_health. Deliberately an equality
+        # check, never a "wider/narrower" claim — see ring_edge_width_ready's
+        # docstring for why: no width-ranking primitive exists in-repo, and a
+        # directional claim would stop being reliably true once a third live
+        # format exists (D9, S24_3LE).
+        from jasper.fanin_coupling import content_lane_format_for_coupling
+
         ring_format = str(topology.camilla_to_outputd.get("format") or "")
-        if ring_format and ring_format != DEFAULT_PLAYBACK_FORMAT:
+        emitted_format = content_lane_format_for_coupling(COUPLING_SHM_RING)
+        if ring_format and ring_format != emitted_format:
             errors.append(
                 f"transport plan is shm_ring with wire format={ring_format!r}, "
-                f"which differs from the emitted program lane format "
-                f"{DEFAULT_PLAYBACK_FORMAT!r} — the ring cannot carry it "
-                "without silently mis-transcoding it; see ring_edge_width_ready "
+                f"but the shm_ring coupling emits a {emitted_format!r} program "
+                "lane — the ring cannot carry it without silently "
+                "mis-transcoding it; see ring_edge_width_ready "
                 "(jasper.fanin.coupling_reconcile)"
             )
         return tuple(errors)

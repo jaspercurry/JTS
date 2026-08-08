@@ -379,6 +379,45 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     return {}
 
 
+def content_lane_format_for_coupling(raw: str | None) -> str:
+    """The CamillaDSP→outputd content-hop sample format this coupling carries.
+
+    ONE definition of that hop's width, for both of its ends:
+
+    - CamillaDSP's emitted ``playback: format:`` — this returns exactly what
+      :func:`capture_kwargs_for_coupling` puts in ``playback_format``, or the
+      emitters' own default (``DEFAULT_PLAYBACK_FORMAT``) for the ``loopback``
+      coupling, whose kwargs are deliberately empty so every existing caller
+      keeps its default.
+    - outputd's requested ``JASPER_OUTPUTD_CONTENT_FORMAT`` — the audio-hardware
+      reconciler emits this value, so the reader cannot ask for a width the
+      writer does not emit. Deriving both from the same function is what makes
+      that a structural property instead of two constants a maintainer must
+      remember to move together.
+
+    ``shm_ring`` therefore answers :data:`RING_WIRE_FORMAT` (S16_LE — the ring
+    slot layout ``jasper_ring::Geometry::validate_self`` hard-rejects anything
+    else), and ``loopback`` answers the box's program-lane default, which the
+    wide-output-path program widens to S32_LE. Unrecognized values fail safe to
+    ``loopback`` exactly as :func:`resolve_coupling` does.
+
+    NOT a sink-type axis: a bonded leader's File/pipe sink is pinned to
+    ``DEFAULT_PIPE_SINK_FORMAT`` (D4) and does not write this hop at all — its
+    outputd content lane is fed by the endpoint-crossover CamillaDSP instance.
+    Callers that need the format for an arbitrary sink want
+    ``jasper.camilla_config_contract`` instead.
+    """
+    # Local import: this module stays stdlib-only at import time for the
+    # socket-activated web surfaces (see the module docstring), and the
+    # contract module is the same one-way direction every other caller uses.
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+
+    value = capture_kwargs_for_coupling(raw).get("playback_format")
+    if isinstance(value, str) and value:
+        return value
+    return DEFAULT_PLAYBACK_FORMAT
+
+
 def coupling_capture_kwargs_from_env(
     env: dict[str, str] | None = None,
 ) -> dict[str, object]:

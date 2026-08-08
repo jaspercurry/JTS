@@ -1401,10 +1401,17 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
 # --- D5 (wide-output-path program): shm_ring format-coherence axis -----------
 
 
-def test_transport_coherence_shm_ring_accepts_matching_wire_format():
-    """Today RING_WIRE_FORMAT == DEFAULT_PLAYBACK_FORMAT (S16_LE), so a
-    coherent ring pair produces NO format-axis error — the byte-identical-
-    release contract PR-1 exists to prove."""
+def test_transport_coherence_shm_ring_accepts_the_narrow_ring_on_a_wide_box():
+    """An ARMED ring on a post-PR-6 box: the box-wide program lane is S32_LE but
+    the shm_ring coupling forces the emitted lane to RING_WIRE_FORMAT, so a
+    coherent ring pair produces NO format-axis error. Compared against the
+    box-wide default instead, this axis would red-line every healthy armed ring
+    box (jts.local included) in doctor, /state, and audio_health — the mistake
+    the PR-6 ruling exists to prevent."""
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+    from jasper.fanin_coupling import RING_WIRE_FORMAT
+
+    assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     errors = transport_coherence_errors(
         coupling=COUPLING_SHM_RING,
         outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
@@ -1416,16 +1423,20 @@ def test_transport_coherence_shm_ring_accepts_matching_wire_format():
     assert errors == ()
 
 
-def test_transport_coherence_shm_ring_flags_a_narrower_ring_than_the_program_lane(
+def test_transport_coherence_shm_ring_flags_a_ring_the_coupling_stopped_narrowing(
     monkeypatch,
 ):
-    """Simulates the future PR-6 world: DEFAULT_PLAYBACK_FORMAT widened while
-    a box is (somehow) still armed on the S16-only ring. This is the standing
-    coherence check that jasper.fanin.coupling_reconcile.ring_edge_width_ready's
-    arm-time gate is the belt to — it should never fire in practice because the
-    gate refuses the arm in the first place, but this proves the axis itself
-    can fail (the doctor-can-fail / mutation rule)."""
-    monkeypatch.setattr(audio_plan, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    """The axis can still fail (the doctor-can-fail / mutation rule): an armed
+    box whose coupling has lost its narrow-lane override is emitting a width the
+    S16-only ring cannot carry. This is the standing check that
+    jasper.fanin.coupling_reconcile.ring_edge_width_ready's arm-time gate is the
+    belt to — it should never fire in practice because the gate refuses the arm,
+    but the axis has to be able to."""
+    import jasper.fanin_coupling as coupling
+
+    monkeypatch.setattr(
+        coupling, "capture_kwargs_for_coupling", lambda raw: {"capture_device": "x"}
+    )
     errors = transport_coherence_errors(
         coupling=COUPLING_SHM_RING,
         outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},

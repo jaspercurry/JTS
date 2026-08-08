@@ -689,6 +689,20 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      dnsmasq service). USB audio stays off by default. Skips cleanly
      pre-reboot when no UDC exists yet. Kill switch:
      JASPER_USB_NETWORK=disabled.
+   - Release the outputd snd-aloop content lane before outputd restarts,
+     but ONLY when this build changes the width outputd REQUESTS on that
+     lane: it compares JASPER_OUTPUTD_CONTENT_FORMAT in the current
+     /var/lib/jasper/outputd.env (absent/empty == outputd's own S16_LE
+     default) against the width the coupling is about to emit. snd-aloop
+     param-locks a pair to its first opener, so a still-running old
+     CamillaDSP would fail the new outputd's open and walk it into
+     StartLimitAction=reboot mid-install. Both sides are reconciler-owned
+     env, deliberately NOT a CamillaDSP config read: the flat cutover config
+     is re-rendered earlier in this same run, so a config read here can
+     already show the new width while the running CamillaDSP still holds the
+     old lock. Stops jasper-camilla early and starts it back at its normal
+     late position. No width change (every ordinary deploy) means no extra
+     stop.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving

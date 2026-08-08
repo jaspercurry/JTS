@@ -712,6 +712,94 @@ if fmt:
 PY
 }
 
+# Resolve the CamillaDSP -> outputd content lane's sample format for the LIVE
+# fan-in coupling, via the one Python policy function that also decides what
+# CamillaDSP emits (jasper.fanin_coupling.content_lane_format_for_coupling).
+# Prints the format, or nothing when Python is unavailable.
+#
+# The coupling token is read from $FANIN_ENV_FILE here rather than inside
+# Python: this reconciler owns that path (JASPER_FANIN_ENV_FILE), and reading it
+# file-fresh on every pass is the same discipline the wizard-owned state gets
+# everywhere else — a long-lived os.environ is a stale reader of a coupling the
+# ring reconciler can flip underneath us.
+#
+# BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd reads
+# JASPER_OUTPUTD_CONTENT_FORMAT and accepts exactly {S16_LE, S32_LE} or empty
+# (empty/unset == S16_LE); anything else fails its config parse and parks the
+# FINAL-OUTPUT OWNER at exit 78. outputd REQUESTS this format on its content
+# capture PCM: on the RAW active lane a value CamillaDSP is not writing fails
+# the open (fail-closed, by design — see deploy/alsa/asoundrc.jasper), and on
+# the plug-wrapped passive lane the plug converts, so a wrong value there is a
+# silent extra requantization rather than a refusal. It is NOT the DAC edge —
+# that is JASPER_OUTPUTD_DAC_FORMAT, a separate hop with its own declaration,
+# and the two legitimately differ (an S32 content lane into an S16 dongle edge).
+# The content axis does NOT enter the chip-AEC alignment identity, so changing
+# it forces no recommission (wide-output-path D6). Emit site is in
+# apply_audio_runtime_env.
+#
+# ONE COUPLING WARNING: JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match — the
+# hand-set, deferred lab bridge — is an i16 resampler, so outputd REFUSES to
+# start when it is paired with a wide content lane. That pairing is kept
+# coherent below rather than constructed and then rejected.
+
+# Every spelling outputd's parse accepts for the rate-match content bridge
+# (rust/jasper-outputd/src/config.rs, ContentBridgeMode, after trim +
+# to_ascii_lowercase). Matching only the canonical token would leave a soak box
+# hand-set to any alias unnarrowed: the reconciler would emit a wide lane,
+# outputd would bail (exit 78 -> RestartPreventExitStatus=78 -> parked
+# final-output owner, silent speaker) on a routine deploy — exactly what the
+# narrowing below exists to prevent. This bash list must stay a SUPERSET of the
+# Rust arms; tests/test_audio_hardware_reconcile.py machine-compares the two
+# sides so drift fails a test instead of silencing a speaker (the
+# migrate_transit_config keys-array pattern).
+RATE_MATCH_BRIDGE_ALIASES=(rate_match ratematch rate-matched rate_matched)
+content_format_for_coupling() {
+    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        return 0
+    fi
+    local coupling
+    coupling="$(env_file_value_from "$FANIN_ENV_FILE" "JASPER_FANIN_CAMILLA_COUPLING")"
+    JASPER_COUPLING_QUERY="$coupling" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
+import os
+
+from jasper.fanin_coupling import content_lane_format_for_coupling
+
+print(content_lane_format_for_coupling(os.environ["JASPER_COUPLING_QUERY"]))
+PY
+}
+
+# The content-lane format to actually emit: the coupling's format, narrowed to
+# S16_LE when this box carries the i16-only `rate_match` lab content bridge.
+# Prints nothing when the coupling probe could not answer, which the caller
+# reads as "leave the key alone" rather than "write a guess".
+resolved_content_format() {
+    local fmt bridge alias
+    fmt="$(content_format_for_coupling)"
+    if [[ -z "$fmt" ]]; then
+        return 0
+    fi
+    bridge="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_BRIDGE")"
+    bridge="$(printf '%s' "${bridge//[[:space:]]/}" | tr '[:upper:]' '[:lower:]')"
+    # rate_match routes the content lane through jasper-resampler, which is i16
+    # throughout, so outputd bails at startup (exit 78, silent speaker) rather
+    # than requantize a wide lane into it — a SECOND quantization on a path whose
+    # contract is that there is exactly one, at the DAC edge. outputd owns that
+    # rule; this keeps the reconciler from writing the pair it would reject, so
+    # an operator's lab soak survives a routine deploy. rate_match is
+    # passive-lane-only by outputd's own full-range-stereo gate, so the plug
+    # converts (ALSA's linear narrowing, not the round-to-nearest the DAC edge
+    # uses) and audio keeps playing at the lab bridge's existing width.
+    for alias in "${RATE_MATCH_BRIDGE_ALIASES[@]}"; do
+        if [[ "$bridge" == "$alias" ]]; then
+            log_event "content_format_narrowed" \
+                "reason=rate_match_content_bridge bridge=$(jasper_asound_log_token "${bridge:0:32}") coupling_format=${fmt} emitted=S16_LE"
+            printf 'S16_LE\n'
+            return 0
+        fi
+    done
+    printf '%s\n' "$fmt"
+}
+
 _fallback_latency_floor_actions() {
     printf 'unset JASPER_CAMILLA_CHUNKSIZE\n'
     printf 'unset JASPER_CAMILLA_TARGET_LEVEL\n'
@@ -1097,6 +1185,25 @@ start_outputd_if_recognized() {
 apply_audio_runtime_env() {
     local changed=0
     local active_channels="" active_mode=0 graph_status="" active_lane_cap="" dac_format=""
+    local content_format=""
+    # The CONTENT lane's width is a function of the fan-in coupling, never of the
+    # DAC — an unrecognized card still has a definitive answer, so unlike
+    # JASPER_OUTPUTD_DAC_FORMAT (which needs a recognized profile to query and is
+    # therefore cleared to explicit-empty when parked) this key is emitted once,
+    # ahead of the per-hardware branches, and is always definitive. That keeps the
+    # same no-stale-value property the explicit-empty convention buys the DAC axis:
+    # a hot-swap cannot leave a width the box is not running.
+    content_format="$(resolved_content_format)"
+    if [[ -n "$content_format" ]]; then
+        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_FORMAT" "$content_format" && changed=1
+    else
+        # No answer at all: the Python policy probe is unavailable. Leave whatever
+        # the box already has rather than writing a guess — a hardcoded fallback
+        # here would be a second spelling of DEFAULT_PLAYBACK_FORMAT, and an empty
+        # value would silently narrow a wide box (outputd reads empty as S16_LE).
+        log_event "content_format_skip" \
+            "reason=coupling_probe_unavailable outputd_env=${OUTPUTD_ENV_FILE}"
+    fi
     if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         OUTPUTD_ACTIVE_MODE=0
         OUTPUTD_ACTIVE_CHANNELS=""
@@ -1121,7 +1228,7 @@ apply_audio_runtime_env() {
         # cannot leave a stale =1.
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
         log_event "runtime_env" \
-            "mode=dual_apple outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+            "mode=dual_apple content_format=${content_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         # A coherent single DAC runs the active lane ONLY when it declares one
         # (DacProfile.active_outputd_lane_channels = the cap) AND an
@@ -1182,7 +1289,7 @@ apply_audio_runtime_env() {
             # safety). Active-mode voice rides fanin, upstream of the crossover.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "1" && changed=1
             log_event "runtime_env" \
-                "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+                "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} content_format=${content_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
         else
             OUTPUTD_ACTIVE_MODE=0
             OUTPUTD_ACTIVE_CHANNELS=""
@@ -1195,7 +1302,7 @@ apply_audio_runtime_env() {
             # an ordinary passive stereo DAC.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
             log_event "runtime_env" \
-                "mode=single_alsa outputd_env=${OUTPUTD_ENV_FILE} changed=${changed} active_graph=${graph_status:-none}"
+                "mode=single_alsa content_format=${content_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed} active_graph=${graph_status:-none}"
         fi
     else
         OUTPUTD_ACTIVE_MODE=0
@@ -1215,7 +1322,7 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
         log_event "runtime_env" \
-            "mode=parked outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+            "mode=parked content_format=${content_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     fi
     if [[ "$changed" == "1" ]]; then
         return 0

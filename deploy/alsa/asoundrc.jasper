@@ -212,11 +212,15 @@ pcm.correction_substream {
 # outputd_dac block below; `channels`/`rate`/`format` would be rejected as
 # unknown fields). Instead the width is set by the OPENERS and locked by
 # snd-aloop: CamillaDSP opens the playback side at its active config's
-# `playback: channels: N`, jasper-outputd opens the capture side at
-# JASPER_OUTPUTD_ACTIVE_CHANNELS (N) — and snd-aloop locks the substream-5
+# `playback: channels: N` / `format`, jasper-outputd opens the capture side at
+# JASPER_OUTPUTD_ACTIVE_CHANNELS (N) and JASPER_OUTPUTD_CONTENT_FORMAT — and
+# snd-aloop locks the substream-5
 # pair to the first opener, so a width/rate/format mismatch fails at
 # snd_pcm_hw_params (open error) instead of silently remixing N->M onto
-# live drivers (the single most dangerous fail-open in active mode). N is
+# live drivers (the single most dangerous fail-open in active mode). That
+# fail-closed open IS the sample-width coherence mechanism on this lane, which
+# is why it stays unpinned while the passive lane below pins its slaves: a
+# half-flipped active box must refuse to run, not convert. N is
 # kept consistent across the two openers by the reconciler: it emits
 # JASPER_OUTPUTD_ACTIVE_CHANNELS only after the cutover gate confirms the
 # loaded CamillaDSP config's playback width equals the DAC's transport
@@ -247,13 +251,32 @@ ctl.outputd_active_content_capture {
 # outputd_content_capture. Do NOT wrap this capture side in dsnoop:
 # outputd needs exclusive ownership so it can be the timing owner for
 # the final DAC loop.
+#
+# WIDTH: both slaves pin `format S32_LE` — the passive lane carries the
+# post-DSP program at CamillaDSP's own working width so the ONE deliberate
+# output quantization happens inside jasper-outputd at the DAC edge, at the
+# DAC's declared width (jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT
+# is the emitter-side half of this pin; outputd's requested half is
+# JASPER_OUTPUTD_CONTENT_FORMAT, emitted by jasper-audio-hardware-reconcile).
+# These two stay `type plug` deliberately, unlike the raw active lane above:
+# the plug is open-order grace on a lane whose openers can arrive in either
+# order, and the follower-side snapclient writer keeps its own format
+# adaptation. The slave pin is what makes the lane's width a declaration
+# rather than a race — tests/test_outputd_wiring.py asserts it.
+#
+# The active-follower grouping round-trip shares substream 6 (see the
+# allocation comment above) and is NOT affected by this pin: it opens RAW
+# `hw:Loopback,0,6` / `hw:Loopback,1,6` directly (jasper.multiroom.reconcile's
+# GROUPING_LOOPBACK_PLAYBACK / _CAPTURE) at S16_LE, bypassing these aliases,
+# so its bit-perfect snapclient rate-track is unchanged. The two uses remain
+# mutually exclusive by hardware mode either way.
 pcm.outputd_content_playback {
     type plug
     slave {
         pcm "hw:Loopback,0,6"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 
@@ -263,7 +286,7 @@ pcm.outputd_content_capture {
         pcm "hw:Loopback,1,6"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 

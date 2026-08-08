@@ -303,24 +303,29 @@ def _run_format_check(monkeypatch, tmp_path, cfg_text):
     return audio.check_camilla_playback_format()
 
 
-def test_playback_format_ok_when_config_matches_default_constant(
+def test_playback_format_ok_when_alsa_lane_matches_the_wide_default(
     monkeypatch, tmp_path
 ):
-    # Green today on every live box: DEFAULT_PLAYBACK_FORMAT is S16_LE and
-    # every JTS emitter is pinned to it (byte-identical release).
-    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
-    assert res.status == "ok"
-    assert "S16_LE" in res.detail
-
-
-def test_playback_format_fails_on_a_deliberately_wide_config(monkeypatch, tmp_path):
-    # Prove the check CAN fail (mutation rule): a config declaring S32_LE
-    # while DEFAULT_PLAYBACK_FORMAT is still S16_LE is a half-flipped box —
-    # a red doctor line instead of silence.
+    # Green on a flipped box: the ALSA content lane carries
+    # DEFAULT_PLAYBACK_FORMAT, S32_LE since PR-6.
     res = _run_format_check(monkeypatch, tmp_path, _S32_PLAYBACK_CFG)
-    assert res.status == "fail"
+    assert res.status == "ok"
     assert "S32_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
+    monkeypatch, tmp_path
+):
+    # Prove the check CAN STILL FAIL in the post-flip world (mutation rule): an
+    # ALSA lane config left at S16_LE after the flip is a half-flipped box — a
+    # stale generated file, or an emitter that regenerated against a different
+    # constant — and on the raw active lane it is what makes outputd's open fail
+    # rather than convert. Red doctor line instead of silence.
+    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
+    assert res.status == "fail"
     assert "S16_LE" in res.detail
+    assert "S32_LE" in res.detail
+    assert "DEFAULT_PLAYBACK_FORMAT" in res.detail
 
 
 def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
@@ -371,18 +376,80 @@ filters:
 """
 
 
-def test_playback_format_ok_for_file_sink_pinned_narrow_even_when_lane_widens(
+_S16_RING_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+    format: S16_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_playback"
+    format: S16_LE
+filters:
+"""
+
+_S32_RING_PLAYBACK_CFG = _S16_RING_PLAYBACK_CFG.replace(
+    '    device: "jts_ring_playback"\n    format: S16_LE',
+    '    device: "jts_ring_playback"\n    format: S32_LE',
+)
+
+
+def test_playback_format_ok_for_an_armed_ring_on_a_wide_box(monkeypatch, tmp_path):
+    """AN ARMED RING IS ``type: Alsa`` — the File split alone does NOT cover it.
+
+    Its width is forced to RING_WIRE_FORMAT by the coupling's own kwargs (the
+    PR-6 ring ruling) and hard-enforced by jasper_ring::Geometry::validate_self,
+    so an S16 ring config on a box whose general default is S32 is HEALTHY. Keyed
+    on the ring's playback device, this must be green; keyed only on the File
+    type, it red-lines every armed-ring box — including the certified-latency USB
+    box, whose canary criterion is literally "doctor green" — with a remediation
+    that regenerates the identical S16 config.
+    """
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, RING_WIRE_FORMAT
+
+    assert RING_WIRE_FORMAT != DEFAULT_PLAYBACK_FORMAT
+    assert RING_PLAYBACK_DEVICE in _S16_RING_PLAYBACK_CFG
+    res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S16_LE" in res.detail
+    assert "RING_WIRE_FORMAT" in res.detail
+
+
+def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
+    monkeypatch, tmp_path
+):
+    """The ring split must not become "any ring device auto-passes": the SHM ring
+    cannot CARRY a wide slot (validate_self hard-rejects it), so a ring config
+    declaring S32 is a genuinely broken box and stays red — even though S32 is
+    what the loopback lane wants, which is exactly the confusion the three-way
+    split has to get right."""
+    res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S32_LE" in res.detail
+    assert "S16_LE" in res.detail
+    assert "RING_WIRE_FORMAT" in res.detail
+
+
+def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
     monkeypatch, tmp_path
 ):
     # The bonded-leader pipe sink (and the active-speaker parked graph's
     # /dev/null sink) are pinned to DEFAULT_PIPE_SINK_FORMAT independently of
-    # the general program lane (D4) — so a File-type S16 config must stay
-    # green even after DEFAULT_PLAYBACK_FORMAT is monkeypatched wide (the
-    # future PR-6 world). Without the lane split this would red-line a
-    # perfectly healthy box.
-    import jasper.camilla_config_contract as contract
+    # the general program lane (D4), so a File-type S16 config stays green while
+    # the ALSA lane is S32 — the two constants now genuinely differ, no
+    # monkeypatch needed. Without the lane split this would red-line every
+    # healthy pipe-sink leader and parked box.
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
 
-    monkeypatch.setattr(contract, "DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
     res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
     assert res.status == "ok"
     assert "S16_LE" in res.detail
@@ -393,7 +460,8 @@ def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
 ):
     # The lane split must not become "any File type auto-passes": a File
     # sink whose format has genuinely drifted off DEFAULT_PIPE_SINK_FORMAT
-    # (S32 today, no monkeypatch needed) still fails.
+    # (S32 here) still fails — even though S32 is what the ALSA lane wants,
+    # which is exactly the confusion the lane split has to get right.
     res = _run_format_check(monkeypatch, tmp_path, _S32_FILE_PLAYBACK_CFG)
     assert res.status == "fail"
     assert "S32_LE" in res.detail

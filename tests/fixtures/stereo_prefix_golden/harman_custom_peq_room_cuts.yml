@@ -26,7 +26,7 @@ devices:
     type: Alsa
     channels: 2
     device: "outputd_content_playback"
-    format: S16_LE
+    format: S32_LE
 
 filters:
   flat:

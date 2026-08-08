@@ -924,6 +924,9 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The coupling-derived content-lane width (S32_LE on a loopback box) is
+        # part of the steady state too — see test_reconcile_emits_content_format_*.
+        "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
         # seed it so a second reconcile is a true no-op.
@@ -1581,6 +1584,9 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The coupling-derived content-lane width (S32_LE on a loopback box) is
+        # part of the steady state too — see test_reconcile_emits_content_format_*.
+        "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
         # seed it so the floor stays the sole delta.
@@ -1728,6 +1734,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        # The coupling-derived content-lane width (S32_LE on a loopback box) is
+        # part of the steady state too — see test_reconcile_emits_content_format_*.
+        "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
         # The registry-declared final-edge format (LIVE: outputd reads it and
         # parks at exit 78 on an unknown value) is part of the steady state —
         # seed it so nothing commits.
@@ -2732,3 +2741,193 @@ def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
     assert event["result"] == "skipped"
     # The run reason wins the first `reason=`; the skip cause trails it.
     assert "reason=cli_unavailable" in result.stderr
+
+
+# --- wide-output-path PR-6: the content-lane format axis ----------------------
+# The reconciler is the single writer of JASPER_OUTPUTD_CONTENT_FORMAT, and its
+# value comes from the SAME function that decides what CamillaDSP emits
+# (jasper.fanin_coupling.content_lane_format_for_coupling) — so outputd cannot
+# ask for a width the emitters do not produce.
+
+
+def test_reconcile_emits_the_wide_content_format_on_a_loopback_box(tmp_path: Path):
+    """The default coupling (unset == loopback) carries the wide program lane."""
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
+    # The content lane and the DAC edge are separate hops with separate
+    # declarations, and on this box they legitimately differ: an S32 lane into
+    # the Apple dongle's S16 edge.
+    assert "JASPER_OUTPUTD_DAC_FORMAT=S16_LE" in outputd_env
+    assert "content_format=S32_LE" in result.stderr
+
+
+def test_reconcile_emits_the_narrow_content_format_on_a_ring_box(tmp_path: Path):
+    """An armed shm_ring box keeps the content hop at the ring's wire format —
+    the belt to ring_edge_width_ready's suspender (the PR-6 ring ruling). Its
+    outputd must request what the ring actually carries, not the box-wide
+    program-lane default."""
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_fanin_env="JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n",
+        # Ring A and Ring B move together; without Ring B's bridge the
+        # reconciler's own transport-coherence validator rejects the stage
+        # (correctly) before the format axis is reachable.
+        initial_outputd_env="JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE" in outputd_env
+    assert "content_format=S16_LE" in result.stderr
+
+
+def _rust_rate_match_bridge_arms() -> set[str]:
+    """The spellings outputd's own parse maps to ContentBridgeMode::RateMatch.
+
+    Read out of the Rust match arm rather than restated, so this test compares
+    the two implementations instead of comparing the bash list to a copy of
+    itself."""
+    config_rs = (
+        ROOT / "rust" / "jasper-outputd" / "src" / "config.rs"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"^\s*((?:\"[a-z_\-]+\"\s*\|\s*)*\"[a-z_\-]+\")\s*=>\s*\{?\s*\n?"
+        r"\s*ContentBridgeMode::RateMatch",
+        config_rs,
+        re.MULTILINE,
+    )
+    assert match is not None, "could not locate the RateMatch parse arm in config.rs"
+    arms = set(re.findall(r'"([a-z_\-]+)"', match.group(1)))
+    assert arms, "RateMatch arm parsed to an empty alias set"
+    return arms
+
+
+def _bash_rate_match_bridge_aliases() -> set[str]:
+    """The spellings the reconciler narrows for, read out of its bash array."""
+    script = (
+        ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"^RATE_MATCH_BRIDGE_ALIASES=\(([^)]*)\)", script, re.MULTILINE)
+    assert match is not None, "could not locate RATE_MATCH_BRIDGE_ALIASES"
+    return set(match.group(1).split())
+
+
+def test_rate_match_alias_set_is_a_superset_of_outputds_parse_arms():
+    """PIN THE PROMISE across the two owners of one fact.
+
+    The reconciler must narrow the content lane for EVERY spelling outputd's
+    parse recognises as rate_match. Miss one, and a soak box hand-set to that
+    alias gets a wide lane emitted, outputd bails at startup (exit 78 ->
+    RestartPreventExitStatus=78 -> parked final-output owner), and the speaker is
+    silent after a routine deploy — verbatim the outcome the narrowing exists to
+    prevent. They cannot share code (a bash array in a root reconciler vs a Rust
+    match arm in a different daemon), so this compares them, the same way
+    tests/test_wifi_profile_hardening_contract.py pins its three writers.
+
+    A SUPERSET assertion, not equality: over-listing on the bash side is
+    harmless (it narrows a spelling outputd would reject outright), under-listing
+    is the silent speaker.
+    """
+    rust_arms = _rust_rate_match_bridge_arms()
+    bash_aliases = _bash_rate_match_bridge_aliases()
+    assert rust_arms == {"rate_match", "ratematch", "rate-matched", "rate_matched"}, (
+        "outputd's ContentBridgeMode::RateMatch parse arm changed — add the new "
+        "spelling to RATE_MATCH_BRIDGE_ALIASES in "
+        "deploy/bin/jasper-audio-hardware-reconcile AND to this literal set. "
+        "The literal stays as the non-vacuity proof that the regex above found a "
+        "real arm rather than nothing. Skipping the bash side leaves a soak box "
+        "hand-set to that spelling with a wide content lane, which parks "
+        f"jasper-outputd at exit 78 and silences the speaker. Parsed: "
+        f"{sorted(rust_arms)}"
+    )
+    assert rust_arms <= bash_aliases, (
+        "spellings outputd accepts as rate_match but the reconciler would not "
+        f"narrow for: {sorted(rust_arms - bash_aliases)}"
+    )
+
+
+@pytest.mark.parametrize("spelling", sorted(_rust_rate_match_bridge_arms()))
+def test_reconcile_keeps_the_rate_match_lab_bridge_coherent(
+    tmp_path: Path, spelling: str
+):
+    """outputd REFUSES to start (exit 78, silent speaker) when the i16-only
+    rate_match content bridge is paired with a wide content lane. rate_match is
+    hand-set by an operator running the AirPlay latency soak, so a routine deploy
+    must not construct the pair outputd would reject — it emits the narrow width
+    and says so, for EVERY spelling outputd's parse accepts (the contract test
+    above is what keeps the two alias sets from drifting)."""
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=f"JASPER_OUTPUTD_CONTENT_BRIDGE={spelling}\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE" in outputd_env
+    # The operator's lab bridge survives the deploy untouched.
+    assert f"JASPER_OUTPUTD_CONTENT_BRIDGE={spelling}" in outputd_env
+    assert "event=audio_hardware_reconcile.content_format_narrowed" in result.stderr
+    assert "reason=rate_match_content_bridge" in result.stderr
+    assert f"bridge={spelling}" in result.stderr
+    assert "coupling_format=S32_LE" in result.stderr
+
+
+def _python_shim_that_cannot_answer_the_coupling(tmp_path: Path) -> Path:
+    """A python wrapper that forwards every call to the real interpreter EXCEPT
+    the coupling-format probe, which it fails.
+
+    Fault-injected at that one call rather than by removing the interpreter
+    outright: the reconciler runs several other Python probes first (the I²S HAT
+    boot pass, the output-hardware state observation) and an absent interpreter
+    aborts the whole reconcile long before the format axis is reached, which
+    would prove nothing about this branch."""
+    shim = tmp_path / "python-no-coupling"
+    shim.write_text(
+        "#!/bin/bash\n"
+        'script="$(cat)"\n'
+        'if [[ "$script" == *content_lane_format_for_coupling* ]]; then\n'
+        '  echo "simulated: coupling policy probe unavailable" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'printf "%s" "$script" | exec {sys.executable} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def test_reconcile_leaves_content_format_alone_when_the_policy_probe_is_absent(
+    tmp_path: Path,
+):
+    """No answer == no write. A bash-side fallback would be a second spelling of
+    DEFAULT_PLAYBACK_FORMAT, and writing empty would silently narrow a wide box
+    (outputd reads empty as S16_LE), so the key keeps whatever the box already had
+    and the skip is logged."""
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _python_shim_that_cannot_answer_the_coupling(tmp_path)
+            )
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
+    assert "event=audio_hardware_reconcile.content_format_skip" in result.stderr
+    assert "reason=coupling_probe_unavailable" in result.stderr
+    assert "content_format=unset" in result.stderr
