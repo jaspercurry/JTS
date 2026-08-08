@@ -283,6 +283,93 @@ pub fn narrow_i32_to_i16_round_slice(input: &[i32], output: &mut [i16]) -> bool 
     true
 }
 
+/// The byte width of ONE S24_3LE sample on the wire: three packed bytes, no
+/// padding byte.
+///
+/// The single source of truth for that stride. [`narrow_i32_to_i24_le_slice`]'s
+/// length contract and its callers' staging sizing both read this instead of
+/// restating a `3` — the number is the difference between S24_3LE (3 bytes) and
+/// ALSA's other 24-bit spellings (`S24_LE`/`S24_BE`, which carry 24 bits inside
+/// a 4-byte word), and a `3` open-coded in two places is a wrong period length
+/// waiting to happen.
+pub const I24_LE_BYTES_PER_SAMPLE: usize = 3;
+
+/// The rails of a signed 24-bit sample: ±2^23. Rust has no `i24`, so unlike the
+/// i16 narrowing's `i16::MIN`/`i16::MAX` these have to be named, and they are
+/// named ONCE rather than spelled as literals at each use.
+const I24_MIN: i64 = -8_388_608;
+const I24_MAX: i64 = 8_388_607;
+
+/// Narrow one S32 spine sample to **24 significant bits** by rounding to nearest
+/// and saturating — full-scale S32 maps onto full-scale S24.
+///
+/// The 24-bit sibling of [`narrow_i32_to_i16_round`], and it is a QUANTIZER on
+/// the same terms: it is the single conversion at an `S24_3LE` speaker edge, and
+/// like its i16 sibling it must never be replaced by a truncating shift. At 24
+/// bits the audible stakes are far lower than at 16 (the quantization floor sits
+/// below any DAC's own analog noise), but truncation is a half-LSB DC step toward
+/// −∞ on every sample whatever the width, and there is no reason to pay it.
+/// [`s32_high_word_to_s16`] remains UAC2 *capture* semantics and belongs on no
+/// output path at any width.
+///
+/// **The return is the 24-bit value SIGN-EXTENDED into an i32 — not a
+/// left-justified one.** So the result always lies in `I24_MIN..=I24_MAX` and its
+/// top 8 bits are pure sign, which is exactly what lets
+/// [`narrow_i32_to_i24_le_slice`] drop the high byte losslessly. Do not feed this
+/// output to anything expecting spine scale; it is 256× quieter.
+///
+/// Semantics (pinned, and the vectors in the tests are the contract):
+///
+/// * Round-half-**up** (toward +∞), computed in i64 as `(s + 128) >> 8` — an
+///   arithmetic shift, so it floors, and adding half the step (2^7) first makes
+///   that floor a round-to-nearest. i64 because `i32::MAX + 128` overflows i32.
+///   Same shape as the i16 sibling with 8 bits dropped instead of 16.
+/// * Saturating: `i32::MAX` rounds up past `I24_MAX` and is clamped to it.
+///   `i32::MIN` maps to `I24_MIN` with no clamp needed.
+/// * Zeros round to zeros — no idle hiss at this edge either.
+/// * A spine sample that is an exact multiple of 256 (i.e. content that was
+///   already 24-bit at spine scale) is carried through with no rounding at all,
+///   which is the 24-bit analogue of the S16 round-trip identity.
+#[inline]
+pub fn narrow_i32_to_i24_round(sample: i32) -> i32 {
+    let rounded = ((sample as i64) + 128) >> 8;
+    rounded.clamp(I24_MIN, I24_MAX) as i32
+}
+
+/// Narrow a slice of interleaved S32 spine samples into **packed little-endian
+/// 24-bit bytes** — ALSA's `S24_3LE` wire — via [`narrow_i32_to_i24_round`].
+///
+/// `output` MUST be exactly `input.len() * I24_LE_BYTES_PER_SAMPLE` bytes. A
+/// mismatch is a programming error and returns `false` **without touching
+/// `output` at all**, for the same reason the i16 slice pair does: at a speaker,
+/// a partially-written period is a short or torn period that no counter can see.
+///
+/// The pack drops the high byte of each rounded value. That is lossless, not a
+/// truncation: [`narrow_i32_to_i24_round`] clamps into the 24-bit range, so byte
+/// 3 of the little-endian representation is pure sign extension of bit 23 — which
+/// is precisely the invariant `to_le_bytes()[..3]` relies on, and it is pinned by
+/// a test at both rails.
+///
+/// Returns `true` on success. Allocation-free — the caller owns both slices, and
+/// on the output path that staging is sized once at open. `bool` rather than a
+/// `Result` for the same reason as its siblings: this crate has one dependency
+/// and no error type, and the ALSA-side caller maps `false` onto its own `anyhow`
+/// idiom in ONE place (`jasper_outputd::types::narrow_period_i24_le`).
+pub fn narrow_i32_to_i24_le_slice(input: &[i32], output: &mut [u8]) -> bool {
+    if output.len() != input.len() * I24_LE_BYTES_PER_SAMPLE {
+        return false;
+    }
+    for (src, dst) in input
+        .iter()
+        .zip(output.chunks_exact_mut(I24_LE_BYTES_PER_SAMPLE))
+    {
+        dst.copy_from_slice(
+            &narrow_i32_to_i24_round(*src).to_le_bytes()[..I24_LE_BYTES_PER_SAMPLE],
+        );
+    }
+    true
+}
+
 /// The dBFS floor an empty / digitally-silent i16 slice reports. Lives in this
 /// pure crate so fan-in's telemetry and its tests share one sentinel.
 pub const RMS_DBFS_FLOOR: f64 = -120.0;
@@ -1539,6 +1626,162 @@ mod tests {
                 "round trip failed at {value}"
             );
         }
+    }
+
+    // ---- 24-bit narrowing + LE24 packing (the S24_3LE speaker edge) -------
+
+    #[test]
+    fn narrowing_to_24_bits_rounds_to_nearest_and_saturates_at_the_rails() {
+        // The 24-bit edge quantizer's pinned contract, in the same shape as the
+        // i16 sibling's: full scale both signs, the i32 rail that has to clamp,
+        // and the half-step boundaries. The step here is 256, not 65536.
+        assert_eq!(narrow_i32_to_i24_round(0), 0, "zeros round to zeros");
+        assert_eq!(narrow_i32_to_i24_round(0x7FFF_FF00), 8_388_607);
+        assert_eq!(narrow_i32_to_i24_round(i32::MIN), -8_388_608);
+        // `i32::MAX` is half an LSB ABOVE the largest representable 24-bit
+        // value, so the round pushes it past the rail and the clamp is what
+        // keeps it in range. Without the clamp `(i32::MAX + 128) >> 8` is
+        // 8_388_608 — one past the rail, whose low three bytes are 00 00 80,
+        // i.e. full-scale NEGATIVE on the wire. Loudest possible defect.
+        assert_eq!(narrow_i32_to_i24_round(i32::MAX), 8_388_607);
+        // Just under / just over half a step: the rounding decision itself.
+        assert_eq!(narrow_i32_to_i24_round(127), 0);
+        assert_eq!(narrow_i32_to_i24_round(128), 1);
+        assert_eq!(narrow_i32_to_i24_round(383), 1); // 1.49609 steps
+        assert_eq!(narrow_i32_to_i24_round(384), 2); // exactly 1.5 steps
+                                                     //
+                                                     // Halves go toward +inf, so `-0.5` steps land on 0, NOT on -1 — the
+                                                     // same documented divergence from `clamp_i16`'s f64::round the i16
+                                                     // sibling carries.
+        assert_eq!(narrow_i32_to_i24_round(-128), 0);
+        assert_eq!(narrow_i32_to_i24_round(-129), -1);
+    }
+
+    #[test]
+    fn narrowing_to_24_bits_is_not_a_truncating_shift() {
+        // The 24-bit twin of `narrowing_is_not_the_truncating_uac2_capture_conversion`.
+        // There is no shipped truncating i32->i24 to compare against, so the
+        // contrast is MEASURED here against the shift a careless implementation
+        // would use, rather than asserted from memory. If these ever agree on
+        // these vectors, the rounding term has been dropped.
+        //
+        // Every vector here is a value where the two genuinely DIVERGE, which is
+        // not every off-grid sample: `-129` rounds to `-1` and `-129 >> 8` is
+        // also `-1`, so it proves nothing and is deliberately absent. (Found by
+        // running this test, not by reading it.)
+        for sample in [-1i32, -257, -384, 128, 255] {
+            let truncated = sample >> 8;
+            let rounded = narrow_i32_to_i24_round(sample);
+            assert_ne!(
+                rounded, truncated,
+                "sample {sample}: rounding must differ from `>> 8`"
+            );
+        }
+        assert_eq!(narrow_i32_to_i24_round(-1), 0);
+        assert_eq!(-1i32 >> 8, -1);
+        assert_eq!(narrow_i32_to_i24_round(-257), -1);
+        assert_eq!(-257i32 >> 8, -2);
+        assert_eq!(narrow_i32_to_i24_round(255), 1);
+        assert_eq!(255i32 >> 8, 0);
+    }
+
+    #[test]
+    fn a_spine_sample_already_at_24_bit_scale_survives_the_narrowing_exactly() {
+        // The 24-bit analogue of the S16 round-trip identity: a multiple of 256
+        // sits on no half-step, so the round is a no-op and the value is carried
+        // through untouched. This is what makes a 24-bit edge lossless for
+        // content that never had more than 24 bits.
+        for value in [0i32, 256, -256, 65_536, -65_536, 0x7FFF_FF00u32 as i32] {
+            assert_eq!(
+                narrow_i32_to_i24_round(value),
+                value >> 8,
+                "multiple of 256 must not be rounded: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_le24_pack_writes_three_little_endian_bytes_per_sample() {
+        // The wire layout itself. ALSA's S24_3LE is three bytes, least
+        // significant first, sign in bit 7 of the third — so a byte-order
+        // mistake here is not a subtle quality change, it is garbage at the
+        // speaker. Vectors cover both rails, ±1 LSB, and silence.
+        let input = [
+            0x7FFF_FF00u32 as i32, // -> +8_388_607 : FF FF 7F
+            i32::MIN,              // -> -8_388_608 : 00 00 80
+            0,                     // ->          0 : 00 00 00
+            256,                   // ->         +1 : 01 00 00
+            -256,                  // ->         -1 : FF FF FF
+            0x0012_3400,           // ->    0x001234 : 34 12 00
+        ];
+        let mut packed = vec![0u8; input.len() * I24_LE_BYTES_PER_SAMPLE];
+        assert!(narrow_i32_to_i24_le_slice(&input, &mut packed));
+        assert_eq!(
+            packed,
+            vec![
+                0xFF, 0xFF, 0x7F, //
+                0x00, 0x00, 0x80, //
+                0x00, 0x00, 0x00, //
+                0x01, 0x00, 0x00, //
+                0xFF, 0xFF, 0xFF, //
+                0x34, 0x12, 0x00, //
+            ]
+        );
+    }
+
+    #[test]
+    fn the_le24_pack_drops_only_sign_extension_at_both_rails() {
+        // The load-bearing invariant behind `to_le_bytes()[..3]`: because the
+        // narrowing CLAMPS into the 24-bit range, byte 3 is always pure sign
+        // extension of bit 23, so dropping it loses nothing. Measured over both
+        // rails and the i32 extremes that reach them.
+        for sample in [i32::MIN, i32::MAX, 0x7FFF_FF00u32 as i32, 0, -1, 1] {
+            let value = narrow_i32_to_i24_round(sample);
+            let bytes = value.to_le_bytes();
+            let expected_high = if value < 0 { 0xFF } else { 0x00 };
+            assert_eq!(
+                bytes[3], expected_high,
+                "sample {sample} narrowed to {value}: byte 3 must be sign only"
+            );
+            // And the three kept bytes really do reconstruct the value.
+            let round_trip = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], expected_high]);
+            assert_eq!(round_trip, value, "sample {sample}");
+        }
+    }
+
+    #[test]
+    fn the_le24_pack_rejects_a_staging_length_that_is_not_three_bytes_per_sample() {
+        // Same all-or-nothing refusal as the i16 slice pair, and the mis-sizing
+        // this catches is the specific one a 3-byte format invites: a staging
+        // sized in SAMPLES (or at 4 bytes each, the S24_LE stride) rather than
+        // at three bytes each.
+        let input = [1i32, 2, 3, 4];
+
+        let mut sample_sized = [9u8; 4];
+        assert!(!narrow_i32_to_i24_le_slice(&input, &mut sample_sized));
+        assert_eq!(sample_sized, [9u8; 4], "a refused pack writes nothing");
+
+        let mut four_byte_stride = [9u8; 16];
+        assert!(!narrow_i32_to_i24_le_slice(&input, &mut four_byte_stride));
+        assert_eq!(four_byte_stride, [9u8; 16], "a refused pack writes nothing");
+
+        let mut off_by_one = [9u8; 11];
+        assert!(!narrow_i32_to_i24_le_slice(&input, &mut off_by_one));
+        assert_eq!(off_by_one, [9u8; 11], "a refused pack writes nothing");
+
+        // The exact size is accepted, so the refusals above are not vacuous.
+        let mut exact = [9u8; 12];
+        assert!(narrow_i32_to_i24_le_slice(&input, &mut exact));
+        assert_ne!(exact, [9u8; 12]);
+    }
+
+    #[test]
+    fn the_le24_byte_stride_is_three_not_four() {
+        // The constant every staging size in the tree derives from. S24_3LE is
+        // the packed spelling; ALSA's S24_LE carries the same 24 bits in FOUR
+        // bytes, and a staging built at that stride would hand ALSA 4/3 of a
+        // period.
+        assert_eq!(I24_LE_BYTES_PER_SAMPLE, 3);
     }
 
     // ---- Per-lane RMS level (USB combo silence gate) ---------------------

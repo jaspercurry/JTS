@@ -684,8 +684,12 @@ PY
 # unrecognized or Python is unavailable.
 #
 # BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd reads
-# JASPER_OUTPUTD_DAC_FORMAT and accepts exactly {S16_LE, S32_LE} or empty
-# (empty/unset == S16_LE). Any other value fails its config parse and parks the
+# JASPER_OUTPUTD_DAC_FORMAT and accepts exactly {S16_LE, S24_3LE, S32_LE} or
+# empty (empty/unset == S16_LE). S24_3LE is the packed 3-byte 24-bit edge; no
+# profile declares it today, so this function cannot return it until one does —
+# outputd's write path shipped ahead of the registry deliberately
+# (wide-output-path D9). ALSA's 4-byte-word S24_LE is a DIFFERENT format and is
+# NOT accepted. Any other value fails its config parse and parks the
 # FINAL-OUTPUT OWNER at exit 78 — jasper-outputd-failure-reconcile grants one
 # bounded retry per window, then the unit stays failed and the speaker is
 # silent. outputd REQUESTS this format on its DAC PCM and parks if the device
@@ -723,10 +727,13 @@ PY
 # everywhere else — a long-lived os.environ is a stale reader of a coupling the
 # ring reconciler can flip underneath us.
 #
-# BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd reads
-# JASPER_OUTPUTD_CONTENT_FORMAT and accepts exactly {S16_LE, S32_LE} or empty
-# (empty/unset == S16_LE); anything else fails its config parse and parks the
-# FINAL-OUTPUT OWNER at exit 78. outputd REQUESTS this format on its content
+# BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd's config
+# PARSER accepts exactly {S16_LE, S24_3LE, S32_LE} or empty (empty/unset ==
+# S16_LE) on this name; anything else fails the parse and parks the FINAL-OUTPUT
+# OWNER at exit 78. S24_3LE parses only because both hops share ONE format
+# vocabulary — outputd has no packed-24 READ path and refuses such a lane at the
+# same exit 78, and this function cannot emit it in any case (the policy below
+# answers only S16_LE or S32_LE). outputd REQUESTS this format on its content
 # capture PCM: on the RAW active lane a value CamillaDSP is not writing fails
 # the open (fail-closed, by design — see deploy/alsa/asoundrc.jasper), and on
 # the plug-wrapped passive lane the plug converts, so a wrong value there is a
@@ -1214,8 +1221,9 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
         # LIVE: outputd reads this and parks at exit 78 on anything outside
-        # {S16_LE, S32_LE, empty}; the value also reaches STATUS dac.format and
-        # the chip-AEC alignment identity. See final_edge_format_for_dac.
+        # {S16_LE, S24_3LE, S32_LE, empty}; the value also reaches STATUS
+        # dac.format and the chip-AEC alignment identity. See
+        # final_edge_format_for_dac.
         dac_format="$(final_edge_format_for_dac "$OUTPUT_DAC_ID")"
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "$dac_format" && changed=1
         # Composite width is fixed at 4 (two stereo children); clear the
@@ -1272,8 +1280,9 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
         # LIVE: outputd reads this and parks at exit 78 on anything outside
-        # {S16_LE, S32_LE, empty}; the value also reaches STATUS dac.format and
-        # the chip-AEC alignment identity. See final_edge_format_for_dac.
+        # {S16_LE, S24_3LE, S32_LE, empty}; the value also reaches STATUS
+        # dac.format and the chip-AEC alignment identity. See
+        # final_edge_format_for_dac.
         dac_format="$(final_edge_format_for_dac "$OUTPUT_DAC_ID")"
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "$dac_format" && changed=1
         if [[ "$active_mode" == "1" ]]; then

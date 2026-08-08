@@ -165,14 +165,22 @@ class DacProfile:
     # final ALSA edge, and it is now what outputd ASKS ALSA for.
     # jasper-audio-hardware-reconcile shells into final_edge_format_for() to
     # emit this as JASPER_OUTPUTD_DAC_FORMAT, which jasper-outputd READS: it
-    # accepts exactly {S16_LE, S32_LE} and parks at exit 78 otherwise, requests
-    # that format on its DAC PCM, and reports what its client edge negotiated
-    # as STATUS dac.format, where the chip-AEC alignment identity records it —
-    # so changing a profile's declared format invalidates every commissioned
-    # artifact on that hardware and forces a foreground
+    # accepts exactly {S16_LE, S24_3LE, S32_LE} and parks at exit 78 otherwise,
+    # requests that format on its DAC PCM, and reports what its client edge
+    # negotiated as STATUS dac.format, where the chip-AEC alignment identity
+    # records it — so changing a profile's declared format invalidates every
+    # commissioned artifact on that hardware and forces a foreground
     # `sudo jasper-aec-commission`. A declaration the hardware cannot install
     # now parks the speaker instead of being silently converted, so this field
     # is load-bearing.
+    #
+    # S24_3LE (24 bits in three PACKED bytes — not ALSA's 4-byte-word S24_LE,
+    # which is NOT accepted) is in the vocabulary but declared by NO profile
+    # today. outputd's packed write path shipped first on purpose, so that
+    # whichever profile flips next is read correctly by the daemon already on the
+    # box (wide-output-path D9). A composite and its children must move width
+    # TOGETHER — see test_a_composite_declares_the_same_edge_format_as_every_child,
+    # and outputd's paired transport refuses a packed child edge outright.
     final_edge_format: str = "S16_LE"
     # The DAC's measured stable buffer floor, or None to use the global
     # default (non-breaking: an undeclared DAC keeps shipping the conservative
@@ -222,7 +230,7 @@ class DacProfile:
                 f"{self.id}: unsupported chip_aec_qualification "
                 f"{self.chip_aec_qualification!r}"
             )
-        if self.final_edge_format not in ("S16_LE", "S32_LE"):
+        if self.final_edge_format not in ("S16_LE", "S24_3LE", "S32_LE"):
             raise ValueError(
                 f"{self.id}: unsupported final_edge_format {self.final_edge_format!r}"
             )
