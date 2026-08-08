@@ -2723,7 +2723,28 @@ class WakeLoop:
                     # A multi-command IPC write can fail after an accepted
                     # prefix. Its per-command drain ledger is still binding:
                     # never release the feedback episode over that tail.
-                    await self._tts.wait_drained()
+                    drain_task = asyncio.create_task(self._tts.wait_drained())
+                    deferred_cancel = False
+                    current = asyncio.current_task()
+                    while not drain_task.done():
+                        try:
+                            await asyncio.shield(drain_task)
+                        except asyncio.CancelledError:
+                            # Cancellation cannot revoke already-accepted
+                            # audio. Keep the feedback episode until its
+                            # physical tail clears, then propagate it.
+                            deferred_cancel = True
+                            if current is not None:
+                                current.uncancel()
+                    if drain_task.cancelled():
+                        raise asyncio.CancelledError
+                    drain_error = drain_task.exception()
+                    if drain_error is not None:
+                        if deferred_cancel:
+                            raise asyncio.CancelledError from None
+                        raise drain_error
+                    if deferred_cancel:
+                        raise asyncio.CancelledError
             except Exception as e:  # noqa: BLE001
                 logger.warning("mic mute click failed: %s", e)
         finally:

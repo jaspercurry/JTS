@@ -516,7 +516,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         socket_path=tts_socket,
         output_rate=48000,
         gain_db=-8.0,
-        drain_tail_sec=0.2,
+        drain_tail_sec=1.0,
     )
     tts._stream = _BlockingWrite()  # type: ignore[assignment]
     wl = WakeLoop.for_tests()
@@ -541,11 +541,17 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     assert await asyncio.to_thread(write_returned.wait, 1.0)
     while tts._ring_end_monotonic is None:
         await asyncio.sleep(0)
+    drain_at = tts.expected_drain_at()
+    click.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
     assert not click.done(), "accepted AUDIO tail must still hold feedback gate"
     assert not pause.done(), "PAUSE must still be draining feedback ownership"
+    assert asyncio.get_running_loop().time() < drain_at
 
     with pytest.raises(asyncio.CancelledError):
         await click
+    assert asyncio.get_running_loop().time() >= drain_at
     assert await asyncio.wait_for(pause, timeout=1.0) == {
         "result": "ok",
         "drained": True,
