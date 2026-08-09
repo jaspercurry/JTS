@@ -1714,6 +1714,42 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
     )
 
 
+def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", applied=True, fc_selection={"comparison_complete": True},
+        verify={"outcome": "pass"},
+        post_apply_grade={
+            "outcome": "verified_best_evaluated", "graded": True,
+            "absolute_miss_db": 4.3139, "absolute_worst_hz": 1590.4083,
+        },
+    ))
+    text = env["verdict_text"].lower()
+    assert "best measured option" in text
+    assert "misses the target by 4.31 db near 1.59 khz" in text
+    assert "within spec" not in text
+    assert "best achievable" not in text
+    assert "perfect" not in text
+    assert "microphone" not in text and "measurement page" not in text
+    assert env["nudges"][0]["code"] == "crossover_v2_verified_best_evaluated"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "copy", "badge"),
+    (
+        ("verified_target", "reached the target", "Target verified."),
+        ("keep_previous", "should not replace", "Keep the previous sound."),
+        ("inconclusive", "not enough complete evidence", "Result inconclusive."),
+    ),
+)
+def test_terminal_outcome_household_copy(outcome, copy, badge):
+    env = build_crossover_envelope_v2(_status(
+        phase="done", applied=True, verify={"outcome": "pass"},
+        post_apply_grade={"outcome": outcome, "graded": True},
+    ))
+    assert copy in env["verdict_text"]
+    assert env["nudges"][0]["text"] == badge
+
+
 def test_a_not_evaluated_crossover_region_renders_no_number():
     """Absence stays absence — an ungraded claim produces no sentence."""
     claims = {

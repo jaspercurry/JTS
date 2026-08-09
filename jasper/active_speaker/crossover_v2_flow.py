@@ -10338,6 +10338,18 @@ class CrossoverV2Conductor:
             value = spec_convergence_residual(report).rms_db
             return round(float(value), 3) if value is not None else None
 
+        if self._measure_predicted_spec_report is not None:
+            self._measure_predicted_spec_report["comparison"] = {
+                "reason": reason,
+                "baseline_rms_db": _rms(before),
+                "selected_rms_db": _rms(after),
+                "improvement_db": (
+                    round(float(improvement_db), 3)
+                    if improvement_db is not None else None
+                ),
+                "required_db": PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+            }
+
         log_event(
             logger, "correction.crossover_v2_prediction_gate",
             level=level, session_id=self.session_id, reason=reason,
@@ -11036,34 +11048,7 @@ class CrossoverV2Conductor:
                     ),
                 },
             )
-        # §7 claim 3's ABSOLUTE half (R18, #1868) — the only gate here that can
-        # fail a capture the MODEL agrees with, which is the whole point. On
-        # 2026-08-05 the JTS3 checkpoint passed at 0.919 dB against 1.5 dB with
-        # its tracking band floored at 2000 Hz (``tracking_band_lo_hz=2000.0``,
-        # that session's ``verify_diag``) while its own post-apply cloud
-        # measured −4.80 dB at 1656 Hz (signal-derived, 1/3-octave) — 344 Hz
-        # below that floor. See ``program_analysis``' absolute-verify note for
-        # why that cloud gauge cannot own this claim.
-        #
-        # LAST on purpose, behind the delta probe, whose refusals carry an
-        # AUTOMATIC remedy (correction rollback). Gating ahead of it would let
-        # a capture that both fails this claim AND warrants a rollback get
-        # neither — sitting applied, waiting on a household never offered the
-        # automatic fix. Last keeps R18 purely additive.
-        #
-        # NOT_EVALUATED never gates: refusing on a measurement nobody made is
-        # the same dishonesty pointed the other way.
-        if (self._verify_claims["absolute"] or {}).get("status") == CLAIM_FAIL:
-            self._set_verify_outcome(
-                "fail", REASON_VERIFY_CROSSOVER_REGION, gate_record,
-            )
-            return PhaseVerdict(
-                False, REASON_VERIFY_CROSSOVER_REGION,
-                payload={
-                    "tracking": dict(tracking),
-                    "claims": dict(self._verify_claims),
-                },
-            )
+        # Absolute remains independent; the terminal owner classifies its miss.
         self._set_verify_outcome("pass", None, gate_record)
         return PhaseVerdict(
             True, payload={

@@ -105,7 +105,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLAIM_NOT_EVALUATED,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLAIM_PASS,
-    REASON_VERIFY_CROSSOVER_REGION,
     verify_absolute_tolerance_db,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_NOT_AN_IMPROVEMENT,
@@ -9014,8 +9013,11 @@ def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
     c = _cloud_conductor(fakes)
     assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
-    stashed = c.measure_predicted_spec_report
-    assert stashed is not None
+    report = c.measure_predicted_spec_report
+    assert report is not None
+    stashed = dict(report)
+    comparison = stashed.pop("comparison")
+    assert comparison["reason"] == "predicted_in_spec"
     # It IS the full-resolution grade.
     assert stashed == spec_report_for_predicted_sum(c.measure_predicted_sum).to_dict()
 
@@ -9051,8 +9053,10 @@ def test_the_prediction_verdict_is_stashed_on_the_trims_only_lane_too():
     assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     assert c.candidate.linearization == {}
-    stashed = c.measure_predicted_spec_report
-    assert stashed is not None
+    report = c.measure_predicted_spec_report
+    assert report is not None
+    stashed = dict(report)
+    assert stashed.pop("comparison")["reason"] == "no_linearization"
     assert stashed == spec_report_for_predicted_sum(c.measure_predicted_sum).to_dict()
 
 
@@ -9073,7 +9077,9 @@ def test_the_gates_ledger_and_the_stashed_verdict_never_disagree(caplog):
 
     assert "reason=no_linearization" in caplog.text
     report = spec_report_for_predicted_sum(c.measure_predicted_sum)
-    assert report.to_dict() == c.measure_predicted_spec_report
+    stashed = dict(c.measure_predicted_spec_report)
+    assert stashed.pop("comparison")["reason"] == "no_linearization"
+    assert report.to_dict() == stashed
     # ``log_event`` renders booleans JSON-style, so compare in its vocabulary
     # rather than Python's.
     assert f"after_passed={'true' if report.overall_passed else 'false'}" in caplog.text
@@ -12275,28 +12281,26 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
     }
 
 
-def test_absolute_crossover_region_failure_fails_a_verify_the_model_agrees_with():
-    """#1868's defect class, at the conductor. Tracking is WELL inside its own
-    tolerance — the model reproduced the defect — and the session still fails,
-    with its own reason code naming the claim that actually broke."""
+def test_absolute_miss_remains_independent_when_integration_passes():
+    """An evaluated target miss is a result, not a failed capture."""
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
     fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.069, verify_absolute=_absolute(3.98),
+        program, max_db=1.398262557, verify_absolute=_absolute(
+            4.3139, worst_db=-4.3139, worst_hz=1590.4083,
+        ),
     )
     verdict = _run_phase(c, 3, 3)
 
-    assert verdict["accepted"] is False
-    assert verdict["code"] == REASON_VERIFY_CROSSOVER_REGION
-    assert c.verify_outcome == "fail"
+    assert verdict["accepted"] is True
+    assert verdict.get("code") in {None, ""}
+    assert c.verify_outcome == "pass"
     claims = c.verify_claims
     assert claims["integration"]["status"] == CLAIM_PASS  # the model agreed
     assert claims["absolute"]["status"] == CLAIM_FAIL
     assert claims["absolute"]["tolerance_db"] == 2.0
-    assert claims["absolute"]["worst_hz"] == 1700.0
-    # §7's bounded actions, not an auto-revert: VERIFY reports, the household
-    # decides. A rollback code would mean the flow chose for them.
-    assert verdict["code"] not in TRANSIENT_AUTO_RETRY_CODES
+    assert claims["absolute"]["max_db"] == 4.3139
+    assert claims["absolute"]["worst_hz"] == 1590.4083
 
 
 def test_the_same_capture_passed_before_the_absolute_claim_existed():
@@ -12430,7 +12434,7 @@ def test_the_crossover_region_claim_is_not_the_cloud_flatness_gauge():
         program, max_db=0.069, verify_absolute=_absolute(3.98),
     )
     verdict = _run_phase(c, 3, 3)
-    assert verdict["code"] == REASON_VERIFY_CROSSOVER_REGION
+    assert verdict["accepted"] is True
     # No cloud has closed on this conductor, so no flatness gauge exists —
     # and the §7 claim was still made and still failed.
     assert c.group_cloud_result(PHASE_CLOUD_VERIFY) is None

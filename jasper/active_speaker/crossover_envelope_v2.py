@@ -1505,6 +1505,7 @@ def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _done_nudges(
     verify: Mapping[str, Any], *, spec_passed: bool | None,
+    result_outcome: str = "",
 ) -> list[dict[str, str]]:
     """The done screen's badges — one claim per instrument, none overclaiming.
 
@@ -1525,6 +1526,15 @@ def _done_nudges(
     A non-pass outcome gets no badge at all, exactly as before — that screen is
     the verify_fail one and carries its own copy.
     """
+    result_badges = {
+        "verified_target": ("ok", "Target verified."),
+        "verified_best_evaluated": ("warn", "Best evaluated; target still missed."),
+        "keep_previous": ("warn", "Keep the previous sound."),
+        "inconclusive": ("warn", "Result inconclusive."),
+    }
+    if result_outcome in result_badges:
+        severity, text = result_badges[result_outcome]
+        return [{"code": f"crossover_v2_{result_outcome}", "severity": severity, "text": text}]
     if verify.get("outcome") != "pass":
         return []
     nudges: list[dict[str, str]] = [
@@ -3084,6 +3094,36 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "— that part is unproven. Measure again to finish it, or "
                 "undo if it sounds worse than before."
             )
+        result_outcome = str(grade.get("outcome") or "")
+        if result_outcome in {"verified_target", "verified_best_evaluated", "keep_previous", "inconclusive"}:
+            result_copy = {
+                "verified_target": (
+                    "The measured result reached the target and matched its prediction. "
+                    "If it sounds worse than before, you can undo."
+                ),
+                "keep_previous": (
+                    "This result should not replace the previous sound. This report changed "
+                    "nothing automatically; use Undo if this audition is still applied."
+                ),
+                "inconclusive": (
+                    "There is not enough complete evidence to grade this result. Valid saved "
+                    "measurements are kept; this report changed nothing automatically."
+                ),
+            }.get(result_outcome)
+            if result_copy:
+                done_verdict = result_copy
+            elif result_outcome == "verified_best_evaluated":
+                miss = _finite(grade.get("absolute_miss_db"))
+                hz = _finite(grade.get("absolute_worst_hz"))
+                miss_text = (
+                    f" by {miss:.2f} dB" + (f" near {hz / 1000:.2f} kHz" if hz else "")
+                    if miss is not None else ""
+                )
+                done_verdict = (
+                    "This is the best measured option from the complete comparison, and it "
+                    f"matched its prediction, but it still misses the target{miss_text}. "
+                    "If it sounds worse than before, you can undo."
+                )
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
             done_verdict = f"{done_verdict} {attempt_sentence}"
@@ -3124,7 +3164,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # tuned, which is exactly when an unstated caveat becomes an
             # overclaim.
             nudges=(
-                _done_nudges(verify, spec_passed=spec_passed)
+                _done_nudges(
+                    verify, spec_passed=spec_passed,
+                    result_outcome=result_outcome,
+                )
                 + _ripple_reservation_nudges(status)
             ),
             status=status,

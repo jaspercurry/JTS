@@ -977,8 +977,8 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
 ):
     """Reproduce P0.3's live ordering through the real relay plan runner.
 
-    VERIFY first persists a meaningful acoustic failure (tracking passes at
-    1.398 dB; the absolute crossover claim fails), then the mutable relay slot
+    VERIFY first persists a meaningful acoustic failure (tracking exceeds
+    its existing 1.5 dB ceiling), then the mutable relay slot
     regresses to an older *validly authenticated* event, and finally transport
     dies. Cleanup still drains/purges, but relay_timeout must not replace the
     already-durable acoustic verdict — even when the drain itself faults.
@@ -1035,7 +1035,7 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
     def incident_verify(program):
         return _verify_analysis(
             program,
-            max_db=1.3982625572605762,
+            max_db=1.6,
             verify_absolute={
                 "band_hz": [1000.0, 4000.0],
                 "rms_db": 2.1,
@@ -1075,11 +1075,11 @@ def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
     assert (session.session_id in backend.sessions) is purge_fails
     state = v2host.load_v2_state()
     assert state["verify"]["outcome"] == "fail"
-    assert state["verify"]["code"] == "verify_crossover_region"
-    assert _persisted_failure(state) == {"code": "verify_crossover_region"}
+    assert state["verify"]["code"] == "verify_out_of_tolerance"
+    assert _persisted_failure(state) == {"code": "verify_out_of_tolerance"}
     last = backend.host_events[session.session_id][-1]
     assert (last["phase"], last["accepted"], last["code"]) == (
-        "capture_result", False, "verify_crossover_region",
+        "capture_result", False, "verify_out_of_tolerance",
     )
     assert "event=capture_relay.capture_event_stale_ignored" in caplog.text
     assert "event=correction.crossover_v2_terminal_verdict_preserved" in caplog.text
@@ -3755,7 +3755,10 @@ def test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade():
 
     priors = v2host.load_v2_state()["verify_priors"]
     assert priors["predicted_spec"] == conductor.measure_predicted_spec_report
-    assert priors["predicted_spec"] == spec_report_for_predicted_sum(
+    stored_report = dict(priors["predicted_spec"])
+    comparison = stored_report.pop("comparison")
+    assert comparison["reason"] == "predicted_in_spec"
+    assert stored_report == spec_report_for_predicted_sum(
         conductor.measure_predicted_sum
     ).to_dict()
 
@@ -4026,7 +4029,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
-def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
+def test_a_refused_correction_still_reaches_the_wire_with_its_verdict(caplog):
     """The 4th reachable ``prediction`` state: report present, curve absent.
 
     The verdict is stashed BEFORE the improvement gate runs, while
@@ -4064,9 +4067,14 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
     # The speaker was left untouched — no candidate, no persisted curve.
     assert conductor.candidate is None
     assert conductor.measure_predicted_sum is None
-    v2host.persist_conductor_state(
-        conductor, failure_code="correction_not_an_improvement",
-    )
+    with caplog.at_level(logging.INFO, logger=v2host.__name__):
+        v2host.persist_conductor_state(
+            conductor, failure_code="correction_not_an_improvement",
+        )
+        v2host.persist_conductor_state(
+            conductor, failure_code="correction_not_an_improvement",
+        )
+        v2host.crossover_v2_status_block()
     priors = v2host.load_v2_state()["verify_priors"]
     assert priors["predicted_sum"] is None
     assert priors["predicted_spec"] is not None
@@ -4077,6 +4085,11 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
     assert prediction["overall_passed"] is False
     assert prediction["spec_bands"]
     assert prediction["reference_db"] is not None
+    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
+        "keep_previous"
+    )
+    assert caplog.text.count("event=correction.crossover_v2_result_classified") == 1
+    assert "outcome=keep_previous" in caplog.text
 
 
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
@@ -4451,6 +4464,152 @@ def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None):
     if cloud_verify is not None:
         state["cloud"] = {PHASE_CLOUD_VERIFY: cloud_verify}
     return state
+
+
+def _honest_result_state(
+    *, tracking="pass", absolute="fail", complete=True, improvement=0.8,
+    verdict="keep_configured", baseline=True, applied=True,
+    verify_outcome=None, absolute_evidence=True,
+):
+    scores = (
+        [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}]
+        if baseline else [{"fc_hz": 1800.0, "score": 3.2}]
+    )
+    absolute_claim = (
+        {
+            "status": absolute, "max_db": 4.3139 if absolute == "fail" else 0.8,
+            "worst_db": -4.3139 if absolute == "fail" else -0.8,
+            "worst_hz": 1590.4083, "tolerance_db": 2.0,
+        }
+        if absolute != "not_evaluated"
+        else {"status": "not_evaluated", "reason": "no_trusted_region"}
+    )
+    if not absolute_evidence:
+        absolute_claim = {"status": absolute}
+    stage1 = [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE]
+    return {
+        "session_id": "cap_p04", "tier": "express", "applied": applied,
+        "session_phases": stage1, "accepted_phases": stage1,
+        "candidate": {"fingerprint": "fp-p04"},
+        "fc_selection": {
+            "verdict": verdict, "configured_hz": 2000.0,
+            "recommended_hz": 1800.0 if verdict == "recommend_alternative" else None,
+            "comparison_complete": complete, "scores": scores,
+        },
+        "verify": {
+            "outcome": verify_outcome or ("fail" if tracking == "fail" else "pass"),
+            "claims": {
+                "integration": {
+                    "status": tracking, "max_db": 1.398262557,
+                    "tolerance_db": 1.5,
+                },
+                "absolute": absolute_claim,
+            },
+        },
+        "verify_priors": {"predicted_spec": {
+            "overall_passed": False, "bands": [],
+            "comparison": {
+                "reason": (
+                    "improved" if improvement >= 0.5
+                    else "correction_not_an_improvement"
+                ),
+                "baseline_rms_db": 2.0, "selected_rms_db": 2.0 - improvement,
+                "improvement_db": improvement, "required_db": 0.5,
+            },
+        }},
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    (
+        ({"absolute": "pass"}, "verified_target"),
+        ({}, "verified_best_evaluated"),
+        ({"tracking": "fail"}, "keep_previous"),
+        ({"improvement": 0.1}, "keep_previous"),
+        ({"verdict": "recommend_alternative"}, "keep_previous"),
+        ({"verdict": "recommend_alternative", "complete": False}, "inconclusive"),
+        ({"tracking": "fail", "complete": False}, "keep_previous"),
+        ({"improvement": 0.1, "complete": False}, "keep_previous"),
+        ({"complete": False}, "inconclusive"),
+        ({"absolute": "not_evaluated"}, "inconclusive"),
+        ({"baseline": False}, "inconclusive"),
+        ({"verdict": "future"}, "inconclusive"),
+        ({"verdict": None}, "inconclusive"),
+        ({"verify_outcome": "future"}, "inconclusive"),
+        ({"absolute_evidence": False}, "inconclusive"),
+        ({"applied": False, "verdict": "recommend_alternative"}, "keep_previous"),
+        ({"applied": False, "verdict": "recommend_alternative", "complete": False}, "inconclusive"),
+    ),
+)
+def test_honest_result_truth_table(changes, expected):
+    v2host.save_v2_state(_honest_result_state(**changes))
+    block = v2host.crossover_v2_status_block()
+    grade = block["post_apply_grade"]
+    assert grade["outcome"] == expected
+    if changes.get("applied", True):
+        assert grade["candidate_fingerprint"] == "fp-p04"
+    else:
+        assert block["phase"] == "review"
+    if expected == "verified_best_evaluated":
+        assert grade["tracking_passed"] is True
+        assert grade["absolute_passed"] is False
+        assert grade["absolute_miss_db"] == 4.3139
+        assert grade["absolute_worst_hz"] == 1590.4083
+
+
+def test_exact_incident_needs_complete_comparison_for_best_evaluated():
+    for complete, expected in ((True, "verified_best_evaluated"), (False, "inconclusive")):
+        v2host.save_v2_state(_honest_result_state(complete=complete))
+        assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == expected
+
+
+def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
+    prior = _honest_result_state()
+    v2host.save_v2_state(prior)
+
+    class TerminalConductor(_StubConductor):
+        verify_outcome = "pass"
+        verify_claims = prior["verify"]["claims"]
+        measure_predicted_spec_report = prior["verify_priors"]["predicted_spec"]
+
+        def snapshot(self):
+            return SimpleNamespace(
+                session_id="cap_p04", accepted_phases=(PHASE_VERIFY,),
+                session_phases=(PHASE_VERIFY,), tier="express", applied=True,
+                gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+            )
+
+    conductor = TerminalConductor("cap_p04")
+    with caplog.at_level(logging.INFO, logger=v2host.__name__):
+        v2host.persist_conductor_state(conductor, failure_code=None)
+        v2host.persist_conductor_state(conductor, failure_code=None)
+        v2host.crossover_v2_status_block()
+    lines = [
+        record.message for record in caplog.records
+        if "event=correction.crossover_v2_result_classified" in record.message
+    ]
+    assert len(lines) == 1
+    assert "outcome=verified_best_evaluated" in lines[0]
+    assert "absolute_passed=false" in lines[0]
+    assert "absolute_miss_db=4.3139" in lines[0]
+    assert "absolute_worst_hz=1590.4083" in lines[0]
+    assert "candidate_fingerprint=fp-p04" in lines[0]
+
+
+def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplog):
+    conductor = _StubConductor("cap_malformed")
+    conductor.snapshot = lambda: SimpleNamespace(
+        session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
+        session_phases=(PHASE_VERIFY,), tier="", applied=True,
+        gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+    )
+    monkeypatch.setattr(
+        v2host, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
+    )
+    with caplog.at_level(logging.INFO, logger=v2host.__name__):
+        v2host.persist_conductor_state(conductor, failure_code=None)
+    assert "outcome=inconclusive" in caplog.text
 
 
 _NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
