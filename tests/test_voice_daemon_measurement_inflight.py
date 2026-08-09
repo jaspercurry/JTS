@@ -1780,6 +1780,66 @@ async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
     assert "contract cue restore failed: duck restore exploded" in caplog.text
 
 
+@pytest.mark.parametrize("restore_fails", [False, True])
+async def test_duck_cleanup_preserves_base_exception_precedence(
+    restore_fails: bool,
+) -> None:
+    """Restore BaseException overrides drain; either follows exact release."""
+
+    class _CleanupAbort(BaseException):
+        pass
+
+    drain_error = _CleanupAbort("drain aborted")
+    restore_error = _CleanupAbort("restore aborted")
+
+    class _FailingDrainTts:
+        async def wait_drained(self) -> None:
+            raise drain_error
+
+    async def restore() -> None:
+        if restore_fails:
+            raise restore_error
+
+    wl = WakeLoop.for_tests()
+    gate = _EndCountingGate()
+    wl._output_gate = gate
+    wl._tts = _FailingDrainTts()
+    episode = await gate.begin_if_idle("admin")
+    assert episode is not None
+
+    with pytest.raises(_CleanupAbort) as caught:
+        await wl._finish_ducked_output_episode_after_drain(
+            episode,
+            restore,
+            cleanup_label="contract cue",
+        )
+
+    expected_error = restore_error if restore_fails else drain_error
+    assert caught.value is expected_error
+    assert gate.end_calls == 1
+    assert not gate.is_active
+
+
+async def test_measurement_deadline_cleanup_preserves_cancelled_error() -> None:
+    """The shared capture boundary does not convert deadline cancellation."""
+
+    cancellation = asyncio.CancelledError("measurement cleanup cancelled")
+
+    async def cancelled_step() -> None:
+        raise cancellation
+
+    wl = WakeLoop.for_tests()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await wl._restore_measurement_step_before_deadline(
+            cancelled_step(),
+            deadline_monotonic=asyncio.get_running_loop().time() + 1.0,
+            event="measurement.test_cleanup_failed",
+            trigger="test",
+        )
+
+    assert caught.value is cancellation
+
+
 @pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
 async def test_cancelled_admin_cue_keeps_duck_until_physical_tail(
     monkeypatch,

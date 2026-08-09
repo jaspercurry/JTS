@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 from enum import Enum
+from inspect import isawaitable
 from types import SimpleNamespace
 
 from jasper.log_event import log_event
@@ -174,6 +175,20 @@ async def _cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
     task_set.difference_update(tasks)
+
+
+async def _capture_cleanup_error(
+    operation: Callable[[], object],
+) -> BaseException | None:
+    """Run one sync/async cleanup step and return any raised outcome."""
+
+    try:
+        outcome = operation()
+        if isawaitable(outcome):
+            await outcome
+    except BaseException as error:  # noqa: BLE001 - one cleanup capture boundary
+        return error
+    return None
 
 
 class FanInDucker:
@@ -2377,19 +2392,37 @@ class WakeLoop:
         """Own physical drain, duck restore, and exact gate release as one."""
 
         async def _drain_restore_and_release() -> None:
+            drain_base_error: BaseException | None = None
             try:
-                try:
-                    await wait_tts_drained_owned(self._tts)
-                except Exception as e:  # noqa: BLE001 - feedback is best-effort
-                    logger.warning("%s drain cleanup failed: %s", cleanup_label, e)
+                drain_error = await _capture_cleanup_error(
+                    lambda: wait_tts_drained_owned(self._tts),
+                )
+                if isinstance(drain_error, Exception):
+                    logger.warning(
+                        "%s drain cleanup failed: %s",
+                        cleanup_label,
+                        drain_error,
+                    )
+                else:
+                    drain_base_error = drain_error
             finally:
+                restore_base_error: BaseException | None = None
                 try:
-                    try:
-                        await restore()
-                    except Exception as e:  # noqa: BLE001 - restore is best-effort
-                        logger.warning("%s restore failed: %s", cleanup_label, e)
+                    restore_error = await _capture_cleanup_error(restore)
+                    if isinstance(restore_error, Exception):
+                        logger.warning(
+                            "%s restore failed: %s",
+                            cleanup_label,
+                            restore_error,
+                        )
+                    else:
+                        restore_base_error = restore_error
                 finally:
                     await self._output_gate.end(episode)
+                if restore_base_error is not None:
+                    raise restore_base_error
+            if drain_base_error is not None:
+                raise drain_base_error
 
         await self._await_output_cleanup_owned(
             _drain_restore_and_release(),
@@ -3024,13 +3057,18 @@ class WakeLoop:
             # Already logged by the join helper. Generation + slot invalidation
             # prevents the stale task from restoring a future lease.
             deferred_cancel = False
-        try:
-            deferred_cancel |= await self._restore_measurement_owned(
+        restore_deferred_cancel = False
+
+        async def restore_measurement() -> None:
+            nonlocal restore_deferred_cancel
+            restore_deferred_cancel = await self._restore_measurement_owned(
                 trigger=trigger,
                 deadline_monotonic=deadline_monotonic,
                 resume_meter=resume_meter,
             )
-        except BaseException as cleanup_error:  # noqa: BLE001
+
+        cleanup_error = await _capture_cleanup_error(restore_measurement)
+        if cleanup_error is not None:
             # The setup exception remains authoritative. Local restore runs
             # before either remote observer, so even a broken best-effort
             # cleanup cannot keep household output admission closed.
@@ -3041,6 +3079,8 @@ class WakeLoop:
                 err=str(cleanup_error),
                 level=logging.ERROR,
             )
+        else:
+            deferred_cancel |= restore_deferred_cancel
         return deferred_cancel
 
     async def _restore_measurement_owned(
@@ -3404,18 +3444,23 @@ class WakeLoop:
                 level=logging.WARNING,
             )
             return
-        try:
+        async def finish_step() -> None:
             async with asyncio.timeout(remaining):
                 await operation
-        except Exception as exc:  # noqa: BLE001 - rollback is local-first
-            log_event(
-                logger,
-                event,
-                trigger=trigger,
-                exc_type=type(exc).__name__,
-                err=str(exc),
-                level=logging.WARNING,
-            )
+
+        error = await _capture_cleanup_error(finish_step)
+        if error is None:
+            return
+        if not isinstance(error, Exception):
+            raise error
+        log_event(
+            logger,
+            event,
+            trigger=trigger,
+            exc_type=type(error).__name__,
+            err=str(error),
+            level=logging.WARNING,
+        )
 
     def _set_measurement_active_local(self, active: bool, *, trigger: str) -> None:
         """Update the hot-path gate synchronously inside transition ownership."""
@@ -5035,6 +5080,7 @@ class WakeLoop:
         text_context: str | None = None,
         listening_feedback: bool = False,
     ) -> None:
+        completed = False
         try:
             if listening_feedback:
                 # Prime the TTS IPC owner's loudness context before the chirp
@@ -5054,25 +5100,26 @@ class WakeLoop:
                 pre_roll=pre_roll,
                 text_context=text_context,
             )
-        except BaseException:  # noqa: BLE001
-            try:
-                await self._await_output_cleanup_owned(
-                    self._cleanup_after_failed_begin(),
-                    task_name="turn-begin-cleanup",
+            completed = True
+        finally:
+            if not completed:
+                cleanup_error = await _capture_cleanup_error(
+                    lambda: self._await_output_cleanup_owned(
+                        self._cleanup_after_failed_begin(),
+                        task_name="turn-begin-cleanup",
+                    ),
                 )
-            except asyncio.CancelledError:
-                # Repeated cancellation is deferred until the owned cleanup
-                # finishes. The original begin failure remains authoritative.
-                pass
-            except BaseException as cleanup_error:  # noqa: BLE001
-                log_event(
-                    logger,
-                    "turn.begin_cleanup_failed",
-                    level=logging.ERROR,
-                    exc_type=type(cleanup_error).__name__,
-                    err=str(cleanup_error),
-                )
-            raise
+                if cleanup_error is not None and not isinstance(
+                    cleanup_error,
+                    asyncio.CancelledError,
+                ):
+                    log_event(
+                        logger,
+                        "turn.begin_cleanup_failed",
+                        level=logging.ERROR,
+                        exc_type=type(cleanup_error).__name__,
+                        err=str(cleanup_error),
+                    )
 
     async def _begin_turn_inner(
         self,
@@ -5297,38 +5344,28 @@ class WakeLoop:
                 # authoritative.
                 first_base_error = error
 
-        async def run_async_phase(
-            phase: str,
-            operation: Awaitable[object],
-        ) -> None:
-            try:
-                await operation
-            except BaseException as error:  # noqa: BLE001
-                record_failure(phase, error)
-
-        def run_sync_phase(
+        async def run_phase(
             phase: str,
             operation: Callable[[], object],
         ) -> None:
-            try:
-                operation()
-            except BaseException as error:  # noqa: BLE001
+            error = await _capture_cleanup_error(operation)
+            if error is not None:
                 record_failure(phase, error)
 
         turn = self._turn
         session_id = self._session_id
         episode = self._turn_output_episode
         if turn is not None:
-            await run_async_phase("turn_release", turn.release())
-        await run_async_phase("duck_restore", self._ducker.restore())
-        run_sync_phase(
+            await run_phase("turn_release", turn.release)
+        await run_phase("duck_restore", self._ducker.restore)
+        await run_phase(
             "volume_session",
             lambda: self._volume_coordinator.note_voice_session(False),
         )
-        run_sync_phase("content_resume", self._content_activity.resume)
-        await run_async_phase("content_meter_resume", self._tts.resume_content_meter())
+        await run_phase("content_resume", self._content_activity.resume)
+        await run_phase("content_meter_resume", self._tts.resume_content_meter)
         if session_id is not None:
-            run_sync_phase(
+            await run_phase(
                 "usage_session_close",
                 lambda: self._usage_store.close_session(session_id, 0, 0),
             )
@@ -5342,8 +5379,8 @@ class WakeLoop:
             self._acquiring = False
             self._state = State.WAKE
 
-        run_sync_phase("local_state_reset", reset_local_state)
-        run_sync_phase(
+        await run_phase("local_state_reset", reset_local_state)
+        await run_phase(
             "refractory_reset",
             lambda: setattr(
                 self,
@@ -5351,7 +5388,10 @@ class WakeLoop:
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
             ),
         )
-        await run_async_phase("output_episode_release", self._output_gate.end_turn(episode))
+        await run_phase(
+            "output_episode_release",
+            lambda: self._output_gate.end_turn(episode),
+        )
         self._turn_output_episode = None
 
         if first_base_error is not None:
