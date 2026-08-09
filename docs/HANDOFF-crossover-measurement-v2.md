@@ -2282,12 +2282,12 @@ owner `correction_crossover_v2._post_apply_grade` classifies from the candidate
 fingerprint, comparison completeness, baseline/selected scores, existing
 material-improvement margin, tracking, and independent absolute claim; it neither creates a second state machine nor alters the audition transaction.
 
-| Complete comparative proof | Tracking | Absolute | Outcome |
+| Comparative / terminal proof | Tracking | Absolute | Outcome |
 |---|---|---|---|
 | authorized selection | pass | pass | `verified_target` |
 | authorized material improvement | pass | fail | `verified_best_evaluated` |
-| complete, but no material improvement, regression, unapplied alternative, or tracking failure | any | any | `keep_previous` |
-| incomplete or unevaluable | any | any | `inconclusive` |
+| tracking failure/regression, or complete no-improvement/unapplied alternative | fail/any | any | `keep_previous` |
+| incomplete or unevaluable without definitive keep evidence above | any | any | `inconclusive` |
 
 `verified_best_evaluated` means only the best measured option in the completed comparison.
 The target remains visibly failed with miss magnitude/frequency; the copy never says within spec, perfect, or best achievable. Tracking error

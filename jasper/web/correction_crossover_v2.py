@@ -1813,17 +1813,21 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         TIER_EXPRESS,
         TIER_FULL,
     )
-    from jasper.active_speaker.fc_selector import SELECTION_RECOMMEND
+    from jasper.active_speaker.fc_selector import SELECTION_KEEP_CONFIGURED, SELECTION_RECOMMEND
+
+    fc = block.get("fc_selection")
+    fc = fc if isinstance(fc, Mapping) else {}
+    fc_verdict = str(fc.get("verdict") or "")
+    comparison_complete = fc.get("comparison_complete") is True
 
     if not block.get("applied"):
         failure = block.get("failure")
+        keep_previous = (
+            isinstance(failure, Mapping)
+            and failure.get("code") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+        ) or (comparison_complete and fc_verdict == SELECTION_RECOMMEND)
         return {
-            "outcome": (
-                RESULT_KEEP_PREVIOUS
-                if isinstance(failure, Mapping)
-                and failure.get("code") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-                else RESULT_INCONCLUSIVE
-            ),
+            **({"outcome": RESULT_KEEP_PREVIOUS if keep_previous else RESULT_INCONCLUSIVE} if keep_previous or fc else {}),
             "state": GRADE_NOT_APPLIED,
             "graded": True,
             "verify_outcome": None,
@@ -1845,8 +1849,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     absolute = absolute if isinstance(absolute, Mapping) else {}
     tracking_status = str(integration.get("status") or "")
     absolute_status = str(absolute.get("status") or "")
-    fc = block.get("fc_selection")
-    fc = fc if isinstance(fc, Mapping) else {}
     configured_hz = _finite(fc.get("configured_hz"))
     scores = fc.get("scores")
     baseline_score = None
@@ -1866,12 +1868,12 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     candidate = candidate if isinstance(candidate, Mapping) else {}
     improvement_db = _finite(comparison.get("improvement_db"))
     required_db = _finite(comparison.get("required_db"))
-    comparison_complete = fc.get("comparison_complete") is True
+    absolute_miss_db, absolute_worst_hz = _finite(absolute.get("max_db")), _finite(absolute.get("worst_hz"))
+    result_evidence = bool(fc or comparison or integration or absolute)
     authorized_winner = (
         bool(str(candidate.get("fingerprint") or ""))
-        and comparison_complete
         and baseline_score is not None
-        and str(fc.get("verdict") or "") != SELECTION_RECOMMEND
+        and fc_verdict == SELECTION_KEEP_CONFIGURED
     )
     material_improvement = (
         str(comparison.get("reason") or "") == "improved"
@@ -1882,33 +1884,35 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         )
         and improvement_db >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
     )
-    legacy_absolute_only_fail = (
+    verify_regressed = (
         outcome == "fail"
-        and str(verify.get("code") or "") == REASON_VERIFY_CROSSOVER_REGION
+        and str(verify.get("code") or "") != REASON_VERIFY_CROSSOVER_REGION
         if isinstance(verify, Mapping) else False
     )
-    if outcome == "inconclusive" or tracking_status not in {CLAIM_PASS, CLAIM_FAIL}:
-        result_outcome = RESULT_INCONCLUSIVE
-    elif tracking_status == CLAIM_FAIL or (
-        outcome == "fail" and not legacy_absolute_only_fail
+    no_material_improvement = (
+        str(comparison.get("reason") or "") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+        or improvement_db is not None
+        and improvement_db < PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+    )
+    if tracking_status == CLAIM_FAIL or verify_regressed or no_material_improvement:
+        result_outcome = RESULT_KEEP_PREVIOUS
+    elif (
+        outcome == "inconclusive"
+        or tracking_status not in {CLAIM_PASS, CLAIM_FAIL}
+        or not comparison_complete
     ):
+        result_outcome = RESULT_INCONCLUSIVE
+    elif fc_verdict == SELECTION_RECOMMEND:
         result_outcome = RESULT_KEEP_PREVIOUS
-    elif str(fc.get("verdict") or "") == SELECTION_RECOMMEND:
-        result_outcome = RESULT_KEEP_PREVIOUS
-    elif not authorized_winner or absolute_status not in {CLAIM_PASS, CLAIM_FAIL}:
+    elif (
+        not authorized_winner or outcome != "pass"
+        or absolute_status not in {CLAIM_PASS, CLAIM_FAIL}
+    ):
         result_outcome = RESULT_INCONCLUSIVE
     elif absolute_status == CLAIM_PASS:
         result_outcome = RESULT_VERIFIED_TARGET
-    elif material_improvement:
+    elif material_improvement and None not in (absolute_miss_db, absolute_worst_hz):
         result_outcome = RESULT_VERIFIED_BEST_EVALUATED
-    elif (
-        str(comparison.get("reason") or "") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-        or (
-            improvement_db is not None
-            and improvement_db < PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
-        )
-    ):
-        result_outcome = RESULT_KEEP_PREVIOUS
     else:
         result_outcome = RESULT_INCONCLUSIVE
     cloud = block.get("cloud")
@@ -1953,7 +1957,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     flatness = post_apply.get("flatness") if isinstance(post_apply, Mapping) else None
     flatness = flatness if isinstance(flatness, Mapping) else {}
     return {
-        "outcome": result_outcome,
+        **({"outcome": result_outcome} if result_evidence else {}),
         "state": state,
         "graded": state in {GRADE_GRADED, GRADE_MARK_VERIFIED},
         "verify_outcome": outcome or None,
@@ -1973,16 +1977,10 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         "complete": complete,
         "comparison_complete": comparison_complete,
         "improvement_db": improvement_db,
-        "tracking_passed": (
-            True if tracking_status == CLAIM_PASS
-            else False if tracking_status == CLAIM_FAIL else None
-        ),
-        "absolute_passed": (
-            True if absolute_status == CLAIM_PASS
-            else False if absolute_status == CLAIM_FAIL else None
-        ),
-        "absolute_miss_db": _finite(absolute.get("max_db")),
-        "absolute_worst_hz": _finite(absolute.get("worst_hz")),
+        "tracking_passed": True if tracking_status == CLAIM_PASS else False if tracking_status == CLAIM_FAIL else None,
+        "absolute_passed": True if absolute_status == CLAIM_PASS else False if absolute_status == CLAIM_FAIL else None,
+        "absolute_miss_db": absolute_miss_db,
+        "absolute_worst_hz": absolute_worst_hz,
         "candidate_fingerprint": str(candidate.get("fingerprint") or "") or None,
     }
 
@@ -2908,21 +2906,31 @@ def persist_conductor_state(
         if prior.get("session_id") == snap.session_id
         else None
     )
+    prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
+    prior_outcome = (
+        str(prior_grade.get("outcome") or "")
+        if isinstance(prior_grade, Mapping)
+        and prior.get("session_id") == snap.session_id else ""
+    )
     save_v2_state(state)
     from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
 
-    if _phase_from_state(state) == PHASE_DONE and _phase_from_state(prior) != PHASE_DONE:
-        grade = (crossover_v2_status_block() or {})["post_apply_grade"]
+    grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
+    grade = grade if isinstance(grade, Mapping) else {}
+    if (
+        _phase_from_state(state) == PHASE_DONE
+        and _phase_from_state(prior) != PHASE_DONE
+    ) or (
+        grade.get("outcome") == RESULT_KEEP_PREVIOUS
+        and prior_outcome != RESULT_KEEP_PREVIOUS
+    ):
         log_event(
             logger, "correction.crossover_v2_result_classified",
-            session_id=snap.session_id, outcome=grade["outcome"],
-            comparison_complete=grade["comparison_complete"],
-            improvement_db=grade["improvement_db"],
-            tracking_passed=grade["tracking_passed"],
-            absolute_passed=grade["absolute_passed"],
-            absolute_miss_db=grade["absolute_miss_db"],
-            absolute_worst_hz=grade["absolute_worst_hz"],
-            candidate_fingerprint=grade["candidate_fingerprint"],
+            session_id=snap.session_id, outcome=grade.get("outcome") or RESULT_INCONCLUSIVE,
+            comparison_complete=grade.get("comparison_complete"), improvement_db=grade.get("improvement_db"),
+            tracking_passed=grade.get("tracking_passed"), absolute_passed=grade.get("absolute_passed"),
+            absolute_miss_db=grade.get("absolute_miss_db"), absolute_worst_hz=grade.get("absolute_worst_hz"),
+            candidate_fingerprint=grade.get("candidate_fingerprint"),
         )
 
 

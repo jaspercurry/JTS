@@ -1743,8 +1743,7 @@ def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
 )
 def test_terminal_outcome_household_copy(outcome, copy, badge):
     env = build_crossover_envelope_v2(_status(
-        phase="done", applied=True, fc_selection={"comparison_complete": True},
-        verify={"outcome": "pass"},
+        phase="done", applied=True, verify={"outcome": "pass"},
         post_apply_grade={"outcome": outcome, "graded": True},
     ))
     assert copy in env["verdict_text"]

@@ -4029,7 +4029,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
-def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
+def test_a_refused_correction_still_reaches_the_wire_with_its_verdict(caplog):
     """The 4th reachable ``prediction`` state: report present, curve absent.
 
     The verdict is stashed BEFORE the improvement gate runs, while
@@ -4067,9 +4067,14 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
     # The speaker was left untouched — no candidate, no persisted curve.
     assert conductor.candidate is None
     assert conductor.measure_predicted_sum is None
-    v2host.persist_conductor_state(
-        conductor, failure_code="correction_not_an_improvement",
-    )
+    with caplog.at_level(logging.INFO, logger=v2host.__name__):
+        v2host.persist_conductor_state(
+            conductor, failure_code="correction_not_an_improvement",
+        )
+        v2host.persist_conductor_state(
+            conductor, failure_code="correction_not_an_improvement",
+        )
+        v2host.crossover_v2_status_block()
     priors = v2host.load_v2_state()["verify_priors"]
     assert priors["predicted_sum"] is None
     assert priors["predicted_spec"] is not None
@@ -4083,6 +4088,8 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
     assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
         "keep_previous"
     )
+    assert caplog.text.count("event=correction.crossover_v2_result_classified") == 1
+    assert "outcome=keep_previous" in caplog.text
 
 
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
@@ -4461,7 +4468,8 @@ def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None):
 
 def _honest_result_state(
     *, tracking="pass", absolute="fail", complete=True, improvement=0.8,
-    verdict="keep_configured", baseline=True,
+    verdict="keep_configured", baseline=True, applied=True,
+    verify_outcome=None, absolute_evidence=True,
 ):
     scores = (
         [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}]
@@ -4476,8 +4484,12 @@ def _honest_result_state(
         if absolute != "not_evaluated"
         else {"status": "not_evaluated", "reason": "no_trusted_region"}
     )
+    if not absolute_evidence:
+        absolute_claim = {"status": absolute}
+    stage1 = [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE]
     return {
-        "session_id": "cap_p04", "tier": "express", "applied": True,
+        "session_id": "cap_p04", "tier": "express", "applied": applied,
+        "session_phases": stage1, "accepted_phases": stage1,
         "candidate": {"fingerprint": "fp-p04"},
         "fc_selection": {
             "verdict": verdict, "configured_hz": 2000.0,
@@ -4485,7 +4497,7 @@ def _honest_result_state(
             "comparison_complete": complete, "scores": scores,
         },
         "verify": {
-            "outcome": "fail" if tracking == "fail" else "pass",
+            "outcome": verify_outcome or ("fail" if tracking == "fail" else "pass"),
             "claims": {
                 "integration": {
                     "status": tracking, "max_db": 1.398262557,
@@ -4516,16 +4528,29 @@ def _honest_result_state(
         ({"tracking": "fail"}, "keep_previous"),
         ({"improvement": 0.1}, "keep_previous"),
         ({"verdict": "recommend_alternative"}, "keep_previous"),
+        ({"verdict": "recommend_alternative", "complete": False}, "inconclusive"),
+        ({"tracking": "fail", "complete": False}, "keep_previous"),
+        ({"improvement": 0.1, "complete": False}, "keep_previous"),
         ({"complete": False}, "inconclusive"),
         ({"absolute": "not_evaluated"}, "inconclusive"),
         ({"baseline": False}, "inconclusive"),
+        ({"verdict": "future"}, "inconclusive"),
+        ({"verdict": None}, "inconclusive"),
+        ({"verify_outcome": "future"}, "inconclusive"),
+        ({"absolute_evidence": False}, "inconclusive"),
+        ({"applied": False, "verdict": "recommend_alternative"}, "keep_previous"),
+        ({"applied": False, "verdict": "recommend_alternative", "complete": False}, "inconclusive"),
     ),
 )
 def test_honest_result_truth_table(changes, expected):
     v2host.save_v2_state(_honest_result_state(**changes))
-    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    block = v2host.crossover_v2_status_block()
+    grade = block["post_apply_grade"]
     assert grade["outcome"] == expected
-    assert grade["candidate_fingerprint"] == "fp-p04"
+    if changes.get("applied", True):
+        assert grade["candidate_fingerprint"] == "fp-p04"
+    else:
+        assert block["phase"] == "review"
     if expected == "verified_best_evaluated":
         assert grade["tracking_passed"] is True
         assert grade["absolute_passed"] is False
@@ -4570,6 +4595,21 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
     assert "absolute_miss_db=4.3139" in lines[0]
     assert "absolute_worst_hz=1590.4083" in lines[0]
     assert "candidate_fingerprint=fp-p04" in lines[0]
+
+
+def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplog):
+    conductor = _StubConductor("cap_malformed")
+    conductor.snapshot = lambda: SimpleNamespace(
+        session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
+        session_phases=(PHASE_VERIFY,), tier="", applied=True,
+        gain_plan_db=None, candidate_fingerprint=None, cloud_close="",
+    )
+    monkeypatch.setattr(
+        v2host, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
+    )
+    with caplog.at_level(logging.INFO, logger=v2host.__name__):
+        v2host.persist_conductor_state(conductor, failure_code=None)
+    assert "outcome=inconclusive" in caplog.text
 
 
 _NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None

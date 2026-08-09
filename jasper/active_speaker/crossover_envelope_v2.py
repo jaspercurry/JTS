@@ -1534,11 +1534,7 @@ def _done_nudges(
     }
     if result_outcome in result_badges:
         severity, text = result_badges[result_outcome]
-        return [{
-            "code": f"crossover_v2_{result_outcome}",
-            "severity": severity,
-            "text": text,
-        }]
+        return [{"code": f"crossover_v2_{result_outcome}", "severity": severity, "text": text}]
     if verify.get("outcome") != "pass":
         return []
     nudges: list[dict[str, str]] = [
@@ -3099,21 +3095,19 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "undo if it sounds worse than before."
             )
         result_outcome = str(grade.get("outcome") or "")
-        if isinstance(v2.get("fc_selection"), Mapping):
+        if result_outcome in {"verified_target", "verified_best_evaluated", "keep_previous", "inconclusive"}:
             result_copy = {
                 "verified_target": (
-                    "The measured result reached the target and matched its "
-                    "prediction. If it sounds worse than before, you can undo."
+                    "The measured result reached the target and matched its prediction. "
+                    "If it sounds worse than before, you can undo."
                 ),
                 "keep_previous": (
-                    "This result should not replace the previous sound. This "
-                    "report changed nothing automatically; use Undo if this "
-                    "audition is still applied."
+                    "This result should not replace the previous sound. This report changed "
+                    "nothing automatically; use Undo if this audition is still applied."
                 ),
                 "inconclusive": (
-                    "There is not enough complete evidence to grade this result. "
-                    "Valid saved measurements are kept; this report changed "
-                    "nothing automatically."
+                    "There is not enough complete evidence to grade this result. Valid saved "
+                    "measurements are kept; this report changed nothing automatically."
                 ),
             }.get(result_outcome)
             if result_copy:
@@ -3126,10 +3120,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     if miss is not None else ""
                 )
                 done_verdict = (
-                    "This is the best measured option from the complete "
-                    "comparison, and it matched its prediction, but it still "
-                    f"misses the target{miss_text}. If it sounds worse than "
-                    "before, you can undo."
+                    "This is the best measured option from the complete comparison, and it "
+                    f"matched its prediction, but it still misses the target{miss_text}. "
+                    "If it sounds worse than before, you can undo."
                 )
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
@@ -3173,7 +3166,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             nudges=(
                 _done_nudges(
                     verify, spec_passed=spec_passed,
-                    result_outcome=result_outcome if v2.get("fc_selection") else "",
+                    result_outcome=result_outcome,
                 )
                 + _ripple_reservation_nudges(status)
             ),
