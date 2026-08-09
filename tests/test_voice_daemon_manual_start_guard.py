@@ -98,7 +98,9 @@ async def test_manual_start_refused_when_measurement_active(caplog):
 async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     """A failed begin that released its episode is not cleaned twice."""
 
-    wl = _make_wake_loop()
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
     cleanup_calls = 0
     cleanup_method = type(wl)._cleanup_after_failed_begin
 
@@ -110,8 +112,7 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     async def noop_prepare() -> None:
         return None
 
-    async def failed_begin(**_kwargs) -> None:
-        await counted_cleanup()
+    async def failed_inner(**_kwargs) -> None:
         raise RuntimeError("begin failed after owned cleanup")
 
     def discard_task(coro, **_kwargs):
@@ -120,7 +121,7 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
 
     wl._cleanup_after_failed_begin = counted_cleanup
     wl._prepare_assistant_loudness_context = noop_prepare
-    wl._begin_turn = failed_begin
+    wl._begin_turn_inner = failed_inner
     wl._create_fire_and_forget_task = discard_task
 
     assert await wl.manual_session_start() == "ERROR"
@@ -129,12 +130,14 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     assert not wl._output_gate.is_active
 
 
-async def test_manual_start_cleans_episode_when_failure_precedes_begin():
-    """The caller retains cleanup ownership until begin actually starts."""
+async def test_manual_start_cleans_prefix_failure_before_turn_inner():
+    """An ordinary loudness-prefix failure is centrally cleaned exactly once."""
 
-    wl = _make_wake_loop()
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
     cleanup_calls = 0
-    begin = _SpyCalls()
+    inner = _SpyCalls()
     cleanup_method = type(wl)._cleanup_after_failed_begin
 
     async def counted_cleanup() -> None:
@@ -147,10 +150,10 @@ async def test_manual_start_cleans_episode_when_failure_precedes_begin():
 
     wl._cleanup_after_failed_begin = counted_cleanup
     wl._prepare_assistant_loudness_context = fail_prepare
-    wl._begin_turn = begin
+    wl._begin_turn_inner = inner
 
     assert await wl.manual_session_start() == "ERROR"
-    assert begin.called is False
+    assert inner.called is False
     assert cleanup_calls == 1
     assert wl._turn_output_episode is None
     assert not wl._output_gate.is_active
@@ -225,17 +228,10 @@ async def test_manual_start_begins_turn_when_unguarded():
     wl = _make_wake_loop()
 
     result = await wl.manual_session_start()
-    # The listening chirp is fire-and-forget (create_task); drain
-    # pending tasks so it runs and doesn't leak a never-awaited coro.
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {}
-    assert wl._prepare_assistant_loudness_context.called is True
-    assert wl._play_listening_chirp.called is True
+    assert wl._begin_turn.kwargs == {"listening_feedback": True}
 
 
 async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
@@ -256,13 +252,13 @@ async def test_manual_start_source_uses_source_audio_without_primary_preroll():
     wl._manual_mics = {"wiim_remote_2": object()}
 
     result = await wl.manual_session_start("wiim_remote_2")
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {"pre_roll": False}
+    assert wl._begin_turn.kwargs == {
+        "pre_roll": False,
+        "listening_feedback": True,
+    }
     assert wl._active_manual_source == "wiim_remote_2"
     assert wl._acquiring is False
 
@@ -393,14 +389,14 @@ async def test_ptt_only_speaker_still_serves_a_named_source():
     wl = _ptt_only_wake_loop()
 
     result = await wl.manual_session_start("wiim_remote_2")
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._cues.played == []
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {"pre_roll": False}
+    assert wl._begin_turn.kwargs == {
+        "pre_roll": False,
+        "listening_feedback": True,
+    }
     assert wl._active_manual_source == "wiim_remote_2"
 
 

@@ -4028,22 +4028,9 @@ class WakeLoop:
 
             # Step 3: existing chirp + acquire + drain flow.
             #
-            # Prime the TTS IPC owner's loudness context before the chirp as well
-            # as before assistant TTS. The chirp is fire-and-forget
-            # below, so waiting for _begin_turn's prepare would race it
-            # back onto the no-context fallback.
-            await self._begin_turn_output_episode()
-            await self._prepare_assistant_loudness_context()
-            # "Now listening" chirp. Fire-and-forget so it plays in
-            # parallel with `_begin_turn` opening rather than adding
-            # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
-            # any done task in that set is a turn-completion signal.
-            self._create_fire_and_forget_task(
-                self._play_listening_chirp(going_on=True),
-                name="listening-chirp-on",
-            )
-
-            await self._begin_turn()  # ends with state = SESSION
+            await self._begin_turn(
+                listening_feedback=True,
+            )  # ends with state = SESSION
             await self._telemetry_stage("turn_opened")
             # Notify peering that we've opened a session (winner-only
             # heartbeat starts firing). Fire-and-forget — voice's own
@@ -4866,16 +4853,13 @@ class WakeLoop:
             self._acquiring = True
             self._acquire_buffer.clear()
         try:
-            await self._begin_turn_output_episode()
-            await self._prepare_assistant_loudness_context()
-            self._create_fire_and_forget_task(
-                self._play_listening_chirp(going_on=True),
-                name="listening-chirp-on",
-            )
             if source:
-                await self._begin_turn(pre_roll=False)
+                await self._begin_turn(
+                    pre_roll=False,
+                    listening_feedback=True,
+                )
             else:
-                await self._begin_turn()
+                await self._begin_turn(listening_feedback=True)
             if source:
                 drained, speech_in_acquire = await self._drain_acquire_audio()
                 if drained:
@@ -5049,8 +5033,23 @@ class WakeLoop:
         *,
         pre_roll: bool = True,
         text_context: str | None = None,
+        listening_feedback: bool = False,
     ) -> None:
         try:
+            if listening_feedback:
+                # Prime the TTS IPC owner's loudness context before the chirp
+                # as well as before assistant TTS. The chirp is fire-and-forget,
+                # so waiting for the inner turn prepare would race it back onto
+                # the no-context fallback.
+                await self._begin_turn_output_episode()
+                await self._prepare_assistant_loudness_context()
+                # Fire-and-forget so the "Now listening" chirp overlaps turn
+                # opening instead of adding ~70 ms to time-to-listen. It is not
+                # a response task: any completed `_bg_tasks` member ends a turn.
+                self._create_fire_and_forget_task(
+                    self._play_listening_chirp(going_on=True),
+                    name="listening-chirp-on",
+                )
             await self._begin_turn_inner(
                 pre_roll=pre_roll,
                 text_context=text_context,
@@ -5278,18 +5277,63 @@ class WakeLoop:
         self._turn_output_episode = await self._output_gate.begin_turn()
 
     async def _cleanup_after_failed_begin(self) -> None:
-        try:
-            if self._turn is not None:
-                try:
-                    await self._turn.release()
-                except Exception:  # noqa: BLE001
-                    pass
-            await self._ducker.restore()
-            self._volume_coordinator.note_voice_session(False)
-            self._content_activity.resume()
-            await self._tts.resume_content_meter()
-            if self._session_id is not None:
-                self._usage_store.close_session(self._session_id, 0, 0)
+        first_base_error: BaseException | None = None
+
+        def record_failure(phase: str, error: BaseException) -> None:
+            nonlocal first_base_error
+            if isinstance(error, Exception):
+                log_event(
+                    logger,
+                    "turn.begin_cleanup_phase_failed",
+                    phase=phase,
+                    exc_type=type(error).__name__,
+                    err=str(error),
+                    level=logging.WARNING,
+                )
+            elif first_base_error is None:
+                # Cancellation and other non-ordinary failures must not skip
+                # later cleanup. Re-raise the first one only after every phase
+                # has run; the outer owner keeps the original begin failure
+                # authoritative.
+                first_base_error = error
+
+        async def run_async_phase(
+            phase: str,
+            operation: Awaitable[object],
+        ) -> None:
+            try:
+                await operation
+            except BaseException as error:  # noqa: BLE001
+                record_failure(phase, error)
+
+        def run_sync_phase(
+            phase: str,
+            operation: Callable[[], object],
+        ) -> None:
+            try:
+                operation()
+            except BaseException as error:  # noqa: BLE001
+                record_failure(phase, error)
+
+        turn = self._turn
+        session_id = self._session_id
+        episode = self._turn_output_episode
+        if turn is not None:
+            await run_async_phase("turn_release", turn.release())
+        await run_async_phase("duck_restore", self._ducker.restore())
+        run_sync_phase(
+            "volume_session",
+            lambda: self._volume_coordinator.note_voice_session(False),
+        )
+        run_sync_phase("content_resume", self._content_activity.resume)
+        await run_async_phase("content_meter_resume", self._tts.resume_content_meter())
+        if session_id is not None:
+            run_sync_phase(
+                "usage_session_close",
+                lambda: self._usage_store.close_session(session_id, 0, 0),
+            )
+
+        def reset_local_state() -> None:
             self._turn = None
             self._session_id = None
             self._bg_tasks = set()
@@ -5297,12 +5341,21 @@ class WakeLoop:
             self._active_manual_source = None
             self._acquiring = False
             self._state = State.WAKE
-            self._refractory_until = (
-                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
-            )
-        finally:
-            await self._output_gate.end_turn(self._turn_output_episode)
-            self._turn_output_episode = None
+
+        run_sync_phase("local_state_reset", reset_local_state)
+        run_sync_phase(
+            "refractory_reset",
+            lambda: setattr(
+                self,
+                "_refractory_until",
+                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
+            ),
+        )
+        await run_async_phase("output_episode_release", self._output_gate.end_turn(episode))
+        self._turn_output_episode = None
+
+        if first_base_error is not None:
+            raise first_base_error
 
     async def _end_turn(self, reason: str = "ended") -> None:
         # Re-entrancy guard. The teardown (_end_turn_inner) runs many

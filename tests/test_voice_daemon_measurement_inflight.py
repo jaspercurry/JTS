@@ -1433,6 +1433,314 @@ async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
     assert wl._turn_output_episode is None
 
 
+@pytest.mark.parametrize("path", ["wake", "manual"])
+async def test_cancelled_listening_feedback_prepare_owns_cleanup(
+    monkeypatch,
+    path: str,
+) -> None:
+    """Wake and manual prefixes retain their episode through repeated cancel."""
+
+    prepare_started = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+
+    class _HeldRestoreDucker:
+        is_ducked = False
+
+        def __init__(self) -> None:
+            self.restore_calls = 0
+
+        async def duck(self) -> None:
+            raise AssertionError("turn inner must not start")
+
+        async def restore(self) -> None:
+            self.restore_calls += 1
+            restore_started.set()
+            await release_restore.wait()
+
+    class _Tts:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+
+    class _ContentActivity:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        def resume(self) -> None:
+            self.resume_calls += 1
+
+    class _Volume:
+        def __init__(self) -> None:
+            self.session_calls: list[bool] = []
+
+        def note_voice_session(self, active: bool, **_kwargs) -> None:
+            self.session_calls.append(active)
+
+    async def held_prepare() -> None:
+        prepare_started.set()
+        await asyncio.Event().wait()
+
+    ducker = _HeldRestoreDucker()
+    tts = _Tts()
+    content = _ContentActivity()
+    volume = _Volume()
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._ducker = ducker
+    wl._tts = tts
+    wl._content_activity = content
+    wl._volume_coordinator = volume
+    wl._output_gate = gate
+    monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", held_prepare)
+    cleanup_calls = 0
+    real_cleanup = wl._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await real_cleanup()
+
+    monkeypatch.setattr(wl, "_cleanup_after_failed_begin", counted_cleanup)
+
+    if path == "wake":
+        async def win_arbitration(**_kwargs) -> str:
+            return "WIN"
+
+        wl._wake_late_cancelled = lambda *_args: False
+        wl._peer_arbitrate = win_arbitration
+        wl._acquiring = True
+        beginning = asyncio.create_task(
+            wl._arbitrate_acquire_drain(
+                score=0.9,
+                rms_dbfs=-30.0,
+                spend_allowed=True,
+                conn_paused=False,
+                can_serve=True,
+            )
+        )
+    else:
+        beginning = asyncio.create_task(wl.manual_session_start())
+
+    await wait_signalled(
+        prepare_started,
+        f"{path} listening-feedback loudness preparation",
+        producer=beginning,
+    )
+    assert gate.active_kind == "turn"
+
+    beginning.cancel("original prefix cancellation")
+    await wait_signalled(
+        restore_started,
+        f"{path} failed-begin restore",
+        producer=beginning,
+    )
+    assert gate.active_kind == "turn"
+
+    beginning.cancel("repeat cleanup cancellation")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not beginning.done()
+    assert gate.active_kind == "turn"
+
+    release_restore.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await beginning
+
+    assert caught.value.args == ("original prefix cancellation",)
+    assert beginning.cancelled()
+    assert cleanup_calls == 1
+    assert ducker.restore_calls == 1
+    assert tts.resume_calls == 1
+    assert content.resume_calls == 1
+    assert volume.session_calls == [False]
+    assert gate.end_calls == 1
+    assert not gate.is_active
+    assert wl._turn_output_episode is None
+    assert wl._turn is None
+    assert wl._session_id is None
+    assert wl._bg_tasks == set()
+    assert wl._state is State.WAKE
+    assert wl._acquiring is False
+
+
+@pytest.mark.parametrize(
+    ("listening_feedback", "expected_events"),
+    [
+        (True, ["prepare", "chirp", "inner"]),
+        (False, ["inner"]),
+    ],
+)
+async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
+    monkeypatch,
+    listening_feedback: bool,
+    expected_events: list[str],
+) -> None:
+    """Wake/manual keep their prefix order; research-style begins add none."""
+
+    events: list[str] = []
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._output_gate = gate
+
+    async def prepare() -> None:
+        assert gate.active_kind == "turn"
+        events.append("prepare")
+
+    async def inner(**_kwargs) -> None:
+        events.append("inner")
+
+    def schedule(coro, *, name: str):
+        assert name == "listening-chirp-on"
+        coro.close()
+        events.append("chirp")
+        return None
+
+    monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", prepare)
+    monkeypatch.setattr(wl, "_begin_turn_inner", inner)
+    monkeypatch.setattr(wl, "_create_fire_and_forget_task", schedule)
+
+    await wl._begin_turn(listening_feedback=listening_feedback)
+
+    assert events == expected_events
+    assert gate.is_active is listening_feedback
+    if wl._turn_output_episode is not None:
+        await gate.end_turn(wl._turn_output_episode)
+        wl._turn_output_episode = None
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "failed_phase"),
+    [
+        ("restore_exception", "duck_restore"),
+        ("meter_exception", "content_meter_resume"),
+        ("usage_exception", "usage_session_close"),
+        ("restore_base", None),
+    ],
+)
+async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
+    caplog,
+    failure_kind: str,
+    failed_phase: str | None,
+) -> None:
+    """No ordinary or non-ordinary cleanup failure can wedge later phases."""
+
+    class _CleanupAbort(BaseException):
+        pass
+
+    class _Turn:
+        def __init__(self) -> None:
+            self.release_calls = 0
+
+        async def release(self) -> None:
+            self.release_calls += 1
+
+    class _Ducker:
+        def __init__(self) -> None:
+            self.restore_calls = 0
+
+        async def restore(self) -> None:
+            self.restore_calls += 1
+            if failure_kind == "restore_exception":
+                raise RuntimeError("duck restore failed")
+            if failure_kind == "restore_base":
+                raise _CleanupAbort("duck restore aborted")
+
+    class _Volume:
+        def __init__(self) -> None:
+            self.session_calls: list[bool] = []
+
+        def note_voice_session(self, active: bool, **_kwargs) -> None:
+            self.session_calls.append(active)
+
+    class _ContentActivity:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        def resume(self) -> None:
+            self.resume_calls += 1
+
+    class _Tts:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+
+        async def resume_content_meter(self) -> None:
+            self.resume_calls += 1
+            if failure_kind == "meter_exception":
+                raise RuntimeError("meter resume failed")
+
+    class _UsageStore:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close_session(self, *_args) -> float:
+            self.close_calls += 1
+            if failure_kind == "usage_exception":
+                raise RuntimeError("usage close failed")
+            return 0.0
+
+    begin_error = RuntimeError("original turn begin failure")
+
+    async def failed_inner(**_kwargs) -> None:
+        raise begin_error
+
+    turn = _Turn()
+    ducker = _Ducker()
+    volume = _Volume()
+    content = _ContentActivity()
+    tts = _Tts()
+    usage = _UsageStore()
+    gate = _EndCountingGate()
+    wl = WakeLoop.for_tests()
+    wl._turn_output_episode = await gate.begin_turn()
+    wl._turn = turn
+    wl._session_id = 42
+    wl._bg_tasks = {object()}  # type: ignore[assignment]
+    wl._bg_end_scheduled = True
+    wl._active_manual_source = "test_remote"
+    wl._acquiring = True
+    wl._state = State.SESSION
+    wl._refractory_until = -1.0
+    wl._ducker = ducker
+    wl._volume_coordinator = volume
+    wl._content_activity = content
+    wl._tts = tts
+    wl._usage_store = usage
+    wl._output_gate = gate
+    wl._begin_turn_inner = failed_inner
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        with pytest.raises(RuntimeError) as caught:
+            await wl._begin_turn(pre_roll=False)
+
+    assert caught.value is begin_error
+    assert turn.release_calls == 1
+    assert ducker.restore_calls == 1
+    assert volume.session_calls == [False]
+    assert content.resume_calls == 1
+    assert tts.resume_calls == 1
+    assert usage.close_calls == 1
+    assert wl._turn is None
+    assert wl._session_id is None
+    assert wl._bg_tasks == set()
+    assert wl._bg_end_scheduled is False
+    assert wl._active_manual_source is None
+    assert wl._acquiring is False
+    assert wl._state is State.WAKE
+    assert wl._refractory_until > 0.0
+    assert wl._turn_output_episode is None
+    assert gate.end_calls == 1
+    assert not gate.is_active
+    if failed_phase is None:
+        assert "event=turn.begin_cleanup_failed" in caplog.text
+        assert "exc_type=_CleanupAbort" in caplog.text
+    else:
+        assert "event=turn.begin_cleanup_phase_failed" in caplog.text
+        assert f"phase={failed_phase}" in caplog.text
+
+
 async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
     caplog,
 ) -> None:
