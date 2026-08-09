@@ -965,6 +965,171 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
     assert env["screen"] == "session_restart"
 
 
+@pytest.mark.parametrize(
+    ("abandon_fails", "purge_fails", "fault_type"),
+    (
+        (False, False, OSError), (True, False, OSError),
+        (False, True, OSError), (False, False, CaptureTimeout),
+    ),
+)
+def test_persisted_verify_verdict_survives_stale_event_and_relay_fault(
+    monkeypatch, caplog, abandon_fails, purge_fails, fault_type,
+):
+    """Reproduce P0.3's live ordering through the real relay plan runner.
+
+    VERIFY first persists a meaningful acoustic failure (tracking passes at
+    1.398 dB; the absolute crossover claim fails), then the mutable relay slot
+    regresses to an older *validly authenticated* event, and finally transport
+    dies. Cleanup still drains/purges, but relay_timeout must not replace the
+    already-durable acoustic verdict — even when the drain itself faults.
+    """
+    from jasper.capture_relay import session as session_mod
+
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(session_mod, "STATUS_POLL_TRANSIENT_GRACE_S", 0.0)
+    backend = FakePlanRelayBackend()
+    spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING)
+
+    class _IncidentPhone(V2PhoneDriver):
+        stale_delivered = False
+        transport_failed = False
+
+        def step(self):
+            host = self.backend.sessions[self.session.session_id]["host_event"] or {}
+            key = (host.get("index"), host.get("attempt"))
+            if (
+                host.get("phase") == "capture_result"
+                and host.get("accepted") is False
+                and key == self.begun
+                and not self.stale_delivered
+            ):
+                self.reacted.add(key)
+                self.results_seen += 1
+                # The arm was sequence 2. Deliver the older, still-authentic
+                # begin slot exactly as the live relay did one second later.
+                self.backend.phone_post(
+                    self.session.session_id,
+                    {
+                        "begin_capture": {"index": 1, "attempt": 1},
+                        "capture_page": self.page,
+                    },
+                    session=self.session,
+                    sequence=1,
+                )
+                self.stale_delivered = True
+                return
+            if self.stale_delivered:
+                self.transport_failed = True
+                raise fault_type("relay delivery closed after stale slot")
+            super().step()
+
+    client, session, phone = _mint_v2_session(
+        backend, spec, driver_cls=_IncidentPhone,
+    )
+    if purge_fails:
+        def _delete_fails(*_args, **_kwargs):
+            raise OSError("relay purge failed")
+
+        monkeypatch.setattr(client, "delete", _delete_fails)
+
+    def incident_verify(program):
+        return _verify_analysis(
+            program,
+            max_db=1.3982625572605762,
+            verify_absolute={
+                "band_hz": [1000.0, 4000.0],
+                "rms_db": 2.1,
+                "max_db": 4.3139,
+                "worst_db": -4.3139,
+                "worst_hz": 1590.4083,
+                "n_bins": 16384,
+            },
+        )
+
+    conductor = _stage2_conductor(
+        backend, session, phone, analyses={"verify": incident_verify},
+    )
+
+    class _IncidentVolume(VolumeRecorder):
+        def hooks(self):
+            base = super().hooks()
+
+            async def _abandon():
+                self.events.append("abandon")
+                if abandon_fails:
+                    raise RuntimeError("volume restoration failed")
+
+            return v2host.V2VolumeHooks(
+                open=base.open, close=base.close, abandon=_abandon,
+            )
+
+    volume = _IncidentVolume()
+    with caplog.at_level(logging.INFO), pytest.raises(
+        fault_type, match="relay delivery closed"
+    ):
+        _run(_build_runner(conductor, volume), client, session)
+
+    assert phone.stale_delivered is True
+    assert phone.transport_failed is True
+    assert volume.events == ["open", "abandon"]
+    assert (session.session_id in backend.sessions) is purge_fails
+    state = v2host.load_v2_state()
+    assert state["verify"]["outcome"] == "fail"
+    assert state["verify"]["code"] == "verify_crossover_region"
+    assert _persisted_failure(state) == {"code": "verify_crossover_region"}
+    last = backend.host_events[session.session_id][-1]
+    assert (last["phase"], last["accepted"], last["code"]) == (
+        "capture_result", False, "verify_crossover_region",
+    )
+    assert "event=capture_relay.capture_event_stale_ignored" in caplog.text
+    assert "event=correction.crossover_v2_terminal_verdict_preserved" in caplog.text
+    assert "component=relay_purge" in caplog.text
+    if purge_fails:
+        assert "event=correction.crossover_v2_cleanup_failed" in caplog.text
+    if abandon_fails:
+        assert "event=correction.crossover_v2_volume_abandon_failed" in caplog.text
+        assert "component=volume_abandon" in caplog.text
+    else:
+        assert "event=correction.crossover_v2_cleanup_complete" in caplog.text
+
+
+def test_verify_pass_survives_volume_close_failure_and_still_purges(
+    caplog,
+):
+    backend = FakePlanRelayBackend()
+    spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _stage2_conductor(
+        backend, session, phone, index_phase_map={1: PHASE_VERIFY},
+    )
+
+    class _CloseFails(VolumeRecorder):
+        def hooks(self):
+            base = super().hooks()
+
+            async def _close():
+                self.events.append("close")
+                raise RuntimeError("exact volume restore failed")
+
+            return v2host.V2VolumeHooks(
+                open=base.open, close=_close, abandon=base.abandon,
+            )
+
+    volume = _CloseFails()
+    with caplog.at_level(logging.INFO):
+        _run(_build_runner(conductor, volume), client, session)
+
+    assert volume.events == ["open", "close"]
+    assert session.session_id not in backend.sessions
+    state = v2host.load_v2_state()
+    assert state["verify"]["outcome"] == "pass"
+    assert state["failure"] is None
+    assert "event=correction.crossover_v2_volume_close_failed" in caplog.text
+    assert "component=volume_close" in caplog.text
+    assert "event=correction.crossover_v2_cleanup_complete" in caplog.text
+    assert "component=relay_purge" in caplog.text
+
+
 def test_volume_open_failure_purges_the_fresh_relay_session():
     """An unconfirmed measurement volume must not leave the freshly-minted
     relay session lingering to worker TTL — it is purged before the raise."""

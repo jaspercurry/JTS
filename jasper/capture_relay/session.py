@@ -570,6 +570,7 @@ class PhoneEventVerifier:
         self._session = session
         self._sequence = 0
         self._event: dict[str, Any] | None = None
+        self._stale_logged = False
 
     def verify(self, relay_event: Any) -> dict[str, Any] | None:
         if relay_event is None:
@@ -582,13 +583,36 @@ class PhoneEventVerifier:
             self._session.session_id,
             relay_event,
         )
-        if sequence < self._sequence or (
+        if sequence < self._sequence:
+            # An authenticated older last-write-wins slot carries no new state.
+            # Log once per session while the stale slot persists.
+            if not self._stale_logged:
+                self._stale_logged = True
+                log_event(
+                    logger,
+                    "capture_relay.capture_event_stale_ignored",
+                    session_id=self._session.session_id,
+                    kind=self._session.spec.kind,
+                    stale_sequence=sequence,
+                    accepted_sequence=self._sequence,
+                )
+            return None
+        if (
             sequence == self._sequence
             and self._event is not None
             and verified != self._event
         ):
             raise CaptureIntegrityError(
-                "authenticated phone event sequence moved backwards"
+                "authenticated capture event sequence conflicts with accepted payload"
+            )
+        if sequence > self._sequence:
+            log_event(
+                logger,
+                "capture_relay.capture_event_sequence_accepted",
+                session_id=self._session.session_id,
+                kind=self._session.spec.kind,
+                previous_sequence=self._sequence,
+                current_sequence=sequence,
             )
         self._sequence = sequence
         self._event = verified
@@ -2310,10 +2334,12 @@ def _poll_capture_plan(
         sleep(poll_interval_s)
 
 
-def purge(client: RelayClient, session: PiCaptureSession) -> None:
+def purge(client: RelayClient, session: PiCaptureSession) -> bool:
     """Delete the session from the relay after a verified pull (best-effort —
-    the short TTL is the backstop)."""
+    the short TTL is the backstop). Return whether deletion completed so an
+    owning cleanup path can report the otherwise-swallowed transport fault."""
     try:
         client.delete(session.session_id, session.pull_token)
     except (OSError, RelayError):
-        pass
+        return False
+    return True

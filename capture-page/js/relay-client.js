@@ -24,6 +24,7 @@ export class RelayError extends Error {
 // cannot freeze the page's serialized meter loop. Blob uploads are intentionally
 // excluded; their bounded size and transfer time are a different contract.
 export const RELAY_CONTROL_TIMEOUT_MS = 3000;
+const EVENT_POST_TAILS = new Map();
 
 // The rejection a timed-out control request produces, carrying a MACHINE tag.
 //
@@ -58,6 +59,7 @@ export class RelayClient {
     this.transportIntegrity = null;
     this.authenticatedEventsRequired = false;
     this._eventSequence = 0;
+    this._eventSequenceStorageKey = `jts.capture.event-sequence.${sessionId}`;
     this._fetch = fetchImpl || ((...a) => globalThis.fetch(...a));
   }
 
@@ -92,6 +94,45 @@ export class RelayClient {
 
   _authHeaders(extra) {
     return { Authorization: `Bearer ${this.uploadToken}`, ...(extra || {}) };
+  }
+
+  _storedEventSequence() {
+    try {
+      const value = Number(
+        globalThis.sessionStorage?.getItem(this._eventSequenceStorageKey),
+      );
+      return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    } catch {
+      // Privacy modes may expose storage but throw on access.
+      return 0;
+    }
+  }
+
+  _nextEventSequence() {
+    // A bfcache-restored client can predate an intervening reload.
+    this._eventSequence = Math.max(
+      this._eventSequence,
+      this._storedEventSequence(),
+    ) + 1;
+    try {
+      globalThis.sessionStorage?.setItem(
+        this._eventSequenceStorageKey,
+        String(this._eventSequence),
+      );
+    } catch {}
+    return this._eventSequence;
+  }
+
+  _serializeEventPost(operation) {
+    const key = this._eventSequenceStorageKey;
+    const prior = EVENT_POST_TAILS.get(key) ?? Promise.resolve();
+    const queued = prior.then(operation, operation);
+    const tail = queued.catch(() => undefined);
+    EVENT_POST_TAILS.set(key, tail);
+    void tail.then(() => {
+      if (EVENT_POST_TAILS.get(key) === tail) EVENT_POST_TAILS.delete(key);
+    });
+    return queued;
   }
 
   async _controlFetch(
@@ -157,30 +198,31 @@ export class RelayClient {
   }
 
   // Drop a relay-control event (e.g. {armed:true}) the Pi polls for.
-  async postEvent(event, { timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
-    if (!this.capturePageIdentity) {
-      throw new Error("capture page compatibility was not established");
-    }
-    const payload = { ...event, capture_page: this.capturePageIdentity };
-    let body = payload;
-    if (this.authenticatedEventsRequired) {
-      if (!this.transportIntegrity) {
-        throw new Error("authenticated capture events are not configured");
+  postEvent(event, { timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
+    return this._serializeEventPost(async () => {
+      if (!this.capturePageIdentity) {
+        throw new Error("capture page compatibility was not established");
       }
-      this._eventSequence += 1;
-      body = await this.transportIntegrity.authenticatePhoneEvent(
-        payload,
-        this._eventSequence,
-      );
-    }
-    return this._controlFetch("/event", {
-      method: "POST",
-      headers: this._authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-    }, async (res) => {
-      if (!res.ok) throw await this._failure(res);
-      return res.json();
-    }, timeoutMs);
+      const payload = { ...event, capture_page: this.capturePageIdentity };
+      let body = payload;
+      if (this.authenticatedEventsRequired) {
+        if (!this.transportIntegrity) {
+          throw new Error("authenticated capture events are not configured");
+        }
+        body = await this.transportIntegrity.authenticatePhoneEvent(
+          payload,
+          this._nextEventSequence(),
+        );
+      }
+      return this._controlFetch("/event", {
+        method: "POST",
+        headers: this._authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      }, async (res) => {
+        if (!res.ok) throw await this._failure(res);
+        return res.json();
+      }, timeoutMs);
+    });
   }
 
   // Poll Pi-side progress for this capture. This uses the upload token, so the

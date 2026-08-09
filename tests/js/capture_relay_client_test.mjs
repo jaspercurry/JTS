@@ -116,6 +116,141 @@ async function testPostEventUsesAuthenticatedEnvelope() {
   ok();
 }
 
+async function testConcurrentAuthenticatedEventsAreSerializedAndMonotonic() {
+  const releases = [];
+  const f = mockFetch(() => new Promise((resolve) => {
+    releases.push(() => resolve(res(200, { ok: true })));
+  }));
+  const client = makeClient(f);
+  const sequences = [];
+  client.setTransportIntegrity({
+    async authenticatePhoneEvent(payload, sequence) {
+      sequences.push(sequence);
+      return {
+        authenticated_event: {
+          sequence,
+          payload: JSON.stringify(payload),
+          mac: `tag-${sequence}`,
+        },
+      };
+    },
+  }, { required: true });
+
+  const first = client.postEvent({ begin_capture: { index: 1, attempt: 1 } });
+  const second = client.postEvent({ armed: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(f.calls.length, 1, "second POST waits for the first response");
+  assert.deepEqual(sequences, [1]);
+  releases.shift()();
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(sequences, [1, 2]);
+  releases.shift()();
+  await second;
+  ok();
+}
+
+function memorySessionStorage({ unavailable = false } = {}) {
+  const values = new Map();
+  return {
+    getItem(key) {
+      if (unavailable) throw new Error("session storage unavailable");
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      if (unavailable) throw new Error("session storage unavailable");
+      values.set(key, String(value));
+    },
+  };
+}
+
+async function withSessionStorage(storage, run) {
+  const hadOwn = Object.prototype.hasOwnProperty.call(globalThis, "sessionStorage");
+  const prior = globalThis.sessionStorage;
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: storage,
+  });
+  try {
+    await run();
+  } finally {
+    if (hadOwn) {
+      Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: prior,
+      });
+    } else {
+      delete globalThis.sessionStorage;
+    }
+  }
+}
+
+async function testAuthenticatedSequenceSurvivesReloadAndBackForwardRestore() {
+  await withSessionStorage(memorySessionStorage(), async () => {
+    const seen = [];
+    const delivered = [];
+    let releaseFirst;
+    const integrity = {
+      async authenticatePhoneEvent(payload, sequence) {
+        seen.push(sequence);
+        if (sequence === 1) await new Promise((resolve) => { releaseFirst = resolve; });
+        return {
+          authenticated_event: {
+            sequence,
+            payload: JSON.stringify(payload),
+            mac: `tag-${sequence}`,
+          },
+        };
+      },
+    };
+    const f = mockFetch((_url, init) => {
+      delivered.push(JSON.parse(init.body).authenticated_event.sequence);
+      return res(200, { ok: true });
+    });
+    const first = makeClient(f);
+    first.setTransportIntegrity(integrity, { required: true });
+    const firstPost = first.postEvent({ begin_capture: { index: 1, attempt: 1 } });
+    await Promise.resolve();
+
+    const reloaded = makeClient(f);
+    reloaded.setTransportIntegrity(integrity, { required: true });
+    const secondPost = reloaded.postEvent({ armed: true });
+    await Promise.resolve();
+    assert.deepEqual(seen, [1]);
+    releaseFirst();
+    await Promise.all([firstPost, secondPost]);
+    assert.deepEqual(delivered, [1, 2]);
+
+    // A bfcache-restored older client still allocates above the shared mark.
+    await first.postEvent({ capture_integrity: { focus_lost: false } });
+    assert.deepEqual(seen, [1, 2, 3]);
+  });
+  ok();
+}
+
+async function testUnavailableSessionStorageFallsBackToInstanceCounter() {
+  await withSessionStorage(memorySessionStorage({ unavailable: true }), async () => {
+    const seen = [];
+    const client = makeClient(mockFetch(() => res(200, { ok: true })));
+    client.setTransportIntegrity({
+      async authenticatePhoneEvent(payload, sequence) {
+        seen.push(sequence);
+        return {
+          authenticated_event: {
+            sequence, payload: JSON.stringify(payload), mac: "tag",
+          },
+        };
+      },
+    }, { required: true });
+    await client.postEvent({ armed: true });
+    await client.postEvent({ aborted: true });
+    assert.deepEqual(seen, [1, 2]);
+  });
+  ok();
+}
+
 async function testFetchPhoneStatus() {
   const payload = { state: "pending", host_event: { phase: "sweep_complete" } };
   const f = mockFetch(() => res(200, payload));
@@ -327,6 +462,9 @@ const tests = [
   testFetchSpec,
   testPostEvent,
   testPostEventUsesAuthenticatedEnvelope,
+  testConcurrentAuthenticatedEventsAreSerializedAndMonotonic,
+  testAuthenticatedSequenceSurvivesReloadAndBackForwardRestore,
+  testUnavailableSessionStorageFallsBackToInstanceCounter,
   testFetchPhoneStatus,
   testControlFetchAbortsBeforePiFeedLossWindow,
   testControlFetchTimeoutAbortsWithANamedReason,
