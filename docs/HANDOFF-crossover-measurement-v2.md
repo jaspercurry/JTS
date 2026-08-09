@@ -1046,14 +1046,16 @@ together. Design rationale:
 5. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
    summed sweep through the **applied production graph** + a pilot pair,
    captured back at the mark (the apply hold's copy is where the
-   household is told to walk back). Pass = **two** claims, both of which
-   must hold (R18, #1868): notch-excluded, validity-floor-clamped tracking
-   error ≤ ±1.5 dB against the model, **and** the measured sum within the
+   household is told to walk back). VERIFY records **two independent
+   claims** (R18, #1868): notch-excluded, validity-floor-clamped tracking
+   error ≤ ±1.5 dB against the model, and the measured sum against the
    crossover region's derived tolerance of the candidate's own crossover
-   target (`verify_crossover_region` on failure). On fail the applied graph
-   **stays in force** (proof-checked safe) and the household is offered
-   Try again / Undo. See "The two absolute grades" below for which
-   instrument owns which question.
+   target. Tracking remains the proof that the applied graph realized its
+   prediction. The absolute claim feeds the terminal outcome without being
+   collapsed into a generic failed capture. The applied graph **stays in
+   force** on failure (proof-checked safe); this round adds no automatic
+   restore or cross-service mutation. See "The two absolute grades" below
+   for which instrument owns which question.
 
 6. **CLOUD-VERIFY** (5 × ~16 s, one tap each). The post-apply cloud,
    walking the same prompted positions.
@@ -2267,13 +2269,32 @@ NOT a peer of the crossover-region claim and neither was retired:
 | curve | spatial mean, post-apply cloud | one design-axis VERIFY capture |
 | reference | its own 250 Hz–8 kHz mean | the candidate's crossover transfer |
 | band | `SPEC_BANDS`, 250 Hz–16 kHz | `[Fc/2, 2Fc]` ∩ trusted |
-| gates? | no (flips the done badge) | yes, at VERIFY |
+| gates? | no (flips the done badge) | classified at the terminal result |
 
 The gauge structurally cannot own §7 claim 3: it is assembled when a position
 group CLOSES, i.e. after `_verify_verdict` has already run, and Express and the
 R15 driver-only path have no post-apply cloud at all. Its spatial mean also
 understates a design-axis null (#1868's forensics: the 8-position mean was
 shallower than any single position in it).
+
+**Terminal grading has one owner and four honest outcomes.** The durable result
+owner `correction_crossover_v2._post_apply_grade` classifies from the candidate
+fingerprint, comparison completeness, baseline/selected scores, existing
+material-improvement margin, tracking, and independent absolute claim; it neither creates a second state machine nor alters the audition transaction.
+
+| Complete comparative proof | Tracking | Absolute | Outcome |
+|---|---|---|---|
+| authorized selection | pass | pass | `verified_target` |
+| authorized material improvement | pass | fail | `verified_best_evaluated` |
+| complete, but no material improvement, regression, unapplied alternative, or tracking failure | any | any | `keep_previous` |
+| incomplete or unevaluable | any | any | `inconclusive` |
+
+`verified_best_evaluated` means only the best measured option in the completed comparison.
+The target remains visibly failed with miss magnitude/frequency; the copy never says within spec, perfect, or best achievable. Tracking error
+`1.398262557 dB <= 1.5 dB` plus a `4.3139 dB` miss near `1.590 kHz` is
+`verified_best_evaluated` only with complete proof and material improvement;
+with incomplete comparison it is `inconclusive`. These outcomes only report:
+they do not apply, undo, retry, or recapture valid stored evidence.
 
 **VERIFY discloses WHAT THE GATE DID, and the inconclusive copy speaks from
 it** (issues #1966 / #1974). A record printing `gate_window_ms = 7.0` and
@@ -3662,7 +3683,8 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-08 — P0.3 verified only "Relay sequence and terminal
+Last verified: 2026-08-08 — P0.4 re-verified the VERIFY claim and terminal grading
+sections; the four outcomes remain offline-tested with no live-Pi run. P0.3 verified only "Relay sequence and terminal
 precedence" and its page-first/Pi-second release note against the relay client,
 session verifier, and v2 cleanup/persistence seams. P0.2 re-verified only "Recommending an Fc" against
 the selector, conductor, durable summary, household copy, and capture-page wait;
