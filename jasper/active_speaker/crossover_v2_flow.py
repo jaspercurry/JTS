@@ -6139,11 +6139,13 @@ class CrossoverV2Conductor:
         last_attempt_decision: Mapping[str, Any] | None = None,
         speaker_id: str = "",
         tuning_attempt_id: str = "",
+        sound_design_revision: int | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
             raise CrossoverV2FlowError("the v2 conductor is a 2-way flow")
         self.session_id = str(session_id)
+        self.sound_design_revision = sound_design_revision
         # Which INSTRUMENT this session is running. Empty = unknown (a caller
         # that never declared one), never silently ``TIER_FULL`` — see
         # ``V2ConductorSnapshot.tier`` for why guessing is the dishonest
@@ -6223,12 +6225,9 @@ class CrossoverV2Conductor:
             dict(crossover_search_band_hz_by_role)
             if crossover_search_band_hz_by_role else {}
         )
-        # R17's retained per-candidate evidence, gathered at MEASURE-consume
-        # and adjudicated at the walk's close. Each entry is scalars plus
-        # ~120-point arrays (``FcCandidateEvaluation`` is the memory contract),
-        # so a six-candidate sweep is tens of kilobytes, not tens of megabytes.
         self._fc_evaluations: tuple[Any, ...] = ()
         self._fc_selection: Any = None
+        self._fc_selected_evaluation: Any = None
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
@@ -8570,6 +8569,11 @@ class CrossoverV2Conductor:
             captured=len(self._lateral_poses),
             mark_return_drift_db=self.lateral_mark_return_drift_db(),
         )
+        selected = self._fc_selected_evaluation
+        self._fc_selected_evaluation = None
+        if selected is not None:
+            return self._commit_fc_candidate(selected)
+        # Preserve the configured winner's established publication path.
         return self._publish_measure_candidate(analysis, None)
 
     # --- R17: the Fc candidate sweep -----------------------------------------
@@ -8713,9 +8717,19 @@ class CrossoverV2Conductor:
         # differently side by side and call the difference a crossover.
         if cand is None or not self._linearization_eligible(analysis):
             return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
-        trims, linearization = self._fit_linearization(
-            analysis, cand, None, candidate_sections=sections,
+        preset = replace(self._preset, crossover_regions=tuple(
+            replace(region,
+                    id=f"{region.lower_driver}_{region.upper_driver}_{round(fc_hz):.0f}hz",
+                    fc_hz=float(fc_hz))
+            for region in self._preset.crossover_regions))
+        self._last_linearized_predicted_sum = None
+        built = self._build_measure_candidate(
+            analysis, None, candidate_sections=sections, source_preset=preset,
         )
+        candidate = built.candidate
+        if candidate.linearization_outcome == "fit_failed":
+            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
+        trims, linearization = candidate.role_attenuations_db, candidate.linearization
         grid = lateral_evidence_grid_hz()
         tweeter_lo, woofer_hi = self._measure_sweep_bounds()
         anchor_sum = self._last_linearized_predicted_sum
@@ -8743,6 +8757,14 @@ class CrossoverV2Conductor:
                  for fit in linearization.values() if isinstance(fit, Mapping)),
                 default=0.0,
             ),
+            candidate=candidate.to_dict(),
+            predicted_sum=(np.asarray(built.predicted_sum[0]).copy(),
+                           np.asarray(built.predicted_sum[1]).copy()),
+            predicted_spec_report=(dict(self._measure_predicted_spec_report)
+                if self._measure_predicted_spec_report is not None else None),
+            commanded_delta=_commanded_delta(analysis.predicted_sum,
+                                             built.predicted_sum),
+            level_frame_finding=built.level_frame_finding,
         )
 
     def _fc_evaluation_budget_s(self) -> float:
@@ -8759,8 +8781,8 @@ class CrossoverV2Conductor:
 
         **Never raises.** A sweep that cannot run leaves the disclosure short
         and says so; no household loses a measured capture because an advisory
-        could not be computed. Nothing here writes an emitted filter — the
-        result is a recommendation the household applies by editing ``/sound``.
+        could not be computed. Nothing here writes an emitted filter; a selected
+        executable candidate waits for Sound-owned acceptance at Review.
         """
         if self._measurement_protection_sections_by_role is None:
             # No protection map means no §4.2 composition at all, so a
@@ -8876,6 +8898,12 @@ class CrossoverV2Conductor:
             limits=candidates.limits,
             planned=len(candidates.candidates),
         )
+        recommended = self._fc_selection.recommended_hz
+        if recommended is not None:
+            self._fc_selected_evaluation = next(
+                (e for e in evaluations
+                 if math.isclose(e.fc_hz, recommended, abs_tol=0.05)
+                 and e.candidate is not None), None)
         log_event(
             logger, "correction.crossover_v2_fc_selection",
             session_id=self.session_id, verdict=self._fc_selection.verdict,
@@ -8904,9 +8932,7 @@ class CrossoverV2Conductor:
     def fc_selection(self) -> FcSelection | None:
         """This session's Fc RECOMMENDATION, or ``None`` if no sweep ran.
 
-        A recommendation, never an instruction: the declared crossover in
-        ``/sound`` remains Fc's only writer, so what the household does with
-        this is edit that declaration and measure again.
+        Review accepts through Sound, then applies this exact candidate.
         """
         return self._fc_selection
 
@@ -9666,6 +9692,9 @@ class CrossoverV2Conductor:
 
     def _build_measure_candidate(
         self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
+        *,
+        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
+        source_preset: Any = None,
     ) -> _SpeculativeClose:
         """Fit and accountability-gate one candidate. Commits NOTHING.
 
@@ -9693,7 +9722,13 @@ class CrossoverV2Conductor:
         overwrites wholesale, and the reason the eager path holds
         ``_close_lock`` rather than running truly free of the conductor.
         """
-        candidate = self._build_candidate(analysis, cloud)
+        if candidate_sections is None and source_preset is None:
+            candidate = self._build_candidate(analysis, cloud)
+        else:
+            candidate = self._build_candidate(
+                analysis, cloud, candidate_sections=candidate_sections,
+                source_preset=source_preset,
+            )
         # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
         # PR-D): when this attempt fitted Layer-1a linearization (fitted OR
         # trim_rejected — both emit the correction filters, see
@@ -9725,6 +9760,28 @@ class CrossoverV2Conductor:
             cloud=cloud,
             level_frame_finding=level_frame_finding,
         )
+
+    def _commit_fc_candidate(self, evaluation: FcCandidateEvaluation) -> dict[str, Any]:
+        from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+
+        if evaluation.candidate is None or evaluation.predicted_sum is None:
+            raise CrossoverV2FlowError("selected Fc has no executable candidate")
+        candidate = MeasuredCrossoverCandidate.from_mapping(evaluation.candidate)
+        self._candidate = candidate
+        self._measure_predicted_sum = evaluation.predicted_sum
+        self._measure_predicted_spec_report = dict(
+            evaluation.predicted_spec_report or {}) or None
+        self._measure_commanded_delta = evaluation.commanded_delta
+        self._seams.publish_candidate(candidate)
+        self._publish_level_frame_finding(evaluation.level_frame_finding)
+        log_event(
+            logger, "correction.crossover_v2_candidate_built",
+            session_id=self.session_id, candidate_fingerprint=candidate.fingerprint,
+            linearization=candidate.linearization_outcome,
+            selected_fc_hz=round(evaluation.fc_hz, 1), cloud_evidence=False,
+            excluded_bands=0, cloud_positions=0)
+        return {"candidate_fingerprint": candidate.fingerprint,
+                "headroom_cost_db": worst_headroom_cost_db(candidate.linearization)}
 
     def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
         """Make a built candidate REAL: stash it, publish it, disclose it.
@@ -11650,6 +11707,9 @@ class CrossoverV2Conductor:
 
     def _build_candidate(
         self, analysis: ProgramAnalysis, cloud: _CloudFitEvidence | None = None,
+        *,
+        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
+        source_preset: Any = None,
     ) -> Any:
         from jasper.active_speaker.measured_crossover_candidate import (
             MeasuredCrossoverAlignment,
@@ -11692,8 +11752,9 @@ class CrossoverV2Conductor:
         linearization: Mapping[str, Any] = {}
         if self._linearization_eligible(analysis):
             try:
+                fit_kwargs = {} if candidate_sections is None else {"candidate_sections": candidate_sections}
                 role_attenuations_db, linearization = self._fit_linearization(
-                    analysis, cand, cloud
+                    analysis, cand, cloud, **fit_kwargs,
                 )
             except (
                 ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
@@ -11738,7 +11799,7 @@ class CrossoverV2Conductor:
         return MeasuredCrossoverCandidate(
             program_id=analysis.program_id,
             analysis=_analysis_json(analysis),
-            source_preset=self._preset,
+            source_preset=source_preset or self._preset,
             role_attenuations_db=role_attenuations_db,
             alignment=alignment,
             linearization=linearization,

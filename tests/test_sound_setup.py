@@ -2568,6 +2568,56 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     )
 
 
+def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from jasper.active_speaker.design_draft import load_design_draft
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24,
+        "confidence": "medium",
+    }]
+    original = sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {"notes": "keep this"},
+        "confirm_safety_profile": True,
+    })
+    original_confirmation = original["driver_safety_profile"]["confirmation"]
+
+    saved = sound_setup.apply_measured_crossover_frequency(
+        expected_revision=1,
+        between_roles=("woofer", "tweeter"),
+        configured_hz=5500,
+        selected_hz=5750,
+    )
+
+    assert saved["revision"] == 2
+    assert saved["operator_inputs"]["notes"] == "keep this"
+    assert saved["manual_settings"]["crossover_candidates"][0][
+        "frequency_hz"
+    ] == 5750
+    assert saved["driver_safety_profile"]["confirmation"] == original_confirmation
+    assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    with pytest.raises(ValueError, match="another session"):
+        sound_setup.apply_measured_crossover_frequency(
+            expected_revision=1,
+            between_roles=("woofer", "tweeter"),
+            configured_hz=5750,
+            selected_hz=6000,
+        )
+    assert load_design_draft()["revision"] == 2
+
+
 def _dual_apple_hardware() -> dict:
     return {
         "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,

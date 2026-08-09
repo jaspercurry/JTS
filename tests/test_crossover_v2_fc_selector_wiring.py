@@ -440,16 +440,19 @@ def _retained_bytes(evaluation) -> int:
             continue
         if isinstance(value, np.ndarray):
             total += value.nbytes
-        elif isinstance(value, tuple) and all(
-            isinstance(item, (int, float)) for item in value
-        ):
-            continue
+        elif isinstance(value, tuple):
+            for item in value:
+                if isinstance(item, np.ndarray):
+                    total += item.nbytes
+                else:
+                    assert isinstance(item, (int, float)), field.name
         elif isinstance(value, Mapping):
-            for key, item in value.items():
-                assert isinstance(item, np.ndarray), (
-                    f"{field.name}[{key!r}] retains a {type(item).__name__}"
-                )
-                total += item.nbytes
+            if all(isinstance(item, np.ndarray) for item in value.values()):
+                total += sum(item.nbytes for item in value.values())
+            else:
+                # Executable candidate/finding records are bounded exact-JSON
+                # data, never analysis objects hidden behind a Mapping.
+                total += len(json.dumps(value, sort_keys=True).encode())
         else:
             raise AssertionError(
                 f"{field.name} retains a {type(value).__name__} — the retained "
@@ -488,17 +491,49 @@ def test_the_sweep_retains_no_analysis_sized_object():
             assert operator.shape == grid.shape
         assert evaluation.anchor_sum_db.size in (0, grid.size)
 
-    # GROWTH, bounded across the whole sweep rather than per record: the
-    # ruling's cap is on what the walk carries, and one small record times N is
-    # what makes it small. 64 kB is ~4x the real figure, so it fails on a
-    # hoarded object (megabytes) without being a tripwire on an honest field.
+    # GROWTH, bounded across the whole sweep rather than per record. The
+    # executable prediction/delta curves remain sub-megabyte; a retained
+    # ProgramAnalysis is hundreds of MB and fails this by orders of magnitude.
     swept = sum(_retained_bytes(e) for e in c._fc_evaluations)
-    assert swept < 64_000, f"the retained sweep grew to {swept} bytes"
+    assert swept < 512_000, f"the retained sweep grew to {swept} bytes"
 
     # …and the walk's close releases even those.
     for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
         _run_phase(c, index, 1)
     assert c._fc_evaluations == ()
+
+
+def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction():
+    fakes = _eligible_seams()
+    c = _selector_conductor(fakes)
+    original = flow.CrossoverV2Conductor._fit_linearization
+    calls = 0
+
+    def fail_after_first(self, analysis, cand, cloud=None, *, candidate_sections=None):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ValueError("forced later-Fc fit failure")
+        return original(
+            self, analysis, cand, cloud, candidate_sections=candidate_sections,
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow.CrossoverV2Conductor, "_fit_linearization", fail_after_first)
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 1)
+        assert c._fc_evaluations[0].refusal is None
+        assert all(
+            item.refusal == flow.EVAL_REFUSED_UNFITTABLE
+            and item.predicted_sum is None
+            and item.candidate is None
+            for item in c._fc_evaluations[1:]
+        )
+        for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+            _run_phase(c, index, 1)
+
+    assert c.fc_selection.recommended_hz is None
+    assert c.candidate.source_preset.crossover_regions[0].fc_hz == FC_HZ
 
 
 def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
@@ -662,15 +697,7 @@ def test_the_walk_close_publishes_a_recommendation_that_names_sound_settings():
     assert "crossover" in " ".join(lines).lower()
 
 
-def test_a_recommending_verdict_always_says_the_household_must_edit_sound():
-    """The hearing-safety promise of Reading 1, asserted on the RECOMMENDING
-    branch unconditionally.
-
-    Written against a constructed payload rather than the fixture's own
-    verdict: the fixture keeps configured, so a conditional assertion here
-    guards nothing — verified by mutation (rewriting the copy to "JTS moved
-    your crossover" left the fixture-driven version green).
-    """
+def test_a_recommending_verdict_says_apply_saves_the_exact_sound_choice():
     from jasper.active_speaker.crossover_envelope_v2 import (
         _fc_recommendation_lines,
     )
@@ -684,11 +711,7 @@ def test_a_recommending_verdict_always_says_the_household_must_edit_sound():
     }}})
     joined = " ".join(lines).lower()
     assert "1750 hz" in joined and "2000 hz" in joined
-    # The ACTION, and whose it is. Without these two the screen reads as a
-    # change JTS made, and the household waits for something nothing will do.
-    assert "sound settings" in joined, joined
-    assert "measure again" in joined, joined
-    assert "does not change it for you" in joined, joined
+    assert "save this choice in sound" in joined, joined
 
 
 def test_incomplete_or_legacy_state_never_presents_an_alternative_as_best():
@@ -732,19 +755,34 @@ def test_no_recommendation_is_rendered_when_no_sweep_ran():
     assert _fc_recommendation_lines({"crossover_v2": {}}) == []
 
 
-def test_the_selection_never_reaches_the_emitted_candidate():
-    """The hearing-safety half of Reading 1, structural rather than asserted by
-    inspection: the selector's Fc has nowhere to go. Nothing on the published
-    candidate carries a crossover frequency, and the conductor's own
-    ``_fc_hz`` is the one the session opened with."""
+def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 1)
-    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
-        _run_phase(c, index, 1)
-    assert c._fc_hz == FC_HZ
-    published = json.dumps(c.candidate.to_dict())
-    for evaluation in c.fc_selection.scores:
-        if evaluation.fc_hz != FC_HZ:
-            assert f"{evaluation.fc_hz}" not in published
+    winner = next(
+        item for item in c._fc_evaluations
+        if item.fc_hz != FC_HZ and item.candidate is not None
+    )
+
+    def choose(*args, **kwargs):
+        return flow.FcSelection(
+            verdict="recommend_alternative", configured_hz=FC_HZ,
+            recommended_hz=winner.fc_hz, margin_db=2.0, scores=(), refusals=(),
+            limits={}, evaluated=2, planned=len(c._fc_evaluations),
+            candidate_order=tuple(item.fc_hz for item in c._fc_evaluations),
+            attempted=tuple(item.fc_hz for item in c._fc_evaluations), skipped=(),
+            comparison_complete=True,
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "select_fc", choose)
+        for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+            _run_phase(c, index, 1)
+
+    assert c._fc_hz == FC_HZ  # measurement context does not silently move
+    assert c.candidate.to_dict() == winner.candidate
+    assert c.candidate.source_preset.crossover_regions[0].fc_hz == winner.fc_hz
+    assert fakes.published_candidates == [c.candidate]
+    assert np.array_equal(c.measure_predicted_sum[1], winner.predicted_sum[1])
+    assert c.measure_predicted_spec_report == winner.predicted_spec_report

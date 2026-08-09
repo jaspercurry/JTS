@@ -427,16 +427,12 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _fc_hz_text(value: float | None) -> str:
+    return "" if value is None else f"{value:.1f}".rstrip("0").rstrip(".")
+
+
 def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
     """What the measurement says the CROSSOVER should be, and what to do.
-
-    R17's one household-facing surface. Three things, in the order somebody
-    deciding needs them: the number, why it won, and — always — that acting on
-    it means editing the declaration in ``/sound``. That last sentence is not
-    politeness. The selector RECOMMENDS; the declared crossover remains Fc's
-    only writer (#1894, PR-3 ruling), so a line that said "JTS moved your
-    crossover to 1750 Hz" would describe something that did not happen and
-    leave the household waiting for a change nothing will make.
 
     **Keep-configured is a first-class outcome, not silence.** A session that
     evaluated alternatives and kept the configured Fc has LEARNED something,
@@ -459,6 +455,7 @@ def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
     planned = fc.get("planned")
     attempted = fc.get("attempted")
     comparison_complete = fc.get("comparison_complete") is True
+    sound_saved = type(_v2(status).get("accepted_sound_revision")) is int
     lines: list[str] = []
     if not comparison_complete:
         lines.append(
@@ -467,14 +464,17 @@ def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
         )
     elif recommended is not None:
         margin = _finite(fc.get("margin_db"))
+        recommended_text = _fc_hz_text(recommended)
         lines.append(
-            f"crossover: {recommended:.0f} Hz measured better than the "
+            f"crossover: {recommended_text} Hz measured better than the "
             f"{configured:.0f} Hz you have"
             + (f", by {margin:.2f} dB through the handoff" if margin else "")
         )
         lines.append(
-            f"to use it, set the crossover to {recommended:.0f} Hz in Sound "
-            "settings and measure again — JTS does not change it for you"
+            f"{recommended_text} Hz is already saved in Sound but is not "
+            "confirmed applied; retry uses this same measured candidate."
+            if sound_saved else
+            "Apply will save this choice in Sound before loading it."
         )
     else:
         lines.append(
@@ -1267,7 +1267,7 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
 
     **No actions at all**, and that is the point: every action this screen
     could offer is destructive of work in progress. "Measure again" would throw
-    away a walked cloud; "Leave it as it is" would abandon a fit that is about
+    away a walked cloud; "Keep current sound" would abandon a fit that is about
     to produce the very thing the household is waiting for. The phone owns the
     only live control (Retake / Continue on the confirm screen), and Stop rides
     the relay block as it does on every in-session screen.
@@ -1319,7 +1319,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     and the candidate stays reachable across a browser close, a page reload,
     and a ``jasper-web`` restart because it lives in durable state with no TTL.
 
-    **"Leave it as it is" does not delete the candidate**, deliberately: it
+    **"Keep current sound" does not delete the candidate**, deliberately: it
     ends the journey and returns to the Active speaker entry screen
     (``/correction/crossover/``), and the proposal stays reviewable until a
     newer measurement replaces it. Deleting on decline would make an accidental
@@ -1335,6 +1335,17 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     prediction = v2.get("prediction")
     prediction = prediction if isinstance(prediction, Mapping) else None
     fingerprint = str(candidate.get("fingerprint") or "")
+    fc_selection = _mapping(v2.get("fc_selection"))
+    recommended_hz = _finite(fc_selection.get("recommended_hz"))
+    uses_alternative = (
+        fc_selection.get("verdict") == "recommend_alternative"
+        and fc_selection.get("comparison_complete") is True
+        and recommended_hz is not None)
+    sound_saved = uses_alternative and type(v2.get("accepted_sound_revision")) is int
+    apply_label = "Apply and verify"
+    if uses_alternative:
+        apply_label = ("Retry applying " if sound_saved else "Use ") + (
+            f"{_fc_hz_text(recommended_hz)} Hz" + ("" if sound_saved else " and apply"))
     # A proposal with no fingerprint cannot be applied even in principle: the
     # apply endpoint's first gate is `expected_candidate_fingerprint`, and it
     # refuses outright without one.
@@ -1393,6 +1404,11 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # whether Apply can or should happen at all; this one qualifies the
     # evidence behind a proposal that is otherwise fine.
     nudges.extend(_ripple_reservation_nudges(status))
+    apply_issue = _mapping(v2.get("apply_blocked"))
+    if sound_saved and apply_issue:
+        nudges.append({"code": str(apply_issue.get("id") or "apply_blocked"),
+                       "severity": "warn", "text": str(apply_issue.get(
+                           "message") or "DSP apply is not confirmed.")})
 
     alternate_actions: list[dict[str, Any]] = [
         {
@@ -1410,7 +1426,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         },
         {
             "id": "review_decline",
-            "label": "Leave it as it is",
+            "label": "Keep current sound",
             # The Active speaker ENTRY screen, not the generic /correction/
             # hub. The hub is the Room-correction wizard, whose first act is
             # a browser-mic HTTPS-transition interstitial -- a different
@@ -1438,7 +1454,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         nudges=nudges,
         next_action={
             "id": "review_apply",
-            "label": "Apply and verify",
+            "label": apply_label,
             "endpoint": "/correction/crossover/v2/apply",
             "body": {"expected_candidate_fingerprint": fingerprint},
             "enabled": apply_enabled,
@@ -1454,10 +1470,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # its flatness/carve-out disclosure belongs here — the same lines the
         # done screen folds away, on the screen where they inform a decision
         # rather than explain a fait accompli.
-        # R17: the Fc recommendation belongs on the screen where a household is
-        # already deciding what to do with this measurement — and it is the one
-        # finding here whose action is theirs alone, since applying it means
-        # editing the declaration in /sound rather than pressing Apply.
+        # R17: Review accepts; Sound saves; the existing DSP path applies.
         expert_details=(
             _flatness_details_lines(status)
             + _ripple_reservation_lines(status)

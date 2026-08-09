@@ -1379,7 +1379,7 @@ and the spec verdict stated plainly — naming the band and the margin past its
 tolerance when the prediction misses. An improved-but-spec-failing fit is
 **presented, never applied silently**: the miss is named and Apply stays
 available, because the decision is the household's. Actions are Apply and
-verify / Measure again / Leave it as it is, and **never Undo** (D6 — stage 1
+verify / Measure again / Keep current sound, and **never Undo** (D6 — stage 1
 replaced nothing, so there is nothing to restore).
 
 Apply is enabled only when all three hold: a candidate with a fingerprint
@@ -1742,18 +1742,20 @@ final `capture_result` before the page's ~250 ms poll reads it.
 ## Recommending an Fc
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
-tells the household which one measured best. **It never changes the crossover.**
-The declared crossover in `/sound` remains Fc's only writer, so the household
-reads the number, declares it there, and the next session's configured Fc *is*
-that number — applied through the untouched golden path. A screen saying "JTS
-moved your crossover" would describe something that did not happen; the copy
-says "set it in Sound settings and measure again", and a test pins that.
+tells the household which one measured best. A configured-Fc winner keeps the
+existing **Apply and verify** path unchanged. An alternative winner offers one
+exact action — **Use N Hz and apply** — with no copy/paste step.
 
-Why recommend rather than apply: `baseline_profile` refuses any candidate whose
-preset differs from the saved crossover — a deliberate one-writer-per-fact
-defence, not an oversight — so a selected Fc has nowhere to go without a
-nine-site change across six modules. That is its own round, and it becomes
-justified when recommendations prove consistently right.
+The declared crossover in `/sound` remains Fc's only writer. The action first
+asks Sound to save that exact measured Fc against the draft revision captured
+when the measurement opened, then reopens Sound's current draft/preview and
+passes the same candidate-specific preset through `baseline_profile`'s existing
+apply transaction. A stale Sound revision refuses before DSP. If Sound saves
+but DSP fails before load or proves rollback, the screen says saved/not applied
+and a retry skips the already-completed Sound save. An unconfirmed transaction
+instead says its current DSP result is unknown and asks the household to review
+the speaker state before retrying. There is no automatic next-Fc loop or
+cross-service rollback of Sound; **Keep current sound** remains a non-mutating exit.
 
 **Where each piece lives.**
 
@@ -1761,6 +1763,8 @@ justified when recommendations prove consistently right.
   — the pure kernel: `band_flatness` (R18's mean-removed signed-worst
   arithmetic), `predict_pose_sum_db`, `score_candidate`, `select_fc`. No
   conductor state, no I/O. `FcCandidateEvaluation` is the memory contract.
+  A retained winning record also carries its compact executable candidate and
+  bounded prediction so publication never re-analyzes a different Fc.
 - `fc_candidate_set` / `resolve_fc_search_band` in the flow module — the set,
   bounded by four declarations: the HF driver's hard floor, the lower driver's
   ceiling, the INTERSECTED declared `crossover_search_band_hz` (a two-way Fc
@@ -1775,8 +1779,8 @@ justified when recommendations prove consistently right.
   configured crossover response, the candidate-required bands — polarity and
   the protection map are preset/safety-derived and ride unchanged), re-analyze,
   fit against that candidate's own branch target, reduce to one small record,
-  **release**. The seven `_last_*` fields the fit writes are saved and restored
-  around the sweep.
+  **release**. Fit scratch state is isolated between candidates; a fit-failed
+  Fc is refused rather than borrowing the preceding candidate's prediction.
 - `_adjudicate_fc` at the walk's close — §4.4's rule that anything reading the
   whole walk waits for the whole walk.
 
@@ -1801,8 +1805,9 @@ evidence put alternatives around 10.1–10.4 s each, a serial all-six path aroun
 55–62 s, and analysis workspaces around 400–500 MB. P0.1's smoothing speedup is
 locally measured; post-P0.1 live-Pi all-six timing is unverified. The 70 s
 budget is a bounded deployment ceiling, not a claimed runtime. Each
-candidate's intermediates are released before the next allocates; only scalars
-plus ~120-point arrays per candidate survive the walk.
+candidate's intermediates are released before the next allocates. The retained
+set holds compact executable candidates, bounded full prediction/delta arrays,
+and ~120-point lateral scoring arrays; all six are capped below 512 kB by test.
 
 **Debugging.** `event=correction.crossover_v2_fc_sweep` and
 `event=correction.crossover_v2_fc_selection` disclose candidate order,
@@ -1817,7 +1822,7 @@ be scored is disclosed with a reason code, never dropped: `fit_refused`
 | File | Responsibility |
 |---|---|
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz` → `_CloudEchoBand`, which clamps the analysis band up to `ECHO_BAND_HF_REGIME_FLOOR_HZ` and discloses the clamp — issue #1763) and the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`). |
-| [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector, as pure functions over small arrays: `band_flatness`, `predict_pose_sum_db`, `score_candidate`, `select_fc`, and the `FcCandidateEvaluation` memory contract. No conductor state, no I/O, no imports from the flow. Produces a RECOMMENDATION — see "Recommending an Fc" above for why it cannot apply one. |
+| [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector, as pure functions over small arrays: `band_flatness`, `predict_pose_sum_db`, `score_candidate`, `select_fc`, and the `FcCandidateEvaluation` memory contract. No conductor state, no I/O, no imports from the flow. Produces a recommendation; the host retains the exact winner for Sound-owned acceptance and existing DSP apply. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
 | [`jasper/audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner + echo/geometry diagnostics (flat-linearization S1, #1741 offline core; wired into the live flow by PR-4, #1756): `combine_positions` → `CombinedResponse` (power-mean spec curve, per-position curves, exclusion mask, `.geometry`/`GeometryLock`), `detect_echo` → `EchoDiagnostic` (two-estimator echo detection; `effective_floor_us`, `earlier_dominant_arrival`/`band_below_passband` refusal hardening from PR-2, #1749), `assess_geometry`, `usable_echo_estimates`. Pure computation, numpy only, no I/O/logging/policy. |
@@ -3683,7 +3688,9 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-08 — P0.4 re-verified the VERIFY claim and terminal grading
+Last verified: 2026-08-09 — R21 re-verified only "Recommending an Fc" against
+the Sound-owned CAS save, exact-candidate apply, Review envelope, and focused
+offline tests; no live-Pi run. P0.4 re-verified the VERIFY claim and terminal grading
 sections; the four outcomes remain offline-tested with no live-Pi run. P0.3 verified only "Relay sequence and terminal
 precedence" and its page-first/Pi-second release note against the relay client,
 session verifier, and v2 cleanup/persistence seams. P0.2 re-verified only "Recommending an Fc" against
