@@ -33,6 +33,7 @@ import wave
 from typing import Any, Callable
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
+from ..audio_io import wait_tts_drained_owned
 from ..log_event import log_event
 from .generator import (
     backend_model,
@@ -66,11 +67,7 @@ _PLAY_DRAIN_BUFFER_SEC = 0.2
 
 
 async def _wait_tts_drained(tts: Any) -> None:
-    wait_drained = getattr(tts, "wait_drained", None)
-    if callable(wait_drained):
-        await wait_drained()
-    else:
-        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+    await wait_tts_drained_owned(tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC)
 
 
 def _profile_token(value: str, fallback: str) -> str:
@@ -308,9 +305,14 @@ class AudioCueManager:
             else:
                 await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001
-            logger.warning("cue play: TtsPlayout.write failed (slug=%s): %s", slug, e)
+            logger.warning(
+                "cue play: TtsPlayout.write failed (slug=%s): %s",
+                slug,
+                e,
+            )
             return False
-        await _wait_tts_drained(self._tts)
+        finally:
+            await _wait_tts_drained(self._tts)
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
@@ -428,7 +430,8 @@ class AudioCueManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return False
-        await _wait_tts_drained(self._tts)
+        finally:
+            await _wait_tts_drained(self._tts)
         # Dynamic cue text (research results, timer labels) can be personal and
         # the journal is persistent — log a short preview + length at INFO, full
         # text only at DEBUG.

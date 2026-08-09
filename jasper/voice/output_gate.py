@@ -29,6 +29,9 @@ class AssistantOutputGate:
         self._lock = asyncio.Lock()
         self._idle = asyncio.Event()
         self._idle.set()
+        self._admission_resumed = asyncio.Event()
+        self._admission_resumed.set()
+        self._admission_paused = False
         self._active: AssistantOutputEpisode | None = None
         self._epoch = 0
         self._next_id = 0
@@ -41,6 +44,10 @@ class AssistantOutputGate:
     def active_kind(self) -> AssistantOutputKind | None:
         active = self._active
         return active.kind if active is not None else None
+
+    @property
+    def admission_paused(self) -> bool:
+        return self._admission_paused
 
     @property
     def epoch(self) -> int:
@@ -82,14 +89,22 @@ class AssistantOutputGate:
     async def begin_turn(self) -> AssistantOutputEpisode:
         while True:
             async with self._lock:
-                active = self._active
-                if active is None:
-                    return self._begin_locked("turn")
-                if active.kind == "turn":
-                    return active
-                self._epoch += 1
-                idle = self._idle
-            await idle.wait()
+                if self._admission_paused:
+                    resumed = self._admission_resumed
+                    idle = None
+                else:
+                    resumed = None
+                    active = self._active
+                    if active is None:
+                        return self._begin_locked("turn")
+                    if active.kind == "turn":
+                        return active
+                    self._epoch += 1
+                    idle = self._idle
+            if resumed is not None:
+                await resumed.wait()
+            elif idle is not None:
+                await idle.wait()
 
     async def end_turn(self, episode: AssistantOutputEpisode | None = None) -> None:
         await self.end(episode, kind="turn")
@@ -99,9 +114,49 @@ class AssistantOutputGate:
         kind: AssistantOutputKind,
     ) -> AssistantOutputEpisode | None:
         async with self._lock:
-            if self._active is not None:
+            if self._admission_paused or self._active is not None:
                 return None
             return self._begin_locked(kind)
+
+    async def pause_admission(self) -> bool:
+        """Atomically refuse every future assistant-output admission.
+
+        Returns whether this call changed the gate. Repeated pauses are
+        harmless and retain the same closed admission boundary.
+        """
+
+        async with self._lock:
+            if self._admission_paused:
+                return False
+            self._admission_paused = True
+            self._admission_resumed.clear()
+            return True
+
+    async def drain_paused(self, timeout: float) -> bool:
+        """Boundedly drain the episode admitted before ``pause_admission``.
+
+        Refuse misuse rather than turning a non-atomic observe-then-wait back
+        into the authority. Once paused, no episode can replace the one this
+        method observes, so ``True`` proves the boundary is silent now.
+        """
+
+        if not self._admission_paused:
+            raise RuntimeError("assistant output admission is not paused")
+        return await self.wait_idle(timeout)
+
+    async def resume_admission(self) -> bool:
+        """Reopen output admission, idempotently.
+
+        Returns whether this call changed the gate. Waiting turns are released
+        together and still serialize through the existing ownership lock.
+        """
+
+        async with self._lock:
+            if not self._admission_paused:
+                return False
+            self._admission_paused = False
+            self._admission_resumed.set()
+            return True
 
     async def end(
         self,

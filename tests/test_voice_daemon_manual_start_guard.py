@@ -95,6 +95,70 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_manual_start_does_not_repeat_begin_owned_cleanup():
+    """A failed begin that released its episode is not cleaned twice."""
+
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    cleanup_calls = 0
+    cleanup_method = type(wl)._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await cleanup_method(wl)
+
+    async def noop_prepare() -> None:
+        return None
+
+    async def failed_inner(**_kwargs) -> None:
+        raise RuntimeError("begin failed after owned cleanup")
+
+    def discard_task(coro, **_kwargs):
+        coro.close()
+        return None
+
+    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._prepare_assistant_loudness_context = noop_prepare
+    wl._begin_turn_inner = failed_inner
+    wl._create_fire_and_forget_task = discard_task
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert cleanup_calls == 1
+    assert wl._turn_output_episode is None
+    assert not wl._output_gate.is_active
+
+
+async def test_manual_start_cleans_prefix_failure_before_turn_inner():
+    """An ordinary loudness-prefix failure is centrally cleaned exactly once."""
+
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    cleanup_calls = 0
+    inner = _SpyCalls()
+    cleanup_method = type(wl)._cleanup_after_failed_begin
+
+    async def counted_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        await cleanup_method(wl)
+
+    async def fail_prepare() -> None:
+        raise RuntimeError("pre-begin loudness preparation failed")
+
+    wl._cleanup_after_failed_begin = counted_cleanup
+    wl._prepare_assistant_loudness_context = fail_prepare
+    wl._begin_turn_inner = inner
+
+    assert await wl.manual_session_start() == "ERROR"
+    assert inner.called is False
+    assert cleanup_calls == 1
+    assert wl._turn_output_episode is None
+    assert not wl._output_gate.is_active
+
+
 async def test_measurement_pause_and_resume_transfer_volume_ownership():
     """The voice-side gate and volume-owner lease change together."""
     wl = _make_wake_loop()
@@ -109,10 +173,12 @@ async def test_measurement_pause_and_resume_transfer_volume_ownership():
 
     assert await wl.measurement_pause() == "ok"
     assert wl._measurement_active.is_set()
+    assert wl._output_gate.admission_paused
     assert ownership == [True]
 
     assert await wl.measurement_resume() == "ok"
     assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
     assert ownership == [True, False]
     assert wl.session_status()["measurement_active"] is False
 
@@ -138,7 +204,10 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
         timer_started.set()
         await release_timer.wait()
 
-    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "jasper.voice_daemon._measurement_safety_sleep",
+        fake_sleep,
+    )
 
     assert await wl.measurement_pause() == "ok"
     await wait_signalled(
@@ -149,6 +218,7 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
 
     assert ownership == [True, False]
     assert not wl._measurement_active.is_set()
+    assert not wl._output_gate.admission_paused
 
 
 async def test_manual_start_begins_turn_when_unguarded():
@@ -158,17 +228,10 @@ async def test_manual_start_begins_turn_when_unguarded():
     wl = _make_wake_loop()
 
     result = await wl.manual_session_start()
-    # The listening chirp is fire-and-forget (create_task); drain
-    # pending tasks so it runs and doesn't leak a never-awaited coro.
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {}
-    assert wl._prepare_assistant_loudness_context.called is True
-    assert wl._play_listening_chirp.called is True
+    assert wl._begin_turn.kwargs == {"listening_feedback": True}
 
 
 async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
@@ -189,13 +252,13 @@ async def test_manual_start_source_uses_source_audio_without_primary_preroll():
     wl._manual_mics = {"wiim_remote_2": object()}
 
     result = await wl.manual_session_start("wiim_remote_2")
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {"pre_roll": False}
+    assert wl._begin_turn.kwargs == {
+        "pre_roll": False,
+        "listening_feedback": True,
+    }
     assert wl._active_manual_source == "wiim_remote_2"
     assert wl._acquiring is False
 
@@ -326,14 +389,14 @@ async def test_ptt_only_speaker_still_serves_a_named_source():
     wl = _ptt_only_wake_loop()
 
     result = await wl.manual_session_start("wiim_remote_2")
-    await asyncio.gather(
-        *(t for t in asyncio.all_tasks() if t is not asyncio.current_task())
-    )
 
     assert result == "OK"
     assert wl._cues.played == []
     assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {"pre_roll": False}
+    assert wl._begin_turn.kwargs == {
+        "pre_roll": False,
+        "listening_feedback": True,
+    }
     assert wl._active_manual_source == "wiim_remote_2"
 
 

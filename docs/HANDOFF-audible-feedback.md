@@ -57,6 +57,27 @@ before standalone cue/click playback; that lets the mix owner snapshot
 pre-duck content loudness when music is playing, or use the current
 listening-level-derived silence target when the room is quiet.
 
+## Duck and output ownership through the physical tail
+
+Writing a cue or dynamic announcement is not the end of playback: accepted
+PCM may still be queued in fan-in/outputd or the device buffer. WakeLoop keeps
+both the duck and the exact `AssistantOutputGate` episode until
+`wait_tts_drained_owned` reaches that physical drain boundary. This applies to
+reactive/admin cues in `WakeLoop._play_cue_owned` and proactive dynamic text in
+`WakeLoop._play_dynamic_text`.
+
+The ownership rule is identical across the two shipped TTS routes:
+
+- solo and active speakers retain the pre-DSP `FanInDucker` through the tail;
+- passive bonded non-sub speakers retain the local-outputd `CueDuck` snapshot
+  through the tail.
+
+Repeated task cancellation is deferred while that one drain owner finishes.
+Only then is the duck restored, the output episode released, and cancellation
+reported to the caller. This prevents already-accepted speech from becoming
+audible after music has been restored or after a room-correction
+`MEASURE_PAUSE` reply has treated assistant output as idle.
+
 ---
 
 ## Architecture at a glance
@@ -317,4 +338,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-08-07 (registry table re-diffed against `jasper/cues/registry.py` CUES — added the `no_room_microphone` row for the #2205 daemon half; the rest of the file retains its 2026-07-11 verification, when the two capture-relay rows were added and `set_failure_escalation_cb`'s wiring location was corrected to `jasper/voice/daemon_main.py`'s `run()`)
+Last verified: 2026-08-08 (accepted-PCM duck/output ownership re-verified for both `FanInDucker` and local-outputd `CueDuck`; registry table re-diffed on 2026-08-07 for the `no_room_microphone` row; the remaining sections retain their 2026-07-11 verification)

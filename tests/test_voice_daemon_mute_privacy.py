@@ -260,6 +260,9 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
         async def write_segment(self, pcm: bytes, **kwargs) -> None:
             events.append(("write_segment", {"pcm": pcm, **kwargs}))
 
+        async def wait_drained(self) -> None:
+            events.append(("wait_drained", None))
+
     class _Volume:
         def get_listening_level(self) -> int:
             return 77
@@ -273,7 +276,9 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
 
     await wl._play_mute_click(going_on=False)
 
-    assert [name for name, _ in events] == ["prepare", "write_segment"]
+    assert [name for name, _ in events] == [
+        "prepare", "write_segment", "wait_drained", "wait_drained",
+    ]
     prepare = events[0][1]
     assert prepare["provider"] == "openai"
     assert prepare["model"] == "gpt-realtime-2"

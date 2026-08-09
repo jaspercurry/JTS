@@ -299,7 +299,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
         async def _noop(*_args, **_kwargs) -> None:
             return None
 
-        async def _begin_boom() -> None:
+        async def _begin_boom(**_kwargs) -> None:
             # Stands in for the real incident: an unexpected local failure
             # on the turn-open hot path (the connection itself is fine).
             raise RuntimeError("attempt to write a readonly database")
@@ -315,7 +315,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
         wl._peer_arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
         wl._play_listening_chirp = _noop
-        wl._begin_turn = _begin_boom
+        wl._begin_turn_inner = _begin_boom
         wl._play_cue = _rec
         wl._connection = _Conn(paused)
 
@@ -350,7 +350,7 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
     async def _noop(*_args, **_kwargs) -> None:
         return None
 
-    async def _begin_boom() -> None:
+    async def _begin_boom(**_kwargs) -> None:
         raise RuntimeError("turn open failed")
 
     class _Conn:
@@ -366,7 +366,7 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
     wl._peer_arbitrate = _win
     wl._prepare_assistant_loudness_context = _noop
     wl._play_listening_chirp = _noop
-    wl._begin_turn = _begin_boom
+    wl._begin_turn_inner = _begin_boom
     wl._connection = _Conn()
     wl._cues = _Cues()
 

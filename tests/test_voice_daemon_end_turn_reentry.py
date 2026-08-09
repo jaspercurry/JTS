@@ -27,6 +27,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
+from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
+from tests._async_wait import wait_signalled
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 
 
@@ -61,6 +65,9 @@ def _make_wakeloop():
             return None
 
         async def end_segment(self):
+            return None
+
+        async def wait_drained(self):
             return None
 
         def take_paced_sec(self):
@@ -252,3 +259,38 @@ def test_simultaneous_background_task_completion_schedules_one_teardown():
     asyncio.run(drive())
 
     assert calls == 1
+
+
+@pytest.mark.parametrize("tts_socket", [FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET])
+async def test_turn_ownership_covers_final_chirp_physical_tail(
+    tts_socket: str,
+) -> None:
+    """PAUSE cannot open while the final chirp is still physically audible."""
+    from jasper.voice_daemon import State
+
+    wl = _make_wakeloop()
+    wl._cfg.tts_outputd_socket = tts_socket
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def wait_drained() -> None:
+        drain_started.set()
+        await wait_signalled(release_drain, "release final chirp drain")
+
+    wl._tts.wait_drained = wait_drained
+    teardown = asyncio.create_task(wl._end_turn())
+    await wait_signalled(
+        drain_started,
+        "final chirp physical drain",
+        producer=teardown,
+    )
+
+    assert wl._state is State.SESSION
+    assert wl._output_gate.active_kind == "turn"
+    assert await wl.measurement_pause() == "BUSY"
+
+    release_drain.set()
+    await teardown
+    assert wl._state is State.WAKE
+    assert not wl._output_gate.is_active

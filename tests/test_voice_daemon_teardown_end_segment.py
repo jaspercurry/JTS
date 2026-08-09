@@ -57,6 +57,9 @@ class _RecordingTts:
     async def resume_content_meter(self):
         return None
 
+    async def wait_drained(self):
+        return None
+
     def take_paced_sec(self) -> float:
         return 0.0
 

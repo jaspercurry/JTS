@@ -2066,7 +2066,40 @@ Captured here so future sessions don't repeat the mistakes.
     bridge's recent journal has no music for the passive check to
     learn from. The opt-in audible probe is isolated in
     `jasper/cli/doctor/aec_probe.py`; passive AEC checks remain in
-    `jasper/cli/doctor/aec.py`.
+    `jasper/cli/doctor/aec.py`. Before generating or playing its tone,
+    the active probe requires a trustworthy `active_source="idle"` from
+    jasper-control `/state`, then uses the loopback-lane check as defense in
+    depth. Those are early diagnostic checks, not the isolation authority:
+    before any precheck, the standalone command takes a fail-fast advisory
+    lock at `/run/jasper/doctor-aec-probe.lock` and holds it through final
+    cleanup. The stable lock file is never unlinked; CLOEXEC prevents `aplay`
+    from inheriting it, and process death releases the kernel flock. This
+    serializes standalone doctor probes. After the prechecks, the probe enters
+    the existing correction
+    `measurement_window()` with its own mux owner (`doctor-aec-probe`) and
+    strict voice pause enabled. Mux then holds `correction` selected against
+    renderer starts that race the precheck, including USB/direct input, while
+    `MEASURE_PAUSE` atomically closes `AssistantOutputGate` admission and drains
+    already-admitted assistant audio whether TTS is routed pre-DSP through
+    fan-in or member-locally through outputd. Feedback and final-turn chirps
+    retain that gate ownership through the TTS route's physical-drain wait.
+    The compatible PAUSE reply keeps
+    `result=ok` whenever the pause armed and adds exact `drained` evidence. The
+    strict probe requires `drained is true`, so a timeout—or an old daemon
+    lacking the additive field—never yields while cleanup still owns
+    `MEASURE_RESUME`.
+    The probe creates the WAV, runs `aplay`, waits, and assesses telemetry only
+    inside that held window. The body uses bounded synchronous subprocess work
+    in a thread; cancellation (including repeated cancellation) does not kill
+    that worker, so teardown keeps isolation held until the worker actually
+    stops and only then re-raises cancellation. Unavailable/malformed STATUS,
+    refused or unconfirmed PAUSE, or a lost mux/voice lease aborts admission;
+    `MEASURE_RESUME` and owner-scoped mux release run on every exit. If teardown
+    fails after the body completes, doctor preserves each body result and
+    reports a neutral, distinct isolation-cleanup failure: it points to the
+    playback outcome above rather than inferring whether a tone ran.
+    An unavailable or malformed initial `/state` likewise fails closed with no
+    tone because USB/direct output can be invisible to the loopback check.
 
     Refined further on 2026-05-17 (PR #134) for the corner case
     where the entire assessment window has no music at all (a
@@ -3051,7 +3084,7 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; the rest of this file was NOT re-verified in that pass. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
+Last verified: 2026-08-08 (scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
 SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
 K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
 boundary, and reconciler/status ownership rechecked against implementation and

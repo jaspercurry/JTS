@@ -30,6 +30,7 @@ aloud immediately, which was itself the bug).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from jasper.timers import Timer
@@ -94,7 +95,8 @@ async def test_play_supervisor_cue_refuses_during_measurement(caplog) -> None:
     assert "reason=measurement_active" in caplog.text
 
 
-async def test_play_supervisor_cue_measurement_takes_priority_over_output_busy() -> None:
+async def test_play_supervisor_cue_measurement_takes_priority_over_output_busy() -> (
+    None):
     """issue #1786 (C-5): measurement and output-active CAN both be true
     at once (measurement_pause() only refuses on an active session, not
     on output), so the skip reason must name the more fundamental cause
@@ -167,7 +169,8 @@ async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
     assert spoken == ["Your pasta timer is up."]
 
 
-async def test_announce_timer_rechecks_measurement_after_grace_wait(monkeypatch) -> None:
+async def test_announce_timer_rechecks_measurement_after_grace_wait(monkeypatch,
+) -> None:
     """A measurement window that opens while announce_timer is waiting
     out an output-busy condition must still be caught — the post-loop
     re-check (not just the up-front one) is what closes this race.
@@ -207,3 +210,51 @@ async def test_announce_timer_rechecks_measurement_after_grace_wait(monkeypatch)
     monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", _fake_sleep)
 
     await wl.announce_timer(_timer())
+async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
+    """A timer past its early check is still stopped at atomic admission."""
+
+    from jasper.voice_daemon import WakeLoop
+
+    prerender_started = asyncio.Event()
+    finish_prerender = asyncio.Event()
+    spoke: list[str] = []
+
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            prerender_started.set()
+            await finish_prerender.wait()
+            return True
+
+        async def speak_text(self, text: str) -> None:
+            spoke.append(text)
+
+    wl = WakeLoop.for_tests()
+    wl._cues = _Cues()
+    announce = asyncio.create_task(wl.announce_timer(_timer()))
+    await asyncio.wait_for(prerender_started.wait(), timeout=1.0)
+
+    assert await wl.measurement_pause() == "ok"
+    finish_prerender.set()
+    await asyncio.wait_for(announce, timeout=1.0)
+
+    assert spoke == []
+    assert wl._output_gate.admission_paused
+    await wl.measurement_resume()
+
+
+async def test_measurement_pause_blocks_mute_click_admission() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    writes: list[bytes] = []
+    wl = WakeLoop.for_tests()
+
+    async def write_segment(pcm, **_kwargs):
+        writes.append(pcm)
+
+    wl._tts.write_segment = write_segment
+    assert await wl.measurement_pause() == "ok"
+
+    await wl._play_mute_click(going_on=True)
+
+    assert writes == []
+    await wl.measurement_resume()

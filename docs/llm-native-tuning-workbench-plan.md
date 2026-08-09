@@ -1168,12 +1168,19 @@ browser/relay path (phone mic or calibrated UMIK through the browser) — to
 reproduce the JTS3/reference comparison. A headless laptop-mic transport is
 a later adapter only when a real session needs it.
 
-Verified seams (checked 2026-07-27; re-verify before building):
+Verified seams (checked 2026-08-08; re-verify before building):
 
-- Isolation: `measurement_window()` currently protects only callers on
-  jasper-web's one event loop: its module-global `_window_active` cannot
-  exclude the standalone workbench CLI. W2 first adds a fail-fast,
-  process-shared advisory lock to that owning context manager, acquired
+- Isolation: `measurement_window()` still protects same-process callers with
+  its module-global `_window_active`; that flag cannot exclude a standalone
+  CLI. The shipped audible AEC doctor therefore owns a narrower process lock,
+  `/run/jasper/doctor-aec-probe.lock`: it acquires a non-blocking exclusive
+  flock before prechecks and holds the descriptor through voice/mux cleanup,
+  never unlinks the stable inode, uses CLOEXEC/NOFOLLOW where available, and
+  fails with a no-tone diagnostic on contention or lock-open failure. Process
+  death releases it. This lock serializes doctor probes only; it does not yet
+  satisfy the workbench's broader cross-feature session contract below. W2
+  still adds a fail-fast process-shared advisory lock to that owning context
+  manager, acquired
   before any voice/mux mutation and held until restoration finishes. The
   descriptor must release automatically on process death; contention must
   raise `MeasurementWindowError` with a stable event/remediation rather than
@@ -1193,10 +1200,18 @@ Verified seams (checked 2026-07-27; re-verify before building):
   before the pause lease (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`) expires.
   The mux lease's owner/label sets are closed frozensets in `jasper/mux.py`
   (`FANIN_TEST_LABELS = {"correction"}`, `FANIN_TEST_OWNERS =
-  {"active-speaker-commissioning", "correction-measurement"}`) — a
-  workbench-specific owner id is a deliberate `jasper/mux.py` change, not
-  just a new string, and it would not by itself prevent a racing
-  `MEASURE_RESUME`. Crash recovery remains layered: the advisory lock drops
+  {"active-speaker-commissioning", "correction-measurement",
+  "doctor-aec-probe"}`) — any future workbench-specific owner id is a
+  deliberate `jasper/mux.py` change, not just a new string, and a mux owner
+  alone does not prevent a racing `MEASURE_RESUME`. The shipped doctor pairs
+  its registered owner with strict voice pause: `AssistantOutputGate` closes
+  admission atomically before its bounded drain, so timer pre-render work,
+  mute feedback, cues, and turns cannot enter after PAUSE; feedback and the
+  turn-closing chirp keep their episode through physical TTS drain. The rolling-safe
+  PAUSE wire keeps `result=ok` whenever cleanup is owned and adds `drained`;
+  strict admission requires that field to be exactly `true`, while permissive
+  correction and old coordinators remain cleanup-compatible. Crash recovery
+  remains layered: the doctor advisory lock drops
   with its process, the mux lease auto-expires within
   `mux.FANIN_TEST_LEASE_SEC`, and the voice pause auto-clears within
   `voice_daemon.MEASUREMENT_AUTOCLEAR_SEC` if the holder dies.

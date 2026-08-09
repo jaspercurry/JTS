@@ -1523,6 +1523,52 @@ async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
     assert mux._fanin_select_label.await_count == 2
 
 
+def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
+    assert "doctor-aec-probe" in mux_module.FANIN_TEST_OWNERS
+    assert "doctor-aec-probe" != "correction-measurement"
+
+
+@pytest.mark.asyncio
+async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
+    mux._fanin_select_label = AsyncMock(return_value={})
+
+    held = await mux.select_test_fanin_label("correction", "doctor-aec-probe")
+    busy = await mux.select_test_fanin_label(
+        "correction", "correction-measurement"
+    )
+    wrong_release = await mux.release_test_fanin_label("correction-measurement")
+
+    assert held["test_owner"] == "doctor-aec-probe"
+    assert "doctor-aec-probe" in busy["error"]
+    assert "doctor-aec-probe" in wrong_release["error"]
+    assert mux._test_fanin_owner == "doctor-aec-probe"
+
+
+@pytest.mark.asyncio
+async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
+    mux, patched_probes,
+):
+    """USB/direct and ordinary program starts cannot displace the held lane."""
+
+    mux._fanin_select_label = AsyncMock(return_value={})
+    _stub_probes(
+        patched_probes,
+        spotify=True,
+        airplay=True,
+        bluetooth=True,
+        usbsink=True,
+    )
+
+    await mux.select_test_fanin_label("correction", "doctor-aec-probe")
+    await mux._tick()
+
+    status = mux._status_payload()
+    assert status["active_source"] == "correction"
+    assert status["test_owner"] == "doctor-aec-probe"
+    mux._fanin_select_label.assert_awaited_with("correction")
+    mux._fanin_select.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_manual_select_is_rejected_without_mutation_during_test_gate(
     mux, patched_probes,

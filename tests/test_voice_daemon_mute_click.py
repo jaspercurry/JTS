@@ -20,6 +20,9 @@ class _FakeTts:
     async def write_segment(self, pcm: bytes, **kwargs) -> None:
         self.calls.append((pcm, kwargs))
 
+    async def wait_drained(self) -> None:
+        return None
+
 
 def test_synthetic_audio_profile_uses_measured_source_level(monkeypatch):
     import jasper.voice_daemon as vd

@@ -2240,32 +2240,50 @@ in feedback (2026-05-09).
 
 **Decision:** Add two commands to `voice_daemon`'s control socket
 ([jasper/voice_daemon.py](../jasper/voice_daemon.py)):
-- `MEASURE_PAUSE` → set in-process `_measurement_active` event;
+- `MEASURE_PAUSE` → atomically close `AssistantOutputGate` admission, then
+  set the in-process `_measurement_active` event;
   pause `WakeLoop` (block on the event before pulling the next
   audio chunk); pause outputd's content loudness meter so sweeps do
   not become assistant loudness baselines; cancel any active
   `Ducker.duck()` and skip future ones; pause the voice daemon's 1 Hz Camilla
   drift reconciler so it cannot overwrite the quiet-start/ramp/restore
-  transaction;
-  return JSON `{"result": "ok"}`.
+  transaction; return JSON `{"result": "ok", "drained": <bool>}`. The
+  additive drain field preserves the scalar result older coordinators require
+  to renew and later resume the pause during rolling deploys.
 - The reply is held while assistant audio that was **already in playout**
-  when `MEASURE_PAUSE` landed finishes (issue #1898). The window is armed
-  first — so no new cue/timer/announcement can start and mic frames stop
-  immediately (issue #1786) — and the drain then waits out only that tail,
-  deferring to it rather than cancelling it. Bounded by
-  `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC`, which must stay under the
-  coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout: a
-  coordinator that gives up believes voice was never paused and skips
-  `MEASURE_RESUME`. On timeout the daemon proceeds with the window open
-  and logs `event=measurement.inflight_drain_timeout` at WARNING, naming
-  the first capture as possibly contaminated. Renewals do not drain.
+  when `MEASURE_PAUSE` landed finishes (issue #1898). The output gate closes
+  before the window is armed, so even pre-render work that passed an earlier
+  measurement check cannot begin either supported TTS route; mic frames also
+  stop immediately (issue #1786). Mute feedback and a turn's final listening
+  chirp retain their gate episode through `TtsPlayout.wait_drained()`, so a
+  completed socket write cannot hide a still-audible physical tail. The drain
+  then waits out only the already-admitted tail, deferring to it rather than
+  cancelling it. One 2.5 s aggregate daemon deadline covers transition-lock
+  acquisition, a stale safety-task join, the volume measurement guard,
+  outputd's canonical meter pause (itself capped at 250 ms), and the residual
+  in-flight drain. Setup plus drain gets 2.25 s; the final 0.25 s is reserved
+  for fail-closed local rollback. This remains strictly below the already
+  shipped coordinator `VOICE_MEASURE_PAUSE_TIMEOUT_SEC=3.0`, leaving 0.5 s for
+  UDS reply scheduling on a loaded Pi. The residual drain is additionally
+  capped by `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC=2.0`; earlier setup
+  work consumes that allowance rather than starting a fresh drain timeout. On
+  a completed drain timeout the daemon keeps every pause armed, returns
+  `{"result": "ok", "drained": false}`, and logs
+  `event=measurement.inflight_drain_timeout` at WARNING. The strict doctor
+  caller requires `drained is true` and fails before playing its tone; this
+  also makes a new strict caller fail closed against an old daemon whose reply
+  lacks the field. Established correction flows may keep their explicit
+  permissive policy, and all callers that see `result=ok` retain cleanup
+  ownership and send `MEASURE_RESUME`. Renewals report `drained=true` without
+  repeating the drain.
 - While the measurement window remains open, the coordinator repeats
   idempotent `MEASURE_PAUSE` every `MEASUREMENT_LEASE_REFRESH_SEC` to renew
   the voice daemon's crash-recovery timer
   (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`). A dead coordinator stops
   renewing, so the speaker still self-recovers. A test pins the pair.
 - `MEASURE_RESUME` → clear the event and reconcile guard, restart trackers,
-  return JSON.
+  atomically reopen assistant-output admission, return JSON. Explicit resume,
+  auto-clear, and pause-error cleanup are idempotent.
 
 The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
@@ -3438,14 +3456,20 @@ Internal:
 
 ---
 
-Verification scope (2026-08-04): PR-1 ingress/current-surface scope: canonical Sound
+Verification scope (2026-08-08): the live Decision 4 `MEASURE_PAUSE` timeout
+invariant was rechecked against `jasper.voice_daemon`,
+`jasper.correction.coordinator`, and deterministic hardware-free UDS tests:
+2.5 s aggregate daemon ownership, 2.25 s setup/drain, 250 ms outputd meter
+control, 0.25 s rollback reserve, and 0.5 s margin below the shipped 3.0 s
+legacy-coordinator read timeout. The historical implementation narratives were not
+re-verified. Prior 2026-08-04 (PR-1 ingress/current-surface scope: canonical Sound
 measurement routes, direct `/correction/*` aliases, Bass's page-relative status
 request, both nginx profiles, the unchanged `/correction/room/` relay return
 path, and the unchanged correction-only static-preflight allowlist were
 rechecked against the correction renderers/modules, nginx profiles, and 768
 passing focused hardware-free Sound/correction/landing tests; 28
 environment-dependent cases were deselected. No Pi, microphone, acoustic,
-deploy, or reboot validation was performed. Prior 2026-07-27 (runtime-integrity memory evidence rechecked against
+deploy, or reboot validation was performed). Prior 2026-07-27 (runtime-integrity memory evidence rechecked against
 the shared RAM-tier-aware headroom policy; hardware-free tests only). Prior
 2026-07-27 (flow-simplification PR-U3 — the Status bullet's
 "16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
@@ -3604,4 +3628,4 @@ topology-safe correction reset/start behavior; prior 2026-06-17 pass covered
 auto-level controller ownership, state guards, and status/bundle payload
 ownership; prior 2026-06-15 pass covered bonded-follower delegation.)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-08

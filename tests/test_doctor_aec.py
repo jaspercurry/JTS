@@ -4,10 +4,15 @@
 
 """Unit tests for the jasper-doctor aec domain."""
 
+import asyncio
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +21,15 @@ import pytest
 
 from jasper.audio_profile_state import MicProbe
 from jasper.cli import doctor
+
+
+@pytest.fixture(autouse=True)
+def _probe_lock_in_test_tmp(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_PROBE_LOCK_PATH",
+        str(tmp_path / "doctor-aec-probe.lock"),
+    )
 
 
 # --------------------------------------------- AEC bridge output assessment
@@ -77,6 +91,449 @@ def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):
     assert [(result.name, result.status) for result in results] == [
         ("probe — bridge running", "fail")
     ]
+
+
+def test_aec_probe_process_lock_is_fail_fast_and_reusable(tmp_path):
+    path = str(tmp_path / "probe.lock")
+
+    with doctor.aec_probe._probe_lock(path) as fd:
+        assert not os.get_inheritable(fd)
+        with pytest.raises(doctor.aec_probe._ProbeLockBusy):
+            with doctor.aec_probe._probe_lock(path):
+                pytest.fail("a second process lock must not enter")
+
+    # Close/process death releases flock; the stable inode is deliberately
+    # retained and can be acquired again without an unlink race.
+    assert Path(path).exists()
+    with doctor.aec_probe._probe_lock(path):
+        pass
+
+
+def test_aec_probe_process_lock_excludes_a_separate_process(tmp_path):
+    path = str(tmp_path / "probe.lock")
+    contender = (
+        "import errno,fcntl,os,sys; "
+        "fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT,0o600); "
+        "\ntry: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        "\nexcept OSError as exc: sys.exit(23 if exc.errno in "
+        "(errno.EACCES,errno.EAGAIN) else 24)"
+        "\nelse: sys.exit(0)"
+    )
+
+    with doctor.aec_probe._probe_lock(path):
+        held = subprocess.run(
+            [sys.executable, "-c", contender, path],
+            check=False,
+        )
+    released = subprocess.run(
+        [sys.executable, "-c", contender, path],
+        check=False,
+    )
+
+    assert held.returncode == 23
+    assert released.returncode == 0
+
+
+def test_second_aec_probe_cannot_reach_precheck_wave_or_aplay(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_run",
+        lambda cmd, **_kwargs: calls.append(cmd),
+    )
+
+    with doctor.aec_probe._probe_lock():
+        results = doctor.probe_aec_ref_path()
+
+    assert [(result.name, result.status) for result in results] == [
+        ("probe — exclusive run", "fail")
+    ]
+    assert "already active" in results[0].detail
+    assert "No test tone was played" in results[0].detail
+    assert calls == []
+
+
+def test_aec_probe_reports_unavailable_process_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_PROBE_LOCK_PATH",
+        str(tmp_path / "missing" / "probe.lock"),
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert results[0].name == "probe — exclusive run"
+    assert results[0].status == "fail"
+    assert "/run/jasper permissions" in results[0].detail
+
+
+def _active_probe_run_recorder():
+    calls = []
+
+    def _run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        raise AssertionError(f"probe continued unexpectedly: {cmd}")
+
+    return calls, _run
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        doctor.aec_probe.control.ControlError("connection refused"),
+        json.JSONDecodeError("invalid JSON", "not-json", 0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+    ids=["control-unreachable", "malformed-json", "invalid-utf8"],
+)
+def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error):
+    calls, fake_run = _active_probe_run_recorder()
+
+    def raise_state_error(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        raise_state_error,
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert "idleness could not be established" in results[-1].detail
+    assert "no test tone was played" in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {"active_source": None},
+        {"active_source": 1},
+        {"active_source": ["idle"]},
+    ],
+    ids=["missing", "null", "integer", "list"],
+)
+def test_active_aec_probe_fails_closed_for_untrusted_active_source(
+    monkeypatch, state
+):
+    calls, fake_run = _active_probe_run_recorder()
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control, "get_state", lambda **_kwargs: state
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert "trustworthy active_source" in results[-1].detail
+    assert "no test tone was played" in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("active_source", "loopback_active", "detail"),
+    [
+        ("spotify", False, "active_source='spotify'"),
+        ("voice", False, "active_source='voice'"),
+        ("idle", True, "fan-in input lane is currently open"),
+    ],
+)
+def test_active_aec_probe_refuses_known_active_playback(
+    monkeypatch, active_source, loopback_active, detail
+):
+    calls, fake_run = _active_probe_run_recorder()
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": active_source},
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe, "_loopback_playback_active", lambda: loopback_active
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "fail"]
+    assert detail in results[-1].detail
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+def test_active_aec_probe_trustworthy_idle_reaches_aplay(monkeypatch, tmp_path):
+    calls = []
+    isolation_open = False
+
+    @asynccontextmanager
+    async def fake_measurement_window(**kwargs):
+        nonlocal isolation_open
+        assert kwargs == {
+            "gate_owner": "doctor-aec-probe",
+            "require_voice_pause": True,
+        }
+        with pytest.raises(doctor.aec_probe._ProbeLockBusy):
+            with doctor.aec_probe._probe_lock():
+                pytest.fail("process lock must cover measurement cleanup")
+        isolation_open = True
+        try:
+            yield
+        finally:
+            isolation_open = False
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        if cmd and cmd[0] == "aplay":
+            assert isolation_open
+            assert Path(doctor.aec_probe._PROBE_SINE_PATH).exists()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd and cmd[0] == "journalctl":
+            return SimpleNamespace(
+                stdout=_rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0),
+                stderr="",
+                returncode=0,
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_DURATION_S", 0.0)
+    monkeypatch.setattr(
+        doctor.aec_probe, "_PROBE_SINE_PATH", str(tmp_path / "probe.wav")
+    )
+    monkeypatch.setattr(doctor.aec_probe.time, "sleep", lambda _seconds: None)
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "ok", "ok", "ok"]
+    assert any(call and call[0] == "aplay" for call in calls)
+    assert isolation_open is False
+
+
+def test_active_aec_probe_releases_isolation_after_aplay_failure(
+    monkeypatch, tmp_path
+):
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def fake_measurement_window(**_kwargs):
+        events.append("isolation-enter")
+        try:
+            yield
+        finally:
+            events.append("isolation-exit")
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="active\n", stderr="", returncode=0)
+        if cmd and cmd[0] == "aplay":
+            events.append("aplay-failed")
+            return SimpleNamespace(stdout="", stderr="device busy", returncode=1)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_DURATION_S", 0.0)
+    monkeypatch.setattr(
+        doctor.aec_probe, "_PROBE_SINE_PATH", str(tmp_path / "probe.wav")
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert results[-1].name == "probe — aplay sine"
+    assert results[-1].status == "fail"
+    assert events == ["isolation-enter", "aplay-failed", "isolation-exit"]
+
+
+def test_active_aec_probe_never_generates_or_plays_without_isolation(
+    monkeypatch, tmp_path
+):
+    calls, fake_run = _active_probe_run_recorder()
+
+    @asynccontextmanager
+    async def unavailable_window(**kwargs):
+        assert kwargs["gate_owner"] == "doctor-aec-probe"
+        raise doctor.aec_probe.MeasurementWindowError("mux busy")
+        yield  # pragma: no cover
+
+    sine_path = tmp_path / "must-not-exist.wav"
+    monkeypatch.setattr(doctor.aec_probe, "_run", fake_run)
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "measurement_window", unavailable_window)
+    monkeypatch.setattr(doctor.aec_probe, "_PROBE_SINE_PATH", str(sine_path))
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.status for result in results] == ["ok", "ok", "fail"]
+    assert results[-1].name == "probe — audio isolation"
+    assert "no test tone was played" in results[-1].detail
+    assert not sine_path.exists()
+    assert not any(call and call[0] == "aplay" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_active_aec_probe_keeps_isolation_until_cancelled_body_stops(
+    monkeypatch,
+):
+    events: list[str] = []
+    entered_body = asyncio.Event()
+    unblock_body = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    @asynccontextmanager
+    async def fake_measurement_window(**_kwargs):
+        events.append("isolation-enter")
+        try:
+            yield
+        finally:
+            events.append("isolation-exit")
+
+    def blocking_body():
+        loop.call_soon_threadsafe(entered_body.set)
+        assert unblock_body.wait(timeout=1.0)
+        events.append("body-stopped")
+        return []
+
+    monkeypatch.setattr(
+        doctor.aec_probe, "measurement_window", fake_measurement_window
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_play_and_assess_probe", blocking_body)
+
+    task = asyncio.create_task(doctor.aec_probe._run_isolated_probe())
+    await asyncio.wait_for(entered_body.wait(), timeout=1.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert events == ["isolation-enter"]
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert events == ["isolation-enter"]
+
+    unblock_body.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["isolation-enter", "body-stopped", "isolation-exit"]
+
+
+def test_active_aec_probe_reports_exit_cleanup_failure_after_tone(monkeypatch):
+    @asynccontextmanager
+    async def release_fails(**_kwargs):
+        yield
+        raise doctor.aec_probe.MeasurementWindowError("mux release stuck")
+
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_run",
+        lambda cmd, **_kwargs: SimpleNamespace(
+            stdout="active\n" if cmd[:2] == ["systemctl", "is-active"] else "",
+            stderr="",
+            returncode=0,
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "measurement_window", release_fails)
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_play_and_assess_probe",
+        lambda: [doctor.CheckResult("probe — aplay sine", "ok", "tone completed")],
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.name for result in results] == [
+        "probe — bridge running",
+        "probe — renderers idle",
+        "probe — aplay sine",
+        "probe — audio isolation cleanup",
+    ]
+    assert results[-1].status == "fail"
+    assert "probe body completed" in results[-1].detail
+    assert "playback outcome is shown above" in results[-1].detail
+    assert "test tone ran" not in results[-1].detail.lower()
+    assert "no test tone was played" not in results[-1].detail.lower()
+
+
+def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
+    monkeypatch,
+):
+    @asynccontextmanager
+    async def release_fails(**_kwargs):
+        yield
+        raise doctor.aec_probe.MeasurementWindowError("mux release stuck")
+
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_run",
+        lambda cmd, **_kwargs: SimpleNamespace(
+            stdout="active\n" if cmd[:2] == ["systemctl", "is-active"] else "",
+            stderr="",
+            returncode=0,
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.aec_probe.control,
+        "get_state",
+        lambda **_kwargs: {"active_source": "idle"},
+    )
+    monkeypatch.setattr(doctor.aec_probe, "_loopback_playback_active", lambda: False)
+    monkeypatch.setattr(doctor.aec_probe, "measurement_window", release_fails)
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_play_and_assess_probe",
+        lambda: [
+            doctor.CheckResult(
+                "probe — generate sine",
+                "fail",
+                "could not write probe file",
+            )
+        ],
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert [result.name for result in results] == [
+        "probe — bridge running",
+        "probe — renderers idle",
+        "probe — generate sine",
+        "probe — audio isolation cleanup",
+    ]
+    assert results[-2].status == "fail"
+    assert "could not write probe file" in results[-2].detail
+    assert "probe body completed" in results[-1].detail
+    assert "test tone ran" not in results[-1].detail.lower()
 
 
 def test_assess_aec_output_empty_journal_is_ok():

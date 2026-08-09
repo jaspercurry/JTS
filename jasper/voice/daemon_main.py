@@ -506,8 +506,10 @@ async def _start_control_socket(
                               recreate the output path or gain policy.
         MEASURE_PAUSE       → open a room-correction measurement
                               window. Drops mic frames, pauses the
-                              outputd content meter. Refuses (BUSY) if a
-                              session is active. Auto-clears after
+                              outputd content meter, and reports additive
+                              `drained` evidence while keeping the compatible
+                              `result=ok` whenever cleanup is owned. Refuses
+                              (BUSY) if a session is active. Auto-clears after
                               voice_daemon.MEASUREMENT_AUTOCLEAR_SEC
                               if RESUME is never sent.
         MEASURE_RESUME      → close the measurement window.
@@ -526,7 +528,11 @@ async def _start_control_socket(
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            try:
+                raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("voice control socket: client read timed out")
+                return
             line = raw.decode("ascii", errors="replace").strip()
             parts = line.split(maxsplit=1)
             cmd = parts[0].upper() if parts else ""
@@ -542,7 +548,7 @@ async def _start_control_socket(
             elif cmd == "CUE_PLAY":
                 result = {"result": await wake_loop.play_cue(arg)}
             elif cmd == "MEASURE_PAUSE":
-                result = {"result": await wake_loop.measurement_pause()}
+                result = await wake_loop.measurement_pause_response()
             elif cmd == "MEASURE_RESUME":
                 result = {"result": await wake_loop.measurement_resume()}
             elif cmd == "MUTE":
@@ -553,8 +559,6 @@ async def _start_control_socket(
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))
             await writer.drain()
-        except asyncio.TimeoutError:
-            logger.warning("voice control socket: client read timed out")
         except Exception as e:  # noqa: BLE001
             logger.exception("voice control socket handler failed: %s", e)
             try:
