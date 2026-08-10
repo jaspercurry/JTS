@@ -1,0 +1,326 @@
+{
+  "_provenance": {
+    "bundle_dir_name": "jts3-incident-20260810-issue2291",
+    "candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
+    "derived_by": "scripts/derive-crossover-incident-fixture.py",
+    "derived_on": "2026-08-10",
+    "incident": "2026-08-10 jts3 crossover prescription incident (issue #2291)",
+    "note": "The published measured-crossover candidate, reduced to the fields the replay needs. Every per-role linearization block is the serialized LinearizationFit the fit engine produced, so the test can rebuild the dataclass rather than invent one.",
+    "source_sha256": {
+      "baseline_profile.json": "a5880af45bbcb91a7be51be7df5171736037336ff1b6972ecbb4d5ae83f611fb",
+      "build.txt": "86124335f1e61a99b28aab3311817f12b5ebc17422a237017d2ced68b1530190",
+      "candidate.json": "5064c24284a5dcbd6a1e0b611f40a2081ead13c725e8bdf2d6c35ee37d9532a1",
+      "check.json": "aebacfe3c24201e7c53d8a745f3d7b4bf5783aed116855ed3a6aafb744db1aac",
+      "crossover_v2_state.json": "aaf3703dc47cfe7ca24dceb18dd9889bd44a7c089aa2a60ed178b4cb3e1cec18",
+      "info.json": "238018405169254d15a2c50a49c0cbe7f0a911c6225b5e3faa0167907068c84a",
+      "measure_sidecar.json": "514a5ae018a9f929e1bc5a2b9699b678cdb13612030f74de3d346623aeb33a11"
+    },
+    "speaker_build_sha": "9cc41b987",
+    "stage1_relay_session_id": "cap_OqlWdywQv9ZlWO7RqkZpSQ",
+    "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
+  },
+  "alignment": {
+    "delay_role": "tweeter",
+    "delay_us": 80.14434127796146,
+    "polarity": "invert"
+  },
+  "analysis": {
+    "flatness_improvement_db": 1.9237,
+    "polarity": "inverted",
+    "predicted_ripple_db": 10.5731,
+    "trim_band_average_db": {
+      "tweeter": -10.8846,
+      "woofer": 0.0
+    },
+    "trim_db": {
+      "tweeter": -10.8846,
+      "woofer": 0.0
+    }
+  },
+  "crossover_region": {
+    "delay_range_ms": [
+      0.0,
+      1.0
+    ],
+    "delay_target_driver": null,
+    "fc_hz": 1648.7,
+    "id": "woofer_tweeter_1649hz",
+    "lower_driver": "woofer",
+    "lower_polarity": "non-inverted",
+    "null_depth_threshold_db": 25.0,
+    "order": 4,
+    "target_type": "LinkwitzRiley",
+    "upper_driver": "tweeter",
+    "upper_polarity": "non-inverted"
+  },
+  "drivers": {
+    "tweeter": {
+      "manufacturer": "Operator research",
+      "model": "DE250-8",
+      "role": "tweeter",
+      "sensitivity_db": 108.5
+    },
+    "woofer": {
+      "manufacturer": "Operator research",
+      "model": "Epique E150HE-44",
+      "role": "woofer",
+      "sensitivity_db": 83.3
+    }
+  },
+  "fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
+  "linearization": {
+    "tweeter": {
+      "correction_giveback_db": 7.07133010257365,
+      "driver_class": "compression_horn",
+      "filters": [
+        {
+          "biquad_type": "Lowshelf",
+          "freq": 4063.563894487073,
+          "gain": -6.91148617595693,
+          "q": 0.7071067811865475
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 3341.254398030567,
+          "gain": -1.8230929473951925,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 2196.7060059560713,
+          "gain": -1.2022383154414316,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 6356.048551231687,
+          "gain": -4.636723587569211,
+          "q": 1.0
+        }
+      ],
+      "fit_band_hz": [
+        1615.118381017347,
+        15991.52712764189
+      ],
+      "headroom_cost_db": 0.0,
+      "hf_continuation_ceiling_hz": 16444.94579038643,
+      "hf_continuation_policy": "hold",
+      "hf_continuation_spend_db": 6.91148617595693,
+      "hf_continuation_suppressed_reason": "",
+      "level_frame_offset_db": 8.881784197001252e-16,
+      "lift_boost_excluded_drops": [],
+      "lift_boost_excluded_residual": [],
+      "lift_from_boost_db": 0.0,
+      "lift_from_reduced_cuts_db": 0.0,
+      "lift_requested_db": 0.8962933719383198,
+      "lift_suppressed_reason": "no_realizable_boost",
+      "measured_deficit_at_ceiling_db": 6.91148617595693,
+      "mic_tier": "reference",
+      "n_repeats": 2,
+      "observe_octave_summary": {
+        "1000": -27.797002046451965,
+        "12000": 0.18168931657483967,
+        "16000": 0.02595990474254606,
+        "2000": -1.6934061528757915,
+        "20000": -1.7393931042007864,
+        "250": 6.792725123714845,
+        "4000": 0.7674426243391963,
+        "500": -10.81594708776462,
+        "8000": 0.39418282200348287
+      },
+      "reason_summary": {
+        "1000": "envelope_out_of_band",
+        "12000": "envelope_limited_by_mic_tier",
+        "16000": "envelope_limited_by_mic_tier",
+        "2000": "envelope_fitted",
+        "20000": "envelope_beyond_measurement_confidence",
+        "250": "envelope_out_of_band",
+        "4000": "envelope_fitted",
+        "500": "envelope_out_of_band",
+        "8000": "envelope_fitted"
+      },
+      "residual_max_db": 2.551803655409394,
+      "residual_rms_db": 0.7331300671280693,
+      "role": "tweeter",
+      "target_level_db": -6.7856697620240665,
+      "verify_band_hz": [
+        1615.118381017347,
+        20000.0
+      ],
+      "verify_residual_max_db": 2.551803655409394,
+      "verify_residual_rms_db": 0.7316987647838901
+    },
+    "woofer": {
+      "correction_giveback_db": 1.3353587252830579,
+      "driver_class": "unknown",
+      "filters": [
+        {
+          "biquad_type": "Peaking",
+          "freq": 976.425769162589,
+          "gain": -6.381774241493606,
+          "q": 2.0385116160278245
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 717.9127307876242,
+          "gain": -2.8989034907556532,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 1255.803809308404,
+          "gain": -1.1187590040442354,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 221.8637544489496,
+          "gain": -0.7607695639744044,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 1756.4341842850188,
+          "gain": -0.587922518209806,
+          "q": 2.0
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 347.0295611567023,
+          "gain": 4.789281043128751,
+          "q": 2.538510159079161
+        },
+        {
+          "biquad_type": "Peaking",
+          "freq": 849.0371573496667,
+          "gain": 3.450800918455605,
+          "q": 1.9823059451359895
+        }
+      ],
+      "fit_band_hz": [
+        150.0,
+        2196.7060059560713
+      ],
+      "headroom_cost_db": 5.244141917602341,
+      "hf_continuation_ceiling_hz": 0.0,
+      "hf_continuation_policy": "",
+      "hf_continuation_spend_db": 0.0,
+      "hf_continuation_suppressed_reason": "",
+      "level_frame_offset_db": 1.5643883858748566,
+      "lift_boost_excluded_drops": [],
+      "lift_boost_excluded_residual": [],
+      "lift_from_boost_db": 4.992455144221156,
+      "lift_from_reduced_cuts_db": 0.0,
+      "lift_requested_db": 4.789281043128751,
+      "lift_suppressed_reason": "",
+      "measured_deficit_at_ceiling_db": 0.0,
+      "mic_tier": "reference",
+      "n_repeats": 2,
+      "observe_octave_summary": {
+        "1000": 0.8295602014856982,
+        "12000": 7.244868115009027,
+        "16000": 25.34041724377147,
+        "2000": -0.7287181011340849,
+        "20000": 52.10634385168473,
+        "250": 1.2009445151627318,
+        "4000": -4.3207559974968035,
+        "500": 1.6856286249457888,
+        "8000": -10.37670376495916
+      },
+      "reason_summary": {
+        "1000": "envelope_fitted",
+        "12000": "envelope_out_of_band",
+        "16000": "envelope_out_of_band",
+        "2000": "envelope_fitted",
+        "20000": "envelope_out_of_band",
+        "250": "envelope_fitted",
+        "4000": "envelope_fitted",
+        "500": "envelope_fitted",
+        "8000": "envelope_out_of_band"
+      },
+      "residual_max_db": 2.6384593687705227,
+      "residual_rms_db": 1.0464754544123003,
+      "role": "woofer",
+      "target_level_db": -20.580391638502185,
+      "verify_band_hz": [
+        150.0,
+        4393.412011912143
+      ],
+      "verify_residual_max_db": 6.5834025147038915,
+      "verify_residual_rms_db": 1.7002235422342453
+    }
+  },
+  "linearization_outcome": "trim_rejected",
+  "program_id": "1b9e1abdc11437b91dcfe6cc66c284001b15ad9bf0fcfbe0444ba9da2346bb75",
+  "role_attenuations_db": {
+    "tweeter": -13.012979363787029,
+    "woofer": 0.0
+  },
+  "source_preset": {
+    "artifact_schema_version": 1,
+    "channel_map": {
+      "layout": "mono",
+      "outputs": [
+        {
+          "driver_role": "woofer",
+          "index": 0,
+          "label": "DAC output 1",
+          "side": "mono",
+          "startup_muted": true
+        },
+        {
+          "driver_role": "tweeter",
+          "index": 1,
+          "label": "DAC output 2",
+          "side": "mono",
+          "startup_muted": true
+        }
+      ]
+    },
+    "crossover_regions": [
+      {
+        "delay_range_ms": [
+          0.0,
+          1.0
+        ],
+        "delay_target_driver": null,
+        "fc_hz": 1648.7,
+        "id": "woofer_tweeter_1649hz",
+        "lower_driver": "woofer",
+        "lower_polarity": "non-inverted",
+        "null_depth_threshold_db": 25.0,
+        "order": 4,
+        "target_type": "LinkwitzRiley",
+        "upper_driver": "tweeter",
+        "upper_polarity": "non-inverted"
+      }
+    ],
+    "drivers": {
+      "tweeter": {
+        "manufacturer": "Operator research",
+        "model": "DE250-8",
+        "role": "tweeter",
+        "sensitivity_db": 108.5
+      },
+      "woofer": {
+        "manufacturer": "Operator research",
+        "model": "Epique E150HE-44",
+        "role": "woofer",
+        "sensitivity_db": 83.3
+      }
+    },
+    "kind": "jts_active_speaker_preset",
+    "name": "Mono active 2-way output preview-derived active 2-way",
+    "notes": "Derived from jts_active_speaker_crossover_preview; review before load.",
+    "preset_id": "preview-default-2way",
+    "safety": {
+      "emergency_stop_required": true,
+      "escalation_step_db": 1.0,
+      "initial_sweep_level_db_spl": 55.0,
+      "max_commissioning_level_db_spl": 80.0,
+      "require_channel_identity_before_drivers": true,
+      "require_physical_tweeter_protection": true
+    },
+    "way_count": 2
+  }
+}

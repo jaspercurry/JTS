@@ -1,0 +1,128 @@
+{
+  "_provenance": {
+    "bundle_dir_name": "jts3-incident-20260810-issue2291",
+    "candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
+    "derived_by": "scripts/derive-crossover-incident-fixture.py",
+    "derived_on": "2026-08-10",
+    "incident": "2026-08-10 jts3 crossover prescription incident (issue #2291)",
+    "note": "Session-level inputs the stage-1 Fc comparison ran under. configured_fc_hz is the crossover the SESSION was configured at and selected_fc_hz is the corner the comparison recommended; the gap between them is what the replay test characterizes.",
+    "source_sha256": {
+      "baseline_profile.json": "a5880af45bbcb91a7be51be7df5171736037336ff1b6972ecbb4d5ae83f611fb",
+      "build.txt": "86124335f1e61a99b28aab3311817f12b5ebc17422a237017d2ced68b1530190",
+      "candidate.json": "5064c24284a5dcbd6a1e0b611f40a2081ead13c725e8bdf2d6c35ee37d9532a1",
+      "check.json": "aebacfe3c24201e7c53d8a745f3d7b4bf5783aed116855ed3a6aafb744db1aac",
+      "crossover_v2_state.json": "aaf3703dc47cfe7ca24dceb18dd9889bd44a7c089aa2a60ed178b4cb3e1cec18",
+      "info.json": "238018405169254d15a2c50a49c0cbe7f0a911c6225b5e3faa0167907068c84a",
+      "measure_sidecar.json": "514a5ae018a9f929e1bc5a2b9699b678cdb13612030f74de3d346623aeb33a11"
+    },
+    "speaker_build_sha": "9cc41b987",
+    "stage1_relay_session_id": "cap_OqlWdywQv9ZlWO7RqkZpSQ",
+    "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
+  },
+  "bundle_session_id": "f007c0b191a8",
+  "capture_context": {
+    "alignment_confidence": 0.7504,
+    "epsilon_ppm": 31.319,
+    "gate_floor_source": "search_span_bound",
+    "gate_window_ms": 7.0,
+    "snr_db": {
+      "tweeter": -0.4,
+      "woofer": 44.1
+    },
+    "validity_floor_hz": 142.85714285714286
+  },
+  "configured_fc_hz": 2000.0,
+  "fc_selection": {
+    "candidate_order": [
+      2000.0,
+      1648.7,
+      1698.9,
+      1750.6,
+      1803.9,
+      1858.9
+    ],
+    "limits": {
+      "beaming_ceiling_hz": 1915.4,
+      "declared_floor_hz": 1600.0,
+      "lower_driver_ceiling_hz": 4000.0,
+      "search_hi_hz": 2500.0,
+      "search_lo_hz": 1600.0
+    },
+    "margin_db": 2.176,
+    "scores": [
+      {
+        "fc_hz": 1648.7,
+        "headroom_cost_db": 5.244,
+        "lateral_excess_db": 1.838,
+        "poses": 6,
+        "score": 3.646,
+        "worst_db": 1.417,
+        "worst_hz": 1682.8
+      },
+      {
+        "fc_hz": 1750.6,
+        "headroom_cost_db": 5.198,
+        "lateral_excess_db": 1.537,
+        "poses": 6,
+        "score": 4.798,
+        "worst_db": -2.73,
+        "worst_hz": 2000.0
+      },
+      {
+        "fc_hz": 1803.9,
+        "headroom_cost_db": 5.248,
+        "lateral_excess_db": 0.155,
+        "poses": 6,
+        "score": 4.806,
+        "worst_db": -3.417,
+        "worst_hz": 2000.0
+      },
+      {
+        "fc_hz": 1698.9,
+        "headroom_cost_db": 5.186,
+        "lateral_excess_db": 2.082,
+        "poses": 6,
+        "score": 4.976,
+        "worst_db": -2.639,
+        "worst_hz": 2000.0
+      },
+      {
+        "fc_hz": 1858.9,
+        "headroom_cost_db": 5.188,
+        "lateral_excess_db": 0.304,
+        "poses": 6,
+        "score": 5.053,
+        "worst_db": -3.604,
+        "worst_hz": 2000.0
+      },
+      {
+        "fc_hz": 2000.0,
+        "headroom_cost_db": 5.273,
+        "lateral_excess_db": 0.0,
+        "poses": 6,
+        "score": 5.822,
+        "worst_db": -4.504,
+        "worst_hz": 2000.0
+      }
+    ],
+    "verdict": "recommend_alternative"
+  },
+  "gain_plan_db": {
+    "tweeter": -34.96673915027996,
+    "woofer": -6.185870665756447
+  },
+  "mic_calibration_id": "minidsp-minidsp_umik2-b7343c0c625b",
+  "mic_tier": "reference",
+  "selected_fc_hz": 1648.7,
+  "sweep_band_hz": {
+    "tweeter": [
+      1600.0,
+      20000.0
+    ],
+    "woofer": [
+      150.0,
+      4000.0
+    ]
+  },
+  "tier": "full"
+}
