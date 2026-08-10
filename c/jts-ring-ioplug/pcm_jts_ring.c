@@ -4,15 +4,21 @@
 //
 // JTS Ring — ALSA ioplug (`pcm.jts_ring`), BOTH directions.
 //
+// The wire — sample format and channel count — is declared per PCM by the
+// conf.d block (`format` / `channels`, defaulting to S16_LE / 2), advertised
+// verbatim as this PCM's only HW format/channel value, and used as the ring
+// geometry; the rate is pinned at 48 kHz. Every staging stride below is
+// (channels x sample width), so widening the conf.d moves the whole plugin.
+//
 // PLAYBACK (Ring B): CamillaDSP (or aplay, for the resolvability probe) opens
-// the ALSA PCM `jts_ring_playback` and writes S16LE/2ch/48 kHz interleaved
-// frames; this plugin stages them into whole slots and publishes each full slot
+// the ALSA PCM `jts_ring_playback` and writes interleaved frames at that wire;
+// this plugin stages them into whole slots and publishes each full slot
 // into the SHM ping-pong ring (jts_ring_shm.c, the WRITER core). jasper-outputd
 // is the reader (rust/jasper-ring) and the DAC pacer. This replaces the outputd
 // content snd-aloop hop.
 //
 // CAPTURE (Ring A): CamillaDSP (or arecord, for the resolvability probe) opens
-// `jts_ring_capture` and READS S16LE/2ch/48 kHz frames; this plugin attaches the
+// `jts_ring_capture` and READS frames at the same declared wire; this plugin attaches the
 // SHM reader core (jts_ring_shm.c), destages slots the WRITER (jasper-fanin,
 // rust/jasper-ring RingWriter) published, and — when the writer is heartbeat-
 // dead — fabricates timer-paced silence so camilla stays DAC-paced through a
@@ -82,7 +88,11 @@
 //    /state.shm_ring.
 // 5. Fail-closed: a geometry mismatch against an existing ring is an open()
 //    error surfaced to Camilla/aplay; a torn (magic-less) file under the owned
-//    /dev/shm/jts-ring/ path is reclaimed. HW constraints pin S16LE/2ch/48 kHz.
+//    /dev/shm/jts-ring/ path is reclaimed. HW constraints pin the PCM to exactly
+//    the conf-declared format/channels at 48 kHz — one value each, so a
+//    negotiated hw_params can never disagree with the ring geometry. An unknown
+//    conf.d field is refused with -EINVAL, which is what makes a plugin older
+//    than its conf.d fail at open instead of on the wire.
 // 6. Default-off: the .so is never loaded outside the lab drop-in.
 // 7. Memory ordering: publish is Release on write_seq after the payload memcpy;
 //    the core documents the pairing with the reader's Acquire. C11 atomics ->
@@ -143,6 +153,12 @@
 #define JTS_RING_DEFAULT_PATH "/dev/shm/jts-ring/content.ring"
 #define JTS_RING_DEFAULT_PERIOD 128
 #define JTS_RING_DEFAULT_SLOTS 2
+// Wire defaults for a conf.d block that declares neither `format` nor
+// `channels`. They reproduce the pre-v2 pinned wire exactly, so an unmodified
+// /etc/alsa/conf.d/60-jts-ring.conf opens the same geometry, stages the same
+// bytes, and advertises the same HW constraints as before those fields existed.
+#define JTS_RING_DEFAULT_FORMAT JTS_RING_SAMPLE_FORMAT_S16LE
+#define JTS_RING_DEFAULT_CHANNELS 2
 
 typedef struct {
     snd_pcm_ioplug_t io;
@@ -154,6 +170,11 @@ typedef struct {
     char path[256];
     uint32_t period_frames;
     uint32_t n_slots;
+    // The wire this PCM declares, from the conf.d block (defaults S16_LE / 2).
+    // Set once at open and never mutated: they drive the ring geometry, the
+    // advertised HW format/channel constraints, and every staging stride below.
+    uint32_t channels;
+    uint32_t sample_format; // JTS_RING_SAMPLE_FORMAT_*
     int opened; // writer/reader attached
     // --- PLAYBACK staging (writer) ---
     // Camilla may writei() fewer than a whole slot at a time; we accumulate into
@@ -163,7 +184,10 @@ typedef struct {
     // `stage_frames` = frames still UNREAD in the destage buffer (so the slot
     // origin index for the next read is stage_capacity - stage_frames). See
     // jts_ring_capture_transfer.
-    int16_t *stage;
+    // Byte-typed: the frame stride is (channels x sample width), which the
+    // conf.d declares, so all staging arithmetic below goes through
+    // frame_bytes() rather than a compiled-in sample type.
+    uint8_t *stage;
     size_t stage_frames;
     size_t stage_capacity_frames; // == period_frames
     // Total frames ACCEPTED from / DELIVERED to the app (== ALSA appl_ptr).
@@ -210,9 +234,27 @@ typedef struct {
 } jts_ring_pcm_t;
 
 static const unsigned int JTS_RING_RATE = 48000;
-static const unsigned int JTS_RING_CHANNELS = 2;
 
 // ---- helpers ----
+
+// Bytes per interleaved frame for this PCM's declared wire — the ONE place the
+// plugin turns (format, channels) into a copy stride, so every staging alloc and
+// memcpy below moves together with the conf.d.
+static size_t frame_bytes(const jts_ring_pcm_t *p) {
+    return jts_ring_bytes_per_sample(p->sample_format) * (size_t)p->channels;
+}
+
+// The ring geometry this PCM opens: the conf-declared wire at the pinned rate.
+static jts_ring_geometry_t pcm_geometry(const jts_ring_pcm_t *p) {
+    jts_ring_geometry_t g = {
+        .rate = JTS_RING_RATE,
+        .channels = p->channels,
+        .sample_format = p->sample_format,
+        .period_frames = p->period_frames,
+        .n_slots = p->n_slots,
+    };
+    return g;
+}
 
 // One poll/pacing tick: period/4, clamped to [0.25 ms, 2 ms]. Shared by the
 // timerfd cadence, the playback drain wait, and the capture starvation nap.
@@ -247,20 +289,14 @@ static void disarm_timer(jts_ring_pcm_t *p) {
 static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
     if (!p->opened) {
-        jts_ring_geometry_t g = {
-            .rate = JTS_RING_RATE,
-            .channels = JTS_RING_CHANNELS,
-            .sample_format = JTS_RING_SAMPLE_FORMAT_S16LE,
-            .period_frames = p->period_frames,
-            .n_slots = p->n_slots,
-        };
+        jts_ring_geometry_t g = pcm_geometry(p);
         int rc = jts_ring_writer_open(p->path, &g, &p->writer);
         if (rc != 0) {
             SNDERR("jts_ring: writer_open(%s) failed rc=%d", p->path, rc);
             return rc < 0 ? rc : -EIO;
         }
         p->stage_capacity_frames = p->period_frames;
-        p->stage = calloc(p->stage_capacity_frames * JTS_RING_CHANNELS, sizeof(int16_t));
+        p->stage = calloc(p->stage_capacity_frames, frame_bytes(p));
         if (!p->stage) {
             jts_ring_writer_close(&p->writer);
             return -ENOMEM;
@@ -357,18 +393,19 @@ static snd_pcm_sframes_t jts_ring_transfer(snd_pcm_ioplug_t *io,
                                            snd_pcm_uframes_t offset,
                                            snd_pcm_uframes_t size) {
     jts_ring_pcm_t *p = io->private_data;
-    // Interleaved S16LE: one contiguous buffer, all channels in areas[0].addr.
-    const int16_t *src =
-        (const int16_t *)((const char *)areas[0].addr + (areas[0].first / 8) +
-                          (size_t)offset * (areas[0].step / 8));
+    // Interleaved: one contiguous buffer, all channels in areas[0].addr. ALSA
+    // gives first/step in BITS, so the frame stride is already byte-derived here
+    // — and it agrees with frame_bytes(p) because the HW constraints advertise
+    // exactly the conf-declared format and channel count.
+    const size_t fb = frame_bytes(p);
+    const uint8_t *src = (const uint8_t *)areas[0].addr + (areas[0].first / 8) +
+                         (size_t)offset * (areas[0].step / 8);
 
     snd_pcm_uframes_t consumed = 0;
     while (consumed < size) {
         size_t room = p->stage_capacity_frames - p->stage_frames;
         size_t take = (size - consumed) < room ? (size - consumed) : room;
-        memcpy(p->stage + p->stage_frames * JTS_RING_CHANNELS,
-               src + consumed * JTS_RING_CHANNELS,
-               take * JTS_RING_CHANNELS * sizeof(int16_t));
+        memcpy(p->stage + p->stage_frames * fb, src + consumed * fb, take * fb);
         p->stage_frames += take;
         consumed += take;
 
@@ -435,9 +472,9 @@ static int jts_ring_drain(snd_pcm_ioplug_t *io) {
     // in_flight == 0 and hw_ptr == appl_frames == ALSA appl_ptr — the correct
     // fully-drained terminal state.
     if (p->stage_frames > 0) {
-        size_t pad_from = p->stage_frames * JTS_RING_CHANNELS;
-        size_t total = p->stage_capacity_frames * JTS_RING_CHANNELS;
-        memset(p->stage + pad_from, 0, (total - pad_from) * sizeof(int16_t));
+        size_t pad_from = p->stage_frames * frame_bytes(p);
+        size_t total = p->stage_capacity_frames * frame_bytes(p);
+        memset(p->stage + pad_from, 0, total - pad_from);
         jts_ring_writer_publish(&p->writer, p->stage);
         p->stage_frames = 0;
     }
@@ -459,8 +496,9 @@ static int jts_ring_drain(snd_pcm_ioplug_t *io) {
 }
 
 static int jts_ring_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params) {
-    // The HW constraints below already pin format/channels/rate; nothing extra
-    // to negotiate. (Kept as a hook so a future active/S32 lane can validate.)
+    // The HW constraints advertise a single format/channels/rate — the values
+    // the conf.d declared — so alsa-lib can only negotiate that one shape and
+    // there is nothing left to validate here. (Kept as a hook.)
     (void)io;
     (void)params;
     return 0;
@@ -588,13 +626,7 @@ static void capture_service_tick(jts_ring_pcm_t *p) {
 static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
     if (!p->opened) {
-        jts_ring_geometry_t g = {
-            .rate = JTS_RING_RATE,
-            .channels = JTS_RING_CHANNELS,
-            .sample_format = JTS_RING_SAMPLE_FORMAT_S16LE,
-            .period_frames = p->period_frames,
-            .n_slots = p->n_slots,
-        };
+        jts_ring_geometry_t g = pcm_geometry(p);
         int rc = jts_ring_reader_open(p->path, &g, &p->reader);
         if (rc != 0) {
             // -EBUSY (a live foreign reader already owns the ring) is the SPSC
@@ -605,7 +637,7 @@ static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
             return rc < 0 ? rc : -EIO;
         }
         p->stage_capacity_frames = p->period_frames;
-        p->stage = calloc(p->stage_capacity_frames * JTS_RING_CHANNELS, sizeof(int16_t));
+        p->stage = calloc(p->stage_capacity_frames, frame_bytes(p));
         if (!p->stage) {
             jts_ring_reader_close(&p->reader);
             return -ENOMEM;
@@ -690,8 +722,7 @@ static size_t capture_refill_destage(jts_ring_pcm_t *p) {
         // consume-empty path used to do this as a side effect, but silence is
         // now served before consume runs, and the buffer still holds the
         // previous slot's audio.
-        memset(p->stage, 0,
-               p->stage_capacity_frames * JTS_RING_CHANNELS * sizeof(int16_t));
+        memset(p->stage, 0, p->stage_capacity_frames * frame_bytes(p));
         p->pending_silence_frames -= p->period_frames;
         p->stage_frames = p->stage_capacity_frames;
         p->silence_periods++;
@@ -715,10 +746,11 @@ static snd_pcm_sframes_t jts_ring_capture_transfer(snd_pcm_ioplug_t *io,
                                                    snd_pcm_uframes_t offset,
                                                    snd_pcm_uframes_t size) {
     jts_ring_pcm_t *p = io->private_data;
-    // Interleaved S16LE: one contiguous destination, all channels in areas[0].
-    int16_t *dst =
-        (int16_t *)((char *)areas[0].addr + (areas[0].first / 8) +
-                    (size_t)offset * (areas[0].step / 8));
+    // Interleaved: one contiguous destination, all channels in areas[0]. Same
+    // byte-derived frame stride as the playback transfer.
+    const size_t fb = frame_bytes(p);
+    uint8_t *dst = (uint8_t *)areas[0].addr + (areas[0].first / 8) +
+                   (size_t)offset * (areas[0].step / 8);
 
     snd_pcm_uframes_t delivered = 0;
     while (delivered < size) {
@@ -733,9 +765,7 @@ static snd_pcm_sframes_t jts_ring_capture_transfer(snd_pcm_ioplug_t *io,
         // Copy from the destage buffer starting at the already-read offset.
         size_t origin = p->stage_capacity_frames - p->stage_frames; // frames already read
         size_t take = (size - delivered) < p->stage_frames ? (size - delivered) : p->stage_frames;
-        memcpy(dst + delivered * JTS_RING_CHANNELS,
-               p->stage + origin * JTS_RING_CHANNELS,
-               take * JTS_RING_CHANNELS * sizeof(int16_t));
+        memcpy(dst + delivered * fb, p->stage + origin * fb, take * fb);
         p->stage_frames -= take;
         delivered += take;
     }
@@ -928,13 +958,22 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     rc = snd_pcm_ioplug_set_param_list(io, SND_PCM_IOPLUG_HW_ACCESS, n_accesses, accesses);
     if (rc < 0) return rc;
 
-    static const unsigned int formats[] = {SND_PCM_FORMAT_S16_LE};
-    rc = snd_pcm_ioplug_set_param_list(io, SND_PCM_IOPLUG_HW_FORMAT,
-                                       sizeof(formats) / sizeof(formats[0]), formats);
+    // Exactly ONE format and ONE channel count — whatever the conf.d block
+    // declared (defaults S16_LE / 2). Advertising a single value keeps the app's
+    // negotiated hw_params identical to the ring's geometry by construction, so
+    // the staging strides and the slot bytes cannot disagree. Static arrays
+    // selected by pointer, like the access lists above: the list outlives this
+    // call regardless of whether alsa-lib copies it.
+    static const unsigned int formats_s16[] = {SND_PCM_FORMAT_S16_LE};
+    static const unsigned int formats_s32[] = {SND_PCM_FORMAT_S32_LE};
+    const unsigned int *formats = (p->sample_format == JTS_RING_SAMPLE_FORMAT_S32LE)
+                                      ? formats_s32
+                                      : formats_s16;
+    rc = snd_pcm_ioplug_set_param_list(io, SND_PCM_IOPLUG_HW_FORMAT, 1, formats);
     if (rc < 0) return rc;
 
-    rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_CHANNELS,
-                                         JTS_RING_CHANNELS, JTS_RING_CHANNELS);
+    rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_CHANNELS, p->channels,
+                                         p->channels);
     if (rc < 0) return rc;
 
     rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_RATE, JTS_RING_RATE,
@@ -942,8 +981,7 @@ static int jts_ring_set_hw_constraints(jts_ring_pcm_t *p) {
     if (rc < 0) return rc;
 
     // Period = exactly one slot (period_frames). Buffer = n_slots periods.
-    unsigned int period_bytes =
-        p->period_frames * JTS_RING_CHANNELS * (unsigned int)sizeof(int16_t);
+    unsigned int period_bytes = p->period_frames * (unsigned int)frame_bytes(p);
     rc = snd_pcm_ioplug_set_param_minmax(io, SND_PCM_IOPLUG_HW_PERIOD_BYTES, period_bytes,
                                          period_bytes);
     if (rc < 0) return rc;
@@ -960,6 +998,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     const char *path = JTS_RING_DEFAULT_PATH;
     long period_frames = JTS_RING_DEFAULT_PERIOD;
     long n_slots = JTS_RING_DEFAULT_SLOTS;
+    long channels = JTS_RING_DEFAULT_CHANNELS;
+    uint32_t sample_format = JTS_RING_DEFAULT_FORMAT;
     int rc;
 
     // `root` is part of the plugin-open signature (the top-level ALSA config
@@ -1002,6 +1042,38 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
             }
             continue;
         }
+        if (!strcmp(id, "format")) {
+            const char *format_name = NULL;
+            if (snd_config_get_string(n, &format_name) < 0) {
+                SNDERR("jts_ring: format must be a string");
+                return -EINVAL;
+            }
+            if (!strcmp(format_name, "S16_LE")) {
+                sample_format = JTS_RING_SAMPLE_FORMAT_S16LE;
+            } else if (!strcmp(format_name, "S32_LE")) {
+                sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
+            } else {
+                SNDERR("jts_ring: format %s unsupported (S16_LE|S32_LE)", format_name);
+                return -EINVAL;
+            }
+            continue;
+        }
+        if (!strcmp(id, "channels")) {
+            if (snd_config_get_integer(n, &channels) < 0) {
+                SNDERR("jts_ring: channels must be an integer");
+                return -EINVAL;
+            }
+            continue;
+        }
+        // An unknown field is REFUSED, and that refusal is load-bearing beyond
+        // typo-catching: it is what makes a deploy-skew mismatch fail at open
+        // instead of on the wire. The ioplug build degrades to a warning (the
+        // previous .so stays installed), so a conf.d that declares a field this
+        // binary does not know about means the daemons are ahead of the plugin —
+        // camilla then fails to start and the reconciler recovers the box to
+        // loopback, rather than a stale plugin opening a geometry it would
+        // misread. Keep new fields OPTIONAL with defaults that reproduce the
+        // prior wire, exactly as `format`/`channels` above do.
         SNDERR("jts_ring: unknown field %s", id);
         return -EINVAL;
     }
@@ -1012,6 +1084,10 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     }
     if (n_slots < (long)JTS_RING_MIN_SLOTS || n_slots > (long)JTS_RING_MAX_SLOTS) {
         SNDERR("jts_ring: n_slots out of range 2..=16");
+        return -EINVAL;
+    }
+    if (channels < (long)JTS_RING_MIN_CHANNELS || channels > (long)JTS_RING_MAX_CHANNELS) {
+        SNDERR("jts_ring: channels out of range 2..=8");
         return -EINVAL;
     }
 
@@ -1027,6 +1103,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     snprintf(p->path, sizeof(p->path), "%s", path);
     p->period_frames = (uint32_t)period_frames;
     p->n_slots = (uint32_t)n_slots;
+    p->channels = (uint32_t)channels;
+    p->sample_format = sample_format;
 
     p->io.version = SND_PCM_IOPLUG_VERSION;
     if (stream == SND_PCM_STREAM_CAPTURE) {
