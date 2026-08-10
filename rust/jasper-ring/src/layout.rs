@@ -68,10 +68,13 @@ pub const MAX_RING_CHANNELS: u32 = 8;
 /// geometry against the size the file already has on disk — so a torn header
 /// drives no allocation through this cap.
 ///
-/// 64 KiB is deliberately roomy. It accommodates a 1024-frame slot at the full
-/// 8 ch x S32 width (32 KiB), not merely the widest deployed slot
-/// (8 ch x S32 x 128 frames = 4 KiB). Do not tighten it to that deployed worst
-/// case.
+/// 64 KiB is deliberately roomy, and the headroom is real rather than
+/// decorative. `period_frames` is the one unbounded input to a slot's size, so
+/// it sets the binding constraint: outputd's default period is 1024 frames, and
+/// at the widest accepted geometry (8 ch, S32) that is a 32 KiB slot — exactly
+/// half the cap. Do not tighten toward the narrow stereo cases (fan-in's
+/// 128-frame S16 stereo slot is 512 B); the cap exists to reject a geometry no
+/// DAC period could justify, not to fence in the shipped ones.
 pub const MAX_SLOT_BYTES: usize = 65_536;
 
 // --- Header field offsets (bytes from the start of the mapping) ---
@@ -304,16 +307,20 @@ mod tests {
     /// `bytes_per_sample` / `samples_per_slot` / `slot_bytes` / `file_size`
     /// fails against a fixed reference instead of against itself.
     ///
-    /// The S16 / 6ch row is deliberate. A surviving hard-coded `* 2` channel
-    /// stride is invisible in every S16 / 2ch row (channels and bytes-per-sample
-    /// are both 2 there, so the wrong factor gives the right answer) and in
-    /// every S32 row (where the same bug would have to be spelled `* 4`). Only a
-    /// WIDE S16 row separates the two twos.
+    /// The S16 / 6ch row is deliberate, and so is keeping wide S32 rows. Exactly
+    /// two geometries in this table have `channels == bytes_per_sample` — S16/2
+    /// (2 and 2) and S32/4 (4 and 4) — so a bug that swaps those two factors
+    /// gives the right answer on both and is invisible to a table built only
+    /// from them. Verified by mutating `slot_bytes` to multiply by `channels`
+    /// instead of `bytes_per_sample`: S16/2 passed and S16/6 caught it
+    /// (4608 != 1536), and S32/4 passes it too (512 * 4 == 2048 == expected).
+    /// S16/6 is the only S16 row that breaks the coincidence; S32/2, S32/6 and
+    /// S32/8 break it on the S32 side.
     #[test]
     fn golden_byte_math_table() {
         // (sample_format, channels, period_frames, n_slots)
         //   -> (bytes_per_sample, samples_per_slot, slot_bytes, file_size)
-        let rows: [((u32, u32, u32, u32), (usize, usize, usize, usize)); 6] = [
+        let rows = [
             ((SAMPLE_FORMAT_S16LE, 2, 128, 2), (2, 256, 512, 1152)),
             ((SAMPLE_FORMAT_S16LE, 6, 128, 2), (2, 768, 1536, 3200)),
             ((SAMPLE_FORMAT_S32LE, 2, 128, 2), (4, 256, 1024, 2176)),

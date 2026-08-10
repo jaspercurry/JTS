@@ -264,11 +264,7 @@ impl RingWriter {
     /// `samples_per_slot` is the wrong size for a slot. Callers move to the byte
     /// path; this wrapper goes away with the last of them.
     pub fn publish(&mut self, samples: &[i16]) -> PublishOutcome {
-        debug_assert_eq!(
-            self.map.geometry.sample_format,
-            layout::SAMPLE_FORMAT_S16LE,
-            "the i16-typed slot view is only valid on an S16LE ring"
-        );
+        self.map.debug_assert_s16_typed_view();
         self.publish_bytes(crate::i16_samples_as_bytes(samples))
     }
 

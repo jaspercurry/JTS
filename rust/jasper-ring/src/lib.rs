@@ -437,6 +437,18 @@ impl RingMapping {
         unsafe { std::ptr::read_unaligned(self.base.add(offset) as *const u32) }
     }
 
+    /// Debug-only tripwire for the `i16`-typed wrappers: each one measures its
+    /// buffer in `samples_per_slot` 2-byte samples, which is exactly one slot on
+    /// an S16LE ring and the wrong size on any other. Stated once here and
+    /// called from all three wrappers rather than repeated at each.
+    pub(crate) fn debug_assert_s16_typed_view(&self) {
+        debug_assert_eq!(
+            self.geometry.sample_format,
+            layout::SAMPLE_FORMAT_S16LE,
+            "the i16-typed slot view is only valid on an S16LE ring"
+        );
+    }
+
     /// One slot's payload size in bytes. Infallible here: every path that
     /// produces a `RingMapping` validated the geometry first.
     fn slot_bytes(&self) -> usize {
@@ -502,11 +514,7 @@ impl RingMapping {
     /// slice of `samples_per_slot` is the wrong size for a slot. Callers move to
     /// the byte path; this wrapper goes away with the last of them.
     pub(crate) fn write_i16_slot(&self, write_seq: u64, samples: &[i16]) {
-        debug_assert_eq!(
-            self.geometry.sample_format,
-            layout::SAMPLE_FORMAT_S16LE,
-            "the i16-typed slot view is only valid on an S16LE ring"
-        );
+        self.debug_assert_s16_typed_view();
         self.write_slot_bytes(write_seq, i16_samples_as_bytes(samples));
     }
 }
@@ -630,11 +638,10 @@ impl RingReader {
     /// `samples_per_slot` is the wrong size for a slot. Callers move to the byte
     /// path; this wrapper goes away with the last of them.
     pub fn try_consume_slot(&mut self, out: &mut [i16]) -> SlotRead {
-        debug_assert_eq!(
-            self.map.geometry.sample_format, SAMPLE_FORMAT_S16LE,
-            "the i16-typed slot view is only valid on an S16LE ring"
-        );
-        debug_assert_eq!(out.len(), self.map.geometry.samples_per_slot());
+        self.map.debug_assert_s16_typed_view();
+        // The byte path checks the length; on an S16LE ring
+        // `samples_per_slot * 2 == slot_bytes`, so a second typed check here
+        // would assert the same fact twice.
         self.try_consume_slot_bytes(i16_samples_as_bytes_mut(out))
     }
 
@@ -649,7 +656,11 @@ impl RingReader {
     /// view (so `/state` is honest even on empty periods).
     pub fn try_consume_slot_bytes(&mut self, out: &mut [u8]) -> SlotRead {
         let g = self.map.geometry;
-        debug_assert_eq!(out.len(), self.map.slot_bytes());
+        debug_assert_eq!(
+            out.len(),
+            self.map.slot_bytes(),
+            "ring consume requires exactly one complete slot"
+        );
 
         // Heartbeat + writer-liveness refresh happen every period, filled or not.
         let now = monotonic_ns();
