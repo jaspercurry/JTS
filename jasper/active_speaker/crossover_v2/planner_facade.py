@@ -164,16 +164,44 @@ def build_intervention_proposal(
 
 
 def plan_intervention_proposal(
-    candidate: Any, *, session_id: str = "", **kwargs: Any
+    candidate: Any,
+    *,
+    session_id: str = "",
+    predicted_response_before: Any = None,
+    predicted_response_after: Any = None,
+    predicted_spec_before: Mapping[str, Any] | None = None,
+    predicted_spec_after: Mapping[str, Any] | None = None,
+    commanded_delta: Any = None,
+    accountability: Mapping[str, Any] | None = None,
+    realized_branch_level: Mapping[str, Any] | None = None,
+    evidence_identities: Mapping[str, Any] | None = None,
+    diagnostic_findings: Sequence[Mapping[str, Any]] | None = None,
 ) -> InterventionProposal | PlanRefusal:
     """:func:`build_intervention_proposal`, but a refusal instead of a raise.
 
     Emits exactly one stable event either way, so a session always says what it
     proposed or why it could not.
+
+    The parameters are spelled out rather than forwarded as ``**kwargs`` on
+    purpose: ``TypeError`` is in :data:`_ASSEMBLY_ERRORS`, so a misspelled
+    keyword would otherwise be caught here and returned as a
+    ``contract_invalid`` refusal — a programming error wearing a domain
+    verdict's clothes. Explicit parameters keep mypy checking the call site.
     """
 
     try:
-        proposal = build_intervention_proposal(candidate, **kwargs)
+        proposal = build_intervention_proposal(
+            candidate,
+            predicted_response_before=predicted_response_before,
+            predicted_response_after=predicted_response_after,
+            predicted_spec_before=predicted_spec_before,
+            predicted_spec_after=predicted_spec_after,
+            commanded_delta=commanded_delta,
+            accountability=accountability,
+            realized_branch_level=realized_branch_level,
+            evidence_identities=evidence_identities,
+            diagnostic_findings=diagnostic_findings,
+        )
     except _ASSEMBLY_ERRORS as exc:
         refusal = _refusal_for(exc, candidate)
         log_event(
