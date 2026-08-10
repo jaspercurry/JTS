@@ -1978,15 +1978,6 @@ impl Mixer {
         // 4. Clamp i32 sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf);
 
-        // 4b. S32LE Ring A only: the wide slot payload, from the SAME sum_buf,
-        //     left-justified. The buffer is non-empty only on a ring whose
-        //     attached header says S32LE, so this is one `is_empty` check on
-        //     every other path. `output_buf` above is untouched — it stays the
-        //     mirror's payload on both wires.
-        if !self.ring_wide_payload.is_empty() {
-            fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
-        }
-
         // 5. Write to output (blocks; paces the loop). Dispatch on transport:
         //    - Alsa: blocking writei, returns when the loopback ring has room
         //      (DAC-paced via the dsnoop consumer). Counts every period.
@@ -2009,6 +2000,16 @@ impl Mixer {
                     .fetch_add(self.period_frames as u64, Ordering::Relaxed);
             }
             Output::Ring(ring) => {
+                // S32LE wire only: build the wide slot payload from the SAME
+                // post-duck post-TTS sum_buf, left-justified. `output_buf`
+                // above is untouched, so the mirror's bytes are the same on
+                // both wires. The ring's own attached header is the ONE
+                // predicate here — the same `wire_is_wide()` that decides which
+                // payload `write_ring_period` publishes — so the fill and the
+                // publish cannot disagree about the wire.
+                if ring.wire_is_wide() {
+                    fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
+                }
                 // Count only frames that actually ENTERED the ring — a
                 // fully-dropped period (reader absent / stuck) adds nothing. The
                 // stuck_reader_drops / drop_no_reader split disambiguates, so the
