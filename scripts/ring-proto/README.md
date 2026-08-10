@@ -573,7 +573,7 @@ for the core; this is the tooling-layer view):
 | C core unit test | `make test` in `c/jts-ring-ioplug/` (via `host-check.sh`) | macOS/Linux laptop |
 | C core bench build | `make bench` in `c/jts-ring-ioplug/` (via `host-check.sh`) | macOS/Linux laptop, build-only |
 | outputd config-parse / default-off proofs | `cargo test -p jasper-outputd` | Linux only (needs `libasound2-dev`) — CI's `rust` job |
-| Full ioplug build | `build-on-pi.sh` | Pi only |
+| Full ioplug build | `build-on-pi.sh` | Pi only for install — plugin compile also checked in CI's `rust` job |
 | Resolvability | `arm.sh` step 3 | Pi only |
 | End-to-end reader | `arm.sh` step 5 (bench writer) | Pi only |
 | Real chain | `arm.sh` steps 6–7 + route-latency harness | Pi only |
