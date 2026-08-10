@@ -269,9 +269,30 @@ def test_a_drifted_scan_is_never_reported_as_a_rejected_trim():
 # --------------------------------------------------------------------------
 
 
+def test_committing_a_candidate_emits_exactly_one_proposal_event(caplog):
+    """The seam discloses once per commit — not zero times, and not twice.
+
+    Asserted deliberately because it is otherwise invisible: whether this
+    record exists depends on the effective capture level, so a test that only
+    counts events around a later direct call silently passes whether or not
+    the production seam logs at all.
+    """
+    with caplog.at_level(logging.INFO, logger=planner_facade.__name__):
+        conductor, _ = _walked()
+    created = [r for r in caplog.records if PROPOSAL_CREATED_EVENT in r.getMessage()]
+    assert len(created) == 1
+    proposal = conductor.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    assert f"proposal_fingerprint={proposal.fingerprint}" in created[0].getMessage()
+
+
 def test_creating_a_proposal_emits_one_stable_event(caplog):
     conductor, _ = _walked()
     with caplog.at_level(logging.INFO, logger=planner_facade.__name__):
+        # The walk above already emitted its own commit event, and whether
+        # caplog kept it depends on the ambient level — so measure only this
+        # call rather than however many records happen to be in the buffer.
+        caplog.clear()
         proposal = plan_intervention_proposal(conductor.candidate, session_id="cap_x")
     assert isinstance(proposal, InterventionProposal)
     lines = [r for r in caplog.records if PROPOSAL_CREATED_EVENT in r.getMessage()]
