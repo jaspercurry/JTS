@@ -32,8 +32,9 @@ pub const HEADER_BYTES: usize = 128;
 /// (`DEFAULT_PLAYBACK_FORMAT="S16_LE"`), so the reader copy is conversion-free.
 pub const SAMPLE_FORMAT_S16LE: u32 = 1;
 
-/// `sample_format` = 2: S32LE. Reserved for future wide/active lanes; not used
-/// by the prototype.
+/// `sample_format` = 2: interleaved signed 32-bit little-endian (S32LE).
+/// Accepted by [`Geometry::validate_self`]; [`Geometry::bytes_per_sample`]
+/// reports 4 bytes for it.
 pub const SAMPLE_FORMAT_S32LE: u32 = 2;
 
 /// Bytes per sample for [`SAMPLE_FORMAT_S16LE`].
@@ -47,6 +48,31 @@ pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 /// and `MAX_SHM_RING_SLOTS` in the outputd config).
 pub const MIN_N_SLOTS: u32 = 2;
 pub const MAX_N_SLOTS: u32 = 16;
+
+/// Ceiling on `channels`. 8 is the widest registered DAC channel count
+/// (HiFiBerry DAC8x) and matches the `2..=8` bound outputd applies to
+/// `JASPER_OUTPUTD_ACTIVE_CHANNELS`, so the layout accept-set IS the product
+/// envelope rather than a looser superset of it. The floor is 2 — a literal in
+/// [`Geometry::validate_self`], not a constant, because excluding mono is a
+/// product policy rather than a property of the layout (the header could carry
+/// `channels = 1` perfectly well; nothing in JTS produces one).
+pub const MAX_RING_CHANNELS: u32 = 8;
+
+/// Ceiling on one slot's payload bytes
+/// (`period_frames * channels * bytes_per_sample`).
+///
+/// It bounds the WRITER-CREATE path: [`Geometry::validate_self`] runs before
+/// the creator's `ftruncate` sizes the file in `/dev/shm`, so a geometry
+/// demanding an absurd tmpfs allocation is refused before a page is charged.
+/// The ATTACH path allocates nothing — it validates the header's declared
+/// geometry against the size the file already has on disk — so a torn header
+/// drives no allocation through this cap.
+///
+/// 64 KiB is deliberately roomy. It accommodates a 1024-frame slot at the full
+/// 8 ch x S32 width (32 KiB), not merely the widest deployed slot
+/// (8 ch x S32 x 128 frames = 4 KiB). Do not tighten it to that deployed worst
+/// case.
+pub const MAX_SLOT_BYTES: usize = 65_536;
 
 // --- Header field offsets (bytes from the start of the mapping) ---
 
@@ -91,8 +117,8 @@ pub const OFF_FUTEX_WORD: usize = 88;
 pub const OFF_RESERVED: usize = 92;
 
 /// The ring's on-disk geometry: everything needed to size the file and index
-/// slots. The prototype instance is S16LE / 2ch / 48 kHz, `period_frames` =
-/// outputd's runtime period, `n_slots` = 2.
+/// slots. [`Geometry::validate_self`] owns the accept-set; a given ring's
+/// instance values are resolved by whichever daemon creates it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
     pub rate: u32,
@@ -133,25 +159,35 @@ impl Geometry {
     }
 
     /// Validate the geometry the caller wants BEFORE touching the filesystem.
-    /// The prototype supports only S16LE / 2ch / 48 kHz with a bounded
-    /// `n_slots`; anything else is a fail-loud config error (the daemon maps it
-    /// to a config-class startup failure so systemd parks, not reboot-loops).
+    ///
+    /// The accept-set is S16LE or S32LE, 2..=[`MAX_RING_CHANNELS`] channels,
+    /// 48 kHz, a non-zero `period_frames`, an `n_slots` in
+    /// [`MIN_N_SLOTS`]..=[`MAX_N_SLOTS`], and a slot no larger than
+    /// [`MAX_SLOT_BYTES`]. Anything outside it returns an
+    /// [`io::ErrorKind::InvalidInput`] error — a config-class fault, distinct
+    /// from a runtime one. This crate's contract ends there: how a caller
+    /// surfaces that error (an exit code, a park, a fall back to another
+    /// transport) belongs to the caller and its unit, not here.
     pub fn validate_self(&self) -> io::Result<()> {
-        if self.sample_format != SAMPLE_FORMAT_S16LE {
+        if self.sample_format != SAMPLE_FORMAT_S16LE && self.sample_format != SAMPLE_FORMAT_S32LE {
             return Err(cfg_err(format!(
-                "ring sample_format {} unsupported by the prototype (only S16LE={})",
-                self.sample_format, SAMPLE_FORMAT_S16LE
+                "ring sample_format {} unsupported (S16LE={SAMPLE_FORMAT_S16LE} or \
+                 S32LE={SAMPLE_FORMAT_S32LE})",
+                self.sample_format
             )));
         }
-        if self.channels != 2 {
+        // The floor is a literal 2: mono is excluded by product policy (no JTS
+        // source or sink produces a one-channel ring), not by the layout — see
+        // MAX_RING_CHANNELS.
+        if !(2..=MAX_RING_CHANNELS).contains(&self.channels) {
             return Err(cfg_err(format!(
-                "ring channels {} unsupported by the prototype (only stereo)",
+                "ring channels {} out of range 2..={MAX_RING_CHANNELS}",
                 self.channels
             )));
         }
         if self.rate != 48_000 {
             return Err(cfg_err(format!(
-                "ring rate {} unsupported by the prototype (only 48000)",
+                "ring rate {} unsupported (only 48000)",
                 self.rate
             )));
         }
@@ -162,6 +198,17 @@ impl Geometry {
             return Err(cfg_err(format!(
                 "ring n_slots {} out of range {MIN_N_SLOTS}..={MAX_N_SLOTS}",
                 self.n_slots
+            )));
+        }
+        // Last: the derived size. Every input it multiplies has been bounded
+        // above, so a failure here is a genuinely oversized slot rather than a
+        // knock-on from a bad field.
+        let slot_bytes = self.slot_bytes()?;
+        if slot_bytes > MAX_SLOT_BYTES {
+            return Err(cfg_err(format!(
+                "ring slot {slot_bytes} bytes exceeds the {MAX_SLOT_BYTES}-byte cap \
+                 (period_frames={} channels={} sample_format={})",
+                self.period_frames, self.channels, self.sample_format
             )));
         }
         Ok(())
@@ -209,6 +256,12 @@ mod tests {
         assert_eq!(SAMPLE_FORMAT_S16LE, 1);
         assert_eq!(SAMPLE_FORMAT_S32LE, 2);
 
+        // The accept-set envelope. These bound no offset, so no `offsetof`
+        // assertion can catch a drift in them; pinning the literals here is
+        // what makes widening either bound a deliberate, reviewed edit.
+        assert_eq!(MAX_RING_CHANNELS, 8);
+        assert_eq!(MAX_SLOT_BYTES, 65_536);
+
         // Every atomic u64 field is 8-byte aligned.
         for off in [
             OFF_WRITER_EPOCH,
@@ -246,6 +299,112 @@ mod tests {
         g.validate_self().unwrap();
     }
 
+    /// Byte-math golden table. Every expected value is computed BY HAND here,
+    /// never by calling the functions under test, so a change to
+    /// `bytes_per_sample` / `samples_per_slot` / `slot_bytes` / `file_size`
+    /// fails against a fixed reference instead of against itself.
+    ///
+    /// The S16 / 6ch row is deliberate. A surviving hard-coded `* 2` channel
+    /// stride is invisible in every S16 / 2ch row (channels and bytes-per-sample
+    /// are both 2 there, so the wrong factor gives the right answer) and in
+    /// every S32 row (where the same bug would have to be spelled `* 4`). Only a
+    /// WIDE S16 row separates the two twos.
+    #[test]
+    fn golden_byte_math_table() {
+        // (sample_format, channels, period_frames, n_slots)
+        //   -> (bytes_per_sample, samples_per_slot, slot_bytes, file_size)
+        let rows: [((u32, u32, u32, u32), (usize, usize, usize, usize)); 6] = [
+            ((SAMPLE_FORMAT_S16LE, 2, 128, 2), (2, 256, 512, 1152)),
+            ((SAMPLE_FORMAT_S16LE, 6, 128, 2), (2, 768, 1536, 3200)),
+            ((SAMPLE_FORMAT_S32LE, 2, 128, 2), (4, 256, 1024, 2176)),
+            ((SAMPLE_FORMAT_S32LE, 4, 128, 2), (4, 512, 2048, 4224)),
+            ((SAMPLE_FORMAT_S32LE, 6, 128, 2), (4, 768, 3072, 6272)),
+            ((SAMPLE_FORMAT_S32LE, 8, 128, 2), (4, 1024, 4096, 8320)),
+        ];
+        for ((sample_format, channels, period_frames, n_slots), (bps, samples, slot, file)) in rows
+        {
+            let g = Geometry {
+                rate: 48_000,
+                channels,
+                sample_format,
+                period_frames,
+                n_slots,
+            };
+            let label =
+                format!("fmt={sample_format} ch={channels} period={period_frames} slots={n_slots}");
+            assert_eq!(
+                g.bytes_per_sample().unwrap(),
+                bps,
+                "bytes_per_sample {label}"
+            );
+            assert_eq!(g.samples_per_slot(), samples, "samples_per_slot {label}");
+            assert_eq!(g.slot_bytes().unwrap(), slot, "slot_bytes {label}");
+            assert_eq!(g.file_size().unwrap(), file, "file_size {label}");
+            g.validate_self()
+                .unwrap_or_else(|e| panic!("{label} must be inside the accept-set: {e}"));
+        }
+
+        // MAX_SLOT_BYTES boundary. `slot_bytes` is always a multiple of
+        // `channels * bytes_per_sample`, so the accept-set cannot express a
+        // geometry exactly one BYTE over the cap; the finest step it can take is
+        // 4 bytes (S16 stereo). Both pairs land exactly ON the cap and then take
+        // their smallest possible step past it.
+        for (label, sample_format, channels, period_frames, slot_bytes, accepted) in [
+            (
+                "S16 stereo on the cap",
+                SAMPLE_FORMAT_S16LE,
+                2u32,
+                16_384u32,
+                65_536usize,
+                true,
+            ),
+            (
+                "S16 stereo one 4-byte step over",
+                SAMPLE_FORMAT_S16LE,
+                2,
+                16_385,
+                65_540,
+                false,
+            ),
+            (
+                "S32 8ch on the cap",
+                SAMPLE_FORMAT_S32LE,
+                8,
+                2_048,
+                65_536,
+                true,
+            ),
+            (
+                "S32 8ch one 32-byte step over",
+                SAMPLE_FORMAT_S32LE,
+                8,
+                2_049,
+                65_568,
+                false,
+            ),
+        ] {
+            let g = Geometry {
+                rate: 48_000,
+                channels,
+                sample_format,
+                period_frames,
+                n_slots: 2,
+            };
+            assert_eq!(g.slot_bytes().unwrap(), slot_bytes, "slot_bytes {label}");
+            match (g.validate_self(), accepted) {
+                (Ok(()), true) => {}
+                (Err(error), false) => {
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{label}");
+                    assert!(
+                        error.to_string().contains("exceeds the 65536-byte cap"),
+                        "{label}: {error}"
+                    );
+                }
+                (result, _) => panic!("{label}: expected accepted={accepted}, got {result:?}"),
+            }
+        }
+    }
+
     #[test]
     fn unknown_sample_format_is_a_controlled_error() {
         let g = Geometry {
@@ -260,8 +419,16 @@ mod tests {
         assert!(error.to_string().contains("unsupported ring sample format"));
     }
 
+    /// The accept-set boundary, one axis at a time.
+    ///
+    /// S32LE and 4 channels used to be REJECTED here and are now accepted: the
+    /// ring wire carries S32 and up to [`MAX_RING_CHANNELS`] channels, so the
+    /// old assertions asserted the opposite of the contract. The guard is not
+    /// weakened by that inversion — the negatives below cover both edges of
+    /// each widened axis (channels 0/1/9, an unknown format id) plus every
+    /// unchanged axis.
     #[test]
-    fn geometry_rejects_unsupported_shapes() {
+    fn geometry_accept_set_boundary() {
         let base = Geometry {
             rate: 48_000,
             channels: 2,
@@ -269,20 +436,74 @@ mod tests {
             period_frames: 128,
             n_slots: 2,
         };
+
+        // --- Accepted: the widened axes ---
         assert!(Geometry {
             sample_format: SAMPLE_FORMAT_S32LE,
             ..base
         }
         .validate_self()
-        .is_err());
+        .is_ok());
         assert!(Geometry {
             channels: 4,
             ..base
         }
         .validate_self()
-        .is_err());
+        .is_ok());
+        assert!(Geometry {
+            channels: MAX_RING_CHANNELS,
+            ..base
+        }
+        .validate_self()
+        .is_ok());
+        // The raised ceiling accepts the full 2..=16 slot range (regression for
+        // the 4 -> 16 bump that gives camilla's playback buffer enough depth).
+        assert!(Geometry { n_slots: 4, ..base }.validate_self().is_ok());
+        assert!(Geometry {
+            n_slots: MAX_N_SLOTS,
+            ..base
+        }
+        .validate_self()
+        .is_ok());
+
+        // --- Rejected: outside every axis ---
+        // Channels: below the policy floor (0 and mono) and above the ceiling.
+        for channels in [0, 1, MAX_RING_CHANNELS + 1] {
+            let error = match (Geometry { channels, ..base }).validate_self() {
+                Ok(()) => panic!("channels {channels} must be rejected"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::InvalidInput,
+                "channels {channels}"
+            );
+            assert!(
+                error.to_string().contains("channels"),
+                "channels {channels}: {error}"
+            );
+        }
+        // An unknown format id, adjacent to the two real ones.
+        let error = match (Geometry {
+            sample_format: 3,
+            ..base
+        })
+        .validate_self()
+        {
+            Ok(()) => panic!("sample_format 3 must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("sample_format"), "{error}");
+        // Unchanged axes: rate, period_frames, n_slots.
         assert!(Geometry {
             rate: 44_100,
+            ..base
+        }
+        .validate_self()
+        .is_err());
+        assert!(Geometry {
+            period_frames: 0,
             ..base
         }
         .validate_self()
@@ -294,14 +515,5 @@ mod tests {
         }
         .validate_self()
         .is_err());
-        // The raised ceiling accepts the full 2..=16 range (regression for the
-        // 4 -> 16 bump that gives camilla's playback buffer enough depth).
-        assert!(Geometry { n_slots: 4, ..base }.validate_self().is_ok());
-        assert!(Geometry {
-            n_slots: MAX_N_SLOTS,
-            ..base
-        }
-        .validate_self()
-        .is_ok());
     }
 }
