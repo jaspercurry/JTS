@@ -539,6 +539,13 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "schema_version",
     "session_id",
     "session_phases",
+    # Deliberate widening (#2292). The declaration half of Undo has to cross
+    # this boundary for the same reason ``pre_apply_profile`` does: both are
+    # written by ``observe_apply_success`` in one state write, and the deferred
+    # VERIFY that arms right after every apply is a DIFFERENT session — so a
+    # key that did not cross would leave stage 2's Undo able to restore the
+    # graph but not the crossover ``/sound`` declares for it.
+    "sound_declaration_undo",
     "sound_design_revision",
     "tier",
     "updated_at",

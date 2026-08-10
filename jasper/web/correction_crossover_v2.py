@@ -6781,11 +6781,14 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
         # reduces to a bool for its conductor caller — so on an AUTOMATIC
         # rollback a refused declaration is journal-only
         # (``event=correction.crossover_v2_restore_sound_declaration``), not
-        # household-visible. Left that way deliberately: no conductor binds
-        # this seam today (stage 2 wires no rollback until #2291 Phase 3), and
-        # widening the seam's return shape to carry a household sentence means
-        # deciding which screen renders it — a decision that belongs with the
-        # caller that will actually exist.
+        # household-visible. Left that way deliberately, because no rollback
+        # that RUNS is bound today: the measuring conductor binds this seam
+        # (the ``rollback=`` above ``applied_offset_db`` in the measuring
+        # preparer) but never reaches the delta probe, and the VERIFYING
+        # conductor reaches the probe but binds no rollback at all — the two
+        # halves meet in #2291 Phase 3. Widening the seam's return shape to
+        # carry a household sentence means deciding which screen renders it,
+        # which belongs with the caller that will actually run it.
         log_event(
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,

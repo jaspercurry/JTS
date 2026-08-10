@@ -1805,7 +1805,10 @@ post-apply VERIFY's relay is sitting there complete, so setting it once would
 show it for one turn of the event loop. The journal line is
 `event=correction.crossover_v2_restore_sound_declaration outcome=…`. On an
 AUTOMATIC rollback (`bind_delta_probe_rollback`) the outcome is journal-only:
-that seam returns a bool, and no conductor binds it until #2291 Phase 3.
+that seam returns a bool, and no rollback that RUNS is bound today — the
+measuring conductor binds the seam but never reaches the delta probe, and the
+verifying conductor reaches the probe but binds no rollback. The two halves
+meet in #2291 Phase 3.
 
 **Where each piece lives.**
 
