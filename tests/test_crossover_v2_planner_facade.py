@@ -12,6 +12,7 @@ who wrote the facade can agree with it while production does not.
 
 from __future__ import annotations
 
+import inspect
 import logging
 
 import numpy as np
@@ -32,12 +33,20 @@ from jasper.active_speaker.crossover_v2 import (
 from jasper.active_speaker.crossover_v2 import planner_facade
 from jasper.active_speaker.fc_selector import FcCandidateEvaluation
 from tests.test_crossover_v2_conductor import (
+    _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT,
     FakeSeams,
     _cloud_conductor,
     _comb_cloud_analysis_factory,
+    _conductor,
     _eligible_measure_analysis,
+    _run_phase,
+    _tilted_woofer_fixture,
     _walk_measure_cloud_to_close,
 )
+
+# ``evidence_identity._freeze_json`` admits a scalar by ``type(v) is …``, not
+# ``isinstance`` — so these are the only leaf types a fingerprint accepts.
+_STRICT_JSON_SCALARS = (float, int, str, bool, type(None))
 
 
 def _walked() -> tuple[flow.CrossoverV2Conductor, dict]:
@@ -381,3 +390,129 @@ def test_build_raises_where_plan_refuses():
     with pytest.raises(Exception) as excinfo:
         build_intervention_proposal(None)
     assert "measured candidate" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# the facade's parameters are spelled out, and that is load-bearing
+# --------------------------------------------------------------------------
+
+
+def test_the_facade_declares_no_var_keyword_parameter():
+    """``**kwargs`` here would convert caller bugs into domain verdicts.
+
+    ``TypeError`` is in ``_ASSEMBLY_ERRORS``, so with ``**kwargs`` a misspelled
+    keyword would be forwarded to :func:`build_intervention_proposal`, raise
+    inside the ``try``, and come back as a ``contract_invalid``
+    :class:`PlanRefusal` — a programming error wearing a domain verdict's
+    clothes, with the session continuing quietly around it. Explicit
+    parameters also restore mypy's checking of the conductor's call site,
+    which ``**kwargs: Any`` erases.
+
+    Asserted structurally because it is otherwise invisible: reintroducing
+    ``**kwargs`` breaks no other test and no type check.
+    """
+    kinds = [
+        parameter.kind
+        for parameter in inspect.signature(plan_intervention_proposal)
+        .parameters.values()
+    ]
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+
+
+def test_a_misspelled_keyword_raises_instead_of_becoming_a_refusal():
+    """The behavioural half of the guard above, with a real candidate.
+
+    Only the keyword is wrong, so a ``PlanRefusal`` here could mean nothing
+    except that the typo was swallowed.
+    """
+    conductor, _ = _walked()
+    with pytest.raises(TypeError, match="predicted_spec_aftr"):
+        plan_intervention_proposal(
+            conductor.candidate,
+            predicted_spec_aftr={},  # type: ignore[call-arg]
+        )
+
+
+# --------------------------------------------------------------------------
+# a populated accountability finding
+# --------------------------------------------------------------------------
+
+
+def _leaf_types(value, path="$"):
+    if isinstance(value, dict):
+        return [
+            item
+            for key, nested in value.items()
+            for item in _leaf_types(nested, f"{path}.{key}")
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            item
+            for index, nested in enumerate(value)
+            for item in _leaf_types(nested, f"{path}[{index}]")
+        ]
+    return [(path, value)]
+
+
+def test_a_populated_accountability_finding_rides_the_proposal():
+    """The banked level-frame finding must survive into a fingerprinted proposal.
+
+    Every other test here commits a candidate whose ``level_frame_finding`` is
+    ``None``, which exercises none of the fingerprinter's handling of the
+    finding's contents — so an unfingerprintable value in there would sail
+    through the whole suite and then degrade EVERY proposal in production to
+    ``contract_invalid``.
+
+    The tilted-woofer fixture (−1.6 dB/oct, baffle-step territory rather than a
+    defect) is the provocation that makes the two level estimators disagree
+    beyond tolerance while the realized check still passes, so the fit banks
+    the disagreement and proceeds.
+    """
+    fakes = FakeSeams()
+    _tilted_woofer_fixture(
+        fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
+    )
+    conductor = _conductor(fakes)
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 2)
+
+    proposal = conductor.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    # Populated, not merely present — the empty dict is what every other
+    # committed candidate in this file produces.
+    assert proposal.accountability
+    assert {"disagreement_db", "realized_difference_db", "reference_role"} <= set(
+        proposal.accountability
+    )
+    assert proposal.fingerprint
+
+
+def test_every_accountability_leaf_is_a_strictly_fingerprintable_scalar():
+    """One stray ``np.float64`` in the finding refuses every proposal.
+
+    ``_freeze_json`` admits scalars by ``type(v) is float``, and
+    ``isinstance(np.float64(1.0), float)`` is ``True`` while
+    ``type(np.float64(1.0)) is float`` is ``False`` — so a numpy scalar reads
+    as a plain float everywhere except the one place that matters, and
+    fingerprinting raises. The finding is assembled from numpy-derived
+    measurements, which is exactly where such a value would come from.
+    """
+    fakes = FakeSeams()
+    _tilted_woofer_fixture(
+        fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
+    )
+    conductor = _conductor(fakes)
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 2)
+    proposal = conductor.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+
+    leaves = _leaf_types(proposal.accountability)
+    assert leaves, "the finding must be populated for this to mean anything"
+    offenders = [
+        (path, type(value).__name__)
+        for path, value in leaves
+        if type(value) not in _STRICT_JSON_SCALARS
+    ]
+    assert not offenders, f"unfingerprintable accountability values: {offenders}"
