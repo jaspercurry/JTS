@@ -157,6 +157,12 @@ both ring ends to the ring's wire format, so ring boxes stay coherently
 S16 — keeping their certified latency — until ring v2 arms them wide.
 Wide is the loopback path's property in the interim.
 
+#2285's banner also still says the plan owns "U0–U9 sequencing" — drifted
+copy; the sequencing this plan actually ships is **U0–U4** (see
+"Sequencing — the U arcs" above). GitHub-side text is not this file's
+contract, so the mismatch isn't fixed here; the banner gets corrected to
+U0–U4 at merge.
+
 ### Fleet
 
 | Box | Hardware / role | State at 2026-08-10 |
@@ -216,7 +222,7 @@ continuity — issues and PRs reference them) and the width workstream.
 
 | Arc | Delivers | Rolls up | Exit gate |
 |---|---|---|---|
-| **U0 — stabilize + replan** | this document; the P5c deletion (in flight in parallel); PR [#2281](https://github.com/jaspercurry/JTS/pull/2281) gate + merge; jts.local commission + route-latency revalidation (owner-gated) | P5c | doc merged; `rate_match` + adaptive-buffer + stale cushion prose gone; jts.local commissioned with a fresh artifact matching the certified distribution |
+| **U0 — stabilize + replan** | this document; the P5c deletion (dispatched 2026-08-10, PR pending); PR [#2281](https://github.com/jaspercurry/JTS/pull/2281) gate + merge; jts.local commission + route-latency revalidation (owner-gated) | P5c | doc merged; `rate_match` + adaptive-buffer + stale cushion prose gone; jts.local commissioned with a fresh artifact matching the certified distribution |
 | **U1 — ring v2** | the R-RING2 design, build, and per-box activation | P8 | jts3 N-channel first (it kills the measured ~17.5-minute content-fill splice class); then jts.local width + recertification; then jts4 Zero-class validation. jts5 / bonded per the P8 scope ruling |
 | **U2 — source width** | #2223's 3-PR ladder plus its Step 0 descriptor check; the TTS/earcon tail | width workstream | bit-pattern fixtures prove low bits survive fan-in. Loopback boxes may flip before U1 completes; ring boxes flip after |
 | **U3 — renderer ring ingress** | P6a–d, one lane at a time, **AirPlay LAST** with offset re-derivation | P6 | per-lane source pass; AirPlay adds a Music.app local-track loop + resync-log watch + bonded A/V spot-check |
@@ -239,7 +245,7 @@ composite edge).
 | P4 | Rings default on validated full-profile solo-stereo boxes | **DONE** — jts.local armed; jts3 correctly resolves `loopback` (roleful topology); jts4 / jts5 excluded by topology and profile, not hostname |
 | P5a | Delete Python usbsink pump + lean-FIFO lane + Rust solo aloop mode | **DONE** |
 | P5b | Delete `transport_pipe` | **DONE** (2026-07-11) |
-| P5c | Delete `rate_match` + adaptive-buffer + stale cushion recipes | **IN FLIGHT 2026-08-10** — its own PR, which also owns the `.env.example` and `HANDOFF-usb-low-latency.md` prose edits |
+| P5c | Delete `rate_match` + adaptive-buffer + stale cushion recipes | **DISPATCHED 2026-08-10, PR pending** — its own PR, which also owns the `.env.example` and `HANDOFF-usb-low-latency.md` prose edits. If no P5c PR exists when this is read, that cushion prose is unowned and P5c must be re-dispatched. |
 | P6a–d | Renderer lanes → ring ingress (librespot, bluealsa, correction, shairport LAST) | **OPEN — U3.** Net-new build: fan-in's `Input` is aloop-PCM-or-USB-DIRECT only, with no ring-reader variant |
 | P7 | Re-point dsnoop consumers; drop the fan-in aloop mirror | **OPEN — U4** |
 | P8 | Ring v2 | **OPEN — U1**, rescoped by R-RING2 to cover format and channels in one design |
@@ -255,7 +261,7 @@ survives it, verified at `9cc41b987`.
 
 | Row | What survives, and where |
 |---|---|
-| **P5c** (in flight) | `rate_match` is fully live in `rust/jasper-outputd/src/content_bridge.rs` plus its `JASPER_OUTPUTD_CONTENT_BRIDGE_{RING,TARGET,MAX_ADJUST}_*` keys, and bleeds into `jasper-apply-airplay-mode`, `jasper-audio-hardware-reconcile`, the doctor, `audio_runtime_plan`, `fanin_coupling`, `multiroom/reconcile`, and `.env.example`. Adaptive buffer = `jasper/fanin/buffer_reconcile.py` + mux's `_settle_adaptive_buffer`. Stale 256 + 256 cushion prose sits in `.env.example` and `HANDOFF-usb-low-latency.md` |
+| **P5c** (dispatched 2026-08-10, PR pending) | `rate_match` is fully live in `rust/jasper-outputd/src/content_bridge.rs` plus its `JASPER_OUTPUTD_CONTENT_BRIDGE_{RING,TARGET,MAX_ADJUST}_*` keys, and bleeds into `jasper-apply-airplay-mode`, `jasper-audio-hardware-reconcile`, the doctor, `audio_runtime_plan`, `fanin_coupling`, `multiroom/reconcile`, and `.env.example`. Adaptive buffer = `jasper/fanin/buffer_reconcile.py` + mux's `_settle_adaptive_buffer`. Stale 256 + 256 cushion prose sits in `.env.example` and `HANDOFF-usb-low-latency.md` |
 | **P6** (U3) | Four aloop renderer lanes — librespot, shairport-sync, bluealsa-aplay, correction sweeps — all `plug:` wrappers over `*_substream` PCMs. fan-in's `Input` carries an aloop `pcm` or a USB `direct` capture and nothing else, so the ring-reader lane source is a **net-new build**, not a re-point |
 | **P7** (U4) | `aec_tune` runs `arecord -D jasper_capture`; the AEC bridge carries `REF_DEVICE = "jasper_ref"`; fan-in's `RingOutput` keeps a lossy aloop MIRROR on lane 7 — which is *why* the dsnoop consumers survive ring coupling, and why the re-point may follow the default flip but must precede snd-aloop removal. Doctor pins to rewrite: `check_loopback` (`doctor/audio.py`), `check_fanin_asound_wiring` (`doctor/audio_runtime.py`), `check_shairport_sync_loopback_plughw` (`doctor/renderers.py`) |
 | **P8** (U1) | outputd hard-gates `shm_ring` to a full-range stereo single-ALSA sink (`is_full_range_stereo_lr_sink` in `rust/jasper-outputd/src/config.rs`), so aloop lane 5 is the **only** N-channel content path, and bonded ACTIVE followers' snapclient writes `hw:Loopback,0,6`. Both are why P9 is hard-gated on P8 |
@@ -385,12 +391,14 @@ reading `snd_pcm_delay` therefore sees truth — the OPPOSITE of the aloop
 history, where `snd_pcm_delay` returned loopback ring FILL rather than DAC
 latency and caused the ~60 s resync glitch storm until
 `resync_threshold_in_seconds = 0.2` (PR #83). Consequences: shairport's
-`audio_backend_latency_offset_in_seconds` (rendered by `renderers.sh` from
-the configured downstream buffers) MUST be re-derived for the ring graph,
-because the ring holds frames the offset math attributed to the aloop
-ring; and the 0.2 threshold may be revisitable afterwards, but only on
-measurement — keep 0.2 through the migration. This is why AirPlay
-migrates last.
+`audio_backend_latency_offset_in_seconds` — substituted into the rendered
+conf by `derive_audio_backend_latency_offset` in
+`deploy/bin/jasper-apply-airplay-mode`, re-run on every shairport-sync
+start via the unit's `ExecStartPre` (`renderers.sh` only installs the
+template) — MUST be re-derived for the ring graph, because the ring holds
+frames the offset math attributed to the aloop ring; and the 0.2 threshold
+may be revisitable afterwards, but only on measurement — keep 0.2 through
+the migration. This is why AirPlay migrates last.
 
 **Per-lane clock reconciliation stays at fan-in ring-read.** Renderer
 lanes keep their `LaneResampler` exactly as on aloop: the transport
@@ -514,13 +522,15 @@ reconciler-owned and coherent as of the 2026-08-10 probe.
 
 ---
 
-Last verified: 2026-08-10 (scope: the live plan, H1 through "Cross-program
-coordination" — egress facts, source-half boundaries, ring v1 wire and
-header, `ring_edge_width_ready` semantics, P-row inventory, doctor-check
+Scope: the live plan, H1 through "Cross-program coordination" — egress
+facts, source-half boundaries, ring v1 wire and header,
+`ring_edge_width_ready` semantics, P-row inventory, doctor-check
 locations, the dither inventory, and the DAC edge-format table were
-re-read against `9cc41b987`. Fleet rows came from a same-day probe of jts3
-and jts.local only; jts4 and jts5 were not probed, and jts3's wide-chain
-row is derived, as its cell says. Appendix A was carried forward with only
-its ring/ioplug constants and `Input` shape re-checked — its shairport
-offset and resync-threshold claims were not. Appendix B was NOT
-re-verified and is retained as archaeology.)
+re-read against `9cc41b987`. Fleet rows came from a same-day probe of
+jts3 and jts.local only; jts4 and jts5 were not probed, and jts3's
+wide-chain row is derived, as its cell says. Appendix A was carried
+forward with only its ring/ioplug constants and `Input` shape
+re-checked — its shairport offset and resync-threshold claims were
+not. Appendix B was NOT re-verified and is retained as archaeology.
+
+Last verified: 2026-08-10
