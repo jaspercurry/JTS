@@ -391,7 +391,11 @@ static void test_wide_slot_publish_consume_roundtrip(void) {
     jts_ring_reader_t r;
     CHECK(jts_ring_reader_open(path, &g, &r) == 0, "wide reader open");
 
-    size_t n = w.samples_per_slot; // 768 i32 samples
+    // Hand-computed, not read off `w` (the code under test): a mutation that
+    // corrupts samples_per_slot must fail the assertion below, not silently
+    // undersize this malloc into a heap overflow a few lines down.
+    size_t n = 128 * 6; // period_frames * channels == 768 i32 samples
+    CHECK(w.samples_per_slot == n, "wide writer samples_per_slot == 128 * 6");
     int32_t *payload = malloc(n * sizeof(int32_t));
     // Values outside the i16 range in every channel: a narrow copy path would
     // truncate them, and the per-channel offset makes a channel-stride bug

@@ -235,7 +235,10 @@ size_t jts_ring_file_size(const jts_ring_geometry_t *g);
 // before any mapping, and an untrusted HEADER format only feeds the implied-file-
 // size cross-check in attach, which is followed by a field-by-field compare
 // against the expected format. Mirrors Geometry::bytes_per_sample in
-// rust/jasper-ring/src/layout.rs.
+// rust/jasper-ring/src/layout.rs on the valid ids {S16LE=1, S32LE=2}; the two
+// diverge deliberately on an unrecognized id — this function still answers 2
+// (bounded sizing for attach diagnostics, per above) where the Rust side
+// returns Err (a hard config-error path with no diagnostic-sizing need).
 size_t jts_ring_bytes_per_sample(uint32_t sample_format);
 // Returns 0 on valid, non-zero (a static reason string is set via *reason) on
 // an unsupported geometry. The accept-set is sample_format in {S16LE, S32LE},
