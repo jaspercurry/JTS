@@ -20,11 +20,6 @@ use crate::types::{SampleFormat, SAMPLE_RATE};
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
 pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
-pub const DEFAULT_CONTENT_BRIDGE_RING_FRAMES: u32 = 16_384;
-pub const DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 4096;
-pub const DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM: u32 = 500;
-pub const MAX_CONTENT_BRIDGE_RING_FRAMES: u32 = 262_144;
-pub const MAX_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 65_536;
 pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
 pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 128;
 pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 256;
@@ -48,7 +43,6 @@ impl BackendMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentBridgeMode {
     Direct,
-    RateMatch,
     /// PROTOTYPE (latency/ring-proto-shm, flag `shm_ring`): read the post-DSP
     /// stereo program from a 2-slot SHM ping-pong ring the CamillaDSP-playback
     /// ALSA ioplug writes, instead of the snd-aloop content hop. Default is
@@ -114,18 +108,31 @@ impl ContentBridgeMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Direct => "direct",
-            Self::RateMatch => "rate_match",
             Self::ShmRing => "shm_ring",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContentBridgeConfig {
-    pub ring_frames: u32,
-    pub target_fill_frames: u32,
-    pub max_adjust_ppm: u32,
-}
+/// Every spelling the REMOVED `rate_match` content bridge answered to.
+///
+/// The rate-matched lab bridge (an i16 windowed-sinc resampler between the
+/// snd-aloop content capture and the DAC-paced output loop) was deleted after
+/// it failed the 2026-07-02 USB tuning; `shm_ring` is the frame-bounded
+/// transport that replaced its diagnostic value. A migrating box may still
+/// carry one of these spellings in `/var/lib/jasper/outputd.env`, so the parser
+/// fails SAFE to [`ContentBridgeMode::Direct`] and says so loudly rather than
+/// bailing — a deleted knob must never turn a routine deploy into a parked
+/// final-output owner (a silent speaker). Mirrors the `transport_pipe`
+/// removal (2026-07-11), whose persisted value likewise fail-safes to the
+/// byte-identical-to-today transport.
+///
+/// This is NOT permission to run the bridge: the route-latency policy
+/// (`jasper.audio_runtime_plan._route_policy_errors`) still REFUSES any
+/// non-`direct` raw bridge value for a `usb_low_latency_48k` claim, so a box
+/// carrying a stale spelling reports an honest red claim instead of a
+/// silently-downgraded green one.
+pub const REMOVED_RATE_MATCH_BRIDGE_SPELLINGS: &[&str] =
+    &["rate_match", "ratematch", "rate-matched", "rate_matched"];
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -152,8 +159,7 @@ pub struct Config {
     /// box, ahead of the per-hardware branches, resolved per coupling by
     /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` on
     /// the `loopback` coupling (the passive lane's slaves are re-pinned to
-    /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring` or
-    /// when the box carries the i16-only `rate_match` content bridge.
+    /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring`.
     /// Absence now means a box that has not yet reconciled (fresh install) or
     /// whose probe could not run — not "every box".
     pub content_format: SampleFormat,
@@ -184,7 +190,6 @@ pub struct Config {
     pub content_buffer_frames: u32,
     pub dac_buffer_frames: u32,
     pub content_bridge_mode: ContentBridgeMode,
-    pub content_bridge: ContentBridgeConfig,
     /// PROTOTYPE SHM ring reader settings. `Some` iff
     /// `content_bridge_mode == ShmRing`; `None` (the default) is byte-identical
     /// to today. See `ShmRingConfig`.
@@ -308,48 +313,33 @@ impl Config {
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
-        let content_bridge_mode = match env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "direct")
+        let raw_content_bridge = env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "direct")
             .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+            .to_ascii_lowercase();
+        let content_bridge_mode = match raw_content_bridge.as_str() {
             "direct" | "off" | "disabled" => ContentBridgeMode::Direct,
-            "rate_match" | "ratematch" | "rate-matched" | "rate_matched" => {
-                ContentBridgeMode::RateMatch
-            }
             // PROTOTYPE flag (latency/ring-proto-shm).
             "shm_ring" | "shmring" | "ring" => ContentBridgeMode::ShmRing,
+            other if REMOVED_RATE_MATCH_BRIDGE_SPELLINGS.contains(&other) => {
+                // Fail SAFE + LOUD on the deleted bridge (see
+                // REMOVED_RATE_MATCH_BRIDGE_SPELLINGS). Bailing here would exit
+                // 78 and park the final-output owner on a box whose only sin is
+                // a stale env line, so resolve `direct` — the transport the
+                // bridge sat in front of — and make the downgrade audible in
+                // the journal instead.
+                eprintln!(
+                    "event=outputd.content_bridge.removed_value requested={other} \
+                     action=fail_safe_direct detail=the rate_match content bridge was \
+                     deleted; remove JASPER_OUTPUTD_CONTENT_BRIDGE from \
+                     /var/lib/jasper/outputd.env or set it to direct"
+                );
+                ContentBridgeMode::Direct
+            }
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, rate_match, shm_ring; got {:?}",
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, shm_ring; got {:?}",
                     other
                 )
-            }
-        };
-        // The rate-match bridge's ring/target/ppm knobs are only meaningful for
-        // RateMatch; shm_ring and Direct both use the safe default so validate
-        // does not run against them.
-        let content_bridge = match content_bridge_mode {
-            ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => {
-                default_content_bridge_config()
-            }
-            ContentBridgeMode::RateMatch => {
-                let bridge = ContentBridgeConfig {
-                    ring_frames: env_u32(
-                        "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
-                        DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-                    )?,
-                    target_fill_frames: env_u32(
-                        "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES",
-                        DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-                    )?,
-                    max_adjust_ppm: env_u32(
-                        "JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM",
-                        DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-                    )?,
-                };
-                validate_content_bridge(bridge, period_frames)?;
-                bridge
             }
         };
         let chip_ref_buffer_frames = env_u32(
@@ -467,7 +457,7 @@ impl Config {
         // Unset or blank falls back to the historical S16_LE lane, but that is
         // no longer every live box: jasper-audio-hardware-reconcile emits this
         // name on every box now, resolved per coupling (S32_LE on loopback,
-        // S16_LE on shm_ring or a rate_match content bridge — see
+        // S16_LE on shm_ring — see
         // jasper.fanin_coupling.content_lane_format_for_coupling). The axis is
         // no longer byte-identical on deploy; absence now means unreconciled
         // or probe-unavailable, not "nothing writes it".
@@ -650,40 +640,6 @@ impl Config {
                 content_bridge_mode.as_str()
             );
         }
-        // The rate-match bridge is the shared windowed-sinc resampler, and that
-        // algorithm is i16 (`jasper_resampler`'s ring and block resampler are i16
-        // throughout; widening them is out of scope for the wide output path). So
-        // outputd's i32 program has to step DOWN into it and back up
-        // (`main::read_content_bridge_period`). On an S16 lane that round trip is
-        // EXACT — the samples were widened from S16 in the first place — but on a
-        // wide lane it would be a real requantization, a SECOND quantization on a
-        // path whose whole contract is that there is exactly one, at the DAC edge.
-        // Refuse the pairing at startup rather than lose bits quietly. No
-        // AUTOMATED writer constructs this pair: jasper-audio-hardware-
-        // reconcile narrows the content format to S16_LE itself whenever it
-        // finds `rate_match` armed, any of its four accepted spellings
-        // (`event=...content_format_narrowed`). But jasper-outputd.service has
-        // no ExecStartPre reconcile, so an operator who hand-sets
-        // JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match on a box still holding a
-        // wide JASPER_OUTPUTD_CONTENT_FORMAT and runs a direct `systemctl
-        // restart jasper-outputd` DOES construct the pair. This bail is what
-        // catches that (exit 78, EX_CONFIG); jasper-outputd-failure-reconcile's
-        // ExecStopPost matches status 78, runs one rate-limited reconcile that
-        // narrows the format for all four rate_match spellings, and restarts —
-        // so this bail guards a real hand-edit path, not dead code, and the
-        // exit-78 path is what heals it.
-        if content_bridge_mode == ContentBridgeMode::RateMatch
-            && content_format != SampleFormat::S16Le
-        {
-            anyhow::bail!(
-                "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match requires \
-                 JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE (got {}): the rate-match \
-                 resampler is an i16 algorithm, so a wider lane would be \
-                 requantized into it — a second quantization ahead of the DAC \
-                 edge, which owns the only one",
-                content_format.as_str()
-            );
-        }
         if tts_socket_path.is_some() && !is_full_range_stereo_lr_sink {
             anyhow::bail!(
                 "JASPER_OUTPUTD_TTS_SOCKET requires a full-range stereo L/R sink: \
@@ -732,7 +688,7 @@ impl Config {
                     n_slots,
                 })
             }
-            ContentBridgeMode::Direct | ContentBridgeMode::RateMatch => None,
+            ContentBridgeMode::Direct => None,
         };
 
         let config = Self {
@@ -752,7 +708,6 @@ impl Config {
             content_buffer_frames,
             dac_buffer_frames,
             content_bridge_mode,
-            content_bridge,
             shm_ring,
             chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
             chip_ref_sample_rate,
@@ -780,55 +735,6 @@ impl Config {
         }
         Ok(config)
     }
-}
-
-fn default_content_bridge_config() -> ContentBridgeConfig {
-    ContentBridgeConfig {
-        ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-        target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-        max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-    }
-}
-
-fn validate_content_bridge(config: ContentBridgeConfig, period_frames: u32) -> Result<()> {
-    if config.target_fill_frames < period_frames.saturating_mul(2) {
-        anyhow::bail!(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES={} must be >= 2 x JASPER_OUTPUTD_PERIOD_FRAMES={} (rate matcher startup headroom)",
-            config.target_fill_frames,
-            period_frames
-        );
-    }
-    if config.target_fill_frames > MAX_CONTENT_BRIDGE_TARGET_FRAMES {
-        anyhow::bail!(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES={} must be <= {}",
-            config.target_fill_frames,
-            MAX_CONTENT_BRIDGE_TARGET_FRAMES
-        );
-    }
-    let min_ring_frames = config
-        .target_fill_frames
-        .saturating_add(period_frames.saturating_mul(4));
-    if config.ring_frames < min_ring_frames {
-        anyhow::bail!(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES={} must be >= target + 4 periods ({} frames)",
-            config.ring_frames,
-            min_ring_frames
-        );
-    }
-    if config.ring_frames > MAX_CONTENT_BRIDGE_RING_FRAMES {
-        anyhow::bail!(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES={} must be <= {}",
-            config.ring_frames,
-            MAX_CONTENT_BRIDGE_RING_FRAMES
-        );
-    }
-    if config.max_adjust_ppm == 0 || config.max_adjust_ppm > 5000 {
-        anyhow::bail!(
-            "JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM={} must be between 1 and 5000",
-            config.max_adjust_ppm
-        );
-    }
-    Ok(())
 }
 
 fn validate_buffer(
@@ -978,14 +884,6 @@ mod tests {
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
-            assert_eq!(
-                cfg.content_bridge,
-                ContentBridgeConfig {
-                    ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-                    target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-                    max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-                }
-            );
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
@@ -1189,7 +1087,7 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -1274,70 +1172,10 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_content_lane_rejects_the_i16_rate_match_resampler() {
-        // The rate-match bridge is the shared windowed-sinc resampler, an i16
-        // algorithm, so outputd's i32 program has to narrow into it and widen
-        // back. On the default S16 lane that round trip is exact; on a wide lane
-        // it would be a SECOND quantization ahead of the DAC edge, which owns the
-        // only one. Refuse it loudly instead of losing bits quietly.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
-                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("rate_match requires"), "{err}");
-                assert!(
-                    err.contains("JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE"),
-                    "{err}"
-                );
-                assert!(err.contains("S32_LE"), "{err}");
-                assert!(err.contains("second quantization"), "{err}");
-            },
-        );
-    }
-
-    #[test]
-    fn the_default_s16_content_lane_still_arms_the_rate_match_bridge() {
-        // The other direction of the guard above: it must refuse ONLY the wide
-        // pairing. An unset content format is the S16 default and has to keep
-        // working, or the guard would have silently retired a shipped mode.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
-                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_FORMAT", None),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
-                assert_eq!(cfg.content_format, SampleFormat::S16Le);
-            },
-        );
-        // And an EXPLICIT S16_LE is accepted too, not just an absent value.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
-                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S16_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
-            },
-        );
-    }
-
-    #[test]
     fn a_wide_content_lane_is_accepted_on_the_direct_default_path() {
-        // The guard must be scoped to `rate_match` alone. The wide lane's whole
-        // purpose is the DIRECT path, so declaring S32 there stays legal — this is
-        // what PR-6 will actually emit.
+        // The wide lane's whole purpose is the DIRECT path, so declaring S32
+        // there is legal — this is what the reconciler actually emits on the
+        // loopback coupling.
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
@@ -1353,19 +1191,23 @@ mod tests {
     }
 
     #[test]
-    fn active_lane_rejects_rate_match_bridge_even_at_two_channels() {
-        // Same invariant on the sibling stereo-only feature: the rate-match
-        // content bridge must also refuse to arm on an active-crossover lane.
+    fn active_lane_rejects_a_content_bridge_even_at_two_channels() {
+        // Same invariant on the sibling stereo-only feature: a content bridge
+        // must refuse to arm on an active-crossover lane, where the full-range
+        // program it carries would be split to the tweeter. Exercised through
+        // `shm_ring` — the surviving non-direct bridge — so the gate keeps a
+        // live witness now that `rate_match` fail-safes to `direct` and could
+        // no longer reach it.
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
                 ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
+                assert!(err.contains("CONTENT_BRIDGE=shm_ring requires"), "{err}");
                 assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
             },
         );
@@ -1672,26 +1514,6 @@ mod tests {
     }
 
     #[test]
-    fn a_packed_24_content_lane_is_still_refused_by_the_rate_match_pairing_guard() {
-        // The rate-match bridge is an i16 algorithm and refuses ANY non-S16 lane.
-        // That guard predates `S24_3LE` and is written as `!= S16Le`, so it covers
-        // the new value for free — asserted rather than assumed, because a later
-        // rewrite into an explicit `== S32Le` would silently let the packed value
-        // through into a second quantization ahead of the edge.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S24_3LE")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("rate_match"), "{err}");
-                assert!(err.contains("S24_3LE"), "{err}");
-            },
-        );
-    }
-
-    #[test]
     fn content_and_dac_formats_are_independent_axes() {
         // The two hops must never be read off each other: a wide content lane
         // into an S16-only hardware edge (the Apple-dongle build) and the
@@ -1771,11 +1593,11 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
+                assert!(err.contains("CONTENT_BRIDGE=shm_ring requires"), "{err}");
             },
         );
         with_env(
@@ -1807,11 +1629,11 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=rate_match requires"), "{err}");
+                assert!(err.contains("CONTENT_BRIDGE=shm_ring requires"), "{err}");
             },
         );
         with_env(
@@ -1870,46 +1692,66 @@ mod tests {
     }
 
     #[test]
-    fn parses_rate_match_content_bridge() {
+    fn the_removed_rate_match_bridge_fails_safe_to_direct_on_every_spelling() {
+        // Legacy-cleanup contract (mirrors the `transport_pipe` removal): a box
+        // migrating with a persisted `rate_match` value in outputd.env must come
+        // up on `direct`, NOT bail. Bailing is exit 78 (EX_CONFIG), which parks
+        // the final-output owner — a silent speaker caused by a stale env line.
+        let mut checked = 0usize;
+        for &spelling in REMOVED_RATE_MATCH_BRIDGE_SPELLINGS {
+            with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(spelling))], || {
+                let cfg = Config::from_env()
+                    .unwrap_or_else(|e| panic!("spelling {spelling} must not bail: {e}"));
+                assert_eq!(
+                    cfg.content_bridge_mode,
+                    ContentBridgeMode::Direct,
+                    "spelling {spelling}"
+                );
+                assert!(cfg.shm_ring.is_none(), "spelling {spelling}");
+            });
+            checked += 1;
+        }
+        // Non-vacuity, and the drift pin against the Python side: the four
+        // spellings here are the same four
+        // tests/test_audio_hardware_reconcile.py parametrizes its
+        // reconciler-no-longer-narrows test over. Shrinking this list silently
+        // would leave a migrating box's spelling untested on one of the two
+        // sides.
+        assert_eq!(
+            checked, 4,
+            "all four removed spellings must be exercised, got {checked}"
+        );
+    }
+
+    #[test]
+    fn the_removed_rate_match_bridge_does_not_drag_a_wide_lane_down_with_it() {
+        // The deleted i16 pairing guard must not leave a ghost: a stale
+        // `rate_match` on a box whose content lane is legitimately WIDE now
+        // resolves `direct`, which is exactly the mode a wide lane belongs to.
+        // Before the deletion this same env pair bailed.
         with_env(
             &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("12288")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("750")),
+                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
             ],
             || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
-                assert_eq!(cfg.content_bridge.ring_frames, 12_288);
-                assert_eq!(cfg.content_bridge.target_fill_frames, 4096);
-                assert_eq!(cfg.content_bridge.max_adjust_ppm, 750);
+                let cfg = Config::from_env().expect("stale rate_match must not bail");
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+                assert_eq!(cfg.content_format, SampleFormat::S32Le);
             },
         );
     }
 
     #[test]
-    fn rejects_tiny_content_bridge_ring() {
+    fn the_removed_rate_match_tuning_knobs_are_inert() {
+        // The three `_RING_FRAMES` / `_TARGET_FRAMES` / `_MAX_ADJUST_PPM` keys
+        // were deleted with the bridge. A stale — even unparseable — value must
+        // be ignored, never re-read into a validation that no longer exists.
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("4096")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err();
-                assert!(err
-                    .to_string()
-                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES"));
-            },
-        );
-    }
-
-    #[test]
-    fn direct_content_bridge_ignores_stale_invalid_bridge_tuning() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 (
                     "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
                     Some("not-a-number"),
@@ -1918,38 +1760,25 @@ mod tests {
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("0")),
             ],
             || {
-                let cfg = Config::from_env().unwrap();
+                let cfg = Config::from_env().expect("stale bridge tuning must be inert");
                 assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
-                assert_eq!(cfg.content_bridge, default_content_bridge_config());
             },
         );
     }
 
     #[test]
-    fn rejects_huge_content_bridge_allocations() {
+    fn an_unknown_content_bridge_still_fails_loud() {
+        // The fail-SAFE arm is scoped to the removed spellings alone. A typo is
+        // still a hard bail — the operator asked for something that never
+        // existed, and silently serving `direct` would hide it.
         with_env(
-            &[
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("262145")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
-            ],
+            &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_matchh"))],
             || {
-                let err = Config::from_env().unwrap_err();
-                assert!(err
-                    .to_string()
-                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES"));
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("65537")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err();
-                assert!(err
-                    .to_string()
-                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES"));
+                let err = Config::from_env().unwrap_err().to_string();
+                // The advertised vocabulary is pinned exactly: a deleted mode
+                // must not be offered back to the operator as a valid choice.
+                assert!(err.contains("must be one of direct, shm_ring"), "{err}");
+                assert!(err.contains("rate_matchh"), "must echo the value: {err}");
             },
         );
     }
@@ -2052,21 +1881,13 @@ mod tests {
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
             assert!(cfg.shm_ring.is_none());
         });
-        // The two established modes still parse unchanged, and neither sets
-        // shm_ring — the new variant did not perturb them.
+        // The `direct` default still parses unchanged and does not set
+        // shm_ring — the ring variant did not perturb it.
         with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct"))], || {
             let cfg = Config::from_env().unwrap();
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
             assert!(cfg.shm_ring.is_none());
         });
-        with_env(
-            &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match"))],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
-                assert!(cfg.shm_ring.is_none());
-            },
-        );
     }
 
     #[test]
@@ -2079,8 +1900,6 @@ mod tests {
                 let ring = cfg.shm_ring.expect("shm_ring config present");
                 assert_eq!(ring.path, DEFAULT_SHM_RING_PATH);
                 assert_eq!(ring.n_slots, DEFAULT_SHM_RING_SLOTS);
-                // The rate-match knobs stay at their safe default (unused here).
-                assert_eq!(cfg.content_bridge, default_content_bridge_config());
             },
         );
         with_env(

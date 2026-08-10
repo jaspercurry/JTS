@@ -1973,49 +1973,21 @@ def _outputd_status_payload() -> dict[str, object] | CheckResult:
     return data
 
 
-def _outputd_content_bridge_health(
-    data: dict[str, object],
-) -> tuple[str, str | None]:
-    """Summarize optional rate-match bridge telemetry and anomalies."""
-    bridge = data.get("content_bridge")
-    detail = "content_bridge=missing"
-    warning: str | None = None
-    if not isinstance(bridge, dict):
-        return detail, warning
-    if not bool(bridge.get("enabled", False)):
-        return "content_bridge=direct", warning
+def _outputd_content_bridge_detail(data: dict[str, object]) -> str:
+    """Report outputd's resolved content source (``direct`` or ``shm_ring``).
 
-    locked = bool(bridge.get("locked", False))
-    fill = int(bridge.get("fill_frames", 0) or 0)
-    target = int(bridge.get("target_fill_frames", 0) or 0)
-    ratio = bridge.get("ratio_ppm")
-    silence = int(bridge.get("silence_frames", 0) or 0)
-    underrun = int(bridge.get("underrun_frames", 0) or 0)
-    overrun = int(bridge.get("overrun_frames", 0) or 0)
-    resync = int(bridge.get("resync_count", 0) or 0)
-    reset = int(bridge.get("reset_count", 0) or 0)
-    clamp = int(bridge.get("ratio_clamp_count", 0) or 0)
-    detail = (
-        f"content_bridge=rate_match, bridge_locked={locked}, "
-        f"bridge_fill_frames={fill}, bridge_target_fill_frames={target}, "
-        f"bridge_ratio_ppm={ratio}, bridge_silence_frames={silence}, "
-        f"bridge_underrun_frames={underrun}, "
-        f"bridge_overrun_frames={overrun}, bridge_resync_count={resync}, "
-        f"bridge_reset_count={reset}, bridge_ratio_clamp_count={clamp}"
-    )
-    anomalies = []
-    for name, value in (
-        ("underrun_frames", underrun),
-        ("overrun_frames", overrun),
-        ("resync_count", resync),
-        ("reset_count", reset),
-        ("ratio_clamp_count", clamp),
-    ):
-        if value:
-            anomalies.append(f"{name}={value}")
-    if anomalies:
-        warning = ", ".join(anomalies)
-    return detail, warning
+    A plain mode readout. The rate-matched bridge that once published
+    fill/ppm/lock/anomaly counters under this key was deleted; the SHM ring's
+    own health has its own ``shm_ring`` block, so there is nothing left to
+    raise a warning about here.
+    """
+    bridge = data.get("content_bridge")
+    if not isinstance(bridge, dict):
+        return "content_bridge=missing"
+    mode = bridge.get("mode")
+    if not isinstance(mode, str) or not mode:
+        return "content_bridge=missing"
+    return f"content_bridge={mode}"
 
 
 def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
@@ -2422,7 +2394,7 @@ def check_outputd_service() -> CheckResult:
     content_partial = int(content.get("partial_periods", 0) or 0)
     content_eagain = int(content.get("eagain_count", 0) or 0)
     frames = int(dac.get("frames_written", 0) or 0)
-    bridge_detail, bridge_warning = _outputd_content_bridge_health(data)
+    bridge_detail = _outputd_content_bridge_detail(data)
     tts_raw = data.get("tts")
     tts = tts_raw if isinstance(tts_raw, dict) else {}
     tts_pending = int(tts.get("pending_frames", 0) or 0)
@@ -2452,13 +2424,6 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "warn",
             f"active but {dual_warning}. {dual_detail.lstrip(', ')}",
-        )
-    if bridge_warning is not None:
-        return CheckResult(
-            "jasper-outputd",
-            "warn",
-            "active but rate-match content bridge reported anomalies: "
-            f"{bridge_warning}. {bridge_detail}",
         )
     if tts_over_budget or tts_pending > 48000 * 2:
         return CheckResult(

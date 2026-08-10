@@ -30,7 +30,7 @@ def _usb_plan():
 
 
 def _usb_plan_with_legacy_transport_error():
-    # The deferred lab `rate_match` outputd bridge (a partial flip without a
+    # A REMOVED/unknown outputd bridge literal (a partial flip without a
     # matching shm_ring coupling) makes the USB low-latency plan error.
     return build_audio_runtime_plan(
         base_env={"JASPER_AUDIO_ROUTE_PROFILE": "usb_low_latency_48k"},

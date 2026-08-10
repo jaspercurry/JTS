@@ -636,9 +636,10 @@ config. The fan-in and outputd DAC terms prefer the daemons' live
 `snd_pcm_delay_frames` STATUS values and fall back to
 `JASPER_FANIN_OUTPUT_BUFFER_FRAMES` /
 `JASPER_OUTPUTD_DAC_BUFFER_FRAMES` when a daemon is not yet available or
-is an older build without that field. `outputd_content_bridge` is `0` in
-outputd's packaged `direct` mode or the configured target fill in opt-in
-`rate_match` lab mode. If any owning env file or live delay changes, the
+is an older build without that field. There is no content-bridge term: the
+`rate_match` lab bridge that once contributed its target fill was deleted, so
+the offset is CamillaDSP + fan-in + outputd DAC only, on every box.
+If any owning env file or live delay changes, the
 next shairport render/restart follows automatically. The old output dmix
 term was added 2026-05-25; the 2026-05-28 outputd topology replaces it
 with outputd's direct-DAC queue.
@@ -1346,7 +1347,7 @@ real audio clock.
 | `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
 | `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
 | `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
-| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + fanin_output_latency + outputd_content_bridge + outputd_dac_latency) / samplerate)` | Compensates fixed downstream delay invisible to shairport's `snd_pcm_delay()`. The fan-in and outputd DAC terms prefer daemon STATUS `snd_pcm_delay_frames`; configured buffers are fallback while daemons are unavailable or old. With current generic fallbacks the direct-mode value is `-0.106667`; live low-latency DAC floors may render lower. If lab mode enables `rate_match`, the bridge target fill is included. Compensation is for video/multi-room sync correctness — Pattern A3 drops require the fan-in topology. |
+| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + fanin_output_latency + outputd_dac_latency) / samplerate)` | Compensates fixed downstream delay invisible to shairport's `snd_pcm_delay()`. The fan-in and outputd DAC terms prefer daemon STATUS `snd_pcm_delay_frames`; configured buffers are fallback while daemons are unavailable or old. With current generic fallbacks the value is `-0.106667`; live low-latency DAC floors may render lower. (A fifth `outputd_content_bridge` term existed while the `rate_match` lab bridge did; both are deleted.) Compensation is for video/multi-room sync correctness — Pattern A3 drops require the fan-in topology. |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
 | `deploy/camilladsp/outputd-cutover.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
@@ -1429,11 +1430,9 @@ The worked-example math with the current production values:
 chunksize                  = 1024 samples (CamillaDSP's implicit baseline)
 target_level               = 2048 samples (2026-05-25 trim from 4096)
 fanin output latency       = 1024 samples (default fallback; live STATUS preferred)
-outputd content bridge     = 0 samples (direct mode; rate_match adds target_fill)
 outputd DAC latency        = 3072 samples (generic fallback; live STATUS preferred)
 extra delay (camilla)      = (2048 - 1024) / 48000 = 0.021333 s
 extra delay (fanin output) =          1024 / 48000 = 0.021333 s
-extra delay (bridge)       =             0 / 48000 = 0.000000 s
 extra delay (outputd DAC)  =          3072 / 48000 = 0.064000 s
 combined extra delay       =                         0.106667 s
 offset                     = -0.106667

@@ -63,13 +63,12 @@ On ring-eligible stereo boxes, `jasper-outputd` normally reads Ring B:
 CamillaDSP writes the post-DSP stereo program to `jts_ring_playback`, and
 outputd consumes `/dev/shm/jts-ring/content.ring` one DAC-sized slot at a
 time. The legacy `direct` content capture lane remains the fail-safe path
-for ring-ineligible, operator-frozen, and active-N-ch topologies. For lab
-validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
-outputd-owned bounded ring plus ppm-clamped rate matcher at this final
-content/DAC clock boundary while leaving the DAC write loop as timing
-owner. The lab bridge target is 4096 frames (~85 ms at 48 kHz); AirPlay
-latency rendering accounts for that target only when the bridge is
-explicitly enabled.
+for ring-ineligible, operator-frozen, and active-N-ch topologies. Those two
+are the whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`: a third value,
+`rate_match` (an outputd-owned bounded ring plus ppm-clamped rate matcher at
+this final content/DAC clock boundary), was **deleted** after it failed the
+2026-07-02 USB tuning. A persisted `rate_match` fail-safes to `direct`, and
+AirPlay latency rendering no longer carries a bridge term at all.
 
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`

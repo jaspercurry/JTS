@@ -19,25 +19,15 @@ SCRIPT = REPO / "deploy" / "bin" / "jasper-apply-airplay-mode"
 NO_OUTPUTD_ENV = object()
 
 
-def _outputd_env(
-    dac_buffer_frames: int = 3072,
-    *,
-    content_bridge: str = "direct",
-    content_bridge_target_frames: int | str = 4096,
-) -> str:
+def _outputd_env(dac_buffer_frames: int = 3072) -> str:
     """Production-shape outputd env fixture.
 
     The AirPlay latency offset compensates CamillaDSP's target_level
-    over chunksize, the fan-in output buffer, jasper-outputd's optional
-    content bridge, plus jasper-outputd's DAC buffer. The old output
-    dmix is retired from the outputd path.
+    over chunksize, the fan-in output buffer, plus jasper-outputd's DAC
+    buffer. The old output dmix is retired from the outputd path, and the
+    optional rate-match content bridge (once a fourth term) was deleted.
     """
-    return (
-        f"JASPER_OUTPUTD_DAC_BUFFER_FRAMES={dac_buffer_frames}\n"
-        f"JASPER_OUTPUTD_CONTENT_BRIDGE={content_bridge}\n"
-        "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES="
-        f"{content_bridge_target_frames}\n"
-    )
+    return f"JASPER_OUTPUTD_DAC_BUFFER_FRAMES={dac_buffer_frames}\n"
 
 
 def _render(
@@ -273,60 +263,38 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
     assert "audio_backend_latency_offset_in_seconds = -0.074667;" in rendered
 
 
-def test_airplay_renderer_direct_content_bridge_adds_no_latency(tmp_path: Path):
-    rendered, _ = _render(
-        tmp_path,
-        """
+def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
+    """The offset is CamillaDSP + fan-in + DAC only.
+
+    The deleted `rate_match` bridge used to contribute a fourth term (its
+    target fill). A box that still carries the stale env must get the SAME
+    offset as one that does not — otherwise the renderer would be compensating
+    for a hold that no longer happens, pushing AirPlay audio early.
+    """
+    camilla = """
         devices:
           samplerate: 48000
           chunksize: 1024
           queuelimit: 4
           target_level: 4096
-        """,
-        outputd_env=_outputd_env(content_bridge="direct"),
-    )
-
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
-
-
-def test_airplay_renderer_rate_match_content_bridge_adds_target_fill(tmp_path: Path):
-    rendered, _ = _render(
-        tmp_path,
         """
-        devices:
-          samplerate: 48000
-          chunksize: 1024
-          queuelimit: 4
-          target_level: 2048
-        """,
-        outputd_env=_outputd_env(
-            content_bridge="rate_match",
-            content_bridge_target_frames=4096,
+    # CamillaDSP (4096-1024) + fan-in output 1024 + outputd DAC 3072 @ 48 kHz.
+    expected = "audio_backend_latency_offset_in_seconds = -0.149333;"
+
+    rendered, _ = _render(tmp_path, camilla, outputd_env=_outputd_env())
+    assert expected in rendered
+
+    stale, result = _render(
+        tmp_path,
+        camilla,
+        outputd_env=(
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072\n"
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match\n"
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES=4096\n"
         ),
     )
-
-    # CamillaDSP 1024 + fan-in output 1024 + bridge 4096 + DAC 3072.
-    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
-
-
-def test_airplay_renderer_rate_match_bridge_target_is_configurable(tmp_path: Path):
-    rendered, _ = _render(
-        tmp_path,
-        """
-        devices:
-          samplerate: 48000
-          chunksize: 1024
-          queuelimit: 4
-          target_level: 2048
-        """,
-        outputd_env=_outputd_env(
-            content_bridge="rate_match",
-            content_bridge_target_frames=2048,
-        ),
-    )
-
-    # CamillaDSP 1024 + fan-in output 1024 + bridge 2048 + DAC 3072.
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert result.returncode == 0, result.stderr
+    assert expected in stale, "a stale rate_match env must not move the offset"
 
 
 def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Path):
@@ -350,23 +318,6 @@ def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Pa
     # outputd.service applies packaged outputd defaults after /etc/jasper,
     # so the renderer must not let stale /etc outputd knobs add a bridge term.
     assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
-
-
-def test_airplay_renderer_warns_on_unknown_bridge_mode(tmp_path: Path):
-    rendered, result = _render(
-        tmp_path,
-        """
-        devices:
-          samplerate: 48000
-          chunksize: 1024
-          queuelimit: 4
-          target_level: 2048
-        """,
-        outputd_env="JASPER_OUTPUTD_CONTENT_BRIDGE=pipewire\n",
-    )
-
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
-    assert "invalid JASPER_OUTPUTD_CONTENT_BRIDGE" in result.stderr
 
 
 def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Path):

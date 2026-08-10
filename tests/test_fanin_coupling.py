@@ -346,9 +346,9 @@ def test_resolve_outputd_content_bridge_fail_safe_and_tokens():
     assert resolve_outputd_content_bridge("") == OUTPUTD_CONTENT_BRIDGE_DIRECT
     assert resolve_outputd_content_bridge(" DIRECT ") == OUTPUTD_CONTENT_BRIDGE_DIRECT
     assert resolve_outputd_content_bridge("Shm_Ring") == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    # rate_match is a separate deferred lab bridge the coupling plane does not
-    # own — it fail-safes to direct here (the raw string is what the route policy
-    # rejects, see the audio_runtime_plan tests).
+    # The REMOVED rate_match bridge fail-safes to direct here, matching the Rust
+    # daemon's own removed-value arm. The RAW string is what the route policy
+    # rejects — see test_audio_runtime_plan.py's refusal test.
     assert resolve_outputd_content_bridge("rate_match") == OUTPUTD_CONTENT_BRIDGE_DIRECT
     assert resolve_outputd_content_bridge("garbage") == OUTPUTD_CONTENT_BRIDGE_DIRECT
 

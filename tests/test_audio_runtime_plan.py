@@ -15,11 +15,9 @@ from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     AUDIO_ROUTE_PROFILE_KEY,
-    FANIN_OUTPUT_BUFFER_KEY,
     FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
-    MIN_FANIN_OUTPUT_BUFFER_FRAMES,
     OUTPUTD_CONTENT_BRIDGE_KEY,
     ROUTE_BITPERFECT_DECLARED,
     ROUTE_CORRECTED_48K,
@@ -39,11 +37,8 @@ from jasper.audio_runtime_plan import (
     coupling_supported_for_route,
     correction_latency_eligibility,
     correction_latency_eligibility_for_config,
-    decide_source_low_latency_route,
     fanin_coupling_action,
     fanin_coupling_capture_kwargs,
-    fanin_output_buffer_action,
-    low_latency_feature_flags,
     outputd_content_buffer_pair_error,
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
@@ -51,7 +46,6 @@ from jasper.audio_runtime_plan import (
     output_endpoint_evidence_from_statefiles,
     resolve_audio_route_profile,
     route_owned_env_actions,
-    resolve_fanin_output_buffer_target,
     transport_coherence_errors,
     transport_topology_for_coupling,
 )
@@ -373,20 +367,23 @@ def test_usb_low_latency_shm_ring_bridge_drops_inert_content_buffer_policy():
     assert setting.value != DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
     assert setting.value == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
     assert setting.source_kind != "route_policy"
-    # rate_match (a deferred lab bridge that DOES open the content PCM) is NOT
-    # suppressed — only a genuine shm_ring is inert.
-    rate_match_plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BRIDGE_KEY: "rate_match",
-        },
-    )
-    assert (
-        rate_match_plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
-        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-    )
+    # Negative control: ONLY a genuine shm_ring is inert. Any other literal —
+    # a typo, or the REMOVED `rate_match` — resolves `direct`, which DOES open
+    # the content PCM, so the policy still applies. Exercised through both so
+    # the suppression cannot quietly widen to "anything non-empty".
+    for stale_bridge in ("rate_match", "not-a-bridge"):
+        stale_plan = build_audio_runtime_plan(
+            profile_id=APPLE_USB_C_DONGLE_ID,
+            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+            outputd_env={
+                OUTPUTD_PERIOD_KEY: "128",
+                OUTPUTD_CONTENT_BRIDGE_KEY: stale_bridge,
+            },
+        )
+        assert (
+            stale_plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
+            == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
+        ), stale_bridge
 
 
 def test_outputd_floor_actions_shm_ring_bridge_unsets_content_buffer():
@@ -556,31 +553,6 @@ def test_fanin_env_is_the_owned_home_for_fanin_buffer_tuning():
     assert any("reconciler-owned home" in warning for warning in plan.warnings)
 
 
-def test_fanin_output_buffer_action_sets_or_unsets_owned_key():
-    set_action = fanin_output_buffer_action(2048)
-    unset_action = fanin_output_buffer_action(None)
-
-    assert (set_action.action, set_action.key, set_action.value) == (
-        "set",
-        FANIN_OUTPUT_BUFFER_KEY,
-        "2048",
-    )
-    assert (unset_action.action, unset_action.key, unset_action.value) == (
-        "unset",
-        FANIN_OUTPUT_BUFFER_KEY,
-        "",
-    )
-
-
-def test_fanin_output_buffer_action_rejects_below_floor():
-    try:
-        fanin_output_buffer_action(MIN_FANIN_OUTPUT_BUFFER_FRAMES - 1)
-    except ValueError as exc:
-        assert "below floor" in str(exc)
-    else:  # pragma: no cover - assertion clarity
-        raise AssertionError("below-floor fan-in output buffer was accepted")
-
-
 def test_audio_route_profile_defaults_to_corrected_safe_path():
     plan = build_audio_runtime_plan(route_mode="solo")
 
@@ -700,19 +672,47 @@ def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
     assert identity["uac2_gadget_attrs"]["c_sync"] == "async"
 
 
-def test_usb_low_latency_route_rejects_legacy_rate_match_bridge():
-    # The deferred lab `rate_match` outputd bridge (a partial flip without a
-    # matching shm_ring coupling) is rejected on the production low-latency route.
-    plan = build_audio_runtime_plan(
+def test_usb_low_latency_route_rejects_any_non_direct_bridge_literal():
+    """The route policy compares the RAW outputd bridge literal, not the
+    fail-safe resolver — so a partial flip without a matching shm_ring coupling
+    is refused whatever the value spells.
+
+    `rate_match` is the load-bearing case: outputd DELETED that bridge and now
+    fail-safes every one of its spellings to `direct`. If this policy were
+    "simplified" onto `resolve_outputd_content_bridge`, a box still carrying a
+    stale spelling would launder into `direct` and certify a green
+    `usb_low_latency_48k` claim it must not get. Each spelling plus a typo is
+    exercised so that regression fails here.
+    """
+    for bridge in (
+        "rate_match",
+        "ratematch",
+        "rate-matched",
+        "rate_matched",
+        "pipewire",
+    ):
+        plan = build_audio_runtime_plan(
+            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+            outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: bridge},
+            route_mode="solo",
+        )
+
+        assert any(
+            "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
+            for error in plan.errors
+        ), f"{bridge} must not certify: {plan.errors}"
+
+    # Positive control: the two COHERENT transports still certify, so the
+    # assertion above is not passing because everything errors.
+    ok = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "rate_match"},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
         route_mode="solo",
     )
-
-    assert any(
+    assert not any(
         "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
-        for error in plan.errors
-    )
+        for error in ok.errors
+    ), ok.errors
 
 
 def test_route_config_hash_includes_fanin_direct_period():
@@ -868,35 +868,6 @@ def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
     assert grouped_result["playback_pipe_path"] == "/run/snapfifo"
     assert "capture_device" not in grouped_result
     assert "playback_device" not in grouped_result
-
-
-def test_fanin_output_buffer_target_resolves_lab_override():
-    assert resolve_fanin_output_buffer_target({}).frames == MIN_FANIN_OUTPUT_BUFFER_FRAMES
-    assert (
-        resolve_fanin_output_buffer_target(
-            {"JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "2048"}
-        ).frames
-        == 2048
-    )
-    malformed = resolve_fanin_output_buffer_target(
-        {"JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "bad"}
-    )
-    below = resolve_fanin_output_buffer_target(
-        {"JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "512"}
-    )
-    assert malformed.frames == MIN_FANIN_OUTPUT_BUFFER_FRAMES
-    assert malformed.warning_event == "fanin.adaptive_shrunk_frames_invalid"
-    assert below.frames == MIN_FANIN_OUTPUT_BUFFER_FRAMES
-    assert below.warning_event == "fanin.adaptive_shrunk_frames_below_floor"
-
-
-def test_fanin_output_buffer_target_uses_runtime_override():
-    target = resolve_fanin_output_buffer_target(
-        {"JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES": "2048"},
-        overrides={"JASPER_FANIN_OUTPUT_BUFFER_FRAMES": "1536"},
-    )
-
-    assert target.frames == 1536
 
 
 def test_fanin_coupling_is_transition_owned_not_lab_overrideable():
@@ -1199,90 +1170,6 @@ def test_correction_latency_gate_allows_peq_and_minimum_phase(tmp_path):
     assert verdict.minimum_phase_or_iir is True
 
 
-def test_source_low_latency_route_is_usb_exclusive_only():
-    enabled = decide_source_low_latency_route(
-        active_sources=("usbsink",),
-        winner="usbsink",
-        enabled=True,
-    )
-    disabled = decide_source_low_latency_route(
-        active_sources=("usbsink",),
-        winner="usbsink",
-        enabled=False,
-    )
-    mixed = decide_source_low_latency_route(
-        active_sources=("airplay", "usbsink"),
-        winner="usbsink",
-        enabled=True,
-    )
-
-    assert (enabled.route, enabled.reason) == ("low_latency", "usb_exclusive")
-    assert (disabled.route, disabled.reason) == ("buffered", "flag_off")
-    assert (mixed.route, mixed.reason) == ("buffered", "not_exclusive")
-
-
-def test_source_low_latency_route_reports_non_exclusive_edges():
-    non_usb = decide_source_low_latency_route(
-        active_sources=("airplay",),
-        winner="airplay",
-        enabled=True,
-    )
-    usb_not_winner = decide_source_low_latency_route(
-        active_sources=("usbsink",),
-        winner=None,
-        enabled=True,
-    )
-    idle = decide_source_low_latency_route(
-        active_sources=(),
-        winner=None,
-        enabled=True,
-    )
-
-    assert (non_usb.route, non_usb.reason) == ("buffered", "not_exclusive")
-    assert (usb_not_winner.route, usb_not_winner.reason) == (
-        "buffered",
-        "non_usb_winner",
-    )
-    assert (idle.route, idle.reason) == ("buffered", "idle")
-
-
-def test_source_low_latency_route_accepts_source_enum_values():
-    from jasper.music_sources import Source
-
-    decision = decide_source_low_latency_route(
-        active_sources=[Source.USBSINK],
-        winner=Source.USBSINK,
-        enabled=True,
-    )
-
-    assert decision.route == "low_latency"
-    assert decision.active_sources == ("usbsink",)
-    assert decision.winner == "usbsink"
-
-
-def test_low_latency_feature_flags_are_exact_opt_in_literals():
-    on_values = ("enabled", "ENABLED", " enabled ")
-    off_values = ("", "disabled", "1", "true")
-
-    for value in on_values:
-        flags = low_latency_feature_flags(
-            {"JASPER_FANIN_ADAPTIVE_BUFFER": value},
-        )
-        assert flags.adaptive_buffer is True
-
-    for value in off_values:
-        flags = low_latency_feature_flags(
-            {"JASPER_FANIN_ADAPTIVE_BUFFER": value},
-        )
-        assert flags.adaptive_buffer is False
-
-
-def test_low_latency_feature_flags_default_off():
-    flags = low_latency_feature_flags({})
-
-    assert flags.adaptive_buffer is False
-
-
 def test_packaged_systemd_defaults_match_plan_constants():
     outputd_unit = (ROOT / "deploy/systemd/jasper-outputd.service").read_text()
     fanin_unit = (ROOT / "deploy/systemd/jasper-fanin.service").read_text()
@@ -1447,3 +1334,40 @@ def test_transport_coherence_shm_ring_flags_a_ring_the_coupling_stopped_narrowin
     )
     assert len(errors) == 1
     assert "S16_LE" in errors[0] and "S32_LE" in errors[0]
+
+
+def test_removed_adaptive_buffer_keys_are_read_by_nothing():
+    """The deleted adaptive-shrink keys must be INERT, not merely unused here.
+
+    `JASPER_FANIN_ADAPTIVE_BUFFER` / `_ADAPTIVE_SHRUNK_FRAMES` gated the
+    mux-driven fan-in output-buffer shrink, which was removed. A migrating box
+    can still carry either line in `/var/lib/jasper/fanin.env`, and the
+    legacy-cleanup contract for them is *ignored*, not *honoured* and not
+    *fatal* — unlike the removed `rate_match` bridge value, nothing reads these
+    keys at all, so there is no reader left to warn from and a stale line is a
+    no-op.
+
+    That is only true while no source file names them. This is the guard for
+    that: a resurrected read (in Python or in either Rust daemon) would
+    silently give a stale operator value authority over the shared summing
+    daemon's output buffer again.
+    """
+    removed = ("JASPER_FANIN_ADAPTIVE_BUFFER", "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES")
+    roots = (ROOT / "jasper", ROOT / "rust", ROOT / "deploy")
+    offenders: list[str] = []
+    for root in roots:
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in (".py", ".rs", ".sh", ".service"):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):  # pragma: no cover - binary/unreadable
+                continue
+            for key in removed:
+                if key in text:
+                    offenders.append(f"{path.relative_to(ROOT).as_posix()}: {key}")
+
+    assert offenders == [], (
+        "the adaptive output-buffer keys were deleted; nothing may read them "
+        f"again without restoring the reconciler that owned them: {offenders}"
+    )

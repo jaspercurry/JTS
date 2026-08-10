@@ -187,8 +187,10 @@ n_slots×128 frames with fan-in blocking-on-full as the transitively DAC-paced
 writer; falsifiable target ≈ −25..35 ms plus the variance the hysteretic aloop
 carried. Certification note: the route-latency artifact binder correctly
 accepts the coherent Ring A + Ring B pair for `usb_low_latency_48k`; it still
-rejects partial ring flips and deferred lab transports (~~`transport_pipe`~~,
-`rate_match`) *(transport_pipe removed 2026-07-11)*.
+rejects partial ring flips and legacy lab transports (~~`transport_pipe`~~,
+~~`rate_match`~~) *(transport_pipe removed 2026-07-11; rate_match removed
+2026-08-10 — both now fail safe to the byte-identical transport, and the
+binder still refuses the raw literal so a stale env cannot certify)*.
 
 ## The chain, and where latency lives
 

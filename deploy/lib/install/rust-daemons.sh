@@ -167,8 +167,9 @@ build_install_rust_daemon() {
         chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-clock"
     fi
     # Same for the shared resampler crate (jasper-resampler) so the
-    # `path = "../jasper-resampler"` dep of jasper-outputd (content_bridge) AND
-    # jasper-fanin (the DEFAULT-OFF per-input lane resampler) resolves.
+    # `path = "../jasper-resampler"` dep of jasper-outputd (the widen/narrow
+    # sample-format primitives on its i32 program spine) AND jasper-fanin (the
+    # per-input lane resampler) resolves.
     # jasper-resampler itself depends on `path = "../jasper-clock"`, which the
     # block above already stages as a sibling — so this single rsync covers the
     # transitive dep. Guarded by existence so a branch predating the crate still

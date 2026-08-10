@@ -526,7 +526,7 @@ def test_outputd_grouping_env_clears_when_not_active():
     loop) and the bridge key fully OMITTED — never present-but-empty
     (outputd's env_str treats a SET-but-empty bridge mode as invalid and
     bails), and never pinned (solo must fall back to the underlying env
-    layers so the lab rate_match soak resumes)."""
+    layers)."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_CONTENT_BRIDGE_ENV,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
@@ -546,7 +546,7 @@ def test_outputd_grouping_env_clears_when_not_active():
 def test_outputd_grouping_env_writer_validator_parity():
     """THE jts3 2026-06-11 boot-loop pin (writer/validator coherence):
     whenever the writer arms the FIFO it MUST also pin
-    CONTENT_BRIDGE=direct — outputd fail-closes on the FIFO + rate_match
+    CONTENT_BRIDGE=direct — outputd fail-closes on the FIFO + non-direct-bridge
     combination, and systemd composes env from layers, so without the
     pin a lab retune in a lower layer crashes outputd into
     StartLimitAction=reboot. And in NO state may the bridge key be

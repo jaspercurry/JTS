@@ -7,6 +7,6 @@
 The daemon itself lives in ``rust/jasper-fanin``; this package holds the
 small Python-side reconcilers that write its wizard-owned env file
 (``/var/lib/jasper/fanin.env``) and ask the restart broker to bounce the
-daemon so the new env takes effect. See
-``buffer_reconcile`` for the adaptive output-buffer arm.
+daemon so the new env takes effect. See ``coupling_reconcile`` for the
+fan-in -> CamillaDSP coupling and the USB low-latency combo.
 """

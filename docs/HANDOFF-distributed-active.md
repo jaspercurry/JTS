@@ -392,7 +392,7 @@ renderers─fanin─music tap─► camilla#1 (:1234)  B/C+headroom, File→SNAP
             (pair 7)                                   │
                        leader snapclient (--host 127.0.0.1, --player file → FIFO)
                                                        ▼
-       outputd-summer  ◄── TTS + commanded duck (soft inputs)   ──  THE ONE LOOP (content_bridge=rate_match) + sum
+       outputd-summer  ◄── TTS + commanded duck (soft inputs)   ──  THE ONE LOOP (a rate-matched content bridge) + sum
                                                        │  (pipe; or loopback in the two-instance build)
                                                        ▼
        camilla#2 (:1235)  crossover, rate_adjust OFF  (passive, DAC-clocked by backpressure)
@@ -460,10 +460,17 @@ topology, not at the 2-instance setup or at TTS.
 **OPEN — the summer build (resolved by the `jts3` measurement, not here).** What
 `outputd-summer` is built from is **not settled**: (a) a **second
 `jasper-outputd` instance** — maximum reuse of the shipped
-`content_bridge=rate_match` + TTS mixer, reference-publish off; heavier (two
+a rate-matched content bridge + TTS mixer, reference-publish off; heavier (two
 outputd processes) and outputs a loopback, so it consumes pair 6 — vs (b) a
-**lean pipe-writing summer** reusing only the `content_bridge` rate-match logic —
-less RAM, frees pair 6 via camilla#2 File-capture, some new code. **Resolution
+**lean pipe-writing summer** reusing only the rate-match logic —
+less RAM, frees pair 6 via camilla#2 File-capture, some new code. **NOTE (2026-08-10):
+option (b) said "reusing only the `content_bridge` rate-match logic". That module
+(`rust/jasper-outputd/src/content_bridge.rs`) has since been DELETED with the
+`rate_match` bridge, so (b) is no longer a reuse — it would compose the shared
+`jasper-resampler` primitives (`AudioRing` + `SincTable` + `RateController`)
+directly, as `jasper-fanin`'s `lane_resampler` already does. That raises (b)'s
+new-code cost and should be re-weighed against (a) when this is resolved.**
+**Resolution
 mechanism:** the `jts3` RAM/CPU measurement inside the Slice-5 CPU/thermal gate,
 plus a soak A/B. **Order logic:** prefer **lean-first** if RAM is the binding
 constraint on the 1 GB Pi (it usually is, per the OOM history); fall back to the
@@ -1232,7 +1239,9 @@ through snapcast.**
 
 Measured anchors (live `/state`, solo active, current buffering):
 `dac.snd_pcm_delay_ms = 63.7`; `content_bridge.fill_frames ≈ 3026` (~63 ms,
-rate_match); camilla `chunksize 1024` (21.3 ms) + `target_level 2048` (42.7 ms).
+measured on the since-deleted `rate_match` bridge — `/state` no longer publishes
+`content_bridge.fill_frames`); camilla `chunksize 1024` (21.3 ms) +
+`target_level 2048` (42.7 ms).
 Option 3's delta is **bounded DSP latency** (not round-trip), tunable toward a
 ~21 ms (one-chunk) floor, and is exactly what a solo active speaker already pays
 for its own voice today. Option 1's +400 ms is the snapcast playout

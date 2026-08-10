@@ -2243,7 +2243,7 @@ def test_coordinated_fanin_restart_helper_reads_persisted_coupling(
     monkeypatch,
 ):
     """coordinated_fanin_restart — the public entry point for out-of-module
-    deliberate restarts (buffer_reconcile's adaptive-buffer path) — reads the
+    deliberate restarts — reads the
     ACTIVE coupling fresh from fanin.env and coordinates camilla only on a
     ring/pipe coupling; loopback (and the fail-safe absent-file default) keeps
     the single plain fan-in restart."""

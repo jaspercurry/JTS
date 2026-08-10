@@ -30,13 +30,14 @@
 //!
 //! ## How it composes the shared crate
 //!
-//! It reuses the EXACT primitives `jasper-outputd`'s `content_bridge.rs`
-//! composes — [`AudioRing`] + [`SincTable`] + [`RateController`] from the
-//! shared [`jasper_resampler`] crate — and runs the same
-//! lock → render-period → underfill state machine. The only difference from
-//! content_bridge is the *direction* of the buffer it disciplines: content
-//! bridge is post-Camilla (one bridge for the whole mix); this is per-INPUT,
-//! upstream of the sum. The DLL control law (the `b = sqrt(2)·ω/2` spa_dll
+//! It composes [`AudioRing`] + [`SincTable`] + [`RateController`] from the
+//! shared [`jasper_resampler`] crate into a lock → render-period → underfill
+//! state machine. The buffer it disciplines is per-INPUT, upstream of the sum
+//! — one resampler per host-clocked lane, not one for the whole mix.
+//! (jasper-outputd once ran the same primitives in the other direction, as a
+//! single post-Camilla `rate_match` content bridge; that bridge was deleted,
+//! so this is now the only in-tree composition of them.)
+//! The DLL control law (the `b = sqrt(2)·ω/2` spa_dll
 //! second-order loop, the variance-adaptive bandwidth, the `max_resync` hard
 //! jump) lives entirely inside [`RateController`]; this module never touches
 //! loop math.
@@ -47,8 +48,8 @@
 //! (`error > 0`) settles to `ratio > 1`, which advances the fractional read
 //! cursor by more than one input frame per output frame — consuming the host's
 //! faster-arriving input FASTER and draining the ring back to target. This is
-//! the same convention content_bridge proves and the crate documents; we feed
-//! the raw `fill - target` and the controller negates internally.
+//! the convention [`jasper_resampler`] documents; we feed the raw
+//! `fill - target` and the controller negates internally.
 //!
 //! ## Real-time safety
 //!
@@ -141,8 +142,8 @@ pub struct LaneResamplerObservability {
 
 /// A per-input windowed-sinc resampler that turns a free-running (host-clocked)
 /// lane into a DAC-paced one. Owns its own ring, sinc table, rate controller,
-/// and fractional read cursor — a per-lane sibling of `content_bridge`'s
-/// `ContentBridge`, composing the same shared primitives.
+/// and fractional read cursor, composing the shared [`jasper_resampler`]
+/// primitives.
 pub struct LaneResampler {
     channels: usize,
     period_frames: usize,
@@ -403,7 +404,7 @@ impl LaneResampler {
     /// that are real audio (vs silence) for the caller's mixing decision —
     /// `period_frames` when locked and rendering, `0` when silent.
     ///
-    /// The state machine mirrors content_bridge's `render_period`: wait for a
+    /// The state machine: wait for a
     /// startup prefill before locking; once locked, drive the ratio from the
     /// fill error and advance the fractional cursor; on underfill, unlock and
     /// emit silence rather than reading past the buffered input.
@@ -427,8 +428,8 @@ impl LaneResampler {
         }
 
         // A reader-overrun (the ring dropped frames the cursor hadn't reached)
-        // skips the cursor forward to the oldest live frame — same guard
-        // content_bridge uses; without it the cursor would read zeros.
+        // skips the cursor forward to the oldest live frame; without it the
+        // cursor would read zeros.
         let read = self.ring.read_frame() as f64;
         if self.next_input_frame < read {
             self.next_input_frame = read;
@@ -451,7 +452,7 @@ impl LaneResampler {
 
         // Guard: emitting one period at this ratio must not read past the
         // newest written frame (kernel rightmost tap included). If it would,
-        // unlock and silence — the same fail-closed boundary as content_bridge.
+        // unlock and silence — the fail-closed boundary.
         let required_end = self.next_input_frame + ratio * self.period_frames as f64;
         if required_end + RADIUS_FRAMES as f64 > self.ring.write_frame() as f64 {
             self.unlock_for_underfill();
@@ -842,7 +843,7 @@ impl LaneResampler {
     }
 
     /// Minimum buffered frames to safely render one period at the worst-case
-    /// (max-ppm) ratio with kernel headroom. Same shape as content_bridge.
+    /// (max-ppm) ratio with kernel headroom.
     /// Delegates to the shared `jasper_resampler` helper — the single source of
     /// truth the config-time decay-floor validation also uses.
     fn minimum_safe_fill_frames(&self) -> usize {

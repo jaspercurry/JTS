@@ -2817,81 +2817,23 @@ def test_reconcile_emits_the_narrow_content_format_on_a_ring_box(tmp_path: Path)
     assert "content_format=S16_LE" in result.stderr
 
 
-def _rust_rate_match_bridge_arms() -> set[str]:
-    """The spellings outputd's own parse maps to ContentBridgeMode::RateMatch.
-
-    Read out of the Rust match arm rather than restated, so this test compares
-    the two implementations instead of comparing the bash list to a copy of
-    itself."""
-    config_rs = (
-        ROOT / "rust" / "jasper-outputd" / "src" / "config.rs"
-    ).read_text(encoding="utf-8")
-    match = re.search(
-        r"^\s*((?:\"[a-z_\-]+\"\s*\|\s*)*\"[a-z_\-]+\")\s*=>\s*\{?\s*\n?"
-        r"\s*ContentBridgeMode::RateMatch",
-        config_rs,
-        re.MULTILINE,
-    )
-    assert match is not None, "could not locate the RateMatch parse arm in config.rs"
-    arms = set(re.findall(r'"([a-z_\-]+)"', match.group(1)))
-    assert arms, "RateMatch arm parsed to an empty alias set"
-    return arms
-
-
-def _bash_rate_match_bridge_aliases() -> set[str]:
-    """The spellings the reconciler narrows for, read out of its bash array."""
-    script = (
-        ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
-    ).read_text(encoding="utf-8")
-    match = re.search(r"^RATE_MATCH_BRIDGE_ALIASES=\(([^)]*)\)", script, re.MULTILINE)
-    assert match is not None, "could not locate RATE_MATCH_BRIDGE_ALIASES"
-    return set(match.group(1).split())
-
-
-def test_rate_match_alias_set_is_a_superset_of_outputds_parse_arms():
-    """PIN THE PROMISE across the two owners of one fact.
-
-    The reconciler must narrow the content lane for EVERY spelling outputd's
-    parse recognises as rate_match. Miss one, and a soak box hand-set to that
-    alias gets a wide lane emitted, outputd bails at startup (exit 78 ->
-    RestartPreventExitStatus=78 -> parked final-output owner), and the speaker is
-    silent after a routine deploy — verbatim the outcome the narrowing exists to
-    prevent. They cannot share code (a bash array in a root reconciler vs a Rust
-    match arm in a different daemon), so this compares them, the same way
-    tests/test_wifi_profile_hardening_contract.py pins its three writers.
-
-    A SUPERSET assertion, not equality: over-listing on the bash side is
-    harmless (it narrows a spelling outputd would reject outright), under-listing
-    is the silent speaker.
-    """
-    rust_arms = _rust_rate_match_bridge_arms()
-    bash_aliases = _bash_rate_match_bridge_aliases()
-    assert rust_arms == {"rate_match", "ratematch", "rate-matched", "rate_matched"}, (
-        "outputd's ContentBridgeMode::RateMatch parse arm changed — add the new "
-        "spelling to RATE_MATCH_BRIDGE_ALIASES in "
-        "deploy/bin/jasper-audio-hardware-reconcile AND to this literal set. "
-        "The literal stays as the non-vacuity proof that the regex above found a "
-        "real arm rather than nothing. Skipping the bash side leaves a soak box "
-        "hand-set to that spelling with a wide content lane, which parks "
-        f"jasper-outputd at exit 78 and silences the speaker. Parsed: "
-        f"{sorted(rust_arms)}"
-    )
-    assert rust_arms <= bash_aliases, (
-        "spellings outputd accepts as rate_match but the reconciler would not "
-        f"narrow for: {sorted(rust_arms - bash_aliases)}"
-    )
-
-
-@pytest.mark.parametrize("spelling", sorted(_rust_rate_match_bridge_arms()))
-def test_reconcile_keeps_the_rate_match_lab_bridge_coherent(
+@pytest.mark.parametrize(
+    "spelling", ["rate_match", "ratematch", "rate-matched", "rate_matched"]
+)
+def test_reconcile_no_longer_narrows_for_the_removed_rate_match_bridge(
     tmp_path: Path, spelling: str
 ):
-    """outputd REFUSES to start (exit 78, silent speaker) when the i16-only
-    rate_match content bridge is paired with a wide content lane. rate_match is
-    hand-set by an operator running the AirPlay latency soak, so a routine deploy
-    must not construct the pair outputd would reject — it emits the narrow width
-    and says so, for EVERY spelling outputd's parse accepts (the contract test
-    above is what keeps the two alias sets from drifting)."""
+    """The i16-only `rate_match` content bridge was DELETED, and its S16_LE
+    format narrowing went with it.
+
+    The narrowing existed so a routine deploy would not emit a wide content lane
+    into a bridge outputd refuses (exit 78 -> parked final-output owner, silent
+    speaker). With the bridge gone that pairing cannot exist: outputd fail-safes
+    every `rate_match` spelling to `direct`, which accepts the wide lane. So the
+    reconciler must now emit the COUPLING's own format — proving the narrowing
+    is really gone rather than merely unreachable, for every spelling the
+    deleted parse used to accept.
+    """
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -2902,13 +2844,26 @@ def test_reconcile_keeps_the_rate_match_lab_bridge_coherent(
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE" in outputd_env
-    # The operator's lab bridge survives the deploy untouched.
+    # The loopback coupling's own width, NOT the narrowed S16_LE.
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE" in outputd_env
+    # The stale operator value is left alone; outputd is what fail-safes it.
     assert f"JASPER_OUTPUTD_CONTENT_BRIDGE={spelling}" in outputd_env
-    assert "event=audio_hardware_reconcile.content_format_narrowed" in result.stderr
-    assert "reason=rate_match_content_bridge" in result.stderr
-    assert f"bridge={spelling}" in result.stderr
-    assert "coupling_format=S32_LE" in result.stderr
+    assert "content_format_narrowed" not in result.stderr
+    assert "rate_match_content_bridge" not in result.stderr
+
+
+def test_reconciler_carries_no_rate_match_narrowing_machinery():
+    """No dead alias list or narrowing branch survives the bridge's deletion.
+
+    A source-level guard because the behavioural test above passes just as well
+    if the loop is still present but never matches — this is what fails if the
+    bash side is left behind.
+    """
+    script = (
+        ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
+    ).read_text(encoding="utf-8")
+    assert "RATE_MATCH_BRIDGE_ALIASES" not in script
+    assert "reason=rate_match_content_bridge" not in script
 
 
 def _python_shim_that_cannot_answer_the_coupling(tmp_path: Path) -> Path:

@@ -376,14 +376,6 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "external or runtime condition."
     ),
     (
-        "jasper-outputd/src/content_bridge.rs",
-        "content bridge output buffer must be exactly one period",
-    ): (
-        "Caller-contract invariant: render_period's only real caller (the "
-        "daemon's own per-period output loop) always passes a buffer sized "
-        "to exactly one period."
-    ),
-    (
         "jasper-outputd/src/dac_content.rs",
         "ChannelPick::Sub applied without a low-pass filter",
     ): (

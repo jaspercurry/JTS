@@ -47,8 +47,8 @@
 #     script has already restarted it would be a park (exit 78) that
 #     this script would then have to notice and roll back anyway.
 #   - outputd is not already running a mutually-exclusive content
-#     source (dac_content round-trip FIFO, or an already-armed
-#     rate_match bridge).
+#     source (the dac_content round-trip FIFO, or any other non-direct
+#     content bridge).
 #   - the multi-room round-trip lane is not active
 #     (JASPER_OUTPUTD_DAC_CONTENT_FIFO unset) — a bonded/grouping
 #     speaker is out of scope for this prototype.

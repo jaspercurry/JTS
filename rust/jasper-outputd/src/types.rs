@@ -99,7 +99,7 @@ impl SampleFormat {
 /// The ONE place `jasper_resampler::widen_i16_to_i32_slice`'s `bool` becomes this
 /// crate's `anyhow` idiom, so the "a mismatch would emit a short or stale period"
 /// message has a single author instead of one copy per S16 ingress (the content
-/// lane, the SHM ring, the round-trip FIFO, the rate-match bridge).
+/// lane, the SHM ring, the round-trip FIFO).
 ///
 /// `Result` rather than `debug_assert!`, for two reasons. It matches the sibling
 /// scratch-buffer check in `alsa_backend` — `deinterleave_4ch_to_dual_stereo`
