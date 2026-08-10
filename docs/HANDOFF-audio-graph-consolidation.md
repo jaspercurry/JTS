@@ -161,7 +161,7 @@ Wide is the loopback path's property in the interim.
 
 | Box | Hardware / role | State at 2026-08-10 |
 |---|---|---|
-| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | Installed `9cc41b987` (~03:40). Coupling `loopback` + `direct`, coherent; `choice=auto`; combo disarmed. Wide end-to-end (content S32 → i32 → DAC S32). AEC profile `auto`, voice ACTIVE — chip-AEC confirmed active; **commission state to re-verify at U1 activation** |
+| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | Installed `9cc41b987` (~03:40). Coupling `loopback` + `direct`, coherent; `choice=auto`; combo disarmed. AEC profile `auto`, voice ACTIVE — chip-AEC confirmed active; **commission state to re-verify at U1 activation**. Expected wide end-to-end (content S32 → i32 → DAC S32) — that follows from the DAC8x registry edge plus the installed build, and was proved live by the wide-output-path program's PR-7, but was not re-probed this pass |
 | **jts.local** | Pi + single Apple dongle (card `A`), passive, USB-in box | Installed `9cc41b987` (~03:40). Coupling `shm_ring` + `shm_ring`, coherent; `choice=auto`; combo ARMED. Profile `xvf_chip_aec`, voice INACTIVE (parked; **commission owed**). Registry declares the dongle edge `S24_3LE`; the live negotiated value is unconfirmed by this pass. **Route-latency revalidation artifact owed** |
 | **jts4** | Zero 2 W streambox + InnoMaker, loopback | Not probed this pass. Zero-class validation target for U1 |
 | **jts5** | InnoMaker HAT, S32 edge live, composite/active testbox | Not probed this pass. **Parked by owner intent — do not commission or play it for tests** |
