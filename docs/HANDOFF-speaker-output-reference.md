@@ -303,17 +303,13 @@ The flag is `JASPER_BARGE_IN_<PROVIDER>` in
 `jasper.voice.provider_state.read_barge_in_enabled` (never an os.environ
 cache); a runtime guard hard-disables it for the session when the active
 profile has no AEC reference (`direct_mic`), to avoid self-tripping on
-un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — landed the
-same day for the OpenAI/Grok pack (PR-4): `turn_playback._flush_for_interrupt`
-drives `cancel_response` then `truncate_assistant_audio` with the flush
-ack's played-ms (Grok inherits the OpenAI adapter). Gemini's reconcile
-landed as a *final* no-op (PR-5): the server self-truncates, so JTS keeps
-Gemini on manual VAD + `NO_INTERRUPTION` and the daemon's local gate stays
-the sole interruption authority. Outstanding: a paid Grok trial confirming
-the inherited pack (PR-6) and the on-hardware AEC threshold + default-on
-gate (PR-7) — see [HANDOFF-barge-in.md](HANDOFF-barge-in.md) for the
-per-provider PR ledger. Off-device validation cannot exercise false-barge
-from TTS bleed; that is a hardware step.
+un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — is wired
+per-provider behind the same flag.
+[HANDOFF-barge-in.md](HANDOFF-barge-in.md#implementation-plan) (rows 4-7)
+is the canonical per-provider ledger for landing status, which providers
+self-truncate as a no-op, and what remains before default-on. Off-device
+validation cannot exercise false-barge from TTS bleed; that is a hardware
+step.
 
 ## Codebase Validation
 
@@ -892,18 +888,16 @@ What is still intentionally not done:
 - The chip USB-IN producer is intentionally separate from the software
   speaker monitor. Software AEC/corpus/diagnostics should not depend on
   chip hardware being present.
-- Provider truncation is wired for the OpenAI/Grok pack (PR-4). The local
-  TTS flush PRODUCES the `audio_played_ms` and provider item identity
+- The local ledger, not bytes received, drives provider truncation: the
+  local TTS flush PRODUCES `audio_played_ms` and provider item identity
   (fan-in solo + outputd bonded), and `turn_playback._flush_for_interrupt`
-  now drives the active provider's adapter to CONSUME that acknowledgement —
-  `response.cancel` then `conversation.item.truncate(audio_end_ms=played-ms)`,
-  a no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
-  truncates on bytes-received. Gemini's own pack (PR-5) also landed the same
-  day: it self-truncates server-side, so the reconcile is a *final* no-op,
-  not deferred wiring. The contract is documented here and in
-  `HANDOFF-voice-providers.md`. Remaining: a paid Grok trial confirming the
-  inherited OpenAI pack (PR-6), and the on-hardware AEC gate before
-  default-on (PR-7).
+  drives the active provider's adapter to CONSUME that acknowledgement, a
+  no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
+  truncates on bytes-received. Per-provider wiring status — landing,
+  self-truncating no-ops, and what remains before default-on — is the
+  canonical ledger at
+  [HANDOFF-barge-in.md](HANDOFF-barge-in.md#implementation-plan)
+  (rows 4-7), not here.
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved
@@ -1818,8 +1812,10 @@ re-touched since carries forward from its most recent entry below.
   `jasper/voice/openai_session.py`, which have driven `cancel_response` +
   `truncate_assistant_audio` for the OpenAI/Grok pack since PR-4 landed the
   same day (2026-06-21); PR-5 (Gemini) also landed that day as a *final*
-  no-op, not deferred wiring. Converted this footer's run-on "prior … pass"
-  chain into the dated log below. Everything else re-verified accurate
+  no-op, not deferred wiring. Converted the footer's former run-on
+  "prior … pass" chain into this dated revision log; the `Last verified:`
+  footer below now records only the latest pass. Everything else
+  re-verified accurate
   against `rust/jasper-outputd`, `jasper/audio_hardware/dac.py`,
   `jasper/output_topology.py`, `jasper/multiroom/reconcile.py`,
   `rust/jasper-fanin/src/playout.rs`, and the systemd/install/reconciler
