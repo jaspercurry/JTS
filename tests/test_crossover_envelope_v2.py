@@ -3112,7 +3112,7 @@ def _review_status(**overrides) -> dict:
 
 
 def test_review_screen_offers_the_three_way_decision_and_never_undo():
-    """D3.5 + **D6**: apply-and-verify / measure again / leave it as it is.
+    """D3.5 + **D6**: apply-and-verify / measure again / Keep current sound.
 
     D6 is the load-bearing half here. ``_failure_envelope``'s applied-override
     is keyed on the raw ``applied`` state fact, correctly false through all of
@@ -3125,6 +3125,7 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
     env = build_crossover_envelope_v2(_review_status())
     assert env["screen"] == "review"
     assert env["next_action"]["id"] == "review_apply"
+    assert env["next_action"]["label"] == "Apply and verify"
     assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
     assert [a["id"] for a in env["alternate_actions"]] == [
         "review_remeasure", "review_decline",
@@ -3136,7 +3137,7 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
 
 
 def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
-    """#1985: "Leave it as it is" must land the household back where the
+    """#1985: "Keep current sound" must land the household back where the
     journey started, not in another subsystem's permission flow.
 
     The generic ``/correction/`` hub is the Room-correction wizard, and its
@@ -3154,6 +3155,7 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
     decline = next(
         a for a in env["alternate_actions"] if a["id"] == "review_decline"
     )
+    assert decline["label"] == "Keep current sound"
     assert decline["href"] == "/correction/crossover/"
     # Declining applies nothing: it is a link, never an endpoint.
     assert "endpoint" not in decline
@@ -3162,6 +3164,34 @@ def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
     )
     assert remeasure["endpoint"] == "/correction/crossover/v2/session"
     assert "href" not in remeasure
+
+
+def test_review_names_the_exact_alternative_in_the_single_apply_action():
+    selection = {
+        "verdict": "recommend_alternative",
+        "configured_hz": 2500.0,
+        "recommended_hz": 1750.6,
+        "comparison_complete": True,
+    }
+    env = build_crossover_envelope_v2(_review_status(fc_selection=selection))
+
+    assert env["next_action"]["label"] == "Use 1750.6 Hz and apply"
+    assert env["next_action"]["id"] == "review_apply"
+
+    retry = build_crossover_envelope_v2(_review_status(
+        fc_selection=selection,
+        accepted_sound_revision=7,
+        apply_blocked={
+            "id": "load_failed",
+            "message": "1750.6 Hz is saved in Sound but was not applied",
+        },
+    ))
+    assert retry["next_action"]["label"] == "Retry applying 1750.6 Hz"
+    assert any(
+        "already saved in Sound" in line
+        for line in retry["expert_details"]
+    )
+    assert any(nudge["code"] == "load_failed" for nudge in retry["nudges"])
 
 
 def test_review_apply_posts_the_reviewed_candidates_own_fingerprint():

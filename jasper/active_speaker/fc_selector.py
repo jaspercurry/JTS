@@ -2,11 +2,7 @@
 
 It reads per-candidate evidence gathered at MEASURE-consume, scores each
 candidate against the lateral walk's robustness evidence, and returns a
-RECOMMENDATION. It never emits a filter and never changes the applied
-crossover: the declared crossover in ``/sound`` remains Fc's only writer
-(#1894, PR-3 ruling 2026-08-06), so the household is told the measured number
-and declares it, and the next session's configured Fc *is* that number. Full
-rationale: ``docs/HANDOFF-crossover-measurement-v2.md`` "Recommending an Fc".
+RECOMMENDATION. The host retains its winner for Sound-owned apply; see R17.
 
 Everything here is a pure function of small arrays — no conductor state, no
 I/O. ``M`` below is a pose's NEUTRAL measured transfer (``plant * P``), what
@@ -78,9 +74,7 @@ class FcCandidateEvaluation:
     **This type is the memory contract.** The #1894 ruling caps the selector at
     one analysis + 50 MB by requiring each candidate's intermediates (analysis,
     driver responses, envelopes — hundreds of MB) to be released before the
-    next starts. What survives is this: scalars plus complex arrays on the
-    shared ~120-point lateral basis, so a six-candidate sweep retains tens of
-    KILObytes. Nothing here references a ``ProgramAnalysis``,
+    next starts. Bounded evidence retains the winner, not a ``ProgramAnalysis``,
     ``DriverResponse`` or ``EnvelopeCurve``.
 
     The guard is
@@ -107,6 +101,11 @@ class FcCandidateEvaluation:
     scoring_band_hz: tuple[float, float] | None
     headroom_cost_db: float = 0.0
     refusal: str | None = None
+    candidate: Mapping[str, Any] | None = None
+    predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    predicted_spec_report: Mapping[str, Any] | None = None
+    commanded_delta: tuple[np.ndarray, np.ndarray] | None = None
+    level_frame_finding: Mapping[str, Any] | None = None
 
     @property
     def scoreable(self) -> bool:
@@ -308,7 +307,7 @@ def select_fc(
     §9.8 as code: the configured candidate is always in the evaluated set, an
     alternative must beat it by ``margin_db``, and keeping configured is an
     honest verdict. Ties go to configured — the burden of proof is on the
-    change, which costs the household a declaration edit and a re-measure.
+    change, which still asks the household to accept and verify another apply.
     """
     scores: list[FcCandidateScore] = []
     refusals: list[tuple[float, str]] = []

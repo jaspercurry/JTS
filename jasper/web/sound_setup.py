@@ -2346,6 +2346,39 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
     return payload
 
 
+def apply_measured_crossover_frequency(
+    *, expected_revision: int, between_roles: tuple[str, str],
+    configured_hz: float, selected_hz: float,
+) -> dict[str, Any]:
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    draft = load_design_draft(topology=load_output_topology())
+    manual = draft.get("manual_settings")
+    if not isinstance(manual, Mapping):
+        raise ValueError("Sound has no manual crossover setting to update")
+    raw = manual.get("crossover_candidates")
+    candidates = list(raw) if isinstance(raw, list) else []
+    matches = [
+        i for i, item in enumerate(candidates) if isinstance(item, Mapping)
+        and tuple(item.get("between_roles") or ()) == between_roles]
+    if len(matches) != 1:
+        raise ValueError("Sound's matching crossover setting is missing or ambiguous")
+    index, current_hz = matches[0], candidates[matches[0]].get("frequency_hz")
+    if (isinstance(current_hz, bool)
+            or not isinstance(current_hz, (int, float))
+            or not math.isclose(float(current_hz), configured_hz, abs_tol=0.05)):
+        raise ValueError("Sound changed since this measurement; review afresh")
+    updated_candidates = [dict(item) for item in candidates]
+    updated_candidates[index]["frequency_hz"] = float(selected_hz)
+    return _active_speaker_design_draft_save_payload({
+        "expected_revision": expected_revision,
+        "driver_research_request": draft.get("driver_research_request"),
+        "driver_research": draft.get("driver_research"),
+        "manual_settings": {**manual, "crossover_candidates": updated_candidates},
+        "operator_inputs": draft.get("operator_inputs"),
+    })
+
+
 def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
     """Return the saved no-audio crossover preview, if any."""
 
