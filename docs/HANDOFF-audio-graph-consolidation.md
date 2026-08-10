@@ -514,10 +514,13 @@ reconciler-owned and coherent as of the 2026-08-10 probe.
 
 ---
 
-Last verified: 2026-08-10 (scope: the live plan above the appendix —
-egress facts, source-half boundaries, ring v1 wire and header,
-`ring_edge_width_ready` semantics, P-row inventory, doctor-check
-locations, and the DAC edge-format table were re-read against `9cc41b987`;
-the fleet row states came from a same-day probe of jts3 and jts.local
-only — jts4 and jts5 were not probed. The appendix was NOT re-verified
-and is retained as archaeology.)
+Last verified: 2026-08-10 (scope: the live plan, H1 through "Cross-program
+coordination" — egress facts, source-half boundaries, ring v1 wire and
+header, `ring_edge_width_ready` semantics, P-row inventory, doctor-check
+locations, the dither inventory, and the DAC edge-format table were
+re-read against `9cc41b987`. Fleet rows came from a same-day probe of jts3
+and jts.local only; jts4 and jts5 were not probed, and jts3's wide-chain
+row is derived, as its cell says. Appendix A was carried forward with only
+its ring/ioplug constants and `Input` shape re-checked — its shairport
+offset and resync-threshold claims were not. Appendix B was NOT
+re-verified and is retained as archaeology.)
