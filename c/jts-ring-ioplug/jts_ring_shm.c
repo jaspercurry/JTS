@@ -157,8 +157,8 @@ size_t jts_ring_samples_per_slot(const jts_ring_geometry_t *g) {
     return (size_t)g->period_frames * (size_t)g->channels;
 }
 
-static size_t bytes_per_sample(const jts_ring_geometry_t *g) {
-    switch (g->sample_format) {
+size_t jts_ring_bytes_per_sample(uint32_t sample_format) {
+    switch (sample_format) {
         case JTS_RING_SAMPLE_FORMAT_S16LE:
             return 2;
         case JTS_RING_SAMPLE_FORMAT_S32LE:
@@ -169,7 +169,7 @@ static size_t bytes_per_sample(const jts_ring_geometry_t *g) {
 }
 
 size_t jts_ring_slot_bytes(const jts_ring_geometry_t *g) {
-    return jts_ring_samples_per_slot(g) * bytes_per_sample(g);
+    return jts_ring_samples_per_slot(g) * jts_ring_bytes_per_sample(g->sample_format);
 }
 
 size_t jts_ring_file_size(const jts_ring_geometry_t *g) {
@@ -177,12 +177,13 @@ size_t jts_ring_file_size(const jts_ring_geometry_t *g) {
 }
 
 int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason) {
-    if (g->sample_format != JTS_RING_SAMPLE_FORMAT_S16LE) {
-        if (reason) *reason = "sample_format unsupported (only S16LE)";
+    if (g->sample_format != JTS_RING_SAMPLE_FORMAT_S16LE &&
+        g->sample_format != JTS_RING_SAMPLE_FORMAT_S32LE) {
+        if (reason) *reason = "sample_format unsupported (only S16LE/S32LE)";
         return 1;
     }
-    if (g->channels != 2) {
-        if (reason) *reason = "channels unsupported (only stereo)";
+    if (g->channels < JTS_RING_MIN_CHANNELS || g->channels > JTS_RING_MAX_CHANNELS) {
+        if (reason) *reason = "channels out of range 2..=8";
         return 1;
     }
     if (g->rate != 48000) {
@@ -195,6 +196,14 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
     }
     if (g->n_slots < JTS_RING_MIN_SLOTS || g->n_slots > JTS_RING_MAX_SLOTS) {
         if (reason) *reason = "n_slots out of range 2..=16";
+        return 1;
+    }
+    // Slot-payload ceiling. Checked LAST because it is the only rule derived
+    // from the others (period_frames x channels x sample width), and it is what
+    // bounds the create path's ftruncate now that period_frames is the sole
+    // unbounded-above term. See JTS_RING_MAX_SLOT_BYTES.
+    if (jts_ring_slot_bytes(g) > (size_t)JTS_RING_MAX_SLOT_BYTES) {
+        if (reason) *reason = "slot_bytes exceeds the 65536-byte ceiling";
         return 1;
     }
     if (reason) *reason = NULL;
@@ -217,9 +226,12 @@ static _Atomic uint64_t *magic_qword_ptr(void *base) {
     return (_Atomic uint64_t *)base;
 }
 
-static int16_t *slot_ptr(const jts_ring_writer_t *w, uint32_t slot_index) {
+// The slot payload is opaque bytes to this core — it memcpys whole slots and
+// never interprets a sample, so the pointer is untyped and the length is always
+// slot_bytes (which carries the format width and channel count).
+static void *slot_ptr(const jts_ring_writer_t *w, uint32_t slot_index) {
     uint8_t *base = (uint8_t *)w->base;
-    return (int16_t *)(base + JTS_RING_HEADER_BYTES + (size_t)slot_index * w->slot_bytes);
+    return base + JTS_RING_HEADER_BYTES + (size_t)slot_index * w->slot_bytes;
 }
 
 static void clamped_nanosleep(uint32_t period_frames) {
@@ -743,7 +755,7 @@ static int reader_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
 }
 
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
-                                                  const int16_t *samples) {
+                                                  const void *slot) {
     jts_ring_header_t *h = hdr(w);
     uint64_t now = jts_ring_monotonic_ns();
     atomic_store_explicit(&h->writer_heartbeat_ns, now, memory_order_relaxed);
@@ -802,7 +814,7 @@ jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
     // stores, then store write_seq+1 with release (the reader's Acquire load of
     // write_seq synchronizes-with this and sees the complete payload).
     uint32_t slot_index = (uint32_t)(wseq % (uint64_t)w->geometry.n_slots);
-    memcpy(slot_ptr(w, slot_index), samples, w->slot_bytes);
+    memcpy(slot_ptr(w, slot_index), slot, w->slot_bytes);
     uint64_t next = wseq + 1;
     atomic_store_explicit(&h->write_seq, next, memory_order_release);
     w->write_seq = next;
@@ -967,7 +979,7 @@ int jts_ring_reader_resync_if_overrun(jts_ring_reader_t *r) {
     return 0;
 }
 
-jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out) {
+jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, void *out) {
     jts_ring_header_t *h = rdr_hdr(r);
     uint64_t now = jts_ring_monotonic_ns();
     // Heartbeat every consume, filled or not — the writer's block-vs-drop gate
@@ -1006,8 +1018,7 @@ jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out)
     // write_seq above ordered the writer's payload stores before this read.
     uint32_t slot_index = (uint32_t)(rr % (uint64_t)r->geometry.n_slots);
     const uint8_t *base = (const uint8_t *)r->base;
-    const int16_t *slot =
-        (const int16_t *)(base + JTS_RING_HEADER_BYTES + (size_t)slot_index * r->slot_bytes);
+    const void *slot = base + JTS_RING_HEADER_BYTES + (size_t)slot_index * r->slot_bytes;
     memcpy(out, slot, r->slot_bytes);
 
     // Release the slot: store read_seq = rr+1 with Release so the copy-out cannot

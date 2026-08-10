@@ -42,6 +42,32 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 #define JTS_RING_HEADER_BYTES 128u
 #define JTS_RING_SAMPLE_FORMAT_S16LE 1u
 #define JTS_RING_SAMPLE_FORMAT_S32LE 2u
+
+// Channel accept-set for the wire: 2..=8. The floor is 2 because every producer
+// in the graph is at least a stereo program; explicit mono is representable in
+// the layout but refused by policy (no consumer). The ceiling is 8: the widest
+// registered DAC (DAC8x) is 8-channel, and jasper-outputd already bounds
+// JASPER_OUTPUTD_ACTIVE_CHANNELS at 2..=8. Like JTS_RING_MAX_SLOTS below, the
+// ceiling is tied cross-language by a source-grep test —
+// tests/test_ring_slot_ceiling_pin.py asserts JTS_RING_MAX_CHANNELS ==
+// MAX_RING_CHANNELS (rust/jasper-ring/src/layout.rs) == that outputd bound, so a
+// drift fails in CI rather than at RUNTIME on-Pi (the reader's geometry
+// validation rejects a channel count the writer created). Change them in the
+// same commit and the pin keeps passing.
+#define JTS_RING_MIN_CHANNELS 2u
+#define JTS_RING_MAX_CHANNELS 8u
+
+// Slot-payload ceiling (bytes), enforced by jts_ring_geometry_validate. What it
+// bounds is the WRITER-CREATE path: create turns the requested geometry straight
+// into an ftruncate of JTS_RING_HEADER_BYTES + n_slots * slot_bytes, and
+// period_frames is otherwise checked only "> 0". With the accept-set widened to
+// 8 channels and S32 the worst-case slot is 16x v1's (4x channels x 2x sample
+// width), so this cap is what keeps a bad geometry from asking the kernel for an
+// unbounded file (and any attacher from mmapping it). The shipped worst case is
+// 8 ch x S32 x 128 frames = 4096 B; 64 KiB leaves room for a larger slot (issue
+// #2147 makes the slot floor-derived) without removing the bound.
+#define JTS_RING_MAX_SLOT_BYTES 65536u
+
 #define JTS_RING_MIN_SLOTS 2u
 // Ceiling raised 4 -> 16 (2026-07-02): CamillaDSP's playback BufferManager
 // negotiates buffer = next_pow2(max(3*chunksize, 4*min_period)) and then drives
@@ -202,8 +228,26 @@ typedef enum {
 size_t jts_ring_slot_bytes(const jts_ring_geometry_t *g);
 size_t jts_ring_samples_per_slot(const jts_ring_geometry_t *g);
 size_t jts_ring_file_size(const jts_ring_geometry_t *g);
+// Bytes per sample for a ring sample_format id — the ONE place the format enum
+// becomes a width, shared by the geometry math here and the ioplug's staging
+// strides (so a conf-declared format moves both together). An unrecognized id
+// answers 2 and never reaches a copy path: jts_ring_geometry_validate rejects it
+// before any mapping, and an untrusted HEADER format only feeds the implied-file-
+// size cross-check in attach, which is followed by a field-by-field compare
+// against the expected format. Mirrors Geometry::bytes_per_sample in
+// rust/jasper-ring/src/layout.rs on the valid ids {S16LE=1, S32LE=2}; the two
+// diverge deliberately on an unrecognized id — this function still answers 2
+// (bounded sizing for attach diagnostics, per above) where the Rust side
+// returns Err (a hard config-error path with no diagnostic-sizing need).
+size_t jts_ring_bytes_per_sample(uint32_t sample_format);
 // Returns 0 on valid, non-zero (a static reason string is set via *reason) on
-// an unsupported geometry.
+// an unsupported geometry. The accept-set is sample_format in {S16LE, S32LE},
+// channels 2..=8, rate 48000, period_frames > 0, n_slots 2..=16, and a slot
+// payload within JTS_RING_MAX_SLOT_BYTES. Both ends of the wire must accept
+// exactly this set — `jasper_ring::Geometry::validate_self` is the Rust half,
+// and a geometry one end creates but the other refuses fails at attach on-Pi.
+// The channel ceiling and the format ids are pinned across the two by
+// tests/test_ring_slot_ceiling_pin.py.
 int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason);
 
 // --- Writer attach / publish / close ---
@@ -217,7 +261,11 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
 int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_writer_t *out);
 
-// Publish one slot from `samples` (jts_ring_samples_per_slot interleaved i16).
+// Publish one slot from `slot` — exactly jts_ring_slot_bytes(&w->geometry) bytes
+// of interleaved samples in the ring's declared format. The core is byte-
+// oriented: it memcpys the payload and never interprets a sample, so the caller
+// owns the typed view at its own boundary (the ioplug stages the ALSA format the
+// conf.d declared; the Rust reader hands out its own slice type).
 // Space discipline: load read_seq (Acquire); if W - R < n_slots, memcpy the
 // payload and store write_seq+1 (Release). If full: check reader liveness
 // (reader_pid != 0 AND heartbeat < 2 s). Reader alive -> clamped nanosleep,
@@ -246,7 +294,7 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
 // bounded, which the dual-mode pointer and the honest live-reader delay both
 // depend on.
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
-                                                  const int16_t *samples);
+                                                  const void *slot);
 
 // Frames of buffering currently in-flight (W - R), for the ioplug `delay`
 // callback: (W - R) * period_frames.
@@ -295,15 +343,17 @@ void jts_ring_writer_close(jts_ring_writer_t *w);
 int jts_ring_reader_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_reader_t *out);
 
-// Consume the OLDEST unread slot into `out` (jts_ring_samples_per_slot
-// interleaved i16). NEVER blocks. Stamps reader_heartbeat + observes epoch every
+// Consume the OLDEST unread slot into `out` — exactly
+// jts_ring_slot_bytes(&r->geometry) bytes of interleaved samples in the ring's
+// declared format (byte-oriented, same contract as publish above).
+// NEVER blocks. Stamps reader_heartbeat + observes epoch every
 // call (filled or not — the writer's block-vs-drop gate reads the heartbeat, so
 // it must bump even on empty periods, exactly like the Rust reader). Defensive:
 // if W - R > n_slots (a correct writer never lets this happen), fast-forwards
 // read_seq = write_seq and counts reader_resyncs rather than reading a slot the
 // writer may be mid-overwriting. Returns JTS_RING_SLOT_FILLED (copied + advanced
 // read_seq with Release) or JTS_RING_SLOT_EMPTY (zero-filled `out`).
-jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, int16_t *out);
+jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, void *out);
 
 // Self-heal an out-of-range occupancy: if W - R > n_slots (a correct writer
 // never lets this happen, but a reader that wedged past the liveness window

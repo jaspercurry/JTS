@@ -244,8 +244,14 @@ static void test_geometry_math_and_validation(void) {
     CHECK(jts_ring_geometry_validate(&g, &reason) == 0, "valid geometry");
 
     jts_ring_geometry_t bad = g;
-    bad.channels = 4;
-    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 4ch");
+    bad.channels = 1; // mono: representable in the layout, refused by policy
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 1ch (below the 2 floor)");
+    bad = g;
+    bad.channels = JTS_RING_MAX_CHANNELS + 1;
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 9ch (> ceiling 8)");
+    bad = g;
+    bad.channels = 0;
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 0 channels");
     bad = g;
     bad.n_slots = 1;
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 1 slot");
@@ -253,8 +259,171 @@ static void test_geometry_math_and_validation(void) {
     bad.n_slots = 17; // ceiling is 16 (raised 4 -> 16 on 2026-07-02)
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 17 slots (> ceiling 16)");
     bad = g;
-    bad.sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
-    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject S32LE (prototype)");
+    bad.sample_format = 3; // neither S16LE (1) nor S32LE (2)
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject unknown format id 3");
+    bad = g;
+    bad.sample_format = 0;
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject format id 0");
+    bad = g;
+    bad.rate = 44100;
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 44100 Hz");
+    bad = g;
+    bad.period_frames = 0;
+    CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 0 period_frames");
+
+    // The two INVERSIONS ring v2 makes: S32LE and >2 channels are now inside the
+    // accept-set (they were rejected while the wire was pinned to S16/2ch). They
+    // are asserted positively here AND covered by the golden byte-math table
+    // below, which is what catches a copy path that still strides as if narrow.
+    jts_ring_geometry_t wide = g;
+    wide.sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
+    CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept S32LE");
+    wide = g;
+    wide.channels = 6;
+    CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept 6ch");
+    wide.sample_format = JTS_RING_SAMPLE_FORMAT_S32LE;
+    CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept S32LE x 6ch");
+    wide.channels = JTS_RING_MAX_CHANNELS;
+    CHECK(jts_ring_geometry_validate(&wide, &reason) == 0, "accept S32LE x 8ch (the ceiling)");
+}
+
+// GOLDEN BYTE-MATH TABLE — the widened geometry arithmetic, hand-computed.
+//
+// The header `_Static_assert`s pin the field OFFSETS bit-for-bit, but nothing
+// pinned the math that turns (format, channels, period, slots) into slot bytes
+// and a file size — and that math is exactly what ring v2 widens. Each row is
+// computed by hand, not by re-deriving the formula the code uses, so a wrong
+// stride cannot agree with a wrong expectation.
+//
+// The S16/6ch row is deliberate: with 2 channels an "S16" and a "2-channel"
+// stride bug are indistinguishable (both give 4 bytes/frame), so a surviving
+// hardcoded `* 2` channel stride is INVISIBLE to every 2-channel row. S16/6 is
+// the row that catches it.
+//
+// The jasper-ring crate carries the matching table on the Rust side of the
+// wire; keep the two row sets in step when either end changes, so the same
+// numbers are asserted in both languages.
+static void test_golden_byte_math_table(void) {
+    struct {
+        uint32_t sample_format;
+        uint32_t channels;
+        size_t bytes_per_sample;  // hand-computed
+        size_t samples_per_slot;  // period_frames * channels
+        size_t slot_bytes;        // samples_per_slot * bytes_per_sample
+        size_t file_size;         // 128 + n_slots * slot_bytes
+        const char *label;
+    } rows[] = {
+        // period_frames = 128, n_slots = 2 for every row.
+        {JTS_RING_SAMPLE_FORMAT_S16LE, 2, 2, 256, 512, 128 + 2 * 512, "S16/2ch"},
+        {JTS_RING_SAMPLE_FORMAT_S16LE, 6, 2, 768, 1536, 128 + 2 * 1536, "S16/6ch"},
+        {JTS_RING_SAMPLE_FORMAT_S32LE, 2, 4, 256, 1024, 128 + 2 * 1024, "S32/2ch"},
+        {JTS_RING_SAMPLE_FORMAT_S32LE, 4, 4, 512, 2048, 128 + 2 * 2048, "S32/4ch"},
+        {JTS_RING_SAMPLE_FORMAT_S32LE, 6, 4, 768, 3072, 128 + 2 * 3072, "S32/6ch"},
+        {JTS_RING_SAMPLE_FORMAT_S32LE, 8, 4, 1024, 4096, 128 + 2 * 4096, "S32/8ch"},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        jts_ring_geometry_t g = {
+            .rate = 48000,
+            .channels = rows[i].channels,
+            .sample_format = rows[i].sample_format,
+            .period_frames = 128,
+            .n_slots = 2,
+        };
+        char msg[128];
+        const char *reason = NULL;
+        snprintf(msg, sizeof(msg), "%s: inside the accept-set", rows[i].label);
+        CHECK(jts_ring_geometry_validate(&g, &reason) == 0, msg);
+        snprintf(msg, sizeof(msg), "%s: bytes_per_sample", rows[i].label);
+        CHECK(jts_ring_bytes_per_sample(g.sample_format) == rows[i].bytes_per_sample, msg);
+        snprintf(msg, sizeof(msg), "%s: samples_per_slot", rows[i].label);
+        CHECK(jts_ring_samples_per_slot(&g) == rows[i].samples_per_slot, msg);
+        snprintf(msg, sizeof(msg), "%s: slot_bytes", rows[i].label);
+        CHECK(jts_ring_slot_bytes(&g) == rows[i].slot_bytes, msg);
+        snprintf(msg, sizeof(msg), "%s: file_size", rows[i].label);
+        CHECK(jts_ring_file_size(&g) == rows[i].file_size, msg);
+    }
+
+    // The JTS_RING_MAX_SLOT_BYTES boundary, both sides. 65536 bytes at 8ch S32
+    // is 32 bytes/frame, so exactly 2048 frames is at the cap and 2049 is one
+    // frame (32 bytes) over.
+    jts_ring_geometry_t at_cap = {
+        .rate = 48000,
+        .channels = 8,
+        .sample_format = JTS_RING_SAMPLE_FORMAT_S32LE,
+        .period_frames = 2048,
+        .n_slots = 2,
+    };
+    const char *reason = NULL;
+    CHECK(jts_ring_slot_bytes(&at_cap) == 65536, "boundary: slot_bytes is exactly the cap");
+    CHECK(jts_ring_slot_bytes(&at_cap) == (size_t)JTS_RING_MAX_SLOT_BYTES,
+          "boundary: the cap constant is 65536");
+    CHECK(jts_ring_geometry_validate(&at_cap, &reason) == 0,
+          "boundary: exactly at the slot-bytes cap is accepted");
+
+    jts_ring_geometry_t over_cap = at_cap;
+    over_cap.period_frames = 2049;
+    CHECK(jts_ring_slot_bytes(&over_cap) == 65536 + 32,
+          "boundary: one frame over is 32 bytes over the cap");
+    CHECK(jts_ring_geometry_validate(&over_cap, &reason) != 0,
+          "boundary: one frame over the slot-bytes cap is rejected");
+}
+
+// The de-typed copy paths carry a WIDE slot end to end. This is the data-path
+// half of the golden table: the table pins the arithmetic, this pins that
+// publish + consume actually move slot_bytes of S32 6-channel payload with every
+// byte in place. A copy that still strided as i16/2ch would move a quarter of
+// the slot and mismatch here.
+static void test_wide_slot_publish_consume_roundtrip(void) {
+    char path[256];
+    tmp_path(path, sizeof(path), "wide-roundtrip");
+    jts_ring_geometry_t g = {
+        .rate = 48000,
+        .channels = 6,
+        .sample_format = JTS_RING_SAMPLE_FORMAT_S32LE,
+        .period_frames = 128,
+        .n_slots = 2,
+    };
+    jts_ring_writer_t w;
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0, "wide writer open");
+    CHECK(w.slot_bytes == 3072, "wide writer slot_bytes == 128 * 6 * 4");
+    CHECK(w.map_len == jts_ring_file_size(&g), "wide map covers the whole file");
+
+    jts_ring_reader_t r;
+    CHECK(jts_ring_reader_open(path, &g, &r) == 0, "wide reader open");
+
+    // Hand-computed, not read off `w` (the code under test): a mutation that
+    // corrupts samples_per_slot must fail the assertion below, not silently
+    // undersize this malloc into a heap overflow a few lines down.
+    size_t n = 128 * 6; // period_frames * channels == 768 i32 samples
+    CHECK(w.samples_per_slot == n, "wide writer samples_per_slot == 128 * 6");
+    int32_t *payload = malloc(n * sizeof(int32_t));
+    // Values outside the i16 range in every channel: a narrow copy path would
+    // truncate them, and the per-channel offset makes a channel-stride bug
+    // visible as a misplaced value rather than a lost one.
+    for (size_t f = 0; f < g.period_frames; f++) {
+        for (uint32_t c = 0; c < g.channels; c++) {
+            payload[f * g.channels + c] = (int32_t)((f + 1) * 100000 + (int32_t)c);
+        }
+    }
+    CHECK(jts_ring_writer_publish(&w, payload) == JTS_RING_PUBLISH_OK, "wide publish ok");
+
+    int32_t *out = calloc(n, sizeof(int32_t));
+    CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_FILLED, "wide consume filled");
+    CHECK(memcmp(out, payload, n * sizeof(int32_t)) == 0,
+          "wide payload roundtrips byte-for-byte (no narrow stride)");
+    CHECK(jts_ring_reader_consume(&r, out) == JTS_RING_SLOT_EMPTY,
+          "wide ring empty after drain");
+    // The empty path zero-fills the WHOLE wide slot, not a narrow prefix.
+    int all_zero = 1;
+    for (size_t i = 0; i < n; i++)
+        if (out[i] != 0) all_zero = 0;
+    CHECK(all_zero, "wide empty read zero-fills every sample");
+
+    free(payload);
+    free(out);
+    jts_ring_reader_close(&r);
+    jts_ring_writer_close(&w);
+    unlink(path);
 }
 
 static void test_publish_consume_roundtrip(void) {
@@ -2749,6 +2918,8 @@ int main(void) {
     CHECK(setenv("JTS_RING_TEST_OWNED_DIR", g_owned_dir, 1) == 0,
           "configure per-process test-owned ring root");
     test_geometry_math_and_validation();
+    test_golden_byte_math_table();
+    test_wide_slot_publish_consume_roundtrip();
     test_publish_consume_roundtrip();
     test_ping_pong_bounding();
     test_no_reader_free_run_drop();

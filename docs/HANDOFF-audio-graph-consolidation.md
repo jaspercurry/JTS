@@ -114,9 +114,10 @@ but stops losing the precision that resample and gain create.
 
 The wire is pinned S16 — `Geometry::validate_self`
 (`rust/jasper-ring/src/layout.rs`) hard-rejects any other sample format,
-and the C ioplug advertises a single-entry `formats[]` of
-`SND_PCM_FORMAT_S16_LE` with `JTS_RING_CHANNELS = 2` and
-`JTS_RING_RATE = 48000`. But **the layout is already wider than its
+and although the C ioplug takes `format`/`channels` from its conf.d block,
+[`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
+declares neither, so both PCMs open at the `S16_LE`/2ch defaults
+(`JTS_RING_RATE = 48000` stays pinned). But **the layout is already wider than its
 consumers**: the header self-describes rate, channels, and sample format,
 and reserves `SAMPLE_FORMAT_S32LE = 2` ("Reserved for future wide/active
 lanes"). Ring v2 is therefore a Rust-reader + C-ioplug + emitter problem,

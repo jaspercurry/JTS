@@ -2,25 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cross-file pin for the SHM-ring slot-count CEILING (P3 review Nit 3).
+"""Cross-file pins for the SHM-ring geometry ACCEPT-SET (P3 review Nit 3).
 
-The maximum ``n_slots`` for the jts SHM ring is defined in THREE places that
-must stay in lockstep by hand:
+Several ring constants are declared independently in C and in two Rust crates
+and must stay in lockstep by hand:
 
-- the C ioplug header ``c/jts-ring-ioplug/jts_ring_shm.h`` (``JTS_RING_MAX_SLOTS``),
-- the Rust reader crate ``rust/jasper-ring/src/layout.rs`` (``MAX_N_SLOTS``),
-- the Rust outputd config ``rust/jasper-outputd/src/config.rs`` (``MAX_SHM_RING_SLOTS``).
+- ``n_slots`` ceiling — ``JTS_RING_MAX_SLOTS`` (C header
+  ``c/jts-ring-ioplug/jts_ring_shm.h``), ``MAX_N_SLOTS``
+  (``rust/jasper-ring/src/layout.rs``), ``MAX_SHM_RING_SLOTS``
+  (``rust/jasper-outputd/src/config.rs``).
+- ``channels`` ceiling — ``JTS_RING_MAX_CHANNELS`` (C header),
+  ``MAX_RING_CHANNELS`` (jasper-ring layout), and the upper bound outputd
+  already enforces on ``JASPER_OUTPUTD_ACTIVE_CHANNELS``.
+- the ``sample_format`` enum ids, which are HEADER FIELD VALUES on the wire.
+- the create/attach transaction-lock contract (suffix, mode, budgets).
 
 Unlike the header OFFSETS — which the golden-layout ``_Static_assert`` and the
-Rust layout test pin bit-for-bit — nothing tied these three MAX constants
-together, so a mismatch was caught only at RUNTIME on the Pi (the reader's
-geometry validation rejects an ``n_slots`` the writer created, failing loud on
-arm). This test moves that failure to CI: if the three ceilings drift, it fails
-here instead of on-device.
+Rust layout test pin bit-for-bit — nothing tied these constants together, so a
+mismatch was caught only at RUNTIME on the Pi (the reader's geometry validation
+rejects a geometry the writer created, failing loud on arm). These tests move
+that failure to CI: if the declarations drift, they fail here instead of
+on-device.
 
-If you intentionally raise/lower the ceiling, change all three in the same
-commit and this test keeps passing (it asserts they are EQUAL, not a specific
-literal).
+The two CEILINGS are asserted EQUAL, not against a literal, so raising or
+lowering one deliberately (in the same commit as its siblings) keeps the pins
+passing. The FORMAT ENUM is different: those ids are written into the shared
+header and compared field-by-field on attach, so their numeric values are a wire
+contract and are pinned to the literals 1 and 2.
 """
 from __future__ import annotations
 
@@ -53,6 +61,99 @@ def _extract_text(pattern: str, text: str, label: str) -> str:
     m = re.search(pattern, text)
     assert m is not None, f"could not find {label} definition (pattern {pattern!r})"
     return m.group(1)
+
+
+def _extract_only(pattern: str, text: str, label: str) -> re.Match[str]:
+    """Extract a match that must be UNIQUE in the file.
+
+    A second call site of the same shape would leave this pin silently guarding
+    only the first one, so ambiguity fails loudly instead.
+    """
+    matches = list(re.finditer(pattern, text))
+    assert matches, f"could not find {label} (pattern {pattern!r})"
+    assert len(matches) == 1, (
+        f"expected exactly one {label} declaration, found {len(matches)} — the pin "
+        "would silently guard only the first. Narrow the pattern or pin each site."
+    )
+    return matches[0]
+
+
+def test_ring_channel_ceiling_agrees_across_c_and_both_rust_crates():
+    c_max = _extract(
+        r"#define\s+JTS_RING_MAX_CHANNELS\s+(\d+)u",
+        _read(_C_HEADER),
+        "JTS_RING_MAX_CHANNELS",
+    )
+    ring_layout = _read(_RING_LAYOUT_RS)
+    ring_match = re.search(r"pub const MAX_RING_CHANNELS:\s*u32\s*=\s*(\d+);", ring_layout)
+    if ring_match is None:
+        # The Rust half of this pin lands with the jasper-ring crate rung (R1),
+        # which is developed in parallel with the C ioplug rung (R2). Until it
+        # merges there is nothing to compare against, so report the missing
+        # constant by name rather than erroring on a regex miss.
+        pytest.xfail(
+            "MAX_RING_CHANNELS is not declared in rust/jasper-ring/src/layout.rs yet "
+            "(the jasper-ring ring-v2 rung has not landed in this checkout). This pin "
+            f"activates as soon as it does; the C side already declares "
+            f"JTS_RING_MAX_CHANNELS={c_max}."
+        )
+    ring_max = int(ring_match.group(1))
+    # outputd does not name a constant: it bounds the env directly. The upper
+    # bound of that range is the same ceiling — the widest active-lane channel
+    # count outputd will accept must be a channel count the ring can carry.
+    outputd_max = int(
+        _extract_only(
+            r'env_optional_u16\(\s*"JASPER_OUTPUTD_ACTIVE_CHANNELS"\s*,\s*\d+\s*,\s*(\d+)\s*\)',
+            _read(_OUTPUTD_CONFIG_RS),
+            "the JASPER_OUTPUTD_ACTIVE_CHANNELS bound",
+        ).group(1)
+    )
+    assert c_max == ring_max == outputd_max, (
+        "SHM-ring channel ceiling drifted across the three source-of-truth "
+        f"definitions: JTS_RING_MAX_CHANNELS={c_max} (C header), "
+        f"MAX_RING_CHANNELS={ring_max} (jasper-ring layout.rs), "
+        f"JASPER_OUTPUTD_ACTIVE_CHANNELS upper bound={outputd_max} "
+        "(jasper-outputd config.rs). Change all three in the same commit — the "
+        "reader rejects a writer's out-of-range channel count at RUNTIME, so a "
+        "mismatch only surfaces on-Pi arm."
+    )
+
+
+def test_ring_sample_format_enum_agrees_between_c_and_rust():
+    c = _read(_C_HEADER)
+    rust = _read(_RING_LAYOUT_RS)
+    c_s16 = _extract(
+        r"#define\s+JTS_RING_SAMPLE_FORMAT_S16LE\s+(\d+)u",
+        c,
+        "JTS_RING_SAMPLE_FORMAT_S16LE",
+    )
+    c_s32 = _extract(
+        r"#define\s+JTS_RING_SAMPLE_FORMAT_S32LE\s+(\d+)u",
+        c,
+        "JTS_RING_SAMPLE_FORMAT_S32LE",
+    )
+    rust_s16 = _extract(
+        r"pub const SAMPLE_FORMAT_S16LE:\s*u32\s*=\s*(\d+);",
+        rust,
+        "SAMPLE_FORMAT_S16LE",
+    )
+    rust_s32 = _extract(
+        r"pub const SAMPLE_FORMAT_S32LE:\s*u32\s*=\s*(\d+);",
+        rust,
+        "SAMPLE_FORMAT_S32LE",
+    )
+    # Literal values, not just equality: these ids are written into the ring
+    # header's sample_format field and compared field-by-field on attach, so
+    # renumbering either side would make two binaries disagree about the bytes
+    # already on the wire.
+    assert (c_s16, rust_s16) == (1, 1), (
+        f"S16LE format id drifted: C={c_s16}, Rust={rust_s16} (both must be 1 — it "
+        "is a header field value, not a local enum)"
+    )
+    assert (c_s32, rust_s32) == (2, 2), (
+        f"S32LE format id drifted: C={c_s32}, Rust={rust_s32} (both must be 2 — it "
+        "is a header field value, not a local enum)"
+    )
 
 
 def test_ring_slot_ceiling_agrees_across_c_and_both_rust_crates():
