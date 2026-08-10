@@ -39,7 +39,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
-const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
+const MAX_DAC_CONTENT_DRAIN_READS: usize = 8;
 const CHIP_REF_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const CHIP_REF_RETRY_MAX: Duration = Duration::from_secs(30);
 const CHIP_REF_WORKER_POLL: Duration = Duration::from_millis(200);
@@ -362,10 +362,9 @@ fn run_alsa(
     let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
-    // S16 scratch for the two content sources that are S16-NATIVE rather than
-    // ALSA lanes: the SHM ring (S16 wire by D5) and the rate-match bridge (the
-    // shared windowed-sinc resampler is an i16 algorithm). Both are alternatives
-    // to each other and to `direct`, so ONE buffer serves whichever is armed and
+    // S16 scratch for the SHM ring — the one content source that is
+    // S16-NATIVE rather than an ALSA lane (S16 wire by D5). It's an
+    // alternative to `direct`, so ONE buffer serves whichever is armed and
     // the `direct` default — every live box — allocates nothing.
     //
     // Zero bytes on `direct` matters here specifically: outputd runs `mlockall`,
@@ -532,7 +531,7 @@ fn run_alsa(
                 // lane is genuinely broken, the inv-B fallback read below
                 // surfaces it when we actually need the lane. Xruns are
                 // already recovered inside read_content_available.
-                for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
+                for _ in 0..MAX_DAC_CONTENT_DRAIN_READS {
                     match sink.read_content_available(&mut content_read_buf) {
                         Ok(ContentRead::Frames(frames)) if frames > 0 => {}
                         Ok(_) => break,

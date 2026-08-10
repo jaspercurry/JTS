@@ -431,9 +431,13 @@ def _restart_fanin_coordinated(
     Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
     silence, not a busy-spin -- so only the camilla side needs coordination.)
 
-    SCOPE: this coordinates DELIBERATE Python-side fan-in restarts (the
-    reconciler's own, plus any out-of-module caller routed through
-    :func:`coordinated_fanin_restart`). Since the ring-ioplug
+    SCOPE: this coordinates DELIBERATE Python-side fan-in restarts — today
+    only this module's own caller, :func:`reconcile_auto`'s auto USB-combo
+    restart. The public out-of-module entry point this docstring used to
+    describe, ``coordinated_fanin_restart``, was deleted in P5c: its sole
+    caller (the adaptive output-buffer arm) was deleted with it, and its
+    ok-flattening-on-resume-failure behavior had no remaining consumer to
+    justify keeping. Since the ring-ioplug
     capture-reader pacing fix (PR #1271, ``c/jts-ring-ioplug/``), RTTIME safety
     no longer depends on this coordination: an UNCOORDINATED fan-in death (a
     crash / OOM-kill / an external ``systemctl restart jasper-fanin``) degrades
@@ -524,57 +528,6 @@ def _restart_fanin_coordinated(
         camilla_started=start_ok,
         detail=detail,
     )
-
-
-def coordinated_fanin_restart(
-    reason: str,
-    *,
-    phase: str,
-    env_path: str | os.PathLike = FANIN_ENV_PATH,
-) -> tuple[bool, str]:
-    """CamillaDSP-coordinated fan-in restart for OUT-OF-MODULE callers. (ok, detail).
-
-    The public entry point for any deliberate fan-in restart that does not go
-    through :func:`reconcile_coupling` itself. It has no in-tree caller today —
-    the adaptive output-buffer arm that used it was deleted, and the auto
-    USB-combo path calls :func:`_restart_fanin_coordinated` directly — so this
-    is the seam plus the tested statement of the coordination's ok/detail
-    contract. Reads the ACTIVE coupling fresh from ``env_path`` (the
-    daemons' next-start truth, fail-safe to loopback) and dispatches through
-    :func:`_restart_fanin_coordinated` with the standard broker ops, so a caller
-    on a live ring/pipe coupling pauses camilla around the restart instead of
-    RTTIME-SIGKILLing it; loopback keeps its single plain fan-in restart.
-
-    ``ok`` is "fan-in restarted" — the contract a caller's write/rollback ladder
-    keys off (roll an env write back only when the daemon did NOT restart into
-    it). A camilla-resume failure after a successful fan-in
-    restart is logged + carried in ``detail`` but does not flip ``ok``: the
-    daemon IS running the new env, and ``OnFailure=jasper-camilla-recover``
-    remains the resume backstop.
-    """
-    coupling = read_persisted_coupling(env_path)
-    coord = _restart_fanin_coordinated(
-        lambda: _restart_fanin(reason=reason),
-        lambda: _stop_camilla(reason=reason),
-        lambda: _start_camilla(reason=reason),
-        coupling=coupling,
-        reason=reason,
-        phase=phase,
-    )
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="coordinated_fanin_restarted"
-        if coord.fanin_restarted
-        else "coordinated_fanin_restart_failed",
-        reason=reason,
-        phase=phase,
-        coupling=coupling,
-        camilla_coordinated=coord.coordinated,
-        detail=coord.detail or None,
-        level=logging.INFO if coord.fanin_restarted else logging.WARNING,
-    )
-    return coord.fanin_restarted, coord.detail
 
 
 def reconcile_coupling(

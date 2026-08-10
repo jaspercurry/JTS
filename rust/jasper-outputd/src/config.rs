@@ -250,12 +250,12 @@ pub struct Config {
     /// Set by the reconciler on a 2-channel active-crossover sink — the one
     /// active case the bare `content_channels == 2` check cannot tell apart
     /// from a full-range stereo L/R sink (distributed-active Stage B). The real
-    /// invariant for outputd's stereo-only features (the TTS mixer, the
-    /// rate-match bridge, and the dac_content round-trip lane) is "full-range
-    /// stereo L/R sink," NOT "exactly 2 channels": an active 2-way speaker
-    /// (woofer/tweeter) is also 2-channel, so without this marker those
-    /// features would WRONGLY arm on it — mixing / rate-matching / channel-
-    /// picking post-crossover sends full-range audio to the tweeter (unsafe).
+    /// invariant for outputd's stereo-only features (the TTS mixer and the
+    /// dac_content round-trip lane) is "full-range stereo L/R sink," NOT
+    /// "exactly 2 channels": an active 2-way speaker (woofer/tweeter) is also
+    /// 2-channel, so without this marker those features would WRONGLY arm on
+    /// it — mixing / channel-picking post-crossover sends full-range audio to
+    /// the tweeter (unsafe).
     /// Wider active sinks (composite, >2ch) are already excluded by their
     /// channel width, so the reconciler does NOT set this for them. Default
     /// false (solo/passive) is byte-identical to today.
@@ -623,10 +623,10 @@ impl Config {
         // may arm ONLY on a full-range stereo L/R sink — single-ALSA, exactly
         // two channels, and NOT an active-crossover lane. Composite and
         // wide-active single sinks are excluded by width; a 2-channel active
-        // sink is excluded by the explicit active_lane marker. Mixing or
-        // rate-matching a stereo feed on any of those mis-sizes buffers on live
-        // drivers, or (on an active lane) sends full-range audio to the
-        // tweeter, so fail closed at startup.
+        // sink is excluded by the explicit active_lane marker. Mixing a
+        // stereo feed on any of those mis-sizes buffers on live drivers, or
+        // (on an active lane) sends full-range audio to the tweeter, so fail
+        // closed at startup.
         let is_full_range_stereo_lr_sink =
             sink_mode == SinkMode::SingleAlsa && content_channels == 2 && !active_lane;
 

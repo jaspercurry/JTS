@@ -709,16 +709,20 @@ AirPlay while 512 produced immediate output xruns. WiFi burst absorption
 therefore stays on the input side instead of becoming downstream
 fanin→CamillaDSP/AEC queueing.
 
-As of 2026-06-30, the fan-in output-buffer writer gets its set/unset/floor
-decision from [`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)
-(`fanin_output_buffer_action`, `resolve_fanin_output_buffer_target`). Temporary
-lab frame values belong in `/var/lib/jasper/audio_runtime_overrides.json` via
-`jasper-audio-config overrides-set`, with a reason and optional expiry. The
-coupling selector is deliberately not a lab override; it still goes through the
-ordered `jasper-fanin-coupling-reconcile` transition. The fan-in reconciler
-still owns the actual env-file write, daemon restart, and
-rollback-on-restart-failure ladder; the plan owns the policy so the doctor,
-operator explain CLI, and writer cannot drift. As of the P3/P4 default-flip the
+Between 2026-06-30 and P5c (2026-08-10), the fan-in output-buffer writer got
+its set/unset/floor decision from
+[`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)
+(`fanin_output_buffer_action`, `resolve_fanin_output_buffer_target`). P5c
+deleted that policy layer along with `jasper/fanin/buffer_reconcile.py` — the
+adaptive shrink never passed an on-device soak — so the packaged
+`jasper-fanin.service` `Environment=` 1024 default is now the sole source of
+`JASPER_FANIN_OUTPUT_BUFFER_FRAMES`; see
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+for the campaign context. The coupling selector was never part of that lab
+override and is unaffected by the P5c deletion; it still goes through the
+ordered `jasper-fanin-coupling-reconcile` transition, and the plan still owns
+its route-support policy so the doctor, operator explain CLI, and writer
+cannot drift. As of the P3/P4 default-flip the
 reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
 the SHIPPED default coupling (`shm_ring` on a validated full-profile,
 ring-eligible box; loopback on streambox or any failed gate) and the independent
@@ -820,13 +824,16 @@ does **not** resample and stays the default + fallback.
 `mixer.rs` can instead reconcile the clock-crossing (USB) lane to the DAC
 clock with a per-input windowed-sinc resampler (`src/lane_resampler.rs`),
 **DLL-steered** to the DAC clock — the drop-free alternative the catch-up's
-own docstring defers to. It composes the EXACT shared primitives
-`jasper-outputd`'s `content_bridge.rs` uses (`AudioRing` + `SincTable` +
-`RateController` from the `jasper-resampler` crate), so the DLL control law
-(the spa_dll second-order loop and variance-adaptive bandwidth) is shared, not
-reimplemented. The input-lane instance disables the shared controller's
-one-period hard-resync because USB burst fill excursions larger than one render
-period are valid buffer state, not discontinuities; real discontinuities still
+own docstring defers to. It composes `AudioRing` + `SincTable` +
+`RateController` from the shared `jasper-resampler` crate, so the DLL control
+law (the spa_dll second-order loop and variance-adaptive bandwidth) lives in
+one place, not reimplemented per lane. (`jasper-outputd` once ran the same
+primitives in the other direction, as a single post-Camilla `rate_match`
+content bridge; P5c deleted that bridge, so `lane_resampler.rs` is now the
+sole in-tree composition of them.) The input-lane instance disables the
+shared controller's one-period hard-resync because USB burst fill excursions
+larger than one render period are valid buffer state, not discontinuities;
+real discontinuities still
 reset the lane on PCM xrun (including xrun reported by `avail_update`) /
 explicit idle reset. When armed, the lane holds a small fixed fill
 (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES` +

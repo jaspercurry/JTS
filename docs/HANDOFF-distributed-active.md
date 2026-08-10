@@ -392,7 +392,7 @@ renderers─fanin─music tap─► camilla#1 (:1234)  B/C+headroom, File→SNAP
             (pair 7)                                   │
                        leader snapclient (--host 127.0.0.1, --player file → FIFO)
                                                        ▼
-       outputd-summer  ◄── TTS + commanded duck (soft inputs)   ──  THE ONE LOOP (a rate-matched content bridge) + sum
+       outputd-summer  ◄── TTS + commanded duck (soft inputs)   ──  THE ONE LOOP (rate-matching resampler) + sum
                                                        │  (pipe; or loopback in the two-instance build)
                                                        ▼
        camilla#2 (:1235)  crossover, rate_adjust OFF  (passive, DAC-clocked by backpressure)
@@ -459,24 +459,26 @@ topology, not at the 2-instance setup or at TTS.
 
 **OPEN — the summer build (resolved by the `jts3` measurement, not here).** What
 `outputd-summer` is built from is **not settled**: (a) a **second
-`jasper-outputd` instance** — maximum reuse of the shipped
-a rate-matched content bridge + TTS mixer, reference-publish off; heavier (two
+`jasper-outputd` instance** — reference-publish off; heavier (two
 outputd processes) and outputs a loopback, so it consumes pair 6 — vs (b) a
-**lean pipe-writing summer** reusing only the rate-match logic —
-less RAM, frees pair 6 via camilla#2 File-capture, some new code. **NOTE (2026-08-10):
-option (b) said "reusing only the `content_bridge` rate-match logic". That module
-(`rust/jasper-outputd/src/content_bridge.rs`) has since been DELETED with the
-`rate_match` bridge, so (b) is no longer a reuse — it would compose the shared
-`jasper-resampler` primitives (`AudioRing` + `SincTable` + `RateController`)
-directly, as `jasper-fanin`'s `lane_resampler` already does. That raises (b)'s
-new-code cost and should be re-weighed against (a) when this is resolved.**
+**lean pipe-writing summer** — less RAM, frees pair 6 via camilla#2
+File-capture, some new code. **NOTE (2026-08-10): both (a) and (b) originally
+read as "maximum reuse of the shipped `content_bridge=rate_match` module."
+That module (`rust/jasper-outputd/src/content_bridge.rs`) has since been
+DELETED with the `rate_match` bridge, so NEITHER option is a reuse anymore —
+a second outputd instance (a) does not inherit a rate matcher any more than
+(b) does. Each would compose the shared `jasper-resampler` primitives
+(`AudioRing` + `SincTable` + `RateController`) directly, as `jasper-fanin`'s
+`lane_resampler` already does. This removes (a)'s traditional "maximum reuse,
+less new code" advantage over (b); both options' new-code cost should be
+re-weighed from scratch when this is resolved.**
 **Resolution
 mechanism:** the `jts3` RAM/CPU measurement inside the Slice-5 CPU/thermal gate,
 plus a soak A/B. **Order logic:** prefer **lean-first** if RAM is the binding
 constraint on the 1 GB Pi (it usually is, per the OOM history); fall back to the
 **two-instance** build if a from-scratch summer's rate-match quality does not
-match the shipped `content_bridge`. Do not encode either choice in config before
-that measurement.
+clear the bar the deleted `content_bridge` used to. Do not encode either choice
+in config before that measurement.
 
 ## Subwoofer — two different "subs" (gaps 4 & 5)
 

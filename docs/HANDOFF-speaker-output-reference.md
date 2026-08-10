@@ -457,10 +457,6 @@ What exists:
   spelling still reports a red `usb_low_latency_48k` claim instead of a
   silently-downgraded green one. An unrecognized value that is *not* one of
   those spellings still fails loud.
-  Direct TTS/cue playout was always on the normal outputd
-  path. The sinc table is precomputed at startup; steady state should
-  be multiply/add work only, but Pi 5 CPU and xrun behavior still need
-  hardware soak before enabling it outside the lab.
 - Multi-room round-trip content lane (OFF by default, inert until a
   grouping bond activates it in Increment 5): when
   `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set, a grouping leader feeds its

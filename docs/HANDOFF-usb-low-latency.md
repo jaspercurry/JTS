@@ -392,11 +392,13 @@ pause does not stop voice's UDP mic producer; the canonical lifecycle contract
 lives in [HANDOFF-aec.md](HANDOFF-aec.md).
 
 **Coordination scope.** All DELIBERATE Python-side fan-in restarts are
-coordinated: the reconciler's own restarts, plus any out-of-module caller routed
-through `coupling_reconcile.coordinated_fanin_restart`. That entry point has no
-in-tree caller today — the adaptive output-buffer arm that used it
-(`jasper.fanin.buffer_reconcile`, behind `JASPER_FANIN_ADAPTIVE_BUFFER`) was
-deleted.
+coordinated: today that is `reconcile_auto`'s own auto USB-combo restart
+(`_restart_fanin_coordinated`). The public out-of-module entry point,
+`coupling_reconcile.coordinated_fanin_restart`, was itself deleted in P5c —
+its sole caller, the adaptive output-buffer arm
+(`jasper.fanin.buffer_reconcile`, behind `JASPER_FANIN_ADAPTIVE_BUFFER`), had
+already been deleted, and the wrapper's remaining behavior (ok-flattening on
+a resume failure) had no consumer left to justify keeping it.
 
 **Root cause fixed (2026-07-11) — the ring-ioplug capture reader now paces
 through writer absence.** The busy-spin's mechanism was NOT the SHM ring: strace

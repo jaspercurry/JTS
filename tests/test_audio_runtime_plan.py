@@ -1357,7 +1357,7 @@ def test_removed_adaptive_buffer_keys_are_read_by_nothing():
     offenders: list[str] = []
     for root in roots:
         for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in (".py", ".rs", ".sh", ".service"):
+            if not path.is_file() or path.suffix in (".woff2", ".woff", ".ttf", ".png", ".ico", ".pyc", ".so"):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
