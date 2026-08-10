@@ -290,12 +290,12 @@ The output-side invariant lives here: **provider truncation must be
 driven from the final playout ledger, not provider event arrival time or
 queued-frame estimates**.
 
-**Status (2026-06-21).** Steps 1-3 — the provider-agnostic *detection +
-local-flush spine* — have landed behind a per-provider feature flag that
-**defaults OFF**. While the assistant is speaking,
-`WakeLoop._handle_playback_frame` (in `jasper/voice_daemon.py`) runs local
-Silero VAD on the AEC-cleaned "on" leg and, on a sustained speech run at
-or above `JASPER_VAD_BARGE_IN_THRESHOLD`, calls
+**Status (2026-06-21, provider wiring corrected 2026-08-08).** Steps 1-3 —
+the provider-agnostic *detection + local-flush spine* — have landed behind a
+per-provider feature flag that **defaults OFF**. While the assistant is
+speaking, `WakeLoop._handle_playback_frame` (in `jasper/voice_daemon.py`)
+runs local Silero VAD on the AEC-cleaned "on" leg and, on a sustained speech
+run at or above `JASPER_VAD_BARGE_IN_THRESHOLD`, calls
 `LiveTurn.request_local_interrupt()`, which `_play_responses` races (now
 including the `wait_drained()` drain-tail window) to `flush()` local TTS.
 The flag is `JASPER_BARGE_IN_<PROVIDER>` in
@@ -303,10 +303,13 @@ The flag is `JASPER_BARGE_IN_<PROVIDER>` in
 `jasper.voice.provider_state.read_barge_in_enabled` (never an os.environ
 cache); a runtime guard hard-disables it for the session when the active
 profile has no AEC reference (`direct_mic`), to avoid self-tripping on
-un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — is
-deliberately *not* wired yet: a real-time provider may resume speaking
-after the local flush until that increment lands. Off-device validation
-cannot exercise false-barge from TTS bleed; that is a hardware step.
+un-cancelled TTS bleed. Step 4 — **provider cancel/truncate** — is wired
+per-provider behind the same flag.
+[HANDOFF-barge-in.md](HANDOFF-barge-in.md#implementation-plan) (rows 4-7)
+is the canonical per-provider ledger for landing status, which providers
+self-truncate as a no-op, and what remains before default-on. Off-device
+validation cannot exercise false-barge from TTS bleed; that is a hardware
+step.
 
 ## Codebase Validation
 
@@ -861,7 +864,7 @@ What exists:
   that does not publish it parks the box by name. outputd reports raw
   observations only; every acceptance rule over them lives in
   `jasper/cli/aec_init.py` and `jasper/chip_aec_alignment.py`. See
-  [HANDOFF-aec.md](HANDOFF-aec.md) "K lifecycle". The
+  [HANDOFF-aec.md](HANDOFF-aec.md) "K-lifecycle". The
   optional `JASPER_OUTPUTD_CHIP_REF_TEE_PATH` raw-sample tee is
   diagnostic only, should point under `/run/jasper-outputd` or
   `/var/lib/jasper` in the packaged systemd sandbox, and must not be
@@ -885,16 +888,16 @@ What is still intentionally not done:
 - The chip USB-IN producer is intentionally separate from the software
   speaker monitor. Software AEC/corpus/diagnostics should not depend on
   chip hardware being present.
-- Provider truncation is wired for the OpenAI/Grok pack (PR-4). The local
-  TTS flush PRODUCES the `audio_played_ms` and provider item identity
+- The local ledger, not bytes received, drives provider truncation: the
+  local TTS flush PRODUCES `audio_played_ms` and provider item identity
   (fan-in solo + outputd bonded), and `turn_playback._flush_for_interrupt`
-  now drives the active provider's adapter to CONSUME that acknowledgement —
-  `response.cancel` then `conversation.item.truncate(audio_end_ms=played-ms)`,
-  a no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
-  truncates on bytes-received. The contract is documented here and in
-  `HANDOFF-voice-providers.md`. Remaining: Gemini's obey-`interrupted` pack
-  (PR-5; it self-truncates server-side, so no client truncate), Grok
-  verification (PR-6), and the on-hardware AEC gate before default-on (PR-7).
+  drives the active provider's adapter to CONSUME that acknowledgement, a
+  no-op + WARN when the ledger reports `max_audio_played_ms=0` so it never
+  truncates on bytes-received. Per-provider wiring status — landing,
+  self-truncating no-ops, and what remains before default-on — is the
+  canonical ledger at
+  [HANDOFF-barge-in.md](HANDOFF-barge-in.md#implementation-plan)
+  (rows 4-7), not here.
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved
@@ -1792,74 +1795,114 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-08-08 (SCOPED — the most recent pass re-read only the
-STATUS-payload passage, which now also documents the chip-reference writer's
-bounded per-write observation ring `chip_ref_writer.recent_writes`: the one
-STATUS field whose absence is a hard refusal rather than a blank surface, since
-`jasper-aec-init` resolves chip-AEC `SYS_DELAY` from it (#2253). Re-stated
-against `rust/jasper-outputd/src/state.rs` and `jasper/cli/aec_init.py`;
-nothing else in the file was re-read in that pass. A prior same-day pass
-re-read only the four passages the content-lane park touches: the
-restart-policy paragraph, the width-mismatch and
-initial-final-sink-failure failure-mode bullets, and the pre-flip rollback
-runbook's stated consequence, re-stated against
-`deploy/bin/jasper-outputd-failure-reconcile` and
-`deploy/systemd/jasper-outputd.service`; the same-day entries below stand on
-their own. Two changes to the FINAL-EDGE hop landed the same
-day — a SEPARATE hop and a separate env var [`JASPER_OUTPUTD_DAC_FORMAT`] from
-the content-lane `S32_LE` flip described below
-[`JASPER_OUTPUTD_CONTENT_FORMAT`]. (1) The DAC output paragraph corrected: the
-base HiFiBerry DAC8x now also declares an `S32_LE` final edge alongside
-InnoMaker — wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware
-probe 2026-08-07 — and DAC8x Studio's deliberate non-flip re-stated against
-the registry comment. (2) The packed `S24_3LE` edge landed and then went LIVE on
-the Apple USB-C dongle profile — wide-output-path PR-8, `aplay -D hw:A -f
-S24_3LE` open-proof on jts.local 2026-08-08, so the open-proof previously owed
-here is now banked — with the edge-conversion paragraph and the composite-egress
-paragraph re-stated against the code, including the new single-vs-composite
-split: the dual-Apple composite stays `S16_LE` because the paired sink has no
-packed-24 child write path and refuses that width at open, so a composite and its
-child profile now legitimately declare different widths and the emission resolves
-by armed-profile id; single-dongle boxes need a chip-AEC recommission.
-Separately — a DAC8x Studio ROUTING fix, not a third
-FINAL-EDGE-hop change — the registry was corrected against the kernel: the
-Studio board has its own `hifiberry-studio-dac8x` overlay and machine driver
-rather than the base board's, so the base profile's card-label regexes were
-narrowed to the single name its own driver emits and Studio silicon no longer
-inherits the base row's `S32_LE` edge or its approved chip-AEC status (#2250);
-two residuals stay documented rather than closed — a Studio board configured
-with the base overlay, and the shared Studio-family card name on rpi-6.18.y and
-later (#2258). Prior 2026-08-08 pass: the snd-aloop content lane widened to `S32_LE` — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`, the cutover seed, the `content_in` port shape, the INGRESS half of the boundary paragraph (its egress half is PR-5's composite-declared-width correction, merged the same day and carried through unchanged), the `rate_match` coherence emission and the plug-narrowing it introduces on a soak box, the NOT-rollback-symmetric rule for a flipped active-lane box (Current Outputd State), and the retained `S16_LE` v1.yml rollback path all re-stated against the code; an armed SHM ring keeps this hop at the ring's own `S16_LE` wire format; prior 2026-08-07 pass: outputd's internal program spine widened to i32 with exactly one quantization at the DAC edge — Current Operational Truth, the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint, the `RuntimeAlsaSink` signatures, and Mixer Semantics all re-stated against the code, and the boundary paragraph corrected to split egress-narrows from ingress-widens after a review found the snapclient round-trip FIFO — a SOURCE — listed among the egress wires; prior 2026-08-05 pass: InnoMaker boot-intent reconciliation on recognized full and Streambox Pi hardware rechecked; the InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh` (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for every registered single DAC profile, and the S32_LE hardware-edge proof moved from the render's pinned slave to outputd's own client-edge readback; prior 2026-08-04 pass covered the passive-stereo runtime alias, generic registered-single reconciliation, staged-candidate rejection parking, and final-sink startup exit 78; prior 2026-07-24 pass covered post-DSP turn-start `VolumeContext` atomicity in `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to silence; prior 2026-07-23 pass covered the shared `MixStage` engine, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
-role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
-STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
-historical readiness entry marked superseded by the
-protected commission ramp; prior 2026-07-10 pass covered optional-reference failure isolation and full
-transport coherence rechecked against `rust/jasper-outputd`,
-`jasper.audio_runtime_plan`, `jasper.camilla_config_contract`,
-`jasper.cli.audio_config`, the staged audio-hardware reconciler, and doctor;
-ring/default outputd bridge text rechecked against
-`jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
-`jasper.fanin.coupling_reconcile`; prior 2026-07-06 outputd config-shear
-resilience rechecked against
-`jasper.audio_runtime_plan`, `jasper.cli.audio_config validate-outputd-env`,
-`deploy/bin/jasper-audio-hardware-reconcile`, and
-`deploy/bin/jasper-outputd-failure-reconcile`, including content and DAC
-buffer/period validation; Camilla/outputd install choreography
-previously rechecked
-against `deploy/lib/install/systemd-units.sh` and
-`deploy/bin/jasper-camilla-recover`; 2026-06-24 active-endpoint and
-wireless-sub TTS route exceptions rechecked against
-`jasper.multiroom.tts_route.expected_grouping_tts_route`,
-`jasper.multiroom.reconcile.outputd_grouping_env`,
-`jasper.multiroom.reconcile.voice_grouping_env`, and
-`jasper.cli.doctor.grouping`; fan-in solo `FLUSH_SYNC` playout-ledger ack
-previously verified against rust/jasper-fanin/src/{playout,tts}.rs;
-active-speaker runtime graph boundary rechecked against
-`jasper.active_speaker.runtime_contract`,
-`outputd_active_lane_decision`'s paired active-leader statefile proof, install
-outputd-statefile selection, doctor runtime graph check, `resolve_output_layout`,
-and the active-lane `DacProfile` declarations; Stage-7 outputd loop unification previously
-rechecked against rust/jasper-outputd; solo fan-in TTS ownership and
-passive bonded-member outputd TTS ownership previously rechecked against
-rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path
-rechecked after `jasper/voice/turn_playback.py` extraction).
+## Revision log
+
+Newest first. Each entry names what that pass re-checked; a claim not
+re-touched since carries forward from its most recent entry below.
+
+- **2026-08-08 (full-document pass, this PR).** Re-read the entire doc
+  against current code, including the `chip_ref_writer.recent_writes`
+  paragraph landed by the entry directly below. Corrected two internal
+  contradictions in the Robust Barge-In Contract's provider-truncation
+  status — the "Status (2026-06-21)" callout still said Step 4 (provider
+  cancel/truncate) was "deliberately not wired yet," and the "still
+  intentionally not done" section listed Gemini's pack (PR-5) as
+  remaining work — both stale against
+  `jasper/voice/turn_playback.py::_flush_for_interrupt` and
+  `jasper/voice/openai_session.py`, which have driven `cancel_response` +
+  `truncate_assistant_audio` for the OpenAI/Grok pack since PR-4 landed the
+  same day (2026-06-21); PR-5 (Gemini) also landed that day as a *final*
+  no-op, not deferred wiring. Converted the footer's former run-on
+  "prior … pass" chain into this dated revision log; the `Last verified:`
+  footer below now records only the latest pass. Everything else
+  re-verified accurate
+  against `rust/jasper-outputd`, `jasper/audio_hardware/dac.py`,
+  `jasper/output_topology.py`, `jasper/multiroom/reconcile.py`,
+  `rust/jasper-fanin/src/playout.rs`, and the systemd/install/reconciler
+  scripts named throughout.
+- **2026-08-08 (#2253/#2264).** The STATUS-payload passage now also
+  documents the chip-reference writer's bounded per-write observation ring
+  `chip_ref_writer.recent_writes`: the one STATUS field whose absence is a
+  hard refusal rather than a blank surface, since `jasper-aec-init`
+  resolves chip-AEC `SYS_DELAY` from it. Re-stated against
+  `rust/jasper-outputd/src/state.rs` and `jasper/cli/aec_init.py`.
+- **2026-08-08.** Two same-day landings on the FINAL-EDGE hop — a separate
+  hop and env var (`JASPER_OUTPUTD_DAC_FORMAT`) from the content-lane
+  `S32_LE` flip below. (1) DAC output: the base HiFiBerry DAC8x now also
+  declares an `S32_LE` final edge alongside InnoMaker (PR-7, jts3 hardware
+  probe 2026-08-07); DAC8x Studio's non-flip re-stated against the registry
+  comment. (2) The packed `S24_3LE` edge went LIVE on the Apple USB-C
+  dongle (PR-8, jts.local open-proof); the dual-Apple composite stays
+  `S16_LE` because the paired sink has no packed-24 child write path — a
+  composite and its child profile can now legitimately declare different
+  widths, resolved by armed-profile id. Separately, a DAC8x Studio ROUTING
+  fix (#2250) narrowed the base profile's card-match regex so Studio
+  silicon no longer inherits the base row's `S32_LE` edge or its approved
+  chip-AEC status; two residuals stay documented rather than closed
+  (#2258).
+- **2026-08-08 (earlier, scoped).** snd-aloop content lane widened to
+  `S32_LE` end to end — `DEFAULT_PLAYBACK_FORMAT`, the passive lane's
+  `plug` slave pins, the reconciler-emitted `JASPER_OUTPUTD_CONTENT_FORMAT`,
+  the cutover seed, the `content_in` port shape, the boundary paragraph's
+  ingress half, the `rate_match` coherence emission, and the rollback
+  runbook's NOT-rollback-symmetric rule — all re-stated against the code;
+  an armed SHM ring keeps this hop at its own `S16_LE` wire format.
+- **2026-08-07.** outputd's internal program spine widened to i32 with
+  exactly one quantization at the DAC edge — Current Operational Truth,
+  the InnoMaker S32 edge paragraph, the `rate_match` S16-only constraint,
+  the `RuntimeAlsaSink` signatures, and Mixer Semantics; the boundary
+  paragraph corrected to split egress-narrows from ingress-widens after a
+  review found the snapclient round-trip FIFO — a SOURCE — misfiled among
+  the egress wires.
+- **2026-08-05.** InnoMaker boot-intent reconciliation rechecked; the
+  InnoMaker final-edge `plug` deleted from `jasper-asound-render.sh`
+  (PR-4, format-foundation) — `outputd_dac` now renders raw `type hw` for
+  every registered single DAC profile, and the S32_LE hardware-edge proof
+  moved from the render's pinned slave to outputd's own client-edge
+  readback.
+- **2026-08-04.** Passive-stereo runtime alias, generic registered-single
+  reconciliation, staged-candidate rejection parking, and final-sink
+  startup exit 78.
+- **2026-07-24.** Post-DSP turn-start `VolumeContext` atomicity in
+  `PREPARE_ASSISTANT`, with missing/rejected context pinned fail-closed to
+  silence.
+- **2026-07-23.** The shared `MixStage` engine, per-period mute/live-regain
+  mix loop, learned/persisted quiet-room reference, and the shared
+  `tts.assistant_loudness` STATUS renderer.
+- **2026-07-16.** Pre-DSP fan-in volume-context ownership.
+- **2026-07-14.** DAC connection declaration and the output-hardware USB
+  role artifact.
+- **2026-07-12.** outputd control-socket command cap/deadline and STATUS
+  JSON contract against `rust/jasper-outputd/src/state.rs`; the historical
+  readiness entry marked superseded by the protected commission ramp.
+- **2026-07-10.** Optional-reference failure isolation and full transport
+  coherence against `rust/jasper-outputd`, `jasper.audio_runtime_plan`,
+  `jasper.camilla_config_contract`, `jasper.cli.audio_config`, the staged
+  audio-hardware reconciler, and doctor; the ring/default outputd bridge
+  text against `jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
+  `jasper.fanin.coupling_reconcile`.
+- **2026-07-06.** outputd config-shear resilience against
+  `jasper.audio_runtime_plan`, `jasper.cli.audio_config
+  validate-outputd-env`, `deploy/bin/jasper-audio-hardware-reconcile`, and
+  `deploy/bin/jasper-outputd-failure-reconcile`, including content and DAC
+  buffer/period validation; Camilla/outputd install choreography against
+  `deploy/lib/install/systemd-units.sh` and
+  `deploy/bin/jasper-camilla-recover`.
+- **2026-06-24.** Active-endpoint and wireless-sub TTS route exceptions
+  against `jasper.multiroom.tts_route.expected_grouping_tts_route`,
+  `jasper.multiroom.reconcile.outputd_grouping_env`,
+  `jasper.multiroom.reconcile.voice_grouping_env`, and
+  `jasper.cli.doctor.grouping`.
+- **2026-06-12 through 2026-06-22 (earlier passes).** fan-in solo
+  `FLUSH_SYNC` playout-ledger ack against
+  `rust/jasper-fanin/src/{playout,tts}.rs`; the active-speaker runtime
+  graph boundary against `jasper.active_speaker.runtime_contract`,
+  `outputd_active_lane_decision`'s paired active-leader statefile proof,
+  install outputd-statefile selection, the doctor runtime graph check, and
+  `resolve_output_layout`; Stage-7 outputd loop unification against
+  `rust/jasper-outputd`; solo fan-in vs. passive bonded-member outputd TTS
+  ownership; the voice playback seam path after the
+  `jasper/voice/turn_playback.py` extraction.
+
+Last verified: 2026-08-08 (full-document pass against `f78dcd597`; revision
+log above)
