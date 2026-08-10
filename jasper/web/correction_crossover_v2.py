@@ -515,6 +515,7 @@ def observe_apply_success(
     candidate_fingerprint: str,
     *,
     pre_apply_profile: Mapping[str, Any] | None = None,
+    sound_declaration_undo: Mapping[str, Any] | None = None,
     expected_post_apply_offset_db: float = 0.0,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
@@ -527,6 +528,22 @@ def observe_apply_success(
     the new applied SSOT. This is the ONLY durable record of what the Undo
     path (``handle_v2_restore``) restores to; ``None`` when this was the
     speaker's first-ever applied crossover (nothing to undo back to).
+
+    ``sound_declaration_undo`` (#2292) is the OTHER half of that same Undo: how
+    to put ``/sound``'s declared crossover back to what it said before this
+    apply's accept wrote it, or ``None`` when this apply did not write Sound
+    (every configured-Fc winner). It is a parameter of THIS call, beside
+    ``pre_apply_profile`` and written in the SAME state write, because the two
+    describe one reversible event and a household undoes both or neither.
+
+    That co-location is the fix for the shape a gate caught in review: while
+    this key was written on the alternative-Fc accept instead, an alternative
+    apply followed by Start over and an ORDINARY apply left the graph half
+    re-stamped here and the declaration half describing the older apply — so
+    Undo restored the recent graph and wrote a two-applies-old frequency into
+    ``/sound``, reporting success. Passing ``None`` is therefore not a default
+    to skip: it is an ordinary apply CLEARING a record that no longer inverts
+    anything.
 
     ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
     emitted graph made and did NOT command as part of the correction's shape —
@@ -570,6 +587,14 @@ def observe_apply_success(
     state["apply_blocked"] = None
     state["pre_apply_profile"] = (
         dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
+    )
+    # UNCONDITIONAL, exactly like the line above it — that is the whole
+    # invariant. Both halves of the Undo are re-stamped by every successful
+    # apply, so neither can outlive the graph the other describes.
+    state["sound_declaration_undo"] = (
+        dict(sound_declaration_undo)
+        if isinstance(sound_declaration_undo, Mapping)
+        else None
     )
     offset_db = float(expected_post_apply_offset_db)
     state["expected_post_apply_offset_db"] = (
@@ -644,6 +669,16 @@ def observe_restore() -> None:
     # that has just been reversed. :func:`handle_v2_restore` reads the record
     # BEFORE calling this, so the declaration leg has already run (or reported
     # why it did not) by the time the record goes away.
+    #
+    # Cleared even when that leg reported ``declaration_restore_failed``, which
+    # does cost the household an automatic second chance — deliberately, on two
+    # grounds. Nothing could consume a surviving record: this call sets
+    # ``applied`` False, and ``handle_v2_restore`` refuses outright without it,
+    # so the Undo button is gone and no other caller reads the key. And a
+    # record that outlives its ``pre_apply_profile`` twin is precisely the
+    # asymmetry a gate caught in review — it is what let a stale frequency
+    # reach ``/sound``. The recovery is the household sentence, which names the
+    # exact frequency to set, plus the ERROR journal line.
     state["sound_declaration_undo"] = None
     save_v2_state(state)
 
@@ -2963,9 +2998,15 @@ def persist_conductor_state(
     )
     state["accepted_sound_revision"] = (prior.get("accepted_sound_revision")
         if PHASE_MEASURE not in snap.session_phases else None)
-    # #2292's declaration-undo record takes ``pre_apply_profile``'s
-    # UNCONDITIONAL shape, deliberately NOT the line directly above it — the
-    # two keys are born in the same state write and then live different lives:
+    # #2292's declaration-undo record is the FOURTH key in the host-owned class
+    # described above — ``observe_apply_success`` writes it beside
+    # ``pre_apply_profile``, the conductor neither produces nor reads it — so it
+    # takes that key's UNCONDITIONAL shape, and the mechanical guard
+    # ``test_every_host_owned_apply_key_survives_persist_conductor_state``
+    # covers it automatically.
+    #
+    # Deliberately NOT the shape of ``accepted_sound_revision`` directly above,
+    # even though the alternative-Fc accept is what makes both non-null:
     #
     #   * ``accepted_sound_revision`` is the REVIEW-binding token
     #     ``_update_current_review`` gates the apply on. It is scoped to the
@@ -6509,26 +6550,7 @@ def handle_v2_apply(
                 or not isinstance(accepted_revision, int)
                 or not _update_current_review(
                     review_session_id, expected, None,
-                    {
-                        "accepted_sound_revision": accepted_revision,
-                        # The inverse of the write that just happened (#2292),
-                        # recorded in the SAME atomic state write so the two
-                        # can never disagree about whether Sound was touched.
-                        # Nothing else on the speaker remembers what ``/sound``
-                        # declared a moment ago: the draft keeps no history and
-                        # ``fc_selection`` is journey state a later measurement
-                        # overwrites, so without this an Undo has no honest
-                        # target to restore to.
-                        "sound_declaration_undo": {
-                            "sound_revision": accepted_revision,
-                            "between_roles": [
-                                regions[0].lower_driver,
-                                regions[0].upper_driver,
-                            ],
-                            "applied_hz": float(selected_fc),
-                            "previous_hz": float(configured_hz),
-                        },
-                    },
+                    {"accepted_sound_revision": accepted_revision},
                 )
             ):
                 raise _review_replaced()
@@ -6536,9 +6558,29 @@ def handle_v2_apply(
               or not isinstance(accepted_revision, int)):
             raise CrossoverV2Refused(
                 "the saved Sound revision is invalid; review a fresh measurement")
+        # How to put ``/sound`` back if the household undoes this (#2292).
+        # Derived here, where the four facts are in scope, and CARRIED to
+        # ``observe_apply_success`` rather than persisted here, so it lands in
+        # the same state write as ``pre_apply_profile`` — see that function.
+        # Rebuilt identically on a retry (whose Sound save already happened and
+        # is skipped above), because every term comes from the review, not from
+        # the save: ``accepted_revision`` is the revision that save produced,
+        # and ``configured_hz`` is what Sound declared when this review opened.
+        declaration_undo = {
+            "sound_revision": accepted_revision,
+            "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
+            "applied_hz": float(selected_fc),
+            "previous_hz": float(configured_hz),
+        }
         preview = _before_dsp(ensure_crossover_preview_ready)
         draft = _before_dsp(lambda: load_design_draft(topology=topology))
     else:
+        # An ordinary configured-Fc apply writes nothing to Sound, so it has
+        # nothing to invert — and says so explicitly rather than by omission.
+        # ``observe_apply_success`` writes this value, so ``None`` here is what
+        # CLEARS a record left by an earlier alternative apply that this one
+        # has just superseded.
+        declaration_undo = None
         draft = load_design_draft(topology=topology)
         preview = load_crossover_preview(current_design_draft=draft)
 
@@ -6665,6 +6707,7 @@ def handle_v2_apply(
             ):
                 observe_apply_success(
                     expected, pre_apply_profile=pre_apply_profile,
+                    sound_declaration_undo=declaration_undo,
                     expected_post_apply_offset_db=offset_db)
     issue = None
     if payload.get("status") in {"blocked", "apply_failed"}:
@@ -6734,10 +6777,20 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
             )
             return False
         restored = payload.get("status") == "restored"
+        # The declaration outcome (#2292) rides the payload, which this seam
+        # reduces to a bool for its conductor caller — so on an AUTOMATIC
+        # rollback a refused declaration is journal-only
+        # (``event=correction.crossover_v2_restore_sound_declaration``), not
+        # household-visible. Left that way deliberately: no conductor binds
+        # this seam today (stage 2 wires no rollback until #2291 Phase 3), and
+        # widening the seam's return shape to carry a household sentence means
+        # deciding which screen renders it — a decision that belongs with the
+        # caller that will actually exist.
         log_event(
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,
             reason=reason, status=payload.get("status"),
+            sound_declaration=str(payload.get("sound_declaration") or ""),
         )
         return restored
 
@@ -6747,8 +6800,11 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
 #: The declaration half of Undo (#2292), as four named outcomes. The DSP graph
 #: and the ``/sound`` declaration are restored by two different owners through
 #: two different writers, so the restore payload reports them separately rather
-#: than letting one ``status`` speak for both. Every Undo carries exactly one of
-#: these in ``payload["sound_declaration"]``.
+#: than letting one ``status`` speak for both. An Undo whose graph half
+#: SUCCEEDED carries exactly one of these in ``payload["sound_declaration"]``.
+#: An Undo whose graph half did NOT succeed omits the key entirely, because the
+#: declaration leg never ran — the graph is still the new one, so reverting the
+#: declaration would invent the inconsistency this exists to remove.
 #:
 #: There is deliberately no "restored, probably" — a declaration this could not
 #: put back is named and handed to the household, because the alternative is a

@@ -704,6 +704,13 @@ async function runAction(action, button) {
       setStatus(response && response.relay ? 'The measurement page is ready.' : 'Updated.', 'ok');
     }
     await refresh();
+    // Re-assert AFTER the refresh, mirroring the catch branch below and for
+    // the same reason: render() → renderRelay()'s terminal branch calls
+    // setStatus('Capture complete.') on the envelope this refresh just
+    // fetched, which is the DOMINANT shape after an Undo (the post-apply
+    // VERIFY's relay is sitting there complete). Setting the caveat only
+    // before the refresh puts it on screen for one turn of the event loop.
+    if (caveat) setStatus(caveat, 'bad');
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
     const issues = error && error.body && Array.isArray(error.body.issues)

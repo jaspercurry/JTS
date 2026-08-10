@@ -8070,6 +8070,10 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     v2host.observe_apply_success(
         "fp",
         pre_apply_profile={"kind": "prior", "config": {"path": "/tmp/x.yml"}},
+        sound_declaration_undo={
+            "sound_revision": 2, "between_roles": ["woofer", "tweeter"],
+            "applied_hz": 2250.0, "previous_hz": 2500.0,
+        },
         expected_post_apply_offset_db=-22.458,
     )
     after_apply = dict(v2host.load_v2_state() or {})
@@ -8081,6 +8085,10 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     # empty set proves nothing.
     assert "expected_post_apply_offset_db" in host_owned
     assert "pre_apply_profile" in host_owned
+    # #2292's key is the fourth of the class, and it is here rather than in an
+    # exception list because it takes ``pre_apply_profile``'s unconditional
+    # carry-forward for the identical reason (see persist_conductor_state).
+    assert "sound_declaration_undo" in host_owned
 
     # (3) Cross the seam under the re-arm's BRAND-NEW session id.
     v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
@@ -8723,6 +8731,76 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     assert "outcome=declaration_restored" in caplog.text
     # The record is spent — it describes an apply that no longer exists.
     assert v2host.load_v2_state()["sound_declaration_undo"] is None
+
+
+def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
+    monkeypatch, tmp_path,
+):
+    """The gate's blocker repro, as a regression: alternative apply (2500 →
+    2250) → Start over → ORDINARY configured-Fc apply → Undo.
+
+    ``pre_apply_profile`` is re-stamped by every successful apply, so after the
+    second one the graph's Undo target is the 2250 graph. While the declaration
+    record was written on the alternative ACCEPT instead of beside
+    ``pre_apply_profile``, it survived that second apply untouched — and the
+    Undo restored the 2250 graph while writing 2500 back into ``/sound`` and
+    calling it ``declaration_restored``. Worse than doing nothing: the next
+    session reads ``/sound`` as its configured Fc.
+
+    The two halves are now written in one state write, so an ordinary apply
+    clears the record it supersedes.
+    """
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.output_topology import load_output_topology
+
+    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
+    _apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, _FakeApplyCam,
+    )
+    assert _declared_fc_hz() == 2250.0
+    assert v2host.load_v2_state()["sound_declaration_undo"] is not None
+
+    # Start over keeps the applied graph and both Undo halves alive.
+    v2host.reset_v2_journey_state()
+    assert v2host.load_v2_state()["sound_declaration_undo"] is not None
+
+    # A second, ORDINARY apply: the configured Fc is now 2250, so this review
+    # has no fc_selection and never touches Sound.
+    preview = v2host.ensure_crossover_preview_ready()
+    configured_preset, issues, _gates = compile_preset_from_crossover_preview(
+        load_output_topology(), preview,
+    )
+    assert configured_preset is not None, issues
+    ordinary = _prior_measured_candidate(configured_preset)
+    v2host.save_v2_state({
+        "session_id": "cap_ordinary",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": ordinary.fingerprint},
+        "applied": True,
+        "pre_apply_profile": v2host.load_v2_state()["pre_apply_profile"],
+        "sound_declaration_undo": v2host.load_v2_state()["sound_declaration_undo"],
+    })
+    second = _apply(
+        {"expected_candidate_fingerprint": ordinary.fingerprint,
+         "candidate": ordinary.to_dict()},
+        _bg_run_async, _FakeApplyCam,
+    )
+    assert second["status"] == "applied", second.get("issues")
+    # The ordinary apply cleared the record in the same write that re-stamped
+    # the graph's Undo target. Neither half can now describe a different apply
+    # from the other.
+    assert v2host.load_v2_state()["sound_declaration_undo"] is None
+    assert v2host.load_v2_state()["pre_apply_profile"] is not None
+
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert restore_payload["sound_declaration"] == "declaration_not_applicable"
+    # Sound still declares what the alternative apply left it declaring — the
+    # Undo reversed the SECOND apply, which never wrote Sound.
+    assert _declared_fc_hz() == 2250.0
 
 
 @pytest.mark.parametrize("edit,expected_fc_hz", [

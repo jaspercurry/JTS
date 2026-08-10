@@ -1761,16 +1761,30 @@ remains a non-mutating exit.
 **Undo reverses the declaration too, or says why it did not** (#2292). Because
 that accept WRITES Sound, an Undo that reloaded only the DSP graph left the
 speaker playing one crossover while `/sound` declared another — and the next
-session reads that declaration as its configured Fc. So the accept records the
-inverse of its own write in the durable v2 state
-(`sound_declaration_undo`: the revision it produced, the driver pair, the value
-it wrote, the value Sound declared before it), and `handle_v2_restore` replays
-it backwards through the SAME in-process `apply_measured_crossover_frequency`
-writer — Sound stays Fc's only writer, and no cross-service hop is involved.
-The record has `pre_apply_profile`'s lifetime, not `accepted_sound_revision`'s:
-carried forward unconditionally (the post-apply VERIFY re-arm persists under a
-new session id) and preserved by Start over, because both halves of an Undo
-must survive exactly as long as the applied graph.
+session reads that declaration as its configured Fc. So a successful apply
+records the inverse of its own Sound write in the durable v2 state
+(`sound_declaration_undo`: the revision the accept produced, the driver pair,
+the value it wrote, the value Sound declared before it), and
+`handle_v2_restore` replays it backwards through the SAME in-process
+`apply_measured_crossover_frequency` writer — Sound stays Fc's only writer, and
+no cross-service hop is involved.
+
+**One state write owns both halves of an Undo.** `observe_apply_success` writes
+`sound_declaration_undo` on the same line-pair as `pre_apply_profile`, and
+**every** successful apply re-stamps both — an ordinary configured-Fc apply
+passes `None`, which CLEARS a record it has just superseded. That co-location
+is the contract, not a convenience: while the record was written on the
+alternative accept instead, an alternative apply → Start over → ordinary apply
+left the graph half describing the newest apply and the declaration half
+describing the older one, so Undo restored the recent graph and wrote a
+two-applies-old frequency into `/sound` while reporting success (gate finding,
+2026-08-10; the apply→apply regression test is what now holds it). Downstream,
+both keys are carried forward unconditionally by `persist_conductor_state` (the
+post-apply VERIFY re-arm persists under a new session id), preserved together
+by Start over, and cleared together by `observe_restore` —
+`test_every_host_owned_apply_key_survives_persist_conductor_state` derives that
+class mechanically, so the record is covered by it rather than by a list
+somebody has to remember.
 
 The two legs are reported separately, because they can honestly disagree:
 `status` stays the graph's answer and `payload["sound_declaration"]` carries the
@@ -1780,12 +1794,18 @@ discarding somebody's edit), `declaration_not_applicable` (this apply never
 wrote Sound — every configured-Fc winner), or `declaration_restore_failed` (the
 writer itself failed). The declaration leg runs only AFTER the graph is back —
 reverting it first and then failing the restore would invent the same
-inconsistency pointing the other way — and it never raises, so a declaration
-that could not be put back is reported beside a successful restore instead of
-turning a working Undo into a 500. The two actionable outcomes ship a household
-sentence in `sound_declaration_message`, which the wizard shows in place of
-"Updated."; the journal line is
-`event=correction.crossover_v2_restore_sound_declaration outcome=…`.
+inconsistency pointing the other way — so an Undo whose graph half did NOT
+succeed omits the key entirely. It never raises, so a declaration that could
+not be put back is reported beside a successful restore instead of turning a
+working Undo into a 500. The two actionable outcomes ship a household sentence
+in `sound_declaration_message`, which the wizard shows in place of "Updated."
+**and re-asserts after its own refresh** — `renderRelay`'s terminal branch
+writes "Capture complete." over the status line, and after an Undo the
+post-apply VERIFY's relay is sitting there complete, so setting it once would
+show it for one turn of the event loop. The journal line is
+`event=correction.crossover_v2_restore_sound_declaration outcome=…`. On an
+AUTOMATIC rollback (`bind_delta_probe_rollback`) the outcome is journal-only:
+that seam returns a bool, and no conductor binds it until #2291 Phase 3.
 
 **Where each piece lives.**
 
@@ -1934,8 +1954,10 @@ be scored is disclosed with a reason code, never dropped: `fit_refused`
    *unconditionally* forward across every snapshot, so
    `handle_v2_restore` can sha-pin a restore to the prior compiled
    config even after a VERIFY re-arm. `sound_declaration_undo` (#2292)
-   rides on exactly those terms so the `/sound` declaration goes back
-   with the graph — see "Recommending an Fc" for the two-leg contract.
+   is written in the SAME `observe_apply_success` state write, so the
+   `/sound` declaration goes back with the graph and neither half can
+   describe a different apply from the other — see "Recommending an
+   Fc" for the two-leg contract.
 9. **The walked-away guarantee.** The `SessionVolumePlan` holds one
    measurement window with an abort target, a wall-clock ceiling, and a
    restore-once latch drained by close / session-death / ceiling. The

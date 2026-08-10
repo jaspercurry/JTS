@@ -13,8 +13,14 @@
 //
 // Drives the real `runAction` against a 200 response and asserts:
 //   1. a `sound_declaration_message` is shown verbatim, in the `bad` tone;
-//   2. an ordinary success still says "Updated." in the `ok` tone;
-//   3. a relay-starting action still says its own copy — the caveat branch
+//   2. it SURVIVES the refresh that follows. This is the shape the first
+//      version of this harness missed: `relay: null` is the one envelope where
+//      nothing re-writes the status line, so it cannot see the clobber.
+//      renderRelay's terminal branch calls setStatus('Capture complete.') on a
+//      completed relay — and after an Undo the post-apply VERIFY's relay is
+//      sitting there complete, so that is the DOMINANT case, not an edge one;
+//   3. an ordinary success still says "Updated." in the `ok` tone;
+//   4. a relay-starting action still says its own copy — the caveat branch
 //      does not swallow the sibling message it sits beside.
 
 import assert from "node:assert/strict";
@@ -98,7 +104,11 @@ const baseEnvelope = {
   alternate_actions: [],
 };
 
-globalThis.__getJSON = async () => ({ ...baseEnvelope });
+// What `refresh()` fetches and renders AFTER the mutation returns. The
+// terminal-relay envelope is the post-Undo reality: the deferred VERIFY that
+// auto-armed on the apply left a completed relay behind.
+let refreshEnvelope = { ...baseEnvelope };
+globalThis.__getJSON = async () => refreshEnvelope;
 globalThis.__renderRelayQr = () => {};
 globalThis.__jtsConfirm = async () => true;
 globalThis.__renderCloud = () => {};
@@ -147,13 +157,15 @@ const CAVEAT =
   "design changed after this crossover was applied, so JTS left it alone. " +
   "Set the crossover back to 2500 Hz in Sound settings if you want it.";
 
-// --- 1: the graph came back, the declaration did not, and the screen says so
-postResponse = {
+const UNDO_WITH_CAVEAT = {
   ...baseEnvelope,
   status: "restored",
   sound_declaration: "declaration_refused_sound_moved",
   sound_declaration_message: CAVEAT,
 };
+
+// --- 1: the graph came back, the declaration did not, and the screen says so
+postResponse = UNDO_WITH_CAVEAT;
 await runAction(UNDO, element("btn"));
 
 assert.equal(
@@ -167,7 +179,28 @@ assert.equal(
   "a restore the household has to act on is not painted as a clean success",
 );
 
-// --- 2: an ordinary success is untouched ------------------------------------
+// --- 2: and it survives the refresh, on the envelope an Undo actually meets -
+refreshEnvelope = {
+  ...baseEnvelope,
+  relay: { status: "complete", tap_link: null },
+};
+postResponse = UNDO_WITH_CAVEAT;
+await runAction(UNDO, element("btn"));
+
+assert.equal(
+  statusEl.textContent,
+  CAVEAT,
+  "the caveat must outlive the refresh's own render — got " +
+    `${statusEl.textContent}`,
+);
+assert.equal(
+  statusEl.dataset.tone,
+  "bad",
+  "and keep its tone, not the terminal relay's 'ok'",
+);
+refreshEnvelope = { ...baseEnvelope };
+
+// --- 3: an ordinary success is untouched ------------------------------------
 postResponse = {
   ...baseEnvelope,
   status: "restored",
@@ -182,7 +215,7 @@ assert.equal(
   "a fully successful Undo keeps the plain success tone",
 );
 
-// --- 3: the relay branch beside it still speaks for itself ------------------
+// --- 4: the relay branch beside it still speaks for itself ------------------
 postResponse = { ...baseEnvelope, relay: {url: "https://capture.example/x"} };
 await runAction(
   {id: "start", label: "Start", endpoint: "/correction/crossover/v2/session", body: {}},
@@ -192,4 +225,4 @@ await runAction(
 assert.equal(statusEl.textContent, "The measurement page is ready.");
 assert.equal(statusEl.dataset.tone, "ok");
 
-console.log(JSON.stringify({ ok: true, passed: 6 }));
+console.log(JSON.stringify({ ok: true, passed: 8 }));
