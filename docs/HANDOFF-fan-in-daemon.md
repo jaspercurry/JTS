@@ -293,6 +293,7 @@ membership shields the work loop from it.
 | Unable to open output PCM at startup | Exit 1, let systemd restart with backoff | Structural; the dedicated output substream MUST exist |
 | Work loop hang | Watchdog ping stops, systemd kills + restarts in ~2 s | The whole point of the heartbeat |
 | Repeated wedge (5 restarts in 5 min) | `StartLimitAction=reboot` triggers clean system reboot | Tier 5.1 protection |
+| Ring A geometry is unusable — a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` / slot-shearing period, or a ring file whose header geometry differs from the one the daemon builds | Exit 78 (EX_CONFIG); `RestartPreventExitStatus=78` PARKS the unit failed | No restart repairs it, and the ring file survives a reboot — so the restart ladder above would reboot the speaker in a loop. Same treatment jasper-outputd carries |
 
 ### Per-handover ramp
 
@@ -340,6 +341,11 @@ WatchdogSec=30s
 TimeoutStopSec=5s          # Load-bearing — 2026-05-11 snd-aloop lesson
 Restart=on-failure
 RestartSec=5
+
+# Config-class faults (the Ring A wire) exit 78 and PARK rather than
+# climbing the burst into StartLimitAction=reboot. No SuccessExitStatus,
+# so the park stays visible as `failed`. Mirrors jasper-outputd.
+RestartPreventExitStatus=78
 
 # OOM ladder slot. See `docs/HANDOFF-resilience.md` Stage 1.
 OOMScoreAdjust=-800
@@ -420,6 +426,12 @@ Design + code: `RingWriter::publish` in
 and `write_ring_period` / `RingStallTracker` in
 [`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs) (events +
 counters).
+
+The same `ring` block in fan-in's own STATUS also carries the OBSERVED wire
+tuple — `wire_format` (`S16_LE` / `S32_LE`) and `channels` — read back from the
+header the writer attached against rather than echoed from config, so a reader
+can tell which wire the ring is carrying instead of inferring it. The same pair
+appears on `event=fanin.ring.opened`.
 
 ### State and selection control
 

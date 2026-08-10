@@ -212,6 +212,21 @@ pub struct Config {
     /// fail-loud backstop.
     pub ring_slots: u32,
 
+    /// The sample format Ring A's wire carries under `Coupling::ShmRing`.
+    /// Unused for `Loopback`. Default [`RingWireFormat::S16Le`]. Env:
+    /// `JASPER_FANIN_RING_WIRE_FORMAT` (`S16_LE` | `S32_LE`); a present but
+    /// unrecognized value fails loud in `Config::from_env` as a config-class
+    /// fault (exit 78, the unit parks) rather than resolving to a default the
+    /// operator did not ask for.
+    ///
+    /// Ring A's wire is declared independently by each end that touches it —
+    /// fan-in through this key, the ioplug through its conf.d `format` field,
+    /// and the emitted CamillaDSP capture stanza. Attach compares
+    /// `sample_format` field-by-field, so a value here that the other ends do
+    /// not also declare makes the ring open fail loudly rather than misreading
+    /// bytes.
+    pub ring_wire_format: RingWireFormat,
+
     /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
     /// (USB) lane (`src/lane_resampler.rs`). When `false` (the default — env
     /// unset / empty / anything but `enabled`), the per-lane read path is
@@ -422,6 +437,82 @@ impl Coupling {
     }
 }
 
+/// The sample format Ring A's wire carries — the ONE place in this daemon that
+/// owns the wire-format vocabulary. Both directions live here (token → header
+/// id for the geometry fan-in builds, header id → token for what STATUS
+/// reports), so the spelling fan-in accepts and the spelling it publishes can
+/// never drift apart.
+///
+/// The tokens are the SAME ones the other ends of the wire spell: the ioplug's
+/// conf.d `format` field (`c/jts-ring-ioplug/pcm_jts_ring.c`) and Python's
+/// `jasper.fanin_coupling.RING_WIRE_FORMAT`. The match is EXACT (not
+/// case-folded) because the ioplug's own `strcmp` is exact: accepting a
+/// spelling the ioplug rejects would let fan-in build a geometry no reader can
+/// declare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingWireFormat {
+    /// Interleaved signed 16-bit little-endian — `jasper_ring`'s
+    /// `SAMPLE_FORMAT_S16LE`.
+    S16Le,
+    /// Interleaved signed 32-bit little-endian — `jasper_ring`'s
+    /// `SAMPLE_FORMAT_S32LE`.
+    S32Le,
+}
+
+impl RingWireFormat {
+    /// Normalize a raw `JASPER_FANIN_RING_WIRE_FORMAT` value.
+    ///
+    /// Unset or empty resolves to [`RingWireFormat::S16Le`] — empty is how the
+    /// env-file writers in this repo clear a key (disable-clears-stale), so a
+    /// cleared key and an absent key mean the same thing. A present but
+    /// unrecognized value is a config-class fault and FAILS LOUD: silently
+    /// resolving a typo to the default would arm a wire the operator did not
+    /// ask for, and the ring's own attach-time validation could not tell the
+    /// difference.
+    pub fn from_env_value(raw: Option<&str>) -> Result<Self> {
+        match raw.map(str::trim) {
+            None | Some("") => Ok(RingWireFormat::S16Le),
+            Some("S16_LE") => Ok(RingWireFormat::S16Le),
+            Some("S32_LE") => Ok(RingWireFormat::S32Le),
+            Some(other) => Err(anyhow::anyhow!(
+                "JASPER_FANIN_RING_WIRE_FORMAT={} unsupported (S16_LE|S32_LE) — \
+                 the token must match the ioplug conf.d `format` field exactly",
+                other,
+            )
+            .context(crate::ConfigClassError)),
+        }
+    }
+
+    /// The `jasper_ring` header id for this wire — what the geometry fan-in
+    /// creates or attaches against declares in `sample_format`.
+    pub fn sample_format_id(self) -> u32 {
+        match self {
+            RingWireFormat::S16Le => jasper_ring::SAMPLE_FORMAT_S16LE,
+            RingWireFormat::S32Le => jasper_ring::SAMPLE_FORMAT_S32LE,
+        }
+    }
+
+    /// The reverse of [`RingWireFormat::sample_format_id`]: `None` for an id
+    /// this daemon has no token for.
+    pub fn from_sample_format_id(id: u32) -> Option<Self> {
+        if id == jasper_ring::SAMPLE_FORMAT_S16LE {
+            Some(RingWireFormat::S16Le)
+        } else if id == jasper_ring::SAMPLE_FORMAT_S32LE {
+            Some(RingWireFormat::S32Le)
+        } else {
+            None
+        }
+    }
+
+    /// The wire vocabulary token — the spelling every end of the ring uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RingWireFormat::S16Le => "S16_LE",
+            RingWireFormat::S32Le => "S32_LE",
+        }
+    }
+}
+
 impl Config {
     /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
     /// Returns `Err` only on structural misconfiguration (e.g., input
@@ -508,17 +599,30 @@ impl Config {
         // 2..=16 range (RING_SLOTS_MIN/MAX) — a fail-loud out-of-range value is
         // a config error, not a silent clamp, so a typo can't ship a geometry
         // the ring header would reject at attach.
+        //
+        // Every rejection in this block carries `ConfigClassError`, so main()
+        // exits 78 and the unit PARKS (RestartPreventExitStatus=78). A bad ring
+        // geometry is identical on every restart, and the restart burst on this
+        // unit escalates to StartLimitAction=reboot — a typo here would
+        // otherwise reboot the speaker every few minutes.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)?;
+        let ring_wire_format = RingWireFormat::from_env_value(
+            std::env::var("JASPER_FANIN_RING_WIRE_FORMAT")
+                .ok()
+                .as_deref(),
+        )?;
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 2)
+            .map_err(|e| e.context(crate::ConfigClassError))?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
                  header validates this at attach; a shear-prone geometry must \
                  fail loud at config, not at runtime",
                 ring_slots,
                 RING_SLOTS_MIN,
                 RING_SLOTS_MAX,
-            );
+            )
+            .context(crate::ConfigClassError));
         }
         // The ring's slot is pinned at RING_SLOT_FRAMES (128, the outputd
         // DAC-period contract): fan-in publishes period_frames/128 slots per
@@ -526,14 +630,15 @@ impl Config {
         // shear a slot. Fail LOUD at config (only when shm_ring is actually
         // selected — an odd period under loopback/pipe is fine).
         if camilla_coupling == Coupling::ShmRing && period_frames % RING_SLOT_FRAMES != 0 {
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
                  pinned SHM ring slot size ({} frames) under \
                  JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a fractional slot count \
                  would shear the ring",
                 period_frames,
                 RING_SLOT_FRAMES,
-            );
+            )
+            .context(crate::ConfigClassError));
         }
 
         // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
@@ -914,6 +1019,7 @@ impl Config {
             camilla_coupling,
             ring_path,
             ring_slots,
+            ring_wire_format,
             input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
@@ -2474,6 +2580,123 @@ mod tests {
         );
     }
 
+    /// INERTNESS BAR: with `JASPER_FANIN_RING_WIRE_FORMAT` unset the resolved
+    /// wire is the narrow one — the same geometry fan-in built before the key
+    /// existed. Cleared-to-empty means the same thing (that is how this repo's
+    /// env-file writers disable a key).
+    #[test]
+    fn ring_wire_format_defaults_to_narrow() {
+        assert_eq!(
+            RingWireFormat::from_env_value(None).unwrap(),
+            RingWireFormat::S16Le
+        );
+        assert_eq!(
+            RingWireFormat::from_env_value(Some("")).unwrap(),
+            RingWireFormat::S16Le
+        );
+        assert_eq!(
+            RingWireFormat::from_env_value(Some("  ")).unwrap(),
+            RingWireFormat::S16Le
+        );
+        assert_eq!(
+            RingWireFormat::S16Le.sample_format_id(),
+            jasper_ring::SAMPLE_FORMAT_S16LE
+        );
+    }
+
+    #[test]
+    fn ring_wire_format_accepts_both_wire_tokens() {
+        assert_eq!(
+            RingWireFormat::from_env_value(Some("S16_LE")).unwrap(),
+            RingWireFormat::S16Le
+        );
+        assert_eq!(
+            RingWireFormat::from_env_value(Some(" S32_LE ")).unwrap(),
+            RingWireFormat::S32Le
+        );
+        assert_eq!(
+            RingWireFormat::S32Le.sample_format_id(),
+            jasper_ring::SAMPLE_FORMAT_S32LE
+        );
+    }
+
+    /// An unknown token FAILS LOUD rather than silently resolving to the
+    /// default — and carries the config-class marker, so the unit parks at
+    /// exit 78 instead of restart-looping into StartLimitAction=reboot.
+    ///
+    /// The match is EXACT, matching the ioplug's own `strcmp`: a case-folded
+    /// spelling fan-in accepted but the ioplug rejected would let fan-in build
+    /// a geometry no reader on the other end can declare.
+    #[test]
+    fn ring_wire_format_rejects_unknown_and_mis_cased_tokens() {
+        for bad in ["S24_3LE", "s32_le", "S32LE", "FLOAT_LE", "32", "yes"] {
+            let err = RingWireFormat::from_env_value(Some(bad))
+                .expect_err("an unsupported wire token must fail loud");
+            let msg = format!("{:#}", err);
+            assert!(
+                msg.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
+                "expected a wire-format error naming the key, got: {}",
+                msg,
+            );
+            assert!(
+                err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                "an unparseable wire is config-class (park at 78), got: {}",
+                msg,
+            );
+        }
+    }
+
+    /// The vocabulary has ONE owner: every token round-trips token → header id
+    /// → token, so the spelling fan-in accepts is the spelling STATUS reports.
+    #[test]
+    fn ring_wire_format_round_trips_through_the_header_id() {
+        for format in [RingWireFormat::S16Le, RingWireFormat::S32Le] {
+            assert_eq!(
+                RingWireFormat::from_sample_format_id(format.sample_format_id()),
+                Some(format),
+            );
+            assert_eq!(
+                RingWireFormat::from_env_value(Some(format.as_str())).unwrap(),
+                format,
+            );
+        }
+        assert_eq!(RingWireFormat::from_sample_format_id(0), None);
+        assert_eq!(RingWireFormat::from_sample_format_id(3), None);
+    }
+
+    #[test]
+    fn shm_ring_wire_format_reaches_the_config() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("unset wire format must parse");
+                assert_eq!(cfg.ring_wire_format, RingWireFormat::S16Le);
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S32_LE")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("S32_LE must parse");
+                assert_eq!(cfg.ring_wire_format, RingWireFormat::S32Le);
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("bogus")),
+            ],
+            || {
+                Config::from_env().expect_err("an unknown wire token must fail the whole parse");
+            },
+        );
+    }
+
     #[test]
     fn shm_ring_ring_path_and_slots_override() {
         with_env(
@@ -2492,7 +2715,10 @@ mod tests {
 
     #[test]
     fn shm_ring_slots_out_of_range_fails_loud() {
-        for bad in ["1", "17", "0", "100"] {
+        // Out-of-range values plus a non-numeric one: both are rejections of
+        // the same key, so both must carry the config-class marker. Marking
+        // only the range check would leave the parse failure restart-looping.
+        for bad in ["1", "17", "0", "100", "abc"] {
             with_env(
                 &[
                     ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
@@ -2504,6 +2730,12 @@ mod tests {
                     assert!(
                         msg.contains("JASPER_FANIN_RING_SLOTS"),
                         "expected ring-slots range error, got: {}",
+                        msg,
+                    );
+                    assert!(
+                        err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                        "a bad ring geometry must park at 78, not restart-loop \
+                         into StartLimitAction=reboot: {}",
                         msg,
                     );
                 },
@@ -2531,6 +2763,12 @@ mod tests {
                 assert!(
                     msg.contains("multiple") && msg.contains("slot"),
                     "expected slot-shear error, got: {}",
+                    msg,
+                );
+                assert!(
+                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                    "a sheared ring geometry must park at 78, not restart-loop \
+                     into StartLimitAction=reboot: {}",
                     msg,
                 );
             },

@@ -56,13 +56,13 @@ use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
 
-use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
+use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 // The ONE shared per-lane RMS level helper + silence-floor sentinel. Importing
 // them from the pure crate keeps the USB DIRECT activity gate independent of
 // the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
-use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
+use crate::config::{Config, Coupling, RingWireFormat, RING_SLOT_FRAMES};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -617,11 +617,12 @@ fn auto_trim_decision(
     }
 }
 
-/// The final-output transport. `Alsa` (the default) writes the snd-aloop
-/// substream and is paced by the blocking ALSA `writei` — byte-identical to the
-/// pre-coupling daemon. `Ring` is the Ring A (PROTOTYPE) SPSC SHM ring writer;
-/// CamillaDSP reads it via a capture-direction ioplug. Each is the sole timing
-/// owner of the fan-in work loop in its mode; only one is ever active.
+/// The final-output transport. `Alsa` writes the snd-aloop substream and is
+/// paced by the blocking ALSA `writei` — byte-identical to the pre-coupling
+/// daemon. `Ring` is the Ring A SPSC SHM ring writer, which the coupling
+/// reconciler resolves as the default on a ring-eligible box; CamillaDSP reads
+/// it via a capture-direction ioplug. Each is the sole timing owner of the
+/// fan-in work loop in its mode; only one is ever active.
 enum Output {
     Alsa(PCM),
     /// The SPSC SHM ring writer plus its lossy aloop MIRROR PCM. The blocking
@@ -654,6 +655,16 @@ struct RingOutput {
     stall: RingStallTracker,
 }
 
+impl RingOutput {
+    /// Whether this ring's wire is S32LE, read from the geometry the writer
+    /// actually attached against rather than from a parallel flag. The header
+    /// is immutable for the ring file's life and attach already compared it
+    /// field-by-field, so this cannot drift from the bytes the reader expects.
+    fn wire_is_wide(&self) -> bool {
+        self.writer.geometry().sample_format == SAMPLE_FORMAT_S32LE
+    }
+}
+
 pub struct Mixer {
     inputs: Vec<Input>,
     output: Output,
@@ -664,6 +675,17 @@ pub struct Mixer {
     /// Per-period output buffer (i16 interleaved). Same length as
     /// sum_buf.
     output_buf: Vec<i16>,
+    /// Per-period payload for an S32LE Ring A wire: `sum_buf` clamped to the
+    /// i16 range and left-justified into 32 bits, already little-endian on the
+    /// wire. EMPTY (and therefore zero heap) on every other path — a `Vec` with
+    /// no capacity does not allocate — so a loopback box and a narrow-ring box
+    /// carry no new allocation at all.
+    ///
+    /// Bytes rather than `Vec<i32>` because the wire is explicitly
+    /// LITTLE-endian: `to_le_bytes` states that, where reinterpreting an `i32`
+    /// slice would silently depend on the host's endianness. `4 * sum_buf.len()`
+    /// bytes when armed.
+    ring_wide_payload: Vec<u8>,
     /// Per-period pre-duck program buffer for the assistant loudness
     /// meter. Same length as sum_buf.
     content_meter_buf: Vec<i16>,
@@ -883,19 +905,29 @@ impl RingCounters {
     }
 }
 
-/// The shared ring counters (cloned Arcs) for the STATUS endpoint's `ring`
-/// block: `{path, slots, occupancy, published, full_waits, stuck_reader_drops,
-/// drop_no_reader, stall_active, last_stall_ms, mirror_frames, mirror_drops}`.
+/// The shared ring counters (cloned Arcs) plus the observed wire geometry, for
+/// the STATUS endpoint's `ring` block: `{path, slots, wire_format, channels,
+/// occupancy, published, full_waits, stuck_reader_drops, drop_no_reader,
+/// stall_active, last_stall_ms, mirror_frames, mirror_drops}`.
 /// The stuck-reader vs no-reader drop counts are UN-FOLDED (issue #1524) so a
 /// heartbeat-live wedge is distinguishable from a benign no-reader reload;
 /// `stall_active` / `last_stall_ms` surface a live/recent stall episode.
 /// `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's written-frame
 /// and drop counts (parity with the music-only tap's `music_frames_written` /
 /// drops).
+///
+/// `wire_format` / `channels` are plain values, not atomics: they come off the
+/// header the writer attached against, which is immutable for the ring file's
+/// life, so there is nothing for a later period to update.
 #[derive(Clone)]
 pub struct RingObservability {
     pub path: String,
     pub slots: u32,
+    /// The OBSERVED wire vocabulary token (`S16_LE` / `S32_LE`), or `unknown`
+    /// for a header id this daemon has no token for.
+    pub wire_format: &'static str,
+    /// The OBSERVED channel count from the attached header.
+    pub channels: u32,
     pub occupancy: Arc<AtomicU64>,
     pub published: Arc<AtomicU64>,
     pub full_waits: Arc<AtomicU64>,
@@ -905,6 +937,18 @@ pub struct RingObservability {
     pub last_stall_ms: Arc<AtomicU64>,
     pub mirror_frames: Arc<AtomicU64>,
     pub mirror_drops: Arc<AtomicU64>,
+}
+
+/// Render a ring header `sample_format` id as the wire vocabulary token
+/// [`RingObservability::wire_format`] publishes. The vocabulary itself lives
+/// once, in [`RingWireFormat`]; this only names the id it cannot map. An
+/// unmappable id cannot reach a running ring (attach validates the accept-set
+/// first), so `unknown` is an honest placeholder rather than a state to act on.
+fn ring_wire_format_label(sample_format: u32) -> &'static str {
+    match RingWireFormat::from_sample_format_id(sample_format) {
+        Some(format) => format.as_str(),
+        None => "unknown",
+    }
 }
 
 /// The fan-in ring-stall EVENT threshold (issue #1524): how long the
@@ -1356,10 +1400,9 @@ impl Mixer {
             );
         }
 
-        // Final-output transport. Loopback (default) opens the ALSA snd-aloop
-        // substream — byte-identical to today. ShmRing (Ring A, PROTOTYPE)
-        // publishes an SPSC ping-pong SHM ring CamillaDSP reads via an ioplug.
-        // Exactly one is active.
+        // Final-output transport. Loopback opens the ALSA snd-aloop substream;
+        // ShmRing (Ring A) publishes an SPSC ping-pong SHM ring CamillaDSP
+        // reads via an ioplug. Exactly one is active.
         let (output, coupling) = match config.camilla_coupling {
             Coupling::Loopback => {
                 let pcm = open_output(&config.output_pcm, config)
@@ -1377,20 +1420,32 @@ impl Mixer {
                 )
             }
             Coupling::ShmRing => {
-                // Ring A (PROTOTYPE). Create-or-attach the SPSC ring as the
-                // WRITER. Geometry: S16LE / 2ch / 48k, slot = 128 frames pinned
-                // (the outputd DAC-period contract; period_frames % 128 == 0 was
-                // validated at config parse), n_slots = ring_slots. A geometry
-                // mismatch against an already-created ring is fail-loud (systemd
-                // parks, not reboot-loops).
+                // Ring A. Create-or-attach the SPSC ring as the WRITER.
+                // Geometry: the configured wire format / 2ch / 48k, slot = 128
+                // frames pinned (the outputd DAC-period contract; period_frames
+                // % 128 == 0 was validated at config parse), n_slots =
+                // ring_slots. A geometry mismatch against an already-created
+                // ring is a config-class fault: it is tagged so main() exits 78
+                // (EX_CONFIG) and the unit parks
+                // (RestartPreventExitStatus=78) instead of climbing the restart
+                // burst into StartLimitAction=reboot.
                 let geometry = Geometry {
                     rate: config.sample_rate,
                     channels: CHANNELS,
-                    sample_format: SAMPLE_FORMAT_S16LE,
+                    sample_format: config.ring_wire_format.sample_format_id(),
                     period_frames: RING_SLOT_FRAMES,
                     n_slots: config.ring_slots,
                 };
                 let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
+                    .map_err(|e| {
+                        warn!(
+                            "event=fanin.ring.config_error path={} wire_format={} detail={}",
+                            config.ring_path,
+                            config.ring_wire_format.as_str(),
+                            e,
+                        );
+                        anyhow::Error::new(e).context(crate::ConfigClassError)
+                    })
                     .with_context(|| {
                         format!("opening fan-in→camilla SHM ring {}", config.ring_path)
                     })?;
@@ -1418,17 +1473,28 @@ impl Mixer {
                 let counters = RingCounters::new();
                 let self_pace_period_ns =
                     (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
+                // The wire this ring OBSERVABLY carries, read back from the
+                // header the writer attached against — not echoed from config.
+                // On a create it equals the requested geometry; on an attach it
+                // is the geometry that survived the field-by-field compare.
+                // Either way it is what the reader on the other end sees.
+                let attached = writer.geometry();
+                let wire_format = ring_wire_format_label(attached.sample_format);
                 info!(
-                    "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={}",
+                    "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={} wire_format={} channels={}",
                     config.ring_path,
                     config.ring_slots,
                     RING_SLOT_FRAMES,
                     config.period_frames,
                     config.period_frames / RING_SLOT_FRAMES,
+                    wire_format,
+                    attached.channels,
                 );
                 let observability = RingObservability {
                     path: config.ring_path.clone(),
                     slots: config.ring_slots,
+                    wire_format,
+                    channels: attached.channels,
                     occupancy: Arc::clone(&counters.occupancy),
                     published: Arc::clone(&counters.published),
                     full_waits: Arc::clone(&counters.full_waits),
@@ -1513,11 +1579,22 @@ impl Mixer {
             Arc::new(Mutex::new(TapConfig::default())),
             tap_sender,
         );
+        // The wide Ring A payload is allocated ONCE here, and only for a ring
+        // whose attached header says S32LE. Every other path gets an empty Vec
+        // (no allocation, no per-period work), which is what keeps a narrow or
+        // loopback box byte-identical.
+        let ring_wide_payload = match &output {
+            Output::Ring(ring) if ring.wire_is_wide() => {
+                vec![0u8; period_samples * WIDE_BYTES_PER_SAMPLE]
+            }
+            _ => Vec::new(),
+        };
         Ok(Self {
             inputs,
             output,
             sum_buf: vec![0i32; period_samples],
             output_buf: vec![0i16; period_samples],
+            ring_wide_payload,
             content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
@@ -1901,6 +1978,15 @@ impl Mixer {
         // 4. Clamp i32 sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf);
 
+        // 4b. S32LE Ring A only: the wide slot payload, from the SAME sum_buf,
+        //     left-justified. The buffer is non-empty only on a ring whose
+        //     attached header says S32LE, so this is one `is_empty` check on
+        //     every other path. `output_buf` above is untouched — it stays the
+        //     mirror's payload on both wires.
+        if !self.ring_wide_payload.is_empty() {
+            fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
+        }
+
         // 5. Write to output (blocks; paces the loop). Dispatch on transport:
         //    - Alsa: blocking writei, returns when the loopback ring has room
         //      (DAC-paced via the dsnoop consumer). Counts every period.
@@ -1928,8 +2014,12 @@ impl Mixer {
                 // stuck_reader_drops / drop_no_reader split disambiguates, so the
                 // top-line counter stays honest rather than optimistic. (`ring`
                 // deref-coerces &mut Box<RingOutput> → &mut RingOutput.)
-                let published_frames =
-                    write_ring_period(ring, &self.output_buf, self.period_frames);
+                let published_frames = write_ring_period(
+                    ring,
+                    &self.output_buf,
+                    &self.ring_wide_payload,
+                    self.period_frames,
+                );
                 self.frames_written
                     .fetch_add(published_frames as u64, Ordering::Relaxed);
             }
@@ -2346,15 +2436,39 @@ impl Mixer {
 /// would re-couple to the aloop timer and silently reintroduce the hop being
 /// removed). It exists only to keep the AEC-fallback dsnoop + aloop diagnostics
 /// live.
-fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u32) -> u32 {
+///
+/// **Which payload the ring gets, and what the mirror gets.** The ring publishes
+/// `output_buf` on an S16LE wire and `wide_payload` on an S32LE one, chosen from
+/// the ring's own attached header. The MIRROR is handed `output_buf` in both
+/// cases and is never given the wide payload — that is what makes the mirror's
+/// bytes independent of the ring's wire, and it is the contract
+/// `mirror_payload_is_byte_identical_across_ring_wire_formats` pins.
+fn write_ring_period(
+    ring: &mut RingOutput,
+    output_buf: &[i16],
+    wide_payload: &[u8],
+    period_frames: u32,
+) -> u32 {
     let slots_per_step = period_frames / RING_SLOT_FRAMES;
     let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+    // The ring's OWN attached geometry decides which payload is published —
+    // never a parallel flag, so the bytes published can never disagree with the
+    // header the reader validated against.
+    let wide = ring.wire_is_wide();
     let mut dropped_this_period = false;
     let mut published_slots: u32 = 0;
     for slot in 0..slots_per_step as usize {
         let start = slot * samples_per_slot;
-        let slot_samples = &output_buf[start..start + samples_per_slot];
-        match ring.writer.publish(slot_samples) {
+        let outcome = if wide {
+            let byte_start = start * WIDE_BYTES_PER_SAMPLE;
+            let slot_bytes = samples_per_slot * WIDE_BYTES_PER_SAMPLE;
+            ring.writer
+                .publish_bytes(&wide_payload[byte_start..byte_start + slot_bytes])
+        } else {
+            ring.writer
+                .publish(&output_buf[start..start + samples_per_slot])
+        };
+        match outcome {
             PublishOutcome::Published => {
                 published_slots += 1;
             }
@@ -2567,6 +2681,44 @@ fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
     debug_assert_eq!(sum.len(), out.len());
     for (o, &s) in out.iter_mut().zip(sum) {
         *o = s.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+}
+
+/// Bytes one sample occupies on an S32LE ring wire.
+const WIDE_BYTES_PER_SAMPLE: usize = 4;
+
+/// One sample of the i32 mix sum, as it appears on an S32LE ring wire:
+/// SATURATE first (clamp into the i16 range), then left-justify by 16.
+///
+/// The order is load-bearing. `sum_buf` is `Vec<i32>` but carries an **i16
+/// numeric scale** — `mix_into` saturating-adds i16 inputs — so two full-scale
+/// lanes legitimately sum to 65534, well inside i32 and well outside i16.
+/// Shifting first would send `65534 << 16` past the i32 range and wrap the sign
+/// bit, turning the loudest possible program into a full-scale NEGATIVE
+/// excursion. Clamping first bounds the value to ±32768 before the shift, where
+/// `<< 16` is exactly representable — `(i16::MIN as i32) << 16` is precisely
+/// `i32::MIN`.
+///
+/// This carries ZERO extra precision over the narrow path — it is the same
+/// clamp `saturate_to_i16` applies, moved 16 bits up. Recovering the duck's
+/// fractional bits means widening the mixer's own arithmetic, which belongs to
+/// the fan-in spine work (U2 / #2223), not to the transport.
+fn wide_ring_sample(sum_sample: i32) -> i32 {
+    sum_sample.clamp(i16::MIN as i32, i16::MAX as i32) << 16
+}
+
+/// Fill an S32LE ring slot payload from the period's mix sum.
+///
+/// `out` is the preallocated `ring_wide_payload` — `4 * sum.len()` bytes,
+/// sized once at construction from the same `period_samples` that sizes
+/// `sum_buf`, so this allocates nothing and copies nothing beyond the samples.
+/// `to_le_bytes` states the wire's little-endianness rather than inheriting the
+/// host's. The 4-byte `copy_from_slice` cannot fail: `chunks_exact_mut(4)`
+/// yields exactly 4-byte chunks and `to_le_bytes` returns exactly 4 bytes.
+fn fill_wide_ring_payload(sum: &[i32], out: &mut [u8]) {
+    debug_assert_eq!(out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE);
+    for (chunk, &s) in out.chunks_exact_mut(WIDE_BYTES_PER_SAMPLE).zip(sum) {
+        chunk.copy_from_slice(&wide_ring_sample(s).to_le_bytes());
     }
 }
 
@@ -4821,22 +4973,34 @@ mod tests {
     // on any host that can build the crate (CI Linux). `mirror: None` keeps ALSA
     // out of the test — the ring publish + reader roundtrip is the contract.
 
-    use jasper_ring::{RingReader, SlotRead};
+    use jasper_ring::{RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
 
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
     fn ring_geometry(n_slots: u32) -> Geometry {
+        ring_geometry_with_wire(n_slots, RingWireFormat::S16Le)
+    }
+
+    fn ring_geometry_with_wire(n_slots: u32, wire: RingWireFormat) -> Geometry {
         Geometry {
             rate: 48_000,
             channels: CHANNELS,
-            sample_format: SAMPLE_FORMAT_S16LE,
+            sample_format: wire.sample_format_id(),
             period_frames: RING_SLOT_FRAMES,
             n_slots,
         }
     }
 
     fn tmp_ring_output(n_slots: u32, tag: &str) -> (RingOutput, String) {
+        tmp_ring_output_with_wire(n_slots, tag, RingWireFormat::S16Le)
+    }
+
+    fn tmp_ring_output_with_wire(
+        n_slots: u32,
+        tag: &str,
+        wire: RingWireFormat,
+    ) -> (RingOutput, String) {
         let dir = std::env::temp_dir().join(format!(
             "jts-fanin-ring-{}-{}-{}",
             tag,
@@ -4845,7 +5009,8 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("program.ring").to_string_lossy().into_owned();
-        let writer = RingWriter::create_or_attach(&path, ring_geometry(n_slots)).unwrap();
+        let writer =
+            RingWriter::create_or_attach(&path, ring_geometry_with_wire(n_slots, wire)).unwrap();
         let counters = RingCounters::new();
         let ring = RingOutput {
             writer,
@@ -4858,6 +5023,11 @@ mod tests {
         };
         (ring, path)
     }
+
+    /// The narrow ring publishes `output_buf`, so the wide payload argument is
+    /// empty on every S16LE call site — exactly what `step()` passes when the
+    /// wide buffer was never allocated.
+    const NO_WIDE_PAYLOAD: &[u8] = &[];
 
     fn cleanup_ring(path: &str) {
         let _ = std::fs::remove_file(path);
@@ -4894,7 +5064,8 @@ mod tests {
         let mut output_buf = vec![0i16; total];
         saturate_to_i16(&sum, &mut output_buf); // expected: 5000 + 4000 = 9000
 
-        let published_frames = write_ring_period(&mut ring, &output_buf, period_frames);
+        let published_frames =
+            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames);
         // Two slots reached a live reader -> the full period is counted.
         assert_eq!(published_frames, period_frames);
 
@@ -4915,6 +5086,246 @@ mod tests {
         cleanup_ring(&path);
     }
 
+    // --- Ring A wide (S32LE) wire. The wide path is INERT unless the ring's
+    // own attached header says S32LE, so these tests build such a ring
+    // explicitly; everything above still exercises the narrow default.
+
+    /// A period's worth of mix sum, spanning the values the wide path has to get
+    /// right: silence, both i16 rails, the 65534 two-full-scale-lanes sum that
+    /// `mix_into_saturates_at_i32_bounds_but_stays_room_for_i16_saturation`
+    /// blesses, its negative twin, and ordinary program levels.
+    fn representative_sum(total: usize) -> Vec<i32> {
+        let pattern = [0i32, 65_534, -65_536, 32_767, -32_768, 9_000, -9_000, 1];
+        (0..total).map(|i| pattern[i % pattern.len()]).collect()
+    }
+
+    /// The panel's prescribed overflow pin. `sum_buf` is `Vec<i32>` in an i16
+    /// numeric scale, so two full-scale lanes legitimately sum to 65534.
+    /// SHIFT-then-saturate would compute `65534 << 16`, wrap the sign bit, and
+    /// turn the loudest possible program into a full-scale NEGATIVE excursion;
+    /// SATURATE-then-shift clamps to 32767 first. Reversing the two operations
+    /// in `wide_ring_sample` fails here.
+    #[test]
+    fn wide_ring_sample_clamps_before_shifting_at_the_i16_sum_ceiling() {
+        assert_eq!(wide_ring_sample(65_534), 32_767i32 << 16);
+        // The wrapped value the wrong order would produce, named so the
+        // assertion above cannot be satisfied by it.
+        assert_ne!(wide_ring_sample(65_534), 65_534i32.wrapping_shl(16));
+        assert!(
+            wide_ring_sample(65_534) > 0,
+            "a full-scale POSITIVE sum must stay positive on the wire"
+        );
+        // The negative twin: two full-scale negative lanes.
+        assert_eq!(wide_ring_sample(-65_536), i32::MIN);
+        assert!(wide_ring_sample(-65_536) < 0);
+    }
+
+    /// Left-justification is exact at both rails: `i16::MIN << 16` is precisely
+    /// `i32::MIN` and `i16::MAX << 16` is `0x7FFF_0000`, so no rail overflows
+    /// and none is silently rounded.
+    #[test]
+    fn wide_ring_sample_left_justifies_the_whole_i16_range() {
+        assert_eq!(wide_ring_sample(0), 0);
+        assert_eq!(wide_ring_sample(i16::MAX as i32), 0x7FFF_0000u32 as i32);
+        assert_eq!(wide_ring_sample(i16::MIN as i32), i32::MIN);
+        assert_eq!(wide_ring_sample(1), 0x0001_0000);
+        assert_eq!(wide_ring_sample(-1), -0x0001_0000);
+    }
+
+    /// ZERO precision claim, stated as an assertion rather than only as prose:
+    /// every wide sample is exactly the narrow sample moved 16 bits up, so the
+    /// wide wire carries the same information the narrow one does. Recovering
+    /// the duck's fractional bits is the fan-in spine's job (U2 / #2223), not
+    /// the transport's — if that ever changes, this test is the thing that
+    /// notices.
+    #[test]
+    fn wide_payload_is_information_equivalent_to_the_narrow_payload() {
+        let sum = representative_sum(64);
+        let mut narrow = vec![0i16; sum.len()];
+        saturate_to_i16(&sum, &mut narrow);
+        let mut wide = vec![0u8; sum.len() * WIDE_BYTES_PER_SAMPLE];
+        fill_wide_ring_payload(&sum, &mut wide);
+        for (i, &n) in narrow.iter().enumerate() {
+            let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = wide
+                [i * WIDE_BYTES_PER_SAMPLE..(i + 1) * WIDE_BYTES_PER_SAMPLE]
+                .try_into()
+                .unwrap();
+            assert_eq!(
+                i32::from_le_bytes(bytes),
+                (n as i32) << 16,
+                "sample {i} (sum {}) must be the narrow sample left-justified",
+                sum[i],
+            );
+        }
+    }
+
+    /// The MANDATORY mirror contract (ring-v2 design §7): for identical input,
+    /// the bytes the lossy aloop mirror is handed are byte-identical whether the
+    /// ring path ran wide or narrow. The mirror's payload is `output_buf`, so
+    /// this pins two things at once — the wide fill reads `sum_buf` and writes
+    /// only its own buffer (it never mutates or re-reads `output_buf`), and
+    /// `output_buf` is produced by the same `saturate_to_i16` in both modes.
+    ///
+    /// Mutation-resistant: applying the duck gain a second time in the wide
+    /// pass, or sourcing the wide payload from `output_buf` after a different
+    /// clamp, changes the wide payload and fails the equivalence half; writing
+    /// through `output_buf` in the wide pass fails the mirror half.
+    #[test]
+    fn mirror_payload_is_byte_identical_across_ring_wire_formats() {
+        let sum = representative_sum(96);
+
+        // Narrow mode: step() saturates into output_buf and hands that to BOTH
+        // the ring and the mirror; no wide buffer is ever allocated.
+        let mut narrow_output_buf = vec![0i16; sum.len()];
+        saturate_to_i16(&sum, &mut narrow_output_buf);
+
+        // Wide mode: the same saturate into output_buf (the mirror's payload),
+        // then the wide fill from the same sum — the order step() uses.
+        let mut wide_output_buf = vec![0i16; sum.len()];
+        saturate_to_i16(&sum, &mut wide_output_buf);
+        let before_wide_fill = wide_output_buf.clone();
+        let mut wide_payload = vec![0u8; sum.len() * WIDE_BYTES_PER_SAMPLE];
+        fill_wide_ring_payload(&sum, &mut wide_payload);
+
+        assert_eq!(
+            wide_output_buf, before_wide_fill,
+            "the wide fill must not write through the mirror's payload"
+        );
+        assert_eq!(
+            wide_output_buf, narrow_output_buf,
+            "the mirror's payload must not depend on the ring's wire format"
+        );
+        // And the wide payload is genuinely different bytes (a wide fill that
+        // silently no-op'd would satisfy the two assertions above).
+        assert_ne!(
+            &wide_payload[..],
+            &vec![0u8; wide_payload.len()][..],
+            "the wide payload must actually be filled"
+        );
+    }
+
+    /// End-to-end through the real ring: the SAME mix sum published onto an
+    /// S32LE ring and an S16LE ring, read back by a real `RingReader`, and the
+    /// wide slots must be exactly the narrow slots left-justified. This is the
+    /// test the byte API's correctness rides on — it fails if the wide payload
+    /// is sliced at the wrong stride, published with the wrong length, or
+    /// computed in the wrong order.
+    #[test]
+    fn wide_ring_slots_carry_the_left_justified_narrow_slots() {
+        let period_frames = 256u32; // 2 slots of 128 frames
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
+        let slots = period_frames / RING_SLOT_FRAMES;
+        let sum = representative_sum(total);
+        let mut output_buf = vec![0i16; total];
+        saturate_to_i16(&sum, &mut output_buf);
+        let mut wide_payload = vec![0u8; total * WIDE_BYTES_PER_SAMPLE];
+        fill_wide_ring_payload(&sum, &mut wide_payload);
+
+        // Narrow ring: publish output_buf, read i16 slots back.
+        let (mut narrow_ring, narrow_path) = tmp_ring_output(8, "wire_narrow");
+        let mut narrow_reader =
+            RingReader::create_or_attach(&narrow_path, ring_geometry(8)).unwrap();
+        let mut narrow_slot = vec![0i16; samples_per_slot];
+        assert_eq!(
+            narrow_reader.try_consume_slot(&mut narrow_slot),
+            SlotRead::Empty,
+            "priming the reader heartbeat"
+        );
+        assert_eq!(
+            write_ring_period(
+                &mut narrow_ring,
+                &output_buf,
+                NO_WIDE_PAYLOAD,
+                period_frames
+            ),
+            period_frames
+        );
+        let mut narrow_read = Vec::with_capacity(total);
+        for _ in 0..slots {
+            assert_eq!(
+                narrow_reader.try_consume_slot(&mut narrow_slot),
+                SlotRead::Filled
+            );
+            narrow_read.extend_from_slice(&narrow_slot);
+        }
+        assert_eq!(narrow_read, output_buf);
+
+        // Wide ring: the ring's OWN header selects the wide payload; the same
+        // output_buf is still what the mirror argument carries.
+        let (mut wide_ring, wide_path) =
+            tmp_ring_output_with_wire(8, "wire_wide", RingWireFormat::S32Le);
+        assert!(wide_ring.wire_is_wide());
+        let mut wide_reader = RingReader::create_or_attach(
+            &wide_path,
+            ring_geometry_with_wire(8, RingWireFormat::S32Le),
+        )
+        .unwrap();
+        let slot_bytes = samples_per_slot * WIDE_BYTES_PER_SAMPLE;
+        let mut wide_slot = vec![0u8; slot_bytes];
+        assert_eq!(
+            wide_reader.try_consume_slot_bytes(&mut wide_slot),
+            SlotRead::Empty,
+            "priming the reader heartbeat"
+        );
+        assert_eq!(
+            write_ring_period(&mut wide_ring, &output_buf, &wide_payload, period_frames),
+            period_frames
+        );
+        let mut wide_read: Vec<i32> = Vec::with_capacity(total);
+        for _ in 0..slots {
+            assert_eq!(
+                wide_reader.try_consume_slot_bytes(&mut wide_slot),
+                SlotRead::Filled
+            );
+            for chunk in wide_slot.chunks_exact(WIDE_BYTES_PER_SAMPLE) {
+                let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = chunk.try_into().unwrap();
+                wide_read.push(i32::from_le_bytes(bytes));
+            }
+        }
+
+        assert_eq!(wide_read.len(), narrow_read.len());
+        for (i, (&w, &n)) in wide_read.iter().zip(narrow_read.iter()).enumerate() {
+            assert_eq!(
+                w,
+                (n as i32) << 16,
+                "slot sample {i}: wide wire must be the narrow wire left-justified",
+            );
+        }
+        // The 65534 rail actually appears in this period — the overflow pin is
+        // exercised end-to-end, not only in the pure unit test above.
+        assert!(
+            wide_read.contains(&(32_767i32 << 16)),
+            "the representative period must include the clamped full-scale rail"
+        );
+        cleanup_ring(&narrow_path);
+        cleanup_ring(&wide_path);
+    }
+
+    /// A narrow ring stays on the typed publish and reports itself narrow, so
+    /// the wide branch is unreachable on the default wire.
+    #[test]
+    fn narrow_ring_reports_its_wire_and_takes_the_typed_publish() {
+        let (ring, path) = tmp_ring_output(2, "wire_default");
+        assert!(!ring.wire_is_wide());
+        assert_eq!(
+            ring.writer.geometry().sample_format,
+            SAMPLE_FORMAT_S16LE,
+            "the default wire is the narrow one"
+        );
+        cleanup_ring(&path);
+    }
+
+    /// STATUS reports the OBSERVED wire, mapped through the one vocabulary
+    /// owner. An id outside the accept-set cannot reach a live ring, so it
+    /// renders as `unknown` rather than guessing.
+    #[test]
+    fn ring_wire_format_label_names_the_observed_header_id() {
+        assert_eq!(ring_wire_format_label(SAMPLE_FORMAT_S16LE), "S16_LE");
+        assert_eq!(ring_wire_format_label(SAMPLE_FORMAT_S32LE), "S32_LE");
+        assert_eq!(ring_wire_format_label(99), "unknown");
+    }
+
     /// Reader-absent: `write_ring_period` free-run-drops and self-paces (never
     /// hot-spins). Counters reflect the drops; occupancy stays bounded. This
     /// stands in the "CamillaDSP not yet up / reloading" turn.
@@ -4932,7 +5343,12 @@ mod tests {
         let start = std::time::Instant::now();
         let mut per_period_published = Vec::with_capacity(4);
         for _ in 0..4 {
-            per_period_published.push(write_ring_period(&mut ring, &output_buf, period_frames));
+            per_period_published.push(write_ring_period(
+                &mut ring,
+                &output_buf,
+                NO_WIDE_PAYLOAD,
+                period_frames,
+            ));
         }
         let elapsed = start.elapsed();
         // Accounting (nit-2): the first period fills the empty 2-slot ring and
@@ -5148,14 +5564,17 @@ mod tests {
         let output_buf = vec![9i16; total];
         // Fill the ring (first period publishes both slots to the live reader).
         assert_eq!(
-            write_ring_period(&mut ring, &output_buf, period_frames),
+            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
             period_frames,
         );
 
         // PRE-GRACE: the ring is full and the reader is wedged but within grace →
         // each publish pays the bounded ~21 ms wait, so the period is slow.
         let pre = std::time::Instant::now();
-        assert_eq!(write_ring_period(&mut ring, &output_buf, period_frames), 0);
+        assert_eq!(
+            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
+            0
+        );
         let pre = pre.elapsed();
         assert!(
             pre >= std::time::Duration::from_millis(5),
@@ -5170,7 +5589,10 @@ mod tests {
         // POST-GRACE: demotion → the period is now just the ~5.3 ms self-pace,
         // an order of magnitude below the pre-grace wall time.
         let post = std::time::Instant::now();
-        assert_eq!(write_ring_period(&mut ring, &output_buf, period_frames), 0);
+        assert_eq!(
+            write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
+            0
+        );
         let post = post.elapsed();
         assert!(
             post * 2 < pre,

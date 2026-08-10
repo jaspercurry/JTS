@@ -56,7 +56,79 @@ use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
+/// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
+/// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed config
+/// rejection PARKS the unit failed (visible on /state + doctor) instead of
+/// crash-looping — restarting cannot fix bad config, and on this unit the loop
+/// escalates to `StartLimitAction=reboot` after five starts in five minutes.
+/// Mirrors `jasper-outputd`, which took the same treatment after a
+/// guard-rejected env combination crash-looped it into three Pi reboots
+/// (jts3, 2026-06-11).
+const EXIT_CONFIG: i32 = 78;
+
+/// Marker attached (as an `anyhow` context layer) to an error whose cause is
+/// CONFIG-class. It covers the Ring A geometry declaration — every rejection
+/// in `Config::from_env`'s ring block (an unparseable
+/// `JASPER_FANIN_RING_WIRE_FORMAT`, an out-of-range `JASPER_FANIN_RING_SLOTS`,
+/// a period that would shear a slot) plus the ring header/geometry mismatch
+/// that `RingWriter::create_or_attach` reports when the ring file on disk was
+/// created against a different geometry. None of those is repairable by
+/// restarting, so [`main`] downcasts for the marker and exits [`EXIT_CONFIG`].
+///
+/// The marker is deliberately narrow. Fan-in's other startup failures (a
+/// missing snd-aloop substream, a de-enumerated USB DAC) DO clear on a retry,
+/// which is exactly what `Restart=on-failure` is for; marking every config
+/// error would park the speaker on a transient hardware blip.
+#[derive(Debug)]
+pub struct ConfigClassError;
+
+impl std::fmt::Display for ConfigClassError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "config-class startup fault (park, do not restart-loop)")
+    }
+}
+
+impl std::error::Error for ConfigClassError {}
+
+/// [`EXIT_CONFIG`] when `error` carries the [`ConfigClassError`] marker
+/// ANYWHERE in its context chain, `None` otherwise. anyhow walks the whole
+/// chain, so the marker survives the `.context(...)` layers the call sites add
+/// above it on the way out.
+fn config_class_exit_code(error: &anyhow::Error) -> Option<i32> {
+    if error.downcast_ref::<ConfigClassError>().is_some() {
+        Some(EXIT_CONFIG)
+    } else {
+        None
+    }
+}
+
+/// Exit [`EXIT_CONFIG`] for a config-class error; return normally otherwise so
+/// every other failure keeps the ordinary `Restart=on-failure` path.
+fn park_on_config_class(error: &anyhow::Error) {
+    if let Some(code) = config_class_exit_code(error) {
+        error!(
+            "event=fanin.config_park exit={} detail={:#} — the unit does not \
+             restart on config errors (RestartPreventExitStatus=78); fix the \
+             config and `systemctl restart jasper-fanin`",
+            code, error,
+        );
+        std::process::exit(code);
+    }
+}
+
 fn main() -> Result<()> {
+    let result = run();
+    // A config-class fault anywhere in startup or the work loop exits
+    // EX_CONFIG so the unit parks rather than climbing the restart burst into
+    // StartLimitAction=reboot. Placed here, around the whole daemon, so every
+    // `?` inside `run` is covered by one decision site.
+    if let Err(e) = &result {
+        park_on_config_class(e);
+    }
+    result
+}
+
+fn run() -> Result<()> {
     // env_logger reads JASPER_FANIN_LOG_LEVEL (or RUST_LOG as a fallback
     // for cargo-run dev) and defaults to "info" so structured event=
     // lines land in journald at priority info. Timestamps to seconds —
@@ -462,4 +534,47 @@ fn install_signal_handlers(shutdown: &Arc<AtomicBool>) -> Result<()> {
     flag::register(SIGTERM, Arc::clone(shutdown))?;
     flag::register(SIGINT, Arc::clone(shutdown))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The park decision must survive the `.context(...)` layers the real call
+    /// sites stack ABOVE the marker. `Mixer::new`'s ring error is wrapped twice
+    /// on the way out ("opening fan-in→camilla SHM ring …" then "opening ALSA
+    /// PCMs"), so a downcast that only inspected the outermost error would miss
+    /// it and the daemon would restart-loop into a reboot instead of parking.
+    #[test]
+    fn config_class_marker_survives_the_real_context_depth() {
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ring geometry mismatch: sample_format 2 != 1",
+        ))
+        .context(ConfigClassError)
+        .context("opening fan-in→camilla SHM ring /dev/shm/jts-ring/program.ring")
+        .context("opening ALSA PCMs");
+        assert_eq!(config_class_exit_code(&error), Some(EXIT_CONFIG));
+    }
+
+    /// A config-parse failure carries the marker straight off
+    /// `Config::from_env`, with no extra context layers.
+    #[test]
+    fn unparseable_ring_wire_format_is_config_class() {
+        let error = crate::config::RingWireFormat::from_env_value(Some("S24_3LE"))
+            .expect_err("an unsupported wire token must fail loud");
+        assert_eq!(config_class_exit_code(&error), Some(EXIT_CONFIG));
+    }
+
+    /// The marker is narrow on purpose: the transient hardware faults that
+    /// `Restart=on-failure` exists to ride out must NOT park the unit.
+    #[test]
+    fn ordinary_startup_errors_keep_the_restart_path() {
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No such file or directory (os error 2)",
+        ))
+        .context("opening ALSA PCMs");
+        assert_eq!(config_class_exit_code(&error), None);
+    }
 }

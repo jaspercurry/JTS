@@ -41,6 +41,24 @@ TimeoutStopSec=5s
 Restart=on-failure
 RestartSec=5
 
+# CONFIG-class failures exit 78 (EX_CONFIG) and must NOT use the restart
+# ladder above: a persistent bad config would climb the burst straight into
+# StartLimitAction=reboot, rebooting the speaker every few minutes over
+# something no restart can fix. The daemon uses 78 for the Ring A geometry
+# declaration only — a rejected JASPER_FANIN_RING_WIRE_FORMAT / _RING_SLOTS /
+# slot-shearing period, and the ring header/geometry mismatch reported when the
+# ring file on disk was created against a different geometry (a stale ring
+# surviving a deploy, or a conf.d and daemon that disagree about the wire).
+# Transient hardware faults (a de-enumerated USB DAC, an absent snd-aloop
+# substream) are NOT this class: they exit non-zero and keep the ordinary
+# Restart=on-failure retry.
+#
+# No SuccessExitStatus: mirroring jasper-outputd, an exit-78 park leaves the
+# unit `failed` on purpose, so /state and jasper-doctor show it rather than a
+# silently-inactive daemon. Recovery: fix the config, then
+# `systemctl restart jasper-fanin`.
+RestartPreventExitStatus=78
+
 # OOM ladder slot. Between Camilla (-900, silence-critical) and
 # AEC bridge (-700, capture-critical). The fan-in daemon is the
 # upstream source of the music signal both consume; killing it

@@ -109,6 +109,56 @@ def test_start_limit_action_reboot():
     )
 
 
+def test_ring_config_class_failures_park_instead_of_rebooting():
+    """A config-class ring failure must PARK the unit, not climb the restart
+    burst into `StartLimitAction=reboot` above.
+
+    fan-in's Ring A geometry declaration has ways to be wrong that no restart
+    can fix: a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` /
+    slot-shearing period, and a ring file on disk whose header geometry differs
+    from the one the daemon builds (a stale ring surviving a deploy, or a
+    conf.d and daemon that disagree about the wire). Before
+    `RestartPreventExitStatus=78` those exited non-zero like any other fault,
+    so five starts in five minutes rebooted the speaker — and kept rebooting
+    it, because the ring file survives the reboot. jasper-outputd took the same
+    treatment for the same reason (jts3, 2026-06-11: a guard-rejected env
+    combination crash-looped it into three Pi reboots).
+
+    Both halves are asserted: the unit stops restarting on 78, and the daemon
+    actually maps that class to 78 (a unit directive for an exit code nothing
+    produces would be a guard that guards nothing).
+    """
+    unit = _read_unit()
+    assert "78" in _values_for(unit, "RestartPreventExitStatus"), (
+        "jasper-fanin.service must declare RestartPreventExitStatus=78 so a "
+        "config-class ring failure parks instead of escalating to "
+        "StartLimitAction=reboot"
+    )
+    # Mirrors jasper-outputd: no SuccessExitStatus for 78, so the park is
+    # visible as `failed` on /state + doctor rather than a quiet inactive unit.
+    assert "78" not in _values_for(unit, "SuccessExitStatus"), (
+        "an exit-78 park must stay FAILED (visible on /state + doctor), "
+        "matching jasper-outputd's precedent"
+    )
+
+    main_src = (REPO / "rust" / "jasper-fanin" / "src" / "main.rs").read_text()
+    assert "const EXIT_CONFIG: i32 = 78;" in main_src
+    assert "struct ConfigClassError;" in main_src
+    assert "std::process::exit(code);" in main_src
+
+    # The two config-class producers, so a rename cannot quietly orphan the
+    # unit directive above.
+    config_src = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
+    assert ".context(crate::ConfigClassError)" in config_src, (
+        "an unparseable JASPER_FANIN_RING_WIRE_FORMAT must be tagged "
+        "config-class"
+    )
+    mixer_src = (REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text()
+    assert ".context(crate::ConfigClassError)" in mixer_src, (
+        "a ring create_or_attach geometry mismatch must be tagged config-class"
+    )
+
+
 def test_oom_score_adj_between_camilla_and_aec_bridge():
     """OOM ladder slot. -800 sits between jasper-camilla (-900,
     silence-critical) and jasper-aec-bridge (-700, capture-critical).

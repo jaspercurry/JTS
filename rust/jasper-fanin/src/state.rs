@@ -1111,12 +1111,21 @@ impl StateServer {
         // written-frame and drop counts (never load-bearing; parity with
         // music_output's frames_written/drops). Only present under shm_ring —
         // byte-identical observability to today under loopback.
+        //
+        // `wire_format` / `channels` are the OBSERVED header tuple — read back
+        // from the geometry the writer attached against, not echoed from
+        // config — so a reader of /state can answer which wire this ring
+        // actually carries rather than which one was requested.
         if let Some(ring) = &self.coupling.ring {
             buf.push(',');
             buf.push_str(r#""ring":{"#);
             push_kv_str(buf, "path", &ring.path);
             buf.push(',');
             push_kv_u64(buf, "slots", ring.slots as u64);
+            buf.push(',');
+            push_kv_str(buf, "wire_format", ring.wire_format);
+            buf.push(',');
+            push_kv_u64(buf, "channels", ring.channels as u64);
             buf.push(',');
             push_kv_u64(buf, "occupancy", ring.occupancy.load(Ordering::Relaxed));
             buf.push(',');
@@ -1552,6 +1561,8 @@ mod tests {
             ring: Some(RingObservability {
                 path: "/dev/shm/jts-ring/program.ring".to_string(),
                 slots: 8,
+                wire_format: "S32_LE",
+                channels: 2,
                 occupancy: Arc::new(AtomicU64::new(6)),
                 published: Arc::new(AtomicU64::new(12345)),
                 full_waits: Arc::new(AtomicU64::new(9)),
@@ -1839,6 +1850,10 @@ mod tests {
         assert_eq!(ring["drop_no_reader"], 3, "drop_no_reader: {ring}");
         assert_eq!(ring["stall_active"], true, "stall_active: {ring}");
         assert_eq!(ring["last_stall_ms"], 1500, "last_stall_ms: {ring}");
+        // The OBSERVED wire tuple: which wire this ring is carrying, so /state
+        // can answer that without inferring it from config.
+        assert_eq!(ring["wire_format"], "S32_LE", "wire_format: {ring}");
+        assert_eq!(ring["channels"], 2, "channels: {ring}");
         // shm_ring carries NO pipe block.
         assert!(
             !j.contains(r#""pipe":{"#),
