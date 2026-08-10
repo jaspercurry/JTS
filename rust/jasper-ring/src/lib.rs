@@ -50,8 +50,8 @@
 //! | 0  | magic | u32 | [`MAGIC`] `0x4A52494E` ("JRIN" LE). Written LAST during init, Release. Attach validity gate. |
 //! | 4  | version | u32 | [`VERSION`] = 1 |
 //! | 8  | rate | u32 | 48000 |
-//! | 12 | channels | u32 | 2 |
-//! | 16 | sample_format | u32 | 1 = S16LE ([`SAMPLE_FORMAT_S16LE`]). 2 = S32LE reserved. |
+//! | 12 | channels | u32 | 2..=8 ([`MAX_RING_CHANNELS`]) |
+//! | 16 | sample_format | u32 | 1 = S16LE ([`SAMPLE_FORMAT_S16LE`]), 2 = S32LE ([`SAMPLE_FORMAT_S32LE`]) |
 //! | 20 | period_frames | u32 | frames per slot |
 //! | 24 | n_slots | u32 | 2 (min ping-pong)..=16 ([`MAX_N_SLOTS`]); 16 is the validated camilla geometry |
 //! | 28 | _pad | u32 | zero |
@@ -161,10 +161,11 @@
 //!    occupancy, empty_reads (startup vs steady split), epoch_resets,
 //!    reader_resyncs, writer_alive, frames_read.
 //! 5. **How does it fail closed?** Geometry/version/format mismatch on attach
-//!    is a hard error (the reader surfaces it as a config-class startup
-//!    failure so systemd parks, not reboot-loops). A magic-invalid owned file
-//!    is unlinked and recreated. A transient empty ring is silence, never a
-//!    crash.
+//!    is a hard error: a fatal attach failure out of the field-by-field header
+//!    compare, surfaced to the caller as an `io::Error`. This crate's contract
+//!    ends there — each daemon owns how it maps that error to an exit code, and
+//!    each unit owns what that exit code does. A magic-invalid owned file is
+//!    unlinked and recreated. A transient empty ring is silence, never a crash.
 //! 6. **Is it default-off?** Yes — no caller exists unless the flag is set.
 //! 7. **What's the memory-ordering argument?** Acquire/Release on the two seqs
 //!    (documented per step above); C11 `atomic_*_explicit` and Rust
@@ -184,8 +185,8 @@ pub mod layout;
 pub mod writer;
 
 pub use layout::{
-    Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MIN_N_SLOTS, SAMPLE_FORMAT_S16LE,
-    SAMPLE_FORMAT_S32LE, VERSION,
+    Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES, MIN_N_SLOTS,
+    SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE, VERSION,
 };
 pub use writer::{
     PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,
@@ -436,11 +437,28 @@ impl RingMapping {
         unsafe { std::ptr::read_unaligned(self.base.add(offset) as *const u32) }
     }
 
-    fn slot_ptr(&self, slot_index: u32) -> *const u8 {
-        let slot_bytes = self
-            .geometry
+    /// Debug-only tripwire for the `i16`-typed wrappers: each one measures its
+    /// buffer in `samples_per_slot` 2-byte samples, which is exactly one slot on
+    /// an S16LE ring and the wrong size on any other. Stated once here and
+    /// called from all three wrappers rather than repeated at each.
+    pub(crate) fn debug_assert_s16_typed_view(&self) {
+        debug_assert_eq!(
+            self.geometry.sample_format,
+            layout::SAMPLE_FORMAT_S16LE,
+            "the i16-typed slot view is only valid on an S16LE ring"
+        );
+    }
+
+    /// One slot's payload size in bytes. Infallible here: every path that
+    /// produces a `RingMapping` validated the geometry first.
+    fn slot_bytes(&self) -> usize {
+        self.geometry
             .slot_bytes()
-            .expect("mapped ring geometry was validated before slot access");
+            .expect("mapped ring geometry was validated before slot access")
+    }
+
+    fn slot_ptr(&self, slot_index: u32) -> *const u8 {
+        let slot_bytes = self.slot_bytes();
         let off = HEADER_BYTES + (slot_index as usize) * slot_bytes;
         debug_assert!(off + slot_bytes <= self.len);
         // SAFETY: slot_index < n_slots (caller guarantees via seq % n_slots)
@@ -467,24 +485,65 @@ impl RingMapping {
         write_seq
     }
 
-    /// Copy one complete S16LE slot at `write_seq`. Publication of
-    /// `OFF_WRITE_SEQ` remains the caller's Release-store responsibility.
-    pub(crate) fn write_i16_slot(&self, write_seq: u64, samples: &[i16]) {
+    /// Copy one complete slot payload at `write_seq`. `payload.len()` must equal
+    /// [`RingMapping::slot_bytes`]. The ring core never interprets samples — it
+    /// memcpys — so this is the single write primitive for every geometry, and
+    /// the sample format only ever decides how many bytes a slot holds.
+    /// Publication of `OFF_WRITE_SEQ` remains the caller's Release-store
+    /// responsibility.
+    pub(crate) fn write_slot_bytes(&self, write_seq: u64, payload: &[u8]) {
         assert_eq!(
-            samples.len(),
-            self.geometry.samples_per_slot(),
+            payload.len(),
+            self.slot_bytes(),
             "ring publish requires exactly one complete slot"
         );
         let slot_index = (write_seq % self.geometry.n_slots as u64) as u32;
-        // SAFETY: slot_index is modulo validated n_slots and the length check
-        // above pins the copy to exactly one mapped slot.
+        // SAFETY: slot_index is modulo validated n_slots, so slot_ptr points at
+        // a mapped slot of exactly slot_bytes; the length check above pins the
+        // copy to that slot. The mapping and `payload` are distinct allocations,
+        // so the regions cannot overlap.
         unsafe {
             let dst = self.slot_ptr(slot_index) as *mut u8;
-            for (i, &sample) in samples.iter().enumerate() {
-                std::ptr::write_unaligned(dst.add(i * 2) as *mut i16, sample);
-            }
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), dst, payload.len());
         }
     }
+
+    /// S16-typed view of [`RingMapping::write_slot_bytes`], kept so existing
+    /// callers compile unchanged; it copies byte-for-byte what the byte path
+    /// copies. Valid ONLY on an S16LE geometry — on any other format an `i16`
+    /// slice of `samples_per_slot` is the wrong size for a slot. Callers move to
+    /// the byte path; this wrapper goes away with the last of them.
+    pub(crate) fn write_i16_slot(&self, write_seq: u64, samples: &[i16]) {
+        self.debug_assert_s16_typed_view();
+        self.write_slot_bytes(write_seq, i16_samples_as_bytes(samples));
+    }
+}
+
+/// View `i16` samples as the bytes they occupy — the exact in-memory
+/// representation the ring stores, so a typed publish and a byte publish of the
+/// same samples produce identical slot bytes. Never copies.
+fn i16_samples_as_bytes(samples: &[i16]) -> &[u8] {
+    // SAFETY: `i16` is a plain integer with no padding and no invalid bit
+    // patterns, and `u8` has alignment 1, so any initialized `[i16]` is also a
+    // valid `[u8]` of `size_of_val` bytes. The returned borrow is tied to
+    // `samples`, so the view cannot outlive it.
+    unsafe {
+        std::slice::from_raw_parts(
+            samples.as_ptr() as *const u8,
+            std::mem::size_of_val(samples),
+        )
+    }
+}
+
+/// Mutable counterpart of [`i16_samples_as_bytes`]: a byte-addressable view of a
+/// caller's `i16` output buffer, so the byte consume path can fill it directly.
+fn i16_samples_as_bytes_mut(samples: &mut [i16]) -> &mut [u8] {
+    let bytes = std::mem::size_of_val(samples);
+    // SAFETY: as above, plus exclusivity — the `&mut` borrow of `samples` is
+    // consumed for the lifetime of the returned view, so no aliasing `[i16]`
+    // reference exists while it lives. Every byte pattern is a valid `i16`, so
+    // writing arbitrary bytes through the view leaves `samples` initialized.
+    unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr() as *mut u8, bytes) }
 }
 
 impl Drop for RingMapping {
@@ -572,17 +631,36 @@ impl RingReader {
         self.map.geometry
     }
 
+    /// S16-typed view of [`RingReader::try_consume_slot_bytes`], kept so
+    /// existing callers compile unchanged; it copies byte-for-byte what the byte
+    /// path copies. `out.len()` must equal `period_frames * channels`. Valid
+    /// ONLY on an S16LE geometry — on any other format an `i16` slice of
+    /// `samples_per_slot` is the wrong size for a slot. Callers move to the byte
+    /// path; this wrapper goes away with the last of them.
+    pub fn try_consume_slot(&mut self, out: &mut [i16]) -> SlotRead {
+        self.map.debug_assert_s16_typed_view();
+        // The byte path checks the length; on an S16LE ring
+        // `samples_per_slot * 2 == slot_bytes`, so a second typed check here
+        // would assert the same fact twice.
+        self.try_consume_slot_bytes(i16_samples_as_bytes_mut(out))
+    }
+
     /// Try to consume exactly one slot into `out` (`out.len()` must equal
-    /// `period_frames * channels`). NEVER blocks:
+    /// [`Geometry::slot_bytes`]). The ring core never interprets samples — it
+    /// memcpys — so this one entry point serves every geometry. NEVER blocks:
     /// - slot available -> copies it, advances `read_seq`, returns
     ///   [`SlotRead::Filled`];
     /// - ring empty -> zero-fills `out`, returns [`SlotRead::Empty`].
     ///
     /// Always updates the reader heartbeat and refreshes the writer-liveness
     /// view (so `/state` is honest even on empty periods).
-    pub fn try_consume_slot(&mut self, out: &mut [i16]) -> SlotRead {
+    pub fn try_consume_slot_bytes(&mut self, out: &mut [u8]) -> SlotRead {
         let g = self.map.geometry;
-        debug_assert_eq!(out.len(), g.samples_per_slot());
+        debug_assert_eq!(
+            out.len(),
+            self.map.slot_bytes(),
+            "ring consume requires exactly one complete slot"
+        );
 
         // Heartbeat + writer-liveness refresh happen every period, filled or not.
         let now = monotonic_ns();
@@ -627,10 +705,12 @@ impl RingReader {
         // safe because the Acquire load of write_seq above ordered the writer's
         // payload stores before this read.
         let slot_index = (r % g.n_slots as u64) as u32;
-        // SAFETY: slot_index < n_slots; out.len() == samples_per_slot; the slot
-        // payload is exactly slot_bytes == samples_per_slot * 2 bytes.
+        let slot_bytes = self.map.slot_bytes();
+        // SAFETY: slot_index < n_slots, so slot_ptr points at a mapped slot of
+        // exactly slot_bytes valid bytes; `out` is a caller buffer in a distinct
+        // allocation, so the regions cannot overlap.
         unsafe {
-            copy_slot_to_i16(self.map.slot_ptr(slot_index), out, g.samples_per_slot());
+            copy_slot_bytes(self.map.slot_ptr(slot_index), out, slot_bytes);
         }
 
         // Release the slot: store read_seq = r+1 with Release so the copy-out
@@ -696,22 +776,19 @@ impl Drop for RingReader {
     }
 }
 
-/// Copy `samples` little-endian i16 samples from a raw slot pointer into `out`.
+/// Copy `bytes` of slot payload from a raw slot pointer into `out`.
+///
+/// This is the memcpy every consume path bottoms out in. The ring core never
+/// interprets samples, so nothing here knows or cares about the sample format;
+/// the slot is opaque bytes, laid out by the writer and handed to the caller
+/// unchanged.
 ///
 /// # Safety
-/// `src` must point to at least `samples * 2` valid bytes (the slot payload);
-/// `out.len()` must be `>= samples`.
-unsafe fn copy_slot_to_i16(src: *const u8, out: &mut [i16], samples: usize) {
-    // The slot is native-endian i16 written by the C memcpy from the ioplug's
-    // S16_LE interleaved staging; on the little-endian aarch64 / x86 targets
-    // this is a straight copy. Read unaligned to be defensive (the slot base is
-    // HEADER_BYTES + k*slot_bytes; HEADER_BYTES=128 and slot_bytes is a
-    // multiple of 4, so it is in fact 2-aligned, but read_unaligned costs
-    // nothing and documents that we do not rely on it).
-    for (i, dst) in out.iter_mut().take(samples).enumerate() {
-        let p = src.add(i * 2) as *const i16;
-        *dst = std::ptr::read_unaligned(p);
-    }
+/// `src` must point to at least `min(bytes, out.len())` valid bytes (the slot
+/// payload), and that region must not overlap `out`.
+unsafe fn copy_slot_bytes(src: *const u8, out: &mut [u8], bytes: usize) {
+    let n = bytes.min(out.len());
+    std::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), n);
 }
 
 /// `O_EXCL` create (init + magic-last) or attach (bounded size+magic wait +
@@ -976,8 +1053,10 @@ where
         )));
     }
 
-    // Validate every config field against the caller's expectation. Any
-    // mismatch is fail-loud (the daemon maps this to a config-class exit).
+    // Validate every config field against the caller's expectation. Any mismatch
+    // is fail-loud: `AttachError::Fatal`, never a reclaim and never a silent
+    // reinterpretation of the bytes. What a caller does with that error — an
+    // exit code, a park, a fall back to another transport — is the caller's.
     let version = map.header_u32(layout::OFF_VERSION);
     if version != VERSION {
         return Err(AttachError::Fatal(mismatch("version", version, VERSION)));
@@ -1542,6 +1621,124 @@ mod tests {
         );
         let _reader = RingReader::create_or_attach(&path, g)
             .expect("fatal attach releases the transaction lock");
+        cleanup(&path);
+    }
+
+    fn wide_geometry(sample_format: u32, channels: u32) -> Geometry {
+        Geometry {
+            rate: 48_000,
+            channels,
+            sample_format,
+            period_frames: 128,
+            n_slots: 2,
+        }
+    }
+
+    /// A ring built S32 and attached expecting S16 must fail on the FIELD
+    /// compare, not on the file-size cross-check. Both widened axes can produce
+    /// a size difference too, and a size error would still fail the attach — but
+    /// it would fail for the wrong reason and would stop naming the field that
+    /// actually disagrees. Pin the field-mismatch class itself.
+    #[test]
+    fn attach_expecting_s16_against_an_s32_ring_is_a_field_mismatch() {
+        let path = tmp_ring_path("fmt-mismatch");
+        let built = wide_geometry(SAMPLE_FORMAT_S32LE, 2);
+        drop(RingReader::create_or_attach(&path, built).unwrap());
+
+        let err = match RingReader::create_or_attach(&path, wide_geometry(SAMPLE_FORMAT_S16LE, 2)) {
+            Ok(_) => panic!("attaching S16 to an S32 ring must be fatal"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("sample_format mismatch"),
+            "expected the field-by-field compare to name sample_format: {err}"
+        );
+        cleanup(&path);
+    }
+
+    /// Same pin on the channel axis: a 6ch ring attached expecting stereo fails
+    /// on the `channels` field compare.
+    #[test]
+    fn attach_expecting_stereo_against_a_six_channel_ring_is_a_field_mismatch() {
+        let path = tmp_ring_path("ch-mismatch");
+        let built = wide_geometry(SAMPLE_FORMAT_S16LE, 6);
+        drop(RingReader::create_or_attach(&path, built).unwrap());
+
+        let err = match RingReader::create_or_attach(&path, wide_geometry(SAMPLE_FORMAT_S16LE, 2)) {
+            Ok(_) => panic!("attaching 2ch to a 6ch ring must be fatal"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("channels mismatch"),
+            "expected the field-by-field compare to name channels: {err}"
+        );
+        cleanup(&path);
+    }
+
+    /// The byte API carries a WIDE slot end to end: an S32 / 6ch payload
+    /// published by the production writer and consumed by the production reader,
+    /// byte-for-byte. The typed wrappers cannot express this geometry at all, so
+    /// this is the only path that proves the widened accept-set is usable rather
+    /// than merely accepted.
+    #[test]
+    fn byte_api_roundtrips_a_wide_slot() {
+        let path = tmp_ring_path("wide-bytes");
+        let g = wide_geometry(SAMPLE_FORMAT_S32LE, 6);
+        let slot_bytes = g.slot_bytes().unwrap();
+        assert_eq!(slot_bytes, 3072, "128 frames x 6 ch x 4 bytes");
+
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let mut reader = RingReader::create_or_attach(&path, g).unwrap();
+        let mut out = vec![0u8; slot_bytes];
+        // Prime the reader heartbeat so the writer takes the publish path.
+        assert_eq!(reader.try_consume_slot_bytes(&mut out), SlotRead::Empty);
+        assert!(out.iter().all(|&b| b == 0), "empty must zero-fill");
+
+        let payload: Vec<u8> = (0..slot_bytes).map(|i| (i % 251) as u8).collect();
+        assert_eq!(writer.publish_bytes(&payload), PublishOutcome::Published);
+        assert_eq!(reader.try_consume_slot_bytes(&mut out), SlotRead::Filled);
+        assert_eq!(out, payload);
+        assert_eq!(reader.metrics().frames_read, g.period_frames as u64);
+        cleanup(&path);
+    }
+
+    /// The i16-typed wrappers are byte-identical to the byte path: samples
+    /// published through `RingWriter::publish` land in the slot as exactly the
+    /// bytes those samples occupy, and read back through
+    /// `try_consume_slot_bytes` unchanged. This is what lets the fan-in and
+    /// outputd call sites keep their typed signatures while the core goes
+    /// byte-oriented.
+    #[test]
+    fn typed_publish_is_byte_identical_to_the_byte_path() {
+        let path = tmp_ring_path("typed-identity");
+        let g = proto_geometry();
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let mut reader = RingReader::create_or_attach(&path, g).unwrap();
+        let n = g.samples_per_slot();
+        let mut out = vec![0u8; g.slot_bytes().unwrap()];
+        assert_eq!(reader.try_consume_slot_bytes(&mut out), SlotRead::Empty);
+
+        let samples: Vec<i16> = (0..n)
+            .map(|i| (i as i16).wrapping_mul(613).wrapping_sub(7))
+            .collect();
+        assert_eq!(
+            writer.publish(&samples),
+            PublishOutcome::Published,
+            "typed publish"
+        );
+
+        // `to_le_bytes` is the assertion, not `to_ne_bytes`: the ring stores the
+        // host's in-memory `i16` bytes and every target this ships on (aarch64,
+        // x86) is little-endian, which is what `SAMPLE_FORMAT_S16LE` names. A
+        // big-endian host would fail here rather than emit a mislabelled wire.
+        let expected: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        assert_eq!(reader.try_consume_slot_bytes(&mut out), SlotRead::Filled);
+        assert_eq!(
+            out, expected,
+            "the typed wrapper must write the samples' own little-endian bytes"
+        );
         cleanup(&path);
     }
 

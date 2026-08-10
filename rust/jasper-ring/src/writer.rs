@@ -257,21 +257,34 @@ impl RingWriter {
         self.write_seq
     }
 
-    /// Publish exactly one slot from `samples` (`samples.len()` must equal
-    /// `period_frames * channels`). Blocks (bounded) on a full ring with a live
-    /// reader; free-run drop-oldest on a full ring with a dead reader. ALWAYS
-    /// returns within the bounded wait cap (`MAX_FULL_WAIT_TICKS` × the
-    /// `min(period/4, 2 ms)` tick — ~21 ms with the fanin 128-frame slot, ~64 ms
-    /// only at the ≥2 ms-tick worst case) so the caller's watchdog stays fresh.
+    /// S16-typed view of [`RingWriter::publish_bytes`], kept so existing callers
+    /// compile unchanged; it publishes byte-for-byte what the byte path
+    /// publishes. `samples.len()` must equal `period_frames * channels`. Valid
+    /// ONLY on an S16LE geometry — on any other format an `i16` slice of
+    /// `samples_per_slot` is the wrong size for a slot. Callers move to the byte
+    /// path; this wrapper goes away with the last of them.
+    pub fn publish(&mut self, samples: &[i16]) -> PublishOutcome {
+        self.map.debug_assert_s16_typed_view();
+        self.publish_bytes(crate::i16_samples_as_bytes(samples))
+    }
+
+    /// Publish exactly one slot from `payload` (`payload.len()` must equal
+    /// [`Geometry::slot_bytes`]). The ring core never interprets samples — it
+    /// memcpys — so this one entry point serves every geometry. Blocks (bounded)
+    /// on a full ring with a live reader; free-run drop-oldest on a full ring
+    /// with a dead reader. ALWAYS returns within the bounded wait cap
+    /// (`MAX_FULL_WAIT_TICKS` × the `min(period/4, 2 ms)` tick — ~21 ms with the
+    /// fanin 128-frame slot, ~64 ms only at the ≥2 ms-tick worst case) so the
+    /// caller's watchdog stays fresh.
     ///
     /// Returns the [`PublishOutcome`] so the caller can self-pace on a dropped
     /// publish (the reader-absent one-period sleep lives in the daemon, not
     /// here — see the plan's `Output::Ring` pacing rule).
-    pub fn publish(&mut self, samples: &[i16]) -> PublishOutcome {
+    pub fn publish_bytes(&mut self, payload: &[u8]) -> PublishOutcome {
         let g = self.map.geometry;
         assert_eq!(
-            samples.len(),
-            g.samples_per_slot(),
+            payload.len(),
+            self.map.slot_bytes(),
             "ring publish requires exactly one complete slot"
         );
 
@@ -354,7 +367,7 @@ impl RingWriter {
         // Space confirmed (or made by drop-oldest). memcpy the payload into slot
         // (w % n_slots) with plain stores, then store write_seq+1 (Release) so
         // the reader's Acquire load of write_seq sees the complete payload.
-        self.map.write_i16_slot(w, samples);
+        self.map.write_slot_bytes(w, payload);
         let next = w.wrapping_add(1);
         self.write_seq = next;
         self.map

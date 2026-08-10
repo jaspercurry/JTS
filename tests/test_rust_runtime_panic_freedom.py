@@ -543,12 +543,29 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-ring/src/lib.rs",
-        "out.len(), g.samples_per_slot()",
+        "ring consume requires exactly one complete slot",
     ): (
-        "try_consume_slot's own doc comment states the exact contract "
-        "(\"out.len() must equal period_frames * channels\"); its only real "
-        "caller (outputd's shm_ring_source.rs) sizes the buffer from the "
-        "same geometry the mapping was attached with."
+        "try_consume_slot_bytes's own doc comment states the exact contract "
+        "(\"out.len() must equal Geometry::slot_bytes\"); its only real "
+        "caller (outputd's shm_ring_source.rs, via the try_consume_slot "
+        "wrapper) sizes the buffer from the same geometry the mapping was "
+        "attached with. Replaces the pre-byte-API entry keyed on "
+        "\"out.len(), g.samples_per_slot()\": the same check, moved onto the "
+        "byte path and given a message, since a slot is measured in bytes "
+        "once the ring carries formats other than S16."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "the i16-typed slot view is only valid on an S16LE ring",
+    ): (
+        "One site (RingMapping::debug_assert_s16_typed_view) deliberately "
+        "covers all three i16-typed wrappers -- write_i16_slot, "
+        "RingReader::try_consume_slot, RingWriter::publish -- which measure "
+        "their buffers in 2-byte samples and are therefore correct only on "
+        "an S16LE geometry. Debug-only tripwire on an internal caller "
+        "contract: the geometry is the one the mapping was constructed "
+        "with, never externally supplied, and the byte-path entry points "
+        "carry no such restriction."
     ),
     (
         "jasper-ring/src/lib.rs",
