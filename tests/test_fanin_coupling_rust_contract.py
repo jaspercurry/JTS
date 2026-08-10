@@ -136,17 +136,33 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     assert f"pub const RING_SLOTS_MAX: u32 = {RING_SLOTS_MAX};" in text, (
         "Rust RING_SLOTS_MAX must match the Python RING_SLOTS_MAX bound"
     )
-    # The out-of-range guard bails (anyhow::bail!), it does NOT clamp.
-    assert "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {" in text, (
+    # The out-of-range guard returns an Err, it does NOT clamp.
+    opener = "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {"
+    assert opener in text, (
         "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
     )
-    guard = text.split(
-        "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {", 1
-    )[1].split("}", 1)[0]
-    assert "anyhow::bail!" in guard, (
-        "Rust out-of-range ring slots must FAIL LOUD (anyhow::bail!), not clamp"
+    # Slice to the block's own closing brace, NOT to the first `}` in the body:
+    # the guard's message is a format string, so `{}` placeholders sit inside it
+    # and a first-`}` split truncates the block mid-literal (it silently read
+    # only 2 lines once the guard grew past its placeholders).
+    body = text.split(opener, 1)[1]
+    guard, sep, _ = body.partition("\n        }\n")
+    assert sep, "could not find the ring-slots guard's closing brace"
+    # Fail-loud is the promise; the spelling is not. `anyhow::bail!` and
+    # `return Err(anyhow::anyhow!(...))` both satisfy it.
+    assert "anyhow::bail!" in guard or "return Err(anyhow::anyhow!(" in guard, (
+        "Rust out-of-range ring slots must FAIL LOUD (bail!/return Err), not clamp"
     )
     assert "clamp" not in guard.lower(), "Rust must not silently clamp ring slots"
+    # And the failure is CONFIG-class: it exits 78 so jasper-fanin.service PARKS
+    # (RestartPreventExitStatus=78) instead of climbing the restart burst into
+    # StartLimitAction=reboot. A bad ring geometry is identical on every restart,
+    # and the ring file survives a reboot, so a restart loop here reboots the
+    # speaker indefinitely.
+    assert "crate::ConfigClassError" in guard, (
+        "Rust out-of-range ring slots must be tagged config-class so the unit "
+        "parks at exit 78 rather than reboot-looping"
+    )
 
 
 def test_shm_ring_status_block_emitted_by_rust_state():
