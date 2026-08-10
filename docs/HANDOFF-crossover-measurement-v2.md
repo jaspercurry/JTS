@@ -1781,6 +1781,10 @@ cross-service rollback of Sound; **Keep current sound** remains a non-mutating e
   fit against that candidate's own branch target, reduce to one small record,
   **release**. Fit scratch state is isolated between candidates; a fit-failed
   Fc is refused rather than borrowing the preceding candidate's prediction.
+  The branch TARGET is per-candidate; the fit's Fc-driven level and ripple
+  terms are not — issue #2291 owns that gap, and
+  [`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
+  characterizes it.
 - `_adjudicate_fc` at the walk's close — §4.4's rule that anything reading the
   whole walk waits for the whole walk.
 

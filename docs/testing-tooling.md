@@ -1074,6 +1074,42 @@ within-run comparison precisely so it does not depend on the difference.
 
 ---
 
+## Committed incident replay
+
+Severed-twin above needs the gitignored bank on the machine running it, so it
+cannot guard anything in CI. When an incident's defect is worth holding still
+across future changes, the other shape is a **committed, minimized fixture plus
+a characterization test** — the 2026-08-10 jts3 crossover incident (#2291) is
+the worked example.
+
+[`scripts/derive-crossover-incident-fixture.py`](../scripts/derive-crossover-incident-fixture.py)
+reduces the 93 MB bank at `captures/jts3-incident-20260810-issue2291/` to ~17 KB
+of JSON under
+[`tests/fixtures/crossover_v2_incident_20260810/`](../tests/fixtures/crossover_v2_incident_20260810/),
+and
+[`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
+drives the current prescription path with it. Copy the shape, not the contents:
+
+* **Derive, never hand-copy.** The script has a `--check` mode that re-derives
+  and diffs, so a fixture can be proved to still be the session it names. It
+  exits `2` when the bank is absent, because "I could not check" must not read
+  as "the check passed" — and it is an operator tool, never a CI gate.
+* **Inject only what cannot be committed, and say which.** Everything the
+  decision consumes rides in the fixture; the one seam whose true inputs are a
+  ~5e5-bin measured response returns the incident's own banked result. The
+  boundary is stated in the test's docstring rather than left to be inferred.
+* **Label a characterization test as one.** It pins behaviour that is WRONG, so
+  every assertion names the issue that will invert it. A green run means the
+  incident still reproduces, not that the speaker is right.
+* **Mutation-verify every site you claim, and name the ones you cannot.** Six
+  of the seven production sites behind those defects fail the test when
+  flipped; the seventh — the straddle test deciding whether the ripple scan
+  runs — cannot, because on this session's overlap band both corners straddle
+  identically. That is written into the test's docstring, because a
+  half-guarded site otherwise reads as covered.
+
+---
+
 ## Offline emit loop
 
 `jasper-active-speaker-emit-bench`

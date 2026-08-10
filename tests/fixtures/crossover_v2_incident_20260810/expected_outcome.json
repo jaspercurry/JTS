@@ -1,0 +1,95 @@
+{
+  "_provenance": {
+    "bundle_dir_name": "jts3-incident-20260810-issue2291",
+    "candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
+    "derived_by": "scripts/derive-crossover-incident-fixture.py",
+    "derived_on": "2026-08-10",
+    "incident": "2026-08-10 jts3 crossover prescription incident (issue #2291)",
+    "note": "What the incident actually emitted, and what the speaker then measured. anchor_replay is DERIVED from the banked scalars; every other number here is banked verbatim.",
+    "source_sha256": {
+      "baseline_profile.json": "a5880af45bbcb91a7be51be7df5171736037336ff1b6972ecbb4d5ae83f611fb",
+      "build.txt": "86124335f1e61a99b28aab3311817f12b5ebc17422a237017d2ced68b1530190",
+      "candidate.json": "5064c24284a5dcbd6a1e0b611f40a2081ead13c725e8bdf2d6c35ee37d9532a1",
+      "check.json": "aebacfe3c24201e7c53d8a745f3d7b4bf5783aed116855ed3a6aafb744db1aac",
+      "crossover_v2_state.json": "aaf3703dc47cfe7ca24dceb18dd9889bd44a7c089aa2a60ed178b4cb3e1cec18",
+      "info.json": "238018405169254d15a2c50a49c0cbe7f0a911c6225b5e3faa0167907068c84a",
+      "measure_sidecar.json": "514a5ae018a9f929e1bc5a2b9699b678cdb13612030f74de3d346623aeb33a11"
+    },
+    "speaker_build_sha": "9cc41b987",
+    "stage1_relay_session_id": "cap_OqlWdywQv9ZlWO7RqkZpSQ",
+    "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
+  },
+  "anchor_replay": {
+    "anchor_drift_db": 6.299962355202764,
+    "anchored_trim_db": {
+      "tweeter": -6.713017008584265,
+      "woofer": 0.0
+    },
+    "derived": true,
+    "normalize_shift_db": 2.8997471111579145,
+    "unnormalized_anchor_db": {
+      "tweeter": -3.81326989742635,
+      "woofer": 2.8997471111579145
+    }
+  },
+  "applied": {
+    "applied_at": "2026-08-10T16:46:57Z",
+    "config_basename": "active_speaker_baseline_candidate_97bb6a40a448.yml",
+    "config_sha256": "5ea1727c5c1a418454c5faf478821e905795aa2e890ce94ab27aa16c1573f9cd",
+    "corrections": {
+      "tweeter": {
+        "delay_ms": 0.0801,
+        "gain_db": -13.012979363787029,
+        "inverted": true
+      },
+      "woofer": {
+        "delay_ms": 0.0,
+        "gain_db": 0.0,
+        "inverted": false
+      }
+    },
+    "measured_candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d"
+  },
+  "committed_attenuations_db": {
+    "tweeter": -13.012979363787029,
+    "woofer": 0.0
+  },
+  "fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
+  "linearization_outcome": "trim_rejected",
+  "post_apply": {
+    "cloud_flatness": {
+      "max_band_hz": [
+        250.0,
+        2000.0
+      ],
+      "max_db": 7.727300631512719,
+      "max_hz": 428.44390869140625,
+      "passed": false,
+      "rms_db": 3.7249287769519337,
+      "tolerance_db": 1.5
+    },
+    "verify_claims": {
+      "absolute": {
+        "band_hz": [
+          824.35,
+          3297.4
+        ],
+        "max_db": 5.456,
+        "rms_db": 2.0898,
+        "status": "fail",
+        "tolerance_db": 2.0,
+        "worst_db": 5.456,
+        "worst_hz": 941.9861
+      },
+      "integration": {
+        "band_hz": [
+          1600.0,
+          3297.4
+        ],
+        "max_db": 1.2913,
+        "status": "pass",
+        "tolerance_db": 1.5
+      }
+    }
+  }
+}
