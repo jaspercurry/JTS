@@ -612,23 +612,24 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**R15 Stage 1 (merged, hardware-proven 2026-08-05):** two captures, index 1
-`check` and index 2 `measure`. Production passes the same resolved protection
-mapping to the protected-neutral emitter and configured-path analysis, and emits
-no `cloud_measure` phase or prompt. Stage 2 is unchanged.
+**Stage 1 — 8 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
+(R17's Fc selector flipped it, #2173) and `STAGE1_INCLUDES_CLOUD_MEASURE` stays
+`False` (R15, #2106), so a shipped session runs the anchor pair and then the
+lateral walk, and emits no `cloud_measure` phase or prompt. Production passes
+the same resolved protection mapping to the protected-neutral emitter and
+configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
+`check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
 
-**R16 Stage 1 — built, and OFF until R17 lands.** `STAGE1_INCLUDES_LATERAL` is
-`False`, so no shipped session walks this yet and stage 1 is still the two
-captures above. Gate 0 pairs every producer with a current consumer, and this
-one's is R17's Fc selector, which is still deferred — but its **structural**
-blocker is gone. #1654 landed: the HF sweep floor follows the declared hard
-band, so on JTS3 `overlap_band_hz` clamps to 1600 Hz instead of 2 kHz and a
-sub-2 kHz candidate's own handoff is inside its scoring band
+Gate 0 pairs every producer with a current consumer, and the walk's is
+`fc_selector.score_candidate`'s lateral robustness term — the only evidence in
+a session that a candidate's handoff survives off the design axis. The
+**structural** blocker cleared first: #1654 made the HF sweep floor follow the
+declared hard band, so on JTS3 `overlap_band_hz` clamps to 1600 Hz instead of
+2 kHz and a sub-2 kHz candidate's own handoff is inside its scoring band
 (Fc 1700 → `(1600, 3400)`, was `(2000, 3400)`). Candidates at or below the
 sweep floor itself stay unscorable — at Fc 1600 the handoff sits exactly on the
 band edge — so the honest downward limit is **Fc strictly above the declared
-hard floor**. R17 remains the flipper. What follows describes the
-shape the moment it flips — **8 captures at either tier:**
+hard floor**.
 
 | index | phase | gate | what it is |
 |---|---|---|---|
@@ -3734,6 +3735,8 @@ R16 lateral-evidence diff and its tests. The lateral walk is code-complete,
 can until `STAGE1_INCLUDES_LATERAL` flips with R17, so every claim about it is
 about what the code does, not about what a household or a microphone did.
 Position groups, failure taxonomy, benchmarks, and history were not re-verified.
+*Superseded — R17 (#2173) flipped the flag; the capture-flow section above has
+the shipped shape.*
 
 **2026-08-06 #1654 scope:** three sections only — the conditioning-policy
 margin, the R16-stage-1 blocker paragraph, and the level-match frame's
