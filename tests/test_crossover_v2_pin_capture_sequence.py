@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Issue #2291 Phase 0 — capture-sequence and retry-ledger characterization.
+
+Two gaps, both found by inventorying what the ~26 existing crossover test
+files already pin. Most of this territory is covered and is NOT re-pinned
+here:
+
+* The shipped stage-1 phase ORDER is authoritatively pinned by
+  ``tests/test_crossover_v2_lateral_evidence.py``'s
+  ``test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape`` — it reads
+  both stage-1 flags live, asserts the entry order, and pins the plan's wire
+  bytes by SHA.
+* Which phases are summed vs per-driver, and VERIFY's program identity with
+  the position groups that follow it, are pinned three independent ways
+  (conductor object-identity, retention labelling, and the
+  ``summed_program.wav`` alias trio).
+* The bounded-retry ruling's own bound and terminal shapes — pooled
+  ``MAX_EXTRA_ATTEMPTS_PER_POSITION`` across initiators, the exhaustion
+  outcomes, the honest refusal copy — are richly pinned in the conductor
+  suite's bounded-retry block.
+
+What follows is only what none of that reaches.
+"""
+
+from __future__ import annotations
+
+import inspect
+
+from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2_flow import (
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    PHASE_MEASURE,
+    STAGE1_INCLUDES_CLOUD_MEASURE,
+    STAGE1_INCLUDES_LATERAL,
+    CrossoverV2Conductor,
+    build_v2_cloud_index_phase_map,
+    build_v2_session_spec,
+)
+from jasper.web import correction_crossover_v2 as v2host
+
+from tests.test_crossover_v2_conductor import (
+    CAPS,
+    FC_HZ,
+    SESSION,
+    SESSION_VOLUME_DB,
+    FakeSeams,
+    _conductor,
+    _measure_analysis,
+    _preset,
+    _roles,
+    _run_phase,
+)
+
+
+# --- gap 1: the lateral walk's own wiring into the shipped session -----------
+
+
+def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
+    """The ``include_lateral`` half of an existing guard that only checks
+    ``include_cloud_measure``.
+
+    ``prepare_v2_session`` reads each stage-1 flag once and threads it into
+    TWO surfaces: the session spec the phone renders, and the conductor's
+    index→phase map. That pairing is the module's own stated invariant —
+    "an entry's prompt can never address a different phase than the conductor
+    believes it is running" (``build_v2_cloud_index_phase_map``'s docstring).
+
+    ``test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map``
+    in ``tests/test_correction_crossover_v2_endpoints.py`` guards exactly this
+    for ``include_cloud_measure`` — including the ``== 2`` call count. There
+    is no ``include_lateral`` equivalent anywhere, and ``include_lateral`` is
+    the flag that is ON. Both builders default it to ``False`` (asserted
+    below), so dropping either thread is silent: the session would still
+    build, and it would build the no-walk shape while the flag says otherwise.
+
+    Source-inspected rather than driven, for the reason the existing guard
+    gives — trusting the call site to stay wired is the desync this guards.
+    That choice is also forced here: both call sites live inside
+    ``prepare_v2_session``'s ``_open`` closure, and no test invokes it. The
+    three tests that call ``prepare_v2_session`` at all either refuse before
+    reaching ``_open`` or stop at ``prepared.label``; nothing calls
+    ``prepared.open()``. That structural testability hole belongs to #2291's
+    Phase 3/4 stage-capability factory, not to this characterization pass.
+    """
+
+    source = inspect.getsource(v2host.prepare_v2_session)
+
+    # The preparer READS the one owner of the fact, rather than restating it.
+    assert "include_lateral = STAGE1_INCLUDES_LATERAL" in source
+    assert STAGE1_INCLUDES_LATERAL is True
+    # …and threads that one read into both surfaces: the spec and the map.
+    assert source.count("include_lateral=include_lateral") == 2
+
+    # Stated beside the sibling flag it was written next to, so a change that
+    # turned the pre-apply cloud back on without revisiting the walk is
+    # visible here rather than only in the plan's byte pin.
+    assert "include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE" in source
+    assert STAGE1_INCLUDES_CLOUD_MEASURE is False
+
+
+def test_both_builders_default_the_walk_off_which_is_why_a_dropped_thread_is_silent():
+    """The premise the guard above rests on, stated rather than assumed.
+
+    If either builder defaulted ``include_lateral=True``, a dropped
+    ``include_lateral=include_lateral`` would be harmless and the guard above
+    would be theatre. They both default it ``False``, so the omission
+    downgrades the shipped session to the no-walk shape with no error.
+    """
+
+    for builder in (build_v2_cloud_index_phase_map, build_v2_session_spec):
+        default = inspect.signature(builder).parameters["include_lateral"].default
+        assert default is False, f"{builder.__name__} no longer defaults the walk off"
+
+
+# --- gap 2: the retry ledger does not survive a conductor rebuild ------------
+
+
+def _hydrated(snapshot, session_id: str, fakes: FakeSeams) -> CrossoverV2Conductor:
+    return CrossoverV2Conductor.hydrate(
+        snapshot,
+        session_id=session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(),
+        driver_spacing_m=0.15,
+    )
+
+
+def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras():
+    """Characterization, not endorsement: what a conductor rebuild does to a
+    partially-spent position's retry pool today.
+
+    ``SlotAttempts`` lives only in ``self._slot_attempts``; it is not a field
+    of ``V2ConductorSnapshot``. So the §5.6 same-session resume restores the
+    accepted phases and the gain plan but NOT the per-position extras — the
+    rebuilt conductor offers a position its full
+    ``MAX_EXTRA_ATTEMPTS_PER_POSITION`` again.
+
+    **Reachability, stated honestly so this is not read as a live defect
+    report.** ``prepare_v2_session`` is the only production caller of
+    ``hydrate``, and it always passes a NEW relay session id, so production
+    takes the different-session branch (a fresh start at CHECK, where a reset
+    pool is simply correct). The same-session branch exercised here is
+    reachable machinery with its own documented resume semantics; what is
+    unasserted is which side of the §5.6 line the retry pool falls on.
+
+    Pinned because #2291 Phase 4 extracts the journey state, and "the ledger
+    is in-memory only" is a property that a state aggregate would silently
+    change in either direction. Whether the bound SHOULD survive a rebuild is
+    a product decision for that phase; this records what it does now.
+    """
+
+    fakes = FakeSeams()
+    conductor = _conductor(fakes)
+    _run_phase(conductor, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(program, linearity=False)
+    _run_phase(conductor, 2, 2)
+    spent = _run_phase(conductor, 2, 3)
+
+    # One extra really was spent before the rebuild.
+    assert spent["attempts"]["used"] == 1
+    assert spent["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION - 1
+
+    snapshot = conductor.snapshot()
+    # The mechanism: the durable shape has no room for the ledger.
+    assert "slot_attempts" not in snapshot.to_dict()
+    assert not hasattr(snapshot, "slot_attempts")
+
+    resumed = _hydrated(snapshot, SESSION, fakes)
+
+    # The resume really is a resume — accepted phases DID survive, so the
+    # reset below is the ledger's own behaviour and not a fresh session.
+    assert resumed.session_id == SESSION
+    assert PHASE_MEASURE not in resumed.accepted_phases
+    assert "check" in resumed.accepted_phases
+    assert resumed._slot_attempts == {}
+
+    after = _run_phase(resumed, 2, 4)
+    assert after["attempts"]["used"] == 0
+    assert after["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION
+
+
+def test_a_different_session_starts_the_ledger_fresh_as_section_5_6_requires():
+    """The other branch, for contrast — here a reset pool is the CORRECT
+    answer, because §5.6 invalidates a prior session's evidence outright and
+    the household is starting the walk again at CHECK.
+
+    Written so the pin above cannot be read as "any reset is wrong": the two
+    branches are asserted side by side, and only one of them is an open
+    question for #2291 Phase 4.
+    """
+
+    fakes = FakeSeams()
+    conductor = _conductor(fakes)
+    _run_phase(conductor, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(program, linearity=False)
+    _run_phase(conductor, 2, 2)
+
+    fresh = _hydrated(conductor.snapshot(), "cap_a_different_session", fakes)
+
+    assert fresh.accepted_phases == frozenset()
+    assert fresh._slot_attempts == {}
+
+
+def test_the_ledger_is_reachable_only_through_the_conductors_own_memory():
+    """Why no durable-state test could have caught the above.
+
+    ``_slot_attempts`` is the single owner of the pooled count, and nothing
+    projects it into the snapshot. Asserted against the live field set so a
+    future migration that DOES persist it fails here and has to update the
+    characterization above rather than leaving it stale.
+    """
+
+    assert "slot_attempts" not in flow.V2ConductorSnapshot.__dataclass_fields__
+    assert isinstance(_conductor(FakeSeams())._slot_attempts, dict)
