@@ -27,7 +27,6 @@ pub mod assistant_reference;
 // tests. See the module doc and #1717.
 pub mod assistant_source;
 pub mod config;
-pub mod content_bridge;
 pub mod core;
 // outputd's multi-room role: the `dac_content` reader (Increment 3) — the
 // round-trip lane a grouping member's snapclient feeds. (The former

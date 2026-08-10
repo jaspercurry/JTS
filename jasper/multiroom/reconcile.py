@@ -620,19 +620,22 @@ def outputd_grouping_env(
     the outputd TTS socket along with the dac_content lane.
 
     WRITER/VALIDATOR COHERENCE (the jts3 2026-06-11 boot-loop incident):
-    outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + ``CONTENT_BRIDGE=
-    rate_match`` — and systemd composes outputd's env from LAYERS, so a
-    lab retune in ``/var/lib/jasper/outputd.env`` (the rate_match soak)
-    plus this file's FIFO crashed outputd into StartLimitAction=reboot
-    (contained by the T5.1 boot-loop guard). The writer must never emit
-    a combination the validator rejects ACROSS ALL LAYERS, so while
-    bonded this file — deliberately the LAST EnvironmentFile= layer —
-    also pins ``CONTENT_BRIDGE=direct``, the lane's hard requirement.
+    outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + any non-``direct``
+    ``CONTENT_BRIDGE`` — and systemd composes outputd's env from LAYERS,
+    so a bridge set in ``/var/lib/jasper/outputd.env`` plus this file's
+    FIFO crashed outputd into StartLimitAction=reboot (contained by the
+    T5.1 boot-loop guard). The writer must never emit a combination the
+    validator rejects ACROSS ALL LAYERS, so while bonded this file —
+    deliberately the LAST EnvironmentFile= layer — also pins
+    ``CONTENT_BRIDGE=direct``, the lane's hard requirement.
     Solo OMITS the key entirely (never an empty value: outputd's
     ``env_str`` treats a SET-but-empty bridge mode as invalid and bails),
-    so a solo speaker falls back to the underlying layers and the lab's
-    rate_match soak resumes. Bonding and the soak coexist; neither can
-    crash outputd.
+    so a solo speaker falls back to the underlying layers. Bonding and a
+    lower-layer bridge choice coexist; neither can crash outputd.
+
+    (The incident's specific lower layer was a ``rate_match`` lab soak.
+    That bridge has since been deleted, but the pin is NOT vestigial: the
+    surviving ``shm_ring`` bridge trips the same fail-closed guard.)
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 

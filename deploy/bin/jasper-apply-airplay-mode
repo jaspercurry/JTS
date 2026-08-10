@@ -77,7 +77,6 @@ GROUPING_AIRPLAY_ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/g
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
-DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES=4096
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -278,45 +277,6 @@ outputd_dac_latency_frames() {
     fi
 }
 
-outputd_content_bridge_mode() {
-    local raw
-    local value
-    raw="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_CONTENT_BRIDGE || true)"
-    value="$raw"
-    value="${value//[[:space:]]/}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-    case "$value" in
-        ""|direct|off|disabled)
-            printf 'direct\n'
-            ;;
-        rate_match|ratematch|rate-matched|rate_matched)
-            printf 'rate_match\n'
-            ;;
-        *)
-            echo "jasper-apply-airplay-mode: invalid JASPER_OUTPUTD_CONTENT_BRIDGE='$raw'; using direct latency term" >&2
-            printf 'direct\n'
-            ;;
-    esac
-}
-
-outputd_content_bridge_target_frames() {
-    local value
-    value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES || true)"
-    positive_int_or_default "$value" "$DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES"
-}
-
-outputd_content_bridge_latency_frames() {
-    if [[ "$(outputd_content_bridge_mode)" == "rate_match" ]]; then
-        outputd_content_bridge_target_frames
-    else
-        printf '0\n'
-    fi
-}
-
 bonded_extra_delay_sec() {
     # Extra fixed downstream delay (SECONDS) to fold into the offset while
     # this speaker is an active bonded LEADER: the Snapcast round-trip
@@ -347,7 +307,6 @@ derive_audio_backend_latency_offset() {
     local chunksize
     local target_level
     local fanin_output_latency
-    local outputd_content_bridge
     local outputd_dac_latency
     local bonded_extra_sec
 
@@ -383,12 +342,6 @@ derive_audio_backend_latency_offset() {
     # older build without that field.
     fanin_output_latency="$(fanin_output_latency_frames)"
 
-    # outputd's optional content bridge intentionally holds post-Camilla
-    # content at a target fill before the DAC-paced final mix. This is
-    # invisible to shairport's private lane and must be compensated when
-    # lab mode enables the bridge.
-    outputd_content_bridge="$(outputd_content_bridge_latency_frames)"
-
     # outputd's DAC queue is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
     # snd_pcm_delay(), so account for the branch-owned output owner
@@ -406,7 +359,6 @@ derive_audio_backend_latency_offset() {
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
         -v fanin_output_latency="$fanin_output_latency" \
-        -v outputd_content_bridge="$outputd_content_bridge" \
         -v outputd_dac_latency="$outputd_dac_latency" \
         -v bonded_extra_sec="$bonded_extra_sec" '
         BEGIN {
@@ -421,8 +373,6 @@ derive_audio_backend_latency_offset() {
             #   + fanin_output_latency       ← jasper-fanin output queue
             #                                   between the private AirPlay
             #                                   lane and CamillaDSP/AEC.
-            #   + outputd_content_bridge     ← optional jasper-outputd
-            #                                   content bridge target fill.
             #   + outputd_dac_latency        ← jasper-outputd direct-DAC
             #                                   playback queue.
             #
@@ -431,7 +381,7 @@ derive_audio_backend_latency_offset() {
             # the script — bash 2026-05-25 lesson, do not paraphrase.
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
-            invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_content_bridge + outputd_dac_latency
+            invisible_frames = (target_level - chunksize) + fanin_output_latency + outputd_dac_latency
             # bonded_extra_sec is a wall-clock buffer (the Snapcast round-
             # trip on a bonded leader), added in seconds; 0 on solo.
             offset = -((invisible_frames / sample_rate) + bonded_extra_sec)

@@ -412,17 +412,18 @@ def check_grouping_channel_pick() -> CheckResult:
         )
     # Writer/validator coherence pin (the jts3 2026-06-11 boot-loop
     # incident): while bonded, this file must ALSO pin
-    # CONTENT_BRIDGE=direct — without it, a lab rate_match retune in a
-    # lower env layer composes into the combination outputd fail-closes
-    # on. A stale pre-pin file (e.g. upgraded across the fix without a
+    # CONTENT_BRIDGE=direct — without it, a non-direct bridge in a lower
+    # env layer composes into the combination outputd fail-closes on. A
+    # stale pre-pin file (e.g. upgraded across the fix without a
     # reconcile) is exactly what this catches.
     if env.get(OUTPUTD_CONTENT_BRIDGE_ENV) != "direct":
         return CheckResult(
             label, "warn",
             f"{OUTPUTD_GROUPING_ENV_FILE} lacks the "
             f"{OUTPUTD_CONTENT_BRIDGE_ENV}=direct pin while bonded — a "
-            "rate_match retune in a lower env layer would fail-close "
-            "outputd at its next restart; run jasper-grouping-reconcile",
+            "non-direct content bridge in a lower env layer would "
+            "fail-close outputd at its next restart; run "
+            "jasper-grouping-reconcile",
         )
     return CheckResult(label, "ok", f"outputd lane wired, channel={want_channel}")
 

@@ -237,8 +237,7 @@ pub struct Config {
     pub input_resampler_target_frames: u32,
 
     /// Output ppm clamp on the input resampler's pitch warp — the hard safety
-    /// bound on how far the host↔DAC rate gap may ever be corrected. Matches
-    /// content_bridge's default. Env:
+    /// bound on how far the host↔DAC rate gap may ever be corrected. Env:
     /// `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM`.
     pub input_resampler_max_adjust_ppm: u32,
 

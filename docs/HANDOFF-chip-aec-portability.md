@@ -81,8 +81,10 @@ USB-IN), so it recovers the clock ratio from **ground-truth counters** —
 chip_ref_snd_pcm_delay`, plus `chip_ref_sequence_lag` (`state.rs:1577`).
 This is easier than the blind acoustic SRO estimation the academic work
 does. The control machinery already exists: the `RateController` (PI servo)
-+ windowed-sinc resampler in `content_bridge.rs` (`render_period` /
-`RateController::next_ratio`). Layer 2 lifts it onto the chip-ref path.
++ windowed-sinc resampler live in the `rust/jasper-resampler` crate
+(`RateController::next_ratio`), composed today by `jasper-fanin`'s
+`lane_resampler.rs` (`render_period`) — the pattern Layer 2 lifts onto the
+chip-ref path.
 
 **Invariant — one rate owner.** If a chip-ref resampler is live, nothing
 else may correct the same drift (e.g. CamillaDSP `rate_adjust` on that

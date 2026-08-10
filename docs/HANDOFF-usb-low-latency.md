@@ -171,12 +171,15 @@ HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
 p99 promotion requires >=1000 impulses over >=30 minutes with jittered
 spacing and p99 <= 42 ms.
 
-The claiming route now hard-fails if it is combined with the legacy low-latency
-lab transport `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`. That path remains
-available only as a default-off diagnostic until it is removed or replaced; it
-cannot carry `usb_low_latency_48k` certification. (The
-`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` coupling was removed 2026-07-11 —
-a persisted value now fails safe to loopback rather than gating certification.)
+The claiming route hard-fails on any `JASPER_OUTPUTD_CONTENT_BRIDGE` value
+other than `direct` or a coherent `shm_ring` pair. That includes the legacy
+`rate_match` lab transport, which was **deleted** — outputd now fail-safes a
+persisted `rate_match` spelling to `direct` so a stale env line cannot park the
+final-output owner, but the route policy compares the RAW literal
+(`audio_runtime_plan._route_policy_errors`), so a box still carrying one reports
+an honest red claim instead of a silently-downgraded green one. (The
+`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` coupling was removed 2026-07-11
+on the same fail-safe-plus-refuse pattern.)
 
 The artifact writer is `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`.
 It does **not** measure audio by itself; the click-in/capture-back harness that
@@ -389,10 +392,13 @@ pause does not stop voice's UDP mic producer; the canonical lifecycle contract
 lives in [HANDOFF-aec.md](HANDOFF-aec.md).
 
 **Coordination scope.** All DELIBERATE Python-side fan-in restarts are
-coordinated: the reconciler's own restarts, and `jasper.fanin.buffer_reconcile`'s
-adaptive-buffer fan-in restart (default-OFF behind
-`JASPER_FANIN_ADAPTIVE_BUFFER`), which routes through
-`coupling_reconcile.coordinated_fanin_restart(phase="adaptive_buffer")`.
+coordinated: today that is `reconcile_auto`'s own auto USB-combo restart
+(`_restart_fanin_coordinated`). The public out-of-module entry point,
+`coupling_reconcile.coordinated_fanin_restart`, was itself deleted in P5c —
+its sole caller, the adaptive output-buffer arm
+(`jasper.fanin.buffer_reconcile`, behind `JASPER_FANIN_ADAPTIVE_BUFFER`), had
+already been deleted, and the wrapper's remaining behavior (ok-flattening on
+a resume failure) had no consumer left to justify keeping it.
 
 **Root cause fixed (2026-07-11) — the ring-ioplug capture reader now paces
 through writer absence.** The busy-spin's mechanism was NOT the SHM ring: strace
@@ -1473,22 +1479,23 @@ when the resampler is armed (`STATIC_CUSHION_JITTER_MARGIN_FRAMES` in
 `rust/jasper-fanin/src/config.rs` — the static-cushion sibling of the decay-floor
 guard), so this knob-set cannot ship silently again.
 
-> **⚠️ Deploy trap — read before deploying #1145 to a box running the lab recipe.**
-> The guard is fail-LOUD: `Config::from_env` `bail!`s at startup for period 256 /
-> ±500 ppm whenever the armed held target is below **562** (`minimum_safe_fill 274 +
-> period 256 + jitter margin 32`). The old lab recipe (`TARGET_FRAMES=256` +
-> `WARMUP_CUSHION_FRAMES=256` → held 512) is **below** that floor, and
-> `jasper-fanin.service` carries `Restart=on-failure` + `StartLimitAction=reboot`, so
-> a box whose live env still has the 256+256 geometry will **reboot-loop** after this
-> lands (the remedy is only visible in the journal between reboots). **The minimum
-> passing geometry at period 256 / ±500 ppm is held ≥ 562** — i.e. keep
-> `TARGET_FRAMES=256` and raise `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`
-> to **≥ 306** (or raise `TARGET_FRAMES` so target+cushion ≥ 562), OR lower
-> `MAX_ADJUST_PPM` / `PERIOD_FRAMES`. **jts.local specifically** runs USB DIRECT +
-> resampler 256+256 as its documented lab route, so bump its
-> `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` to ≥ 306 in
-> `/etc/jasper/jasper.env` **before** deploying this PR. The blast radius is identical
-> to the existing decay-floor guard (same fail-loud-at-boot class).
+> **The guard shipped and stands.** `Config::from_env` `bail!`s at startup for
+> period 256 / ±500 ppm whenever the armed held target is below **562**
+> (`minimum_safe_fill 274 + period 256 + jitter margin 32`). It is fail-LOUD by
+> design, and `jasper-fanin.service` carries `Restart=on-failure` +
+> `StartLimitAction=reboot`, so an under-sized geometry reboot-loops the box with
+> the remedy visible only in the journal between reboots — which is why the
+> shipped defaults (held 2560) sit ~2030 frames clear of it.
+>
+> The 256+256 lab recipe this callout was originally written against (a
+> `TARGET_FRAMES=256` + `WARMUP_CUSHION_FRAMES=256` → held 512 geometry, below
+> the floor) is **no longer documented or shipped anywhere in the tree**. If you
+> hand-tune the pair, the minimum passing geometry at period 256 / ±500 ppm is
+> held ≥ 562: keep `TARGET_FRAMES=256` and raise
+> `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` to **≥ 306** (or raise
+> `TARGET_FRAMES` so target+cushion ≥ 562), OR lower `MAX_ADJUST_PPM` /
+> `PERIOD_FRAMES` — and do it **before** deploying, not after. Same
+> fail-loud-at-boot class as the decay-floor guard.
 
 | run | measured p50/p95/p99 | end-to-end p50/p95/p99 |
 |---|---|---|
@@ -2015,7 +2022,8 @@ speaker remains recoverable.
 | Python/PortAudio and Rust `jasper-usbsink-audio` bridges | **DELETED** (USB dead-pipeline sweep) — fan-in DIRECT capture is the sole USB ingress; only the host-volume observer in `volume_bridge.py` survives | done |
 | lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | **DELETED** (USB dead-pipeline sweep) — it was reachable only through the deleted Python bridge (the Rust daemon has no fifo mode) | done |
 | `transport_pipe` fan-in↔Camilla dual FIFO coupling | **DELETED** (2026-07-11) — the shm_ring SHM-ring pair replaced its diagnostic value as the frame-bounded low-latency default; fan-in Output::Fifo + outputd local_content_pipe + the reconciler arm/gate branches + the JASPER_FANIN_CAMILLA_PIPE/JASPER_OUTPUTD_LOCAL_CONTENT_PIPE env keys are gone | done |
-| outputd `rate_match` content bridge for USB | Rejected for this route; produced content xruns/EAGAIN/partials in tuning | Keep only as a DAC/content clock-slip lab tool, or delete once no active diagnostic depends on it |
+| outputd `rate_match` content bridge for USB | **DELETED** — rejected for this route (produced content xruns/EAGAIN/partials in tuning), then removed along with `content_bridge.rs`, its three `_RING_FRAMES`/`_TARGET_FRAMES`/`_MAX_ADJUST_PPM` knobs, the reconciler's S16 format narrowing, and the AirPlay latency term. A persisted spelling fail-safes to `direct`; the route policy still refuses it | done |
+| adaptive fan-in output-buffer shrink (`JASPER_FANIN_ADAPTIVE_BUFFER`, `JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES`) | **DELETED** — the opt-in mux-driven shrink never passed an on-device soak; `jasper/fanin/buffer_reconcile.py`, mux's `_settle_adaptive_buffer` ladder and its `/state.fanin_output_buffer` block, and the runtime-plan source-route policy are gone. The packaged `jasper-fanin.service` 1024 default is now the only writer of the output buffer | done |
 | stale low-latency prose and component estimates | Historical context only | Compress into dated appendices as product docs converge on measured route artifacts |
 
 Before deleting any path, add a guard test that the production

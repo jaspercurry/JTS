@@ -28,7 +28,6 @@ use jasper_outputd::alsa_backend::{
     NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
-use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
@@ -40,7 +39,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
-const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
+const MAX_DAC_CONTENT_DRAIN_READS: usize = 8;
 const CHIP_REF_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const CHIP_REF_RETRY_MAX: Duration = Duration::from_secs(30);
 const CHIP_REF_WORKER_POLL: Duration = Duration::from_millis(200);
@@ -363,10 +362,9 @@ fn run_alsa(
     let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
-    // S16 scratch for the two content sources that are S16-NATIVE rather than
-    // ALSA lanes: the SHM ring (S16 wire by D5) and the rate-match bridge (the
-    // shared windowed-sinc resampler is an i16 algorithm). Both are alternatives
-    // to each other and to `direct`, so ONE buffer serves whichever is armed and
+    // S16 scratch for the SHM ring — the one content source that is
+    // S16-NATIVE rather than an ALSA lane (S16 wire by D5). It's an
+    // alternative to `direct`, so ONE buffer serves whichever is armed and
     // the `direct` default — every live box — allocates nothing.
     //
     // Zero bytes on `direct` matters here specifically: outputd runs `mlockall`,
@@ -374,25 +372,7 @@ fn run_alsa(
     // never uses it.
     let mut s16_lane_scratch: Vec<i16> = match config.content_bridge_mode {
         ContentBridgeMode::Direct => Vec::new(),
-        ContentBridgeMode::ShmRing | ContentBridgeMode::RateMatch => {
-            vec![0i16; content_period_samples]
-        }
-    };
-    let mut content_bridge = match config.content_bridge_mode {
-        ContentBridgeMode::Direct | ContentBridgeMode::ShmRing => None,
-        ContentBridgeMode::RateMatch => {
-            eprintln!(
-                "event=outputd.content_bridge.enabled mode=rate_match ring_frames={} target_fill_frames={} max_adjust_ppm={}",
-                config.content_bridge.ring_frames,
-                config.content_bridge.target_fill_frames,
-                config.content_bridge.max_adjust_ppm,
-            );
-            Some(ContentBridge::new(
-                config.content_bridge,
-                config.period_frames,
-                CHANNELS as usize,
-            )?)
-        }
+        ContentBridgeMode::ShmRing => vec![0i16; content_period_samples],
     };
     // Ring B: the SHM ping-pong ring content source. Shipped default on
     // eligible stereo topologies (P4 LANDED —
@@ -551,7 +531,7 @@ fn run_alsa(
                 // lane is genuinely broken, the inv-B fallback read below
                 // surfaces it when we actually need the lane. Xruns are
                 // already recovered inside read_content_available.
-                for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
+                for _ in 0..MAX_DAC_CONTENT_DRAIN_READS {
                     match sink.read_content_available(&mut content_read_buf) {
                         Ok(ContentRead::Frames(frames)) if frames > 0 => {}
                         Ok(_) => break,
@@ -580,15 +560,6 @@ fn run_alsa(
                 src.read_period(&mut s16_lane_scratch);
                 state.mark_shm_ring(src.metrics());
                 widen_period(&s16_lane_scratch, &mut content_buf)?;
-            } else if let Some(bridge) = content_bridge.as_mut() {
-                read_content_bridge_period(
-                    &mut sink,
-                    bridge,
-                    &mut content_read_buf,
-                    &mut s16_lane_scratch,
-                    &mut content_buf,
-                )?;
-                state.mark_content_bridge(bridge.metrics());
             } else {
                 let _frames_read = sink.read_content_period(&mut content_buf)?;
             }
@@ -835,51 +806,6 @@ fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
         return 1;
     }
     ((buffer_frames / period_frames).saturating_sub(1)).max(1)
-}
-
-/// Drain the content lane into the rate-match bridge and render one period.
-///
-/// The bridge is the shared windowed-sinc resampler, an **i16 algorithm**
-/// (`jasper_resampler`'s `AudioRing`/`BlockResampler` are i16 throughout and
-/// widening them is explicitly out of this program's scope). So this helper is
-/// the one place on the content path that steps DOWN out of the spine and back
-/// up, and `s16_scratch` is where it happens.
-///
-/// That round trip is exact for every configuration this daemon will start in,
-/// and it is a config guard — not an argument — that makes it so:
-/// `Config::from_env` refuses `rate_match` on a non-S16 content lane, so the
-/// samples arriving in `read_buf` were themselves widened from S16 and narrow
-/// back to the identical bytes. Without that guard an S32 lane would be silently
-/// requantized here, which would be a SECOND quantization on the output path.
-///
-/// One scratch serves both halves: every `push_input` completes before
-/// `render_period` writes, so the borrows never overlap.
-fn read_content_bridge_period(
-    sink: &mut RuntimeAlsaSink,
-    bridge: &mut ContentBridge,
-    read_buf: &mut [ProgramSample],
-    s16_scratch: &mut [i16],
-    out: &mut [ProgramSample],
-) -> Result<()> {
-    for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
-        match sink.read_content_available(read_buf)? {
-            ContentRead::Frames(frames) => {
-                if frames == 0 {
-                    break;
-                }
-                let samples = frames * (CHANNELS as usize);
-                narrow_period(&read_buf[..samples], &mut s16_scratch[..samples])?;
-                bridge.push_input(&s16_scratch[..samples]);
-            }
-            ContentRead::NoData => break,
-            ContentRead::XrunRecovered => {
-                bridge.reset_after_discontinuity("content_xrun");
-                break;
-            }
-        }
-    }
-    bridge.render_period(s16_scratch);
-    widen_period(s16_scratch, out)
 }
 
 fn notify_ready(config: &Config) -> Result<()> {
@@ -1757,7 +1683,6 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jasper_outputd::config::ContentBridgeConfig;
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2033,11 +1958,6 @@ mod tests {
             content_buffer_frames: 512,
             dac_buffer_frames: 256,
             content_bridge_mode: ContentBridgeMode::Direct,
-            content_bridge: ContentBridgeConfig {
-                ring_frames: 16_384,
-                target_fill_frames: 4096,
-                max_adjust_ppm: 500,
-            },
             shm_ring: None,
             chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
             chip_ref_sample_rate: 16_000,

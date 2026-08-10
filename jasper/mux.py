@@ -93,11 +93,6 @@ from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .busctl import system_busctl
 from .control import restart_broker
-from .audio_runtime_plan import (
-    SourceRouteDecision,
-    decide_source_low_latency_route,
-    low_latency_feature_flags,
-)
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
@@ -339,19 +334,6 @@ class Mux:
         self._test_fanin_label: str | None = None
         self._test_fanin_owner: str | None = None
         self._test_fanin_expires_at: float | None = None
-        low_latency_flags = low_latency_feature_flags()
-        # Adaptive fan-in OUTPUT-buffer (default-OFF): shrink fan-in's near-FULL
-        # output buffer when USB is the sole exclusive winner, and restore the
-        # full default otherwise. Parsed ONCE here so the _tick hot path makes no
-        # env read per tick and the disabled path is provably byte-identical.
-        # `_buffer_shrunk` tracks whether we have the shrunk override armed, so
-        # shrink/restore are idempotent across ticks (act only on the edge).
-        self._adaptive_buffer_enabled = low_latency_flags.adaptive_buffer
-        self._buffer_shrunk = False
-        # Re-arm backoff: a failed shrink (env write or fanin restart failed)
-        # must not restart-storm the shared daemon every tick. Stay full until
-        # the source set changes.
-        self._buffer_shrink_blocked = False
         # Alert/patrol reconciliation. Producers may only mark a source dirty
         # and wake this event; `_reconcile` is the single policy entry point.
         self._reconcile_wake = asyncio.Event()
@@ -645,16 +627,10 @@ class Mux:
 
         if self._test_fanin_label is not None:
             await self._reassert_test_fanin_label()
-            # A diagnostic lane owns fan-in; never the exclusive-USB low-latency
-            # path -> restore the full buffer if shrunk.
-            await self._settle_low_latency_audio(current)
             return
 
         if self._manual_source is not None:
             await self._reassert_manual_source()
-            # Manual pin is not the auto exclusive-USB low-latency trigger ->
-            # restore the full buffer if it was shrunk.
-            await self._settle_low_latency_audio(current)
             return
 
         target: Source | None = None
@@ -719,9 +695,6 @@ class Mux:
                             reason="handoff_prepare_failed",
                         )
             if not selected:
-                # Handoff didn't settle — never shrink on an unsettled gate;
-                # restore the full buffer if it was shrunk.
-                await self._settle_low_latency_audio(current)
                 return
 
             # Pause every OTHER source that's currently active after
@@ -764,129 +737,6 @@ class Mux:
         # escape-hatch. After the release above so a just-released lane isn't
         # re-muted this tick.
         await self._reassert_usbsink_preempt_mute()
-
-        await self._settle_low_latency_audio(current)
-
-    async def _settle_low_latency_audio(self, current: dict[Source, bool]) -> None:
-        """Drive optional low-latency consumers from one source-route decision."""
-        if not self._adaptive_buffer_enabled:
-            return
-        decision = self._source_low_latency_decision(current)
-        await self._settle_adaptive_buffer(decision)
-
-    def _source_low_latency_decision(
-        self,
-        current: dict[Source, bool],
-    ) -> SourceRouteDecision:
-        """Single source-route policy for the adaptive low-latency consumer."""
-        manual_or_test = (
-            self._manual_source is not None or self._test_fanin_label is not None
-        )
-        if manual_or_test:
-            return decide_source_low_latency_route(
-                active_sources=(),
-                winner=None,
-                enabled=True,
-                exclusive_source=Source.USBSINK.value,
-            )
-        return decide_source_low_latency_route(
-            active_sources=tuple(self._active_sources(current)),
-            winner=self._winner,
-            enabled=True,
-            exclusive_source=Source.USBSINK.value,
-        )
-
-    # ------------------------------------------------------------------
-    # Adaptive fan-in output-buffer — consumer of the shared source-route policy
-    # ------------------------------------------------------------------
-
-    async def _settle_adaptive_buffer(
-        self,
-        decision: SourceRouteDecision,
-    ) -> None:
-        """Drive the adaptive fan-in output-buffer from the settled state.
-
-        Default-OFF: when ``JASPER_FANIN_ADAPTIVE_BUFFER`` is not ``enabled``
-        this returns immediately and ``_tick`` is byte-identical to the
-        pre-adaptive behavior (the flag is parsed once at construction, so the
-        hot path makes no env read).
-
-        On the enabled path it consumes the shared source-route policy
-        (exclusive wired-USB sole-active-winner -> ``low_latency`` -> shrink;
-        any networked/mixed/idle/manual/test route -> restore the full buffer).
-        Idempotent across ticks via ``self._buffer_shrunk`` (act only on the
-        edge). FAIL-SAFE: every failure path keeps/restores the FULL buffer.
-
-        SCOPE: AUTO mode only for the shrink. A manual pin or an active
-        diagnostic (test) lane is treated as non-exclusive -> it gets the
-        restore-to-full path so a manual/correction run while the buffer was
-        shrunk unwinds it.
-        """
-        if not self._adaptive_buffer_enabled:
-            return
-
-        if decision.route == "low_latency":
-            if self._buffer_shrunk:
-                return
-            if self._buffer_shrink_blocked:
-                # Already tried and failed for this exclusive-USB episode; stay
-                # full until the source set changes (routes us to the restore
-                # branch below, which clears the block).
-                return
-            await self._shrink_output_buffer()
-        else:
-            # Any non-exclusive route clears the shrink-block (a fresh
-            # exclusive-USB edge gets a clean retry) and restores the full
-            # buffer if shrunk.
-            self._buffer_shrink_blocked = False
-            if self._buffer_shrunk:
-                await self._restore_output_buffer(reason=decision.reason)
-
-    async def _shrink_output_buffer(self) -> None:
-        """Shrink fan-in's output buffer to the soak-sweepable target. FAIL-SAFE
-        -> stays FULL on any failure (the buffer_reconcile rolls its env back on
-        a restart failure, so the running daemon is never left ahead of the
-        persisted value)."""
-        from .fanin import buffer_reconcile as br
-
-        target = br.shrunk_target_frames()
-        result = await asyncio.to_thread(
-            br.set_fanin_output_buffer, target, reason="adaptive_usb_exclusive",
-        )
-        if not result.ok:
-            self._buffer_shrink_blocked = True
-            log_event(
-                logger,
-                "mux.adaptive_buffer_shrink_failed",
-                frames=target,
-                detail=result.detail,
-                level=logging.WARNING,
-            )
-            return
-        self._buffer_shrunk = True
-        log_event(logger, "mux.adaptive_buffer_shrunk", frames=result.frames)
-
-    async def _restore_output_buffer(self, *, reason: str) -> None:
-        """Restore the FULL default output buffer. FAIL-SAFE: on a restore
-        failure we keep ``_buffer_shrunk`` set so the NEXT non-exclusive tick
-        retries the unwind — convergent, and the buffer_reconcile's SF-1
-        rollback means the persisted value never leads the daemon either way."""
-        from .fanin import buffer_reconcile as br
-
-        result = await asyncio.to_thread(
-            br.restore_fanin_output_buffer, reason=f"adaptive_{reason}",
-        )
-        if not result.ok:
-            log_event(
-                logger,
-                "mux.adaptive_buffer_restore_failed",
-                reason=reason,
-                detail=result.detail,
-                level=logging.WARNING,
-            )
-            return
-        self._buffer_shrunk = False
-        log_event(logger, "mux.adaptive_buffer_restored", reason=reason)
 
     async def select_source(self, source: Source) -> dict[str, Any]:
         """Manual source selection from the web UI.
@@ -1128,10 +978,6 @@ class Mux:
     ) -> dict[str, Any]:
         current = current or self._state.playing
         active = self._active_source_name(current)
-        # Local import mirrors the adaptive ladder's pattern (keeps the control
-        # package off mux's module-load path); cached after first use.
-        from jasper.fanin import buffer_reconcile as br
-
         return {
             "mode": "manual" if self._manual_source is not None else "auto",
             "selected_source": (
@@ -1164,21 +1010,6 @@ class Mux:
                 # fan-in DIRECT-captures the gadget on every box now; the aloop
                 # bridge path and its resident helper were removed.
                 "combo": True,
-            },
-            # Review should-fix #1: surface the adaptive output-buffer mode so an
-            # operator sees the live shrink state from /state without ssh+journal.
-            # This is the mux's INTENDED state; fan-in's actual running buffer is
-            # in /state.renderers.fanin.output.buffer_frames (cross-check the two).
-            # Read-only status field — does not touch _tick, so the default-OFF
-            # byte-identical proof is unaffected; no env I/O while disabled.
-            "fanin_output_buffer": {
-                "adaptive_enabled": self._adaptive_buffer_enabled,
-                "shrunk": self._buffer_shrunk,
-                "frames": (
-                    br.shrunk_target_frames()
-                    if (self._adaptive_buffer_enabled and self._buffer_shrunk)
-                    else br.DEFAULT_OUTPUT_BUFFER_FRAMES
-                ),
             },
         }
 

@@ -436,34 +436,27 @@ What exists:
   `direct` bridge still reads `outputd_content_capture`, backed by snd-aloop
   substream 6 (`hw:Loopback,1,6`), for ring-ineligible, operator-frozen, and
   active-N-ch paths — there the content buffer env is real.
-- Lab bridge: the opt-in `rate_match` mode keeps the DAC as timing owner, drains
-  `outputd_content_capture` into an explicit bounded ring, and renders
-  DAC-sized periods through a ppm-clamped windowed-sinc rate matcher. That
-  resampler is an i16 algorithm, so outputd steps down out of its i32 spine and
-  back up around it; the round trip is exact only for an S16 content lane, and
-  `Config::from_env` refuses `rate_match` on a wider one rather than
-  requantizing silently ahead of the DAC edge. Since the lane's default width is
-  now `S32_LE`, `jasper-audio-hardware-reconcile` emits
-  `JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE` whenever it finds this bridge set (for
-  every spelling outputd's own parse accepts — `rate_match`, `ratematch`,
-  `rate-matched`, `rate_matched`; a contract test keeps the two alias sets from
-  drifting), so a routine deploy keeps an operator's lab soak coherent instead of
-  building the pair outputd rejects (exit 78 →
-  `RestartPreventExitStatus=78` → parked final-output owner, silent speaker).
-  **A post-flip `rate_match` box therefore gains a conversion it did not have
-  before:** CamillaDSP writes the lane at `S32_LE` and outputd requests `S16_LE`
-  through it, so the `outputd_content_*` `plug` narrows — with ALSA's own linear
-  truncation, NOT the round-to-nearest the DAC edge uses. That is still the right
-  trade against a parked speaker on a lab-soak-only mode whose i16 resampler
-  already imposed the same narrowing, but it is a real difference: do not read a
-  `rate_match` soak's noise floor as representative of the production path.
-  Use this for DAC/content-lane clock-slip validation only until it has
-  passed long jts3 soaks; it is not a broad DAC abstraction.
-  Default lab settings add 4096 frames of content latency (~85 ms at
-  48 kHz) while leaving direct TTS/cue playout on the normal outputd
-  path. The sinc table is precomputed at startup; steady state should
-  be multiply/add work only, but Pi 5 CPU and xrun behavior still need
-  hardware soak before enabling it outside the lab.
+- **Removed — the `rate_match` lab bridge.** `direct` and `shm_ring` are the
+  whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`. A third mode drained
+  `outputd_content_capture` into a bounded ring and rendered DAC-sized periods
+  through a ppm-clamped windowed-sinc rate matcher, keeping the DAC as timing
+  owner. It was rejected for the USB low-latency route (content
+  xruns/EAGAIN/partials in the 2026-07-02 tuning) and then deleted, along with
+  its `_RING_FRAMES` / `_TARGET_FRAMES` / `_MAX_ADJUST_PPM` knobs, the
+  reconciler's S16 format narrowing, the AirPlay latency term, and outputd's
+  `content_bridge` telemetry block (`/state` now carries only
+  `content_bridge.mode`). Its resampler was an i16 algorithm, which is why the
+  lane had to be narrowed for it; nothing narrows the lane now.
+  **Migration behaviour, and it is deliberate:** a persisted `rate_match` (or
+  `ratematch` / `rate-matched` / `rate_matched`) resolves to `direct` with an
+  `event=outputd.content_bridge.removed_value` WARN rather than bailing —
+  a deleted knob must never turn a routine deploy into exit 78 →
+  `RestartPreventExitStatus=78` → parked final-output owner → silent speaker.
+  The three tuning keys are inert. This is NOT permission to run it: the
+  route-latency policy compares the RAW literal, so a box carrying a stale
+  spelling still reports a red `usb_low_latency_48k` claim instead of a
+  silently-downgraded green one. An unrecognized value that is *not* one of
+  those spellings still fails loud.
 - Multi-room round-trip content lane (OFF by default, inert until a
   grouping bond activates it in Increment 5): when
   `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set, a grouping leader feeds its
@@ -493,8 +486,8 @@ What exists:
   byte-identical to the direct path above. The reference still equals
   what the DAC plays, so AEC is unaffected. Design + invariants live in
   [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2; this doc owns only
-  the outputd knobs. Mutually exclusive with `rate_match` and the
-  dual-Apple sink (both fail loud at startup).
+  the outputd knobs. Mutually exclusive with any non-`direct` content bridge
+  and with the dual-Apple sink (both fail loud at startup).
 - DAC output: `outputd_dac`, a direct hardware alias for the selected
   final-output card. Every recognized single DAC profile renders as a raw
   `type hw` alias with no converting `plug` in front of it — PR-4
@@ -1725,6 +1718,7 @@ datum: how much assistant audio was actually heard.
   (`JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`) for DAC-paced
   rate-matching validation. Packaged production remains `direct`; the
   bridge is a lab-gated pipeline fix for snd-aloop content-lane drift.
+  **(Deleted 2026-08-10 — see the content-bridge bullet above.)**
 - 2026-06-02: Split final-output DAC role from Apple mixer ownership.
   `outputd_dac` may target the Apple USB-C dongle or the JTS3 DAC8x;
   `jasper-audio-hardware-reconcile` now owns install/boot/udev-triggered

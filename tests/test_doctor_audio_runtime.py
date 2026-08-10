@@ -814,7 +814,6 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
 
 
 def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
-    monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
@@ -834,7 +833,6 @@ def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
 
 
 def test_check_fanin_service_accepts_new_low_latency_output_default(monkeypatch):
-    monkeypatch.delenv("JASPER_FANIN_ADAPTIVE_BUFFER", raising=False)
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
@@ -843,20 +841,6 @@ def test_check_fanin_service_accepts_new_low_latency_output_default(monkeypatch)
     r = doctor.check_fanin_service()
     assert r.status == "ok"
     assert "output_buffer_frames=1024" in r.detail
-
-
-def test_check_fanin_service_adaptive_below_floor_still_fails(monkeypatch):
-    # Even with the legacy adaptive flag on, a value below the production floor
-    # still hard-fails.
-    monkeypatch.setenv("JASPER_FANIN_ADAPTIVE_BUFFER", "enabled")
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _fanin_status_payload(output_buffer_frames=512),
-    )
-    r = doctor.check_fanin_service()
-    assert r.status == "fail"
-    assert "output_buffer_frames=512" in r.detail
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
@@ -879,6 +863,30 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "content_source=alsa" in r.detail
     assert "content_bridge=direct" in r.detail
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
+
+
+def test_outputd_content_bridge_detail_reports_every_mode():
+    """The surviving `/state.content_bridge` readout is a plain mode string.
+
+    The rate-matched bridge's fill/ppm/lock counters were deleted with it, so
+    this is all the doctor reports for the axis now. Pinned across all three
+    branches because `direct` alone would pass even if the function hardcoded
+    it: `shm_ring` proves it reads the payload, and the two malformed shapes
+    prove it degrades to `missing` rather than raising inside a doctor check.
+    """
+    from jasper.cli.doctor.audio_runtime import _outputd_content_bridge_detail
+
+    assert (
+        _outputd_content_bridge_detail({"content_bridge": {"mode": "direct"}})
+        == "content_bridge=direct"
+    )
+    assert (
+        _outputd_content_bridge_detail({"content_bridge": {"mode": "shm_ring"}})
+        == "content_bridge=shm_ring"
+    )
+    for malformed in ({}, {"content_bridge": None}, {"content_bridge": {}},
+                      {"content_bridge": {"mode": ""}}):
+        assert _outputd_content_bridge_detail(malformed) == "content_bridge=missing", malformed
 
 
 def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
@@ -1077,7 +1085,9 @@ def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
 def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     monkeypatch,
 ):
-    # rate_match is the surviving deferred lab content bridge (transport_pipe was
+    # A stale non-direct outputd bridge literal (the REMOVED rate_match, or a
+    # typo) is a partial flip: outputd fail-safes it to `direct`, but the route
+    # policy compares the raw value, so certification stays red. (transport_pipe was
     # removed 2026-07-11); a non-direct bridge without a matching shm_ring pair is
     # a partial flip the USB low-latency route refuses.
     plan = audio_runtime_plan.build_audio_runtime_plan(
@@ -1708,32 +1718,6 @@ def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
 
     assert r.status == "fail"
     assert "speaker_reference_source" in r.detail
-
-
-def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
-    payload = json.loads(_outputd_status_payload().decode())
-    payload["content_bridge"].update(
-        {
-            "mode": "rate_match",
-            "enabled": True,
-            "locked": True,
-            "fill_frames": 4096,
-            "underrun_frames": 1024,
-            "overrun_frames": 0,
-            "resync_count": 1,
-            "ratio_clamp_count": 0,
-        }
-    )
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "warn"
-    assert "rate-match content bridge reported anomalies" in r.detail
-    assert "underrun_frames=1024" in r.detail
-    assert "resync_count=1" in r.detail
-    assert "bridge_fill_frames=4096" in r.detail
 
 
 def _outputd_aec_clock_payload(

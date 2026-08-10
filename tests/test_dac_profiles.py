@@ -748,7 +748,8 @@ def _rust_dac_format_arms() -> set[str]:
     Read out of the Rust match arms rather than restated, so the test below
     compares the two IMPLEMENTATIONS instead of comparing the registry to a copy
     of itself. Same idiom as
-    ``tests/test_audio_hardware_reconcile.py::_rust_rate_match_bridge_arms``.
+    ``tests/test_wifi_profile_hardening_contract.py``: read the fact out of each
+    owner and compare, rather than comparing one owner to a copy of itself.
 
     The unset/blank arm (``"" | "S16_LE"``) contributes ``S16_LE`` only: the empty
     string is outputd's default-when-absent, and no ``DacProfile`` can carry it

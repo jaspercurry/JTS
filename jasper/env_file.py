@@ -12,11 +12,10 @@ survive verbatim** and assignment order is preserved. Assignment lines are
 canonicalized to ``KEY=value`` on any rewrite (key-side spacing in a
 hand-written ``KEY = value`` is normalized) — harmless because every writer here
 emits clean ``KEY=value`` and that is the systemd ``EnvironmentFile`` form. The
-consumers are :mod:`jasper.fanin.coupling_reconcile` and
-:mod:`jasper.fanin.buffer_reconcile` — both predated this module and carried
-equivalent private ``_parse_env`` / ``_render_*`` copies until they were
-migrated onto this helper (behavior-preserving: for the single-assignment
-files those reconcilers produce the rendering is identical).
+consumer is :mod:`jasper.fanin.coupling_reconcile`, which predated this module
+and carried equivalent private ``_parse_env`` / ``_render_*`` copies until it
+was migrated onto this helper (behavior-preserving: for the single-assignment
+files that reconciler produces the rendering is identical).
 
 Scope is deliberately small: parse, read one key, upsert one key, remove one
 key. It is NOT a general env-file framework (no interpolation, no multi-line

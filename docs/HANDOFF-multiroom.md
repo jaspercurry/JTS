@@ -2415,7 +2415,7 @@ separate bug. FIXES: (1) writer/validator coherence — outputd_grouping_env
 pins CONTENT_BRIDGE=direct while bonded (grouping-outputd.env is the LAST
 env layer, so the lane's hard requirement wins over lab retunes) and OMITS
 the key when solo (never present-but-empty — outputd bails on an empty
-bridge mode — and solo falls back to the lower layers, so the rate_match
+bridge mode — and solo falls back to the lower layers, so the lower-layer
 soak and bonding now COEXIST); pinned by a writer-side parity test, and the
 doctor's channel-pick check warns on a stale un-pinned file. (2)
 Park-not-reboot — outputd exits EX_CONFIG (78) on config-validation failure

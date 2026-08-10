@@ -22,7 +22,6 @@ use anyhow::{Context, Result};
 use crate::aec_clock::SroEstimator;
 use crate::alsa_backend::{CompositeStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
-use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
 use crate::json::json_string;
@@ -149,9 +148,9 @@ pub struct OutputdState {
     /// outputd should ask CamillaDSP's snd-aloop lane for (`Config::
     /// content_format`, set from `config.content_format.as_str()`). The
     /// reconciler (`jasper-audio-hardware-reconcile`) emits this key per
-    /// coupling now — `S32_LE` on `loopback`, `S16_LE` on `shm_ring` or a
-    /// `rate_match` content bridge — so `S16_LE` remains the value here for
-    /// an unreconciled box, the ring, or that bridge, not "today always". It
+    /// coupling now — `S32_LE` on `loopback`, `S16_LE` on `shm_ring` — so
+    /// `S16_LE` remains the value here for an unreconciled box or the ring,
+    /// not "today always". It
     /// is what `content.format` reports only UNTIL outputd opens that lane;
     /// the fake backend and the SHM-ring source never do, so there it is the
     /// whole answer.
@@ -191,31 +190,12 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
+    // The resolved outputd content source: `direct` or `shm_ring`. Published as
+    // a plain mode string; the ring's own health lives in the `shm_ring` block
+    // below. (The rate-matched bridge that once published fill/ppm/lock
+    // counters here was deleted — see
+    // `config::REMOVED_RATE_MATCH_BRIDGE_SPELLINGS`.)
     content_bridge_mode: String,
-    content_bridge_ring_frames: AtomicU64,
-    content_bridge_target_fill_frames: AtomicU64,
-    content_bridge_locked: AtomicBool,
-    content_bridge_fill_frames: AtomicU64,
-    content_bridge_min_fill_frames: AtomicU64,
-    content_bridge_max_fill_frames: AtomicU64,
-    content_bridge_ratio_ppm_x100: AtomicI64,
-    content_bridge_input_frames: AtomicU64,
-    content_bridge_output_frames: AtomicU64,
-    content_bridge_silence_frames: AtomicU64,
-    content_bridge_underrun_frames: AtomicU64,
-    content_bridge_overrun_frames: AtomicU64,
-    content_bridge_resync_count: AtomicU64,
-    content_bridge_reset_count: AtomicU64,
-    content_bridge_ratio_clamp_count: AtomicU64,
-    content_bridge_lock_count: AtomicU64,
-    content_bridge_unlock_count: AtomicU64,
-    // The content-bridge rate controller's shared-DLL snapshot (Inc 4): the
-    // loop's OWN rate_diff (ppm, error stats, bandwidth, DLL-internal lock /
-    // resync counters), published in the one consistent telemetry shape. Mutex
-    // (not atomics) because it is a small multi-field Copy struct written once
-    // per period by `mark_content_bridge` and read only by the state server —
-    // mirrors the `sro_estimator` / `dac_clock` pattern.
-    content_bridge_rate_diff: Mutex<DllSnapshot>,
     // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
     // `shm_ring_path` is Some iff JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring; the
     // block is enabled:false with no further fields otherwise (default-off,
@@ -392,26 +372,6 @@ impl OutputdState {
             content_buffer_frames: AtomicU64::new(config.content_buffer_frames as u64),
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
             content_bridge_mode: config.content_bridge_mode.as_str().to_string(),
-            content_bridge_ring_frames: AtomicU64::new(config.content_bridge.ring_frames as u64),
-            content_bridge_target_fill_frames: AtomicU64::new(
-                config.content_bridge.target_fill_frames as u64,
-            ),
-            content_bridge_locked: AtomicBool::new(false),
-            content_bridge_fill_frames: AtomicU64::new(0),
-            content_bridge_min_fill_frames: AtomicU64::new(0),
-            content_bridge_max_fill_frames: AtomicU64::new(0),
-            content_bridge_ratio_ppm_x100: AtomicI64::new(0),
-            content_bridge_input_frames: AtomicU64::new(0),
-            content_bridge_output_frames: AtomicU64::new(0),
-            content_bridge_silence_frames: AtomicU64::new(0),
-            content_bridge_underrun_frames: AtomicU64::new(0),
-            content_bridge_overrun_frames: AtomicU64::new(0),
-            content_bridge_resync_count: AtomicU64::new(0),
-            content_bridge_reset_count: AtomicU64::new(0),
-            content_bridge_ratio_clamp_count: AtomicU64::new(0),
-            content_bridge_lock_count: AtomicU64::new(0),
-            content_bridge_unlock_count: AtomicU64::new(0),
-            content_bridge_rate_diff: Mutex::new(DllSnapshot::idle()),
             // PROTOTYPE SHM ring reader health.
             shm_ring_path: config.shm_ring.as_ref().map(|r| r.path.clone()),
             shm_ring_slots: AtomicU64::new(
@@ -880,51 +840,6 @@ impl OutputdState {
         }
     }
 
-    pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
-        self.content_bridge_locked
-            .store(metrics.locked, Ordering::Relaxed);
-        self.content_bridge_ring_frames
-            .store(metrics.ring_capacity_frames, Ordering::Relaxed);
-        self.content_bridge_target_fill_frames
-            .store(metrics.target_fill_frames, Ordering::Relaxed);
-        self.content_bridge_fill_frames
-            .store(metrics.fill_frames, Ordering::Relaxed);
-        self.content_bridge_min_fill_frames
-            .store(metrics.min_fill_frames, Ordering::Relaxed);
-        self.content_bridge_max_fill_frames
-            .store(metrics.max_fill_frames, Ordering::Relaxed);
-        self.content_bridge_ratio_ppm_x100.store(
-            (metrics.ratio_ppm.clamp(-50_000.0, 50_000.0) * 100.0).round() as i64,
-            Ordering::Relaxed,
-        );
-        self.content_bridge_input_frames
-            .store(metrics.input_frames, Ordering::Relaxed);
-        self.content_bridge_output_frames
-            .store(metrics.output_frames, Ordering::Relaxed);
-        self.content_bridge_silence_frames
-            .store(metrics.silence_frames, Ordering::Relaxed);
-        self.content_bridge_underrun_frames
-            .store(metrics.underrun_frames, Ordering::Relaxed);
-        self.content_bridge_overrun_frames
-            .store(metrics.overrun_frames, Ordering::Relaxed);
-        self.content_bridge_resync_count
-            .store(metrics.resync_count, Ordering::Relaxed);
-        self.content_bridge_reset_count
-            .store(metrics.reset_count, Ordering::Relaxed);
-        self.content_bridge_ratio_clamp_count
-            .store(metrics.ratio_clamp_count, Ordering::Relaxed);
-        self.content_bridge_lock_count
-            .store(metrics.lock_count, Ordering::Relaxed);
-        self.content_bridge_unlock_count
-            .store(metrics.unlock_count, Ordering::Relaxed);
-        // The rate controller's shared-DLL rate_diff (Inc 4). `try_lock` so this
-        // per-period mark never blocks on a concurrent /state read; on the rare
-        // contention we skip one update (the next period refreshes it).
-        if let Ok(mut slot) = self.content_bridge_rate_diff.try_lock() {
-            *slot = metrics.rate_diff;
-        }
-    }
-
     pub fn snapshot_json(&self) -> String {
         // Sized for the payload this actually builds: the chip-reference
         // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
@@ -1056,128 +971,6 @@ impl OutputdState {
 
         buf.push_str(r#""content_bridge":{"#);
         push_kv_str(&mut buf, "mode", &self.content_bridge_mode);
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "enabled",
-            self.content_bridge_mode == "rate_match",
-        );
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "locked",
-            self.content_bridge_locked.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "ring_frames",
-            self.content_bridge_ring_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "target_fill_frames",
-            self.content_bridge_target_fill_frames
-                .load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "fill_frames",
-            self.content_bridge_fill_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "min_fill_frames",
-            self.content_bridge_min_fill_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "max_fill_frames",
-            self.content_bridge_max_fill_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_f64(
-            &mut buf,
-            "ratio_ppm",
-            (self.content_bridge_ratio_ppm_x100.load(Ordering::Relaxed) as f64) / 100.0,
-            2,
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "input_frames",
-            self.content_bridge_input_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "output_frames",
-            self.content_bridge_output_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "silence_frames",
-            self.content_bridge_silence_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "underrun_frames",
-            self.content_bridge_underrun_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "overrun_frames",
-            self.content_bridge_overrun_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "resync_count",
-            self.content_bridge_resync_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "reset_count",
-            self.content_bridge_reset_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "ratio_clamp_count",
-            self.content_bridge_ratio_clamp_count
-                .load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "lock_count",
-            self.content_bridge_lock_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "unlock_count",
-            self.content_bridge_unlock_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        // The rate controller's shared-DLL rate_diff (Inc 4) — the loop's OWN
-        // ppm / error stats / bandwidth / lock+resync counters, in the same
-        // shape every DLL site publishes. `try_lock`; on contention emit the
-        // idle placeholder rather than block or panic.
-        let cb_rate_diff = self
-            .content_bridge_rate_diff
-            .try_lock()
-            .map(|s| *s)
-            .unwrap_or_else(|_| DllSnapshot::idle());
-        push_dll_rate_diff(&mut buf, "rate_diff", &cb_rate_diff);
         buf.push('}');
         buf.push(',');
 
@@ -2322,11 +2115,7 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, SinkMode,
-        DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM, DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-        DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-    };
+    use crate::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 
     fn test_config() -> Config {
         Config {
@@ -2346,11 +2135,6 @@ mod tests {
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
             content_bridge_mode: ContentBridgeMode::Direct,
-            content_bridge: ContentBridgeConfig {
-                ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-                target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-                max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-            },
             shm_ring: None,
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
@@ -3424,56 +3208,58 @@ mod tests {
 
     #[test]
     fn every_dll_site_publishes_the_same_rate_diff_shape() {
-        // Inc 4: both DLL instances (the content-bridge rate controller and the
-        // DAC-clock observer) publish their loop state through the
-        // single shared `rate_diff` writer. The shape must appear under BOTH
-        // blocks with the same field set, so /state / doctor read every
-        // clock-domain boundary identically.
+        // Inc 4: every DLL instance publishes its loop state through the single
+        // shared `rate_diff` writer, so /state and the doctor read every
+        // clock-domain boundary identically. One site remains — the DAC-clock
+        // observer — since the content-bridge rate controller was deleted with
+        // the `rate_match` bridge. The count assertion is what keeps a future
+        // DLL site from publishing a hand-rolled block instead of reusing
+        // `push_dll_rate_diff`.
         let state = OutputdState::new(&test_config());
-        // Push a content-bridge metrics sample so its rate_diff slot is set.
-        state.mark_content_bridge(ContentBridgeMetrics {
-            locked: true,
-            ring_capacity_frames: 16_384,
-            target_fill_frames: 4096,
-            fill_frames: 4096,
-            min_fill_frames: 4000,
-            max_fill_frames: 4200,
-            ratio_ppm: 12.5,
-            input_frames: 1000,
-            output_frames: 1000,
-            silence_frames: 0,
-            underrun_frames: 0,
-            overrun_frames: 0,
-            resync_count: 0,
-            reset_count: 0,
-            ratio_clamp_count: 0,
-            lock_count: 1,
-            unlock_count: 0,
-            rate_diff: jasper_clock::DllSnapshot {
-                ratio: 1.000_05,
-                ratio_ppm: 50.0,
-                error_mean: -0.5,
-                error_var: 0.25,
-                bandwidth: 0.05,
-                locked: true,
-                updates: 1234,
-                lock_count: 1,
-                unlock_count: 0,
-                resync_count: 2,
-            },
-        });
         let j = state.snapshot_json();
-        // Exactly two rate_diff objects: content_bridge + dac_clock.
         assert_eq!(
             j.matches(r#""rate_diff":{"ppm":"#).count(),
-            2,
-            "exactly two rate_diff blocks (one per DLL site) in {j}"
+            1,
+            "exactly one rate_diff block (one per DLL site) in {j}"
         );
-        // The content-bridge rate_diff carries the loop's OWN values.
-        assert!(
-            j.contains(r#""rate_diff":{"ppm":50.000,"error_mean":-0.5000,"error_var":0.2500,"bandwidth":0.0500,"locked":true,"updates":1234,"lock_count":1,"unlock_count":0,"resync_count":2}"#),
-            "content_bridge rate_diff must carry the DLL snapshot fields: {j}"
-        );
+        // The full field set, in order — the shape every site must publish.
+        // Keys, not values: the values are whatever the DLL happens to hold at
+        // construction (`DllSnapshot::idle()` seeds `bandwidth` to `BW_MAX`, not
+        // zero), and pinning them here would assert the loop's tuning rather
+        // than the wire shape this test is about.
+        let start = j
+            .find(r#""rate_diff":{"#)
+            .expect("a rate_diff block must be present");
+        let block = &j[start..];
+        // A named const, not `'}'` and not a bare `"}"`. `'}'` would break
+        // tests/test_rust_runtime_panic_freedom.py, which brace-counts this file
+        // to find the `#[cfg(test)]` span and strips only double-quoted strings —
+        // a char literal there closes the span early and makes every later
+        // `#[test]` look like it escaped the module. A bare `"}"` instead trips
+        // clippy's `single_char_pattern` under `-D warnings`. The const satisfies
+        // both. Bounding matters: `"locked"` is also emitted by the enclosing
+        // `dac_clock` block, so an unbounded scan could match outside rate_diff.
+        const CLOSE_BRACE: &str = "}";
+        let end = block.find(CLOSE_BRACE).expect("rate_diff block must close");
+        let block = &block[..end];
+        let mut cursor = 0usize;
+        for key in [
+            "ppm",
+            "error_mean",
+            "error_var",
+            "bandwidth",
+            "locked",
+            "updates",
+            "lock_count",
+            "unlock_count",
+            "resync_count",
+        ] {
+            let needle = format!(r#""{key}":"#);
+            let at = block[cursor..].find(&needle).unwrap_or_else(|| {
+                panic!("rate_diff is missing {key} at or after byte {cursor}: {block}")
+            });
+            cursor += at + needle.len();
+        }
     }
 
     #[test]

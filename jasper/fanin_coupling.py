@@ -231,12 +231,16 @@ def resolve_outputd_content_bridge(raw: str | None) -> str:
     """Normalize a raw ``JASPER_OUTPUTD_CONTENT_BRIDGE`` value.
 
     Fail-SAFE to ``direct`` (the byte-identical-to-today outputd content source)
-    on unset, empty, or any unrecognized value — the Rust daemon
-    (``config.rs``) additionally accepts ``rate_match``, but the coupling control
-    plane only knows the two bridges the ``loopback``/``shm_ring`` couplings pair
-    with: ``direct`` (loopback's partner) and ``shm_ring`` (Ring B). ``rate_match``
-    is a separate deferred lab bridge, not part of any coupling. Case-insensitive;
-    surrounding whitespace ignored.
+    on unset, empty, or any unrecognized value. The vocabulary is exactly the
+    Rust daemon's (``config.rs``): ``direct`` (loopback's partner) and
+    ``shm_ring`` (Ring B). Case-insensitive; surrounding whitespace ignored.
+
+    The REMOVED ``rate_match`` lab bridge lands here as an unrecognized value
+    and resolves ``direct``, matching the daemon's own fail-safe arm
+    (``REMOVED_RATE_MATCH_BRIDGE_SPELLINGS``). Do NOT reach for this resolver
+    where a *policy* must reject a stale value: the route-latency policy in
+    :mod:`jasper.audio_runtime_plan` compares the RAW literal precisely so this
+    fail-safe cannot launder a removed bridge into a green low-latency claim.
     """
     if raw is None:
         return OUTPUTD_CONTENT_BRIDGE_DIRECT

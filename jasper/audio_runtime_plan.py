@@ -89,10 +89,8 @@ OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
-FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV = "JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096
 DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES = 1024
-MIN_FANIN_OUTPUT_BUFFER_FRAMES = 1024
 FANIN_INPUT_RESAMPLER_KEY = "JASPER_FANIN_INPUT_RESAMPLER"
 FANIN_INPUT_RESAMPLER_LANE_KEY = "JASPER_FANIN_INPUT_RESAMPLER_LANE"
 FANIN_INPUT_RESAMPLER_TARGET_KEY = "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES"
@@ -178,8 +176,6 @@ RouteMode = Literal[
     "invalid_grouping",
     "unknown",
 ]
-
-SourceLowLatencyRoute = Literal["low_latency", "buffered"]
 
 SourceKind = Literal[
     "operator_env",
@@ -327,33 +323,6 @@ class RuntimeEnvAction:
 
 
 @dataclass(frozen=True)
-class FaninOutputBufferTarget:
-    """Resolved adaptive fan-in output-buffer target."""
-
-    frames: int
-    warning_event: str = ""
-    raw_value: str = ""
-
-
-@dataclass(frozen=True)
-class SourceRouteDecision:
-    """Pure source-route verdict for optional low-latency consumers.
-
-    The route decision is intentionally independent of the concrete mechanism
-    that consumes it. Today one experimental consumer uses it:
-    ``JASPER_FANIN_ADAPTIVE_BUFFER`` shrinks fan-in's output buffer. A future
-    low-latency source route should change this support matrix/consumer set
-    here rather than re-implementing the same source-exclusivity check in each
-    caller.
-    """
-
-    route: SourceLowLatencyRoute
-    reason: str
-    active_sources: tuple[str, ...] = ()
-    winner: str | None = None
-
-
-@dataclass(frozen=True)
 class TransportTopology:
     """Resolved audio transport topology for status/doctor surfaces."""
 
@@ -454,13 +423,6 @@ class CorrectionLatencyEligibility:
         if self.blocking_reason:
             out["blocking_reason"] = self.blocking_reason
         return out
-
-
-@dataclass(frozen=True)
-class LowLatencyFeatureFlags:
-    """Parsed opt-in gates for experimental low-latency consumers."""
-
-    adaptive_buffer: bool
 
 
 @dataclass(frozen=True)
@@ -706,63 +668,6 @@ def route_mode_from_grouping_config(cfg: Any) -> RouteMode:
     if role == "follower":
         return "active_follower"
     return "unknown"
-
-
-def decide_source_low_latency_route(
-    *,
-    active_sources: tuple[Any, ...] | list[Any],
-    winner: Any | None,
-    enabled: bool,
-    exclusive_source: str = "usbsink",
-) -> SourceRouteDecision:
-    """Pure source-route policy for optional low-latency audio consumers.
-
-    ``"low_latency"`` iff the feature flag is enabled, exactly one source is
-    active, that source is ``exclusive_source``, and it is also the audible
-    winner. Everything else stays on the safe buffered route.
-
-    ``active_sources`` / ``winner`` may be :class:`str` or enum-like values with
-    a ``.value`` attribute; the decision normalizes them to stable source ids in
-    the returned object. No I/O, no daemon state, no CamillaDSP calls.
-    """
-
-    active = tuple(_source_id(source) for source in active_sources)
-    winner_id = _source_id(winner) if winner is not None else None
-    target = str(exclusive_source).strip()
-    if not enabled:
-        return SourceRouteDecision("buffered", "flag_off", active, winner_id)
-    if not active:
-        return SourceRouteDecision("buffered", "idle", active, winner_id)
-    if active != (target,):
-        return SourceRouteDecision("buffered", "not_exclusive", active, winner_id)
-    if winner_id != target:
-        return SourceRouteDecision("buffered", "non_usb_winner", active, winner_id)
-    return SourceRouteDecision("low_latency", "usb_exclusive", active, winner_id)
-
-
-def low_latency_feature_flags(
-    env: Mapping[str, str] | None = None,
-) -> LowLatencyFeatureFlags:
-    """Return default-off low-latency feature gates from ``env``.
-
-    Only the exact literal ``enabled`` (case-insensitive, stripped) turns the
-    experiment on; unset, ``disabled``, ``1``, and ``true`` all stay off.
-    """
-
-    if env is None:
-        env = os.environ
-    return LowLatencyFeatureFlags(
-        adaptive_buffer=_enabled_literal(env.get("JASPER_FANIN_ADAPTIVE_BUFFER")),
-    )
-
-
-def _source_id(source: Any) -> str:
-    value = getattr(source, "value", source)
-    return str(value).strip()
-
-
-def _enabled_literal(raw: str | None) -> bool:
-    return (raw or "").strip().lower() == "enabled"
 
 
 def resolve_audio_route_profile(
@@ -1058,9 +963,13 @@ def _route_policy_errors(
 
     normalized_coupling = resolve_coupling(coupling)
     # RAW bridge value (lowercased) — NOT resolve_outputd_content_bridge, which
-    # fail-safes an unknown bridge (e.g. the deferred lab `rate_match`) to
-    # `direct` and would hide it here. The route policy must reject `rate_match`
-    # explicitly, so it compares the operator's literal value.
+    # fail-safes ANY unrecognized bridge to `direct` and would hide it here. A
+    # box can still carry a stale literal in outputd.env — the REMOVED
+    # `rate_match` lab bridge, or a typo — and the route policy must refuse the
+    # low-latency claim on it rather than certify a box whose operator asked for
+    # something else. So it compares the operator's literal value.
+    # DO NOT "simplify" this to the resolver now that only two bridges parse:
+    # that would silently green-light a claim on a stale value.
     raw_bridge = str(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
         or OUTPUTD_CONTENT_BRIDGE_DIRECT
@@ -1072,9 +981,9 @@ def _route_policy_errors(
     # measured to reduce route latency (the
     # ring-proto train), so the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
-    # low-latency claim permanently red (gap 8). The outputd rate_match content
-    # bridge stays rejected (a deferred lab transport that failed the 2026-07-02
-    # USB tuning).
+    # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
+    # stays rejected — including the removed `rate_match` lab transport, which
+    # failed the 2026-07-02 USB tuning and was deleted.
     if normalized_coupling == COUPLING_SHM_RING and ring_pair_is_coherent(
         normalized_coupling, raw_bridge
     ):
@@ -1904,21 +1813,6 @@ def outputd_latency_floor_actions(
     return tuple(actions)
 
 
-def fanin_output_buffer_action(frames: int | None) -> RuntimeEnvAction:
-    """Return the ``fanin.env`` action for the output-buffer override.
-
-    ``frames=None`` means restore the packaged default by removing the override.
-    A concrete value must meet the production floor; below-floor lab values are
-    rejected before any reconciler writes them into persistent config.
-    """
-
-    if frames is None:
-        return RuntimeEnvAction("unset", FANIN_OUTPUT_BUFFER_KEY)
-    if frames < MIN_FANIN_OUTPUT_BUFFER_FRAMES:
-        raise ValueError(f"{frames} below floor {MIN_FANIN_OUTPUT_BUFFER_FRAMES}")
-    return RuntimeEnvAction("set", FANIN_OUTPUT_BUFFER_KEY, str(frames))
-
-
 def fanin_coupling_capture_kwargs(
     coupling: str | None = None,
     *,
@@ -1995,38 +1889,6 @@ def apply_capture_precedence(
     merged = dict(emit_kwargs)
     merged.update(fanin_coupling_capture_kwargs)
     return cast(EmitSoundConfigKwargs, merged)
-
-
-def resolve_fanin_output_buffer_target(
-    env: Mapping[str, str] | None = None,
-    overrides: Mapping[str, str] | None = None,
-) -> FaninOutputBufferTarget:
-    """Resolve the adaptive fan-in output-buffer target from lab override env."""
-
-    values = dict(env or {})
-    override_raw = _raw(dict(overrides or {}), FANIN_OUTPUT_BUFFER_KEY)
-    raw = (
-        override_raw
-        if override_raw is not None
-        else str(values.get(FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV, "")).strip()
-    )
-    if not raw:
-        return FaninOutputBufferTarget(MIN_FANIN_OUTPUT_BUFFER_FRAMES)
-    try:
-        value = int(raw)
-    except ValueError:
-        return FaninOutputBufferTarget(
-            MIN_FANIN_OUTPUT_BUFFER_FRAMES,
-            warning_event="fanin.adaptive_shrunk_frames_invalid",
-            raw_value=raw,
-        )
-    if value < MIN_FANIN_OUTPUT_BUFFER_FRAMES:
-        return FaninOutputBufferTarget(
-            MIN_FANIN_OUTPUT_BUFFER_FRAMES,
-            warning_event="fanin.adaptive_shrunk_frames_below_floor",
-            raw_value=raw,
-        )
-    return FaninOutputBufferTarget(value, raw_value=raw)
 
 
 def _positive_int(raw: str | None) -> tuple[int | None, str | None]:
@@ -2257,8 +2119,9 @@ def _resolve_outputd_content_buffer_int(
     # decide whether to open the content PCM — NOT the coupling: the writer-side
     # `outputd_latency_floor_actions` path does not thread fanin.env, so the coupling
     # is invisible there, but the outputd bridge is always in outputd.env. Uses the
-    # fail-safe resolver so only a genuine `shm_ring` (never `rate_match`, which DOES
-    # open the content PCM, or a garbage value) suppresses the policy.
+    # fail-safe resolver so only a genuine `shm_ring` suppresses the policy: any
+    # other value (a garbage literal, or the removed `rate_match`) resolves
+    # `direct`, which DOES open the content PCM, so the policy still applies.
     generated_bridge = resolve_outputd_content_bridge(
         _raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY)
     )

@@ -38,9 +38,9 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 /// **Why the refusal lives at the ingest arms and not in `Config::from_env`.** An
 /// early refusal there would make both of these arms unreachable by construction,
 /// which is a real attraction — it is the shape `Config`'s other cross-field
-/// guards (the `rate_match` pairing, the full-range-stereo sink checks) already
-/// use. It was considered and not taken, for two reasons. The arms are MANDATORY
-/// whatever `Config` does: the match is over `SampleFormat`, so Rust requires an
+/// guards (the full-range-stereo sink checks) already use. It was considered
+/// and not taken, for two reasons. The arms are MANDATORY whatever `Config`
+/// does: the match is over `SampleFormat`, so Rust requires an
 /// arm here, and the only alternatives to a loud refusal are a silent wrong arm
 /// (S16 read of a 3-byte lane — loud garbage at the speaker) or an `unreachable!`
 /// panic on the audio path, which this crate's panic-freedom invariant forbids.
@@ -658,11 +658,9 @@ impl AlsaBackend {
                 // Camilla's post-DSP loopback lane — its own declared hop, NOT
                 // the hardware edge and not outputd's internal program width.
                 // Every box now declares S32_LE here unless its fan-in
-                // coupling is shm_ring, or it carries the i16-only rate_match
-                // content bridge (jasper-audio-hardware-reconcile emits this
-                // per coupling, narrowing for either case); unset/blank still
-                // falls back to S16_LE. `configure_pcm`'s content readback
-                // proves what the lane installed.
+                // coupling is shm_ring (jasper-audio-hardware-reconcile emits
+                // this per coupling); unset/blank still falls back to S16_LE.
+                // `configure_pcm`'s content readback proves what the lane installed.
                 format: config.content_format,
                 buffer_frames: config.content_buffer_frames,
                 manual_start: false,

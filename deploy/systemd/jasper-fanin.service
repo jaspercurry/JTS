@@ -100,9 +100,9 @@ RuntimeDirectoryMode=0750
 # The wizard/reconciler-owned /var/lib/jasper/fanin.env is loaded LAST
 # (after the Environment= defaults below) so its overrides win — systemd
 # applies a later EnvironmentFile= over an earlier Environment=. This is
-# load-bearing for jasper.fanin.buffer_reconcile: it writes the adaptive
-# JASPER_FANIN_OUTPUT_BUFFER_FRAMES override into that file, which MUST
-# beat the Environment="...=1024" default below. Keep the wizard file's
+# load-bearing for jasper.fanin.coupling_reconcile: it writes the coupling
+# and USB-combo keys into that file, which MUST beat the Environment=
+# defaults below. Keep the wizard file's
 # EnvironmentFile= line AFTER the Environment= lines (see end of section).
 EnvironmentFile=/etc/jasper/jasper.env
 
@@ -147,8 +147,10 @@ Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
 
 # Wizard/reconciler-owned overrides — loaded LAST so they win over the
 # Environment= defaults above (later EnvironmentFile= beats earlier
-# Environment=). jasper.fanin.buffer_reconcile is the single writer of the
-# adaptive JASPER_FANIN_OUTPUT_BUFFER_FRAMES override here. Optional (leading
+# Environment=). jasper.fanin.coupling_reconcile is the single writer of this
+# file. Nothing overrides JASPER_FANIN_OUTPUT_BUFFER_FRAMES any more (the
+# adaptive shrink arm was deleted), so the Environment= default above is the
+# live value unless an operator hand-edits this file. Optional (leading
 # `-`): absent on a fresh box, where the 1024 default above is live.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 

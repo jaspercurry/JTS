@@ -25,9 +25,11 @@
 //! # Provenance
 //!
 //! The interpolation math (the sinc/window coefficients, the table layout, the
-//! per-frame interpolation, the `i16` rounding) is lifted verbatim from
-//! `jasper-outputd`'s `content_bridge.rs`, which now *consumes* this crate
-//! rather than carrying its own copy. This is a Rust-only primitive — there
+//! per-frame interpolation, the `i16` rounding) was originally lifted verbatim
+//! from `jasper-outputd`'s `content_bridge.rs`. That module (the `rate_match`
+//! content bridge) was deleted in the P5c cleanup; `jasper-fanin`'s
+//! `lane_resampler.rs` is the crate's sole resampling-algorithm consumer now.
+//! This is a Rust-only primitive — there
 //! is no cross-language binding or contract test in this repo (a prior
 //! C++/usbsink mirror + Python contract test were cut; see
 //! docs/RESEARCH-pipewire-low-latency.md). Silent math drift is caught by the

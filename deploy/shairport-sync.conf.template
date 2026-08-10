@@ -49,12 +49,10 @@ general = {
     //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
     // Derived by jasper-apply-airplay-mode as:
-    //   -((target_level - chunksize + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer) / samplerate)
+    //   -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)
     // where target_level/chunksize/samplerate come from the active
     // CamillaDSP config, fanin_output_buffer comes from jasper-fanin's
-    // output buffer setting, outputd_content_bridge comes from
-    // JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES only when
-    // JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match, and outputd_dac_buffer
+    // output buffer setting, and outputd_dac_buffer
     // comes from JASPER_OUTPUTD_DAC_BUFFER_FRAMES. While this speaker is an
     // active bonded leader, jasper-grouping-reconcile also folds in the
     // Snapcast round-trip playout buffer (JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC);
@@ -101,8 +99,11 @@ alsa = {
     output_rate = 44100;
     // S32 stays for the same reason it did before -- efficient when
     // the plug layer above the fan-in lane only has to downconvert
-    // format (S32 -> S16_LE), and jasper-outputd writes S16_LE to the
-    // dongle anyway.
+    // format (S32 -> the lane's own width). This is the fan-in ingress
+    // hop, NOT the DAC edge: jasper-outputd declares the edge per DAC
+    // profile from DacProfile.final_edge_format, which for the Apple
+    // USB-C dongle (APPLE_USB_C_DONGLE in jasper/audio_hardware/dac.py)
+    // is S24_3LE, not S16_LE.
     output_format = "S32";
     use_mmap_if_available = "no";
     // Templated — see file header. With JTS's snd-aloop -> CamillaDSP
