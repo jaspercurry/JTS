@@ -50,6 +50,13 @@ complex response runs to ~5e5 bins per driver. The branches below are
 therefore synthetic, and the two seams whose true output needs them —
 ``fit_driver_linearization`` and ``solve_ripple_optimal_trim`` — return the
 incident's own recorded results instead.
+
+One consequence is worth stating rather than leaving to be inferred: the
+``difference_db`` values the commit decision turns on are computed by real code
+over those synthetic zero-phase branches, so they are not the incident's own
+level errors. What the incident's record does prove is their ORDERING — it
+committed the scan's pair, so the scan levelled better — and the test asserts
+that ordering as its own premise rather than assuming it holds.
 """
 from __future__ import annotations
 
@@ -62,11 +69,16 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_db
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection,
+    crossover_response_db,
+    radiating_band_hz,
+)
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CrossoverV2Conductor,
     V2FlowSeams,
+    _rounded_band_hz,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -321,7 +333,12 @@ class _Replay:
         }
         self.graded: list[dict[str, float]] = []
         self.candidate: Any = None
+        # What the fit was HANDED (the candidate's re-cornered sections) beside
+        # what it would have read had it ignored them (the session's own), so
+        # an R17 regression is a difference this replay can see.
         self.candidate_sections: dict[str, tuple[CrossoverSection, ...]] = {}
+        self.configured_sections: dict[str, tuple[CrossoverSection, ...]] = {}
+        self.fit_radiating_bands: dict[str, tuple[float, float]] = {}
 
     def _pair(self, *, scan: bool) -> dict[str, float]:
         """The graded pair that IS (or is not) the ripple scan's own trim.
@@ -361,10 +378,11 @@ def _run_replay(monkeypatch: pytest.MonkeyPatch) -> _Replay:
         return result
 
     def fake_ripple(freqs, w_lin, t_lin, fc_hz, **kwargs):
-        # The one seam whose true result needs the measured responses this
-        # fixture cannot commit. It returns the incident's own scan result, so
-        # everything the decision below does with it is the incident's own
-        # arithmetic rather than this test's.
+        # The second of the two stubs (``fake_fit`` below is the other), and
+        # like it, stubbed because its true inputs are the measured responses
+        # this fixture cannot commit. It returns the incident's own scan
+        # result, so everything the decision below does with it is the
+        # incident's own arithmetic rather than this test's.
         replay.fc_seen["solve_ripple_optimal_trim"].append(float(fc_hz))
         return (
             float(COMMITTED_DB["tweeter"]),
@@ -372,15 +390,23 @@ def _run_replay(monkeypatch: pytest.MonkeyPatch) -> _Replay:
             float(kwargs["seed_trim_db"]),
         )
 
+    def fake_fit(resp, envelope, **kwargs):
+        # The band the fit engine was actually bounded to. Recorded because it
+        # is derived from ``sections``, which is where an R17 regression would
+        # show: a fit that ignored ``candidate_sections`` would hand the engine
+        # the SESSION's shape here while still accepting the kwarg.
+        replay.fit_radiating_bands[resp.role] = tuple(kwargs["radiating_band_hz"])
+        return _incident_fit(resp.role)
+
     monkeypatch.setattr(flow, "overlap_band_hz", spy_overlap)
     monkeypatch.setattr(flow, "realized_branch_level_match", spy_match)
     monkeypatch.setattr(flow, "solve_ripple_optimal_trim", fake_ripple)
-    monkeypatch.setattr(
-        flow, "fit_driver_linearization",
-        lambda resp, envelope, **kwargs: _incident_fit(resp.role),
-    )
+    monkeypatch.setattr(flow, "fit_driver_linearization", fake_fit)
 
     replay.candidate_sections = conductor._fc_candidate_sections(SELECTED_FC_HZ)
+    replay.configured_sections = {
+        role: conductor._branch_crossover_sections(role) for role in ROLES
+    }
     candidate_preset = replace(conductor._preset, crossover_regions=tuple(
         replace(region, fc_hz=SELECTED_FC_HZ)
         for region in conductor._preset.crossover_regions
@@ -454,12 +480,20 @@ def test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own(
     applied to a 1648.7 Hz candidate. The journal line that would have told an
     operator which corner the fit ran at reports the session's corner too.
 
-    **One further site reads ``self._fc_hz`` and is NOT pinned here:** the
-    straddle test that decides whether the ripple scan runs at all. On this
-    session's overlap band (1600-4000 Hz) both corners straddle identically,
-    so no assertion about the incident can tell the two apart — verified by
-    mutation, which this scenario cannot fail. Treat it as covered by
-    inspection, never by this test.
+    ``_fit_linearization`` reads ``self._fc_hz`` at six sites; this pins four
+    of them (the overlap band at ``:12366``, the ripple scan at ``:12495``, the
+    level match at ``:12811``, and the ``fit_band`` journal field at
+    ``:12111``). **The other two are NOT pinned here and cannot be:** the
+    straddle test at ``:12493`` that decides whether the ripple scan runs, and
+    the ``fc_hz`` field at ``:12506`` of the ``ripple_trim_skipped`` event in
+    that straddle's own else-branch. On this session's overlap band
+    (1600-4000 Hz) both corners straddle identically, so the branch this replay
+    takes is the same either way and the else-branch never runs — no assertion
+    about THIS incident can tell them apart, which mutation confirms. Treat
+    those two as covered by inspection, never by this test.
+
+    Separately, this pins that the candidate's sections are USED and not merely
+    accepted (R17) — see the radiating-band assertions at the end.
 
     After Phase 2 these seams should see the candidate's own corner; these
     assertions are expected to invert.
@@ -474,16 +508,45 @@ def test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own(
     for seam, seen in replay.fc_seen.items():
         assert seen, f"{seam} was never reached — the replay did not exercise the fit"
         assert set(seen) == {CONFIGURED_FC_HZ}, (
-            f"{seam} saw {sorted(set(seen))}; today it reads the session corner"
+            f"#2291: {seam} saw {sorted(set(seen))}; today it reads the session "
+            f"corner {CONFIGURED_FC_HZ}, not the candidate's {SELECTED_FC_HZ}"
         )
         assert SELECTED_FC_HZ not in seen
     # Both trim pairs are graded, so the level match runs twice — a single call
     # would mean the guard stopped comparing them (PR-L4's own behaviour).
     assert len(replay.fc_seen["realized_branch_level_match"]) == 2
 
+    # R17: the candidate's sections are USED, not just accepted. Without this,
+    # a fit that dropped ``candidate_sections`` and re-read the session's own
+    # would pass everything above — the corner it reports is the session's in
+    # BOTH worlds, so only the SHAPE separates them. The two shapes are
+    # unmistakable: a 1648.7 Hz LR4 radiates (0.0, 1321.3) / (2057.2, inf),
+    # a 2000.0 Hz one (0.0, 1602.9) / (2495.5, inf). Both sides are computed
+    # through production's own ``radiating_band_hz`` so this pins which
+    # SECTIONS reached the fit, not how a band is derived from them.
+    for role in ROLES:
+        want = radiating_band_hz(replay.candidate_sections[role])
+        never = radiating_band_hz(replay.configured_sections[role])
+        assert want != never, "the two corners must give different shapes"
+        assert replay.fit_radiating_bands[role] == pytest.approx(want), (
+            f"#2291 R17: the {role} fit was bounded to "
+            f"{replay.fit_radiating_bands[role]}, not the candidate's {want}"
+        )
+
     fit_band = _one_event_line(caplog, "correction.crossover_v2_linearization_fit_band")
-    assert f"fc_hz={CONFIGURED_FC_HZ}" in fit_band
+    # One line carrying both halves of the contradiction: the corner it names
+    # is the session's, the shapes beside it are the candidate's.
+    assert f"fc_hz={CONFIGURED_FC_HZ}" in fit_band, f"#2291: {fit_band}"
     assert str(SELECTED_FC_HZ) not in fit_band
+    for role in ROLES:
+        rendered = str(_rounded_band_hz(radiating_band_hz(
+            replay.candidate_sections[role],
+        )))
+        stale = str(_rounded_band_hz(radiating_band_hz(
+            replay.configured_sections[role],
+        )))
+        assert rendered in fit_band, f"#2291 R17: {role} {rendered} not in {fit_band}"
+        assert stale not in fit_band
 
 
 def _one_event_line(caplog, name: str) -> str:
@@ -516,8 +579,12 @@ def test_trim_rejected_still_commits_the_ripple_scan_trim(monkeypatch, caplog):
     caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
     replay = _run_replay(monkeypatch)
 
-    assert replay.candidate.linearization_outcome == "trim_rejected"
-    assert dict(replay.candidate.role_attenuations_db) == pytest.approx(COMMITTED_DB)
+    assert replay.candidate.linearization_outcome == "trim_rejected", (
+        "#2291: the incident's outcome string"
+    )
+    assert dict(replay.candidate.role_attenuations_db) == pytest.approx(COMMITTED_DB), (
+        "#2291: the incident's committed pair"
+    )
 
     # Production's own anchor, read off the trim pair it graded — the exact
     # number, not the 3-decimal one the journal rounds to.
@@ -536,10 +603,10 @@ def test_trim_rejected_still_commits_the_ripple_scan_trim(monkeypatch, caplog):
     # the graph runs.
     assert (
         "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    )
+    ), "#2291: the guard's own WARNING"
     assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
         scan["trim_t_db"], abs=1e-12
-    )
+    ), "#2291: today a rejected trim is still the trim that ships"
     assert replay.candidate.role_attenuations_db["tweeter"] != pytest.approx(
         anchor["trim_t_db"]
     )

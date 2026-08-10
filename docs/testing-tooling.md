@@ -33,6 +33,7 @@
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
+| Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
@@ -1088,24 +1089,46 @@ of JSON under
 [`tests/fixtures/crossover_v2_incident_20260810/`](../tests/fixtures/crossover_v2_incident_20260810/),
 and
 [`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
-drives the current prescription path with it. Copy the shape, not the contents:
+drives `CrossoverV2Conductor._build_candidate` with it, using the exact keyword
+pair `_evaluate_fc_candidate` passes for a non-configured corner. It stops
+there deliberately: the caller `_build_measure_candidate` adds a
+linearized-vs-raw predicted-spec gate that passed on the incident, is
+orthogonal to both defects, and cannot pass on synthetic branches without
+shaping them until it does. Copy the shape, not the contents:
 
 * **Derive, never hand-copy.** The script has a `--check` mode that re-derives
   and diffs, so a fixture can be proved to still be the session it names. It
   exits `2` when the bank is absent, because "I could not check" must not read
-  as "the check passed" — and it is an operator tool, never a CI gate.
-* **Inject only what cannot be committed, and say which.** Everything the
-  decision consumes rides in the fixture; the one seam whose true inputs are a
-  ~5e5-bin measured response returns the incident's own banked result. The
-  boundary is stated in the test's docstring rather than left to be inferred.
+  as "the check passed" — and it is an operator tool, never a CI gate. Content
+  drift and a same-content/renamed-directory bank both exit `1` but say so in
+  different sentences, so neither sends a reader hunting for the other.
+* **Inject only what cannot be committed, and name every stub.** Every SCALAR
+  the decision consumes rides in the fixture, and **two** seams are stubbed —
+  `fit_driver_linearization` returns the incident's own serialized
+  `LinearizationFit` pair, and `solve_ripple_optimal_trim` returns its recorded
+  scan result — because their true inputs are ~5e5-bin measured responses. The
+  branches underneath are synthetic and zero-phase, so the level errors the
+  commit decision turns on are real code over stand-in curves; the test asserts
+  that premise instead of assuming it. State the whole injection surface in the
+  test's docstring rather than leaving it to be inferred.
 * **Label a characterization test as one.** It pins behaviour that is WRONG, so
-  every assertion names the issue that will invert it. A green run means the
-  incident still reproduces, not that the speaker is right.
-* **Mutation-verify every site you claim, and name the ones you cannot.** Six
-  of the seven production sites behind those defects fail the test when
-  flipped; the seventh — the straddle test deciding whether the ripple scan
-  runs — cannot, because on this session's overlap band both corners straddle
-  identically. That is written into the test's docstring, because a
+  each defect's docstring and its load-bearing assertion messages name the
+  issue that will invert them. A green run means the incident still reproduces,
+  not that the speaker is right.
+* **Pin that inputs are USED, not merely accepted.** The pre-existing R17 guard
+  spied `candidate_sections` being *passed* and never *used*, so a fit that
+  dropped the kwarg entirely passed the whole repo. The discriminant is shape,
+  not corner: a 1648.7 Hz LR4 radiates `(0.0, 1321.3)`/`(2057.2, inf)` where a
+  2000.0 Hz one radiates `(0.0, 1602.9)`/`(2495.5, inf)`, so asserting the band
+  handed to the fit engine (and reported on its journal line) closes the hole
+  that asserting the corner cannot.
+* **Mutation-verify every site you claim, and name the ones you cannot.** Of
+  the six `self._fc_hz` reads behind these defects, four fail the test when
+  flipped; **two cannot** — the straddle test deciding whether the ripple scan
+  runs, and the `fc_hz` field of the `ripple_trim_skipped` event in that
+  straddle's own else-branch. On this session's overlap band both corners
+  straddle identically, so the replay takes the same branch either way and the
+  else-branch never runs. Both are named in the test's docstring, because a
   half-guarded site otherwise reads as covered.
 
 ---

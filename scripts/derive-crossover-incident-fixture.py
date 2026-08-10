@@ -337,6 +337,24 @@ def _render(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+def _without_bundle_name(text: str) -> Any:
+    """One rendered fixture, parsed, with the bundle's directory name blanked.
+
+    Lets ``--check`` tell "this is a different session" from "this is the same
+    session, read out of a directory with another name" — a real case, since
+    the bank is copied by hand between machines. Unparseable text compares as
+    itself, so a hand-corrupted file never masquerades as a rename.
+    """
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    provenance = payload.get("_provenance")
+    if isinstance(provenance, dict):
+        provenance["bundle_dir_name"] = ""
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
@@ -366,6 +384,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     drifted = False
+    # A bundle copied to a differently-named directory re-derives identical
+    # content under a different ``bundle_dir_name``. That is still a mismatch —
+    # the committed fixture names a bundle this run did not read — but calling
+    # it corruption would send the reader hunting for a data difference that is
+    # not there, so the two cases get different sentences. Both exit 1.
+    rename_only = True
     for name, payload in derived.items():
         target = args.out / name
         want = _render(payload)
@@ -373,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
         if have == want:
             continue
         drifted = True
+        if _without_bundle_name(have) != _without_bundle_name(want):
+            rename_only = False
         print(f"--- {target} (committed)\n+++ {target} (re-derived)", file=sys.stderr)
         sys.stderr.writelines(
             difflib.unified_diff(
@@ -380,7 +406,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     if drifted:
-        print("fixture does not match the bundle it claims to come from", file=sys.stderr)
+        print(
+            (
+                "fixture content matches, but it records a bundle directory name "
+                f"other than {args.bundle.name!r} — re-run without --check to restamp"
+            )
+            if rename_only
+            else "fixture does not match the bundle it claims to come from",
+            file=sys.stderr,
+        )
         return 1
     print(f"fixture matches the banked bundle ({len(derived)} files)")
     return 0
