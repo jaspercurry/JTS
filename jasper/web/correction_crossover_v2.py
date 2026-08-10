@@ -473,6 +473,7 @@ def reset_v2_journey_state() -> None:
         return
     pre_apply_profile = state.get("pre_apply_profile")
     attempts_loop = state.get("attempts_loop")
+    sound_declaration_undo = state.get("sound_declaration_undo")
     save_v2_state({
         "session_id": None,
         "accepted_phases": [],
@@ -494,6 +495,16 @@ def reset_v2_journey_state() -> None:
         "pre_apply_profile": (
             dict(pre_apply_profile)
             if isinstance(pre_apply_profile, Mapping)
+            else None
+        ),
+        # Preserved on exactly ``pre_apply_profile``'s terms (#2292): the two
+        # are the graph half and the declaration half of ONE Undo. Start over
+        # keeps the applied graph playing and keeps Undo reachable, so dropping
+        # this here would leave that Undo able to restore the sound but not the
+        # crossover ``/sound`` declares for it.
+        "sound_declaration_undo": (
+            dict(sound_declaration_undo)
+            if isinstance(sound_declaration_undo, Mapping)
             else None
         ),
     })
@@ -628,6 +639,12 @@ def observe_restore() -> None:
     state["measure"] = None
     state["sound_design_revision"] = None
     state["accepted_sound_revision"] = None
+    # The declaration half of the Undo (#2292), cleared for the same reason
+    # ``pre_apply_profile`` above is: both describe how to reverse an apply
+    # that has just been reversed. :func:`handle_v2_restore` reads the record
+    # BEFORE calling this, so the declaration leg has already run (or reported
+    # why it did not) by the time the record goes away.
+    state["sound_declaration_undo"] = None
     save_v2_state(state)
 
 
@@ -2128,6 +2145,17 @@ def _finite(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
+def _fc_hz_label(hz: float) -> str:
+    """A crossover frequency as the household reads it: ``2250``, ``1787.5``.
+
+    One formatter, because the apply path's refusal copy and the Undo path's
+    declaration copy (#2292) name the same numbers to the same person, and two
+    spellings of one frequency in two adjacent sentences is a defect the
+    household is the first to notice.
+    """
+    return f"{hz:.1f}".rstrip("0").rstrip(".")
+
+
 def _candidate_headroom_cost_db(linearization: Any) -> float:
     """The applied correction's disclosed max-level cost, dB (PR-L5).
 
@@ -2935,6 +2963,21 @@ def persist_conductor_state(
     )
     state["accepted_sound_revision"] = (prior.get("accepted_sound_revision")
         if PHASE_MEASURE not in snap.session_phases else None)
+    # #2292's declaration-undo record takes ``pre_apply_profile``'s
+    # UNCONDITIONAL shape, deliberately NOT the line directly above it — the
+    # two keys are born in the same state write and then live different lives:
+    #
+    #   * ``accepted_sound_revision`` is the REVIEW-binding token
+    #     ``_update_current_review`` gates the apply on. It is scoped to the
+    #     review that saved Sound, so a fresh MEASURE must clear it or the next
+    #     accept would skip its own Sound save.
+    #   * this record is the inverse of a LIVE applied declaration, which
+    #     outlives that review exactly as long as the graph does. Session-
+    #     scoping it would reproduce the W6.12 P0 one field over: the deferred
+    #     VERIFY that auto-arms after every apply persists under a brand-new
+    #     session id, so the very first Undo after every apply would find no
+    #     record and leave ``/sound`` declaring the undone crossover.
+    state["sound_declaration_undo"] = prior.get("sound_declaration_undo")
     state["apply_blocked"] = (
         prior.get("apply_blocked")
         if prior.get("session_id") == snap.session_id
@@ -6412,8 +6455,7 @@ def handle_v2_apply(
         and recommended_hz is not None and configured_hz is not None
     )
     selected_fc_label = (
-        f"{recommended_hz:.1f}".rstrip("0").rstrip(".")
-        if recommended_hz is not None else "")
+        _fc_hz_label(recommended_hz) if recommended_hz is not None else "")
 
     def _saved_not_applied(exc: BaseException) -> CrossoverV2Refused:
         log_event(logger, "correction.crossover_v2_sound_saved_not_applied",
@@ -6467,7 +6509,26 @@ def handle_v2_apply(
                 or not isinstance(accepted_revision, int)
                 or not _update_current_review(
                     review_session_id, expected, None,
-                    {"accepted_sound_revision": accepted_revision},
+                    {
+                        "accepted_sound_revision": accepted_revision,
+                        # The inverse of the write that just happened (#2292),
+                        # recorded in the SAME atomic state write so the two
+                        # can never disagree about whether Sound was touched.
+                        # Nothing else on the speaker remembers what ``/sound``
+                        # declared a moment ago: the draft keeps no history and
+                        # ``fc_selection`` is journey state a later measurement
+                        # overwrites, so without this an Undo has no honest
+                        # target to restore to.
+                        "sound_declaration_undo": {
+                            "sound_revision": accepted_revision,
+                            "between_roles": [
+                                regions[0].lower_driver,
+                                regions[0].upper_driver,
+                            ],
+                            "applied_hz": float(selected_fc),
+                            "previous_hz": float(configured_hz),
+                        },
+                    },
                 )
             ):
                 raise _review_replaced()
@@ -6683,6 +6744,140 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     return _rollback
 
 
+#: The declaration half of Undo (#2292), as four named outcomes. The DSP graph
+#: and the ``/sound`` declaration are restored by two different owners through
+#: two different writers, so the restore payload reports them separately rather
+#: than letting one ``status`` speak for both. Every Undo carries exactly one of
+#: these in ``payload["sound_declaration"]``.
+#:
+#: There is deliberately no "restored, probably" — a declaration this could not
+#: put back is named and handed to the household, because the alternative is a
+#: speaker that plays one crossover while ``/sound`` declares another and says
+#: nothing about it.
+DECLARATION_RESTORED = "declaration_restored"
+DECLARATION_REFUSED_SOUND_MOVED = "declaration_refused_sound_moved"
+DECLARATION_NOT_APPLICABLE = "declaration_not_applicable"
+DECLARATION_RESTORE_FAILED = "declaration_restore_failed"
+
+
+def _parse_sound_declaration_undo(
+    record: Any,
+) -> tuple[int, tuple[str, str], float, float] | None:
+    """The accept-time undo record, validated, or ``None``.
+
+    ``None`` covers three honest cases that all mean the same thing to the
+    restore path — there is no declaration write to reverse: this apply never
+    touched Sound (the configured-Fc winner, which is most applies), the apply
+    predates #2292, or the persisted record is not the shape this build writes.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    revision = record.get("sound_revision")
+    roles = record.get("between_roles")
+    applied_hz = _finite(record.get("applied_hz"))
+    previous_hz = _finite(record.get("previous_hz"))
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 0
+        or not isinstance(roles, Sequence)
+        or isinstance(roles, (str, bytes))
+        or len(roles) != 2
+        or not all(isinstance(role, str) and role for role in roles)
+        or applied_hz is None
+        or previous_hz is None
+    ):
+        return None
+    return revision, (str(roles[0]), str(roles[1])), applied_hz, previous_hz
+
+
+def _restore_sound_declaration(record: Any) -> tuple[str, str]:
+    """Put ``/sound``'s declared crossover back to its pre-accept value.
+
+    The declaration half of Undo (#2292). ``handle_v2_apply``'s
+    alternative-Fc path writes the winning measured Fc into the Sound
+    declaration before it touches DSP (#2290), so an Undo that only reloads
+    the previous DSP graph leaves the speaker playing one crossover while
+    ``/sound`` declares another — one fact with two answers, and the wrong one
+    is the one the next measurement session reads as its configured Fc.
+
+    Goes back through
+    :func:`jasper.web.sound_setup.apply_measured_crossover_frequency`, the
+    SAME in-process revision-checked writer the forward path used, with its
+    two frequencies swapped. Sound stays the only writer of Fc; this is the
+    forward write run backwards, not a second route into the declaration.
+
+    Returns ``(outcome, household_message)``. **Never raises**: the graph is
+    already back by the time this runs, so a declaration that could not be
+    restored is a fact to report beside a successful restore, never a 500 that
+    hides it. The message is empty when nothing needs saying.
+    """
+    from jasper.active_speaker.design_draft import (
+        ActiveSpeakerDesignDraftRevisionConflict,
+        load_design_draft,
+    )
+    from jasper.output_topology import load_output_topology
+    from jasper.web.sound_setup import apply_measured_crossover_frequency
+
+    parsed = _parse_sound_declaration_undo(record)
+    if parsed is None:
+        log_event(logger, "correction.crossover_v2_restore_sound_declaration",
+                  outcome=DECLARATION_NOT_APPLICABLE)
+        return DECLARATION_NOT_APPLICABLE, ""
+    revision, roles, applied_hz, previous_hz = parsed
+    applied_label, previous_label = _fc_hz_label(applied_hz), _fc_hz_label(previous_hz)
+
+    def _refused(current_revision: Any) -> tuple[str, str]:
+        log_event(logger, "correction.crossover_v2_restore_sound_declaration",
+                  level=logging.WARNING, outcome=DECLARATION_REFUSED_SOUND_MOVED,
+                  accepted_revision=revision, current_revision=current_revision)
+        return DECLARATION_REFUSED_SOUND_MOVED, (
+            f"The previous sound is back, but Sound still declares "
+            f"{applied_label} Hz: the speaker design changed after this "
+            f"crossover was applied, so JTS left it alone. Set the crossover "
+            f"back to {previous_label} Hz in Sound settings if you want it.")
+
+    def _failed(exc: BaseException) -> tuple[str, str]:
+        log_event(logger, "correction.crossover_v2_restore_sound_declaration",
+                  level=logging.ERROR, outcome=DECLARATION_RESTORE_FAILED,
+                  accepted_revision=revision, error_type=type(exc).__name__)
+        return DECLARATION_RESTORE_FAILED, (
+            f"The previous sound is back, but Sound's declared crossover "
+            f"could not be changed back from {applied_label} Hz — set it to "
+            f"{previous_label} Hz in Sound settings.")
+
+    # Read the live revision first so the ordinary "someone edited Sound"
+    # refusal is named exactly and costs no write attempt. Without it, an edit
+    # that moved the crossover ITSELF trips
+    # ``apply_measured_crossover_frequency``'s value guard, and a household
+    # edit would be reported as a failed write. The writer's own CAS below is
+    # still the authority: it closes the window between this read and that
+    # write, and it refuses BEFORE composing anything, so a Sound that moved in
+    # between is left byte-identical either way.
+    try:
+        current_revision = load_design_draft(
+            topology=load_output_topology()).get("revision")
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _failed(exc)
+    if isinstance(current_revision, bool) or current_revision != revision:
+        return _refused(current_revision)
+    try:
+        apply_measured_crossover_frequency(
+            expected_revision=revision,
+            between_roles=roles,
+            configured_hz=applied_hz,
+            selected_hz=previous_hz,
+        )
+    except ActiveSpeakerDesignDraftRevisionConflict as exc:
+        return _refused(exc.current_draft.get("revision"))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _failed(exc)
+    log_event(logger, "correction.crossover_v2_restore_sound_declaration",
+              outcome=DECLARATION_RESTORED, accepted_revision=revision,
+              restored_fc_hz=previous_hz)
+    return DECLARATION_RESTORED, ""
+
+
 def handle_v2_restore(
     run_async: Any,
     camilla_factory: Any,
@@ -6703,6 +6898,16 @@ def handle_v2_restore(
     (:func:`~jasper.active_speaker.baseline_profile.restore_applied_baseline_profile`),
     then clear the durable v2 applied/candidate/failure state so the
     envelope returns to a clean measure/review state.
+
+    An apply that also WROTE the winning Fc into the Sound declaration (#2290's
+    alternative-Fc path) owes a second leg: ``/sound`` must go back to what it
+    declared before that accept, or say why it did not (#2292). The two legs
+    are reported separately — ``status`` stays the DSP graph's answer and
+    ``sound_declaration`` carries the declaration's — because they are restored
+    by different owners through different writers and can genuinely disagree.
+    The declaration leg runs only after the graph is back, never before: a
+    declaration reverted ahead of a restore that then failed would invent the
+    same inconsistency in the other direction.
 
     Never raises a bare exception for an ordinary refusal — every refusal is
     a :class:`CrossoverV2Refused` (maps to 400 at the dispatch ladder,
@@ -6771,11 +6976,21 @@ def handle_v2_restore(
         )
     )
     if payload.get("status") == "restored":
+        # Read off the state loaded above, before ``observe_restore`` clears
+        # the record — the graph is back, so this is the moment the
+        # declaration owes the same reversal.
+        outcome, message = _restore_sound_declaration(
+            state.get("sound_declaration_undo")
+        )
+        payload["sound_declaration"] = outcome
+        if message:
+            payload["sound_declaration_message"] = message
         observe_restore()
     log_event(
         logger,
         "correction.crossover_v2_restored",
         status=payload.get("status"),
+        sound_declaration=str(payload.get("sound_declaration") or ""),
     )
     return payload
 

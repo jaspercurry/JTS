@@ -1754,8 +1754,38 @@ apply transaction. A stale Sound revision refuses before DSP. If Sound saves
 but DSP fails before load or proves rollback, the screen says saved/not applied
 and a retry skips the already-completed Sound save. An unconfirmed transaction
 instead says its current DSP result is unknown and asks the household to review
-the speaker state before retrying. There is no automatic next-Fc loop or
-cross-service rollback of Sound; **Keep current sound** remains a non-mutating exit.
+the speaker state before retrying. There is no automatic next-Fc loop and no
+cross-service rollback of Sound on an apply failure; **Keep current sound**
+remains a non-mutating exit.
+
+**Undo reverses the declaration too, or says why it did not** (#2292). Because
+that accept WRITES Sound, an Undo that reloaded only the DSP graph left the
+speaker playing one crossover while `/sound` declared another — and the next
+session reads that declaration as its configured Fc. So the accept records the
+inverse of its own write in the durable v2 state
+(`sound_declaration_undo`: the revision it produced, the driver pair, the value
+it wrote, the value Sound declared before it), and `handle_v2_restore` replays
+it backwards through the SAME in-process `apply_measured_crossover_frequency`
+writer — Sound stays Fc's only writer, and no cross-service hop is involved.
+The record has `pre_apply_profile`'s lifetime, not `accepted_sound_revision`'s:
+carried forward unconditionally (the post-apply VERIFY re-arm persists under a
+new session id) and preserved by Start over, because both halves of an Undo
+must survive exactly as long as the applied graph.
+
+The two legs are reported separately, because they can honestly disagree:
+`status` stays the graph's answer and `payload["sound_declaration"]` carries the
+declaration's — `declaration_restored`, `declaration_refused_sound_moved` (the
+draft revision moved since the accept: Sound is left byte-identical rather than
+discarding somebody's edit), `declaration_not_applicable` (this apply never
+wrote Sound — every configured-Fc winner), or `declaration_restore_failed` (the
+writer itself failed). The declaration leg runs only AFTER the graph is back —
+reverting it first and then failing the restore would invent the same
+inconsistency pointing the other way — and it never raises, so a declaration
+that could not be put back is reported beside a successful restore instead of
+turning a working Undo into a 500. The two actionable outcomes ship a household
+sentence in `sound_declaration_message`, which the wizard shows in place of
+"Updated."; the journal line is
+`event=correction.crossover_v2_restore_sound_declaration outcome=…`.
 
 **Where each piece lives.**
 
@@ -1903,7 +1933,9 @@ be scored is disclosed with a reason code, never dropped: `fit_refused`
    `pre_apply_profile` and `persist_conductor_state` carries it
    *unconditionally* forward across every snapshot, so
    `handle_v2_restore` can sha-pin a restore to the prior compiled
-   config even after a VERIFY re-arm.
+   config even after a VERIFY re-arm. `sound_declaration_undo` (#2292)
+   rides on exactly those terms so the `/sound` declaration goes back
+   with the graph — see "Recommending an Fc" for the two-leg contract.
 9. **The walked-away guarantee.** The `SessionVolumePlan` holds one
    measurement window with an abort target, a wall-clock ceiling, and a
    restore-once latch drained by close / session-death / ceiling. The
@@ -3688,7 +3720,11 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-09 — R21 re-verified only "Recommending an Fc" against
+Last verified: 2026-08-10 — #2292 re-verified only "Recommending an Fc" (the
+Undo/declaration two-leg contract) and gotcha 8 against `handle_v2_apply` /
+`handle_v2_restore` / `persist_conductor_state` / `reset_v2_journey_state` and
+focused offline tests; no live-Pi run. 2026-08-09: R21 re-verified only
+"Recommending an Fc" against
 the Sound-owned CAS save, exact-candidate apply, Review envelope, and focused
 offline tests; no live-Pi run. P0.4 re-verified the VERIFY claim and terminal grading
 sections; the four outcomes remain offline-tested with no live-Pi run. P0.3 verified only "Relay sequence and terminal
