@@ -598,7 +598,17 @@ impl TtsMixer {
         }
     }
 
-    pub fn mix_period(&mut self, sum: &mut [i32]) {
+    /// Mix the queued assistant/cue audio into the program sum.
+    ///
+    /// `width` is the sum's numeric scale ([`crate::mixer::ProgramWidth`]), and
+    /// it affects the LEVEL only: the per-frame gain is still applied at i16
+    /// precision by `apply_gain_i16`, and a wide sum simply receives that same
+    /// result promoted with the shared `widen_i16_to_i32`. Without the
+    /// promotion, TTS would enter a spine-scale sum 96 dB below the program it
+    /// is supposed to speak over. Making the assistant path itself carry more
+    /// than 16 bits is the next rung's work (the TTS/earcon/gain tail of U2);
+    /// this only keeps it at the right level under either scale.
+    pub fn mix_period(&mut self, sum: &mut [i64], width: crate::mixer::ProgramWidth) {
         let queued_samples_before = self.pending_samples;
         for frame_sum in sum.chunks_exact_mut(CHANNELS as usize) {
             let Some(front) = self.queue.front() else {
@@ -643,7 +653,14 @@ impl TtsMixer {
                 };
                 for (channel, sample_sum) in frame_sum.iter_mut().enumerate() {
                     let sample = front.samples[front.cursor + channel];
-                    *sample_sum = sample_sum.saturating_add(apply_gain_i16(sample, gain) as i32);
+                    let gained = apply_gain_i16(sample, gain);
+                    let contribution = match width {
+                        crate::mixer::ProgramWidth::Narrow => gained as i64,
+                        crate::mixer::ProgramWidth::Wide => {
+                            jasper_resampler::widen_i16_to_i32(gained) as i64
+                        }
+                    };
+                    *sample_sum = sample_sum.saturating_add(contribution);
                 }
                 front.cursor += CHANNELS as usize;
                 self.pending_samples = self.pending_samples.saturating_sub(CHANNELS as u64);
@@ -1655,14 +1672,14 @@ mod tests {
             command: TtsCommand::Audio(vec![10_000, -10_000, 10_000, -10_000]),
         })
         .unwrap();
-        let mut sum = vec![0i32; 4];
+        let mut sum = vec![0i64; 4];
 
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
 
         // First-use quiet-room speech lands exactly on the envelope. The
         // ordinary music-relative assistant offset does not apply here.
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-17.0)) as i32;
+        let expected = apply_gain_i16(10_000, gain_db_to_linear(-17.0)) as i64;
         assert_eq!(sum, vec![expected, -expected, expected, -expected]);
         assert_eq!(metrics.pending_frames(), 0);
         assert!(metrics.loudness_snapshot().decision_seen);
@@ -1797,11 +1814,11 @@ mod tests {
         })
         .unwrap();
 
-        let mut sum = vec![0i32; 2];
+        let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
 
-        let expected = apply_gain_i16(10_000, gain_db_to_linear(-13.0)) as i32;
+        let expected = apply_gain_i16(10_000, gain_db_to_linear(-13.0)) as i64;
         assert_eq!(sum, vec![expected, -expected]);
         let loudness = metrics.loudness_snapshot();
         assert!(loudness.decision_seen);
@@ -1850,9 +1867,9 @@ mod tests {
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
-        let mut prior = [0i32; 2];
+        let mut prior = [0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut prior);
+        mixer.mix_period(&mut prior, crate::mixer::ProgramWidth::Narrow);
         assert_eq!(prior, [30_000, 30_000]);
 
         for command in [
@@ -1873,11 +1890,11 @@ mod tests {
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
-        let mut capped = vec![0i32; 128 * (CHANNELS as usize)];
+        let mut capped = vec![0i64; 128 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut capped);
+        mixer.mix_period(&mut capped, crate::mixer::ProgramWidth::Narrow);
 
-        let cap = apply_gain_i16(30_000, gain_db_to_linear(-3.0)).abs() as i32;
+        let cap = apply_gain_i16(30_000, gain_db_to_linear(-3.0)).abs() as i64;
         assert!(
             capped.iter().all(|sample| sample.abs() <= cap),
             "every rendered frame must respect the new segment's -3 dB cap"
@@ -1947,9 +1964,9 @@ mod tests {
         })
         .unwrap();
 
-        let mut first = vec![0i32; 4_800 * (CHANNELS as usize)];
+        let mut first = vec![0i64; 4_800 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut first);
+        mixer.mix_period(&mut first, crate::mixer::ProgramWidth::Narrow);
         assert!(first.iter().all(|sample| *sample == 10_000));
 
         tx.send(QueuedTtsCommand {
@@ -1963,16 +1980,16 @@ mod tests {
             }),
         })
         .unwrap();
-        let mut second = vec![0i32; 4_800 * (CHANNELS as usize)];
+        let mut second = vec![0i64; 4_800 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut second);
+        mixer.mix_period(&mut second, crate::mixer::ProgramWidth::Narrow);
 
         assert!(
             (second[0] - 10_000).abs() <= 1,
             "ramp starts without a step discontinuity"
         );
         assert!(second[200] > 10_000, "ramp makes audible progress");
-        let expected_last = apply_gain_i16(10_000, gain_db_to_linear(1.56)) as i32;
+        let expected_last = apply_gain_i16(10_000, gain_db_to_linear(1.56)) as i64;
         assert!((second[second.len() - 1] - expected_last).abs() <= 2);
         let reference = reference_rx
             .try_recv()
@@ -2040,9 +2057,9 @@ mod tests {
         })
         .unwrap();
 
-        let mut sum = vec![0i32; 2];
+        let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         assert!(reference_rx.try_recv().is_err());
 
         // A remote update after playout but before provider SEGMENT_END must not
@@ -2118,9 +2135,9 @@ mod tests {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
 
-        let mut audible = [0i32; CHANNELS as usize];
+        let mut audible = [0i64; CHANNELS as usize];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut audible);
+        mixer.mix_period(&mut audible, crate::mixer::ProgramWidth::Narrow);
         assert!(audible.iter().all(|sample| *sample != 0));
 
         tx.send(QueuedTtsCommand {
@@ -2134,9 +2151,9 @@ mod tests {
             }),
         })
         .unwrap();
-        let mut muted_tail = [1i32; 3 * (CHANNELS as usize)];
+        let mut muted_tail = [1i64; 3 * (CHANNELS as usize)];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut muted_tail);
+        mixer.mix_period(&mut muted_tail, crate::mixer::ProgramWidth::Narrow);
         assert!(muted_tail.iter().all(|sample| *sample == 1));
 
         tx.send(QueuedTtsCommand {
@@ -2242,9 +2259,9 @@ mod tests {
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
-        let mut sum = vec![0i32; 2];
+        let mut sum = vec![0i64; 2];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -2306,9 +2323,9 @@ mod tests {
             })
             .unwrap();
 
-        let mut sum = [0i32; 4];
+        let mut sum = [0i64; 4];
         assert!(!mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
 
         let ack = ack_rx.try_recv().unwrap();
         assert_eq!(ack.pending_frames, 2);
@@ -2351,11 +2368,11 @@ mod tests {
         .unwrap();
 
         // Commit exactly three periods (300 ms) downstream before barge-in.
-        let mut sum = vec![0i32; PERIOD_FRAMES * (CHANNELS as usize)];
+        let mut sum = vec![0i64; PERIOD_FRAMES * (CHANNELS as usize)];
         for _ in 0..3 {
             assert!(mixer.prepare_period());
             sum.iter_mut().for_each(|s| *s = 0);
-            mixer.mix_period(&mut sum);
+            mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         }
 
         // Barge-in: synchronous flush mid-segment.
@@ -2519,9 +2536,9 @@ mod tests {
             &epoch,
             &metrics,
         );
-        let mut sum = [0i32; 4];
+        let mut sum = [0i64; 4];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         assert!(metrics.program_duck_active());
 
         run_tts_client_payload(
@@ -2618,9 +2635,9 @@ mod tests {
         })
         .unwrap();
 
-        let mut sum = [0i32; 4];
+        let mut sum = [0i64; 4];
         assert!(mixer.prepare_period());
-        mixer.mix_period(&mut sum);
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         assert!(mixer.prepare_period());
         assert!(metrics.program_duck_active());
     }
@@ -2657,8 +2674,8 @@ mod tests {
 
         assert!(mixer.prepare_period());
         assert!(metrics.program_duck_active());
-        let mut sum = [0i32; 4];
-        mixer.mix_period(&mut sum);
+        let mut sum = [0i64; 4];
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
         assert_eq!(mixer.pending_frames(), 0);
         assert!(!mixer.prepare_period());
         assert!(!metrics.program_duck_active());

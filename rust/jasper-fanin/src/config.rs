@@ -514,6 +514,28 @@ impl RingWireFormat {
 }
 
 impl Config {
+    /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
+    /// per-box width decision the whole daemon reads (U2 / #2223).
+    ///
+    /// A wide wire needs BOTH halves: the ring transport (an snd-aloop output is
+    /// an S16 substream, full stop) AND an S32LE ring wire format. The ring's
+    /// own attached header is the RUNTIME authority for what
+    /// `write_ring_period` publishes; this is the same fact resolved from config
+    /// at construction, which is when the lane buffers and the direct lane's
+    /// render width have to be sized. The two cannot drift: `create_or_attach`
+    /// validates the header field-by-field against the geometry built from this
+    /// same config and fails the open on a mismatch, and `Mixer::new`
+    /// cross-checks them explicitly before mixing a single period.
+    ///
+    /// False unless a box explicitly opts in: `JASPER_FANIN_RING_WIRE_FORMAT`
+    /// unset is the shipped default, and [`RingWireFormat::from_env_value`]
+    /// resolves that to `S16_LE`. Arming a box is a per-box configuration
+    /// change, never a code default.
+    pub fn program_wire_is_wide(&self) -> bool {
+        matches!(self.camilla_coupling, Coupling::ShmRing)
+            && matches!(self.ring_wire_format, RingWireFormat::S32Le)
+    }
+
     /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
     /// Returns `Err` only on structural misconfiguration (e.g., input
     /// PCM list length != renderer label list length).
@@ -2806,6 +2828,70 @@ mod tests {
                     "error message should name the offending var, got: {}",
                     msg,
                 );
+            },
+        );
+    }
+
+    /// The per-box program width (U2 / #2223) needs BOTH halves: the ring
+    /// transport AND an S32LE wire. A loopback box is narrow whatever the wire
+    /// format says, because an snd-aloop substream is S16 — resolving it wide
+    /// would build spine-scale lanes for an output that cannot carry them.
+    #[test]
+    fn the_program_width_needs_both_the_ring_transport_and_the_wide_format() {
+        let cases = [
+            ("shm_ring", Some("S32_LE"), true),
+            ("shm_ring", Some("S16_LE"), false),
+            ("loopback", Some("S32_LE"), false),
+            ("loopback", Some("S16_LE"), false),
+        ];
+        for (coupling, wire, expected) in cases {
+            with_env(
+                &[
+                    ("JASPER_FANIN_CAMILLA_COUPLING", Some(coupling)),
+                    ("JASPER_FANIN_RING_WIRE_FORMAT", wire),
+                ],
+                || {
+                    let cfg = Config::from_env().expect("defaults must parse");
+                    assert_eq!(
+                        cfg.program_wire_is_wide(),
+                        expected,
+                        "coupling={coupling} wire={wire:?}",
+                    );
+                },
+            );
+        }
+    }
+
+    /// INERTNESS BAR for the widened source path: with
+    /// `JASPER_FANIN_RING_WIRE_FORMAT` unset — the shipped default on every box
+    /// in the fleet — the program width resolves NARROW, so the DIRECT lane
+    /// keeps its capture narrowing, the sum keeps its i16 scale, and no lane
+    /// allocates a spine-scale period buffer. A default that resolved wide would
+    /// arm the entire widened route with nobody asking for it.
+    #[test]
+    fn the_shipped_default_leaves_the_wide_program_path_inert() {
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                assert!(
+                    !cfg.program_wire_is_wide(),
+                    "an unset wire format must leave the widened source path inert",
+                );
+            },
+        );
+        // ...and so does a loopback box, which is the other shipped default.
+        with_env(
+            &[
+                ("JASPER_FANIN_CAMILLA_COUPLING", None),
+                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
+            ],
+            || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                assert!(!cfg.program_wire_is_wide());
             },
         );
     }

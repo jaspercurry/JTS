@@ -750,18 +750,27 @@ pub(crate) fn ring_open_error(
 pub struct Mixer {
     inputs: Vec<Input>,
     output: Output,
-    /// Per-period scratch: i32 sum buffer absorbs the
-    /// saturating-add accumulation before clamping back to i16
-    /// in the output buffer. Holds `period_frames * CHANNELS` samples.
-    sum_buf: Vec<i32>,
+    /// The numeric scale this run's program sum carries, resolved ONCE from the
+    /// box's wire (see [`ProgramWidth`]). Every stage between a lane's read and
+    /// the summed write consults this one value rather than re-deriving the
+    /// width from the transport.
+    program_width: ProgramWidth,
+    /// Per-period scratch: the sum accumulator absorbs the saturating-add
+    /// accumulation before its consumers narrow or saturate it. Holds
+    /// `period_frames * CHANNELS` samples, in the scale `program_width` names.
+    /// `i64` so the mix keeps real headroom above full scale at BOTH scales —
+    /// see [`ProgramWidth`] for why that headroom is audible rather than
+    /// theoretical.
+    sum_buf: Vec<i64>,
     /// Per-period output buffer (i16 interleaved). Same length as
     /// sum_buf.
     output_buf: Vec<i16>,
-    /// Per-period payload for an S32LE Ring A wire: `sum_buf` clamped to the
-    /// i16 range and left-justified into 32 bits, already little-endian on the
-    /// wire. EMPTY (and therefore zero heap) on every other path — a `Vec` with
-    /// no capacity does not allocate — so a loopback box and a narrow-ring box
-    /// carry no new allocation at all.
+    /// Per-period payload for an S32LE Ring A wire: `sum_buf` saturated into the
+    /// i32 spine range, already little-endian on the wire. (A wide wire implies a
+    /// wide sum, so no scale change happens here — the promotion already
+    /// happened at each lane's sum entry.) EMPTY (and therefore zero heap) on
+    /// every other path — a `Vec` with no capacity does not allocate — so a
+    /// loopback box and a narrow-ring box carry no new allocation at all.
     ///
     /// Bytes rather than `Vec<i32>` because the wire is explicitly
     /// LITTLE-endian: `to_le_bytes` states that, where reinterpreting an `i32`
@@ -1335,7 +1344,19 @@ pub struct Input {
     pub pcm_name: String,
     /// Per-input read buffer (i16 interleaved stereo). Reused as the
     /// discard scratch by the catch-up drain — no per-period allocation.
+    ///
+    /// The lane's period lands HERE unless `read_buf_wide` is non-empty.
     read_buf: Vec<i16>,
+    /// Per-input SPINE-SCALE read buffer (i32 interleaved stereo), allocated
+    /// ONLY for the USB DIRECT lane on a wide wire (U2 / #2223). EMPTY — and so
+    /// zero heap, a `Vec` with no capacity does not allocate — on every other
+    /// lane and on every narrow-wire box.
+    ///
+    /// Non-empty is the lane's OWN width switch, and the mixer reads it exactly
+    /// that way (`read_buf_wide.is_empty()` picks the sum entry). One allocation
+    /// decision at construction is the whole mechanism; there is no second flag
+    /// that could disagree with which buffer actually holds the period.
+    read_buf_wide: Vec<i32>,
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
@@ -1390,6 +1411,10 @@ impl Mixer {
     /// non-blocking channel to the off-thread xrun log writer.
     pub fn new(config: &Config, xrun_tx: Sender<XrunEvent>, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+        // The ONE width derivation for this run. Resolved before any lane is
+        // built because it decides the DIRECT lane's render width and whether it
+        // allocates a spine-scale read buffer at all.
+        let program_width = ProgramWidth::from_config(config);
 
         // DEFAULT-OFF host-compliance persistence state, seeded when the cushion
         // decay is armed on the resampler lane (persistence rides that flag). Only
@@ -1671,10 +1696,31 @@ impl Mixer {
             }
             _ => Vec::new(),
         };
+        // FAIL CLOSED on a width disagreement. The lanes above were built (ring
+        // width, render width, wide read buffer) from the CONFIG's resolved
+        // wire; the ring below publishes from its own ATTACHED header. Those two
+        // cannot legitimately differ — `create_or_attach` validates the header
+        // field-by-field against the geometry built from this same config — but
+        // "cannot" is worth an assertion rather than an assumption, because the
+        // failure it guards is a lane contributing at the wrong numeric scale,
+        // i.e. one source 96 dB louder than the rest of the mix. Refusing to
+        // construct is the only safe answer; there is no partial mode to
+        // degrade to.
+        let output_is_wide = matches!(&output, Output::Ring(ring) if ring.wire_is_wide());
+        if output_is_wide != config.program_wire_is_wide() {
+            anyhow::bail!(
+                "fan-in program width disagreement: config resolved wire_is_wide={} \
+                 but the attached ring header says wire_is_wide={} — refusing to mix \
+                 lanes at mismatched numeric scales",
+                config.program_wire_is_wide(),
+                output_is_wide,
+            );
+        }
         Ok(Self {
             inputs,
             output,
-            sum_buf: vec![0i32; period_samples],
+            program_width,
+            sum_buf: vec![0i64; period_samples],
             output_buf: vec![0i16; period_samples],
             ring_wide_payload,
             content_meter_buf: vec![0i16; period_samples],
@@ -1967,7 +2013,16 @@ impl Mixer {
             // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
             // to the sum (0 when it read nothing), reused by the mix below.
             let active = frames * (CHANNELS as usize);
-            let lane_rms_dbfs = rms_dbfs_i16(&input.read_buf[..active]);
+            // Read the level off whichever buffer actually holds this lane's
+            // period. The two RMS functions report the SAME dBFS for the same
+            // signal (they differ only in the full-scale normalizer), so mux's
+            // activity gate and the STATUS `rms_dbfs` keep one meaning across
+            // widths.
+            let lane_rms_dbfs = if input.read_buf_wide.is_empty() {
+                rms_dbfs_i16(&input.read_buf[..active])
+            } else {
+                jasper_resampler::rms_dbfs_i32(&input.read_buf_wide[..active])
+            };
             input
                 .rms_dbfs_x100
                 .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
@@ -2001,7 +2056,23 @@ impl Mixer {
             // input.read_buf so reading the full period is also safe; explicit
             // bounds save a few unnecessary saturating_add calls when an input
             // is silent.
-            mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
+            if input.read_buf_wide.is_empty() {
+                mix_into(
+                    &mut self.sum_buf[..active],
+                    &input.read_buf[..active],
+                    self.program_width,
+                );
+            } else {
+                // A spine-scale lane (the USB DIRECT capture on a wide wire):
+                // its period is already in the sum's own scale, so it enters
+                // with no shift and no narrowing — the low bits a hi-res host
+                // sent reach the summed write.
+                mix_into_wide(
+                    &mut self.sum_buf[..active],
+                    &input.read_buf_wide[..active],
+                    self.program_width,
+                );
+            }
         }
         // 3c. Service the DEFAULT-OFF host-compliance persistence — write the proof
         // once the descent settles clean at the floor, and run the one-strike
@@ -2015,7 +2086,11 @@ impl Mixer {
             compliance_probe_ratio,
         );
         if let Some(tts) = self.tts.as_mut() {
-            saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
+            saturate_to_i16(
+                &self.sum_buf,
+                &mut self.content_meter_buf,
+                self.program_width,
+            );
             tts.observe_content_period(&self.content_meter_buf);
         }
         // Apply the program-lane duck as a per-sample ramp toward the
@@ -2045,7 +2120,7 @@ impl Mixer {
         // blocks, never escalates — the primary `output` below stays the
         // sole timing owner (inv-1). `None` on a solo speaker → no work.
         if let Some(music_out) = self.music_output.as_ref() {
-            saturate_to_i16(&self.sum_buf, &mut self.music_only_buf);
+            saturate_to_i16(&self.sum_buf, &mut self.music_only_buf, self.program_width);
             write_music_only(
                 music_out,
                 &self.music_only_buf,
@@ -2054,11 +2129,11 @@ impl Mixer {
             );
         }
         if let Some(tts) = self.tts.as_mut() {
-            tts.mix_period(&mut self.sum_buf);
+            tts.mix_period(&mut self.sum_buf, self.program_width);
         }
 
-        // 4. Clamp i32 sum -> i16 output.
-        saturate_to_i16(&self.sum_buf, &mut self.output_buf);
+        // 4. Clamp the sum -> i16 output.
+        saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width);
 
         // 5. Write to output (blocks; paces the loop). Dispatch on transport:
         //    - Alsa: blocking writei, returns when the loopback ring has room
@@ -2723,21 +2798,133 @@ impl Input {
 
 /// Sum input samples into the running i32 accumulator with saturating
 /// arithmetic. Pulled out for unit testability — no ALSA needed.
-fn mix_into(sum: &mut [i32], input: &[i16]) {
+/// The numeric scale fan-in's program sum carries this run — the ONE width
+/// decision every stage between a lane's read and the summed write consults
+/// (U2 / #2223).
+///
+/// # What the two scales mean
+///
+/// * [`ProgramWidth::Narrow`] — the sum is in the **i16 numeric scale**: full
+///   scale is ±32768, and every renderer lane's `i16` sample is added as-is.
+///   This is what the shipped default resolves to, and what `saturate_to_i16`
+///   writes out.
+/// * [`ProgramWidth::Wide`] — the sum is in the **i32 spine scale**: full scale
+///   is ±2^31, an `i16` lane is promoted by `widen_i16_to_i32` at its sum entry,
+///   and the USB DIRECT lane contributes its gadget samples untouched.
+///
+/// # Why the promotion moved to the sum entry
+///
+/// Before this, the S32LE ring wire got its width by left-justifying the
+/// FINISHED narrow sum at the write. That carried zero extra precision by
+/// construction — a lane's low bits were already gone at the `>> 16` in its
+/// capture, so the wire was a wide container around 16-bit content. Promoting at
+/// each lane's sum entry instead is what lets a lane that HAS more bits keep
+/// them; the promotion of the lanes that do not is exactly the same
+/// `<< 16` as before, just applied earlier, so their contribution is unchanged
+/// sample for sample.
+///
+/// # Why the accumulator is i64
+///
+/// The narrow sum has ~16 bits of headroom above full scale (two full-scale
+/// lanes legitimately reach 65534 in an `i32`), and the program duck can bring
+/// an over-full-scale sum back into range before the write — so that headroom is
+/// audible, not theoretical. A spine-scale sum in an `i32` would have NO
+/// headroom: two full-scale lanes would saturate at the mix, and a subsequent
+/// 25 dB duck would then be attenuating an already-clipped value. `i64` keeps
+/// the same headroom argument true at both widths (32 bits of it at spine
+/// scale), at the cost of one extra kilobyte of per-period scratch and no
+/// measurable arithmetic. It also retires the clamp-before-shift hazard the
+/// write-time promotion had to defend against: `widen_i16_to_i32` into an `i64`
+/// cannot wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgramWidth {
+    /// The i16 numeric scale — an S16 wire, and the shipped default.
+    Narrow,
+    /// The i32 spine scale — an S32LE ring wire.
+    Wide,
+}
+
+impl ProgramWidth {
+    /// Resolve the width from THIS BOX's config — the single derivation, from
+    /// [`Config::program_wire_is_wide`], which owns what makes a wire wide.
+    fn from_config(config: &Config) -> Self {
+        ProgramWidth::from_wire_is_wide(config.program_wire_is_wide())
+    }
+
+    /// The pure mapping, split out from [`ProgramWidth::from_config`] so the
+    /// scale choice is testable without constructing a whole `Config`. The
+    /// boolean's own derivation stays in one place.
+    fn from_wire_is_wide(wire_is_wide: bool) -> Self {
+        if wire_is_wide {
+            ProgramWidth::Wide
+        } else {
+            ProgramWidth::Narrow
+        }
+    }
+}
+
+/// Accumulate one lane's i16 period into the sum at the sum's own scale.
+///
+/// `Narrow` adds the sample as-is (today's behaviour, unchanged). `Wide`
+/// promotes it with the shared `widen_i16_to_i32` primitive first — the same
+/// information-preserving `<< 16` the wide wire used to apply at the write, done
+/// per lane so a wide lane's own bits are not forced through the narrow scale.
+fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
     debug_assert_eq!(sum.len(), input.len());
+    match width {
+        ProgramWidth::Narrow => {
+            for (s, &i) in sum.iter_mut().zip(input) {
+                *s = s.saturating_add(i as i64);
+            }
+        }
+        ProgramWidth::Wide => {
+            for (s, &i) in sum.iter_mut().zip(input) {
+                *s = s.saturating_add(jasper_resampler::widen_i16_to_i32(i) as i64);
+            }
+        }
+    }
+}
+
+/// Accumulate one lane's **already spine-scale** period into the sum — the USB
+/// DIRECT lane on a wide wire (U2 / #2223), the only producer that has more than
+/// 16 significant bits to contribute.
+///
+/// Nothing is shifted and nothing is narrowed: the i32 the gadget capture
+/// produced is added as-is. That is the whole point of the wide route — the low
+/// word a hi-res host sends survives from `readi` to the summed write.
+///
+/// Only meaningful against a [`ProgramWidth::Wide`] sum; a narrow sum is in the
+/// i16 scale and adding a spine-scale sample to it would be 96 dB of gain. The
+/// mixer picks the pairing per lane from the ONE resolved width, and the
+/// `debug_assert` states that contract for anyone who wires a new caller.
+fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
+    debug_assert_eq!(sum.len(), input.len());
+    debug_assert_eq!(
+        width,
+        ProgramWidth::Wide,
+        "a spine-scale lane may only enter a spine-scale sum",
+    );
     for (s, &i) in sum.iter_mut().zip(input) {
-        *s = s.saturating_add(i as i32);
+        *s = s.saturating_add(i as i64);
     }
 }
 
 /// Apply a period-stable gain to the accumulated program sum. Used
 /// after pre-duck content metering so the assistant loudness baseline
 /// tracks the listener-facing content, not the temporary ducked level.
-fn apply_gain_to_sum(sum: &mut [i32], gain: f32) {
+///
+/// Width-agnostic on purpose: a linear gain commutes with the promotion, so the
+/// `f32` multiply and the i32-range clamp are the SAME operation at either
+/// scale, and the narrow path's bytes are untouched. The `f32` mantissa is 24
+/// bits, so at spine scale the product carries ~24 of the sum's 32 bits — a
+/// −138 dBFS floor on a ducked wide program, not a level error. Making the
+/// gain stages themselves wide is the next rung's work (the TTS/earcon/gain
+/// tail of U2), not this one's.
+fn apply_gain_to_sum(sum: &mut [i64], gain: f32) {
     for sample in sum {
         *sample = ((*sample as f32) * gain)
             .round()
-            .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+            .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
     }
 }
 
@@ -2761,7 +2948,7 @@ fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
 /// into music playing under a short earcon/cue. Ramping the edges removes
 /// both.
 fn ramp_program_duck(
-    sum: &mut [i32],
+    sum: &mut [i64],
     channels: usize,
     mut current: f32,
     target: f32,
@@ -2781,59 +2968,75 @@ fn ramp_program_duck(
             for s in &mut sum[base..base + channels] {
                 *s = ((*s as f32) * current)
                     .round()
-                    .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+                    .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
             }
         }
     }
     current
 }
 
-/// Clamp i32 sum back to i16 for output. Pulled out for unit testability.
-fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
+/// Clamp the sum back to i16 for an S16 consumer — the aloop output, the aloop
+/// mirror, the assistant content meter, and the multi-room music-only tap.
+/// Pulled out for unit testability.
+///
+/// `Narrow` is a bare clamp, exactly as it always was: the sum is already in the
+/// i16 numeric scale, so the only question is saturation.
+///
+/// `Wide` has 16 more bits to shed, and sheds them with the shared
+/// [`jasper_resampler::narrow_i32_to_i16_round`] — the round-to-nearest speaker-edge
+/// quantizer, NOT a truncating shift. It inverts `widen_i16_to_i32` exactly, so a
+/// wide sum built only from promoted i16 lanes narrows back to the identical
+/// bytes the narrow sum would have produced; a wide sum carrying real low bits
+/// rounds rather than stepping half an LSB toward −∞ on every sample.
+fn saturate_to_i16(sum: &[i64], out: &mut [i16], width: ProgramWidth) {
     debug_assert_eq!(sum.len(), out.len());
-    for (o, &s) in out.iter_mut().zip(sum) {
-        *o = s.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    match width {
+        ProgramWidth::Narrow => {
+            for (o, &s) in out.iter_mut().zip(sum) {
+                *o = s.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            }
+        }
+        ProgramWidth::Wide => {
+            for (o, &s) in out.iter_mut().zip(sum) {
+                *o = jasper_resampler::narrow_i32_to_i16_round(clamp_sum_to_spine(s));
+            }
+        }
     }
+}
+
+/// Saturate one accumulator sample into the i32 spine range.
+///
+/// The sum accumulates in `i64` for headroom (see [`ProgramWidth`]); every
+/// consumer of a WIDE sum — the ring payload and the i16 narrowing above — needs
+/// it back inside i32 first, and this is the one place that clamp lives.
+#[inline]
+fn clamp_sum_to_spine(sum_sample: i64) -> i32 {
+    sum_sample.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 /// Bytes one sample occupies on an S32LE ring wire.
 const WIDE_BYTES_PER_SAMPLE: usize = 4;
 
-/// One sample of the i32 mix sum, as it appears on an S32LE ring wire:
-/// SATURATE first (clamp into the i16 range), then left-justify by 16.
-///
-/// The order is load-bearing. `sum_buf` is `Vec<i32>` but carries an **i16
-/// numeric scale** — `mix_into` saturating-adds i16 inputs — so two full-scale
-/// lanes legitimately sum to 65534, well inside i32 and well outside i16.
-/// Shifting first sends such a sum past the i32 range and wraps the sign bit.
-/// The failure is NON-MONOTONIC sign-flipping fold-over, not a simple polarity
-/// flip, and it is worth being exact about because the two ends look nothing
-/// alike:
-///
-///   - `32768 << 16` (one LSB above i16 full scale) wraps to exactly
-///     `i32::MIN` — the loudest possible program becomes maximally NEGATIVE.
-///   - `65534 << 16` (two full-scale lanes) wraps all the way around to
-///     `-131_072`, i.e. an i16-scale value of `-2`: roughly **−84 dBFS**
-///     sign-flipped near-SILENCE, not a loud excursion at all.
-///
-/// So as the sum rises past full scale the output folds down through zero and
-/// climbs again — nothing about the wrongness is monotonic in the input, which
-/// is why "it would just clip loudly" is the wrong intuition here.
-///
-/// Clamping first bounds the value to ±32768 before the shift, where `<< 16` is
-/// exactly representable — `(i16::MIN as i32) << 16` is precisely `i32::MIN`.
-/// `wide_ring_sample_clamps_before_shifting_at_the_i16_sum_ceiling` pins the
-/// 65534 case.
-///
-/// This carries ZERO extra precision over the narrow path — it is the same
-/// clamp `saturate_to_i16` applies, moved 16 bits up. Recovering the duck's
-/// fractional bits means widening the mixer's own arithmetic, which belongs to
-/// the fan-in spine work (U2 / #2223), not to the transport.
-fn wide_ring_sample(sum_sample: i32) -> i32 {
-    sum_sample.clamp(i16::MIN as i32, i16::MAX as i32) << 16
-}
-
 /// Fill an S32LE ring slot payload from the period's mix sum.
+///
+/// A wide wire implies a [`ProgramWidth::Wide`] sum (`Mixer::new` refuses to run
+/// any other pairing), so the sum is ALREADY in the wire's own spine scale: the
+/// only conversion left is the `i64`→`i32` saturation the accumulator's headroom
+/// made necessary, plus the explicit little-endian byte order.
+///
+/// This is where the wide wire's content changed. It used to left-justify the
+/// finished narrow sum, which carried zero extra precision — the same clamp
+/// `saturate_to_i16` applies, moved 16 bits up. Now the promotion happens at
+/// each lane's sum entry, so a lane with more than 16 significant bits (the USB
+/// DIRECT capture) puts them here intact. A period built only from i16 lanes
+/// still lands on exactly the old bytes, which
+/// `wide_payload_is_information_equivalent_to_the_narrow_payload` pins.
+///
+/// The clamp-BEFORE-shift hazard the old write-time promotion had to defend
+/// against (shifting a 65534 two-full-scale-lane sum wrapped the sign bit into
+/// non-monotonic fold-over) cannot arise on this path: the promotion is now a
+/// widen into an `i64`, which has 32 bits of room above spine full scale, and
+/// the single saturation happens at the end rather than the beginning.
 ///
 /// `out` is the preallocated `ring_wide_payload` — `4 * sum.len()` bytes,
 /// sized once at construction from the same `period_samples` that sizes
@@ -2841,10 +3044,10 @@ fn wide_ring_sample(sum_sample: i32) -> i32 {
 /// `to_le_bytes` states the wire's little-endianness rather than inheriting the
 /// host's. The 4-byte `copy_from_slice` cannot fail: `chunks_exact_mut(4)`
 /// yields exactly 4-byte chunks and `to_le_bytes` returns exactly 4 bytes.
-fn fill_wide_ring_payload(sum: &[i32], out: &mut [u8]) {
+fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
     debug_assert_eq!(out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE);
     for (chunk, &s) in out.chunks_exact_mut(WIDE_BYTES_PER_SAMPLE).zip(sum) {
-        chunk.copy_from_slice(&wide_ring_sample(s).to_le_bytes());
+        chunk.copy_from_slice(&clamp_sum_to_spine(s).to_le_bytes());
     }
 }
 
@@ -3222,6 +3425,9 @@ fn open_input(
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
+        // An aloop renderer lane is S16 at its capture PCM, so it has no wide
+        // period to hold at any wire width.
+        read_buf_wide: Vec::new(),
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
@@ -3292,6 +3498,15 @@ fn open_direct_input(
         }
     };
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    // The ONLY lane that can be spine-scale, and only on a wide wire: the gadget
+    // capture is already S32_LE at `readi`, so on a wide box its period never
+    // passes through i16 at all. On a narrow box this stays empty and the lane
+    // reads, resamples, and mixes exactly as before.
+    let read_buf_wide = if config.program_wire_is_wide() {
+        vec![0i32; period_samples]
+    } else {
+        Vec::new()
+    };
     Input {
         // The direct lane does NOT open its aloop substream — its only source
         // is the gadget capture in `direct` (C6).
@@ -3300,6 +3515,7 @@ fn open_direct_input(
         label: label.to_string(),
         pcm_name: pcm_name.to_string(),
         read_buf: vec![0i16; period_samples],
+        read_buf_wide,
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
@@ -4675,9 +4891,9 @@ mod tests {
 
     #[test]
     fn mix_into_sums_two_inputs() {
-        let mut sum = vec![0i32; 4];
-        mix_into(&mut sum, &[100, 200, 300, 400]);
-        mix_into(&mut sum, &[50, 50, 50, 50]);
+        let mut sum = vec![0i64; 4];
+        mix_into(&mut sum, &[100, 200, 300, 400], ProgramWidth::Narrow);
+        mix_into(&mut sum, &[50, 50, 50, 50], ProgramWidth::Narrow);
         assert_eq!(sum, vec![150, 250, 350, 450]);
     }
 
@@ -4685,23 +4901,23 @@ mod tests {
     fn mix_into_saturates_at_i32_bounds_but_stays_room_for_i16_saturation() {
         // Two max-i16 inputs sum to 2 × 32767 = 65534 — well within i32.
         // Only saturate_to_i16 should clip; mix_into just accumulates.
-        let mut sum = vec![0i32; 1];
-        mix_into(&mut sum, &[i16::MAX]);
-        mix_into(&mut sum, &[i16::MAX]);
+        let mut sum = vec![0i64; 1];
+        mix_into(&mut sum, &[i16::MAX], ProgramWidth::Narrow);
+        mix_into(&mut sum, &[i16::MAX], ProgramWidth::Narrow);
         assert_eq!(sum[0], 65534);
     }
 
     #[test]
     fn mix_into_cancels_positive_and_negative() {
-        let mut sum = vec![0i32; 2];
-        mix_into(&mut sum, &[5000, -3000]);
-        mix_into(&mut sum, &[-5000, 3000]);
+        let mut sum = vec![0i64; 2];
+        mix_into(&mut sum, &[5000, -3000], ProgramWidth::Narrow);
+        mix_into(&mut sum, &[-5000, 3000], ProgramWidth::Narrow);
         assert_eq!(sum, vec![0, 0]);
     }
 
     #[test]
     fn apply_gain_to_sum_ducks_after_program_sum() {
-        let mut sum = vec![20_000i32, -20_000, 1_500, -1_500];
+        let mut sum = vec![20_000i64, -20_000, 1_500, -1_500];
         apply_gain_to_sum(&mut sum, 0.1);
         assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
     }
@@ -4723,7 +4939,7 @@ mod tests {
         // early frames stay near full level and the level descends monotonically.
         let channels = 2usize;
         let frames = 64usize;
-        let mut sum = vec![10_000i32; frames * channels];
+        let mut sum = vec![10_000i64; frames * channels];
         // attack_step chosen so it takes ~the whole period to reach target.
         let attack = (1.0 - 0.5) / (frames as f32);
         let current = ramp_program_duck(&mut sum, channels, 1.0, 0.5, attack, 1.0);
@@ -4755,7 +4971,7 @@ mod tests {
         // it must stop scaling entirely (samples pass through unchanged).
         let channels = 2usize;
         let frames = 8usize;
-        let mut sum = vec![10_000i32; frames * channels];
+        let mut sum = vec![10_000i64; frames * channels];
         // release_step large enough to reach 1.0 within the first frame.
         let current = ramp_program_duck(&mut sum, channels, 0.5, 1.0, 1.0, 1.0);
         assert_eq!(current, 1.0);
@@ -4769,7 +4985,7 @@ mod tests {
         // constant — identical to apply_gain_to_sum (the step() steady-state
         // fast path uses apply_gain_to_sum; this guards their equivalence).
         let channels = 2usize;
-        let mut ramped = vec![20_000i32, -20_000, 1_500, -1_500];
+        let mut ramped = vec![20_000i64, -20_000, 1_500, -1_500];
         let mut flat = ramped.clone();
         let current = ramp_program_duck(&mut ramped, channels, 0.1, 0.1, 0.01, 0.01);
         apply_gain_to_sum(&mut flat, 0.1);
@@ -4782,14 +4998,22 @@ mod tests {
         // Mirrors step()'s tap point exactly: the music-only buffer is the
         // summed program AFTER the program duck and BEFORE TTS is mixed.
         // Two music lanes summed:
-        let mut sum = vec![0i32; 4];
-        mix_into(&mut sum, &[10_000, -10_000, 8_000, -8_000]);
-        mix_into(&mut sum, &[2_000, -2_000, 1_000, -1_000]);
+        let mut sum = vec![0i64; 4];
+        mix_into(
+            &mut sum,
+            &[10_000, -10_000, 8_000, -8_000],
+            ProgramWidth::Narrow,
+        );
+        mix_into(
+            &mut sum,
+            &[2_000, -2_000, 1_000, -1_000],
+            ProgramWidth::Narrow,
+        );
         // Program duck applies (TTS active): attenuate the program by 0.5.
         apply_gain_to_sum(&mut sum, 0.5);
         // TAP HERE — clamp to i16 for the music-only output.
         let mut music_only = vec![0i16; 4];
-        saturate_to_i16(&sum, &mut music_only);
+        saturate_to_i16(&sum, &mut music_only, ProgramWidth::Narrow);
         // Post-duck (×0.5), pre-TTS: (12000,-12000,9000,-9000) × 0.5.
         assert_eq!(music_only, vec![6_000, -6_000, 4_500, -4_500]);
 
@@ -4806,21 +5030,21 @@ mod tests {
     #[test]
     fn saturate_to_i16_clamps_positive_overflow() {
         let mut out = vec![0i16; 1];
-        saturate_to_i16(&[100_000], &mut out);
+        saturate_to_i16(&[100_000], &mut out, ProgramWidth::Narrow);
         assert_eq!(out[0], i16::MAX);
     }
 
     #[test]
     fn saturate_to_i16_clamps_negative_overflow() {
         let mut out = vec![0i16; 1];
-        saturate_to_i16(&[-100_000], &mut out);
+        saturate_to_i16(&[-100_000], &mut out, ProgramWidth::Narrow);
         assert_eq!(out[0], i16::MIN);
     }
 
     #[test]
     fn saturate_to_i16_passes_in_range_values() {
         let mut out = vec![0i16; 4];
-        saturate_to_i16(&[0, 1000, -1000, 32767], &mut out);
+        saturate_to_i16(&[0, 1000, -1000, 32767], &mut out, ProgramWidth::Narrow);
         assert_eq!(out, vec![0, 1000, -1000, i16::MAX]);
     }
 
@@ -4829,12 +5053,24 @@ mod tests {
         // Three inputs at ~1/3 max each: sum approaches max but
         // doesn't saturate. Models the realistic three-renderer
         // simultaneous-handover transient.
-        let mut sum = vec![0i32; 4];
-        mix_into(&mut sum, &[10_000, 10_000, 10_000, 10_000]);
-        mix_into(&mut sum, &[10_000, 10_000, 10_000, 10_000]);
-        mix_into(&mut sum, &[10_000, 10_000, 10_000, 10_000]);
+        let mut sum = vec![0i64; 4];
+        mix_into(
+            &mut sum,
+            &[10_000, 10_000, 10_000, 10_000],
+            ProgramWidth::Narrow,
+        );
+        mix_into(
+            &mut sum,
+            &[10_000, 10_000, 10_000, 10_000],
+            ProgramWidth::Narrow,
+        );
+        mix_into(
+            &mut sum,
+            &[10_000, 10_000, 10_000, 10_000],
+            ProgramWidth::Narrow,
+        );
         let mut out = vec![0i16; 4];
-        saturate_to_i16(&sum, &mut out);
+        saturate_to_i16(&sum, &mut out, ProgramWidth::Narrow);
         assert_eq!(out, vec![30_000, 30_000, 30_000, 30_000]);
     }
 
@@ -4842,12 +5078,12 @@ mod tests {
     fn mix_three_max_inputs_saturates_output() {
         // Three max-positive inputs sum to 98_301, well above i16::MAX.
         // Saturation clips to 32767.
-        let mut sum = vec![0i32; 2];
-        mix_into(&mut sum, &[i16::MAX, i16::MAX]);
-        mix_into(&mut sum, &[i16::MAX, i16::MAX]);
-        mix_into(&mut sum, &[i16::MAX, i16::MAX]);
+        let mut sum = vec![0i64; 2];
+        mix_into(&mut sum, &[i16::MAX, i16::MAX], ProgramWidth::Narrow);
+        mix_into(&mut sum, &[i16::MAX, i16::MAX], ProgramWidth::Narrow);
+        mix_into(&mut sum, &[i16::MAX, i16::MAX], ProgramWidth::Narrow);
         let mut out = vec![0i16; 2];
-        saturate_to_i16(&sum, &mut out);
+        saturate_to_i16(&sum, &mut out, ProgramWidth::Narrow);
         assert_eq!(out, vec![i16::MAX, i16::MAX]);
     }
 
@@ -5202,14 +5438,14 @@ mod tests {
         // Model step()'s output_buf: build a summed program, apply a duck, then
         // add a TTS contribution — the SAME order step() uses — and saturate.
         let total = (period_frames as usize) * (CHANNELS as usize);
-        let mut sum = vec![0i32; total];
-        mix_into(&mut sum, &vec![10_000i16; total]); // program lane
+        let mut sum = vec![0i64; total];
+        mix_into(&mut sum, &vec![10_000i16; total], ProgramWidth::Narrow); // program lane
         apply_gain_to_sum(&mut sum, 0.5); // duck (TTS active)
         for s in sum.iter_mut() {
             *s = s.saturating_add(4_000); // stand-in for tts.mix_period
         }
         let mut output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut output_buf); // expected: 5000 + 4000 = 9000
+        saturate_to_i16(&sum, &mut output_buf, ProgramWidth::Narrow); // expected: 5000 + 4000 = 9000
 
         let published_frames =
             write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames);
@@ -5237,73 +5473,199 @@ mod tests {
     // own attached header says S32LE, so these tests build such a ring
     // explicitly; everything above still exercises the narrow default.
 
-    /// A period's worth of mix sum, spanning the values the wide path has to get
-    /// right: silence, both i16 rails, the 65534 two-full-scale-lanes sum that
+    /// A period's worth of NARROW-scale mix sum, spanning the values the narrow
+    /// path has to get right: silence, both i16 rails, the 65534
+    /// two-full-scale-lanes sum that
     /// `mix_into_saturates_at_i32_bounds_but_stays_room_for_i16_saturation`
     /// blesses, its negative twin, and ordinary program levels.
-    fn representative_sum(total: usize) -> Vec<i32> {
-        let pattern = [0i32, 65_534, -65_536, 32_767, -32_768, 9_000, -9_000, 1];
+    fn representative_sum(total: usize) -> Vec<i64> {
+        let pattern = [0i64, 65_534, -65_536, 32_767, -32_768, 9_000, -9_000, 1];
         (0..total).map(|i| pattern[i % pattern.len()]).collect()
     }
 
-    /// The panel's prescribed overflow pin. `sum_buf` is `Vec<i32>` in an i16
-    /// numeric scale, so two full-scale lanes legitimately sum to 65534.
-    /// SHIFT-then-saturate would compute `65534 << 16`, wrap the sign bit, and
-    /// turn the loudest possible program into a full-scale NEGATIVE excursion;
-    /// SATURATE-then-shift clamps to 32767 first. Reversing the two operations
-    /// in `wide_ring_sample` fails here.
+    /// The SAME period at the spine scale a wide box's sum would carry — every
+    /// lane's contribution `widen_i16_to_i32`'d at its sum entry. The promotion
+    /// is applied to the FINISHED narrow sum here only because these are
+    /// pure-function tests with no lanes; per sample it is the identical
+    /// `<< 16`, which is exactly why doing it per lane in `mix_into` changes
+    /// nothing for a lane that had no low bits to keep.
+    fn representative_wide_sum(total: usize) -> Vec<i64> {
+        representative_sum(total)
+            .into_iter()
+            .map(|s| s * (1i64 << 16))
+            .collect()
+    }
+
+    /// The overflow pin, restated for the accumulator that replaced the i32 sum.
+    ///
+    /// It used to guard an ORDER: the wide payload had to clamp into the i16
+    /// range before shifting, because `65534 << 16` in an `i32` wrapped the sign
+    /// bit and turned the loudest possible program into non-monotonic fold-over.
+    /// The promotion now happens at each lane's sum entry into an `i64`, where
+    /// that hazard cannot exist — so what needs pinning is the property that
+    /// replaced it: two full-scale lanes land at exactly twice one lane, in the
+    /// right sign, with no wrap, at BOTH widths.
     #[test]
-    fn wide_ring_sample_clamps_before_shifting_at_the_i16_sum_ceiling() {
-        assert_eq!(wide_ring_sample(65_534), 32_767i32 << 16);
-        // The wrapped value the wrong order would produce, named so the
-        // assertion above cannot be satisfied by it.
-        assert_ne!(wide_ring_sample(65_534), 65_534i32.wrapping_shl(16));
-        assert!(
-            wide_ring_sample(65_534) > 0,
-            "a full-scale POSITIVE sum must stay positive on the wire"
+    fn two_full_scale_lanes_do_not_wrap_at_either_width() {
+        // Narrow: unchanged — 65534, comfortably inside the accumulator.
+        let mut narrow = vec![0i64; 1];
+        mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
+        mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
+        assert_eq!(narrow[0], 65_534);
+        assert!(narrow[0] > 0, "a full-scale POSITIVE sum stays positive");
+
+        // Wide: the same sum promoted, and crucially NOT the wrapped value an
+        // i32 accumulator would have produced.
+        let mut wide = vec![0i64; 1];
+        mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
+        mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
+        assert_eq!(wide[0], 65_534i64 << 16);
+        assert!(wide[0] > 0);
+        assert_ne!(
+            wide[0],
+            (65_534i32).wrapping_shl(16) as i64,
+            "the i32-wrap value must not be reachable"
         );
-        // The negative twin: two full-scale negative lanes.
-        assert_eq!(wide_ring_sample(-65_536), i32::MIN);
-        assert!(wide_ring_sample(-65_536) < 0);
+
+        // The negative twin.
+        let mut wide_neg = vec![0i64; 1];
+        mix_into(&mut wide_neg, &[i16::MIN], ProgramWidth::Wide);
+        mix_into(&mut wide_neg, &[i16::MIN], ProgramWidth::Wide);
+        assert_eq!(wide_neg[0], -65_536i64 << 16);
+        assert!(wide_neg[0] < 0);
     }
 
-    /// Left-justification is exact at both rails: `i16::MIN << 16` is precisely
-    /// `i32::MIN` and `i16::MAX << 16` is `0x7FFF_0000`, so no rail overflows
-    /// and none is silently rounded.
+    /// THE HEADROOM PROPERTY, and the reason the accumulator is `i64` rather
+    /// than `i32` (see [`ProgramWidth`]).
+    ///
+    /// Two full-scale lanes legitimately exceed full scale, and the program duck
+    /// can bring them back into range before the write. With an `i32`
+    /// accumulator at spine scale the mix would saturate FIRST and the duck
+    /// would then be attenuating an already-clipped value — audible distortion,
+    /// not a rounding difference. Both widths must recover the same ducked
+    /// level.
     #[test]
-    fn wide_ring_sample_left_justifies_the_whole_i16_range() {
-        assert_eq!(wide_ring_sample(0), 0);
-        assert_eq!(wide_ring_sample(i16::MAX as i32), 0x7FFF_0000u32 as i32);
-        assert_eq!(wide_ring_sample(i16::MIN as i32), i32::MIN);
-        assert_eq!(wide_ring_sample(1), 0x0001_0000);
-        assert_eq!(wide_ring_sample(-1), -0x0001_0000);
+    fn the_sum_keeps_duck_recoverable_headroom_above_full_scale_at_both_widths() {
+        let duck = 0.1f32;
+
+        let mut narrow = vec![0i64; 1];
+        mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
+        mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
+        apply_gain_to_sum(&mut narrow, duck);
+        // 65534 * 0.1 — recovered cleanly, well inside i16.
+        assert_eq!(narrow[0], 6_553);
+
+        let mut wide = vec![0i64; 1];
+        mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
+        mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
+        apply_gain_to_sum(&mut wide, duck);
+        let mut out = vec![0i16; 1];
+        saturate_to_i16(&wide, &mut out, ProgramWidth::Wide);
+        assert_eq!(
+            out[0], 6_553,
+            "the wide path must recover the same ducked level, not a clipped one"
+        );
+        // Stated as the failure it guards: an accumulator that saturated at the
+        // MIX would leave the duck attenuating i32::MAX instead.
+        let clipped_first = ((i32::MAX as f32) * duck).round() as i64;
+        assert_ne!(
+            wide[0], clipped_first,
+            "a saturating-at-the-mix accumulator would land here"
+        );
     }
 
-    /// ZERO precision claim, stated as an assertion rather than only as prose:
-    /// every wide sample is exactly the narrow sample moved 16 bits up, so the
-    /// wide wire carries the same information the narrow one does. Recovering
-    /// the duck's fractional bits is the fan-in spine's job (U2 / #2223), not
-    /// the transport's — if that ever changes, this test is the thing that
-    /// notices.
+    /// The promotion is exact at both rails: `i16::MIN << 16` is precisely
+    /// `i32::MIN` and `i16::MAX << 16` is `0x7FFF_0000`, so no rail overflows and
+    /// none is silently rounded. Asserted through the sum entry that performs it.
+    #[test]
+    fn the_wide_sum_entry_left_justifies_the_whole_i16_range() {
+        let lane = [0i16, i16::MAX, i16::MIN, 1, -1];
+        let mut sum = vec![0i64; lane.len()];
+        mix_into(&mut sum, &lane, ProgramWidth::Wide);
+        assert_eq!(
+            sum,
+            vec![
+                0,
+                0x7FFF_0000i64,
+                i32::MIN as i64,
+                0x0001_0000,
+                -0x0001_0000
+            ]
+        );
+    }
+
+    /// The value a period's `i`th sample must publish on a wide wire, given what
+    /// the SAME period publishes on a narrow one.
+    ///
+    /// Below full scale the two wires are the same number 16 bits apart. AT the
+    /// positive clip rail they differ by exactly one i16 LSB, and that is
+    /// correct rather than a rounding slip: the narrow wire's positive full
+    /// scale is `32767`, whose left-justification is `0x7FFF_0000`, while the
+    /// wide wire's own positive full scale is `i32::MAX` — one i16 step higher,
+    /// because two's complement has one more negative code than positive. A
+    /// wide wire that stopped at `0x7FFF_0000` would be refusing to use its own
+    /// top code. The negative rail has no such asymmetry (`i16::MIN << 16` IS
+    /// `i32::MIN`), and the difference only exists on samples that are already
+    /// clipping.
+    fn expected_wide_sample(narrow_sum_sample: i64, narrow_out_sample: i16) -> i32 {
+        if narrow_sum_sample > i16::MAX as i64 {
+            i32::MAX
+        } else {
+            (narrow_out_sample as i32) << 16
+        }
+    }
+
+    /// A wide period built ONLY from i16 lanes carries exactly the information
+    /// the narrow one does — every wide sample is the narrow sample moved 16
+    /// bits up (modulo the one-LSB clip-rail asymmetry
+    /// [`expected_wide_sample`] names), and narrowing it back returns the narrow
+    /// bytes with no drift at all. That is what makes the promotion a scale
+    /// change rather than a content change, and it is why flipping a box's wire
+    /// cannot alter how an S16-only program sounds.
+    ///
+    /// Where the wide path now DIFFERS is that a lane with more than 16
+    /// significant bits keeps them —
+    /// `a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload`
+    /// is that half of the claim.
     #[test]
     fn wide_payload_is_information_equivalent_to_the_narrow_payload() {
-        let sum = representative_sum(64);
-        let mut narrow = vec![0i16; sum.len()];
-        saturate_to_i16(&sum, &mut narrow);
-        let mut wide = vec![0u8; sum.len() * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&sum, &mut wide);
+        let narrow_sum = representative_sum(64);
+        let wide_sum = representative_wide_sum(64);
+        let mut narrow = vec![0i16; narrow_sum.len()];
+        saturate_to_i16(&narrow_sum, &mut narrow, ProgramWidth::Narrow);
+        let mut wide = vec![0u8; wide_sum.len() * WIDE_BYTES_PER_SAMPLE];
+        fill_wide_ring_payload(&wide_sum, &mut wide);
+        let mut saw_clip_rail = false;
         for (i, &n) in narrow.iter().enumerate() {
             let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = wide
                 [i * WIDE_BYTES_PER_SAMPLE..(i + 1) * WIDE_BYTES_PER_SAMPLE]
                 .try_into()
                 .unwrap();
+            let published = i32::from_le_bytes(bytes);
             assert_eq!(
-                i32::from_le_bytes(bytes),
-                (n as i32) << 16,
-                "sample {i} (sum {}) must be the narrow sample left-justified",
-                sum[i],
+                published,
+                expected_wide_sample(narrow_sum[i], n),
+                "sample {i} (narrow sum {})",
+                narrow_sum[i],
             );
+            if narrow_sum[i] > i16::MAX as i64 {
+                saw_clip_rail = true;
+                assert_eq!(
+                    (published as i64) - (((n as i32) << 16) as i64),
+                    65_535,
+                    "the clip-rail difference must be exactly one i16 LSB",
+                );
+            }
         }
+        assert!(
+            saw_clip_rail,
+            "the representative period must exercise the positive clip rail"
+        );
+        // Narrowing the wide sum back returns the narrow bytes EXACTLY, clip
+        // rail included — `narrow_i32_to_i16_round` inverts the promotion.
+        let mut round_tripped = vec![0i16; wide_sum.len()];
+        saturate_to_i16(&wide_sum, &mut round_tripped, ProgramWidth::Wide);
+        assert_eq!(round_tripped, narrow);
     }
 
     /// The MANDATORY mirror contract (ring-v2 design §7): for identical input,
@@ -5348,11 +5710,11 @@ mod tests {
         // The payload BOTH wires must hand the mirror, computed here
         // independently of anything the production path does with it.
         let mut expected_mirror = vec![0i16; total];
-        saturate_to_i16(&sum, &mut expected_mirror);
+        saturate_to_i16(&sum, &mut expected_mirror, ProgramWidth::Narrow);
 
         // Narrow wire: step() passes output_buf and an empty wide payload.
         let mut narrow_output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut narrow_output_buf);
+        saturate_to_i16(&sum, &mut narrow_output_buf, ProgramWidth::Narrow);
         let (mut narrow_ring, narrow_path) = tmp_ring_output(8, "mirror_narrow");
         arm_mirror_capture(&mut narrow_ring);
         let mut narrow_reader =
@@ -5373,7 +5735,7 @@ mod tests {
         // Wide wire: the ring's own header selects the wide payload; the same
         // output_buf still rides the mirror argument.
         let mut wide_output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut wide_output_buf);
+        saturate_to_i16(&sum, &mut wide_output_buf, ProgramWidth::Narrow);
         let mut wide_payload = vec![0u8; total * WIDE_BYTES_PER_SAMPLE];
         fill_wide_ring_payload(&sum, &mut wide_payload);
         let (mut wide_ring, wide_path) =
@@ -5453,11 +5815,16 @@ mod tests {
         let total = (period_frames as usize) * (CHANNELS as usize);
         let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
         let slots = period_frames / RING_SLOT_FRAMES;
+        // The narrow box's sum and the SAME period as a wide box's sum would
+        // carry it — the promotion happens at each lane's sum entry now, so the
+        // two wires are fed from differently-scaled accumulators rather than
+        // from one accumulator converted twice.
         let sum = representative_sum(total);
+        let wide_sum = representative_wide_sum(total);
         let mut output_buf = vec![0i16; total];
-        saturate_to_i16(&sum, &mut output_buf);
+        saturate_to_i16(&sum, &mut output_buf, ProgramWidth::Narrow);
         let mut wide_payload = vec![0u8; total * WIDE_BYTES_PER_SAMPLE];
-        fill_wide_ring_payload(&sum, &mut wide_payload);
+        fill_wide_ring_payload(&wide_sum, &mut wide_payload);
 
         // Narrow ring: publish output_buf, read i16 slots back.
         let (mut narrow_ring, narrow_path) = tmp_ring_output(8, "wire_narrow");
@@ -5525,15 +5892,16 @@ mod tests {
         for (i, (&w, &n)) in wide_read.iter().zip(narrow_read.iter()).enumerate() {
             assert_eq!(
                 w,
-                (n as i32) << 16,
-                "slot sample {i}: wide wire must be the narrow wire left-justified",
+                expected_wide_sample(sum[i], n),
+                "slot sample {i}: wide wire must carry the narrow wire's sample",
             );
         }
-        // The 65534 rail actually appears in this period — the overflow pin is
-        // exercised end-to-end, not only in the pure unit test above.
+        // The 65534 over-rail sum actually appears in this period, so the clip
+        // behaviour is exercised end-to-end and not only in the pure unit test
+        // above.
         assert!(
-            wide_read.contains(&(32_767i32 << 16)),
-            "the representative period must include the clamped full-scale rail"
+            wide_read.contains(&i32::MAX),
+            "the representative period must include the saturated full-scale rail"
         );
         cleanup_ring(&narrow_path);
         cleanup_ring(&wide_path);
@@ -5911,5 +6279,285 @@ mod tests {
         assert!(!d.fire);
         let d2 = auto_trim_decision(1_096_128, d.next, TEST_DELAY);
         assert!(d2.fire);
+    }
+
+    // ---- U2 / #2223: the widened DIRECT lane, end of the route -------------
+
+    /// A known 24-bit sample in S24-in-S32 placement, and both 24-bit rails —
+    /// the same vectors the lane-level fixture and the `jasper-resampler`
+    /// contract test use, restated here because THIS is where the claim has to
+    /// land: the summed write.
+    const U2_HIRES_VECTORS: [i32; 3] = [0x1234_5600, 0x7fff_ff00, i32::MIN];
+
+    /// THE EXIT-GATE FIXTURE: a hi-res sample injected where the DIRECT capture
+    /// hands its period to the mixer survives — low bits and all — into the
+    /// bytes published on a wide wire.
+    ///
+    /// Driven through the REAL sum entry (`mix_into_wide`) and the REAL payload
+    /// fill, so it fails if either reintroduces a narrowing, a shift, or a clamp
+    /// into the i16 range.
+    ///
+    /// The contrast is the point: the same sample taken through the NARROW sum
+    /// entry loses its low byte, and the test asserts the exact number of bits
+    /// each route keeps rather than only that they differ.
+    #[test]
+    fn a_hi_res_direct_lane_keeps_its_low_bits_all_the_way_to_the_wide_payload() {
+        for pattern in U2_HIRES_VECTORS {
+            // The wide route: the lane's spine-scale period enters the sum
+            // untouched and is published as-is.
+            let mut sum = vec![0i64; 4];
+            mix_into_wide(&mut sum, &[pattern; 4], ProgramWidth::Wide);
+            let mut payload = vec![0u8; sum.len() * WIDE_BYTES_PER_SAMPLE];
+            fill_wide_ring_payload(&sum, &mut payload);
+            for (i, chunk) in payload.chunks_exact(WIDE_BYTES_PER_SAMPLE).enumerate() {
+                let bytes: [u8; WIDE_BYTES_PER_SAMPLE] = chunk.try_into().unwrap();
+                assert_eq!(
+                    i32::from_le_bytes(bytes),
+                    pattern,
+                    "published sample {i} must be {pattern:#010x} bit for bit",
+                );
+            }
+
+            // The narrow route, for contrast: the capture narrowing runs first,
+            // and everything below bit 16 is gone before the sum ever sees it.
+            let narrowed = jasper_resampler::s32_high_word_to_s16(pattern);
+            let mut narrow_sum = vec![0i64; 4];
+            mix_into(&mut narrow_sum, &[narrowed; 4], ProgramWidth::Narrow);
+            let mut narrow_out = vec![0i16; 4];
+            saturate_to_i16(&narrow_sum, &mut narrow_out, ProgramWidth::Narrow);
+            let survived_narrow = jasper_resampler::widen_i16_to_i32(narrow_out[0]);
+            assert_eq!(
+                pattern & !0xffff,
+                survived_narrow,
+                "the narrow route keeps exactly the high word and nothing below it",
+            );
+        }
+
+        // Named explicitly on the one vector that HAS low bits, so this test
+        // cannot pass on rails alone.
+        let with_low_bits = U2_HIRES_VECTORS[0];
+        assert_ne!(with_low_bits & 0xffff, 0, "the probe must carry low bits");
+        let mut sum = vec![0i64; 1];
+        mix_into_wide(&mut sum, &[with_low_bits], ProgramWidth::Wide);
+        let mut payload = vec![0u8; WIDE_BYTES_PER_SAMPLE];
+        fill_wide_ring_payload(&sum, &mut payload);
+        let published = i32::from_le_bytes(payload[..].try_into().unwrap());
+        assert_eq!(
+            published & 0xffff,
+            with_low_bits & 0xffff,
+            "the low word must reach the wire, not just the high word"
+        );
+    }
+
+    /// A hi-res lane MIXED WITH an ordinary S16 lane keeps both at the right
+    /// level and keeps its own low bits — the promotion and the pass-through
+    /// have to agree about the scale or one source is 96 dB off.
+    #[test]
+    fn a_wide_lane_and_an_s16_lane_sum_at_the_same_scale() {
+        let hires = 0x0012_3456i32; // small, so the sum cannot saturate
+        let s16 = 1_000i16;
+        let mut sum = vec![0i64; 2];
+        mix_into_wide(&mut sum, &[hires; 2], ProgramWidth::Wide);
+        mix_into(&mut sum, &[s16; 2], ProgramWidth::Wide);
+        let expected = (hires as i64) + (jasper_resampler::widen_i16_to_i32(s16) as i64);
+        assert_eq!(sum, vec![expected; 2]);
+        // The S16 lane still dominates by exactly the ratio of its level to the
+        // hi-res sample's, i.e. the promotion did not scale it wrong.
+        assert_eq!(
+            jasper_resampler::widen_i16_to_i32(s16) as i64,
+            (s16 as i64) << 16
+        );
+        // And the hi-res lane's low bits are still in the sum.
+        assert_ne!(sum[0] & 0xffff, 0);
+    }
+
+    /// The gadget-shaped input stream the byte-identity golden runs on.
+    ///
+    /// Deterministic and NOT constant: a constant survives any normalised
+    /// interpolation kernel unchanged, so a DC golden would pin the conversions
+    /// but not the resampling. This is a two-tone stereo signal at genuine
+    /// 24-bit depth (the low bits are populated, so the capture narrowing has
+    /// something to discard), phase-continuous across the whole buffer.
+    fn golden_gadget_stream(frames: usize) -> Vec<i32> {
+        let mut out = Vec::with_capacity(frames * (CHANNELS as usize));
+        for n in 0..frames {
+            let t = n as f64;
+            // Amplitudes well inside full scale so nothing clips; the `+ 0x5a`
+            // style offsets keep the bottom byte busy.
+            let l = (0.31 * (t * 0.013).sin() + 0.11 * (t * 0.211).sin()) * 2_000_000_000.0;
+            let r = (0.27 * (t * 0.019).cos() + 0.09 * (t * 0.077).sin()) * 2_000_000_000.0;
+            out.push(jasper_resampler::clamp_i32(l));
+            out.push(jasper_resampler::clamp_i32(r));
+        }
+        out
+    }
+
+    /// THE BYTE-IDENTITY GOLDEN for the narrow wire.
+    ///
+    /// The gadget-shaped stream above driven through the DIRECT lane's NARROW
+    /// route — capture narrowing, resampler push, render, sum entry, summed
+    /// write — pinned to committed bytes. Every box in the fleet runs this path.
+    ///
+    /// **The golden was captured by running this same fixture against the
+    /// PRE-CHANGE code on `origin/main`**, not by printing what the new code
+    /// happens to produce. That is the difference between a byte-identity proof
+    /// and a tautology: these numbers are evidence about the old behaviour, and
+    /// the new code has to meet them.
+    ///
+    /// What moves them: the capture narrowing itself; the narrowing ORDER
+    /// (narrow-then-resample — resampling first and narrowing after is
+    /// better-rounded but DIFFERENT, and is the mutation this exists to catch);
+    /// the resampler ring's storage scale or its narrowing back out; the sum's
+    /// scale; the i16 saturation.
+    #[test]
+    fn the_narrow_direct_route_is_byte_identical_to_its_committed_golden() {
+        let output = narrow_direct_route_golden_output();
+        // Captured from origin/main @ 8f021e6ac (pre-change), same fixture.
+        let expected: [i16; 24] = [
+            6921, 2186, 7688, 2077, 8462, 1983, 9211, 1903, 9904, 1838, 10513, 1786, 11015, 1747,
+            11390, 1721, 11624, 1707, 11709, 1704, 11644, 1713, 11434, 1731,
+        ];
+        assert_eq!(
+            &output[..expected.len()],
+            &expected,
+            "the narrow DIRECT route's summed write drifted from its pre-change golden"
+        );
+        // A second window, deeper into the period, so the pin is not only on the
+        // ramp-adjacent leading samples.
+        let tail: [i16; 8] = [10327, -8137, 9893, -7973, 9338, -7805, 8683, -7635];
+        assert_eq!(&output[200..208], &tail, "golden tail window drifted");
+    }
+
+    /// Drive the DIRECT lane's narrow route over [`golden_gadget_stream`] and
+    /// return the summed write of a steady-state period.
+    ///
+    /// Deliberately built from the SAME primitives the daemon uses in the same
+    /// order — `convert_s32_to_s16` at the capture boundary, then `push_input`,
+    /// then `render_period`, then `mix_into`, then `saturate_to_i16` — so the
+    /// golden it feeds pins the real route rather than a paraphrase of it.
+    fn narrow_direct_route_golden_output() -> Vec<i16> {
+        const PERIOD: u32 = 256;
+        const CH: usize = CHANNELS as usize;
+        let mut lane = LaneResampler::new(
+            CH,
+            PERIOD,
+            48_000,
+            512,
+            PERIOD as usize,
+            500.0,
+            8_192,
+            crate::lane_resampler::DecayParams::disabled(),
+        )
+        .expect("lane resampler builds");
+        let mut rendered = vec![0i16; PERIOD as usize * CH];
+        let mut phase = 0usize;
+        // Feed a period per render, as the gadget does; prime deep enough to lock.
+        // The chunk goes in through the REAL width fork
+        // (`direct_capture::push_capture_chunk`), so this pins the narrowing
+        // ORDER the daemon uses rather than a restatement of it.
+        let feed = |lane: &mut LaneResampler, phase: &mut usize, frames: usize| {
+            let gadget = golden_gadget_stream(*phase + frames);
+            let raw = &gadget[*phase * CH..];
+            let mut narrowed = vec![0i16; raw.len()];
+            assert!(jasper_resampler::convert_s32_to_s16(raw, &mut narrowed));
+            direct_capture::push_capture_chunk(Some(lane), false, raw, &narrowed);
+            *phase += frames;
+        };
+        feed(
+            &mut lane,
+            &mut phase,
+            512 + PERIOD as usize + 17 + PERIOD as usize,
+        );
+        for _ in 0..3 {
+            feed(&mut lane, &mut phase, PERIOD as usize);
+            assert_eq!(lane.render_period(&mut rendered), PERIOD as usize);
+        }
+        let mut sum = vec![0i64; rendered.len()];
+        mix_into(&mut sum, &rendered, ProgramWidth::Narrow);
+        let mut out = vec![0i16; rendered.len()];
+        saturate_to_i16(&sum, &mut out, ProgramWidth::Narrow);
+        out
+    }
+
+    /// The WIDTH FORK's two branches, asserted at the seam itself: the narrow
+    /// route hands the resampler the NARROWED view (narrow-then-resample), the
+    /// wide route hands it the raw gadget `i32`.
+    ///
+    /// Observed through what each lane then renders, because the fork's whole
+    /// output is what the resampler received. A narrow lane fed a hi-res chunk
+    /// renders the truncated high word; a wide lane fed the same chunk renders
+    /// the sample intact.
+    #[test]
+    fn the_width_fork_narrows_before_the_resampler_and_only_on_the_narrow_route() {
+        const PERIOD: u32 = 256;
+        const CH: usize = CHANNELS as usize;
+        let hires = 0x1234_5600i32;
+        let build = || {
+            LaneResampler::new(
+                CH,
+                PERIOD,
+                48_000,
+                512,
+                PERIOD as usize,
+                500.0,
+                8_192,
+                crate::lane_resampler::DecayParams::disabled(),
+            )
+            .expect("lane resampler builds")
+        };
+        let raw = vec![hires; (512 + 3 * PERIOD as usize + 17) * CH];
+        let mut narrowed = vec![0i16; raw.len()];
+        assert!(jasper_resampler::convert_s32_to_s16(&raw, &mut narrowed));
+
+        let mut narrow_lane = build();
+        let mut wide_lane = build();
+        direct_capture::push_capture_chunk(Some(&mut narrow_lane), false, &raw, &narrowed);
+        direct_capture::push_capture_chunk(Some(&mut wide_lane), true, &raw, &narrowed);
+
+        let mut narrow_out = vec![0i16; PERIOD as usize * CH];
+        let mut wide_out = vec![0i32; PERIOD as usize * CH];
+        // Render twice: the first period after lock is scaled by the startup
+        // de-click ramp, so the steady-state period is the one that shows what
+        // the resampler was actually handed.
+        for _ in 0..2 {
+            assert_eq!(narrow_lane.render_period(&mut narrow_out), PERIOD as usize);
+            assert_eq!(wide_lane.render_period_wide(&mut wide_out), PERIOD as usize);
+        }
+
+        assert_eq!(
+            narrow_out[0],
+            jasper_resampler::s32_high_word_to_s16(hires),
+            "the narrow route must hand the resampler the narrowed chunk",
+        );
+        assert_eq!(
+            wide_out[0], hires,
+            "the wide route must hand the resampler the raw gadget sample",
+        );
+        // A `None` resampler is a silent no-op, not a panic — the lane can be
+        // Absent with no resampler built.
+        direct_capture::push_capture_chunk(None, false, &raw, &narrowed);
+    }
+
+    /// Printer for [`the_narrow_direct_route_is_byte_identical_to_its_committed_golden`]'s
+    /// fixture, so the golden can be RE-captured against a known commit rather
+    /// than hand-transcribed. Ignored by default; run with
+    /// `cargo test print_narrow_direct_golden -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_narrow_direct_golden() {
+        let out = narrow_direct_route_golden_output();
+        println!("HEAD24 {:?}", &out[..24]);
+        println!("TAIL8 {:?}", &out[200..208]);
+    }
+
+    /// The width mapping itself: one boolean in, one scale out. The boolean's
+    /// own derivation (ring transport AND S32LE wire, default narrow) is pinned
+    /// where it lives, next to the env parse — see config.rs
+    /// `the_program_width_needs_both_the_ring_transport_and_the_wide_format`
+    /// and `the_shipped_default_leaves_the_wide_program_path_inert`.
+    #[test]
+    fn the_program_width_maps_the_one_resolved_wire_boolean() {
+        assert_eq!(ProgramWidth::from_wire_is_wide(true), ProgramWidth::Wide);
+        assert_eq!(ProgramWidth::from_wire_is_wide(false), ProgramWidth::Narrow);
     }
 }

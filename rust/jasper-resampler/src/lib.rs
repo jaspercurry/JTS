@@ -150,6 +150,43 @@ pub fn clamp_i16(value: f64) -> i16 {
     value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
+/// Round-to-nearest, saturating to the `i32` range — the spine-scale sibling of
+/// [`clamp_i16`], and the ONLY rounding applied on the wide interpolation path.
+///
+/// Same `f64::round` (half away from zero) as [`clamp_i16`], so the two differ
+/// only in where they saturate. `i32::MAX as f64` is exactly `2147483647.0` and
+/// `i32::MIN as f64` exactly `-2147483648.0`, so the clamp rails are exact and
+/// the `as i32` cast never sees an out-of-range value.
+pub fn clamp_i32(value: f64) -> i32 {
+    value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+/// The exact scale factor between the i16 sample scale and the i32 spine scale:
+/// `2^16`, the same factor [`widen_i16_to_i32`] applies as a shift.
+///
+/// Named once because the byte-identity of the narrow resample path depends on
+/// it being an exact power of two: scaling every ring sample by `2^16` scales
+/// the interpolator's `f64` accumulator by exactly `2^16` (a power-of-two
+/// multiply changes only the exponent, never the mantissa or a rounding
+/// decision, and the kernel's magnitudes are far from subnormal or overflow),
+/// so dividing back out before the i16 round reproduces the pre-spine result
+/// bit for bit. [`spine_acc_to_i16`] is that division.
+pub const SPINE_SCALE_F64: f64 = 65_536.0;
+
+/// Narrow a spine-scale interpolator accumulator to `i16` with the HISTORICAL
+/// rounding — `clamp_i16(acc / 2^16)`.
+///
+/// The one place the narrow render path's rounding lives. [`SincTable::interpolate`]
+/// returns its raw accumulator at the ring's own (i32 spine) scale; a narrow
+/// consumer divides by [`SPINE_SCALE_F64`] and rounds ONCE here. Rounding at i32
+/// first and narrowing afterwards would round twice and is not the same
+/// function — do not compose [`clamp_i32`] with [`narrow_i32_to_i16_round`] to
+/// get here.
+#[inline]
+pub fn spine_acc_to_i16(acc: f64) -> i16 {
+    clamp_i16(acc / SPINE_SCALE_F64)
+}
+
 /// Narrow one S32_LE sample to S16 by keeping the high word — an arithmetic
 /// right shift by 16, sign-preserving, no rounding, no dither.
 ///
@@ -405,6 +442,34 @@ pub fn rms_dbfs_i16(samples: &[i16]) -> f64 {
     }
 }
 
+/// Per-period RMS in dBFS of an interleaved **spine-scale i32** slice — the
+/// wide sibling of [`rms_dbfs_i16`], for a lane whose samples are i32 rather
+/// than i16.
+///
+/// Identical shape, identical epsilon, identical floor; only the normalizer
+/// changes (`/ 2147483648.0`, i.e. `2^31`, where the narrow one uses `2^15`).
+/// That makes the two report the SAME dBFS for the same acoustic signal, which
+/// is what lets STATUS and mux's activity gate keep one meaning for `rms_dbfs`
+/// no matter which width a lane carries.
+pub fn rms_dbfs_i32(samples: &[i32]) -> f64 {
+    if samples.is_empty() {
+        return RMS_DBFS_FLOOR;
+    }
+    let sum_sq: f64 = samples
+        .iter()
+        .map(|sample| {
+            let normalized = (*sample as f64) / 2_147_483_648.0;
+            normalized * normalized
+        })
+        .sum();
+    let rms = (sum_sq / (samples.len() as f64)).sqrt();
+    if rms <= 1.0e-9 {
+        RMS_DBFS_FLOOR
+    } else {
+        (20.0 * rms.log10()).max(RMS_DBFS_FLOOR)
+    }
+}
+
 /// A precomputed windowed-sinc interpolation table.
 ///
 /// Built ONCE (it is `PHASES * TAPS` `f64` ≈ 540 KB) and shared across every
@@ -424,13 +489,21 @@ impl SincTable {
         }
     }
 
-    /// Interpolate one channel of `ring` at fractional frame position `pos`.
+    /// Interpolate one channel of `ring` at fractional frame position `pos`,
+    /// returning the RAW `f64` accumulator at the ring's own (i32 spine) scale.
     ///
     /// `pos` is an absolute frame index in the ring's monotonic frame space
     /// (the same space [`AudioRing::write_frame`] / [`AudioRing::read_frame`]
     /// report). Out-of-window taps read as zero (the ring returns 0 outside
     /// `[read_frame, write_frame)`), so the edges of a fresh stream ramp in.
-    pub fn interpolate(&self, ring: &AudioRing, pos: f64, channel: usize) -> i16 {
+    ///
+    /// **The caller owns the rounding**, and which one it owns is the width
+    /// decision: a narrow consumer calls [`spine_acc_to_i16`] (the historical
+    /// `clamp_i16` of the pre-spine value), a wide one calls [`clamp_i32`].
+    /// Returning `f64` rather than rounding here is what keeps the two paths a
+    /// SINGLE rounding each — an `i32`-rounding interpolator would force a
+    /// narrow consumer to round twice, which is a different function.
+    pub fn interpolate(&self, ring: &AudioRing, pos: f64, channel: usize) -> f64 {
         let center = pos.floor() as i64;
         let frac = pos - center as f64;
         let phase = ((frac * PHASES as f64).floor() as usize).min(PHASES - 1);
@@ -441,7 +514,7 @@ impl SincTable {
             let frame = center + offset;
             acc += ring.sample(frame, channel) as f64 * coeff;
         }
-        clamp_i16(acc)
+        acc
     }
 }
 
@@ -451,8 +524,8 @@ impl Default for SincTable {
     }
 }
 
-/// A fixed-capacity interleaved `i16` ring addressed by a monotonic frame
-/// counter.
+/// A fixed-capacity interleaved **i32 spine-scale** ring addressed by a
+/// monotonic frame counter.
 ///
 /// Lifted verbatim from `content_bridge.rs`: writes advance `write_frame`,
 /// drops oldest-first on overflow (advancing `read_frame`), and
@@ -460,9 +533,25 @@ impl Default for SincTable {
 /// outside that window). The monotonic counters let a fractional read cursor
 /// live in the *same* coordinate space as the writes, which is what makes the
 /// streaming resampler phase-continuous across blocks.
+///
+/// # Why the storage is i32 even for an S16 lane
+///
+/// There is ONE ring type, not a narrow one and a wide one. An S16 producer
+/// pushes through [`AudioRing::push_interleaved_narrow`], which widens with
+/// [`widen_i16_to_i32`] (`<< 16`) on the way in; an S32 producer pushes its
+/// samples unchanged. The interpolation kernel then runs at spine scale for
+/// both, and the ONE narrowing a 16-bit consumer needs happens at its output
+/// boundary ([`spine_acc_to_i16`]).
+///
+/// That is bit-transparent for the narrow path, not merely close: every ring
+/// sample is scaled by the exact power of two [`SPINE_SCALE_F64`], so the
+/// kernel's `f64` accumulator is scaled by exactly the same factor, and
+/// dividing it back out before the i16 round reproduces the pre-spine result
+/// sample for sample. Storing i16 and i32 in two ring types would instead have
+/// meant two interpolators and two kernels to keep in step.
 #[derive(Debug, Clone)]
 pub struct AudioRing {
-    data: Vec<i16>,
+    data: Vec<i32>,
     channels: usize,
     capacity_frames: usize,
     read_frame: u64,
@@ -511,9 +600,9 @@ impl AudioRing {
         self.write_frame
     }
 
-    /// Push interleaved frames, dropping oldest-first on overflow. Returns the
-    /// number of frames dropped (overrun).
-    pub fn push_interleaved(&mut self, samples: &[i16]) -> u64 {
+    /// Push interleaved **spine-scale i32** frames, dropping oldest-first on
+    /// overflow. Returns the number of frames dropped (overrun).
+    pub fn push_interleaved(&mut self, samples: &[i32]) -> u64 {
         let frames = samples.len() / self.channels;
         let mut dropped = 0u64;
         for frame in 0..frames {
@@ -524,6 +613,31 @@ impl AudioRing {
             let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
             let src = frame * self.channels;
             self.data[dst..dst + self.channels].copy_from_slice(&samples[src..src + self.channels]);
+            self.write_frame += 1;
+        }
+        dropped
+    }
+
+    /// Push interleaved **S16** frames, widening each with [`widen_i16_to_i32`]
+    /// on the way in. Same oldest-first drop and same return as
+    /// [`AudioRing::push_interleaved`].
+    ///
+    /// The widening is done here rather than in a caller-owned scratch buffer so
+    /// a narrow producer needs no second allocation and no second copy — the
+    /// hot path is one pass, exactly as it was when the ring stored i16.
+    pub fn push_interleaved_narrow(&mut self, samples: &[i16]) -> u64 {
+        let frames = samples.len() / self.channels;
+        let mut dropped = 0u64;
+        for frame in 0..frames {
+            if self.fill_frames() == self.capacity_frames {
+                self.read_frame += 1;
+                dropped += 1;
+            }
+            let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
+            let src = frame * self.channels;
+            for channel in 0..self.channels {
+                self.data[dst + channel] = widen_i16_to_i32(samples[src + channel]);
+            }
             self.write_frame += 1;
         }
         dropped
@@ -574,10 +688,11 @@ impl AudioRing {
         }
     }
 
-    /// Read one channel of one frame. Returns 0 for any frame outside the live
-    /// window `[read_frame, write_frame)` (including negative indices), so a
-    /// kernel reaching past the buffered edges reads silence there.
-    pub fn sample(&self, frame: i64, channel: usize) -> i16 {
+    /// Read one channel of one frame, at spine scale. Returns 0 for any frame
+    /// outside the live window `[read_frame, write_frame)` (including negative
+    /// indices), so a kernel reaching past the buffered edges reads silence
+    /// there.
+    pub fn sample(&self, frame: i64, channel: usize) -> i32 {
         if frame < 0 {
             return 0;
         }
@@ -833,7 +948,7 @@ impl BlockResampler {
             1.0
         };
         if !input.is_empty() {
-            self.ring.push_interleaved(input);
+            self.ring.push_interleaved_narrow(input);
         }
 
         // On the first block, seat the cursor RADIUS_FRAMES into the buffered
@@ -861,7 +976,14 @@ impl BlockResampler {
         let mut out: Vec<i16> = Vec::new();
         while pos + RADIUS_FRAMES as f64 + 1.0 <= write_frame {
             for channel in 0..self.channels {
-                out.push(self.table.interpolate(&self.ring, pos, channel));
+                // The ring is spine-scale, so the accumulator is too: narrow
+                // back with the ONE historical rounding. Input widened by an
+                // exact power of two and divided back out is bit-identical to
+                // the pre-spine i16 ring — `golden_vector_is_stable` is the
+                // empirical proof of that argument.
+                out.push(spine_acc_to_i16(
+                    self.table.interpolate(&self.ring, pos, channel),
+                ));
             }
             pos += ratio;
         }
@@ -1451,6 +1573,133 @@ mod tests {
         assert!(!convert_s32_to_s16(&input, &mut short));
     }
 
+    // ---- The widened DIRECT-lane path (U2 / #2223) ------------------------
+    // The sign-boundary vectors above pin what the NARROW capture route does to
+    // a gadget sample. These pin what the WIDE route does with the same values:
+    // it carries them, unchanged, all the way into the interpolation ring.
+
+    /// The U2 sign-boundary vectors, on the widened side. Every value the
+    /// narrow route truncates through `s32_high_word_to_s16` reaches the ring
+    /// BIT-EXACT on the wide route — including the S24-in-S32 placements the
+    /// exit-gate fixture uses and both 24-bit sign rails.
+    #[test]
+    fn the_wide_capture_route_carries_every_sign_boundary_sample_unchanged() {
+        // (raw gadget sample, what the NARROW route would keep)
+        let vectors: [(i32, i16); 8] = [
+            (0, 0),
+            (0x7fff_ffff, 0x7fff),
+            (i32::MIN, i16::MIN),
+            (-1, -1),
+            (-65_536, -1),
+            (-65_537, -2),
+            // 0x123456 in S24-in-S32 placement (24-bit value left-justified
+            // into 32 bits): the low byte is exactly what the narrow route
+            // discards.
+            (0x1234_5600, 0x1234),
+            // The positive 24-bit rail 0x7FFFFF, same placement.
+            (0x7fff_ff00, 0x7fff),
+        ];
+        let mut ring = AudioRing::new(64, 1).unwrap();
+        for (raw, narrow_keeps) in vectors {
+            assert_eq!(
+                s32_high_word_to_s16(raw),
+                narrow_keeps,
+                "narrow route vector drifted for {raw:#x}"
+            );
+            let before = ring.write_frame() as i64;
+            ring.push_interleaved(&[raw]);
+            assert_eq!(
+                ring.sample(before, 0),
+                raw,
+                "wide route must carry {raw:#x} into the ring bit-exact"
+            );
+        }
+    }
+
+    /// The BIT-IDENTITY LEMMA the narrow resample path rests on: widening every
+    /// ring sample by the exact power of two [`SPINE_SCALE_F64`] scales the
+    /// interpolator's accumulator by exactly that factor, so dividing it back
+    /// out and rounding reproduces the pre-spine `clamp_i16(acc)` sample for
+    /// sample.
+    ///
+    /// Asserted directly on the arithmetic (`spine_acc_to_i16(acc * 2^16) ==
+    /// clamp_i16(acc)`) across the interesting magnitudes, INCLUDING the
+    /// half-step values where a rounding-mode difference would show, and both
+    /// saturation rails. `golden_vector_is_stable` is the end-to-end half of
+    /// the same claim.
+    #[test]
+    fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
+        let accs = [
+            0.0, 0.5, -0.5, 1.5, -1.5, 0.4999999, -0.4999999, 123.456, -123.456, 32_766.5,
+            -32_766.5, 32_767.0, -32_768.0,
+            // Past both rails: the clamp must engage identically.
+            40_000.0, -40_000.0, 1.0e12, -1.0e12,
+        ];
+        for acc in accs {
+            assert_eq!(
+                spine_acc_to_i16(acc * SPINE_SCALE_F64),
+                clamp_i16(acc),
+                "spine narrowing diverged from the pre-spine rounding at {acc}"
+            );
+        }
+    }
+
+    /// `push_interleaved_narrow` is exactly `widen_i16_to_i32` applied
+    /// per-sample — the same conversion an S16 lane would have done in a
+    /// caller-owned scratch, just without the scratch.
+    #[test]
+    fn the_narrow_push_widens_every_sample_by_the_shared_primitive() {
+        let block: [i16; 6] = [0, 1, -1, i16::MAX, i16::MIN, -12_345];
+        let mut ring = AudioRing::new(16, 2).unwrap();
+        ring.push_interleaved_narrow(&block);
+        assert_eq!(ring.fill_frames(), 3);
+        for (frame, pair) in block.chunks_exact(2).enumerate() {
+            for (channel, &sample) in pair.iter().enumerate() {
+                assert_eq!(
+                    ring.sample(frame as i64, channel),
+                    widen_i16_to_i32(sample),
+                    "frame {frame} channel {channel}"
+                );
+            }
+        }
+    }
+
+    /// `clamp_i32` is `clamp_i16`'s rounding at the i32 rails: same
+    /// half-away-from-zero `f64::round`, different saturation.
+    #[test]
+    fn clamp_i32_rounds_half_away_from_zero_and_saturates_at_the_i32_rails() {
+        assert_eq!(clamp_i32(0.0), 0);
+        assert_eq!(clamp_i32(0.5), 1);
+        assert_eq!(clamp_i32(-0.5), -1);
+        assert_eq!(clamp_i32(1.4), 1);
+        assert_eq!(clamp_i32(-1.4), -1);
+        assert_eq!(clamp_i32(i32::MAX as f64), i32::MAX);
+        assert_eq!(clamp_i32(i32::MIN as f64), i32::MIN);
+        assert_eq!(clamp_i32(1.0e12), i32::MAX);
+        assert_eq!(clamp_i32(-1.0e12), i32::MIN);
+    }
+
+    /// The wide RMS reports the SAME dBFS as the narrow one for the same
+    /// acoustic signal — the property that lets STATUS keep one meaning for
+    /// `rms_dbfs` across lane widths.
+    #[test]
+    fn the_wide_rms_agrees_with_the_narrow_one_on_a_widened_signal() {
+        let narrow: Vec<i16> = (0..512)
+            .map(|n| clamp_i16(9000.0 * ((n as f64) * 0.031).sin()))
+            .collect();
+        let wide: Vec<i32> = narrow.iter().copied().map(widen_i16_to_i32).collect();
+        let narrow_dbfs = rms_dbfs_i16(&narrow);
+        let wide_dbfs = rms_dbfs_i32(&wide);
+        assert!(
+            (narrow_dbfs - wide_dbfs).abs() < 1.0e-9,
+            "narrow {narrow_dbfs} vs wide {wide_dbfs}"
+        );
+        // Both ends of the scale, too.
+        assert_eq!(rms_dbfs_i32(&[]), RMS_DBFS_FLOOR);
+        assert_eq!(rms_dbfs_i32(&[0; 64]), RMS_DBFS_FLOOR);
+        assert!((rms_dbfs_i32(&[i32::MIN; 64])).abs() < 1.0e-9, "full scale");
+    }
+
     // ---- The output spine's width conversions ----------------------------
     // These four tests came over from jasper-outputd's `alsa_backend` with
     // `widen_i16_to_i32` and gained the narrowing direction. They are the
@@ -1876,7 +2125,7 @@ mod tests {
             samples.push(n); // L = frame index
             samples.push(-n); // R
         }
-        ring.push_interleaved(&samples);
+        ring.push_interleaved_narrow(&samples);
         assert_eq!(ring.fill_frames(), 1000);
         let write_before = ring.write_frame();
 
@@ -1890,8 +2139,18 @@ mod tests {
         // [744, 1000). Sample the oldest surviving and newest frames by index.
         let oldest_kept = ring.read_frame();
         assert_eq!(oldest_kept, 744);
-        assert_eq!(ring.sample(744, 0), 744, "oldest kept frame is index 744");
-        assert_eq!(ring.sample(999, 0), 999, "newest frame preserved");
+        // Spine scale: the ring widened each i16 on the way in, so a frame
+        // whose L channel was written as `n` reads back as `widen_i16_to_i32(n)`.
+        assert_eq!(
+            ring.sample(744, 0),
+            widen_i16_to_i32(744),
+            "oldest kept frame is index 744"
+        );
+        assert_eq!(
+            ring.sample(999, 0),
+            widen_i16_to_i32(999),
+            "newest frame preserved"
+        );
         // Dropped frames read as 0 (outside the live window).
         assert_eq!(ring.sample(743, 0), 0, "dropped frame is gone");
     }
@@ -1900,7 +2159,7 @@ mod tests {
     fn trim_to_is_noop_when_at_or_below_target() {
         let mut ring = AudioRing::new(1024, 2).unwrap();
         let block: Vec<i16> = (0..100).flat_map(|n| [n as i16, n as i16]).collect();
-        ring.push_interleaved(&block); // 100 frames
+        ring.push_interleaved_narrow(&block); // 100 frames
         assert_eq!(ring.fill_frames(), 100);
         // Target above current fill: nothing dropped.
         assert_eq!(ring.trim_to(256), 0);
@@ -1922,7 +2181,7 @@ mod tests {
         let table = SincTable::new();
         let mut ring = AudioRing::new(8192, 2).unwrap();
         let signal = stereo_signal(4096);
-        ring.push_interleaved(&signal);
+        ring.push_interleaved_narrow(&signal);
         let dropped = ring.trim_to(512);
         assert_eq!(dropped, 4096 - 512);
         // Seat a cursor RADIUS_FRAMES into the retained window and interpolate:
@@ -1932,7 +2191,7 @@ mod tests {
         // Compare against the untrimmed reference at the same absolute frame:
         // trimming the oldest frames must not perturb the retained samples.
         let mut ref_ring = AudioRing::new(8192, 2).unwrap();
-        ref_ring.push_interleaved(&signal);
+        ref_ring.push_interleaved_narrow(&signal);
         let ref_sample = table.interpolate(&ref_ring, pos, 0);
         assert_eq!(
             sample, ref_sample,
