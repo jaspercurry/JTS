@@ -134,12 +134,13 @@ ioplug takes `format`/`channels` from its conf.d block, but
 [`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
 declares neither, so both PCMs open at the `S16_LE`/2ch defaults
 (`JTS_RING_RATE = 48000` stays pinned). Nothing on the fleet declares a
-non-default wire yet: changing the resolver is **R5a**'s, and the first box
-to actually run wide is **R6**'s.
+non-default wire yet: changing the resolver was **R5a**'s, and the first
+box to actually run wide is still **R6**'s.
 
 So ring v2 was never a layout redesign: it is a transport + reader/writer +
-emitter + resolver problem. The transport layer (R1's crate, R2's ioplug)
-and both daemons (R3 fan-in, R4 outputd) are merged; the resolver is R5a.
+emitter + resolver problem. The transport layer (R1's crate, R2's ioplug),
+both daemons (R3 fan-in, R4 outputd), and the resolver (R5a/R5b) are all
+merged — the R1–R5 ladder is complete.
 Certified
 geometry is 2 slots × 128 frames per ring, CamillaDSP chunk/target 128,
 `enable_rate_adjust: false`; Ring A contributes ≈5.3 ms at 48 kHz.
@@ -244,7 +245,7 @@ continuity — issues and PRs reference them) and the width workstream.
 | Arc | Delivers | Rolls up | Exit gate |
 |---|---|---|---|
 | **U0 — stabilize + replan** — **COMPLETE** | this document (PR [#2293](https://github.com/jaspercurry/JTS/pull/2293), merged, gate 0/0 after fix round); the P5c deletion (PR [#2302](https://github.com/jaspercurry/JTS/pull/2302), merged, gate 0/0 after fix round); PR [#2281](https://github.com/jaspercurry/JTS/pull/2281), merged, gate 0/0 after delta | P5c | doc merged; `rate_match` + adaptive-buffer + stale cushion prose gone. jts.local commission + route-latency revalidation no longer gates U0 — it now proceeds under U1's R6 rung below, since ring v2 width activation needs exactly that fresh artifact and a bare pre-ring-v2 commission would be thrown away |
-| **U1 — ring v2** | the R-RING2 design, build, and per-box activation (design ratified 2026-08-10 — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) | P8 | jts.local width first (R6, owner-gated) — jts3 (R7a/R7b) is resequenced after it: blocked on a missing DAC8x `LatencyFloor` declaration, and R7a/R7b together are the daytime redesign package, repaneled before either is scheduled. jts3 still kills the measured ~17.5-minute content-fill splice class once it lands. Then jts4 Zero-class validation. jts5 / bonded per the P8 scope ruling |
+| **U1 — ring v2** | the R-RING2 design, build, and per-box activation (design ratified 2026-08-10 — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) | P8 | R1–R5 ladder complete (all merged). R7's design converged (v2 + ratified errata); jts3's hardware phase — 30-minute soak windows per owner amendment, box-side dead-man timer per owner directive — **PASSED 2026-08-11** (all three windows, every gate; DAC presentation latency 63.833 → 5.167 ms), clearing R7a's DAC8x `LatencyFloor(256, 1536, 128, 256)` — its PR drafting dispatched 2026-08-11 — and R7b's implementation dispatched 2026-08-11, in flight. jts.local's R6 activation stays separately owner-gated (home box, not yet granted). jts3 still kills the measured ~17.5-minute content-fill splice class once R7 lands. Then jts4 Zero-class validation; jts5 / bonded per the P8 scope ruling |
 | **U2 — source width** | #2223's 3-PR ladder plus its Step 0 descriptor check; the TTS/earcon tail | width workstream | bit-pattern fixtures prove low bits survive fan-in. Loopback boxes may flip before U1 completes; ring boxes flip after |
 | **U3 — renderer ring ingress** | P6a–d, one lane at a time, **AirPlay LAST** with offset re-derivation | P6 | per-lane source pass; AirPlay adds a Music.app local-track loop + resync-log watch + bonded A/V spot-check |
 | **U4 — delete** | P7 dsnoop re-points, P9 snd-aloop removal after fleet burn-in, P10 polish + `audio-paths.md` rewrite | P7, P9, P10 | full-fleet deploy + doctor + every-source pass; reboot test per box |
@@ -289,52 +290,76 @@ at them rather than restating them.
 
 **The R-ladder P8 rescopes to:**
 
-| Rung | Scope | Status (2026-08-10) |
+| Rung | Scope | Status (2026-08-11) |
 |---|---|---|
 | R1 | `rust/jasper-ring` crate | **DONE** — PR [#2297](https://github.com/jaspercurry/JTS/pull/2297), merged, gate 0/0 |
 | R2 | C ioplug | **DONE** — PR [#2296](https://github.com/jaspercurry/JTS/pull/2296), merged, gate 0/0 |
-| R3 | fan-in | **DONE** — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308), merged |
-| R4 | outputd | **DONE** — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310), merged |
-| R5a | schemas / parsers / renderer | in flight — PR [#2314](https://github.com/jaspercurry/JTS/pull/2314) |
-| R5b | gates / recovery / observability | queued |
-| R6 | jts.local width activation | **owner-gated** |
-| R7a | DAC8x `LatencyFloor` + the one jts3 chip-AEC recommission | **REDESIGN PACKAGE** (bundled with R7b) — owner-gated, then panel re-review before scheduling |
-| R7b | jts3 active-half | **REDESIGN REQUIRED**, then its own panel re-review, before scheduling |
+| R3 | fan-in | **DONE** — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308), merged; live-audio-path 3-lens panel, fix round to 0/0 |
+| R4 | outputd | **DONE** — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310), merged; 3-lens panel (found the reader-side twin of R3's marker-breadth defect, fixed symmetrically), delta 0/0 |
+| R5a | schemas / parsers / renderer | **DONE** — PR [#2314](https://github.com/jaspercurry/JTS/pull/2314), merged; gate 0/2/5, fix round to 0/0 |
+| R5b | gates / recovery / observability | **DONE** — PR [#2320](https://github.com/jaspercurry/JTS/pull/2320), merged; gate 0/4/7, fix round to 0/0 — **closes the R1–R5 ladder** |
+| R6 | jts.local width activation | **owner-gated** (home box; not yet granted) |
+| R7a | DAC8x `LatencyFloor` + floor soak | **soak PASSED** 2026-08-11 (all three 30-min windows, every gate; DAC presentation latency 63.833 → 5.167 ms) — floor CLEARED at `LatencyFloor(256, 1536, 128, 256)`; floor PR drafting dispatched 2026-08-11 |
+| R7b | jts3 active-half | design converged (v2 + ratified errata) — implementation dispatched, in flight |
 
 R1 and R2 land the ring transport layer v2-capable in both languages —
 wide/N-channel geometry is accepted and byte-copyable end to end — but
-inert until R5 arms anything: no conf.d on the fleet declares a
+inert until R6/R7 arms anything: no conf.d on the fleet declares a
 non-default format/channels yet, so every box still opens S16/stereo.
 CI hardening (PR [#2300](https://github.com/jaspercurry/JTS/pull/2300),
 merged) closes a gap R2's review surfaced: the ioplug's `.so` now
 compiles in the `rust` CI job's C step, contract-pinned so the check
 can't silently regress.
 
-Two follow-ups filed rather than folded into a rung:
+**R7 package (2026-08-11).** A second 3-lens panel on the R7a/R7b
+redesign found 7 blockers / 14 SF (repanel rounds 1–3: correctness,
+resilience, hearing-safety), forcing a design revision to v2; each
+lens then returned a focused delta, and the consolidated errata
+(E1–E6, all ratified) closed the panel CONVERGED. Deepest find: an
+incoherent stereo-predicate pair could silently admit the active ring
+as a stereo sink onto the horn — closed by a bail-on-incoherent-pair
+check plus a mode-scoped allowlist in `Config::from_env`. Full
+record: `captures/PLAN-ring-v2-rulings-2026-08-10.md`, "R7 PACKAGE"
+onward.
+
+Three follow-ups filed rather than folded into a rung:
 [#2294](https://github.com/jaspercurry/JTS/issues/2294) (doctor
 observability — a dangling check name, and floor-blocked ring
-ineligibility reporting `ok` with no reason shown) rides R5;
+ineligibility reporting `ok` with no reason shown) — targeted to ride
+R5, still open now that R5a/R5b have merged;
 [#2306](https://github.com/jaspercurry/JTS/issues/2306) (P5c
 follow-ups, including the explicitly-owed Pi-side doctor pass) rides
-the R6 session.
+the R6 session;
+[#2319](https://github.com/jaspercurry/JTS/issues/2319)
+(`camillagui.socket` — unauthenticated root listener on
+`0.0.0.0:5005` with `ReadWritePaths=/etc/camilladsp`, surfaced by the
+R7 hearing-safety repanel; pre-existing, out of R7 scope) — open.
 
 **P8 splits.** P8a is this ladder — solo-stereo width plus active
 N-channel. P8b — composite ring plus bonded round-trip ingress — moves
 out to later, and still hard-gates P9; jts5 stays on aloop lanes 5/6
 until P8b.
 
-**Forced ordering: jts.local (R6) before jts3 (R7).** jts3 is blocked
-on a missing `DacProfile.latency_floor` declaration for
-`HIFIBERRY_DAC8X`: the full 4-field `LatencyFloor` (`camilla_chunksize`,
+**Forced ordering inside jts3: R7a before R7b.** jts3 is blocked on a
+missing `DacProfile.latency_floor` declaration for `HIFIBERRY_DAC8X`:
+the full 4-field `LatencyFloor` (`camilla_chunksize`,
 `camilla_target_level`, `outputd_period_frames`,
 `outputd_dac_buffer_frames`, with `camilla_target_level` enforced ≥4×
 `camilla_chunksize`). Per the ring v2 rulings record's round-2 amendment
 (`captures/PLAN-ring-v2-rulings-2026-08-10.md`), declaring it for
 `HIFIBERRY_DAC8X` also sets jts3's CamillaDSP chunk/target — it touches
-the **active graph's** chunksize, not just outputd's period. Fixing it
-at R7a forces the one jts3 chip-AEC recommission the identity change
-causes — which is what makes R7b identity-neutral. All three panel
-lenses verified that resequencing independently.
+the **active graph's** chunksize, not just outputd's period. All three
+panel lenses verified that ordering independently. **Correction from
+the R7 repanel:** jts3 actually runs `aec-init` in **CORPUS mode** — no
+alignment artifact exists (the 2026-08-08 closeout's corpus-exit was
+undone by open trap
+[#2254](https://github.com/jaspercurry/JTS/issues/2254)) — so there is
+no commissioned identity on jts3 for the floor change to invalidate.
+The one jts3 chip-AEC recommission this section used to require is
+DROPPED from the R7 runbook as inapplicable; that recommission logic
+stays load-bearing for jts.local's eventual R6 and any genuinely
+commissioned box. Exiting corpus mode on jts3 is a separate owner
+decision, out of this campaign's scope.
 
 **Key ratified rulings** (rationale in the rulings file): R-WIDTH
 stands unchanged, including its no-cross-daemon-format-negotiation-ever
@@ -639,6 +664,26 @@ ring-wire section against `rust/jasper-ring/src/layout.rs` and
 `jasper/fanin_coupling.py` and rewrote it: R1 falsified its
 "`validate_self` hard-rejects any other format / `S32LE` is Reserved"
 claim, and the wire's narrowness now comes from the resolver, not the
-layout. Nothing else in this pass.
+layout. Nothing else in this pass. A fourth pass (2026-08-11) verified
+the R-ladder's remaining PR states live via `gh` — R3
+[#2308](https://github.com/jaspercurry/JTS/pull/2308), R4
+[#2310](https://github.com/jaspercurry/JTS/pull/2310), R5a
+[#2314](https://github.com/jaspercurry/JTS/pull/2314), and R5b
+[#2320](https://github.com/jaspercurry/JTS/pull/2320) are all MERGED,
+closing the R1–R5 ladder — and transcribed the R7 repanel's outcome
+from the rulings record: 7 blockers / 14 SF across three lenses,
+design revised to v2, consolidated errata E1–E6 ratified, panel
+CONVERGED. It corrected the R7a/R7b "forced ordering" section for the
+repanel's corpus-mode discovery (jts3 has no alignment artifact, so
+the recommission step is dropped as inapplicable there — the
+load-bearing case moves to jts.local's R6), updated the U1 exit gate
+for the running jts3 hardware phase (30-minute soak windows, box-side
+dead-man timer, both per owner direction on 2026-08-11), and confirmed
+[#2319](https://github.com/jaspercurry/JTS/issues/2319) (camillagui
+posture) as filed and open, alongside re-verified-current
+[#2294](https://github.com/jaspercurry/JTS/issues/2294) /
+[#2306](https://github.com/jaspercurry/JTS/issues/2306). It did not
+re-touch the egress/source-half facts, the fleet probe, or Appendix
+A/B.
 
-Last verified: 2026-08-10
+Last verified: 2026-08-11
