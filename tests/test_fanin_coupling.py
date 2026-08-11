@@ -137,7 +137,8 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
     assert DEFAULT_FANIN_RING_SLOTS == 2
     # A present-but-out-of-range or unparseable value FAILS LOUD (never a
     # silent clamp) — repo doctrine, and it must agree with the Rust daemon,
-    # which anyhow::bail!s on the same range.
+    # which returns a config-class Err on the same range (jasper-fanin then
+    # exits 78 and the unit parks rather than restart-looping).
     for bad in ("1", "0", "17", "100", "-1", "garbage", "8.5"):
         with pytest.raises(ValueError):
             resolve_ring_slots(bad)

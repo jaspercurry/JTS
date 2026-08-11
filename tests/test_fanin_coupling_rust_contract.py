@@ -136,17 +136,44 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     assert f"pub const RING_SLOTS_MAX: u32 = {RING_SLOTS_MAX};" in text, (
         "Rust RING_SLOTS_MAX must match the Python RING_SLOTS_MAX bound"
     )
-    # The out-of-range guard bails (anyhow::bail!), it does NOT clamp.
-    assert "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {" in text, (
+    # The out-of-range guard returns an Err, it does NOT clamp.
+    opener = "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {"
+    assert opener in text, (
         "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
     )
-    guard = text.split(
-        "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {", 1
-    )[1].split("}", 1)[0]
-    assert "anyhow::bail!" in guard, (
-        "Rust out-of-range ring slots must FAIL LOUD (anyhow::bail!), not clamp"
+    # Slice to the block's own closing brace, NOT to the first `}` in the body:
+    # the guard's message is a format string, so `{}` placeholders sit inside it
+    # and a first-`}` split truncates the block mid-literal (it silently read
+    # only 2 lines once the guard grew past its placeholders).
+    body = text.split(opener, 1)[1]
+    guard, sep, _ = body.partition("\n        }\n")
+    assert sep, "could not find the ring-slots guard's closing brace"
+    # Containment: the slice must stop at THIS guard and not run on into the
+    # next one. Without this, an over-capturing slice would satisfy every
+    # assertion below using text that belongs to the adjacent slot-shear guard,
+    # and the ring-slots guard could be gutted while the test stayed green.
+    assert "must be a whole multiple" not in guard, (
+        "the ring-slots guard slice over-captured into the adjacent "
+        "slot-shear guard — the assertions below would pass on the wrong block"
+    )
+    # Fail-loud is the promise; the spelling is not. `anyhow::bail!` and
+    # `return Err(anyhow::anyhow!(...))` both satisfy it.
+    assert "anyhow::bail!" in guard or "return Err(anyhow::anyhow!(" in guard, (
+        "Rust out-of-range ring slots must FAIL LOUD (bail!/return Err), not clamp"
     )
     assert "clamp" not in guard.lower(), "Rust must not silently clamp ring slots"
+    # And the failure is CONFIG-class: it exits 78 so jasper-fanin.service PARKS
+    # (RestartPreventExitStatus=78) instead of climbing the restart burst into
+    # StartLimitAction=reboot. This guard is the ENV-declaration half of that
+    # class: an out-of-range JASPER_FANIN_RING_SLOTS is re-read from the env file
+    # on every start, so it is identical across restarts AND across reboots —
+    # a restart loop here reboots the speaker indefinitely. (The other half, a
+    # stale ring file, does clear on a reboot because /dev/shm is tmpfs; it
+    # survives a RESTART, which is the loop the park prevents.)
+    assert "crate::ConfigClassError" in guard, (
+        "Rust out-of-range ring slots must be tagged config-class so the unit "
+        "parks at exit 78 rather than reboot-looping"
+    )
 
 
 def test_shm_ring_status_block_emitted_by_rust_state():
@@ -490,6 +517,15 @@ def test_host_compliance_prime_gated_on_host_clock_servo_armed():
     )
     armed_start = config_text.index("pub fn host_clock_servo_armed(&self) -> bool {")
     armed_body = config_text[armed_start : config_text.index("}", armed_start)]
+    # Containment — the SAFE half of the first-`}` slicing class: this body has
+    # no braces of its own, so the slice lands on the fn's own closing brace. If
+    # it ever grows one the slice truncates EARLY, which fails the assertion
+    # below loudly rather than passing on a neighbour's text. This pins the
+    # other direction: the slice must not run past the function into the next
+    # one. (The count is 1, not 0 — the slice starts AT this fn's own opener.)
+    assert armed_body.count("pub fn ") == 1, (
+        "the host_clock_servo_armed slice ran past its own function"
+    )
     assert "self.host_clock_enabled && self.usb_direct_enabled" in armed_body, (
         "host_clock_servo_armed must be host_clock_enabled AND usb_direct_enabled"
     )

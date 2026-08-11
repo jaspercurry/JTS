@@ -293,6 +293,41 @@ membership shields the work loop from it.
 | Unable to open output PCM at startup | Exit 1, let systemd restart with backoff | Structural; the dedicated output substream MUST exist |
 | Work loop hang | Watchdog ping stops, systemd kills + restarts in ~2 s | The whole point of the heartbeat |
 | Repeated wedge (5 restarts in 5 min) | `StartLimitAction=reboot` triggers clean system reboot | Tier 5.1 protection |
+| Ring A geometry is unusable — a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` / slot-shearing period, or a ring file whose header geometry differs from the one the daemon builds | Exit 78 (EX_CONFIG); `RestartPreventExitStatus=78` PARKS the unit failed | **No restart repairs either shape**, so the restart ladder above would reboot the speaker in a loop. Remediation differs — see below |
+| Ring open fails transiently — `.open.lock` still held by the outgoing process, tmpfs permissions not yet applied, no space | Exit 1; ordinary `Restart=on-failure` | These clear themselves within a retry or two. Parking on them would take audio down over a fault that heals in 5 s |
+
+#### The exit-78 ring park — which half you have, and how to clear it
+
+The two shapes above land on the same exit code but need different fixes, and
+the journal line names both:
+
+- **Bad env declaration** (`JASPER_FANIN_RING_WIRE_FORMAT`, `_RING_SLOTS`, a
+  slot-shearing `_PERIOD_FRAMES`). Re-read from the env file on every start, so
+  it is identical across restarts *and* across reboots. **Fix:** correct the
+  value, then `systemctl restart jasper-fanin`.
+- **Stale ring file** whose header geometry differs from the one the daemon
+  builds. **Fix:** `rm /dev/shm/jts-ring/program.ring`, then restart. Note
+  `/dev/shm` is tmpfs — the file does *not* survive a reboot, so rebooting also
+  clears it. What it survives is a **restart**, which is precisely why the park
+  is right: without it, fan-in would exit-1 loop against a file no retry
+  removes, and the five-starts-in-five-minutes burst would escalate to
+  `StartLimitAction=reboot`.
+
+  Second-order consequence worth knowing when debugging: because the file is
+  volatile, a wire disagreement that parked fan-in **before** a reboot does not
+  re-park it **after** one. Fan-in creates the ring fresh and starts cleanly;
+  the mismatch then re-manifests on the READER side, when CamillaDSP's ioplug
+  attaches with the geometry its conf.d declares and fails there instead. A
+  post-reboot "fan-in is healthy but Camilla cannot attach" is the same
+  underlying disagreement, not a new fault.
+
+**What is and is not borrowed from `jasper-outputd`.** Fan-in takes the exit-78
++ `RestartPreventExitStatus=78` half only. outputd additionally has a bounded
+`ExecStopPost` retry helper (`jasper-outputd-failure-reconcile`) and an
+`ExecCondition` hardware gate; fan-in has neither, deliberately. The park marker
+is gated on `io::ErrorKind::{InvalidInput, InvalidData}`, so the transient
+faults a retry helper exists to absorb never reach exit 78 — they keep
+`Restart=on-failure` and self-heal. A retry helper would have nothing to retry.
 
 ### Per-handover ramp
 
@@ -340,6 +375,12 @@ WatchdogSec=30s
 TimeoutStopSec=5s          # Load-bearing — 2026-05-11 snd-aloop lesson
 Restart=on-failure
 RestartSec=5
+
+# Config-class faults (the Ring A wire) exit 78 and PARK rather than
+# climbing the burst into StartLimitAction=reboot. No SuccessExitStatus,
+# so the park stays visible as `failed`. Takes outputd's exit-78 half
+# only — no ExecStopPost retry helper, no ExecCondition gate.
+RestartPreventExitStatus=78
 
 # OOM ladder slot. See `docs/HANDOFF-resilience.md` Stage 1.
 OOMScoreAdjust=-800
@@ -420,6 +461,12 @@ Design + code: `RingWriter::publish` in
 and `write_ring_period` / `RingStallTracker` in
 [`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs) (events +
 counters).
+
+The same `ring` block in fan-in's own STATUS also carries the OBSERVED wire
+tuple — `wire_format` (`S16_LE` / `S32_LE`) and `channels` — read back from the
+header the writer attached against rather than echoed from config, so a reader
+can tell which wire the ring is carrying instead of inferring it. The same pair
+appears on `event=fanin.ring.opened`.
 
 ### State and selection control
 

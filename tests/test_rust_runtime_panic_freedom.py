@@ -349,6 +349,16 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-fanin/src/mixer.rs",
+        "out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE",
+    ): (
+        "fill_wide_ring_payload, the S32LE-ring twin of saturate_to_i16 "
+        "above: same buffer-sizing invariant, one sample wider. Both "
+        "buffers are allocated once in Mixer::new from the same "
+        "period_samples, so the sizes cannot diverge at runtime; the "
+        "debug_assert states the relationship for a developer run."
+    ),
+    (
+        "jasper-fanin/src/mixer.rs",
         "period_frames > 0",
     ): (
         "catchup_drain_periods (\"Pure (no ALSA) for unit testability\"): "
@@ -557,7 +567,14 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "an S16LE geometry. Debug-only tripwire on an internal caller "
         "contract: the geometry is the one the mapping was constructed "
         "with, never externally supplied, and the byte-path entry points "
-        "carry no such restriction."
+        "carry no such restriction. It stays DEBUG-only deliberately: the "
+        "guard against a typed wrapper being used on a wide ring is the "
+        "wire-format contract test in jasper-fanin's mixer "
+        "(wide_ring_slots_carry_the_left_justified_narrow_slots, which "
+        "publishes and reads back both wires), not this tripwire -- the "
+        "tripwire is developer feedback on a debug run, so promoting it to "
+        "a release assert would add a panic site in the audio path without "
+        "adding coverage."
     ),
     (
         "jasper-ring/src/lib.rs",
@@ -572,10 +589,12 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "jasper-ring/src/writer.rs",
         "ring publish requires exactly one complete slot",
     ): (
-        "publish's own doc comment states the exact contract "
-        "(\"samples.len() must equal period_frames * channels\"); its only "
-        "real caller is the same fanin RingOutput/mixer code as "
-        "try_publish_slot above, which owns the geometry both share."
+        "The assert lives in publish_bytes, whose own doc comment states the "
+        "exact contract (\"payload.len() must equal Geometry::slot_bytes\"). "
+        "Both real callers are fanin's RingOutput/mixer code -- the typed "
+        "publish wrapper on an S16LE ring and the byte path on an S32LE one "
+        "-- and each slices its payload from a buffer sized off the same "
+        "geometry the writer was constructed with."
     ),
     (
         "jasper-host-clock/src/lib.rs",

@@ -41,6 +41,42 @@ TimeoutStopSec=5s
 Restart=on-failure
 RestartSec=5
 
+# CONFIG-class failures exit 78 (EX_CONFIG) and must NOT use the restart
+# ladder above: a persistent bad config would climb the burst straight into
+# StartLimitAction=reboot, rebooting the speaker every few minutes over
+# something no restart can fix. The daemon uses 78 for the Ring A geometry
+# declaration only, in two shapes that need DIFFERENT fixes:
+#
+#   1. A bad ENV DECLARATION — a rejected JASPER_FANIN_RING_WIRE_FORMAT /
+#      _RING_SLOTS / slot-shearing period. Identical on every restart AND
+#      across a reboot, because it is re-read from the env file each start.
+#      Fix: correct the env, then `systemctl restart jasper-fanin`.
+#   2. A STALE RING FILE whose header geometry differs from the one the daemon
+#      builds (a ring surviving a deploy, or a conf.d and daemon that disagree
+#      about the wire). /dev/shm is tmpfs, so this one DOES clear on a reboot —
+#      but not on a restart, which is exactly the loop the park prevents.
+#      Fix: `rm /dev/shm/jts-ring/program.ring` (or reboot), then restart.
+#      Restarting alone does NOT fix this; the file is still there.
+#
+# Transient faults are NOT this class and keep the ordinary Restart=on-failure
+# retry: a de-enumerated USB DAC, an absent snd-aloop substream, and — at the
+# ring open specifically — a .open.lock still held by the outgoing process or a
+# tmpfs permission systemd-tmpfiles has not applied yet. The daemon gates the
+# park on io::ErrorKind::{InvalidInput, InvalidData} so those self-heal instead
+# of parking the speaker's audio.
+#
+# No SuccessExitStatus: an exit-78 park leaves the unit `failed` on purpose, so
+# /state and jasper-doctor show it rather than a silently-inactive daemon.
+#
+# Scope vs jasper-outputd: fan-in adopts outputd's exit-78 +
+# RestartPreventExitStatus half ONLY. outputd additionally carries a bounded
+# ExecStopPost retry helper (jasper-outputd-failure-reconcile) and an
+# ExecCondition hardware gate; fan-in has neither. That is deliberate, not an
+# omission — with the marker gated on the two config-class error kinds, the
+# faults a retry helper would exist to absorb never reach exit 78 in the first
+# place, so the smaller surface is the correct one.
+RestartPreventExitStatus=78
+
 # OOM ladder slot. Between Camilla (-900, silence-critical) and
 # AEC bridge (-700, capture-critical). The fan-in daemon is the
 # upstream source of the music signal both consume; killing it
