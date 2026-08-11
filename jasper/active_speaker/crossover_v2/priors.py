@@ -83,6 +83,12 @@ def configured_crossover_transfers(
     must be the same filters, or "the measurement matches the design" is about a
     design nothing emitted.
     """
+    # Lazy, and not because of a cycle — ``camilla_yaml`` names this package
+    # only in a docstring. It is the package-shallowness discipline
+    # ``round_evidence`` and ``verification`` are reached under: the emitter
+    # pulls yaml, camilla_emit, graph_safety, profile and test_signal_plan, and
+    # a module whose other six functions need none of that should not make every
+    # importer of this package pay for them.
     from ..camilla_yaml import role_polarity
 
     return (
