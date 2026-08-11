@@ -1615,13 +1615,15 @@ def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
 # ``_close_cloud_group`` for ``PHASE_CLOUD_VERIFY``, once the spatial arm has
 # landed — and until #2291 Phase 5a-iv that call site had no coverage at all.
 #
-# **Measured, not assumed** (2026-08-11, against ``origin/main`` at 5dcd872a4):
-# deleting the ``_grade_round_once`` call from that branch left 867 tests across
-# 15 suites GREEN. The same deletion at the Express site fails 18. Two suites
-# reach the branch — ``test_crossover_v2_conductor`` and
-# ``test_correction_crossover_v2_endpoints`` — and both stop at the capture
-# verdict, so a Full household's adoption decision, its automatic restore, and
-# its receipt were all riding on a call nothing checked was still there.
+# **Measured, not assumed** (2026-08-11, against a ``git archive`` of
+# ``origin/main`` at 5dcd872a4): deleting the ``_grade_round_once`` call from
+# that branch left the 15 crossover-reaching suites entirely GREEN — 874
+# collected, 863 passed, 11 skipped, exit 0. The same deletion at the Express
+# site fails 18 of them. Two suites reach this branch —
+# ``test_crossover_v2_conductor`` and ``test_correction_crossover_v2_endpoints``
+# — and both stop at the capture verdict, so a Full household's adoption
+# decision, its automatic restore, and its receipt were all riding on a call
+# nothing checked was still there.
 #
 # The bar for this section is therefore a property rather than a coverage
 # claim: **each test below fails if the Full trigger stops grading.** They
