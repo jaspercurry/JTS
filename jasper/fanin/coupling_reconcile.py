@@ -12,10 +12,12 @@ daemons. One non-loopback coupling is supported:
 - ``shm_ring`` (audio-graph consolidation P2) — the end-to-end SHM-ring path.
   fan-in writes Ring A (program.ring) that CamillaDSP captures via
   ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B
-  (content.ring) via ``jts_ring_playback`` that jasper-outputd reads. Arming it is
+  (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or, on a
+  roleful box whose active endpoint is armed, to the ACTIVE ring
+  (active-content.ring) via ``jts_ring_active_playback``. Arming it is
   ONE coherent flip of BOTH ends: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
-  (fanin.env) AND ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the Ring B
-  path/slots (outputd.env). ``_outputd_actions`` is the single writer of that
+  (fanin.env) AND ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP
+  ring's path/slots (outputd.env). ``_outputd_actions`` is the single writer of that
   pair; ``_arm_ring`` PREFLIGHTs the P1 ring assets (``ring_assets_ready``), the
   topology eligibility, and BOTH geometry axes (period AND Ring-A slot count),
   self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS``, deletes a
@@ -23,7 +25,8 @@ daemons. One non-loopback coupling is supported:
   failure, so a half-installed ring platform, an incoherent geometry, or a partial
   flip never strands the realtime path.
 
-  - **ARM** (loopback -> shm_ring): outputd (Ring B reader) MUST come up first,
+  - **ARM** (loopback -> shm_ring): outputd (the post-DSP ring's reader) MUST
+    come up first,
     fan-in (Ring A writer) second, and only then may CamillaDSP load the ring
     config. See :func:`_arm_ring`.
 
@@ -1493,8 +1496,11 @@ class RingWireDeclaration:
     here", which the comparison reports rather than passes.
 
     ``ring`` is ``"A"`` or ``"B"`` and selects which channel count this end is
-    held to; the two rings differ on that axis by design (a stereo program in,
-    per-driver channels out), so the comparison cannot use one number.
+    held to; the two are separate axes by design — Ring A is always the stereo
+    program fan-in mixes, Ring B follows the box's output topology — so the
+    comparison cannot use one number. (Post-crossover per-driver channels are
+    NOT Ring B's: they ride the ACTIVE ring, which this gate does not compare —
+    ``active_ring_endpoint_proof`` owns that end.)
 
     ``channels_excused`` marks an end that STRUCTURALLY states no channel count,
     which is a different fact from one that tried and could not — only the
@@ -1693,8 +1699,11 @@ def ring_edge_width_ready(
     - **fan-in** — ``JASPER_FANIN_RING_WIRE_FORMAT`` off the daemon's own env
       chain, plus its compile-time stereo mixer width;
     - **the conf.d** — both PCM blocks, PER BLOCK, because Ring A and Ring B may
-      legitimately differ on channels (a stereo program in, per-driver channels
-      out) and only the file can say what the ioplug will attach with;
+      legitimately differ on channels (Ring A is always the stereo program;
+      Ring B follows the box's output topology) and only the file can say what
+      the ioplug will attach with. The ACTIVE block is deliberately NOT one of
+      this gate's ends — ``active_ring_endpoint_proof`` proves it on its own
+      path, with its own remedy;
     - **CamillaDSP's emitted stanzas** — the counterfactual "what would arming
       emit", which is what catches the kwargs override path breaking (if
       ``capture_kwargs_for_coupling`` ever stopped forcing the ring's own
@@ -2653,7 +2662,8 @@ def _arm_ring(
     self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
     defect-A geometry hole); then (5) ``_delete_stale_ring_files`` clears a
     geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
-    ordered spine — outputd (Ring B reader) first, fan-in (Ring A writer) second,
+    ordered spine — outputd (the post-DSP ring's reader) first, fan-in (Ring A
+    writer) second,
     CamillaDSP (loads the ring config, opening jts_ring_capture/jts_ring_playback)
     last — matching the validated ring-proto arm order. Any failure rolls the whole
     box back to loopback + direct (``recovered=True``). The rings are forgiving
@@ -3320,6 +3330,43 @@ def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
     return remove(text, action.key)
 
 
+def _outputd_ring_path_for(outputd_text: str) -> str:
+    """The ring file outputd must read, derived from the endpoint marker.
+
+    ONE writer for the path half of outputd's ring-path/marker biconditional.
+    Armed -> the ACTIVE ring's file; unarmed -> the operator's custom Ring B
+    path if they set one, else the canonical Ring B default.
+
+    The marker is read from the outputd.env TEXT the caller is reconciling
+    rather than from the file on disk, so the path written and the marker
+    written are read from one snapshot; a second file read could straddle a
+    concurrent hardware reconcile and emit a crossed pair.
+
+    Note the asymmetry, which is deliberate: an operator's custom path is
+    honoured on the STEREO ring and ignored on the ACTIVE one. There is exactly
+    one legal active-ring file — outputd's allowlist compares against that named
+    constant — so "preserving" a custom value there would only ever produce the
+    crossed pair the allowlist refuses.
+    """
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        ring_active_endpoint_armed,
+    )
+
+    armed = ring_active_endpoint_armed(
+        {
+            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: read_value(
+                outputd_text, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
+            )
+            or ""
+        }
+    )
+    if armed:
+        return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
+    return resolve_outputd_ring_path(read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR))
+
+
 def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for a coupling.
 
@@ -3328,31 +3375,40 @@ def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction
     others — the two ends must never split (a stale outputd key while fan-in flips
     strands one transport):
 
-    - ``shm_ring``: set ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the Ring B
-      path/slots (outputd reads content.ring). The two rings flip together —
-      fan-in's Ring A capture (fanin.env) and outputd's Ring B bridge (here) are
-      ONE coupling.
-    - ``loopback``: clear the Ring B keys — outputd reads the snd-aloop content
+    - ``shm_ring``: set ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP
+      ring's path/slots — content.ring, or active-content.ring on an armed
+      roleful box (see the convergence note below). The two rings flip together —
+      fan-in's Ring A capture (fanin.env) and outputd's post-DSP ring bridge
+      (here) are ONE coupling.
+    - ``loopback``: clear the ring keys — outputd reads the snd-aloop content
       lane.
 
     Every branch also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key
     (the removed transport_pipe coupling's outputd content source) — a one-way
     migration sweep so a box that once armed transport_pipe converges clean on its
     next reconcile (nothing writes the key anymore).
+
+    **The ring PATH converges from the endpoint MARKER, it is not preserved.**
+    outputd enforces a biconditional between the two — the active ring file may
+    be read only by an armed active endpoint, and an armed active endpoint may
+    read only that file — so path and marker are ONE pairing with two writers,
+    and this is the writer of the path half. Deriving it here means the pair is
+    coherent by construction: a preserve-else-stereo default would write the
+    full-range Ring B path onto an armed box and the arm would ADMIT and then
+    park at exit 78, with the only workaround being a hand-edited half of a
+    safety pair. The marker is read from ``outputd_text`` — the same file this
+    call is reconciling, already carrying the hardware reconciler's answer,
+    because the arm ladder runs that reconciler before this step.
     """
     if coupling == COUPLING_SHM_RING:
         return (
             RuntimeEnvAction(
                 "set", OUTPUTD_CONTENT_BRIDGE_ENV_VAR, OUTPUTD_CONTENT_BRIDGE_SHM_RING
             ),
-            # Preserve custom ring path/slots if the operator set them; else the
-            # canonical Ring B defaults. resolve_* validates the slot range.
             RuntimeEnvAction(
                 "set",
                 OUTPUTD_RING_PATH_ENV_VAR,
-                resolve_outputd_ring_path(
-                    read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
-                ),
+                _outputd_ring_path_for(outputd_text),
             ),
             RuntimeEnvAction(
                 "set",
@@ -3401,13 +3457,15 @@ def _sync_process_env_for_emit(
     coupling key alone drives the emit; the outputd ring keys below keep the
     in-process env coherent for any other reader. The legacy transport_pipe outputd
     key is popped on every branch (migration sweep).
+
+    The ring PATH is taken from :func:`_outputd_ring_path_for`, the same single
+    derivation the persisted write uses, so the in-process env can never carry a
+    different ring than the file just written.
     """
     os.environ[COUPLING_ENV_VAR] = coupling
     if coupling == COUPLING_SHM_RING:
         os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
-        os.environ[OUTPUTD_RING_PATH_ENV_VAR] = resolve_outputd_ring_path(
-            read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
-        )
+        os.environ[OUTPUTD_RING_PATH_ENV_VAR] = _outputd_ring_path_for(outputd_text)
         os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
             resolve_outputd_ring_slots(
                 read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
@@ -3554,9 +3612,9 @@ def main(argv: "list[str] | None" = None) -> int:
         choices=[COUPLING_LOOPBACK, COUPLING_SHM_RING],
         help=(
             "explicit operator choice (stamps the operator-choice marker so --auto "
-            "won't override it): loopback (snd-aloop); shm_ring (Ring A + Ring B SHM "
-            "rings — arms both fan-in and outputd). Mutually exclusive with "
-            "--auto."
+            "won't override it): loopback (snd-aloop); shm_ring (Ring A plus the "
+            "post-DSP SHM ring — Ring B, or the ACTIVE ring on an armed roleful "
+            "box; arms both fan-in and outputd). Mutually exclusive with --auto."
         ),
     )
     parser.add_argument(

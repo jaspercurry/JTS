@@ -140,7 +140,7 @@ RING_A_CHANNELS = 2
 # which jasper-outputd reads one slot per DAC period. Both rings flip together or
 # not at all (the coupling reconciler is the single writer of the pair; a partial
 # flip is fail-closed to loopback/direct). It is a dual-boundary coupling (Ring A
-# capture + Ring B playback).
+# capture + the post-DSP playback ring).
 #
 # The env keys below are read by the Rust ``jasper-outputd`` daemon
 # (``rust/jasper-outputd/src/config.rs``): ``JASPER_OUTPUTD_CONTENT_BRIDGE`` +
@@ -243,7 +243,8 @@ class RingWire:
     """The geometry every end of the SHM ring must declare, resolved once.
 
     The ring's four independent ends — fan-in (the Ring A writer), the two
-    ``jts_ring`` ioplug PCMs CamillaDSP opens, and outputd (the Ring B reader) —
+    ``jts_ring`` ioplug PCMs CamillaDSP opens, and outputd (the post-DSP ring's
+    reader) —
     each declare a geometry, and the attach compares them field-by-field. While
     every axis was a constant, coherence was held by everyone reading the same
     literal. This object is what replaces that: ONE resolution, four declarers.

@@ -82,7 +82,7 @@ APLAY_TIMEOUT_PAD_SEC = 1.0
 # are sinks and readers in the RUNTIME graph, not test-tone injection points:
 # writing a tone into one of them puts lab audio on a live speaker path.
 #
-# The two RING devices are here for the sharper version of that: writing into a
+# The RING devices are here for the sharper version of that: writing into a
 # ring is not merely "wrong output", it is a SECOND WRITER on a single-producer
 # ring. The ring's epoch takeover accepts a new writer rather than refusing it
 # the way a raw ALSA `hw` device refuses with EBUSY, so a stray tone would be

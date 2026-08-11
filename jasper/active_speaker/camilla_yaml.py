@@ -134,8 +134,9 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 )
 
 # CamillaDSP queue/rate-adjust defaults for the roleful ALSA-sink emitters.
-# These were six hardcoded literals; they are parameters now because an ACTIVE
-# RING sink needs different ones, and only different ones:
+# The pair was TWELVE hardcoded literals across SIX emitters; TEN of them, across
+# FIVE emitters, are parameters now because an ACTIVE RING sink needs different
+# ones, and only different ones:
 #
 #   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
 #   latency with no benefit; and
@@ -144,10 +145,15 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 #   transport is a documented oscillation shape in this repo.
 #
 # The DEFAULTS are exactly the literals they replaced, so every non-ring emit is
-# byte-identical. The PARKED emitter keeps its own literals: its sink is a
-# ``File``, so it can never target a ring and has no reason to take the knobs.
+# byte-identical. The SIXTH emitter — the PARKED one — is excluded deliberately
+# rather than missed: its sink is a ``File``, so it can never target a ring and
+# has no reason to take the knobs, and its two literals stay literals.
 DEFAULT_ACTIVE_QUEUELIMIT = 4
 DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
+# What the ACTIVE RING sink needs instead, and the reason the knobs became
+# parameters at all (see the note above for why these two values).
+RING_ACTIVE_QUEUELIMIT = 1
+RING_ACTIVE_ENABLE_RATE_ADJUST = False
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
 # It emits ONLY the program domain (Layer B room correction + Layer C preference
@@ -313,6 +319,29 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
             "compares the channel count field-by-field — emitting it would crash "
             "the ring rather than refuse it"
         )
+
+
+def active_sink_queue_params(playback_device: str) -> tuple[int, bool]:
+    """The ``(queuelimit, enable_rate_adjust)`` pair a given active sink needs.
+
+    ONE home for "the ACTIVE RING needs 1/false", so a caller that re-points an
+    active graph at the ring cannot forget the knobs that make the ring behave —
+    which is exactly the shape of forgetting that produces a graph naming the
+    right device with the wrong handshake. Every other device (the ALSA active
+    lane, and every lab/CI override) gets today's literals back, so a caller
+    that routes through this helper is byte-identical on every box that is not
+    armed.
+
+    A helper rather than emitter-internal derivation: the emitters keep taking
+    the values as PARAMETERS (Q6), because a lab emit deliberately setting them
+    is a legitimate call, and burying the choice inside the emitter would remove
+    that seam. This is the default a production caller composes with.
+    """
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    if playback_device == RING_ACTIVE_PLAYBACK_DEVICE:
+        return RING_ACTIVE_QUEUELIMIT, RING_ACTIVE_ENABLE_RATE_ADJUST
+    return DEFAULT_ACTIVE_QUEUELIMIT, DEFAULT_ACTIVE_ENABLE_RATE_ADJUST
 
 
 def _finite_float(value: float, field_name: str) -> float:
@@ -1938,6 +1967,13 @@ def emit_active_speaker_startup_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its four declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
@@ -2500,6 +2536,13 @@ def emit_active_speaker_commissioning_config(
             f"audible_gain_db must be between {STARTUP_MUTE_GAIN_DB:.0f} and 0 dB"
         )
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its four declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
@@ -3008,6 +3051,13 @@ def emit_active_speaker_program_config(
             raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
         tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its four declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
@@ -3244,6 +3294,13 @@ def emit_active_speaker_baseline_config(
     )
     room_peqs = tuple(room_peqs)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its four declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
@@ -3468,6 +3525,13 @@ def emit_active_speaker_driver_domain_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
     # The ring's width is one of its four declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every

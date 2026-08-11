@@ -438,8 +438,34 @@ What exists:
   `jasper.audio_runtime_plan` does not emit
   `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` under `shm_ring`. The legacy/fail-safe
   `direct` bridge still reads `outputd_content_capture`, backed by snd-aloop
-  substream 6 (`hw:Loopback,1,6`), for ring-ineligible, operator-frozen, and
-  active-N-ch paths — there the content buffer env is real.
+  substream 6 (`hw:Loopback,1,6`), for ring-ineligible boxes, operator-frozen
+  boxes, and every roleful/active-N-ch box that has not been explicitly armed
+  — there the content buffer env is real.
+- **The ACTIVE ring, and the startup allowlist that can park outputd.** A
+  roleful (active-crossover) box has a third ring of its own:
+  `jts_ring_active_playback` -> `/dev/shm/jts-ring/active-content.ring`,
+  carrying POST-crossover per-driver channels rather than a full-range stereo
+  program. It is never armed by the unattended pass — arming is the explicit
+  three-step ladder documented in
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+  ("The ACTIVE-ring arm/rollback lifecycle"), which is the single home for that
+  ordering.
+
+  What matters HERE is the refusal an operator will meet. `Config::from_env`
+  enforces a biconditional under the `shm_ring` bridge: **the active ring path
+  may be read ONLY by an armed active endpoint, and an armed active endpoint may
+  read ONLY that path.** A crossed pair is a hard bail — outputd exits rather
+  than starts, which presents as a silent speaker with a parked unit. It is
+  scoped to `shm_ring` deliberately: under `direct` there is no ring to read, so
+  an unscoped check would park the documented rollback. A second,
+  bridge-independent bail rejects `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` set
+  without `JASPER_OUTPUTD_ACTIVE_LANE` — the two are written by one helper from
+  one decision in `jasper-audio-hardware-reconcile`, so an incoherent pair can
+  only mean that writer is broken.
+
+  Why the role rides the NAME and not the width: on a 2-way speaker both rings
+  are 2 channels, so no channel-count test can tell them apart. The allowlist is
+  positive equality against a named path constant, never a denylist.
 - **Removed — the `rate_match` lab bridge.** `direct` and `shm_ring` are the
   whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`. A third mode drained
   `outputd_content_capture` into a bounded ring and rendered DAC-sized periods

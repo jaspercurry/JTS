@@ -9,12 +9,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import stat
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.baseline_profile import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
+from jasper.active_speaker.environment import read_camilla_statefile_config_path
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
@@ -360,8 +363,36 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     return 0 if decision.ok else 1
 
 
+def _baseline_reemit_endpoint(
+    topology: Any, endpoint: str | None
+) -> tuple[str | None, str]:
+    """Which playback endpoint this re-emit targets, and where that came from.
+
+    ``--endpoint`` is what makes this command the ARM/ROLLBACK entry point
+    rather than a tidy-up. The reconciler derives its ring marker FROM the
+    loaded graph, and the graph's device derives from that marker, so an
+    auto-resolving re-emit can only ever reproduce the state the box is already
+    in — it cannot bootstrap either direction. Naming the endpoint explicitly is
+    the operator act that breaks that circle: the GRAPH moves first, the marker
+    then derives from it, and the coupling follows.
+
+    Omitting it keeps the auto answer (``resolve_output_layout``, the single
+    chooser, reading the marker) — correct for a plain refresh, and never able
+    to change which lane the box is on.
+    """
+    from jasper.active_speaker.playback_route import resolve_active_playback_device
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    if endpoint == "ring":
+        return RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring"
+    if endpoint == "aloop":
+        return OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_aloop"
+    return resolve_active_playback_device(topology)
+
+
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
-    """Re-emit the APPLIED active baseline against the box's current endpoint.
+    """Re-emit the APPLIED active baseline against a chosen playback endpoint.
 
     WHY THIS EXISTS. The applied baseline is a roleful box's BOOT graph — the
     statefile points at it, and ``safe_graph_for_current_topology`` preserves or
@@ -373,21 +404,50 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     reads the ring, and the speaker goes silent with every daemon reporting
     healthy.
 
-    Re-emitting is therefore not tidying, it is the step that makes an arm
-    survive a restart. It is a pure re-emit from the IMMUTABLE applied snapshot —
-    the same seam ``/sound`` and the commissioning host use — so Layer A is
-    rebuilt from the evidence that was applied, not from any current draft. The
-    only thing that changes is the endpoint the graph is emitted against, and
-    that is resolved by ``resolve_output_layout``, the single chooser.
+    AND IT IS THE BOOTSTRAP. The endpoint marker derives from the loaded graph;
+    the graph's device derives from the marker. That is a fixed point: at
+    marker-absent the pair can only reproduce itself, in BOTH directions — a box
+    can neither arm nor release. ``--endpoint`` is the explicit operator act
+    that breaks it by moving the GRAPH first, which is why the arm ladder is
+    ``baseline-reemit --endpoint ring`` -> ``jasper-audio-hardware-reconcile``
+    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``, and
+    the rollback is its mirror through ``--endpoint aloop``.
 
-    Prints the emitted path and the device it named; ``--out`` writes elsewhere
-    for inspection without disturbing the live artifact.
+    It is a pure re-emit from the IMMUTABLE applied snapshot — the same seam
+    ``/sound`` and the commissioning host use — so Layer A is rebuilt from the
+    evidence that was applied, not from any current draft. The only thing that
+    moves is the endpoint the graph is emitted against.
+
+    WHAT IT WRITES. By default, the artifact the statefile and the classifier
+    actually read: the applied profile's own ``config.path``. The bytes are
+    published atomically at the target's existing mode, the canonical
+    ``active_speaker_baseline.yml`` copy is refreshed, and the statefile is
+    pointed at the artifact (a no-op when it already is). Nothing is written
+    until the recomposed graph RE-PROVES as ``GRAPH_APPROVED_ACTIVE_RUNTIME``;
+    a refusal writes nothing at all and exits non-zero.
+
+    ``--out`` is a PREVIEW: it writes the emitted YAML to that path and touches
+    nothing else — no live artifact, no canonical copy, no statefile. The
+    re-proof still gates it, so a preview file is never a graph the contract
+    rejected.
+
+    The full ladder, its ordering rationale, and why every intermediate state is
+    silence rather than wrong audio live in
+    ``docs/HANDOFF-audio-graph-consolidation.md`` ("The ACTIVE-ring arm/rollback
+    lifecycle") — one home, pointed at from here rather than restated.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
+        promote_applied_baseline_candidate,
         recompose_applied_baseline_yaml,
     )
-    from jasper.active_speaker.playback_route import resolve_active_playback_device
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_bass_extension_graph,
+        write_camilla_statefile,
+    )
+    from jasper.atomic_io import atomic_write_text
+    from jasper.bass_extension.profile import evaluate_bass_extension_profile
 
     topology = load_output_topology_strict(args.topology)
     applied = load_applied_baseline_profile_state(args.applied_baseline_state)
@@ -397,32 +457,141 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
             "nothing to re-emit (commission the speaker first)"
         )
         return 1
-    device, source = resolve_active_playback_device(topology)
-    yaml, issues = recompose_applied_baseline_yaml(topology, applied_profile=applied)
+    device, source = _baseline_reemit_endpoint(topology, args.endpoint)
+    if not device:
+        print(
+            "ERROR: this topology resolves no active playback endpoint, so there "
+            "is no device to re-emit against"
+        )
+        return 1
+
+    # Bass evidence is split exactly as the /sound recompose splits it: only an
+    # ACCEPTED profile is emitted, while the proof is asked against whatever was
+    # evaluated, so a rejected profile cannot be silently emitted OR silently
+    # excused.
+    bass_evaluation = evaluate_bass_extension_profile(
+        topology=topology, applied_baseline_state=applied
+    )
+    bass_emission_profile = (
+        bass_evaluation.profile if bass_evaluation.status == "accepted" else None
+    )
+    yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=device,
+        out_path=None,
+        bass_extension_profile=bass_emission_profile,
+    )
     if yaml is None or issues:
         print("ERROR: could not re-emit the applied baseline:")
         for issue in issues or []:
-            print(f"  [{issue.get('severity')}] {issue.get('code')}: {issue.get('detail')}")
+            print(
+                f"  [{issue.get('severity')}] {issue.get('code')}: "
+                f"{issue.get('message') or issue.get('detail')}"
+            )
         return 1
-    out_path = Path(args.out) if args.out else None
-    if out_path is not None:
-        out_path.write_text(yaml, encoding="utf-8")
+
+    # RE-PROOF before any byte lands. This graph is about to become the box's
+    # boot graph, so it is held to the same contract the runtime holds a loaded
+    # graph to — and it is re-derived here rather than trusted from the emitter,
+    # because the emitter is the thing being checked.
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=yaml,
+        applied_baseline_state=applied,
+        desired_profile=bass_evaluation.profile,
+    )
+    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        print(
+            "ERROR: the re-emitted baseline did not re-prove as "
+            f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification}); "
+            "NOTHING was written"
+        )
+        for issue in graph.issues:
+            print(
+                f"  [{issue.get('severity')}] {issue.get('code')}: "
+                f"{issue.get('message')}"
+            )
+        return 1
+
+    preview_path = Path(args.out) if args.out else None
+    written_path: Path | None = None
+    statefile_written = False
+    if preview_path is not None:
+        if not preview_path.parent.exists():
+            print(
+                f"ERROR: parent directory does not exist: {preview_path.parent}"
+            )
+            return 1
+        atomic_write_text(preview_path, yaml, mode=0o640)
+        written_path = preview_path
+    else:
+        applied_config = applied.get("config")
+        raw_target = (
+            applied_config.get("path") if isinstance(applied_config, Mapping) else None
+        )
+        if not isinstance(raw_target, str) or not raw_target.strip():
+            print(
+                "ERROR: the applied baseline profile records no config path, so "
+                "there is no artifact to re-emit over; NOTHING was written"
+            )
+            return 1
+        target = Path(raw_target)
+        # Preserve the target's own mode when it exists (this rewrites a file
+        # someone else created); fall back to the module's 0640 convention when
+        # it does not.
+        try:
+            target_mode = stat.S_IMODE(target.stat().st_mode)
+        except OSError:
+            target_mode = 0o640
+        atomic_write_text(
+            target,
+            yaml,
+            mode=target_mode,
+            group_from_parent=True,
+            durable=True,
+        )
+        written_path = target
+        # Keep the canonical readable copy in step (fail-soft by its own
+        # contract), then make sure the boot pointer names the artifact we just
+        # rewrote — idempotent when it already does.
+        promote_applied_baseline_candidate(applied)
+        statefile = Path(args.statefile)
+        if read_camilla_statefile_config_path(statefile) != str(target):
+            write_camilla_statefile(statefile, target)
+            statefile_written = True
+
     payload = {
         "playback_device": device,
         "playback_device_source": source,
-        "out_path": str(out_path) if out_path else None,
+        "classification": graph.classification,
+        "preview": preview_path is not None,
+        "written_path": str(written_path) if written_path else None,
+        "statefile_path": str(args.statefile),
+        "statefile_written": statefile_written,
         "bytes": len(yaml),
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"Re-emitted applied baseline against playback_device={device}")
-        print(f"  source: {source}")
-        print(f"  bytes:  {len(yaml)}")
-        if out_path:
-            print(f"  wrote:  {out_path}")
+        print(f"  source:         {source}")
+        print(f"  classification: {graph.classification}")
+        print(f"  bytes:          {len(yaml)}")
+        if preview_path is not None:
+            print(f"  PREVIEW only:   {preview_path}")
+            print("  (live artifact, canonical copy and statefile untouched)")
         else:
-            print("  (no --out given; nothing written)")
+            print(f"  wrote:          {written_path}")
+            print(
+                "  statefile:      "
+                + (
+                    f"repointed -> {written_path}"
+                    if statefile_written
+                    else "already correct"
+                )
+            )
     return 0
 
 
@@ -945,10 +1114,11 @@ def build_parser() -> argparse.ArgumentParser:
     reemit = sub.add_parser(
         "baseline-reemit",
         help=(
-            "re-emit the APPLIED active baseline against the box's currently "
-            "resolved playback endpoint (run after the active endpoint moves — "
-            "e.g. after arming the active ring — or the next CamillaDSP restart "
-            "re-seeds a graph naming the old lane)"
+            "re-emit the APPLIED active baseline against a playback endpoint, "
+            "publishing it over the live artifact and repointing the statefile. "
+            "This is the FIRST step of the active-ring arm (--endpoint ring) and "
+            "of its rollback (--endpoint aloop): the reconciler derives its "
+            "endpoint marker from the loaded graph, so the graph must move first"
         ),
     )
     reemit.add_argument(
@@ -963,8 +1133,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     reemit.add_argument(
+        "--endpoint",
+        choices=("ring", "aloop"),
+        help=(
+            "playback endpoint to emit against: 'ring' = the ACTIVE ring "
+            "(jts_ring_active_playback, the arm), 'aloop' = the ALSA active lane "
+            "(outputd_active_content_playback, the rollback). Omit to keep the "
+            "endpoint the box already resolves, which can refresh a graph but "
+            "never move a box between lanes"
+        ),
+    )
+    reemit.add_argument(
+        "--statefile",
+        default="/var/lib/camilladsp/outputd-statefile.yml",
+        help="CamillaDSP statefile to point at the re-emitted artifact",
+    )
+    reemit.add_argument(
         "--out",
-        help="write the re-emitted YAML here (omit to emit and report only)",
+        help=(
+            "PREVIEW: write the re-emitted YAML here and touch nothing else — "
+            "no live artifact, no canonical copy, no statefile"
+        ),
     )
     reemit.add_argument("--json", action="store_true")
     reemit.set_defaults(func=_cmd_baseline_reemit)

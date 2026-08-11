@@ -287,8 +287,9 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     playback_pipe_path: str | None
     enable_rate_adjust: bool
     # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via
-    # ALSA ioplug devices (jts_ring_capture / jts_ring_playback), so BOTH device
-    # and format ride the coupling kwargs.
+    # ALSA ioplug devices (jts_ring_capture, plus jts_ring_playback or — on an
+    # armed roleful box — jts_ring_active_playback), so BOTH device and format
+    # ride the coupling kwargs.
     capture_device: str
     capture_format: str
     playback_device: str
@@ -1025,8 +1026,8 @@ def _route_policy_errors(
 
     # usb_low_latency_48k is certifiable on EITHER of the two COHERENT transports:
     # loopback + direct (legacy/fail-safe fallback), OR the shm_ring pair (Ring A
-    # + Ring B, the shipped default on eligible stereo boxes). The ring pair was
-    # measured to reduce route latency (the
+    # plus whichever post-DSP ring the box armed — the intent tokens are all this
+    # predicate reads). The ring pair was measured to reduce route latency (the
     # ring-proto train), so the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
     # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
@@ -1588,7 +1589,7 @@ def transport_coherence_errors(
         if raw_bridge != COUPLING_SHM_RING:
             errors.append(
                 f"transport plan is shm_ring but {OUTPUTD_CONTENT_BRIDGE_KEY}="
-                f"{raw_bridge}; Ring A and Ring B must move together"
+                f"{raw_bridge}; Ring A and the post-DSP ring must move together"
             )
         if capture_device and capture_device != expected_capture:
             errors.append(

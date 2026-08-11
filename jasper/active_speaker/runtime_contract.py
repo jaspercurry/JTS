@@ -616,15 +616,13 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
     speaker groups — the common fresh-install shape, which uses the flat stereo
     graph, exactly the shape ring replaces).
 
-    Everything else has no ring:
+    Everything else has no Ring B:
 
     - roleful / protected / subwoofer topologies (``requires_roleful_graph``).
-      A ring for one of these would have to carry POST-crossover per-driver
-      channels, and the transport for that does not exist: the conf.d ships two
-      PCMs and both are the full-range stereo program, outputd refuses the
-      content bridge on an active lane, and the statefile seeder sends these
-      boxes to the driver-domain graph rather than the ring flat config. So the
-      honest answer today is "no ring", not "a wider ring";
+      Their POST-crossover per-driver program rides the ACTIVE ring — its own
+      PCM, its own file and its own width, answered by
+      :func:`active_ring_channels_for_topology` and gated by outputd's endpoint
+      marker. So the answer here is "no Ring B", not "a wider Ring B";
     - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``): the ring
       ioplug is a single coherent device, not the 4-ch composite the two
       child DACs need. The exclusion is
@@ -4472,9 +4470,13 @@ def safe_graph_for_current_topology(
     The residual an armed roleful box carries is therefore a STALE ARTIFACT, not
     a wrong selection: if its on-disk baseline still names the pre-arm ALSA lane,
     preserving it is the correct thing to do with the graph the box has, and the
-    box de-arms itself on the next CamillaDSP restart. Re-emitting the baseline
-    after an arm is what closes that (``jasper-active-speaker baseline-reemit``),
-    and the doctor's ``check_fanin_coupling`` is what reports the gap in the
+    box de-arms itself on the next CamillaDSP restart. Closing that is what
+    ``jasper-active-speaker baseline-reemit --endpoint ring|aloop`` is FOR — it
+    publishes the re-emitted graph over the artifact this function selects and
+    repoints the statefile at it, which is also why it is step ONE of the arm
+    ladder rather than a tidy-up after it (ordering:
+    ``docs/HANDOFF-audio-graph-consolidation.md``, "The ACTIVE-ring arm/rollback
+    lifecycle"). The doctor's ``check_fanin_coupling`` reports the gap in the
     meantime — it derives the expected playback device from the endpoint marker,
     so it names the exact mismatch rather than reading green through it. This
     function deliberately does NOT add a refusal of its own: blocking here would

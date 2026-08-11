@@ -465,7 +465,7 @@ def test_render_ring_conf_wire_is_a_no_op_when_it_already_matches(tmp_path):
 
 
 def test_render_ring_conf_wire_moves_only_the_period_values(tmp_path):
-    # Converging a drifted conf.d: both PCM blocks follow, and NOTHING else
+    # Converging a drifted conf.d: every PCM block follows, and NOTHING else
     # moves — comments, n_slots, path, type, and indentation survive verbatim.
     conf = _drifted_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
@@ -780,8 +780,10 @@ def test_render_tolerates_a_missing_active_block_only_with_nothing_to_write(tmp_
 
 
 def test_render_round_trips_through_the_parsers(tmp_path):
-    # render -> parse -> equality, on every axis and on BOTH blocks. The parsers
-    # and the writer share their regexes precisely so this holds.
+    # render -> parse -> equality, on every axis and on the two stereo blocks —
+    # the ACTIVE block's render->parse is pinned by
+    # test_render_writes_the_active_block_only_for_a_roleful_wire above. The
+    # parsers and the writer share their regexes precisely so this holds.
     conf = _shipped_conf_copy(tmp_path)
     wire = _shipped_wire(sample_format="S32_LE", ring_b_channels=8)
     ring_assets.render_ring_conf_wire(wire, conf_d=str(conf))

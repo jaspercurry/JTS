@@ -22,8 +22,9 @@
 #      build does not churn (no restart is triggered — nothing runs it
 #      yet in P1).
 #   2. /etc/alsa/conf.d/60-jts-ring.conf — the system-wide (0644,
-#      renderer-user resolvable) pcm.jts_ring_capture / pcm.jts_ring_playback
-#      definitions. Shipped from deploy/alsa/conf.d/60-jts-ring.conf verbatim.
+#      renderer-user resolvable) pcm.jts_ring_capture / pcm.jts_ring_playback /
+#      pcm.jts_ring_active_playback definitions. Shipped from
+#      deploy/alsa/conf.d/60-jts-ring.conf verbatim.
 #   3. /etc/tmpfiles.d/jts-ring.conf — the /dev/shm/jts-ring directory
 #      lifecycle (group-writable, setgid), shipped from
 #      deploy/tmpfiles/jts-ring.conf and applied via systemd-tmpfiles.

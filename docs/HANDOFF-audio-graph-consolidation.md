@@ -124,15 +124,16 @@ fields, so ring `VERSION` stays 1.
 The **wire** is still S16 everywhere, and by a different mechanism: the
 resolver forces it. `jasper.fanin_coupling.resolve_ring_wire` is the one
 per-box resolution every declaring end reads, and it answers
-`RING_WIRE_FORMAT` (`S16_LE`) at 2 channels on every box, for both ring
-ends and for outputd's `JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed
+`RING_WIRE_FORMAT` (`S16_LE`) at 2 channels on every box today, for every
+ring end and for outputd's `JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed
 box stays coherently narrow even on a box whose program-lane default is
 `S32_LE` (see "Where this corrects #2285"). Because the accept-set is
 wider than the wire, the attach can no longer be relied on to refuse a
 drift *inside* it: the ends are compared rather than assumed. The C
 ioplug takes `format`/`channels` from its conf.d block, but
 [`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
-declares neither, so both PCMs open at the `S16_LE`/2ch defaults
+declares neither on any of its three PCM blocks, so all of them open at the
+`S16_LE`/2ch defaults
 (`JTS_RING_RATE = 48000` stays pinned). Nothing on the fleet declares a
 non-default wire yet: changing the resolver was **R5a**'s, and the first
 box to actually run wide is still **R6**'s.
@@ -371,6 +372,62 @@ round 3's resilience lens overruled it — 32 KiB is #2147's legitimate
 future case); `resolve_ring_wire` stays equality-only, never ranking;
 renderer migrations (P6) land once, on v2, never onto v1 (reaffirmed
 from R-RING2).
+
+**The ACTIVE-ring arm/rollback lifecycle.** This is the durable home for
+the ordering; the docstrings on `jasper-active-speaker baseline-reemit`,
+`_outputd_actions`, and `check_fanin_coupling` point here rather than
+each restating it.
+
+A roleful box's ACTIVE ring is armed by an operator, in three steps, in
+this order — and the order is forced, not stylistic:
+
+```
+ARM       jasper-active-speaker baseline-reemit --endpoint ring
+       -> systemctl start jasper-audio-hardware-reconcile     (marker -> 1)
+       -> jasper-fanin-coupling-reconcile shm_ring            (path -> active ring)
+
+ROLLBACK  jasper-active-speaker baseline-reemit --endpoint aloop
+       -> systemctl start jasper-audio-hardware-reconcile     (marker -> cleared)
+       -> jasper-fanin-coupling-reconcile loopback            (ring keys unset)
+```
+
+**Why the graph moves first.** The endpoint marker
+(`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`) is derived by the hardware
+reconciler from the classification of the graph the statefile points at.
+The graph's playback device is in turn chosen by `resolve_output_layout`
+from that marker. Left to themselves the two only reproduce each other —
+a fixed point that holds in BOTH directions, so a box can neither arm nor
+release. `--endpoint` is the explicit operator act that breaks it: it
+re-emits the applied baseline against a NAMED endpoint, publishes it over
+the artifact the statefile reads, and repoints the statefile. Everything
+after that is derivation. (Ratified as Option B in the R7b panel round 2;
+it amends E1's earlier coupling-first rollback ordering for the same
+reason the arm needs it.)
+
+**Why every intermediate state is safe.** After step 1 the graph names
+the ring while the coupling is still loopback: CamillaDSP writes a ring
+nobody reads and outputd reads an unwritten ALSA lane — silence, not
+wrong audio. After step 2 the marker is set but the bridge is still
+`direct`, and outputd's ring-path allowlist is scoped to the `shm_ring`
+bridge, so the marker grants nothing and the box keeps playing. Only step
+3 moves audio. A crash between any two steps leaves silence and re-running
+the ladder converges.
+
+**What holds the pair coherent.** outputd enforces a biconditional at
+startup: the active ring file may be read only by an armed active
+endpoint, and an armed active endpoint may read only that file. The two
+halves have two writers — the hardware reconciler owns the marker, the
+coupling reconciler owns the path — so the path is DERIVED from the marker
+(`_outputd_ring_path_for`) rather than preserved. A preserved path is how
+an armed box gets handed the full-range stereo ring and parks at exit 78
+with every daemon reporting healthy.
+
+**Operator symptom → step.** `jasper-doctor`'s `fan-in coupling` check
+warns when the loaded graph does not name the ring the marker selects, and
+names this ladder in its remediation. On a roleful box with a CLEARED
+marker it deliberately does not report "expected `jts_ring_playback`":
+that device is a forbidden token for every active emitter, so no roleful
+graph can ever name it.
 
 ## What still has to be deleted or built
 
