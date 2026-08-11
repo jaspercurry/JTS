@@ -754,13 +754,24 @@ def decide_adoption(
       boosted: does the applied intervention contain a boost? Computed by the
         host with the shipped predicate (``camilla_yaml._linearization_has_boost``
         — any filter whose numeric ``gain`` exceeds 0 dB); this module keeps
-        no second copy of that rule.
-      rollback_available: can the host actually restore the entry graph?
-        The flow's capability idiom is seam presence (``V2FlowSeams.rollback
-        is not None``), and #2291 Phase 3c binds it in the stage that runs
-        VERIFY — today only stage 1 binds it and only stage 2 reaches the
-        probe, which is the wiring defect this parameter exists to let the
-        decision *see* rather than assume away.
+        no second copy of that rule. Read **only** when
+        :attr:`~.contracts.BenefitStatus.INDETERMINATE`, which is the scope
+        #2291's row states ("indeterminate because evidence is
+        incomparable/missing … boosted candidates fail closed"). A boost whose
+        benefit was *measured* past the margin is not unproven, so it must not
+        be restored under an unproven-boost cause.
+      rollback_available: can the host actually restore the entry graph? The
+        flow's capability idiom is seam presence — ``STAGE_VERIFY_CAPABILITIES``
+        provides ``CAPABILITY_ROLLBACK``, and ``bind_v2_stage_seams`` binds the
+        rollback seam only for a stage that declares it
+        (:mod:`jasper.web.correction_crossover_v2`). #2291 Phase 3a (#2316)
+        moved that binding onto the stage that actually reaches the delta
+        probe, so on the shipped two-stage host the seam is present where this
+        decision is made. The parameter exists so the decision *sees* seam
+        presence rather than assuming it: a host that binds no rollback — a
+        first-ever round with no anchor, a future single-stage caller — must
+        get a different answer, not a restore instruction nothing can carry
+        out.
       restore_failed: a restore was attempted and did not complete.
 
     Safety, stated plainly because this decides whether a graph stays on a
@@ -773,11 +784,17 @@ def decide_adoption(
     * **Indeterminate never claims success.** Every ``INDETERMINATE`` cell is
       UNPROVEN, which can only become ``user_decision``, ``restore``, or
       ``recovery_required`` — never ``keep``.
-    * **A boosted intervention fails closed when unproven.** An unverified
-      *cut* can wait for a household to decide; an unverified *boost* is
-      energy we put into a driver and cannot show was warranted, so it comes
-      off. This is why ``boosted`` promotes UNPROVEN to a restore rather
-      than leaving it a question.
+    * **A boosted intervention fails closed when the benefit is
+      indeterminate.** An unverified *cut* can wait for a household to
+      decide; a *boost* whose benefit we cannot show is energy we put into a
+      driver and cannot justify, so it comes off — ``boosted`` promotes that
+      cell to a restore rather than leaving it a question. The modifier is
+      scoped to :attr:`~.contracts.BenefitStatus.INDETERMINATE` on purpose: a
+      boost that measured *improved* but lacks realization evidence is
+      unattributed, not unproven, and restoring it under an unproven-boost
+      cause would put a false statement on a receipt — the same defect this
+      module already fixed for the unboosted sibling cell. That cell stays
+      ``user_decision``, which claims no success either.
     * **A restore we cannot perform is not a restore.** When the evidence
       says the graph must come off and no rollback anchor exists, the answer
       is ``recovery_required`` — a loud operator path — never a ``restore``
@@ -807,7 +824,7 @@ def decide_adoption(
         return AdoptionDecision(outcome=AdoptionOutcome.KEEP, reason=reason)
     if intent is _Intent.RESTORE:
         return _restore_or_recover(reason, rollback_available=rollback_available)
-    if boosted:
+    if boosted and benefit is BenefitStatus.INDETERMINATE:
         return _restore_or_recover(
             ADOPTION_UNPROVEN_BOOST, rollback_available=rollback_available
         )

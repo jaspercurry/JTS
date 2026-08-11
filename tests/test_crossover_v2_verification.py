@@ -811,6 +811,55 @@ def test_an_unproven_boost_fails_closed_instead_of_asking(realization):
     assert expected in decision.reason
 
 
+@pytest.mark.parametrize("rollback", [True, False])
+def test_a_boosted_but_measured_improvement_is_not_an_unproven_boost(rollback):
+    """``(unavailable, improved, boosted)`` — the benefit was MEASURED.
+
+    The fail-closed modifier is scoped to indeterminate benefit, so this
+    cell lands exactly where its unboosted sibling does: ``user_decision``,
+    cause ``realization_unavailable``. Restoring it under
+    ``unproven_boost_failed_closed`` would put a false statement on a
+    receipt — the benefit is not unproven, only unattributed — and with no
+    rollback anchor it would escalate a round that measured *better* to
+    ``recovery_required``.
+    """
+
+    decision = _adopt(
+        RealizationStatus.UNAVAILABLE,
+        BenefitStatus.IMPROVED,
+        boosted=True,
+        rollback_available=rollback,
+    )
+    assert decision.outcome is AdoptionOutcome.USER_DECISION
+    assert decision.reason == ADOPTION_REALIZATION_UNAVAILABLE
+    assert ADOPTION_UNPROVEN_BOOST not in decision.reason
+    unboosted = _adopt(
+        RealizationStatus.UNAVAILABLE,
+        BenefitStatus.IMPROVED,
+        boosted=False,
+        rollback_available=rollback,
+    )
+    assert decision == unboosted
+
+
+def test_the_boost_modifier_reads_only_the_indeterminate_cells():
+    """Scope check across the whole surface: a boost changes the answer
+    only where the benefit is indeterminate."""
+
+    for realization, benefit, rollback in itertools.product(
+        RealizationStatus, BenefitStatus, (False, True)
+    ):
+        if benefit is BenefitStatus.INDETERMINATE:
+            continue
+        boosted = _adopt(
+            realization, benefit, boosted=True, rollback_available=rollback
+        )
+        plain = _adopt(
+            realization, benefit, boosted=False, rollback_available=rollback
+        )
+        assert boosted == plain, (realization, benefit, rollback)
+
+
 def test_an_unproven_cut_asks_the_household_rather_than_restoring():
     decision = _adopt(
         RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE, boosted=False
