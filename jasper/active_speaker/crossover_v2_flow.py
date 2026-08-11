@@ -101,11 +101,7 @@ from jasper.active_speaker.attempts_loop import (
     LoopDecision,
     decide_next,
 )
-from jasper.active_speaker.linearization_envelope import (
-    DEFAULT_ENVELOPE_GRID_HZ,
-    compose_envelope,
-    compute_sigma_curve,
-)
+from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -129,6 +125,22 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.crossover_v2.contracts import (
     InterventionProposal,
     PlanRefusal,
+)
+
+# #2291 Phase 2 moved the prescription policy — the two Layer-1a constants, the
+# σ-composition table and gate, and three small pure derivations — into the
+# planner module, because a pure planner cannot import this one (the dependency
+# runs one way: flow → crossover_v2, never back). They are re-exported here
+# under their historical private names so every existing importer keeps
+# resolving to the single definition rather than growing a second copy.
+from jasper.active_speaker.crossover_v2.intervention import (  # noqa: F401
+    LINEARIZATION_MIN_PAIRED_OCCURRENCES,
+    LINEARIZATION_TRIM_SANITY_MARGIN_DB,
+    SIGMA_TOLERABLE_DB as _SIGMA_TOLERABLE_DB,
+    compose_sigma_db as _compose_sigma_db,
+    driver_response_by_role as _driver_response_by_role,
+    measure_validity_floor_hz as _measure_validity_floor_hz,
+    rounded_band_hz as _rounded_band_hz,
 )
 from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
@@ -3658,31 +3670,8 @@ def _verify_frame_from_tracking(
 # a NEW number or influence any verdict.
 
 
-def _driver_response_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
-    for resp in analysis.driver_responses:
-        if resp.role == role:
-            return resp
-    return None
 
 
-def _rounded_band_hz(
-    band_hz: tuple[float, float] | None,
-) -> tuple[float, float | None] | None:
-    """A ``(lo, hi)`` band rounded for the journal, with a non-finite upper
-    edge rendered as ``None`` rather than ``inf``.
-
-    A high-pass branch radiates to infinity, and ``inf`` is not JSON-safe;
-    ``None`` reads as "no upper bound" and survives every consumer. Shared by
-    the two places that log a band so they cannot render the same number two
-    ways.
-    """
-    if band_hz is None:
-        return None
-    lo_hz, hi_hz = band_hz
-    return (
-        round(float(lo_hz), 1),
-        round(float(hi_hz), 1) if math.isfinite(hi_hz) else None,
-    )
 
 
 def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
@@ -3743,17 +3732,6 @@ def _driver_snr_fields(resp: Any | None) -> tuple[float | None, str | None]:
     return worst.get("estimated_snr_db"), worst.get("verdict")
 
 
-def _measure_validity_floor_hz(analysis: ProgramAnalysis) -> float | None:
-    """The worse (higher) of the two driver responses' own reflection-gate floor.
-
-    Mirrors ``_build_candidate``'s ``branch_floor_hz`` clamp — diagnostic
-    only here, does not feed any verdict in this module.
-    """
-    floors = [
-        r.validity_floor_hz for r in analysis.driver_responses
-        if r.validity_floor_hz is not None
-    ]
-    return max(floors) if floors else None
 
 
 # The finite stand-in logged for `_pilot_in_band_snr_db`'s ``-inf`` — "this
@@ -3826,40 +3804,14 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
 #
 # The fit engine (jasper.active_speaker.linearization_fit) and the envelope
 # core (jasper.active_speaker.linearization_envelope) are pure, policy-free
-# computation. This conductor is where their outputs become a PRODUCT
-# decision: gate eligibility (mic tier + paired repeat count), σ-composition
-# policy, and the trim re-solve + sanity backstop. See
+# computation. Turning their outputs into a PRODUCT decision — σ-composition
+# policy, the anchored trim, the re-solve and its sanity backstop — is
+# `crossover_v2.intervention`'s job since #2291 Phase 2, and
+# `LINEARIZATION_MIN_PAIRED_OCCURRENCES` / `LINEARIZATION_TRIM_SANITY_MARGIN_DB`
+# / `_SIGMA_TOLERABLE_DB` / `_compose_sigma_db` are re-exported from there at
+# the top of this module rather than defined twice. This conductor still owns
+# eligibility (mic tier + paired repeat count) and the accountability gate. See
 # docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
-
-# Both drivers of the pair must carry at least this many in-capture
-# occurrences (primary + repeats) before Layer-1a trusts ANY repeatability
-# evidence — the "paired gate" (sigma-seeding report finding 5: "don't trust
-# live sigma alone until N>=3 for BOTH drivers"). Mirrors the v2 MEASURE
-# program's own default repeat count
-# (jasper.audio_measurement.program.MEASURE_REPEAT_COUNT) — not imported,
-# since this is a POLICY floor (what linearization requires), not a
-# statement about what the program composes; the two happen to agree today.
-LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
-
-# How far the ripple-optimal tweeter trim may move from its ANCHORED trim
-# (raw trim + that branch's measured `correction_giveback_db`, normalized) before
-# the scan's result is treated as implausible and discarded in favor of the
-# anchored pair (with a WARNING — never a silent swap). ANCHOR-anchored since
-# the 2026-07-24 JTS3 runs (#1668): the anchor is measured give-back, not a
-# solver prediction, so it is trusted by construction and only the SCAN can
-# drift. What the guard catches is the scan wandering into the "attenuate the
-# tweeter toward silence is always flatter against a flat woofer" degenerate its
-# own +/-window allows. It no longer fights the give-back itself: the previous
-# overlap-band seed under-returned the correction and this guard then blocked the
-# scan's attempt to fix it on both live runs — the anchor removes that conflict.
-# Magnitude protection against a garbage correction lives upstream in the fit
-# engine's structural caps (per-filter <=12 dB cut, total normalization budget,
-# realization tolerance) plus the downstream VERIFY gate — not this trim guard.
-# NOTE the margin's MEANING changed with the anchor: it is now "how far the
-# summed-flatness optimum may disagree with the measured level anchor," not
-# "how far a re-solve may drift from another level estimate." The 6.0 value is
-# retained deliberately and is judged from live guard telemetry, not re-derived.
-LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
 # How far the two measured level estimates may disagree before the session is
 # refused (linearization-integrity PR-L5). The estimates are the trim solve's
@@ -3937,80 +3889,6 @@ LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 # model and what the hardware realizes is not an improvement we can honestly
 # claim, so it does not earn an apply.
 PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
-
-# Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
-# (module-private there — see that module's top docstring for the "no
-# cross-module private imports" convention this repo follows). LOCKSTEP
-# REQUIREMENT: any change to that table must be mirrored here, or this
-# conductor's sigma floor and the envelope module's own
-# repeatability_limit() disagree about what "tolerable" means per tier.
-_SIGMA_TOLERABLE_DB: Mapping[str, float] = {
-    "reference": 0.5,
-    "consumer": 1.0,
-    "phone": 1.5,
-}
-
-
-def _compose_sigma_db(
-    own: Any,
-    sibling: Any,
-    *,
-    tier: str,
-    valid_band_hz: tuple[float, float],
-    grid_hz: np.ndarray = DEFAULT_ENVELOPE_GRID_HZ,
-) -> np.ndarray | None:
-    """PR-C's σ-composition policy: the paired-N gate + the per-tier floor.
-
-    ``own``/``sibling`` are the two :class:`~jasper.audio_measurement.
-    program_analysis.DriverResponse` of a crossover pair (typed ``Any`` —
-    matching this module's own convention of not importing program_analysis
-    dataclasses purely for type hints). Returns ``None`` (no evidence, no
-    permission — the same contract
-    :func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`
-    itself uses) when EITHER driver has fewer than
-    :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES` occurrences (primary +
-    repeats) — an under-repeated sibling voids the pair's trust even if
-    ``own`` alone has plenty. This gate is deliberately redundant with the
-    conductor's own outer eligibility gate (:meth:`CrossoverV2Conductor.
-    _linearization_eligible`) — belt-and-suspenders, so this function stays
-    independently correct/safe if ever called from a different context.
-
-    Otherwise computes ``own``'s live σ(f)
-    (:func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`)
-    and floors it at the tier's own tolerable value:
-    ``sigma_eff = max(sigma_tolerable(tier), live)``.
-
-    **This floor is currently BEHAVIORALLY INERT.** ``repeatability_limit``'s
-    own formula is ``D_cap * min(1, sigma_tolerable / max(sigma, eps))`` —
-    for ANY ``live <= sigma_tolerable`` that expression already saturates at
-    ``D_cap * 1`` (the full ceiling), identically whether ``live`` is floored
-    up to ``sigma_tolerable`` or left alone. Flooring at EXACTLY the tier's
-    own tolerable value therefore changes nothing about the resulting
-    envelope today; it exists as a SEAM for a future PR that might set the
-    floor HIGHER than ``sigma_tolerable`` for genuine extra conservatism
-    (e.g. a stricter product-taste floor independent of the envelope
-    module's own per-tier table). Do not assume this floor currently does
-    more than the paired-N gate above.
-
-    N2 (2026-07-24 adversarial review): flagged this same inertness;
-    coordinator ruling was to KEEP it as-is — it is the σ-seeding report's
-    own recommended composition, already honestly documented here and
-    pinned by ``test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit``,
-    and cutting it now only to re-add it for the same future seam later
-    would cost more than carrying it.
-    """
-    own_n = 1 + len(own.repeat_responses)
-    sibling_n = 1 + len(sibling.repeat_responses)
-    if (
-        own_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        or sibling_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-    ):
-        return None
-    live = compute_sigma_curve(own, valid_band_hz=valid_band_hz, grid_hz=grid_hz)
-    if live is None:
-        return None
-    floor_db = _SIGMA_TOLERABLE_DB[tier]
-    return np.maximum(floor_db, live)
 
 
 # --------------------------------------------------------------------------- #
