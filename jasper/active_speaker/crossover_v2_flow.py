@@ -78,7 +78,6 @@ renders the template. A woofer-repeat level disagreement REUSES
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import logging
 import math
@@ -138,6 +137,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
@@ -6867,72 +6867,54 @@ class CrossoverV2Conductor:
 
     # --- priors per phase ----------------------------------------------------
 
-    def _check_priors(self) -> MeasurementPriors:
-        """CHECK's priors — Fc only, for the MEASURE level solve (#1825).
+    # --- priors per phase ----------------------------------------------------
+    #
+    # Thin argument lists over :mod:`jasper.active_speaker.crossover_v2.priors`,
+    # which owns every one of the WITHHOLDING decisions their docstrings used to
+    # carry. What is left here is this conductor's own reading of its session
+    # state — which is exactly the part that could not move.
 
-        CHECK used to run on bare defaults. Its gain solve now scopes each
-        band's SNR requirement by whether that band lies inside the crossover
-        overlap window (an alignment-class decision needs materially more SNR
-        than a magnitude one — see ``program_analysis._band_required_snr_db``),
-        and that window is derived from Fc. Withholding it is not neutral: the
-        solve then applies the ALIGNMENT requirement everywhere, i.e. solves
-        louder, so this prior can only make MEASURE quieter, never louder.
-        Nothing else in ``_analyze_check`` reads priors.
-        """
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+    def _check_priors(self) -> MeasurementPriors:
+        return _priors.check_priors(fc_hz=self._fc_hz)
 
     def _configured_crossover_transfers(
         self,
     ) -> tuple[dict[str, Any] | None, dict[str, int]]:
-        """``(response_by_role, polarity_sign_by_role)`` for the committed
-        crossover — ONE derivation, two phases. MEASURE consumes it as §4.2's
-        ``C_c``; VERIFY as the candidate's design target for the summed
-        response (R18, #1868). They must be the same filters, or "the
-        measurement matches the design" is about a design nothing emitted.
-        """
-        return (
-            _role_transfers(sections_by_role(self._preset.crossover_regions)),
-            {role: -1 if inverted else 1
-             for role, inverted in role_polarity(self._preset).items()},
-        )
+        return _priors.configured_crossover_transfers(self._preset)
 
     def _measure_priors(self) -> MeasurementPriors:
-        protection = self._measurement_protection_sections_by_role
-        overlap = overlap_band_hz(self._fc_hz)
-        configured_response, configured_polarity = (
-            self._configured_crossover_transfers()
-        )
-        return MeasurementPriors(
-            crossover_fc_hz=self._fc_hz,
-            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
-            # CHECK's measured room floor, carried forward so MEASURE can grade
-            # its own per-driver SNR (issue #1830). Without it
-            # ``program_analysis._driver_response`` skips the verdict entirely
-            # and ``DriverResponse.snr`` is None on every v2 session — a shipped
-            # instrument reading nothing while the evidence to compute it sat
-            # in the same session's check.json. ``None`` only when CHECK never
-            # accepted (no MEASURE can run then) or produced no ambient report,
-            # in which case the verdict stays honestly absent rather than
-            # guessed.
+        return _priors.measure_priors(
+            fc_hz=self._fc_hz,
+            source_preset=self._preset,
+            protection_sections_by_role=self._measurement_protection_sections_by_role,
             ambient_report=self._check_ambient_report,
-            measurement_protection_response_by_role=_role_transfers(protection),
-            configured_crossover_response_by_role=(
-                configured_response if protection is not None else None
-            ),
-            configured_polarity_sign_by_role=(
-                configured_polarity if protection is not None else None
-            ),
-            # §4.2's candidate-required bins: radiating span (what the fit
-            # masks to) union the trim/alignment overlap band, which together
-            # bound everything a candidate consumes. Overlap deliberately
-            # UNCLAMPED — the superset is the safe side for this mask.
-            candidate_required_band_hz_by_role=None if protection is None else {
-                role: (min(radiating_band_hz(sec)[0], overlap[0]),
-                       max(radiating_band_hz(sec)[1], overlap[1]))
-                for role, sec in sections_by_role(
-                    self._preset.crossover_regions).items()
-            },
+            # Derived here rather than there: its producer shares
+            # ``_declared_alignment_delay_range_ms`` with the plausibility gate,
+            # which is not a priors concern.
+            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
         )
+
+    def _lateral_priors(self) -> MeasurementPriors:
+        return _priors.lateral_priors(
+            fc_hz=self._fc_hz, ambient_report=self._check_ambient_report,
+        )
+
+    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
+        return _priors.measure_sweep_bounds(self._measure_program)
+
+    def _verify_priors(self) -> MeasurementPriors:
+        return _priors.verify_priors(
+            fc_hz=self._fc_hz,
+            source_preset=self._preset,
+            predicted_sum=self._measure_predicted_sum,
+            sweep_bounds=self._measure_sweep_bounds(),
+        )
+
+    def _cloud_priors(self) -> MeasurementPriors:
+        return _priors.cloud_priors(fc_hz=self._fc_hz)
+
+    def _entry_baseline_priors(self) -> MeasurementPriors:
+        return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
 
     def _fc_candidate_set(self) -> FcCandidateSet:
         """This session's proposable Fc set, from DECLARATIONS only (R17).
@@ -13570,16 +13552,9 @@ def build_v2_session_spec(
 # --------------------------------------------------------------------------- #
 
 
-def _role_transfers(sections_by_role: Mapping[str, Any] | None) -> dict | None:
-    """Per-role ``freqs -> complex response``, evaluated HOST-side: the kernel
-    may not import this package (``tests/test_correction_boundary_ssot.py``),
-    so it gets a callable, never the ``CrossoverSection`` behind it."""
-    if sections_by_role is None:
-        return None
-    return {
-        role: functools.partial(crossover_response_complex, sections=tuple(sections))
-        for role, sections in sections_by_role.items()
-    }
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.priors`, which owns
+#: it beside the priors that are its heaviest readers (#2291 Phase 5a-iii).
+_role_transfers = _priors.role_transfers
 
 
 async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
