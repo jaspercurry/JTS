@@ -2176,14 +2176,30 @@ def _decimate_delta(commanded_delta: Any) -> dict[str, Any] | None:
     ``_decimate_to_analysis_grid`` and is restated here.
 
     **Averaged in dB, not in linear power** — the one place this deliberately
-    parts company with :func:`_decimate_sum`. That function's power mean is the
-    right estimator for a MAGNITUDE curve; this is a DIFFERENCE of two dB
-    curves, for which the power mean is biased. Measured over 200 synthetic
-    commanded deltas of realistic shape (shelf plus ripple, 1024-4096 bins),
-    the two estimators disagreed by up to 0.27 dB — against a commanded floor
-    (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_MIN_COMMANDED_DB`)
-    of 0.5 dB. So the domain choice moves which bins the probe grades at all,
-    not merely a third decimal.
+    parts company with :func:`_decimate_sum`.
+
+    The REASON first: over a block, the arithmetic mean is the unbiased
+    estimator of a DIFFERENCE of dB curves, where the power mean is biased
+    upward by Jensen's inequality. That bias grows with the WITHIN-BLOCK spread
+    of the values and vanishes across a block the curve is flat over — so it is
+    largest exactly where the commanded delta is steepest, and zero where the
+    two estimators would have agreed anyway. ``_decimate_sum``'s power mean is
+    the right estimator for its own input, a MAGNITUDE curve; it is the wrong
+    one here.
+
+    The measured bound second. Re-derived through the production owner
+    (:func:`~jasper.active_speaker.linearization_fit.complex_correction_response`)
+    over 200 cascades of realistic shape — a highshelf plus 4–11 peaking
+    biquads at Q 0.7–6 plus a trim, on 1,024–8,192-bin grids: worst single
+    block disagreement **1.60 dB**, and **5 of 100,762** persisted bins change
+    side of the 0.5 dB
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_MIN_COMMANDED_DB`
+    floor. So the domain choice does reach band membership and not merely a
+    third decimal — rarely, and the bias is largest where the commanded value
+    is largest, which is furthest from the floor.
+
+    (The 0.27 dB this docstring used to quote was not reproducible against the
+    production response owner and has been replaced by the figures above.)
 
     What it does NOT move is the graded error. The conductor reconstructs
     ``realized = (measured - predicted) + commanded``, so ``realized -
@@ -2329,6 +2345,17 @@ def commanded_delta_prior_from_state(
     probe — there is no commanded axis to grade against: a state file written
     before this key shipped, a trims-only candidate (which commands no shape at
     all), and a record that is not the pair this build writes.
+
+    **A length disagreement is one of those, checked here (#2316 N3).** The two
+    arrays are read separately, so a truncated or hand-edited record yields two
+    valid arrays that are not a curve. Returning them would leave the two
+    surfaces disagreeing in the journal: ``prepare_v2_verify``'s capability line
+    would report the commanded delta PRESENT, and the probe's own warning would
+    report it unavailable a moment later. Both degrade safely, but one of the
+    two lines is false, and an operator reading the capability line has no way
+    to know which. Refusing the pair here — rather than documenting the
+    disagreement — makes the capability line true by construction, for the cost
+    of one comparison.
     """
     import numpy as np
 
@@ -2338,6 +2365,13 @@ def commanded_delta_prior_from_state(
         return None
     freqs, delta = record.get("freqs_hz"), record.get("delta_db")
     if not freqs or not delta:
+        return None
+    if len(freqs) != len(delta):
+        log_event(
+            logger, "correction.crossover_v2_commanded_delta_malformed",
+            level=logging.WARNING,
+            n_freqs=len(freqs), n_delta=len(delta),
+        )
         return None
     return (
         np.asarray(freqs, dtype=float),
