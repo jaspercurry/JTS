@@ -289,11 +289,24 @@ def test_fresh_flat_outputd_cutover_uses_apple_dongle_floor(monkeypatch, tmp_pat
     assert parsed["playback_device"] == "outputd_content_playback"
 
 
-def test_generated_sound_config_dac8x_uses_global_default(monkeypatch, tmp_path):
-    """DAC8x declares no floor => the generated config keeps 1024 / 2048."""
+def test_generated_sound_config_floorless_dac_uses_global_default(
+    monkeypatch, tmp_path
+):
+    """A profile with no declared floor => the generated config keeps 1024/2048."""
+    from jasper.audio_hardware.dac import (
+        INNOMAKER_HIFI_AMP_PRO_ID,
+        latency_floor_for,
+    )
+
+    # Asserted, not assumed: a later floor declaration for this profile must
+    # fail HERE rather than silently turning the two assertions below into a
+    # test of the floor path (what an R7a DAC8x floor did to this test).
+    assert latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, "hifiberry_dac8x")
+    parsed = _generated_sound_devices(
+        monkeypatch, tmp_path, INNOMAKER_HIFI_AMP_PRO_ID
+    )
     assert parsed["chunksize"] == DEFAULT_CHUNKSIZE == 1024
     assert parsed["target_level"] == DEFAULT_TARGET_LEVEL == 2048
 
@@ -358,6 +371,65 @@ def test_generated_active_speaker_baseline_uses_apple_dongle_floor(
     parsed = parse_camilla_devices_config(yaml)
     assert parsed["chunksize"] == 256
     assert parsed["target_level"] == 1536
+
+
+def test_generated_active_speaker_baseline_carries_the_dac8x_floor(
+    monkeypatch, tmp_path
+):
+    """R7a: an EMITTED roleful baseline carries the DAC8x floor (soak gap).
+
+    The jts3 soak proved the 256/1536 geometry by pushing it into the RUNNING
+    CamillaDSP over the websocket — it never re-emitted the applied baseline, so
+    it could not prove that the next regeneration of that config (install.sh's
+    runtime-safe-graph, a jasper-control re-emit, a re-apply after a
+    correction) reproduces the geometry from the declaration alone. That is what
+    this pins, on the shape jts3 actually runs: a roleful two-way baseline
+    resolving the floor through ``resolve_camilla_chunksize`` /
+    ``resolve_camilla_target_level``.
+
+    The floorless control below is what makes the assertion mean "the DECLARED
+    floor moved this", not "256 happens to be the default".
+    """
+    from jasper.active_speaker import (
+        ActiveSpeakerPreset,
+        emit_active_speaker_baseline_config,
+    )
+    from jasper.active_speaker.runtime_contract import (
+        classify_output_contract,
+        topology_supports_shm_ring,
+    )
+    from jasper.audio_hardware.dac import INNOMAKER_HIFI_AMP_PRO_ID
+    from tests.test_active_speaker_profile import _two_way_preset
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    # The topology this preset stands for really is roleful — the jts3 shape,
+    # and the reason this box has no ring width of its own.
+    topology = _active_topology("mono", "active_2_way")
+    assert classify_output_contract(topology).requires_roleful_graph
+    assert not topology_supports_shm_ring(topology)
+
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+
+    _stage_output_profile(monkeypatch, tmp_path, "hifiberry_dac8x")
+    parsed = parse_camilla_devices_config(
+        emit_active_speaker_baseline_config(
+            preset, playback_device="outputd_active_content_playback"
+        )
+    )
+    assert parsed["chunksize"] == 256
+    assert parsed["target_level"] == 1536
+
+    # Control: same emit, same preset, a profile that declares NO floor.
+    _stage_output_profile(monkeypatch, tmp_path, INNOMAKER_HIFI_AMP_PRO_ID)
+    control = parse_camilla_devices_config(
+        emit_active_speaker_baseline_config(
+            preset, playback_device="outputd_active_content_playback"
+        )
+    )
+    assert control["chunksize"] == DEFAULT_CHUNKSIZE == 1024
+    assert control["target_level"] == DEFAULT_TARGET_LEVEL == 2048
 
 
 def test_total_positive_boost_db_sums_only_boosts():

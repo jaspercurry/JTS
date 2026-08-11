@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from jasper import audio_runtime_plan as audio_plan
-from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
+from jasper.audio_hardware.dac import (
+    APPLE_USB_C_DONGLE_ID,
+    HIFIBERRY_DAC8X_ID,
+    INNOMAKER_HIFI_AMP_PRO_ID,
+    latency_floor_for,
+)
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     AUDIO_ROUTE_PROFILE_KEY,
@@ -503,8 +508,14 @@ def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
 
 
 def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
+    # A floorless profile drops every generated floor key so the packaged
+    # defaults apply. Asserted, not assumed, that this profile is floorless —
+    # a later floor declaration must fail here rather than quietly making the
+    # {"unset"} expectation unreachable (what an R7a DAC8x floor did when this
+    # test named `hifiberry_dac8x`).
+    assert latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
     actions = outputd_latency_floor_actions(
-        profile_id="hifiberry_dac8x",
+        profile_id=INNOMAKER_HIFI_AMP_PRO_ID,
         base_env={},
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "256",
@@ -513,6 +524,30 @@ def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
     )
 
     assert {action.action for action in actions} == {"unset"}
+
+
+def test_outputd_latency_floor_actions_set_the_dac8x_soak_floor():
+    # The R7a hardware-validated floor reaches outputd.env through the same
+    # writer-side policy the Apple dongle uses: Camilla 256/1536 and outputd
+    # period 128 / dac_buffer 256, with the content buffer left at the packaged
+    # default (4096) — the 128/4096 content pair the jts3 soak ran.
+    actions = outputd_latency_floor_actions(
+        profile_id=HIFIBERRY_DAC8X_ID,
+        base_env={},
+        outputd_env={},
+    )
+
+    by_key = {action.key: action for action in actions}
+    assert by_key["JASPER_CAMILLA_CHUNKSIZE"].action == "set"
+    assert by_key["JASPER_CAMILLA_CHUNKSIZE"].value == "256"
+    assert by_key["JASPER_CAMILLA_TARGET_LEVEL"].value == "1536"
+    assert by_key[OUTPUTD_PERIOD_KEY].value == "128"
+    assert by_key[OUTPUTD_DAC_BUFFER_KEY].value == "256"
+    # The packaged content-buffer default is emitted as an unset (the writer
+    # never pins a value equal to the shipped default), so outputd runs the
+    # soak-proven 128-period / 4096-buffer content pair.
+    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
+    assert DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES == 4096
 
 
 def test_outputd_latency_floor_actions_use_lab_override():

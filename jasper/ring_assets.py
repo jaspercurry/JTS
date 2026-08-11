@@ -620,8 +620,8 @@ class RingConfWireRender:
 
     ``changed`` is False for the no-write outcome — the conf already declares the
     target wire, which is the golden case on a box running the shipped geometry
-    (an Apple box whose declared floor equals the shipped 128, on the shipped
-    S16_LE / 2-channel wire).
+    (a box whose declared floor equals the shipped 128, on the shipped S16_LE /
+    2-channel wire).
 
     ``previous_period_frames`` is ``None`` for a TORN conf.d whose two PCM blocks
     disagreed, because there was no single previous value to report.

@@ -603,9 +603,10 @@ limit, not a documented silicon one), so its registry profile declares an
 `S32_LE` edge (wide-output-path PR-7) for a different reason: it is the
 intended horn-lane fix (acoustic verdict pending — see plan §6 PR-7) — a
 2-channel `aplay --dump-hw-params` open test on jts3 confirmed the S32 edge
-opens cleanly (2026-08-07); jts3's production graph is 6-channel active, and
-that specific pairing has not been separately probed, so it fails closed
-rather than being pre-verified if unsupported. Declaring it lets outputd's
+opens cleanly (2026-08-07). The profile's *capability* is 8 channels while
+jts3 runs a 2-channel active 2-way, so no width above 2 has been paired with
+S32_LE on this silicon; that pairing fails closed at the ALSA open rather
+than being pre-verified if unsupported. Declaring it lets outputd's
 i32 program spine reach the DAC with zero narrowing where an undithered
 16-bit requantization used to crackle on decay tails. DAC8x Studio's
 registry entry declares `S16_LE`, unchanged: it shares

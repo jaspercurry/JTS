@@ -21,12 +21,28 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_hardware.dac import LatencyFloor
+from jasper.audio_hardware.dac import (
+    INNOMAKER_HIFI_AMP_PRO_ID,
+    LatencyFloor,
+    latency_floor_for,
+)
 from jasper.cli.doctor import audio_runtime as audio
 
 SHIPPED_RING_CONF = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+)
+
+# A registered profile that declares NO LatencyFloor, so the no-floor branches
+# below exercise the real registry rather than a synthetic id. Asserted rather
+# than assumed: declaring a floor for this profile must fail THIS line, not
+# silently turn the two no-floor tests into vacuous passes against a branch
+# they no longer reach. (That is exactly what a declared DAC8x floor did to
+# them in R7a, when they were written against `hifiberry_dac8x`.)
+NO_FLOOR_DAC_ID = INNOMAKER_HIFI_AMP_PRO_ID
+assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
+    f"{NO_FLOOR_DAC_ID} now declares a latency floor; pick another floorless "
+    "profile for the no-floor doctor branches"
 )
 
 
@@ -61,7 +77,7 @@ def _synthetic_floor(period_frames):
 
 def test_ok_when_the_dac_declares_no_floor(monkeypatch, tmp_path):
     # State 1: nothing to render — the shipped default stands by rule.
-    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+    _stage(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
 
     result = audio.check_ring_conf_floor_render()
 
@@ -183,12 +199,12 @@ def test_no_floor_detail_names_the_resolved_ring_ineligibility(monkeypatch, tmp_
     never equal the fixed ring slot, so the arm preflight refuses shm_ring. The
     conf.d is correct either way — hence `ok` — but the household's actual
     question is "why is this box on loopback?", and before this the answer
-    appeared on no surface. jts3 (HIFIBERRY_DAC8X) is the live case.
+    appeared on no surface. The InnoMaker HiFi AMP Pro is the live case.
     """
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
     from jasper.fanin_coupling import RING_SLOT_FRAMES
 
-    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+    _stage(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
 
     result = audio.check_ring_conf_floor_render()
 
