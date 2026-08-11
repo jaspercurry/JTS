@@ -306,8 +306,15 @@ def _outputd_xrun_rate_warning(
 # (max_peak_dbfs - source_peak_dbfs), which STATUS publishes next to the gain it
 # limited. See docs/audio-paths.md "Hearing safety is peak-aware".
 _ASSISTANT_GAIN_FLOOR_DB = -60.0
-# Every assistant-loudness dB field is rendered at 0.1 dB, so two independently
-# rounded values can disagree by up to 0.1 dB without either being wrong.
+# Under today's publish paths the comparison below is EXACT: both round
+# monotonically to 0.1 dB, min/max commute with any monotone map, and the floor
+# is fixed under that rounding — so the value recomputed from the published
+# inputs equals the published final_gain_db, with no residue. Fuzzing both paths
+# (fan-in's pack-x10-then-format and outputd's format, under both tie rules)
+# put the worst disagreement at 0.000000 dB over 400k samples each. This
+# tolerance is therefore a deliberate cushion against a future publish path that
+# rounds differently, NOT a bound derived from the current arithmetic; a real
+# clamp regression is dB-scale and clears it by an order of magnitude.
 _ASSISTANT_GAIN_ROUNDING_DB = 0.15
 
 
