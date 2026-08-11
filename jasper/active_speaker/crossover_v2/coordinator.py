@@ -479,11 +479,15 @@ def _regrade_after_failed_restore(
     copy says ("the newer tuning is STILL APPLIED"). Both reachable failure
     shapes leave it there: a ``CrossoverV2Refused`` never touches DSP, and
     ``restore_applied_baseline_profile`` is an atomic transaction that leaves
-    the live config alone when it does not complete.
+    the live config alone when it does not complete. ``decide_adoption`` and
+    :class:`~.contracts.RoundReceipt` still describe this state as "neither the
+    entry graph nor the intended one" — the abstract worst case, not this one,
+    and contradicted by the sentence the household reads. Left for their owners
+    rather than edited from here; do not propagate it back into this one.
 
     The table's ``restore_failed`` row still describes it: what makes that row
     right is that the intended graph is live and unverified with its automatic
-    remedy spent. Re-grading rather than editing the decision in place keeps
+    remedy spent, not the stronger claim above. Re-grading rather than editing the decision in place keeps
     :func:`~.verification.decide_adoption` the only thing that ever produces an
     :class:`~.contracts.AdoptionDecision`.
     """
