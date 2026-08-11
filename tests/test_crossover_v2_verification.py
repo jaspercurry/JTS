@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_NO_ROLLBACK_ANCHOR,
     ADOPTION_REALIZATION_FAILED,
+    ADOPTION_REALIZATION_UNAVAILABLE,
     ADOPTION_REALIZED_AND_IMPROVED,
     ADOPTION_RESTORE_FAILED,
     ADOPTION_UNPROVEN,
@@ -699,10 +700,17 @@ def test_row_unavailable_indeterminate_asks_rather_than_claiming_success():
 
 
 def test_row_unavailable_improved_does_not_claim_the_graph_is_why():
-    """The keep row names ``matched``; this table does not widen it."""
+    """The keep row names ``matched``; this table does not widen it.
+
+    And the cause names the *realization* gap, not the benefit: the speaker
+    did measure better, so a receipt reading "benefit unproven" here would
+    be false.
+    """
 
     decision = _adopt(RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED)
     assert decision.outcome is AdoptionOutcome.USER_DECISION
+    assert decision.reason == ADOPTION_REALIZATION_UNAVAILABLE
+    assert decision.reason != ADOPTION_UNPROVEN
 
 
 def test_row_restore_attempted_but_failed_requires_recovery():

@@ -657,6 +657,10 @@ ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
 ADOPTION_REALIZATION_FAILED = "realization_failed"
 ADOPTION_MEASURED_REGRESSION = "measured_regression"
 ADOPTION_UNPROVEN = "benefit_unproven"
+#: Distinct from :data:`ADOPTION_UNPROVEN` because the benefit in that one
+#: cell was *improved* — what is missing is the evidence that the graph we
+#: applied is why. A receipt saying "benefit unproven" there would be false.
+ADOPTION_REALIZATION_UNAVAILABLE = "realization_unavailable"
 ADOPTION_UNPROVEN_BOOST = "unproven_boost_failed_closed"
 ADOPTION_RESTORE_FAILED = "restore_failed"
 ADOPTION_NO_ROLLBACK_ANCHOR = "restore_required_without_rollback_anchor"
@@ -702,7 +706,7 @@ _ADOPTION_TABLE: Mapping[
     ),
     (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED): (
         _Intent.UNPROVEN,
-        ADOPTION_UNPROVEN,
+        ADOPTION_REALIZATION_UNAVAILABLE,
     ),
     (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED): (
         _Intent.RESTORE,
