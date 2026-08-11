@@ -165,6 +165,23 @@ from jasper.active_speaker.crossover_v2.intervention import (
     plan_linearization,
     request_from_analysis,
 )
+from jasper.active_speaker.crossover_v2.journey import (
+    CAPTURE_PHASES,
+    GROUP_PHASES,
+    PHASE_APPLYING,
+    PHASE_CHECK,
+    PHASE_CLOSING,
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
+    PHASE_DONE,
+    PHASE_ENTRY_BASELINE,
+    PHASE_LATERAL,
+    PHASE_MEASURE,
+    PHASE_REVIEW,
+    PHASE_VERIFY,
+    CommissionJourney,
+    JourneyPlan,
+)
 from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
 )
@@ -213,86 +230,22 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
-# phase vocabulary
+# phase vocabulary — owned by crossover_v2.journey, imported at the top
 # --------------------------------------------------------------------------- #
-
-PHASE_CHECK = "check"
-PHASE_MEASURE = "measure"
-# The owner ruling (2026-07-20) removed the human mid-flow Apply gate: a
-# trusted candidate is applied by the CONDUCTOR itself, never by a household
-# tap. This phase now names the brief machine-paced window between "MEASURE
-# accepted" and "apply observed" — the phone sees it as the existing
-# CaptureBeginDeferred hold (now captioned "Applying…", not "waiting for the
-# household"), and the wizard shows a plain in-progress screen. It is still a
-# control-page phase (no capture index) between MEASURE-accepted and
-# VERIFY-armed.
-PHASE_APPLYING = "applying"
-PHASE_VERIFY = "verify"
-# The two POSITION-GROUP phases (flat-linearization PR-3b). Each spans MANY
-# capture-plan indexes — one prompted mic position per index — where every
-# other phase spans exactly one. CLOUD_MEASURE holds the pre-apply spatial
-# cloud (the N−1 summed sweeps that follow MEASURE's design-axis anchor);
-# CLOUD_VERIFY holds the post-apply one (the M−1 that follow VERIFY's
-# anchor). See ``CLOUD_POSITION_PROMPTS`` for the physics the prompts encode
-# and ``build_v2_cloud_index_phase_map`` for the index layout.
 #
-# These are CONDUCTOR phases, deliberately distinct from the EXCITATION
-# PROGRAM's own ``program.phase``: every cloud position plays the VERIFY-
-# shaped mono summed sweep (``phase="verify"``), so
-# ``program_analysis.analyze_program_capture`` routes it to ``_analyze_verify``
-# with no dispatch change and the conductor still knows which group the
-# capture belongs to. Do not conflate the two vocabularies.
-PHASE_CLOUD_MEASURE = "cloud_measure"
-PHASE_CLOUD_VERIFY = "cloud_verify"
-# R16 lateral evidence (plan §4.4). A position group like the two clouds, but
-# its captures replay the ANCHOR's per-driver MEASURE program rather than the
-# summed sweep, because §4.4's uses ("compare the woofer/HF relative falloff",
-# "predict each candidate's sum at all sampled positions") are per-driver claims
-# a summed curve cannot answer. So it is NOT in ``SUMMED_SWEEP_PHASES``: same
-# protected-neutral commissioning graph, same stimulus, same gains as MEASURE.
-PHASE_LATERAL = "lateral"
-# #2291's "before" measurement: ONE summed sweep at the design-axis mark, taken
-# as the last thing stage 1 does — immediately before the household applies.
+# The phase names, their canonical capture order (``CAPTURE_PHASES``) and which
+# of them are position groups (``GROUP_PHASES``) moved to
+# :mod:`jasper.active_speaker.crossover_v2.journey` in #2291 Phase 4: a journey
+# is made of them, and it cannot import this module (the strangler destination
+# does not import the monolith it replaces). They are re-exported from here —
+# the same objects, not copies — so every ``from ...crossover_v2_flow import
+# PHASE_CHECK`` keeps working, and ``__all__`` below still lists them.
 #
-# It exists because a round could not say whether the speaker got BETTER. The
-# 2026-08-10 jts3 round retained CHECK/MEASURE, the lateral walk, VERIFY, and
-# five post-apply cloud positions and still had no answer, because none of that
-# evidence was *the same summed acoustic question, at the same program and
-# level, at the same mark, before and after the graph change*. This phase is
-# that question's first half; stage 2's ``PHASE_VERIFY`` is its second.
-#
-# Membership in ``SUMMED_SWEEP_PHASES`` (below) is what makes the pair
-# comparable at all: it routes ``_program_for_phase`` to the very same
-# ``_verify_program`` object, so the two captures share a ``program_id`` — a
-# SHA-256 over the whole excitation schedule including every segment's gain —
-# and that equality IS the comparability check
-# :func:`jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
-# runs. It is deliberately NOT a ``GROUP_PHASES`` member: it is one capture at
-# one mark, not a walk.
-PHASE_ENTRY_BASELINE = "entry_baseline"
-# The two-stage commission flow's untimed INTERLUDE (work order D3, issue
-# #1806): a measure-only session has closed, a candidate exists, and NOTHING
-# has been applied — the household is being shown what was measured, what is
-# proposed, what is predicted, and the spec verdict, and is choosing. Like
-# PHASE_APPLYING and PHASE_DONE this is a control-page phase with no capture
-# index, and like them it is deliberately NOT in ``CAPTURE_PHASES``: no
-# excitation plays and no evidence is bound while it renders.
-#
-# It exists because ``_phase_from_state``'s walk resolved a measure-only
-# session to PHASE_DONE — the RESULT screen, "Your speaker is tuned" — over a
-# speaker that had been measured and not tuned at all (work order current-state
-# premise 6, a verified collision rather than a theoretical one).
-PHASE_REVIEW = "review"
-# The measuring session's own tail (two-stage work order D1): every stage-1
-# phase is accepted, and the pre-apply cloud's close has NOT produced a
-# candidate yet — either because the household has not confirmed on the phone,
-# or because the fit is running. Like PHASE_REVIEW it is a control-page phase
-# with no capture index, and it exists because without it those moments
-# resolved to PHASE_REVIEW: the wizard told a household mid-hold that the
-# measurement had produced nothing and offered to throw it away, while the
-# relay was still live and the phone was waiting for their tap.
-PHASE_CLOSING = "closing"
-PHASE_DONE = "done"
+# The phase-ADJACENT constants stay here with the concern that owns them:
+# ``_INDEX_PHASE`` and ``CAPTURE_PLAN_TARGET`` describe the relay capture plan,
+# ``SUMMED_SWEEP_PHASES`` selects an excitation program, and
+# ``PRE_CLOUD_CAPTURE_PHASES`` records what a session ran before the position
+# groups shipped. None of those answers "where is this round".
 
 # Where the pre-apply cloud's close has got to. Read by the wizard through
 # durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
@@ -335,32 +288,6 @@ CAPTURE_PLAN_TARGET = 3
 # exact same `max_attempts` on the wire. Changing it is a product decision
 # about retries, not a consequence of the relay's capacity.
 CAPTURE_PLAN_MAX_ATTEMPTS = 8
-
-# The capturing phases in CANONICAL ORDER — the ones bound to the relay
-# session's evidence and invalidated on a new session (§5.6). A given session
-# runs a SUBSET of these (a verify-only re-arm runs just ``PHASE_VERIFY``), so
-# ``CrossoverV2Conductor`` walks its own ``session_phases`` — the subset its
-# ``index_phase_map`` actually addresses, in this order — never this tuple
-# directly. Consumers that only have the persisted state read its
-# ``session_phases`` field and fall back to this tuple (see
-# ``jasper.web.correction_crossover_v2._phase_from_state``).
-CAPTURE_PHASES = (
-    PHASE_CHECK,
-    PHASE_MEASURE,
-    PHASE_LATERAL,
-    PHASE_CLOUD_MEASURE,
-    # LAST in stage 1, and so immediately before apply — that adjacency is the
-    # whole point of the entry baseline (#2291), not a layout preference: the
-    # less the room, the mic, and the household have moved between it and the
-    # graph change, the more of the before→after difference is the graph.
-    PHASE_ENTRY_BASELINE,
-    PHASE_VERIFY,
-    PHASE_CLOUD_VERIFY,
-)
-
-# The phases whose accepted-capture bookkeeping is PER INDEX rather than per
-# phase, because one phase spans many prompted positions.
-GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
 
 # What a session ran before the position groups shipped. Durable state written
 # then carries no ``session_phases`` field, and it came from a session that ran
@@ -6491,8 +6418,25 @@ class CrossoverV2Conductor:
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
         )
-        self._accepted = set(accepted_phases)
-        self._applied = bool(applied)
+        # Where this round is, and the walk it is somewhere in (#2291 Phase 4).
+        # ONE aggregate: the index map, the ordered phases, the group index
+        # spans, the accepted phases, the accepted indexes inside an open group,
+        # and the applied flag were six correlated fields here and could
+        # disagree. Every read below goes to ``self._journey`` — its frozen
+        # ``plan`` for the walk, its own methods for progress — and every write
+        # is one of its two transitions.
+        #
+        # The standard 3-entry session uses the default map; a verify-only
+        # re-arm session (§5.2 "Re-verify") maps its single entry
+        # {1: PHASE_VERIFY}.
+        self._journey = CommissionJourney(
+            JourneyPlan.from_index_map(
+                index_phase_map if index_phase_map is not None else _INDEX_PHASE,
+                post_apply_verifies=post_apply_verifies,
+            ),
+            accepted_phases=accepted_phases,
+            applied=applied,
+        )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         # CHECK's measured room floor, held from CHECK's accept until MEASURE
         # reads it in ``_measure_priors`` (issue #1830).
@@ -6513,61 +6457,13 @@ class CrossoverV2Conductor:
         # say something false. Pinned by
         # ``test_measure_priors_carry_no_ambient_when_check_never_ran``.
         self._check_ambient_report: dict[str, Any] | None = None
-        # Relay capture-plan index → phase. The standard 3-entry session uses
-        # the default; a verify-only re-arm session (§5.2 "Re-verify") maps its
-        # single entry {1: PHASE_VERIFY}.
-        self._index_phase_map = (
-            dict(index_phase_map) if index_phase_map is not None else dict(_INDEX_PHASE)
-        )
-        # The ordered phases THIS session runs, and — for the position groups —
-        # which indexes each spans. Both derive from the map above so a session
-        # can never walk a phase it has no capture for (the verify-only re-arm
-        # would otherwise sit forever "pending" on a cloud group it never runs).
-        present = set(self._index_phase_map.values())
-        self._phases = tuple(p for p in CAPTURE_PHASES if p in present)
-        # Whether the correction this session proposes will be MEASURED after
-        # it is applied — the boost-permission evidence gate (see the
-        # ``FitVocabulary`` construction in ``_build_candidate``).
-        #
-        # It used to be read straight off ``self._phases``, which was exact
-        # while one session carried both the fit and the post-apply sweep. The
-        # two-stage split (work order D2) moved the sweep into its OWN session,
-        # so a measuring conductor's phases correctly contain no VERIFY while
-        # the verification itself is very much still part of the journey —
-        # reading the phases alone would have silently demoted every two-stage
-        # correction to cut-only. The measuring host therefore DECLARES the
-        # answer from the plan shape it resolved (``verify_capture_target``),
-        # which keeps the gate a derivation rather than a constant: a future
-        # tier that declares no post-apply positions drops boost with them.
-        # ``None`` keeps the original phase-derived reading, so every other
-        # caller — the post-apply session, the recovery re-verify, the 3-entry
-        # shape, every test — is unchanged.
-        self._post_apply_verifies = (
-            PHASE_VERIFY in self._phases
-            if post_apply_verifies is None
-            else bool(post_apply_verifies)
-        )
-        self._group_indexes: dict[str, tuple[int, ...]] = {
-            phase: tuple(
-                sorted(i for i, p in self._index_phase_map.items() if p == phase)
-            )
-            for phase in self._phases
-            if phase in GROUP_PHASES
-        }
-        # Per-group progress. ``_accepted`` still holds PHASES (one entry per
-        # group, added when the group CLOSES); this holds the accepted indexes
-        # inside an open group, so accepting position 3 of 8 does not read as
-        # "the pre-apply cloud is done."
-        self._group_accepted: dict[str, set[int]] = {
-            phase: set() for phase in self._group_indexes
-        }
         # Retained per-position evidence, in capture order, keyed by group
         # phase. The ASSEMBLY SEAM for PR-4: this list is the input
         # ``combine_positions`` consumes, and PR-4 extends the pipeline that
         # reads it (nulls → spec → persistence) without changing what PR-3b
         # puts in it. Bounded by the plan's own entry count.
         self._group_positions: dict[str, list[_CloudPosition]] = {
-            phase: [] for phase in self._group_indexes
+            phase: [] for phase in self._journey.plan.group_indexes
         }
         # R16's lateral walk keeps its OWN retention rather than joining the
         # dict above, because a pose is per-driver evidence and a cloud position
@@ -6592,12 +6488,12 @@ class CrossoverV2Conductor:
         # pruning in the retry branch without checking that: the retake
         # normally arrives and overwrites the record anyway.
         self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
-            phase: {} for phase in self._group_indexes
+            phase: {} for phase in self._journey.plan.group_indexes
         }
         # Geometry-locked retakes already spent, per group — the bound behind
         # "up to GEOMETRY_RETRY_POSITIONS extra positions, ONCE".
         self._geometry_retries_used: dict[str, int] = {
-            phase: 0 for phase in self._group_indexes
+            phase: 0 for phase in self._journey.plan.group_indexes
         }
         # The group's closing geometry verdict, as a plain dict for the host to
         # persist/disclose. ``None`` until the group closes.
@@ -6673,7 +6569,7 @@ class CrossoverV2Conductor:
         # proceed without it (``_resolve_spent_slot``), so the group closes with
         # the positions it has instead of the session dying at the mic.
         self._group_unresolved: dict[str, dict[int, str]] = {
-            phase: {} for phase in self._group_indexes
+            phase: {} for phase in self._journey.plan.group_indexes
         }
         self._armed_index: int | None = None
         # The most recent authorized (index, attempt) — the host reads it to
@@ -7294,11 +7190,25 @@ class CrossoverV2Conductor:
         """
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
+    # --- journey delegation --------------------------------------------------
+
+    @property
+    def post_apply_verifies(self) -> bool:
+        """Will this session's correction be MEASURED after it is applied?
+
+        The boost-permission evidence gate (see the ``FitVocabulary``
+        construction in ``_build_candidate``): a round nobody will verify may
+        not put energy in. Public because it is a fact ABOUT the journey that
+        callers legitimately ask — tests reached the private field for it before
+        this property existed.
+        """
+        return self._journey.plan.post_apply_verifies
+
     # --- read surfaces -------------------------------------------------------
 
     @property
     def accepted_phases(self) -> frozenset[str]:
-        return frozenset(self._accepted)
+        return self._journey.accepted_phases
 
     @property
     def attempt_history(self) -> tuple[AttemptRecord, ...]:
@@ -7314,15 +7224,15 @@ class CrossoverV2Conductor:
         )
 
     def phase_status(self, phase: str) -> str:
-        return "accepted" if phase in self._accepted else "pending"
+        return self._journey.phase_status(phase)
 
     @property
     def session_phases(self) -> tuple[str, ...]:
         """The ordered phases this session runs (its ``index_phase_map``'s)."""
-        return self._phases
+        return self._journey.plan.phases
 
     def pending_phases(self) -> tuple[str, ...]:
-        return tuple(p for p in self._phases if p not in self._accepted)
+        return self._journey.pending_phases()
 
     def group_geometry(self, phase: str) -> dict[str, Any] | None:
         """The closing geometry verdict for one position group, or ``None``.
@@ -7419,19 +7329,7 @@ class CrossoverV2Conductor:
 
     @property
     def current_phase(self) -> str:
-        for phase in self._phases:
-            if phase not in self._accepted:
-                # Everything before VERIFY accepted but not yet applied ⇒ an
-                # apply is pending. RETAINED and unreached by any shipped
-                # session since the two-stage split (D10): stage 1 has no
-                # VERIFY in ``self._phases`` at all, and stage 2 is
-                # constructed ``applied=True``. The wizard's own resolution
-                # (``_phase_from_state``) is what routes those two shapes, to
-                # the review interlude and to PHASE_VERIFY respectively.
-                if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
-                    return PHASE_APPLYING
-                return phase
-        return PHASE_DONE
+        return self._journey.current_phase
 
     @property
     def candidate(self) -> Any:
@@ -7504,7 +7402,7 @@ class CrossoverV2Conductor:
 
     @property
     def applied(self) -> bool:
-        return self._applied
+        return self._journey.applied
 
     @property
     def measure_predicted_sum(self) -> Any:
@@ -7727,7 +7625,7 @@ class CrossoverV2Conductor:
         return self._armed_capture
 
     def _phase_of_index(self, index: int) -> str:
-        phase = self._index_phase_map.get(index)
+        phase = self._journey.plan.phase_for_index(index)
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
@@ -7755,7 +7653,7 @@ class CrossoverV2Conductor:
         than the table), but a defensive fallback keeps a prompt-less capture
         from being a crash rather than a retake.
         """
-        offsets = self._group_indexes.get(phase, ())
+        offsets = self._journey.plan.group_offsets(phase)
         try:
             position = offsets.index(index)
         except ValueError:
@@ -7810,29 +7708,29 @@ class CrossoverV2Conductor:
 
     def note_apply_complete(self) -> None:
         """The apply-complete host event — arms the soft-held VERIFY (§5.2)."""
-        self._applied = True
+        self._journey.mark_applied()
         log_event(
             logger, "correction.crossover_v2_apply_complete",
             session_id=self.session_id,
         )
 
     def _apply_observed(self) -> bool:
-        if self._applied:
+        if self._journey.applied:
             return True
         try:
             observed = bool(self._seams.apply_complete())
         except (OSError, RuntimeError, ValueError):
             observed = False
         if observed:
-            self._applied = True
+            self._journey.mark_applied()
         return observed
 
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
             session_id=self.session_id,
-            accepted_phases=tuple(p for p in CAPTURE_PHASES if p in self._accepted),
-            session_phases=self._phases,
-            applied=self._applied,
+            accepted_phases=self._journey.accepted_capture_phases(),
+            session_phases=self._journey.plan.phases,
+            applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             candidate_fingerprint=(
                 getattr(self._candidate, "fingerprint", None)
@@ -8038,7 +7936,7 @@ class CrossoverV2Conductor:
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
         """The state after an exhausted slot, derived from conductor state."""
-        if phase in self._group_indexes:
+        if self._journey.plan.is_group(phase):
             if index in self._group_unresolved[phase]:
                 return "This position was left out and the group continued."
             if index in self._retained_group_indexes(phase):
@@ -8128,7 +8026,7 @@ class CrossoverV2Conductor:
             # accepted MEASURE that a walk will follow — a rejected capture has
             # no evidence to adjudicate from, and a session with no walk has no
             # lateral robustness term and no close to adjudicate at.
-            if verdict.accepted and PHASE_LATERAL in self._phases:
+            if verdict.accepted and PHASE_LATERAL in self._journey.plan.phases:
                 self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
             verdict = self._consume_lateral_pose(index, attempt, analysis)
@@ -8287,7 +8185,7 @@ class CrossoverV2Conductor:
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
             )
-        if phase not in self._group_indexes:
+        if not self._journey.plan.is_group(phase):
             outcome = "phase_cannot_proceed"
             self._log_slot_spent(
                 phase, index, observed, outcome,
@@ -8318,10 +8216,7 @@ class CrossoverV2Conductor:
             # positions the household has not walked yet — never the count so
             # far, which would make the answer depend on walk order and end the
             # session at position 1 of 8 with seven good spots still ahead.
-            unwalked = [
-                other for other in self._group_indexes[phase]
-                if other != index and other not in self._group_accepted[phase]
-            ]
+            unwalked = self._journey.unresolved_in_group(phase, excluding=index)
             if len(retained) + len(unwalked) < self._group_position_floor(phase):
                 outcome = "below_position_floor"
                 self._log_slot_spent(
@@ -8401,7 +8296,7 @@ class CrossoverV2Conductor:
 
         Caller holds ``_close_lock``.
         """
-        if index == self._group_indexes[phase][-1]:
+        if self._journey.plan.is_last_index_of_group(phase, index):
             # R16: a dropped LAST pose must still close the walk, or a session
             # whose final capture could not be measured would end with no
             # candidate at all — the anchor's coefficients were never the poses'
@@ -8458,16 +8353,11 @@ class CrossoverV2Conductor:
         )
 
     def _note_accepted(self, phase: str, index: int) -> None:
-        # ``_group_accepted`` means RESOLVED, not "has a curve": a position the
-        # flow gave up on (``_group_unresolved``) lands here too, because the
-        # relay advanced past it and the phase would otherwise never close.
-        # ``_group_positions`` remains the sole record of what was measured.
-        if phase not in self._group_indexes:
-            self._accepted.add(phase)
-            return
-        self._group_accepted[phase].add(index)
-        if self._group_accepted[phase] >= set(self._group_indexes[phase]):
-            self._accepted.add(phase)
+        # The journey's group-close rule: a position the flow gave up on
+        # (``_group_unresolved``) counts as resolved too, because the relay
+        # advanced past it and the phase would otherwise never close.
+        # ``_group_positions`` remains the sole record of what was MEASURED.
+        self._journey.accept(phase, index)
 
     # --- per-phase verdicts --------------------------------------------------
     #
@@ -8767,7 +8657,7 @@ class CrossoverV2Conductor:
         # that predates five minutes of evidence the household was just asked to
         # produce — the exact defect the 2026-07-27 decision removed for the
         # cloud. The lateral group's last accepted pose closes it instead.
-        if PHASE_CLOUD_MEASURE in self._phases or PHASE_LATERAL in self._phases:
+        if PHASE_CLOUD_MEASURE in self._journey.plan.phases or PHASE_LATERAL in self._journey.plan.phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         # The pre-cloud 3-entry shape, which NO production caller constructs
@@ -8885,7 +8775,7 @@ class CrossoverV2Conductor:
                 key=lambda p: p.index,
             )
             payload: dict[str, Any] = {"position_id": pose.pose_id}
-            if index == self._group_indexes[PHASE_LATERAL][-1]:
+            if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())
             return PhaseVerdict(True, payload=payload)
 
@@ -8923,7 +8813,7 @@ class CrossoverV2Conductor:
         log_event(
             logger, "correction.crossover_v2_lateral_walk_closed",
             session_id=self.session_id,
-            planned=len(self._group_indexes[PHASE_LATERAL]),
+            planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
             captured=len(self._lateral_poses),
             mark_return_drift_db=self.lateral_mark_return_drift_db(),
         )
@@ -9394,7 +9284,7 @@ class CrossoverV2Conductor:
         # with the re-stash.
         with self._close_lock:
             self._retain_cloud_position(phase, position, analysis, result)
-            if index != self._group_indexes[phase][-1]:
+            if not self._journey.plan.is_last_index_of_group(phase, index):
                 return PhaseVerdict(
                     True, payload={"position_id": position.position_id}
                 )
@@ -11945,7 +11835,7 @@ class CrossoverV2Conductor:
         # recovery for a round that went on to succeed. A session that ends on
         # a terminal rejection writes no round receipt, which is the honest
         # record: its post-apply evidence never completed.
-        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._phases:
+        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._journey.plan.phases:
             return self._grade_round_once(verdict)
         return verdict
 
@@ -13267,8 +13157,8 @@ class CrossoverV2Conductor:
             # tells "no cloud by design" (R15's driver-only path) apart from
             # "a cloud was planned and lost". Both are the host's to answer —
             # the planner cannot see a session's phase list.
-            post_apply_verifies=self._post_apply_verifies,
-            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._phases,
+            post_apply_verifies=self.post_apply_verifies,
+            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             cloud=cloud,
         )
         plan = plan_linearization(request, journal=self._journal_linearization)
@@ -14345,6 +14235,13 @@ __all__ = [
     "PHASE_APPLYING",
     "PHASE_VERIFY",
     "PHASE_DONE",
+    # Control-page phases this module never evaluates itself, but re-exports
+    # for ``crossover_envelope_v2`` and the web host, which both resolve a
+    # persisted state to one of them. Listed here since #2291 Phase 4 moved the
+    # vocabulary to ``crossover_v2.journey``: naming them is what says the
+    # pass-through is deliberate rather than a stray import.
+    "PHASE_REVIEW",
+    "PHASE_CLOSING",
     "PHASE_LATERAL",
     "LATERAL_POSE_PROMPTS",
     "LATERAL_EVIDENCE_BAND_HZ",

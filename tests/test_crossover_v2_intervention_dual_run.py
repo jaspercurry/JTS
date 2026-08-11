@@ -154,8 +154,8 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
             conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
         },
         driver_class_by_role=conductor._driver_class_by_role,
-        post_apply_verifies=conductor._post_apply_verifies,
-        cloud_phase_planned=flow.PHASE_CLOUD_MEASURE in conductor._phases,
+        post_apply_verifies=conductor.post_apply_verifies,
+        cloud_phase_planned=flow.PHASE_CLOUD_MEASURE in conductor.session_phases,
         cloud=None,
     )
 

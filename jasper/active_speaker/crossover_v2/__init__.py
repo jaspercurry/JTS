@@ -2,23 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Crossover-v2 domain contracts and the planner facade over them (#2291).
+"""Crossover-v2 domain modules for the intervention loop (#2291).
 
-The strangler destination package for the v2 intervention loop.  Phase 1 ships
-two modules:
+The strangler destination package.  Each module arrived with the phase that
+needed it — the issue is explicit that its target diagram is not a scaffolding
+order — so this list is what exists, not a plan:
 
 * :mod:`.contracts` — the immutable domain values (candidate acoustic context,
   intervention proposal, plan refusal, verification result, adoption decision,
   round receipt) with their construction-time invariants and fingerprints.
 * :mod:`.planner_facade` — assembles a proposal from the existing conductor's
   candidate output, computing nothing of its own.
+* :mod:`.intervention` — the side-effect-free prescription planner.
+* :mod:`.verification` — realization / benefit / spec grading and the adoption
+  decision over them.
+* :mod:`.round_evidence` — the two measurements a round compares, reduced.
+* :mod:`.journey` — the phase walk, its transitions, and the stage capability
+  declarations.
+
+Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
+rest are imported by module path, which is also what keeps a caller that wants
+one of them from paying for all of them.
 
 Dependency direction: this package imports no ``jasper.web`` and nothing from
 :mod:`jasper.active_speaker.crossover_v2_flow`.  The flow imports these
-contracts; the reverse import is what the migration exists to prevent.  The
-remaining modules in #2291's target layout (capture plan, spatial, intervention,
-verification, journey, host) arrive with the phase that needs them — the issue
-is explicit that the diagram is not a scaffolding order.
+modules; the reverse import is what the migration exists to prevent.  Pinned by
+``test_crossover_v2_journey.test_no_domain_module_imports_the_host_or_the_legacy_flow``,
+which walks every module here.
 """
 
 from __future__ import annotations

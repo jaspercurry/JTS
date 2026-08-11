@@ -188,9 +188,10 @@ def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
 
 
 def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure():
-    """The fit-timing deferral keys off ``PHASE_LATERAL in self._phases``, so a
-    session built WITHOUT the walk keeps MEASURE as the last capture before the
-    apply — and R17's sweep, which fires on the same condition, does not run.
+    """The fit-timing deferral keys off ``PHASE_LATERAL`` being in the journey's
+    walk, so a session built WITHOUT the walk keeps MEASURE as the last capture
+    before the apply — and R17's sweep, which fires on the same condition, does
+    not run.
 
     ``include_lateral=False`` is written out rather than read off
     ``STAGE1_INCLUDES_LATERAL``: this pins the no-walk SHAPE, which stays a
@@ -207,7 +208,7 @@ def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure(
             include_lateral=False,
         ),
     )
-    assert PHASE_LATERAL not in c._group_indexes
+    assert PHASE_LATERAL not in c.session_phases
     _run_phase(c, 1, 1)
     accepted = _run_phase(c, 2, 1)
     assert "candidate_fingerprint" in accepted
