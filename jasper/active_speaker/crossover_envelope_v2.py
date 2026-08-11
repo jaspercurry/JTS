@@ -66,6 +66,7 @@ from .crossover_v2_flow import (
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
+    PHASE_ENTRY_BASELINE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_LATERAL,
@@ -163,6 +164,12 @@ _PHASE_STEP = {
     # phase falls back to ``microphone_check``, and the REJECTION screens use
     # this as their step (silent-auto-retry, as their SCREEN).
     PHASE_LATERAL: "measure",
+    # #2291's entry baseline is the LAST thing stage 1 measures, and it is still
+    # measuring: nothing has been applied and the apply decision has not been
+    # put to the household yet. Registered rather than left to the unmapped
+    # fallback, which is ``microphone_check`` — the stepper would walk BACKWARDS
+    # to step 1 on the final capture of the session.
+    PHASE_ENTRY_BASELINE: "measure",
     # The review interlude sits on the APPLY step: measuring is finished and
     # what the household is now doing IS the apply decision (two-stage D3).
     # It shares the step with PHASE_APPLYING deliberately — the stepper tracks
@@ -2893,6 +2900,22 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "then back on it — follow the prompts on the measurement page. "
                 "Moving the microphone is what shows how the speaker's drivers "
                 "hand over to each other away from the middle."
+            ),
+            next_action=None,
+            status=status,
+        )
+    elif phase == PHASE_ENTRY_BASELINE:
+        # #2291's "before" capture. Same screen and step as the three above —
+        # the household is still measuring — with copy that says the two things
+        # the neighbours' copy would get wrong: they are BACK on the mark and
+        # holding still again (the lateral walk just had them moving), and this
+        # recording is what the tuning gets compared against afterwards.
+        env = _envelope(
+            screen="measure", active_step="measure",
+            verdict=(
+                "One last measurement, back on the mark and held still — this "
+                "is how your speaker sounds now, so JTS can tell you whether "
+                "the tuning actually improved it."
             ),
             next_action=None,
             status=status,

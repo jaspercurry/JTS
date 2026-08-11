@@ -1394,12 +1394,14 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     """
     info = flow.tier_display_info()
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # DERIVED from the two flags rather than hardcoded, so the chooser is
-    # pinned to whatever stage 1 actually runs. R16's walk is off until R17
-    # lands (see STAGE1_INCLUDES_LATERAL), so today this is 2; the day it
-    # flips, this test moves with it instead of going stale.
-    expected_stage1 = 2 + (
-        len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0
+    # DERIVED from the three stage-1 flags rather than hardcoded, so the
+    # chooser is pinned to whatever stage 1 actually runs and this test moves
+    # with a flag flip instead of going stale. R17's walk is on and #2291's
+    # entry baseline is on, so today this is 9.
+    expected_stage1 = (
+        2
+        + (len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0)
+        + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     )
     # The tiers genuinely no longer differ in stage 1 — so the numbers must not
     # imply that they do. (The lateral walk would not change that: it is the
@@ -5644,6 +5646,7 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
                 roles, fc_hz, plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
                 include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
             minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
@@ -6254,7 +6257,14 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     coupled: PR-3a sized ``MAX_CAPTURE_PLAN_ATTEMPTS`` from PR-3b's declared
     maxima, so raising a cloud constant past what the relay can carry must fail
     here — hardware-free — rather than stranding an operator on a refused blob
-    index at position 20."""
+    index at position 20.
+
+    The worst case is the WHOLE journey's draw and it is now EXACTLY at the
+    ceiling — 32 of 32 — which is why ``MAX_CLOUD_MEASURE_POSITIONS`` came down
+    to 11 when #2291 added a stage-1 entry (see that constant's own arithmetic).
+    The equality is asserted rather than the inequality alone: at zero headroom
+    the next entry anyone adds must be a deliberate decision about what to spend
+    it out of, not a test that quietly still passes."""
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
     assert_cloud_plan_fits_relay_capacity()
@@ -6270,15 +6280,20 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         + DEFAULT_CLOUD_VERIFY_POSITIONS
         + GEOMETRY_RETRY_POSITIONS
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert worst_entries == 19
+    assert worst_entries == 18
     assert (
         cloud_plan_max_attempts(
             cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
             cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
         )
-        == 26
+        == 25
         <= MAX_CAPTURE_PLAN_ATTEMPTS
     )
+    # …and the two stage-1 groups the cloud arithmetic above does not count.
+    assert flow.relay_plan_attempts_required(
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    ) == MAX_CAPTURE_PLAN_ATTEMPTS == 32
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
@@ -6312,10 +6327,12 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
-    # 1800 + (13 - 3) * 120 = 3000 s: the biggest stage-1 plan no longer
-    # reaches the hard cap, so the cap is exercised on a plan long enough to
-    # need it rather than left unpinned.
-    assert session_wall_clock_ceiling_s(biggest) == 3000.0
+    # 1800 + (12 - 3) * 120 = 2880 s: the biggest CLOUD-configured stage-1 plan
+    # does not reach the hard cap, so the cap is exercised on a plan long enough
+    # to need it (the synthetic 100 below) rather than left unpinned. 12, down
+    # from 13, because #2291's stage-1 entry brought
+    # ``MAX_CLOUD_MEASURE_POSITIONS`` to 11 — see that constant's arithmetic.
+    assert session_wall_clock_ceiling_s(biggest) == 2880.0
     assert MAX_WALL_CLOCK_CEILING_S == 3600.0
     assert session_wall_clock_ceiling_s(
         types.SimpleNamespace(capture_target=100)

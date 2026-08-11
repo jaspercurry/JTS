@@ -2201,6 +2201,51 @@ def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, Mapping) else None
 
 
+def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
+    """The conductor's entry baseline as durable state carries it (#2291).
+
+    ``getattr`` plus a duck-typed ``to_dict`` for :func:`_predicted_spec_prior`'s
+    reason: this persistence helper is called with conductor doubles that carry
+    only the surfaces a given test exercises, and a missing property must read
+    as "no baseline", not raise mid-persist and lose the whole snapshot.
+    """
+    baseline = getattr(conductor, "measure_entry_baseline", None)
+    to_dict = getattr(baseline, "to_dict", None)
+    if not callable(to_dict):
+        return None
+    record = to_dict()
+    return dict(record) if isinstance(record, Mapping) else None
+
+
+def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """The stage-1 entry baseline, as the conductor's ctor takes it (#2291).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.entry_baseline`` and the exact mirror of
+    :func:`commanded_delta_prior_from_state` below: durable state in, the
+    ``measure_entry_baseline`` argument out. Named and module-level for the
+    same reason — the seeding PATH is then drivable in a test without a relay.
+
+    Returns an
+    :class:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline`
+    or ``None``. ``None`` is
+    :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_BASELINE_UNAVAILABLE`,
+    which is INDETERMINATE and **not** a pass, and it covers the honest cases
+    that mean one thing to the round — there is no comparable before: a state
+    file written before this key shipped, a stage 1 whose baseline capture
+    never landed, and a truncated or hand-edited record. Which of those it was
+    is not recoverable from the file and the round does not branch on it.
+
+    Shape validation belongs to ``EntryBaseline.from_dict``, which owns the
+    "length-agreeing curve and mask, or nothing" rule.
+    """
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    priors = (state or {}).get("verify_priors")
+    record = priors.get("entry_baseline") if isinstance(priors, Mapping) else None
+    return EntryBaseline.from_dict(record)
+
+
 def pilot_transfer_prior_from_state(
     state: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -2859,6 +2904,26 @@ def persist_conductor_state(
             "commanded_delta": _decimate_delta(
                 getattr(conductor, "measure_commanded_delta", None)
             ),
+            # #2291's measured "before": the summed capture stage 1 takes at
+            # the mark immediately before apply, which stage 2's benefit
+            # verdict differences its own capture against. Produced in one
+            # process and graded in another, so — exactly like
+            # ``predicted_sum`` and ``commanded_delta`` above — this durable
+            # state is the only channel it has.
+            #
+            # Already bounded: the record's curve is reduced to
+            # ``round_evidence.BENEFIT_CURVE_MAX_BINS`` (the same 512
+            # ``_decimate_sum`` applies) at capture time, on BOTH sides of the
+            # comparison, so no decimation belongs here — re-gridding one side
+            # after the fact is how a grid mismatch gets manufactured.
+            #
+            # Read through ``getattr`` for ``_predicted_spec_prior``'s reason,
+            # and ``to_dict`` behind a type check for the same one: a duck-typed
+            # conductor without the property, or with something that is not an
+            # ``EntryBaseline``, means "no baseline" — which is what the key's
+            # own absence already means downstream — never a raise that loses
+            # the whole snapshot.
+            "entry_baseline": _entry_baseline_prior(conductor),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference, DATED — history, not a
             # comparator (#1927). ``prepare_v2_verify`` hands it to the next
@@ -2918,6 +2983,25 @@ def persist_conductor_state(
         )
         if isinstance(prior_reference, Mapping):
             state["verify_priors"]["pilot_transfer_reference"] = dict(prior_reference)
+    # #2291's entry baseline needs NO carry-forward, and that is worth stating
+    # because its immediate neighbour above needs one. The difference is where
+    # the fact lives. ``pilot_transfer_reference`` is seeded into the conductor
+    # as history it may only DISCLOSE (#1927) and is not what
+    # ``verify_pilot_transfer_reference`` reports, so a re-arm's own persist
+    # really would blank it. The entry baseline is seeded into the SAME field
+    # its own capture writes (``measure_entry_baseline``) — exactly like
+    # ``predicted_sum`` and ``commanded_delta``, neither of which carries
+    # forward either — so a stage-2 persist re-writes the record its conductor
+    # was constructed with.
+    #
+    # Mutation-verified rather than argued (2026-08-11): a carry-forward branch
+    # was written here first, and deleting it changed no test outcome, because
+    # no path reaches it. Keeping it would have been a branch nothing can
+    # distinguish, and it would have weakened the real pin — that a MEASURING
+    # session replaces the previous round's "before" instead of letting this
+    # round's "after" be differenced against a stale one, which is exactly the
+    # false comparison #2291 exists to stop.
+    #
     # The applied flag is host-durable (set by the apply endpoint) — never
     # regressed by a conductor snapshot that predates it.
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
@@ -5942,6 +6026,7 @@ CAPABILITY_FINDINGS = "findings"
 CAPABILITY_ROLLBACK = "rollback"
 CAPABILITY_COMMANDED_DELTA = "commanded_delta"
 CAPABILITY_PREDICTED_SUM = "predicted_sum"
+CAPABILITY_ENTRY_BASELINE = "entry_baseline"
 
 
 @dataclass(frozen=True)
@@ -5990,12 +6075,52 @@ STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
 #: non-matched verdicts: a conductor without the seam still refuses, but under
 #: ``REASON_CORRECTION_ROLLBACK_FAILED``, whose copy tells the household the
 #: correction is STILL APPLIED. Requires the two stage-1 curves the probe and
-#: the tracking check grade against.
+#: the tracking check grade against, plus #2291's entry baseline — the measured
+#: "before" this stage's benefit verdict differences its own capture against.
+#: Without it the round can still say the graph did what it commanded; it
+#: cannot say the speaker got better, which is the question the issue exists
+#: for, so its absence must reach the journal rather than pass unremarked.
 STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
     stage="verify",
     provides=frozenset({CAPABILITY_ROLLBACK}),
-    requires=frozenset({CAPABILITY_COMMANDED_DELTA, CAPABILITY_PREDICTED_SUM}),
+    requires=frozenset({
+        CAPABILITY_COMMANDED_DELTA,
+        CAPABILITY_PREDICTED_SUM,
+        CAPABILITY_ENTRY_BASELINE,
+    }),
 )
+
+
+def _active_graph_fingerprint() -> str:
+    """Identity of the Layer-A profile currently on the speaker, or ``""``.
+
+    The conductor's ``entry_graph_fingerprint`` seam (#2291): which DSP graph
+    the entry baseline was measured through, so a receipt can say what the
+    "before" was a before OF.
+
+    **Reuses the existing owner rather than hashing anything here.**
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
+    returns the frozen applied SSOT with its ``candidate_fingerprint``
+    *recomputed* from the immutable source + snapshot by
+    :func:`~jasper.active_speaker.baseline_profile.baseline_candidate_fingerprint`
+    — that repair is why this reads the stored field instead of re-deriving it:
+    the loader has already refused to trust a stale or absent stamp. One hash
+    function, one definition of "which graph".
+
+    ``""`` for a speaker with no applied profile — its first-ever round, where
+    the entry graph genuinely has no identity to name. The conductor turns that
+    into its own ``unknown`` word; this function does not invent one, because
+    "the loader found nothing" and "the conductor has no seam" are the same
+    answer to the round and should not become two vocabularies.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+
+    applied = load_applied_baseline_profile_state()
+    if not isinstance(applied, Mapping):
+        return ""
+    return str(applied.get("candidate_fingerprint") or "")
 
 
 def bind_v2_stage_seams(
@@ -6080,6 +6205,10 @@ def bind_v2_stage_seams(
         ),
         applied_offset_db=_applied_offset_gate,
         record_model_error=_record_live_model_error,
+        # Unconditional on both stages: "which graph is live right now" is not
+        # a stage asymmetry, and #2291's receipt is what lets a LATER round
+        # bind the currently-active profile as its own entry graph.
+        entry_graph_fingerprint=_active_graph_fingerprint,
     )
 
 
@@ -6111,6 +6240,7 @@ def prepare_v2_session(
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_ENTRY_BASELINE,
         STAGE1_INCLUDES_LATERAL,
         CrossoverV2Conductor,
         CrossoverV2FlowError,
@@ -6157,6 +6287,11 @@ def prepare_v2_session(
     # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
     # spec and the conductor's index map below are built from ONE decision.
     include_lateral = STAGE1_INCLUDES_LATERAL
+    # #2291's entry baseline. Same reason, same place: the emitted plan and the
+    # conductor's index→phase map are two surfaces that must agree about which
+    # captures this session runs, and reading the flag twice is how they get to
+    # disagree.
+    include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
@@ -6199,6 +6334,7 @@ def prepare_v2_session(
             plan_shape=plan_shape,
             include_cloud_measure=include_cloud_measure,
             include_lateral=include_lateral,
+            include_entry_baseline=include_entry_baseline,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -6267,6 +6403,7 @@ def prepare_v2_session(
                 plan_shape=plan_shape,
                 include_cloud_measure=include_cloud_measure,
                 include_lateral=include_lateral,
+                include_entry_baseline=include_entry_baseline,
             ),
             # The boost-permission evidence gate (work order D2's consequence).
             # This session's own phases carry no VERIFY — the post-apply sweep
@@ -6445,6 +6582,14 @@ def prepare_v2_verify(
     # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
     # permission granted either.
     commanded_delta = commanded_delta_prior_from_state(state)
+    # #2291's measured "before", rehydrated. Stage 2 never captures one — its
+    # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
+    # baseline has to precede the apply this stage is verifying — so this is
+    # the only way the benefit verdict gets a side to compare against. ``None``
+    # stays ``entry_baseline_unavailable``: INDETERMINATE, never a pass, and
+    # declared to the capability journal below so the verdict's reason is not
+    # the first place anyone learns it was missing.
+    entry_baseline = entry_baseline_prior_from_state(state)
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -6533,6 +6678,7 @@ def prepare_v2_verify(
                     for slug, present in (
                         (CAPABILITY_COMMANDED_DELTA, commanded_delta is not None),
                         (CAPABILITY_PREDICTED_SUM, predicted_sum is not None),
+                        (CAPABILITY_ENTRY_BASELINE, entry_baseline is not None),
                     )
                     if present
                 ),
@@ -6548,6 +6694,7 @@ def prepare_v2_verify(
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_commanded_delta=commanded_delta,
+            measure_entry_baseline=entry_baseline,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),

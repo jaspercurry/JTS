@@ -127,44 +127,52 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
 
 def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
     """R17 flipped ``STAGE1_INCLUDES_LATERAL``, so a household now walks the
-    six poses after the anchor. Same guard as the dormancy pin it replaces, one
-    state over: the shape is written out INDEPENDENTLY of the flag, so a build
-    that flipped the flag and also changed the shape some other way still
-    fails. (The retired assertion was ``… is False`` over a 794-byte plan.)
+    six poses after the anchor; #2291 added one held-still capture at the mark
+    after them. Same guard as the dormancy pin it replaces, one state over: the
+    shape is written out INDEPENDENTLY of the flags, so a build that flipped a
+    flag and also changed the shape some other way still fails. (The retired
+    assertion was ``… is False`` over a 794-byte plan.)
     """
     assert flow.STAGE1_INCLUDES_LATERAL is True
+    assert flow.STAGE1_INCLUDES_ENTRY_BASELINE is True
 
     index_phase = build_v2_cloud_index_phase_map(
         tier="full",
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     plan = build_v2_capture_plan(
         _roles(), FC_HZ, tier="full",
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
-    # Stage 1 with the walk on, stated in full: the anchor pair, then one entry
-    # per prompted pose. The pre-apply cloud stays off — a separate flag, and
-    # R17 did not authorize it.
+    # Stage 1 stated in full: the anchor pair, one entry per prompted pose, and
+    # #2291's entry baseline LAST — the capture immediately before apply, which
+    # is the whole reason it is at the end rather than anywhere else. The
+    # pre-apply cloud stays off — a separate flag, and R17 did not authorize it.
     poses = len(flow.LATERAL_POSE_PROMPTS)
-    assert index_phase == {1: PHASE_CHECK, 2: PHASE_MEASURE} | {
-        index: PHASE_LATERAL for index in range(3, 3 + poses)
-    }
+    assert index_phase == (
+        {1: PHASE_CHECK, 2: PHASE_MEASURE}
+        | {index: PHASE_LATERAL for index in range(3, 3 + poses)}
+        | {3 + poses: flow.PHASE_ENTRY_BASELINE}
+    )
     assert [e.kind_label for e in plan.entries] == [
-        "check", "measure", *["lateral"] * poses,
+        "check", "measure", *["lateral"] * poses, "entry_baseline",
     ]
-    assert plan.capture_target == 2 + poses
-    assert plan.max_attempts == 2 + poses + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 2 + poses
+    assert plan.capture_target == 3 + poses
+    assert plan.max_attempts == 3 + poses + flow.CLOUD_RETAKE_ALLOWANCE
+    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3 + poses
 
     # The walk reaches the wire, and its bytes are pinned exactly as the
     # dormant shape's were — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
     assert b"lateral" in raw
+    assert b"entry_baseline" in raw
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        2379, "72bff8bad69cf9e95d6f12435c36a1a6285d229b2a408aa97d4684220e1401a3",
+        2692, "7737d2b3cecd04bae6c43aa40f872da0617d86319a0544d431558df8ce9c8940",
     ), "the shipped stage-1 plan's wire bytes moved"
 
     # …and the consent screen now tells the household they will be walked,
@@ -173,6 +181,7 @@ def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
         _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     notes = [c["text"] for c in spec.screen if c["type"] == "note"]
     assert any("of the mark" in note for note in notes)

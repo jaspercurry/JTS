@@ -3086,6 +3086,8 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     just-closed relay spends winding down, exactly as T2 predicted.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        MAX_CLOUD_MEASURE_POSITIONS,
+        MIN_CLOUD_MEASURE_POSITIONS,
         TIER_EXPRESS,
         TIER_FULL,
         build_v2_cloud_index_phase_map,
@@ -3102,7 +3104,15 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
         )
         assert stage2[1] == PHASE_VERIFY, tier
         assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, tier
-    for n, m in ((6, 5), (12, 5), (6, 12), (12, 12), (9, 6)):
+    # The corners of the configurable (N, M) space plus the shipped default.
+    # N is DERIVED from its own two bounds rather than written out: the upper
+    # one moved (12 -> 11) when #2291's entry baseline took a relay blob index,
+    # and a literal here would have made this test fail for the wrong reason
+    # instead of following the constant it is exercising the extremes of.
+    _n_lo, _n_hi = MIN_CLOUD_MEASURE_POSITIONS, MAX_CLOUD_MEASURE_POSITIONS
+    for n, m in (
+        (_n_lo, 5), (_n_hi, 5), (_n_lo, 12), (_n_hi, 12), (9, 6),
+    ):
         shape = resolve_plan_shape(
             cloud_measure_positions=n, cloud_verify_positions=m,
         )

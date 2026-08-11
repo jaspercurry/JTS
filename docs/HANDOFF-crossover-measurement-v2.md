@@ -612,10 +612,12 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — 8 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
-(R17's Fc selector flipped it, #2173) and `STAGE1_INCLUDES_CLOUD_MEASURE` stays
-`False` (R15, #2106), so a shipped session runs the anchor pair and then the
-lateral walk, and emits no `cloud_measure` phase or prompt. Production passes
+**Stage 1 — 9 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
+(R17's Fc selector flipped it, #2173), `STAGE1_INCLUDES_ENTRY_BASELINE` is
+`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` stays `False`
+(R15, #2106), so a shipped session runs the anchor pair, then the lateral walk,
+then one summed capture back at the mark, and emits no `cloud_measure` phase or
+prompt. Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
@@ -636,6 +638,7 @@ hard floor**.
 | 1 | `check` | tap | microphone check |
 | 2 | `measure` | tap | design-axis anchor, per-driver |
 | 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) |
+| 9 | `entry_baseline` | tap | summed sweep at the mark, the round's measured "before" (#2291) |
 
 The walk is the mark, ±12 cm and ±40 cm left/right, and a return to the mark.
 Four things about it are load-bearing and easy to undo by accident:
@@ -1339,9 +1342,12 @@ grade the curve). The `review` screen below renders it.
 **The stage bridge.** Stage 1 and stage 2 are two relay sessions with two
 conductors and nothing shared in memory, so `verify_priors` — written by
 `persist_conductor_state`, read by `prepare_v2_verify` — is the *only* channel
-between them. It carries five keys: `predicted_sum`, `predicted_spec`,
-`gate_window_ms`, `pilot_transfer_reference`, and (since #2291 Phase 3a)
-`commanded_delta`, the delta probe's commanded axis. Before Phase 3a that fifth
+between them. It carries six keys: `predicted_sum`, `predicted_spec`,
+`gate_window_ms`, `pilot_transfer_reference`, (since #2291 Phase 3a)
+`commanded_delta`, the delta probe's commanded axis, and (since #2291 Phase 3c)
+`entry_baseline`, the summed at-the-mark capture stage 1 takes immediately
+before apply so stage 2 has a measured "before" to grade its "after" against.
+Before Phase 3a that fifth
 curve was produced in stage 1 and consumed in stage 2 with no key to travel in,
 so every shipped stage 2 reported the probe `unavailable` — grading a correction
 with the shortfall-vs-model-error discriminator switched off. It is reduced to
