@@ -112,6 +112,7 @@ __all__ = [
     "LinearizationPlan",
     "LinearizationRequest",
     "PlannerError",
+    "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
     "TrimDecision",
     "compose_sigma_db",
@@ -120,6 +121,7 @@ __all__ = [
     "measure_validity_floor_hz",
     "plan_linearization",
     "realized_level_match",
+    "request_from_analysis",
     "rounded_band_hz",
 ]
 
