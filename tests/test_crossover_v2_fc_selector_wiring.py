@@ -25,6 +25,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_complex,
 )
+from jasper.active_speaker.crossover_v2 import fc_sweep
 from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
 # From the kernel that OWNS them rather than through the flow's namespace: the
 # flow stopped reading these when #2291 Phase 5a-v(b) moved the sweep, and
@@ -757,6 +758,111 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         assert PHASE_MEASURE in c.accepted_phases, broken
         # …and the sweep declined cleanly rather than half-populating.
         assert c._fc_evaluations == (), broken
+
+
+def _sweep_ports(**overrides):
+    """Minimal working ports for :func:`fc_sweep.sweep_candidates`.
+
+    Direct on the organ rather than through a conductor: the subject is the
+    guard, and a fixture that has to fit a real fit engine cannot make a
+    *logging* port fail on demand.
+    """
+    ports = {
+        "evaluate": lambda fc, anchor, program, result: fc_sweep.refusal(
+            fc, "evaluation_invalid",
+        ),
+        "candidate_set_of": lambda: fc_sweep.FcCandidateSet(
+            configured_hz=FC_HZ, candidates=(FC_HZ, 1700.0),
+            rejected=(), limits={"declared_floor_hz": 300.0},
+        ),
+        "budget_s_of": lambda: 70.0,
+        "journal": lambda record: None,
+        "configured_fc_hz": FC_HZ,
+        "protection_declared": True,
+    }
+    ports.update(overrides)
+    return ports
+
+
+def test_a_logging_port_out_of_disk_refuses_the_candidate_instead_of_escaping():
+    """``OSError`` is in the caught set, and it has to be.
+
+    The ``journal`` port is a LOGGING delegate, and a handler with nowhere to
+    write raises ``OSError`` — the ENOSPC shape. The pre-extraction tuple did
+    not carry it, so a full disk turned the one advisory that is supposed to be
+    unable to cost a household anything into the thing that failed their
+    completed MEASURE. Both sibling port guards in this package
+    (``intervention._PORT_ERRORS``, ``coordinator._SEAM_ERRORS``) already
+    carried it; this is the third.
+
+    Asserted at BOTH sites the port is called from inside the loop — the
+    per-candidate refusal line and the evaluation itself — because a set that
+    covered only one of them would look right from either test alone.
+    """
+    # (a) the per-candidate disclosure raises.
+    def out_of_disk(record):
+        if record.event == fc_sweep.EVENT_CANDIDATE_REFUSED:
+            raise OSError(28, "No space left on device")
+
+    def boom(fc, anchor, program, result):
+        raise ValueError("forced candidate failure")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(evaluate=boom, journal=out_of_disk),
+    )
+    # The candidate-refusal line could not be said, so the whole advisory
+    # declined — but it declined, it did not escape.
+    assert got == ()
+
+    # (b) the evaluation itself raises OSError.
+    def evaluate_out_of_disk(fc, anchor, program, result):
+        raise OSError(28, "No space left on device")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(evaluate=evaluate_out_of_disk),
+    )
+    assert [e.refusal for e in got] == [EVAL_REFUSED_UNFITTABLE] * 2, (
+        "an OSError candidate must be refused per-candidate, not end the sweep"
+    )
+
+
+def test_a_journal_that_fails_inside_the_handler_does_not_double_fault():
+    """The #2313 SF1 shape: the handler's own disclosure goes through the port
+    that may be exactly what just failed.
+
+    Unguarded, a journal raising in the refusal arm replaces a CONTAINED
+    advisory failure with an escaping one — the household loses the completed
+    MEASURE to the second fault rather than the first. There is nowhere left to
+    report the loss to, so it is swallowed; what must survive is the return.
+    """
+    def always_fails(record):
+        raise OSError(28, "No space left on device")
+
+    def broken_set():
+        raise ValueError("forced candidate-set failure")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(candidate_set_of=broken_set, journal=always_fails),
+    )
+
+    assert got == (), "the refusal must still return its (empty) evidence"
+
+    # …and the same when the failure is the SUMMARY line rather than the
+    # candidate set: the handler is reached by a different route and must
+    # contain the second fault the same way.
+    def summary_fails(record):
+        if record.event == fc_sweep.EVENT_SWEEP:
+            raise OSError(28, "No space left on device")
+        if record.event == fc_sweep.EVENT_SWEEP_REFUSED:
+            raise OSError(28, "No space left on device")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(), **_sweep_ports(journal=summary_fails),
+    )
+    assert len(got) == 2, "the evaluations survive a disclosure that cannot be said"
 
 
 def test_the_evaluation_budget_has_one_explicit_owner():

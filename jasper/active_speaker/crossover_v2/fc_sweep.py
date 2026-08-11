@@ -152,16 +152,25 @@ _FC_GRID_EPS_HZ = 0.05
 FC_SWEEP_COMPUTE_BUDGET_S = 70.0
 
 #: The exceptions a candidate evaluation may fail with and still leave the
-#: capture acceptable. Mirrors the tuple the pre-extraction sweep used rather
-#: than a blind ``except Exception`` (ruff BLE, and the repository's frozen
-#: broad-except budget). ``CrossoverV2FlowError`` is a ``RuntimeError``, so a
-#: refused candidate-set derivation lands here rather than escaping into the
-#: capture's accept path.
+#: capture acceptable. An enumeration rather than a blind ``except Exception``
+#: (ruff BLE, and the repository's frozen broad-except budget).
+#: ``CrossoverV2FlowError`` is a ``RuntimeError``, so a refused candidate-set
+#: derivation lands here rather than escaping into the capture's accept path.
+#:
+#: ``OSError`` is in the set and the pre-extraction tuple did not have it — a
+#: real gap, not a transcription slip. The ``journal`` port is a *logging*
+#: delegate, and a logging handler with nowhere to write raises ``OSError``
+#: (the ENOSPC shape). Without it, a full disk turns the one advisory that is
+#: supposed to be unable to cost a household anything into the thing that
+#: fails their completed MEASURE. Both sibling port guards in this package
+#: already carry it — ``intervention._PORT_ERRORS`` and
+#: ``coordinator._SEAM_ERRORS`` — and this is the third of them.
 _SWEEP_ERRORS = (
     ArithmeticError,
     AttributeError,
     IndexError,
     KeyError,
+    OSError,
     RuntimeError,
     TypeError,
     ValueError,
@@ -666,19 +675,30 @@ def sweep_candidates(
     conditioning policy refuses to un-compose them. Adjudication still
     happens at the walk's close, so nothing publishes early (§4.4).
 
-    **Never raises.** A sweep that cannot run leaves the disclosure short
-    and says so; no household loses a measured capture because an advisory
-    could not be computed. Nothing here writes an emitted filter; a selected
-    executable candidate waits for Sound-owned acceptance at Review.
+    **Never raises**, for anything in :data:`_SWEEP_ERRORS` — which includes
+    the ``OSError`` a logging port raises with nowhere to write, and which
+    covers the port calls as well as the arithmetic, since the disclosure is
+    exactly as able to fail as the computation. A sweep that cannot run leaves
+    the disclosure short and says so; no household loses a measured capture
+    because an advisory could not be computed. What still escapes is a consumer
+    raising a *custom* exception class, by the same design :mod:`.intervention`
+    states for its own port guard: a consumer with its own hierarchy knows what
+    it is doing and can raise a stdlib type or wrap. Nothing here writes an
+    emitted filter; a selected executable candidate waits for Sound-owned
+    acceptance at Review.
 
     **Returns the evidence rather than stashing it** (#2291 Phase 5a-v(b)).
     The pre-extraction method assigned ``self._fc_evaluations`` from a
     ``finally``; the caller now assigns what this returns. The one path that
     differs is an escape OUTSIDE the caught set (``MemoryError`` and friends):
     the partial list is then lost rather than stashed. That is named rather
-    than hidden — it is unobservable, because such an escape propagates out of
-    the MEASURE consume that called this, and the capture it belonged to fails
-    before anything reads the evaluations.
+    than hidden, and the thing that makes it unobservable is **the host's
+    teardown, not the conductor** — ``correction_crossover_v2``'s catch-all
+    cleanup arm posts a terminal host event and PURGES the relay session on any
+    such escape, so no later reader of ``_fc_evaluations`` exists to see the
+    difference. Saying "the capture fails, so nobody reads it" would credit the
+    wrong owner: it holds because that teardown purges, and a change there is
+    what would make this delta real.
 
     ``protection_declared`` is False when no protection map exists, which means
     no §4.2 composition at all, so a candidate's crossover cannot be
@@ -764,11 +784,23 @@ def sweep_candidates(
         # per-candidate handler above; ``CrossoverV2FlowError`` is a
         # ``RuntimeError``, so a refused candidate-set derivation lands here
         # rather than escaping into the capture's accept path.
-        journal(GateRecord(
-            event=EVENT_SWEEP_REFUSED,
-            level=logging.WARNING,
-            fields={"reason": type(exc).__name__},
-        ))
+        #
+        # **The handler's own disclosure is guarded in turn**, because it goes
+        # through the same port that may be what just failed. Unguarded, a
+        # journal raising here replaces a CONTAINED advisory failure with an
+        # escaping one — the household loses the completed MEASURE to the
+        # second fault rather than the first, which is the #2313 SF1
+        # double-fault shape. There is nowhere left to report the loss TO: the
+        # journal IS the reporting channel. So it is swallowed, deliberately
+        # and only here, and the evaluations still return.
+        try:
+            journal(GateRecord(
+                event=EVENT_SWEEP_REFUSED,
+                level=logging.WARNING,
+                fields={"reason": type(exc).__name__},
+            ))
+        except _SWEEP_ERRORS:
+            pass
     return tuple(evaluations)
 
 

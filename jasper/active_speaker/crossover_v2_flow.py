@@ -1271,6 +1271,14 @@ def _shape_from_kwargs(
 # (``test_lint_contracts.test_noqa_debt_does_not_grow``) on something that is
 # not a suppression at all. ``_fc_refusal`` cannot use it — it is a RENAME to
 # the historical private name — so it is an ordinary assignment below.
+#
+# **These doors are READ-ONLY.** Substituting one of them here — a
+# ``monkeypatch.setattr(flow, "fc_candidate_set", …)`` — rebinds this module's
+# name and NOTHING else: production reaches the declaration half through
+# ``_fc``/``crossover_v2.fc_sweep``, so the patch would be vacuous while
+# looking applied. Patch the owning module, or inject through the conductor's
+# ports (``_fc_candidate_set`` and friends), which is what the sweep takes them
+# as precisely so a substitution still binds (#2354).
 # --------------------------------------------------------------------------- #
 
 from jasper.active_speaker.crossover_v2.fc_sweep import (
@@ -8221,9 +8229,17 @@ class CrossoverV2Conductor:
         analysis, self._measure_analysis = self._measure_analysis, None
         # R17 adjudicates HERE — §4.4's rule that anything reading the whole
         # walk waits for the whole walk. Before the candidate build below, so
-        # a selector bug cannot be blamed on the published candidate; it
-        # cannot raise (``_adjudicate_fc`` is total over its inputs) and it
+        # a selector bug cannot be blamed on the published candidate, and it
         # writes nothing the build reads.
+        #
+        # It is UNGUARDED, and it is not total: the candidate-set derivation,
+        # the selector kernel and the journal port can each raise, so a raise
+        # here fails the walk close instead of publishing a candidate whose
+        # recommendation blew up. (An earlier version of this comment claimed
+        # the call "cannot raise" — it never could not.) The contrast with
+        # ``_sweep_fc_candidates``'s own guard is the PHASE, not the risk: the
+        # sweep runs at capture-consume, where a refused advisory would cost a
+        # household the MEASURE they had already completed.
         self._adjudicate_fc()
         log_event(
             logger, "correction.crossover_v2_lateral_walk_closed",

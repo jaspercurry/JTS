@@ -26,6 +26,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.spatial` — what a capture-consuming phase decides about one take.
 * :mod:`.candidates` — what one candidate build produced, as values.
 * :mod:`.accountability` — whether a built candidate may be proposed at all.
+* :mod:`.fc_sweep` — which crossover corners this speaker may be asked about,
+  what each costs to score, and which one the evidence recommends.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants
