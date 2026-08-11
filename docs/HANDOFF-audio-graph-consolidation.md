@@ -1068,8 +1068,9 @@ it comes from the changed source plus the jts3 arm-2 evidence
 (`captures/r7b-jts3-arm2-20260811T132227Z`). Every other section
 stands as last verified above.
 
-A sixth pass (2026-08-11, this PR) reconciled the **status, sequencing, and
-position** layers with the campaign's own record
+A sixth pass (2026-08-11,
+[#2346](https://github.com/jaspercurry/JTS/pull/2346)) reconciled the
+**status, sequencing, and position** layers with the campaign's own record
 (`captures/PLAN-ring-v2-rulings-2026-08-10.md`) and the merged PRs that record
 cites — R7a [#2324](https://github.com/jaspercurry/JTS/pull/2324), R7b
 [#2326](https://github.com/jaspercurry/JTS/pull/2326), the arm-waypoint fix
@@ -1093,7 +1094,7 @@ EQ-save proofs returned green: the armed-box restriction on deploys and `/eq/` /
 `/sound/` saves is recorded as lifted, jts3's row carries its post-deploy build,
 and #2345 joins the register — each read from
 `captures/endpoint-deploy-jts3-20260811T185255Z` rather than from a summary of
-it. A fix round after this PR's adversarial gate (0 blockers / 6 should-fixes)
+it. A fix round after #2346's adversarial gate (0 blockers / 6 should-fixes)
 then corrected four claims the campaign had outrun, each re-verified at its
 source rather than from the finding: the splice watch signal is `empty_reads`,
 not `epoch_resets` (`rust/jasper-ring/src/lib.rs` — `epoch_resets` counts writer
