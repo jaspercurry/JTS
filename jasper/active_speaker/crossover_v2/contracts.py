@@ -143,10 +143,15 @@ def _detached(value: Any) -> Any:
     one level down (#2307 gate note N1).
 
     Leaves are returned as they are: this normalizes *containers*, not values,
-    so a numpy scalar or a small dataclass passes through untouched. Sequences
-    become tuples, which is both immutable and fingerprint-neutral —
-    ``json.dumps`` renders a tuple and a list identically, so no existing
-    digest moves.
+    so a numpy scalar or a small dataclass passes through untouched.
+
+    A copied list stays a ``list`` rather than becoming a tuple, and that is a
+    requirement rather than a preference: the shared fingerprinter's
+    ``_freeze_json`` admits ``type(value) is list`` exactly and refuses a tuple
+    as a non-JSON value. Detaching therefore changes no type the digest sees,
+    so no existing fingerprint moves. The copy is fresh, which is the whole
+    property — the caller holds no reference to any container inside the
+    result, so nothing it does afterwards can reach in.
     """
 
     if isinstance(value, Mapping):
@@ -154,7 +159,7 @@ def _detached(value: Any) -> Any:
     if isinstance(value, (str, bytes, bytearray)):
         return value
     if isinstance(value, Sequence):
-        return tuple(_detached(item) for item in value)
+        return [_detached(item) for item in value]
     return value
 
 

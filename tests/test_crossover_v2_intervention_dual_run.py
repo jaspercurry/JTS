@@ -577,6 +577,43 @@ def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
     assert [r.event for r in first.journal] == [r.event for r in second.journal]
 
 
+def test_the_request_snapshots_the_trim_mappings_it_was_handed():
+    """A caller mutating its own dict cannot change a request already built.
+
+    The two trim mappings are read at four points spread across the plan, so a
+    live reference would let one run see two different inputs — a result that
+    matches no single request. Mutating the caller's dict after construction is
+    the only way to observe this, which is why determinism alone does not pin
+    it.
+    """
+    raw = {"woofer": 0.0, "tweeter": -10.0}
+    average = {"woofer": 0.0, "tweeter": -9.0}
+    evidence = iv.DriverEvidence(
+        role="woofer", response=object(), excited_band_hz=(100.0, 2000.0)
+    )
+    request = iv.LinearizationRequest(
+        context=CandidateAcousticContext.from_sections(_sections_at(SELECTED_FC_HZ)),
+        woofer=evidence,
+        tweeter=replace(evidence, role="tweeter"),
+        raw_trim_db=raw,
+        trim_band_average_db=average,
+        predicted_ripple_db=0.0,
+        polarity_sign=1,
+        delay_us=0.0,
+        anchor_delay_us=None,
+        mic_tier="reference",
+        branch_floor_hz=None,
+        post_apply_verifies=True,
+        cloud_phase_planned=False,
+    )
+    raw["tweeter"] = -99.0
+    average["tweeter"] = -99.0
+    raw["subwoofer"] = -3.0
+
+    assert request.raw_trim_db == {"woofer": 0.0, "tweeter": -10.0}
+    assert request.trim_band_average_db == {"woofer": 0.0, "tweeter": -9.0}
+
+
 def test_the_planner_writes_no_conductor_state(monkeypatch):
     """No ``_last_*`` field moves while the pure planner runs.
 

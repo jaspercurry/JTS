@@ -264,6 +264,41 @@ def test_a_proposal_is_immutable_and_copies_the_mappings_it_was_handed():
     assert "woofer" not in proposal.linearization_filters
 
 
+def test_a_proposal_detaches_the_nested_containers_it_was_handed_too():
+    """The copy is DEEP — a shallow one leaves the fingerprint describing a
+    different object than the report does (#2307 gate note N1).
+
+    The top-level guard above passed while nested mutation still reached in:
+    ``dict(value)`` copies the outer mapping and shares every inner one. Since
+    :attr:`InterventionProposal.fingerprint` is taken once at construction, a
+    caller mutating an inner dict afterwards produced a proposal whose digest
+    no longer covered its own contents — the exact divergence these contracts
+    exist to make impossible.
+    """
+    inner = {"gain_db": -2.0}
+    band = [100.0, 200.0]
+    filters = {"tweeter": {"filters": [inner], "band_hz": band}}
+    proposal = _proposal(linearization_filters=filters)
+    fingerprint = proposal.fingerprint
+
+    inner["gain_db"] = -40.0
+    band.append(300.0)
+    filters["tweeter"]["reason"] = "tampered"
+
+    held = proposal.linearization_filters["tweeter"]
+    assert held["filters"][0]["gain_db"] == -2.0
+    assert list(held["band_hz"]) == [100.0, 200.0]
+    assert "reason" not in held
+    # A list stays a list: the shared fingerprinter refuses a tuple, so
+    # detaching must not change the type the digest sees.
+    assert type(held["band_hz"]) is list
+    # And the digest still describes what the object holds.
+    assert proposal.fingerprint == fingerprint
+    assert _proposal(linearization_filters=proposal.linearization_filters).fingerprint == (
+        fingerprint
+    )
+
+
 def test_the_proposal_fingerprint_is_deterministic_across_key_ordering():
     forward = _proposal(
         evidence_identities={"session_id": "cap_1", "program_id": "p"},
