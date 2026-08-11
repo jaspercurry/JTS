@@ -39,6 +39,9 @@ via :func:`resolve_coupling`, and the ``--auto`` reconciler converges it loudly
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 
@@ -76,8 +79,8 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 #
 # The Rust side is a COMPILE-TIME const with no env override — fan-in always
 # creates Ring A with it — so this is the only slot size the transport carries.
-# The conf.d WRITER is pinned here too: jasper.ring_assets.render_ring_conf_period
-# refuses any target that is not this value, and its caller refuses a DAC
+# The conf.d WRITER is pinned here too: jasper.ring_assets.render_ring_conf_wire
+# refuses any period that is not this value, and its caller refuses a DAC
 # LatencyFloor whose outputd_period_frames differs, because writing another
 # period would make CamillaDSP's ioplug attach against a geometry fan-in never
 # builds (RING_ATTACH_FATAL -> shm_ring crashes at arm instead of refusing).
@@ -89,15 +92,36 @@ RING_CAMILLA_TARGET_LEVEL = 128
 RING_CAMILLA_QUEUELIMIT = 1
 RING_CAMILLA_ENABLE_RATE_ADJUST = False
 
-# Ring A capture device + wire format. fan-in is S16 native and the SHM ring
-# carries S16LE with NO widening (an SHM ring has no kernel page-size floor).
-# CamillaDSP captures it as an ALSA device named
-# by the ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``, shipped
-# inert by P1). Pinned here so the hand generator
-# (``make-camilla-ring-config.sh`` capture-swap mode) and the Rust writer stay
-# one SSOT.
+# Ring A capture device. CamillaDSP captures it as an ALSA device named by the
+# ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``). Pinned here so
+# the hand generator (``make-camilla-ring-config.sh`` capture-swap mode) and the
+# Rust writer stay one SSOT.
 RING_CAPTURE_DEVICE = "jts_ring_capture"
+
+# The ring wire's sample-format VOCABULARY — the two tokens every end of the
+# ring spells identically: the conf.d ``format`` field (C ioplug), fan-in's
+# ``JASPER_FANIN_RING_WIRE_FORMAT``, outputd's
+# ``JASPER_OUTPUTD_CONTENT_FORMAT``, and CamillaDSP's emitted capture/playback
+# ``format:``. They map onto the header's ``sample_format`` ids
+# (``jasper.ring_assets.RING_SAMPLE_FORMAT_*``), which the attach compares
+# field-by-field.
+#
+# ``RING_WIRE_FORMAT`` is the NARROW token specifically, not "the ring's
+# format": which of the two a box carries is :func:`resolve_ring_wire`'s answer.
+# It stays a named constant because it is also the ioplug conf.d default and the
+# shipped wire, so "narrow" has one spelling.
 RING_WIRE_FORMAT = "S16_LE"
+RING_WIRE_FORMAT_WIDE = "S32_LE"
+RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
+
+# Ring A's channel count. Everything upstream of CamillaDSP is a stereo program
+# and fan-in's mixer is stereo (``mixer.rs``'s ``CHANNELS: u32 = 2``, "Not
+# configurable"), so Ring A is 2 on every box — it is not a per-topology axis
+# the way Ring B's is. Mirrors
+# ``jasper.active_speaker.runtime_contract.RING_STEREO_PROGRAM_CHANNELS``, which
+# is the same number reached from the topology side; the contract test pins them
+# equal.
+RING_A_CHANNELS = 2
 
 # ---------------------------------------------------------------------------
 # Ring B (camilla -> outputd playback bridge). The OTHER half of the ``shm_ring``
@@ -126,12 +150,92 @@ DEFAULT_OUTPUTD_RING_SLOTS = 2
 
 # Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
 # ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
-# CAPTURE direction is ``jts_ring_capture``). S16_LE — the SHM ring's pinned wire
-# format, enforced by ``jasper_ring::Geometry::validate_self``, which hard-rejects
-# anything else. The ring itself therefore never carries wide samples. outputd's
-# internal program IS wide (i32), so reading a slot is an S16 ingress: outputd
-# widens the slot onto its spine after the copy, on its own side of the ring.
+# CAPTURE direction is ``jts_ring_capture``). Its wire is whatever
+# :func:`resolve_ring_wire` resolves for the box — the layout's accept-set
+# (``jasper_ring::Geometry::validate_self``) admits S16LE and S32LE, so the wire
+# is held to ONE of them by the resolver, not by the layout. outputd's internal
+# program is i32, so a narrow slot is an S16 ingress it widens onto its spine
+# after the copy, on its own side of the ring.
 RING_PLAYBACK_DEVICE = "jts_ring_playback"
+
+
+@dataclass(frozen=True)
+class RingWire:
+    """The geometry every end of the SHM ring must declare, resolved once.
+
+    The ring's four independent ends — fan-in (the Ring A writer), the two
+    ``jts_ring`` ioplug PCMs CamillaDSP opens, and outputd (the Ring B reader) —
+    each declare a geometry, and the attach compares them field-by-field. While
+    every axis was a constant, coherence was held by everyone reading the same
+    literal. This object is what replaces that: ONE resolution, four declarers.
+
+    **Equality only, never a ranking.** A declared wire either equals the
+    resolved one or the end refuses to arm. No axis here supports a "wider is
+    fine" claim: no width-ranking primitive exists in-repo, and ``S24_3LE`` —
+    live on the DAC edge — already breaks any ordering by byte count.
+
+    ``n_slots`` is deliberately NOT an axis here even though it is part of the
+    attach-compared geometry: it already has owners (:func:`resolve_ring_slots`
+    for Ring A, :func:`resolve_outputd_ring_slots` for Ring B) that resolve it
+    per-ring from env, which this object has no access to. Restating it would
+    make two answers for one fact.
+    """
+
+    sample_format: str
+    ring_a_channels: int
+    ring_b_channels: int
+    period_frames: int
+
+
+def resolve_ring_wire(topology: Any = None) -> RingWire:
+    """Resolve the per-box SHM ring wire.
+
+    ``topology`` is an :class:`~jasper.output_topology.OutputTopology` (typed
+    loosely because this module stays import-cheap for the socket-activated web
+    surfaces, so the topology layer is imported lazily). Pass the box's saved
+    topology where it is in hand; ``None`` answers for the shipped conf.d
+    geometry, which is what a caller with no topology to consult — the ioplug
+    open-probe, a conf.d render on a box whose topology is not the question —
+    must use.
+
+    Each axis and who decides it:
+
+    - ``sample_format`` — :data:`RING_WIRE_FORMAT` on every box. The layout's
+      accept-set is wider (S16LE and S32LE, both ends of the ring already parse
+      both), so the wire is held narrow HERE, by policy, rather than by anything
+      structural. The ioplug conf.d default is the same token, which is why an
+      unrendered conf.d and this resolver agree without the file saying so.
+    - ``ring_a_channels`` — :data:`RING_A_CHANNELS` on every box. Not a
+      per-topology axis: the program upstream of CamillaDSP is stereo and
+      fan-in's mixer is not configurable.
+    - ``ring_b_channels`` — from
+      :func:`~jasper.active_speaker.runtime_contract.ring_channels_for_topology`,
+      the single ring-eligibility/width answer. A topology with NO ring width
+      (roleful, composite, explicit mono) falls back to the shipped stereo
+      declaration, because that is genuinely what the conf.d on that box says
+      and what an open-probe of it must ask for. Whether such a box may ARM is
+      not this function's question — ``topology_supports_shm_ring`` and the arm
+      preflights own that, and they refuse it.
+    - ``period_frames`` — :data:`RING_SLOT_FRAMES`, fan-in's compile-time slot
+      size. Reading it through the resolver is what gives issue #2147 a seam:
+      making the slot floor-derived becomes "this axis stops being a constant"
+      rather than a change at every declaring end.
+    """
+    ring_b_channels = RING_A_CHANNELS
+    if topology is not None:
+        # Lazy import: the topology layer is heavy and this module is imported by
+        # the socket-activated wizards (see the module docstring).
+        from jasper.active_speaker.runtime_contract import ring_channels_for_topology
+
+        resolved = ring_channels_for_topology(topology)
+        if resolved is not None:
+            ring_b_channels = resolved
+    return RingWire(
+        sample_format=RING_WIRE_FORMAT,
+        ring_a_channels=RING_A_CHANNELS,
+        ring_b_channels=ring_b_channels,
+        period_frames=RING_SLOT_FRAMES,
+    )
 
 
 def resolve_coupling(raw: str | None) -> str:
@@ -332,7 +436,9 @@ def ring_pair_is_coherent(
     return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
+def capture_kwargs_for_coupling(
+    raw: str | None, *, topology: Any = None
+) -> dict[str, object]:
     """Return the ``emit_sound_config`` capture kwargs for the resolved coupling.
 
     - ``loopback`` (default): returns ``{}`` so the caller's existing
@@ -345,10 +451,13 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     - ``shm_ring`` (Ring A + Ring B): returns the FULL end-to-end ring topology
       kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in
       writes it) AND the playback device ``jts_ring_playback`` (Ring B, outputd
-      reads it), both S16_LE (the SHM ring's pinned wire format, hard-enforced by
-      ``jasper_ring::Geometry::validate_self``, so neither ring ever carries wide
-      samples; outputd widens a consumed slot onto its own i32 program spine after
-      the copy, on its side of the ring). The
+      reads it), both at the format :func:`resolve_ring_wire` resolves for this
+      box, which is what makes the emitted config and the ring's other three
+      declaring ends one answer instead of four. (outputd widens a narrow
+      consumed slot onto its own i32 program spine after the copy, on its side
+      of the ring.) ``topology`` is threaded into that resolution and may be
+      ``None`` — the shipped stereo geometry — for a caller with no topology in
+      hand. The
       two rings are ONE coupling: an
       armed box's ``/sound/`` save must emit a config whose capture is the ring
       AND whose playback is the ring — a half-ring config (ring capture + ALSA
@@ -370,11 +479,12 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:
+        wire = resolve_ring_wire(topology)
         return {
             "capture_device": RING_CAPTURE_DEVICE,
-            "capture_format": RING_WIRE_FORMAT,
+            "capture_format": wire.sample_format,
             "playback_device": RING_PLAYBACK_DEVICE,
-            "playback_format": RING_WIRE_FORMAT,
+            "playback_format": wire.sample_format,
             "chunksize": RING_CAMILLA_CHUNKSIZE,
             "target_level": RING_CAMILLA_TARGET_LEVEL,
             "queuelimit": RING_CAMILLA_QUEUELIMIT,
@@ -383,7 +493,9 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     return {}
 
 
-def content_lane_format_for_coupling(raw: str | None) -> str:
+def content_lane_format_for_coupling(
+    raw: str | None, *, topology: Any = None
+) -> str:
     """The CamillaDSP→outputd content-hop sample format this coupling carries.
 
     ONE definition of that hop's width, for both of its ends:
@@ -399,11 +511,11 @@ def content_lane_format_for_coupling(raw: str | None) -> str:
       that a structural property instead of two constants a maintainer must
       remember to move together.
 
-    ``shm_ring`` therefore answers :data:`RING_WIRE_FORMAT` (S16_LE — the ring
-    slot layout ``jasper_ring::Geometry::validate_self`` hard-rejects anything
-    else), and ``loopback`` answers the box's program-lane default, which the
-    wide-output-path program widens to S32_LE. Unrecognized values fail safe to
-    ``loopback`` exactly as :func:`resolve_coupling` does.
+    ``shm_ring`` therefore answers :func:`resolve_ring_wire`'s
+    ``sample_format`` for this box, and ``loopback`` answers the box's
+    program-lane default, which the wide-output-path program widens to S32_LE.
+    Unrecognized values fail safe to ``loopback`` exactly as
+    :func:`resolve_coupling` does.
 
     NOT a sink-type axis: a bonded leader's File/pipe sink is pinned to
     ``DEFAULT_PIPE_SINK_FORMAT`` (D4) and does not write this hop at all — its
@@ -416,7 +528,7 @@ def content_lane_format_for_coupling(raw: str | None) -> str:
     # contract module is the same one-way direction every other caller uses.
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
 
-    value = capture_kwargs_for_coupling(raw).get("playback_format")
+    value = capture_kwargs_for_coupling(raw, topology=topology).get("playback_format")
     if isinstance(value, str) and value:
         return value
     return DEFAULT_PLAYBACK_FORMAT
@@ -431,6 +543,12 @@ def coupling_capture_kwargs_from_env(
     coupling into a live re-emit. Returns ``{}`` for the default ``loopback``
     coupling (byte-identical to today) and the full ring topology kwargs for
     ``shm_ring``.
+
+    Resolves the ring wire with NO topology, i.e. the shipped geometry. That is
+    not a gap: ``ring_channels_for_topology`` answers the same stereo width for
+    every topology a ring can arm on, and returns "no ring" for the rest, so
+    loading the saved topology here would pay a disk read and the heavy topology
+    import inside a socket-activated wizard for an answer it cannot change.
 
     **Coupling token is resolved FILE-FRESH on the live-env path** (``env`` is
     ``None``). The wizard processes that call this — jasper-web (``/sound/``) and

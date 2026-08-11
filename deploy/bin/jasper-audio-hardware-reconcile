@@ -1071,8 +1071,14 @@ render_flat_cutover_if_needed() {
         "result=ok changed=${changed} config_dir=${CAMILLA_CONF_DIR} topology=${OUTPUT_TOPOLOGY_PATH}"
 }
 
+# The `key value` protocol below is a WHITELIST: an unmatched key is dropped
+# silently, so every key the Python renderer emits needs an arm here or it never
+# reaches the journal. The renderer emits the full resolved wire (period,
+# format, per-ring channels) plus how the topology read went, because a conf.d
+# that shears on any of those axes fails the ioplug attach the same way.
 render_ring_conf_if_needed() {
     local actions key value result="" period="" previous="" reason="" conf=""
+    local sample_format="" channels_a="" channels_b="" topology=""
     if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
         log_event "ring_conf" "result=skipped reason=dac_unrecognized"
         return 0
@@ -1083,9 +1089,10 @@ render_ring_conf_if_needed() {
     fi
     if ! actions="$(
         "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
-            render-ring-conf-period \
+            render-ring-conf-wire \
             --profile-id "$OUTPUT_DAC_ID" \
-            --conf-d "$RING_CONF_D_OVERRIDE" 2>&1
+            --conf-d "$RING_CONF_D_OVERRIDE" \
+            --output-topology "$OUTPUT_TOPOLOGY_PATH" 2>&1
     )"; then
         log_event "ring_conf" \
             "result=failed output_dac_id=${OUTPUT_DAC_ID} detail=$(jasper_asound_log_token "$actions")"
@@ -1097,12 +1104,16 @@ render_ring_conf_if_needed() {
             result) result="$value" ;;
             period_frames) period="$value" ;;
             previous_period_frames) previous="$value" ;;
+            sample_format) sample_format="$value" ;;
+            ring_a_channels) channels_a="$value" ;;
+            ring_b_channels) channels_b="$value" ;;
+            topology) topology="$value" ;;
             reason) reason="$value" ;;
             conf) conf="$value" ;;
         esac
     done <<<"$actions"
     log_event "ring_conf" \
-        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
+        "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
 gate_role_services() {

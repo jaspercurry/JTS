@@ -171,3 +171,39 @@ def test_check_is_registered_in_the_audio_doctor_group():
         is audio.check_ring_conf_floor_render
     )
     assert "check_ring_conf_floor_render" in audio_group.__all__
+
+
+# --- #2294: a floor-blocked box must SAY it cannot ring -----------------------
+
+
+def test_no_floor_detail_names_the_resolved_ring_ineligibility(monkeypatch, tmp_path):
+    """`ok` is right, silence was not (issue #2294).
+
+    A DAC with no declared floor leaves outputd on its default period, which can
+    never equal the fixed ring slot, so the arm preflight refuses shm_ring. The
+    conf.d is correct either way — hence `ok` — but the household's actual
+    question is "why is this box on loopback?", and before this the answer
+    appeared on no surface. jts3 (HIFIBERRY_DAC8X) is the live case.
+    """
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    _stage(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+
+    result = audio.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert str(DEFAULT_OUTPUTD_PERIOD_FRAMES) in result.detail
+    assert str(RING_SLOT_FRAMES) in result.detail
+    assert "shm_ring is unavailable" in result.detail
+    assert "#2147" in result.detail
+
+
+def test_a_matching_floor_does_not_claim_ineligibility(monkeypatch, tmp_path):
+    # The mirror of the above: a box that CAN ring must not be told it cannot.
+    _stage(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    result = audio.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "unavailable" not in result.detail

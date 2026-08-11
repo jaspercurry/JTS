@@ -1310,23 +1310,35 @@ def test_transport_coherence_shm_ring_accepts_the_narrow_ring_on_a_wide_box():
     assert errors == ()
 
 
-def test_transport_coherence_shm_ring_flags_a_ring_the_coupling_stopped_narrowing(
+def test_transport_coherence_shm_ring_flags_a_ring_end_that_declares_another_wire(
     monkeypatch,
 ):
-    """The axis can still fail (the doctor-can-fail / mutation rule): an armed
-    box whose coupling has lost its narrow-lane override is emitting a width the
-    S16-only ring cannot carry. This is the standing check that
-    jasper.fanin.coupling_reconcile.ring_edge_width_ready's arm-time gate is the
-    belt to — it should never fire in practice because the gate refuses the arm,
-    but the axis has to be able to."""
+    """The axis can still fail (the doctor-can-fail / mutation rule).
+
+    Its EVIDENCE changed: it compares the resolved wire against outputd's own
+    declared format rather than against a second derivation of the same
+    coupling kwargs, which could not disagree with the first. The failing case
+    is now reachable from real per-box state, and the wire-side half of the
+    mutation is pinned here — move the resolver and the axis follows it.
+    """
     import jasper.fanin_coupling as coupling
 
     monkeypatch.setattr(
-        coupling, "capture_kwargs_for_coupling", lambda raw: {"capture_device": "x"}
+        coupling,
+        "resolve_ring_wire",
+        lambda topology=None: coupling.RingWire(
+            sample_format="S32_LE",
+            ring_a_channels=2,
+            ring_b_channels=2,
+            period_frames=coupling.RING_SLOT_FRAMES,
+        ),
     )
     errors = transport_coherence_errors(
         coupling=COUPLING_SHM_RING,
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+        outputd_env={
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+        },
         camilla_devices={
             "capture_device": "jts_ring_capture",
             "playback_device": "jts_ring_playback",
@@ -1370,4 +1382,132 @@ def test_removed_adaptive_buffer_keys_are_read_by_nothing():
     assert offenders == [], (
         "the adaptive output-buffer keys were deleted; nothing may read them "
         f"again without restoring the reconciler that owned them: {offenders}"
+    )
+
+
+# --- shm_ring transport WIRE: resolved, and compared against per-end evidence --
+
+
+def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch):
+    """/state names the geometry the ring is built to.
+
+    Both channel counts and the format come from the one resolver every
+    declaring end reads. Patching it must move the reported transport; a literal
+    would keep reporting stereo/S16 for a ring built otherwise, which is exactly
+    the kind of observability that confirms a shear instead of catching it.
+    """
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S32_LE",
+            ring_a_channels=2,
+            ring_b_channels=6,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
+    topo = transport_topology_for_coupling(COUPLING_SHM_RING).to_dict()
+    assert topo["fanin_to_camilla"]["format"] == "S32_LE"
+    assert topo["fanin_to_camilla"]["channels"] == 2
+    assert topo["camilla_to_outputd"]["format"] == "S32_LE"
+    assert topo["camilla_to_outputd"]["channels"] == 6
+
+
+def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration():
+    """The format axis compares the wire against OUTPUTD'S OWN declaration.
+
+    It used to compare two derivations of one constant, so it could not fail:
+    both sides moved together by construction. outputd's
+    JASPER_OUTPUTD_CONTENT_FORMAT is a per-box env value that decides which
+    sample_format its attach demands, so a box where it drifted is a real,
+    detectable shear.
+    """
+    errors = transport_coherence_errors(
+        coupling=COUPLING_SHM_RING,
+        outputd_env={
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
+        },
+        camilla_devices={
+            "capture_device": "jts_ring_capture",
+            "playback_device": "jts_ring_playback",
+        },
+    )
+    assert len(errors) == 1
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT='S32_LE'" in errors[0]
+    assert "S16_LE" in errors[0]
+
+
+def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees():
+    assert (
+        transport_coherence_errors(
+            coupling=COUPLING_SHM_RING,
+            outputd_env={
+                OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+                "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+            },
+            camilla_devices={
+                "capture_device": "jts_ring_capture",
+                "playback_device": "jts_ring_playback",
+            },
+        )
+        == ()
+    )
+
+
+def test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing():
+    # An end this function cannot see is not a contradiction — the module's
+    # missing-evidence doctrine, same as an absent Camilla config.
+    assert (
+        transport_coherence_errors(
+            coupling=COUPLING_SHM_RING,
+            outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"},
+            camilla_devices={
+                "capture_device": "jts_ring_capture",
+                "playback_device": "jts_ring_playback",
+            },
+        )
+        == ()
+    )
+
+
+def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config():
+    # The ring header's channel count is compared field-by-field at attach, so a
+    # Camilla config declaring another width fails the ioplug open.
+    errors = transport_coherence_errors(
+        coupling=COUPLING_SHM_RING,
+        outputd_env={
+            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+            "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+        },
+        camilla_devices={
+            "capture_device": "jts_ring_capture",
+            "playback_device": "jts_ring_playback",
+            "capture_channels": 2,
+            "playback_channels": 6,
+        },
+    )
+    assert len(errors) == 1
+    assert "playback channels=2" in errors[0]
+    assert "declares 6" in errors[0]
+
+
+def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees():
+    assert (
+        transport_coherence_errors(
+            coupling=COUPLING_SHM_RING,
+            outputd_env={
+                OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
+                "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+            },
+            camilla_devices={
+                "capture_device": "jts_ring_capture",
+                "playback_device": "jts_ring_playback",
+                "capture_channels": 2,
+                "playback_channels": 2,
+            },
+        )
+        == ()
     )

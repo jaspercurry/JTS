@@ -402,3 +402,131 @@ def test_ring_pair_is_coherent_only_for_matched_ends():
     # A None coupling resolves to loopback -> pairs with direct only.
     assert ring_pair_is_coherent(None, "direct") is True
     assert ring_pair_is_coherent(None, "shm_ring") is False
+
+
+# --- resolve_ring_wire: one resolution, four declarers -------------------------
+
+
+def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
+    from jasper.fanin_coupling import (
+        RING_A_CHANNELS,
+        RING_SLOT_FRAMES,
+        resolve_ring_wire,
+    )
+
+    wire = resolve_ring_wire()
+    assert wire.sample_format == RING_WIRE_FORMAT
+    assert wire.ring_a_channels == RING_A_CHANNELS
+    assert wire.ring_b_channels == RING_A_CHANNELS
+    assert wire.period_frames == RING_SLOT_FRAMES
+
+
+def test_resolve_ring_wire_is_narrow_stereo_on_every_topology():
+    """DORMANCY BAR. No topology in the fleet resolves off the shipped wire.
+
+    This rung gives the ring wire a per-box resolution; it does not move any
+    box onto a different one. Asserted over the whole eligibility table rather
+    than the default case, because a resolver that answered differently for one
+    shape would flip that box's emitted config, conf.d and outputd env in one
+    deploy.
+    """
+    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _full_range_mono,
+        _full_range_stereo,
+        _subwoofer_topology,
+        _topology,
+    )
+    from tests.test_runtime_contract_ring import _dual_apple_stereo
+
+    for label, topology in (
+        ("none", None),
+        ("unconfigured", _topology([])),
+        ("full_range_stereo", _full_range_stereo()),
+        ("full_range_mono", _full_range_mono()),
+        ("subwoofer", _subwoofer_topology()),
+        ("composite", _dual_apple_stereo()),
+        ("active_2_way", _active_topology("stereo", "active_2_way")),
+    ):
+        wire = resolve_ring_wire(topology)
+        assert wire.sample_format == RING_WIRE_FORMAT, label
+        assert wire.ring_a_channels == RING_A_CHANNELS, label
+        assert wire.ring_b_channels == RING_A_CHANNELS, label
+
+
+def test_resolve_ring_wire_reads_ring_b_channels_from_the_topology(monkeypatch):
+    """The Ring B channel axis is genuinely wired to the topology resolver.
+
+    Without this, "resolve_ring_wire consults the topology" is unfalsifiable
+    while every topology answers the same width: the dormancy bar above passes
+    identically for a resolver that ignores its argument. Patching the topology
+    answer is what separates the two.
+    """
+    import jasper.active_speaker.runtime_contract as rc
+    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology = _full_range_stereo()
+    monkeypatch.setattr(rc, "ring_channels_for_topology", lambda _t: 6)
+    wire = resolve_ring_wire(topology)
+    assert wire.ring_b_channels == 6
+    # Ring A is NOT a topology axis — the program upstream of Camilla is stereo.
+    assert wire.ring_a_channels == RING_A_CHANNELS
+
+
+def test_resolve_ring_wire_falls_back_to_the_shipped_width_for_no_ring_topology(
+    monkeypatch,
+):
+    # An ineligible topology has no ring width; the wire still describes what
+    # the conf.d on that box declares, which is the shipped stereo geometry.
+    # Refusing to ARM is the preflights' job, not the resolver's.
+    import jasper.active_speaker.runtime_contract as rc
+    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    monkeypatch.setattr(rc, "ring_channels_for_topology", lambda _t: None)
+    wire = resolve_ring_wire(_full_range_stereo())
+    assert wire.ring_b_channels == RING_A_CHANNELS
+
+
+def test_ring_wire_formats_are_exactly_the_two_the_ioplug_accepts():
+    """The Python vocabulary must be the C parser's, token for token.
+
+    A token the ioplug rejects is a conf.d that fails `open()` with -EINVAL; a
+    token it accepts and Python cannot name is a wire no Python surface can
+    report. Both are the same drift.
+    """
+    from pathlib import Path
+
+    from jasper.fanin_coupling import RING_WIRE_FORMATS
+
+    c_src = (
+        Path(__file__).resolve().parents[1]
+        / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
+    ).read_text(encoding="utf-8")
+    assert set(RING_WIRE_FORMATS) == {"S16_LE", "S32_LE"}
+    for token in RING_WIRE_FORMATS:
+        assert f'strcmp(format_name, "{token}")' in c_src, token
+    assert 'format %s unsupported (S16_LE|S32_LE)' in c_src
+
+
+def test_capture_kwargs_take_their_format_from_the_resolver(monkeypatch):
+    # The emitted config's width is the resolver's answer, not a constant the
+    # emitter re-derives. Patch the resolver; both ring ends must follow.
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S32_LE",
+            ring_a_channels=2,
+            ring_b_channels=6,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
+    kwargs = fc.capture_kwargs_for_coupling(COUPLING_SHM_RING)
+    assert kwargs["capture_format"] == "S32_LE"
+    assert kwargs["playback_format"] == "S32_LE"
+    assert fc.content_lane_format_for_coupling(COUPLING_SHM_RING) == "S32_LE"

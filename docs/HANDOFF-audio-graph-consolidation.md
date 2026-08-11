@@ -122,12 +122,15 @@ does and does not arm; wide is a value-space widening of existing header
 fields, so ring `VERSION` stays 1.
 
 The **wire** is still S16 everywhere, and by a different mechanism: the
-resolver forces it. `content_lane_format_for_coupling(COUPLING_SHM_RING)`
-answers `RING_WIRE_FORMAT` (`S16_LE`) for both ring ends and for outputd's
-`JASPER_OUTPUTD_CONTENT_FORMAT`, so a ring-armed box stays coherently
-narrow even on a box whose program-lane default is `S32_LE` (see "Where
-this corrects #2285"). The C ioplug takes `format`/`channels` from its
-conf.d block, but
+resolver forces it. `jasper.fanin_coupling.resolve_ring_wire` is the one
+per-box resolution every declaring end reads, and it answers
+`RING_WIRE_FORMAT` (`S16_LE`) at 2 channels on every box, for both ring
+ends and for outputd's `JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed
+box stays coherently narrow even on a box whose program-lane default is
+`S32_LE` (see "Where this corrects #2285"). Because the accept-set is
+wider than the wire, the attach can no longer be relied on to refuse a
+drift *inside* it: the ends are compared rather than assumed. The C
+ioplug takes `format`/`channels` from its conf.d block, but
 [`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
 declares neither, so both PCMs open at the `S16_LE`/2ch defaults
 (`JTS_RING_RATE = 48000` stays pinned). Nothing on the fleet declares a
@@ -135,8 +138,8 @@ non-default wire yet: changing the resolver is **R5a**'s, and the first box
 to actually run wide is **R6**'s.
 
 So ring v2 was never a layout redesign: it is a transport + reader/writer +
-emitter + resolver problem, and only the transport layer (R1's crate, R2's
-ioplug) is merged so far — the daemons are R3/R4 and the resolver is R5a.
+emitter + resolver problem. The transport layer (R1's crate, R2's ioplug)
+and both daemons (R3 fan-in, R4 outputd) are merged; the resolver is R5a.
 Certified
 geometry is 2 slots × 128 frames per ring, CamillaDSP chunk/target 128,
 `enable_rate_adjust: false`; Ring A contributes ≈5.3 ms at 48 kHz.
@@ -166,8 +169,9 @@ offset with it. On a `direct` box the fill is expected and observable
 equality against `DEFAULT_PLAYBACK_FORMAT`. That was its shipped shape in
 the wide-output-path program's PR-1; **PR-6 (2026-08-08) reworked it into
 a kwargs-coherence check** —
-`content_lane_format_for_coupling(COUPLING_SHM_RING)` must equal
-`RING_WIRE_FORMAT` (`jasper/fanin/coupling_reconcile.py`). The planning
+`content_lane_format_for_coupling(COUPLING_SHM_RING)` must equal the
+box's resolved ring wire format (`jasper/fanin/coupling_reconcile.py`;
+R5a repointed both sides at `resolve_ring_wire`). The planning
 consequence: the box-wide `S32` default does **not** disarm rings. A
 ring-armed box installs the coupling's own CamillaDSP kwargs, which force
 both ring ends to the ring's wire format, so ring boxes stay coherently
@@ -289,8 +293,8 @@ at them rather than restating them.
 |---|---|---|
 | R1 | `rust/jasper-ring` crate | **DONE** — PR [#2297](https://github.com/jaspercurry/JTS/pull/2297), merged, gate 0/0 |
 | R2 | C ioplug | **DONE** — PR [#2296](https://github.com/jaspercurry/JTS/pull/2296), merged, gate 0/0 |
-| R3 | fan-in | in flight — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308) |
-| R4 | outputd | in flight — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310) |
+| R3 | fan-in | **DONE** — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308), merged |
+| R4 | outputd | **DONE** — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310), merged |
 | R5a | schemas / parsers / renderer | queued |
 | R5b | gates / recovery / observability | queued |
 | R6 | jts.local width activation | **owner-gated** |

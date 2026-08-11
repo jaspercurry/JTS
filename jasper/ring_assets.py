@@ -20,10 +20,10 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   realtime path (the ioplug would fail to resolve and CamillaDSP would crash-loop
   on its statefile). Presence-only here — an open-probe from the reconciler could
   disturb a live arm, and the doctor already owns the deep probe.
-- ``jasper.cli.audio_config render-ring-conf-period`` — the per-box conf.d
+- ``jasper.cli.audio_config render-ring-conf-wire`` — the per-box conf.d
   **renderer** the output-hardware reconciler shells into. It reuses this
-  module's ``period_frames`` regex to REWRITE the value it also parses, so the
-  reader and the writer of the conf.d format cannot drift.
+  module's own regexes to REWRITE the values it also parses, so the reader and
+  the writer of the conf.d format cannot drift.
 
 Import-cheap (stdlib, plus the import-free ``jasper.fanin_coupling`` constants)
 so the reconciler and the socket-activated web surfaces can resolve asset
@@ -36,7 +36,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
 # Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
@@ -61,6 +61,16 @@ RING_B_CONTENT_FILE = os.path.join(RING_SHM_DIR, "content.ring")
 # ``jts_ring_playback`` block, paired with ``JASPER_OUTPUTD_SHM_RING_SLOTS``).
 RING_A_CONF_PCM = "jts_ring_capture"
 RING_B_CONF_PCM = "jts_ring_playback"
+
+# What a conf.d PCM block declares when it omits ``format`` / ``channels``.
+# Mirrors the C ioplug's ``JTS_RING_DEFAULT_FORMAT`` / ``JTS_RING_DEFAULT_CHANNELS``
+# (``c/jts-ring-ioplug/pcm_jts_ring.c``), which reproduce the pre-ring-v2 pinned
+# wire exactly. They are what makes an UNRENDERED conf.d byte-identical to the
+# shipped file while still declaring a complete wire: the renderer writes a key
+# only where the resolved wire differs from these, so a box on the shipped wire
+# never gains a line.
+RING_CONF_DEFAULT_FORMAT = "S16_LE"
+RING_CONF_DEFAULT_CHANNELS = 2
 
 
 def ring_ioplug_so_path(*, plugin_dir: str = RING_ALSA_PLUGIN_DIR) -> str:
@@ -130,9 +140,11 @@ def ring_asset_presence(
 # PREFLIGHTs the match and fail-closes to loopback with a crisp reason. The fix
 # is always to bring the OUTPUTD period to the slot, never to raise this file.
 #
-# :func:`render_ring_conf_period` therefore has exactly one live job: converging
-# a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand edit, a half
-# install) back onto it. It refuses any other target. (scripts/ring-proto/arm.sh
+# :func:`render_ring_conf_wire`'s PERIOD axis therefore has exactly one live
+# job: converging a conf.d that has drifted OFF ``RING_SLOT_FRAMES`` (a hand
+# edit, a half install) back onto it. It refuses any other target. Its format
+# and channels axes are per-box and carry no such fixed target.
+# (scripts/ring-proto/arm.sh
 # renders the conf period from outputd's resolved env per box — that is the lab
 # prototype, which predates the fixed-slot product path and is not this rule.)
 #
@@ -170,34 +182,287 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
     return next(iter(values))
 
 
-@dataclass(frozen=True)
-class RingConfPeriodRender:
-    """The outcome of rendering the ring conf.d slot period for one box.
+# --- Ring A slot-count coherence (defect A) --------------------------------
+#
+# The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
+# fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
+# (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
+# the shipped file); the on-disk ring header records the ``n_slots`` the writer
+# actually created. A mismatch on ANY of the three axes is a hard failure:
+#   - fan-in env vs conf.d: fan-in creates an old 8-slot ring but CamillaDSP's
+#     ioplug attaches expecting 2 → hw_params EINVAL + ioplug attach_fatal
+#     ("ring header does not match expected geometry") → CamillaDSP crash-loop →
+#     start-limit-hit.
+#     (The 2026-07-06 default migration class: old 8-slot ring state must converge
+#     to the new 2-slot production default.)
+#   - on-disk vs expected: a stale ring file left over from a prior geometry (e.g.
+#     an old 8-slot file from before this 2-slot default) is a create-or-ATTACH
+#     open() error for the writer, because
+#     ``jasper_ring::RingWriter::create_or_attach`` validates the existing header's
+#     geometry against the requested one.
+#
+# Per-block field parsing. The conf.d has TWO PCM blocks (Ring A and Ring B),
+# and since ring v2 they can declare DIFFERENT geometry: Ring B's ``channels``
+# follows the box's topology while Ring A's is always the stereo program. So
+# every field parser here is scoped to one named block; a whole-file scan would
+# collapse two legitimately different values into "torn".
+#
+# ``_ring_conf_block_body`` finds that block by MATCHING BRACES rather than by
+# regex. A `[^}]*` body (what this used before the per-block fields landed)
+# terminates at the FIRST `}`, so any nested block — ALSA's own ``hint { … }``
+# convention is the obvious one — would truncate the body and hide every field
+# after it. Quoted values are skipped so a brace inside ``path "…"`` cannot
+# unbalance the scan.
+_RING_CONF_BLOCK_OPEN_RE_TEMPLATE = r"pcm\.{name}[^\S\n]*\{{"
 
-    ``changed`` is False for the two no-write outcomes — the conf already
-    declares the target period, which is the golden case on an Apple box where
-    the declared floor equals the shipped 128.
+
+def _ring_conf_block_body_span(text: str, pcm_name: str) -> tuple[int, int] | None:
+    """``(start, end)`` offsets of a named PCM block's BODY, or ``None``.
+
+    ``start`` is just past the opening brace, ``end`` is at the matching closing
+    brace. Returns ``None`` when the block is absent or its braces never balance
+    (a truncated / torn file — report nothing rather than guess a body).
+    """
+    opener = re.compile(_RING_CONF_BLOCK_OPEN_RE_TEMPLATE.format(name=re.escape(pcm_name)))
+    m = opener.search(text)
+    if m is None:
+        return None
+    start = m.end()
+    depth = 1
+    i = start
+    quote: str | None = None
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return start, i
+        i += 1
+    return None
+
+
+def _ring_conf_block_body(text: str, pcm_name: str) -> str | None:
+    span = _ring_conf_block_body_span(text, pcm_name)
+    return None if span is None else text[span[0] : span[1]]
+
+
+def _read_conf_text(conf_d: str | None) -> str | None:
+    """The ring conf.d's text, or ``None`` when it is absent/unreadable."""
+    path = RING_CONF_D if conf_d is None else conf_d
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+# One regex per scalar field, shared by the parsers and the renderer so a conf.d
+# the parser accepts is one the renderer can update (and vice versa).
+# Horizontal-whitespace classes (not ``\s``) keep both directions line-scoped
+# under ``re.MULTILINE``.
+_RING_CONF_N_SLOTS_RE = re.compile(
+    r"^(?P<indent>[^\S\n]*)n_slots[^\S\n]+(?P<value>\d+)[^\S\n]*$", re.MULTILINE
+)
+_RING_CONF_CHANNELS_RE = re.compile(
+    r"^(?P<indent>[^\S\n]*)channels[^\S\n]+(?P<value>\d+)[^\S\n]*$", re.MULTILINE
+)
+# ``format`` is an ALSA token, optionally quoted (both spellings are valid ALSA
+# conf and the C ioplug reads either through snd_config_get_string).
+_RING_CONF_FORMAT_RE = re.compile(
+    r"^(?P<indent>[^\S\n]*)format[^\S\n]+(?P<quote>[\"']?)(?P<value>[A-Za-z0-9_]+)"
+    r"(?P=quote)[^\S\n]*$",
+    re.MULTILINE,
+)
+
+
+def _single_block_value(
+    pattern: re.Pattern[str], pcm_name: str, conf_d: str | None
+) -> str | None:
+    """The single value ``pattern`` matches inside one PCM block, or ``None``.
+
+    ``None`` covers every indeterminate case — file absent/unreadable, block
+    missing, field absent, or the block declaring the field more than once with
+    different values. The caller decides what an indeterminate read means; this
+    never silently picks one.
+    """
+    text = _read_conf_text(conf_d)
+    if text is None:
+        return None
+    body = _ring_conf_block_body(text, pcm_name)
+    if body is None:
+        return None
+    values = {m.group("value") for m in pattern.finditer(body)}
+    if len(values) != 1:
+        return None
+    return next(iter(values))
+
+
+def ring_conf_n_slots(pcm_name: str, conf_d: str | None = None) -> int | None:
+    """Parse the ``n_slots`` pinned for a named PCM block in the ring conf.d.
+
+    ``pcm_name`` is ``jts_ring_capture`` (Ring A) or ``jts_ring_playback`` (Ring
+    B). Returns the single ``n_slots`` value that block declares, or ``None`` when
+    the file is absent/unreadable, the block is missing, or the block declares no
+    single ``n_slots`` (a torn conf.d — the caller treats that as a mismatch, not
+    a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
+    :data:`RING_CONF_D` at CALL time (not a bound default) so a test/caller that
+    repoints the module constant is honored.
+    """
+    raw = _single_block_value(_RING_CONF_N_SLOTS_RE, pcm_name, conf_d)
+    return None if raw is None else int(raw)
+
+
+def ring_conf_channels(pcm_name: str, conf_d: str | None = None) -> int | None:
+    """Parse the ``channels`` a named PCM block declares, or the ioplug default.
+
+    An ABSENT ``channels`` key is not indeterminate — the C ioplug defaults it to
+    :data:`RING_CONF_DEFAULT_CHANNELS`, so a block that omits it declares exactly
+    that wire. This returns the default in that case, and ``None`` only when the
+    conf.d/block itself cannot be read or the block declares the key more than
+    once with different values.
+    """
+    text = _read_conf_text(conf_d)
+    if text is None:
+        return None
+    if _ring_conf_block_body(text, pcm_name) is None:
+        return None
+    raw = _single_block_value(_RING_CONF_CHANNELS_RE, pcm_name, conf_d)
+    if raw is None:
+        # Block exists (checked above) — so this is "key absent" or "declared
+        # twice". Distinguish: absent means the ioplug default.
+        body = _ring_conf_block_body(text, pcm_name) or ""
+        if not _RING_CONF_CHANNELS_RE.search(body):
+            return RING_CONF_DEFAULT_CHANNELS
+        return None
+    return int(raw)
+
+
+def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
+    """Parse the ``format`` a named PCM block declares, or the ioplug default.
+
+    Same absent-means-default contract as :func:`ring_conf_channels`: the C
+    ioplug defaults an undeclared ``format`` to
+    :data:`RING_CONF_DEFAULT_FORMAT`, so an unmodified shipped conf.d declares
+    that wire even though the token appears nowhere in it.
+    """
+    text = _read_conf_text(conf_d)
+    if text is None:
+        return None
+    if _ring_conf_block_body(text, pcm_name) is None:
+        return None
+    raw = _single_block_value(_RING_CONF_FORMAT_RE, pcm_name, conf_d)
+    if raw is None:
+        body = _ring_conf_block_body(text, pcm_name) or ""
+        if not _RING_CONF_FORMAT_RE.search(body):
+            return RING_CONF_DEFAULT_FORMAT
+        return None
+    return raw
+
+
+@dataclass(frozen=True)
+class RingConfWireRender:
+    """The outcome of rendering the ring conf.d wire for one box.
+
+    ``changed`` is False for the no-write outcome — the conf already declares the
+    target wire, which is the golden case on a box running the shipped geometry
+    (an Apple box whose declared floor equals the shipped 128, on the shipped
+    S16_LE / 2-channel wire).
+
+    ``previous_period_frames`` is ``None`` for a TORN conf.d whose two PCM blocks
+    disagreed, because there was no single previous value to report.
     """
 
     changed: bool
     period_frames: int
     previous_period_frames: int | None
+    sample_format: str
+    ring_a_channels: int
+    ring_b_channels: int
     conf_d: str
 
 
-def render_ring_conf_period(
-    period_frames: int,
+def _render_block_field(
+    body: str,
+    *,
+    pattern: re.Pattern[str],
+    key: str,
+    value: str,
+    default: str,
+) -> str:
+    """Return ``body`` with ``key`` declaring ``value``.
+
+    Three cases, and the split is what keeps an unrendered conf.d byte-identical:
+
+    - the key is already declared → SUBSTITUTE in place (indentation, ordering
+      and every other line survive);
+    - the key is absent and ``value`` is the ioplug's own ``default`` → write
+      NOTHING. An absent key already declares that wire, so adding the line
+      would churn the file for no change in meaning;
+    - the key is absent and ``value`` differs from the default → INSERT it,
+      anchored after the block's ``n_slots`` (else ``period_frames``) line so
+      the geometry keys stay together and the indentation is copied from the
+      anchor.
+
+    A present key is never DELETED when it returns to the default: rewriting it
+    to the explicit default converges just as exactly, and a substitution cannot
+    disturb a line the deletion path would have to find the boundaries of.
+    """
+    if pattern.search(body):
+        return pattern.sub(lambda m: f"{m.group('indent')}{key} {value}", body)
+    if value == default:
+        return body
+    anchor = _RING_CONF_N_SLOTS_RE.search(body) or _RING_CONF_PERIOD_RE.search(body)
+    if anchor is None:
+        raise ValueError(
+            f"ring conf.d block declares neither n_slots nor period_frames, so "
+            f"there is no anchor to insert '{key} {value}' after; refusing to "
+            "invent a block shape — redeploy to reinstall the conf.d"
+        )
+    indent = anchor.group("indent")
+    return (
+        body[: anchor.end()] + f"\n{indent}{key} {value}" + body[anchor.end() :]
+    )
+
+
+def render_ring_conf_wire(
+    wire: RingWire,
     *,
     conf_d: str | None = None,
-) -> RingConfPeriodRender:
-    """Rewrite the ring conf.d ``period_frames`` lines to ``period_frames``.
+) -> RingConfWireRender:
+    """Rewrite the ring conf.d so both PCM blocks declare ``wire``.
 
-    The ring slot IS one outputd DAC period, so a box whose DAC declares a
-    latency floor needs the conf.d to pin that floor's period. This is the
-    per-box render the conf.d's own header calls for; the CALLER decides
-    whether a render is warranted (the rule is "only from a DECLARED
-    :class:`~jasper.audio_hardware.dac.LatencyFloor`"), so this function never
-    consults the DAC registry itself.
+    ``wire`` is a :class:`~jasper.fanin_coupling.RingWire` — the ONE per-box
+    resolution of the ring's geometry. Taking the resolved object rather than
+    four loose scalars is deliberate: the four ends of the ring must declare the
+    same tuple, and a call site that could pass a format from one resolution and
+    a channel count from another is exactly the shear this rung exists to close.
+
+    What lands where:
+
+    - ``period_frames`` — both blocks, one shared value (the ring slot IS one
+      outputd DAC period). This is the per-box render the conf.d's own header
+      calls for; the CALLER decides whether a render is warranted (the rule is
+      "only from a DECLARED :class:`~jasper.audio_hardware.dac.LatencyFloor`"),
+      so this function never consults the DAC registry itself.
+    - ``format`` — both blocks, one shared value. The rings carry one wire
+      format; a box with two would need every emitter, gate and doctor surface
+      to carry two forever.
+    - ``channels`` — PER BLOCK. ``jts_ring_capture`` (Ring A) declares
+      ``ring_a_channels``: everything upstream of CamillaDSP is a stereo
+      program, and fan-in's mixer is stereo. ``jts_ring_playback`` (Ring B)
+      declares ``ring_b_channels``, which follows the box's output topology.
+      This is the one axis on which the two rings can legitimately differ, which
+      is why the parsers above are block-scoped.
 
     **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
     Ring A's slot size is fan-in's COMPILE-TIME constant
@@ -211,23 +476,31 @@ def render_ring_conf_period(
     ioplug, the CamillaDSP emitter, and the negotiation model is issue #2147.
     This guard is defence in depth behind the caller's own floor gate.
 
-    **Write-on-change only.** When the conf already declares exactly
-    ``period_frames`` the file is left GENUINELY untouched — no rewrite, no
-    mtime churn — so a box that renders to the shipped value is byte-identical
-    to one that never rendered. Otherwise the whole file is published through
+    **Write-on-change only.** When the conf already declares exactly this wire
+    the file is left GENUINELY untouched — no rewrite, no mtime churn — so a box
+    that renders to the shipped values is byte-identical to one that never
+    rendered. Because an omitted ``format``/``channels`` key already declares
+    the ioplug's default (:data:`RING_CONF_DEFAULT_FORMAT` /
+    :data:`RING_CONF_DEFAULT_CHANNELS`), a box on the shipped wire never gains a
+    line either. Otherwise the whole file is published through
     :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
     reader never observes a half-written conf.d and the installed file's
     uid/gid/mode survive the replace.
 
-    Only the ``period_frames`` VALUES move: indentation, ``n_slots``, the
-    ``path`` values, and every comment survive verbatim, because the rewrite is
-    a substitution over the same regex :func:`ring_conf_period_frames` reads.
+    Only geometry VALUES move: the ``path`` values, block ordering and every
+    comment survive verbatim, because each rewrite is a substitution over the
+    same regex the matching parser reads.
 
-    Raises ``ValueError`` for a target that is not ``RING_SLOT_FRAMES`` or a
-    conf.d that declares no ``period_frames`` line at all (a torn / foreign
-    file — never invent one), and ``OSError`` when the file cannot be read or
-    replaced.
+    Raises ``ValueError`` for a period that is not ``RING_SLOT_FRAMES``, a conf.d
+    that declares no ``period_frames`` line at all, or one whose PCM blocks
+    cannot be found (a torn / foreign file — never invent one), and ``OSError``
+    when the file cannot be read or replaced.
     """
+    period_frames = wire.period_frames
+    sample_format = wire.sample_format
+    ring_a_channels = wire.ring_a_channels
+    ring_b_channels = wire.ring_b_channels
+
     if period_frames != RING_SLOT_FRAMES:
         raise ValueError(
             f"period_frames must equal RING_SLOT_FRAMES ({RING_SLOT_FRAMES}), "
@@ -248,17 +521,53 @@ def render_ring_conf_period(
     # report, but it is still rendered: converging both lines onto the target is
     # exactly the repair. Mirrors ring_conf_period_frames returning None there.
     distinct = set(previous)
-    if distinct == {period_frames}:
-        return RingConfPeriodRender(
-            changed=False,
-            period_frames=period_frames,
-            previous_period_frames=period_frames,
-            conf_d=path,
-        )
+
     rendered = _RING_CONF_PERIOD_RE.sub(
         lambda m: f"{m.group('indent')}period_frames {period_frames}",
         text,
     )
+    for pcm_name, channels in (
+        (RING_A_CONF_PCM, ring_a_channels),
+        (RING_B_CONF_PCM, ring_b_channels),
+    ):
+        # Re-find the span each pass: rendering Ring A's body moves Ring B's.
+        span = _ring_conf_block_body_span(rendered, pcm_name)
+        if span is None:
+            raise ValueError(
+                f"ring conf.d ({path}) has no readable pcm.{pcm_name} block "
+                "(absent or unbalanced braces); refusing to invent one — "
+                "redeploy to reinstall it"
+            )
+        body = rendered[span[0] : span[1]]
+        # Channels first, then format: each insert anchors immediately after
+        # ``n_slots``, so rendering in reverse leaves the file reading
+        # period_frames / n_slots / format / channels in every block.
+        body = _render_block_field(
+            body,
+            pattern=_RING_CONF_CHANNELS_RE,
+            key="channels",
+            value=str(channels),
+            default=str(RING_CONF_DEFAULT_CHANNELS),
+        )
+        body = _render_block_field(
+            body,
+            pattern=_RING_CONF_FORMAT_RE,
+            key="format",
+            value=sample_format,
+            default=RING_CONF_DEFAULT_FORMAT,
+        )
+        rendered = rendered[: span[0]] + body + rendered[span[1] :]
+
+    if rendered == text:
+        return RingConfWireRender(
+            changed=False,
+            period_frames=period_frames,
+            previous_period_frames=period_frames if distinct == {period_frames} else None,
+            sample_format=sample_format,
+            ring_a_channels=ring_a_channels,
+            ring_b_channels=ring_b_channels,
+            conf_d=path,
+        )
     # Function-local so the module keeps its stdlib-only import cost for the
     # presence/parse callers (the coupling reconciler and the socket-activated
     # web surfaces); only the renderer pays for atomic_io. preserve_target_stat
@@ -268,10 +577,13 @@ def render_ring_conf_period(
     from jasper.atomic_io import atomic_write_text
 
     atomic_write_text(path, rendered, preserve_target_stat=True)
-    return RingConfPeriodRender(
+    return RingConfWireRender(
         changed=True,
         period_frames=period_frames,
         previous_period_frames=previous[0] if len(distinct) == 1 else None,
+        sample_format=sample_format,
+        ring_a_channels=ring_a_channels,
+        ring_b_channels=ring_b_channels,
         conf_d=path,
     )
 
@@ -340,94 +652,77 @@ def ring_geometry_matches_outputd(
     )
 
 
-# --- Ring A slot-count coherence (defect A) --------------------------------
+# The ring SHM header layout — the u32 prefix of rust/jasper-ring/src/layout.rs,
+# duplicated here (Python has no way to link the Rust const). The golden layout
+# test in the Rust crate is the offset SSOT, and ``test_ring_assets`` pins these
+# against it.
 #
-# The ring's ``n_slots`` is a SECOND geometry axis independent of period_frames.
-# fan-in creates Ring A with ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots
-# (default 2); the ``jts_ring_capture`` ioplug conf.d block pins ``n_slots`` (2 in
-# the shipped file); the on-disk ring header records the ``n_slots`` the writer
-# actually created. A mismatch on ANY of the three axes is a hard failure:
-#   - fan-in env vs conf.d: fan-in creates an old 8-slot ring but CamillaDSP's
-#     ioplug attaches expecting 2 → hw_params EINVAL + ioplug attach_fatal
-#     ("ring header does not match expected geometry") → CamillaDSP crash-loop →
-#     start-limit-hit.
-#     (The 2026-07-06 default migration class: old 8-slot ring state must converge
-#     to the new 2-slot production default.)
-#   - on-disk vs expected: a stale ring file left over from a prior geometry (e.g.
-#     an old 8-slot file from before this 2-slot default) is a create-or-ATTACH
-#     open() error for the writer, because
-#     ``jasper_ring::RingWriter::create_or_attach`` validates the existing header's
-#     geometry against the requested one.
-#
-# ``_RING_CONF_PCM_N_SLOTS_RE`` extracts the ``n_slots`` line WITHIN a named PCM
-# block. The conf.d has TWO blocks (Ring A and Ring B); they both pin 2 slots
-# today, but this parser still scopes to the requested block so a future coherent
-# override on one ring cannot be hidden by a whole-file scan. It is intentionally
-# forgiving of the ALSA conf brace style the
-# shipped file uses (``pcm.NAME {`` … ``n_slots N`` … ``}``).
-_RING_CONF_PCM_BLOCK_RE_TEMPLATE = (
-    r"pcm\.{name}\s*\{{(?P<body>[^}}]*)\}}"
-)
-_RING_CONF_N_SLOTS_RE = re.compile(r"^\s*n_slots\s+(\d+)\s*$", re.MULTILINE)
-
-
-def ring_conf_n_slots(pcm_name: str, conf_d: str | None = None) -> int | None:
-    """Parse the ``n_slots`` pinned for a named PCM block in the ring conf.d.
-
-    ``pcm_name`` is ``jts_ring_capture`` (Ring A) or ``jts_ring_playback`` (Ring
-    B). Returns the single ``n_slots`` value that block declares, or ``None`` when
-    the file is absent/unreadable, the block is missing, or the block declares no
-    single ``n_slots`` (a torn conf.d — the caller treats that as a mismatch, not
-    a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
-    :data:`RING_CONF_D` at CALL time (not a bound default) so a test/caller that
-    repoints the module constant is honored.
-    """
-    path = RING_CONF_D if conf_d is None else conf_d
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError:
-        return None
-    block_re = re.compile(
-        _RING_CONF_PCM_BLOCK_RE_TEMPLATE.format(name=re.escape(pcm_name)),
-        re.DOTALL,
-    )
-    m = block_re.search(text)
-    if m is None:
-        return None
-    values = {int(v.group(1)) for v in _RING_CONF_N_SLOTS_RE.finditer(m.group("body"))}
-    if len(values) != 1:
-        return None
-    return next(iter(values))
-
-
-# The ring SHM header layout — a small subset of rust/jasper-ring/src/layout.rs,
-# duplicated here (Python has no way to link the Rust const). ONLY the fields the
-# stale-file geometry guard needs are read; the golden layout test in the Rust
-# crate is the offset SSOT, and ``test_ring_assets`` pins these against it.
+# ALL SIX declared geometry fields are read, not just the two the slot-count
+# guard needs. ``rate``/``channels``/``sample_format`` have been real header
+# fields since v1 and the Rust/C attach compares every one of them field-by-
+# field, so a Python guard that reads only ``period_frames``/``n_slots`` cannot
+# see a file that shears on the other three — it would report a coherent ring
+# where the ioplug attach will fail.
 _RING_MAGIC = 0x4A52_494E  # "JRIN" little-endian (layout.rs MAGIC)
 _RING_HEADER_BYTES = 128  # layout.rs HEADER_BYTES
+# The one layout version this parser's offsets describe (layout.rs VERSION).
+_RING_HEADER_VERSION = 1
 _RING_OFF_MAGIC = 0  # u32
 _RING_OFF_VERSION = 4  # u32
+_RING_OFF_RATE = 8  # u32
+_RING_OFF_CHANNELS = 12  # u32
+_RING_OFF_SAMPLE_FORMAT = 16  # u32
 _RING_OFF_PERIOD_FRAMES = 20  # u32
 _RING_OFF_N_SLOTS = 24  # u32
+
+# The ``sample_format`` header field's wire values (layout.rs
+# SAMPLE_FORMAT_S16LE / SAMPLE_FORMAT_S32LE, mirrored by the C header's
+# JTS_RING_SAMPLE_FORMAT_*). These ids are written into the shared header and
+# compared field-by-field on attach, so they are a wire contract pinned to the
+# literals 1 and 2 by ``tests/test_ring_slot_ceiling_pin.py``.
+RING_SAMPLE_FORMAT_S16LE = 1
+RING_SAMPLE_FORMAT_S32LE = 2
+# Header sample_format id -> the ALSA format token the conf.d and the emitters
+# spell. ``jasper.fanin_coupling`` owns that token vocabulary; this map is how a
+# header byte is named in a human-readable mismatch detail.
+RING_SAMPLE_FORMAT_NAMES = {
+    RING_SAMPLE_FORMAT_S16LE: "S16_LE",
+    RING_SAMPLE_FORMAT_S32LE: "S32_LE",
+}
 
 
 @dataclass(frozen=True)
 class RingHeader:
     """The geometry fields read from an on-disk ring SHM file header.
 
-    ``valid`` is False when the file is absent, too small for a header, or does
-    not carry the ``JRIN`` magic (a torn / partially-initialized / foreign file).
-    A ``valid=False`` header is NOT trusted for a geometry comparison — the caller
-    treats an unreadable/invalid on-disk ring as "no coherent ring present".
+    ``valid`` is False when the file is absent, too small for a header, does not
+    carry the ``JRIN`` magic (a torn / partially-initialized / foreign file), or
+    declares a layout ``version`` this parser does not describe. A
+    ``valid=False`` header is NOT trusted for a geometry comparison — the caller
+    treats it as "no coherent ring present".
+
+    The version gate is a PARSER property, not a policy one: these offsets are
+    the v1 layout's, so a file announcing another version may put entirely
+    different meanings at them and its "geometry" would be fiction. ``version``
+    is still reported so a caller can name what it saw.
     """
 
     valid: bool
     magic: int = 0
     version: int = 0
+    rate: int = 0
+    channels: int = 0
+    sample_format: int = 0
     period_frames: int = 0
     n_slots: int = 0
+
+    @property
+    def sample_format_name(self) -> str:
+        """The header's ``sample_format`` as an ALSA token, or ``id=N`` for one
+        outside the two the layout defines."""
+        return RING_SAMPLE_FORMAT_NAMES.get(
+            self.sample_format, f"id={self.sample_format}"
+        )
 
 
 def read_ring_header(path: str) -> RingHeader:
@@ -435,10 +730,11 @@ def read_ring_header(path: str) -> RingHeader:
 
     Pure filesystem read of the first :data:`_RING_HEADER_BYTES` bytes — no mmap,
     no ALSA, no writer disturbance (read-only open). Returns ``RingHeader(valid=
-    False)`` for an absent/short/magic-less file. The magic gate matters: the Rust
-    writer publishes ``JRIN`` LAST (a Release store), so a header without it is
-    not yet a coherent ring and must not drive a delete/mismatch decision on its
-    (zero) geometry fields.
+    False)`` for an absent/short/magic-less file, and for one whose ``version``
+    is not :data:`_RING_HEADER_VERSION`. The magic gate matters: the Rust writer
+    publishes ``JRIN`` LAST (a Release store), so a header without it is not yet
+    a coherent ring and must not drive a delete/mismatch decision on its (zero)
+    geometry fields.
     """
     import struct
 
@@ -452,10 +748,18 @@ def read_ring_header(path: str) -> RingHeader:
     magic = struct.unpack_from("<I", head, _RING_OFF_MAGIC)[0]
     if magic != _RING_MAGIC:
         return RingHeader(valid=False)
+    version = struct.unpack_from("<I", head, _RING_OFF_VERSION)[0]
+    if version != _RING_HEADER_VERSION:
+        # Magic matched but the layout is not the one these offsets describe:
+        # report the version, vouch for nothing else.
+        return RingHeader(valid=False, magic=magic, version=version)
     return RingHeader(
         valid=True,
         magic=magic,
-        version=struct.unpack_from("<I", head, _RING_OFF_VERSION)[0],
+        version=version,
+        rate=struct.unpack_from("<I", head, _RING_OFF_RATE)[0],
+        channels=struct.unpack_from("<I", head, _RING_OFF_CHANNELS)[0],
+        sample_format=struct.unpack_from("<I", head, _RING_OFF_SAMPLE_FORMAT)[0],
         period_frames=struct.unpack_from("<I", head, _RING_OFF_PERIOD_FRAMES)[0],
         n_slots=struct.unpack_from("<I", head, _RING_OFF_N_SLOTS)[0],
     )

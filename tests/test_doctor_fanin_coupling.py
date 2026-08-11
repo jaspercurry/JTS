@@ -401,38 +401,42 @@ _S32_RING_PLAYBACK_CFG = _S16_RING_PLAYBACK_CFG.replace(
 def test_playback_format_ok_for_an_armed_ring_on_a_wide_box(monkeypatch, tmp_path):
     """AN ARMED RING IS ``type: Alsa`` — the File split alone does NOT cover it.
 
-    Its width is forced to RING_WIRE_FORMAT by the coupling's own kwargs (the
-    PR-6 ring ruling) and hard-enforced by jasper_ring::Geometry::validate_self,
-    so an S16 ring config on a box whose general default is S32 is HEALTHY. Keyed
+    Its width comes from resolve_ring_wire through the coupling's own kwargs (the
+    PR-6 ring ruling), so an S16 ring config on a box whose general default is
+    S32 is HEALTHY. Keyed
     on the ring's playback device, this must be green; keyed only on the File
     type, it red-lines every armed-ring box — including the certified-latency USB
     box, whose canary criterion is literally "doctor green" — with a remediation
     that regenerates the identical S16 config.
     """
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, RING_WIRE_FORMAT
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
 
-    assert RING_WIRE_FORMAT != DEFAULT_PLAYBACK_FORMAT
+    assert resolve_ring_wire().sample_format != DEFAULT_PLAYBACK_FORMAT
     assert RING_PLAYBACK_DEVICE in _S16_RING_PLAYBACK_CFG
     res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
     assert res.status == "ok"
     assert "S16_LE" in res.detail
-    assert "RING_WIRE_FORMAT" in res.detail
+    assert "resolve_ring_wire" in res.detail
 
 
 def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
     monkeypatch, tmp_path
 ):
-    """The ring split must not become "any ring device auto-passes": the SHM ring
-    cannot CARRY a wide slot (validate_self hard-rejects it), so a ring config
-    declaring S32 is a genuinely broken box and stays red — even though S32 is
-    what the loopback lane wants, which is exactly the confusion the three-way
-    split has to get right."""
+    """The ring split must not become "any ring device auto-passes": a config
+    declaring a width the box's resolved ring wire does not carry is a genuinely
+    broken box and stays red — even though S32 is what the loopback lane wants,
+    which is exactly the confusion the three-way split has to get right.
+
+    This is the check that has to catch it, because the ring LAYOUT accepts both
+    S16LE and S32LE: a config drifted to the other one is inside the accept-set,
+    so the attach would not refuse it — the ends would simply be built to
+    different widths."""
     res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
     assert res.status == "fail"
     assert "S32_LE" in res.detail
     assert "S16_LE" in res.detail
-    assert "RING_WIRE_FORMAT" in res.detail
+    assert "resolve_ring_wire" in res.detail
 
 
 def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(

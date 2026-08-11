@@ -2332,7 +2332,8 @@ def test_reconcile_apple_leaves_the_shipped_ring_conf_byte_identical(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
-        "previous_period_frames=128"
+        "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
+        "ring_b_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2359,7 +2360,8 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
         "output_dac_id=hifiberry_dac8x period_frames=none "
-        "previous_period_frames=none reason=no_declared_floor"
+        "previous_period_frames=none sample_format=none ring_a_channels=none "
+        "ring_b_channels=none topology=none reason=no_declared_floor"
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2394,7 +2396,7 @@ def test_reconcile_leaves_ring_conf_untouched_when_no_dac_is_recognized(
 def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
-    assert "render-ring-conf-period" in text
+    assert "render-ring-conf-wire" in text
     # The INSTALLED conf.d path is NOT a fourth copy in bash: the only --conf-d
     # the script passes is the (empty by default) test override, so the Python
     # SSOT jasper.ring_assets.RING_CONF_D resolves the real path and reports
@@ -2402,12 +2404,30 @@ def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None
     assert "/etc/alsa/conf.d" not in text
     assert 'RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"' in text
     assert '--conf-d "$RING_CONF_D_OVERRIDE"' in text
+    # Ring B's channel count is topology-resolved, so the render needs the
+    # saved topology the rest of this script already resolves.
+    assert '--output-topology "$OUTPUT_TOPOLOGY_PATH"' in text
+    # The `key value` protocol is a WHITELIST — an unmatched key is dropped
+    # silently. Every key the renderer emits needs an arm, or the wire it
+    # resolved never reaches the journal.
+    for key in (
+        "result",
+        "period_frames",
+        "previous_period_frames",
+        "sample_format",
+        "ring_a_channels",
+        "ring_b_channels",
+        "topology",
+        "reason",
+        "conf",
+    ):
+        assert f"            {key}) " in text, key
     # The render must not feed a restart flag: arming is the coupling
     # reconciler's job, and ALSA re-reads the conf.d at the next PCM open.
     assert "render_ring_conf_if_needed && " not in text
 
 
-# --- render-ring-conf-period: the floor is DATA -------------------------------
+# --- render-ring-conf-wire: the floor is DATA -------------------------------
 
 
 def _render_ring_conf(conf: Path) -> int:
@@ -2415,7 +2435,7 @@ def _render_ring_conf(conf: Path) -> int:
 
     return audio_config_main(
         [
-            "render-ring-conf-period",
+            "render-ring-conf-wire",
             "--profile-id",
             "hifiberry_dac8x",
             "--conf-d",
@@ -2512,19 +2532,26 @@ def test_render_subcommand_refuses_a_floor_the_ring_slot_cannot_carry(
     assert conf.stat().st_mtime_ns == before_mtime
 
 
-def test_render_ring_conf_period_itself_refuses_a_non_slot_period(
+def test_render_ring_conf_wire_itself_refuses_a_non_slot_period(
     tmp_path: Path,
 ) -> None:
     # Defence in depth: the writer cannot emit a period the ring transport
     # will not carry, even if a future caller forgets the floor gate.
     from jasper import ring_assets
+    from jasper.fanin_coupling import RingWire
 
     conf = _staged_ring_conf(tmp_path)
     before_bytes = conf.read_bytes()
 
     with pytest.raises(ValueError, match="RING_SLOT_FRAMES"):
-        ring_assets.render_ring_conf_period(
-            2 * RING_SLOT_FRAMES, conf_d=str(conf)
+        ring_assets.render_ring_conf_wire(
+            RingWire(
+                sample_format="S16_LE",
+                ring_a_channels=2,
+                ring_b_channels=2,
+                period_frames=2 * RING_SLOT_FRAMES,
+            ),
+            conf_d=str(conf),
         )
     assert conf.read_bytes() == before_bytes
 

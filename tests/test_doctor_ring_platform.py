@@ -354,3 +354,60 @@ def test_inert_missing_asset_stays_warn(monkeypatch, tmp_path):
     res = audio.check_ring_platform_assets()
     assert res.status == "warn"
     assert "inert" in res.detail
+
+
+# --- The open-probe asks for the RESOLVED wire, not a literal ------------------
+
+
+def test_probe_asks_for_the_resolved_wire(monkeypatch):
+    """The ioplug advertises EXACTLY the conf-declared format/channels as its
+    hardware constraint, so a probe hardcoded to 2ch/S16_LE would fail hw_params
+    on a perfectly healthy plugin the moment a box's conf.d declared anything
+    else. Patch the resolver; the probe argv must follow it, per PCM."""
+    import jasper.fanin_coupling as fc
+
+    monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(
+        fc,
+        "resolve_ring_wire",
+        lambda topology=None: fc.RingWire(
+            sample_format="S32_LE",
+            ring_a_channels=2,
+            ring_b_channels=6,
+            period_frames=fc.RING_SLOT_FRAMES,
+        ),
+    )
+    seen = {}
+
+    def _capture_cmd(cmd, timeout=5.0):
+        seen[cmd[2]] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(audio, "_run", _capture_cmd)
+
+    audio._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    audio._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+
+    ring_a = seen["jts_ring_capture"]
+    ring_b = seen["jts_ring_playback"]
+    assert ring_a[ring_a.index("-f") + 1] == "S32_LE"
+    assert ring_b[ring_b.index("-f") + 1] == "S32_LE"
+    # Ring A is the stereo program; Ring B follows the topology.
+    assert ring_a[ring_a.index("-c") + 1] == "2"
+    assert ring_b[ring_b.index("-c") + 1] == "6"
+
+
+def test_probe_asks_for_the_shipped_wire_today():
+    """DORMANCY: the argv on a real box is unchanged — 2 channels, S16_LE."""
+    from jasper.fanin_coupling import resolve_ring_wire
+
+    wire = resolve_ring_wire()
+    for pcm in ("jts_ring_capture", "jts_ring_playback"):
+        channels, sample_format = audio._jts_ring_probe_wire(pcm)
+        assert channels == 2
+        assert sample_format == "S16_LE"
+    assert (wire.sample_format, wire.ring_a_channels, wire.ring_b_channels) == (
+        "S16_LE",
+        2,
+        2,
+    )
