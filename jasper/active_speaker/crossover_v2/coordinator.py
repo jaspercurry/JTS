@@ -295,11 +295,16 @@ class RoundDecision:
     Every field is what the caller should now hold, including on the failure
     paths: a round whose grading raised returns this object with every field at
     its default, which is precisely the state the caller started in.
+
+    **What a restore DID is deliberately not here.** It has two owners already —
+    the receipt's ``restore_result`` and the ``crossover_v2_round_restore``
+    journal line — and the conductor had no reader for it once this module took
+    the receipt.  Returning it anyway would put a third copy in the caller's
+    hands with nothing to check it against.
     """
 
     evaluation: RoundEvaluation | None = None
     refusal: RoundRefusal | None = None
-    restore_result: dict[str, Any] | None = None
     receipt_identity: dict[str, Any] | None = None
 
 
@@ -360,10 +365,7 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
         evaluation, evidence, ports, restore_result=restore_result,
     )
     return RoundDecision(
-        evaluation=evaluation,
-        refusal=refusal,
-        restore_result=restore_result,
-        receipt_identity=receipt_identity,
+        evaluation=evaluation, refusal=refusal, receipt_identity=receipt_identity,
     )
 
 

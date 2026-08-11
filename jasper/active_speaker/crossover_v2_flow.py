@@ -6608,7 +6608,6 @@ class CrossoverV2Conductor:
         # per trigger that happens to fire.
         self._round_evaluated = False
         self._round_evaluation: Any = None
-        self._round_restore_result: dict[str, Any] | None = None
         # Where this round's receipt landed: round id + the bundle artifact's
         # fingerprint. Persisted, so the NEXT round can find the previous one
         # without scanning bundles. ``None`` until a receipt is written, and it
@@ -11399,7 +11398,6 @@ class CrossoverV2Conductor:
             self._round_ports(),
         )
         self._round_evaluation = decision.evaluation
-        self._round_restore_result = decision.restore_result
         self._round_receipt_identity = decision.receipt_identity
         refusal = decision.refusal
         if refusal is None:
