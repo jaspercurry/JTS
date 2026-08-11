@@ -125,7 +125,10 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
 def _load_topology_for_ring_wire(path: str) -> tuple[object | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
-    An unreadable / absent saved topology yields ``None``, which resolves the
+    An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
+    an empty draft for it, because "no saved topology" means "not configured
+    yet" — a ring-eligible shape in its own right, not an unknown one. Only a
+    CORRUPT or unreadable file yields ``None``, which resolves the
     SHIPPED stereo ring wire — the geometry already on disk in the conf.d. That
     is the fail-safe direction for a RENDERER: an indeterminate topology must
     never move the conf.d off what the box is running, and the arm preflights

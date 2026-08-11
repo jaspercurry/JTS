@@ -3116,3 +3116,112 @@ def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_prob
     assert "event=audio_hardware_reconcile.runtime_env" in result.stderr
     assert "mode=dual_apple" in result.stderr
     assert "dac_format=S24_3LE" in result.stderr
+
+
+# --- render-ring-conf-wire: the topology arm ---------------------------------
+
+
+def _render_ring_conf_with_topology(conf: Path, topology_path: Path) -> int:
+    from jasper.cli.audio_config import main as audio_config_main
+
+    return audio_config_main(
+        [
+            "render-ring-conf-wire",
+            "--profile-id",
+            "hifiberry_dac8x",
+            "--conf-d",
+            str(conf),
+            "--output-topology",
+            str(topology_path),
+        ]
+    )
+
+
+def test_render_subcommand_reports_the_full_wire_it_resolved(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Every axis the renderer resolved is emitted for the shell to log. A key
+    # the CLI does not print is a key the reconcile journal reports as `none`,
+    # which is how a per-box wire becomes invisible at the exact moment it
+    # starts differing between boxes.
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+
+    assert _render_ring_conf(conf) == 0
+    out = capsys.readouterr().out
+    assert "sample_format S16_LE" in out
+    assert "ring_a_channels 2" in out
+    assert "ring_b_channels 2" in out
+    assert "topology " in out
+
+
+def test_render_subcommand_fails_safe_on_a_corrupt_topology(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """An indeterminate topology renders the SHIPPED wire and says so.
+
+    Fail-safe direction for a RENDERER: a topology it cannot read must never
+    move the conf.d off what the box is already running. Refusing to ARM on one
+    is the preflights' job (they read it strictly); this only writes a file.
+
+    CORRUPT, not absent — `load_output_topology_strict` deliberately returns an
+    empty draft for a missing file ("not configured yet" is a real, ring-
+    eligible shape), so an absent path is the `loaded` arm, not this one.
+    """
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+    corrupt = tmp_path / "output_topology.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+
+    assert _render_ring_conf_with_topology(conf, corrupt) == 0
+    out = capsys.readouterr().out
+    assert "topology topology_unreadable" in out
+    assert "sample_format S16_LE" in out
+    assert "ring_b_channels 2" in out
+
+    from jasper import ring_assets
+
+    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
+        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S16_LE"
+        assert ring_assets.ring_conf_channels(pcm, str(conf)) == 2
+
+
+def test_render_subcommand_reads_a_readable_topology(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # The other arm: a topology that loads reports `loaded`, so the two cases
+    # are distinguishable in the journal rather than both reading as "fine".
+    import json
+
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps(_full_range_stereo().to_dict()), encoding="utf-8"
+    )
+
+    assert _render_ring_conf_with_topology(conf, topology_path) == 0
+    out = capsys.readouterr().out
+    assert "topology loaded" in out
+    assert "ring_b_channels 2" in out
