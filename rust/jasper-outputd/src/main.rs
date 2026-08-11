@@ -27,13 +27,13 @@ use jasper_outputd::alsa_backend::{
     open_playback_pcm, AlsaBackend, ContentRead, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
 };
-use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
+use jasper_outputd::config::{BackendMode, Config, SinkMode};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
-use jasper_outputd::types::{narrow_period, widen_period, ProgramSample, SampleFormat};
+use jasper_outputd::types::{narrow_period, ProgramSample, SampleFormat};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -362,18 +362,6 @@ fn run_alsa(
     let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
-    // S16 scratch for the SHM ring — the one content source that is
-    // S16-NATIVE rather than an ALSA lane (S16 wire by D5). It's an
-    // alternative to `direct`, so ONE buffer serves whichever is armed and
-    // the `direct` default — every live box — allocates nothing.
-    //
-    // Zero bytes on `direct` matters here specifically: outputd runs `mlockall`,
-    // so an unconditional allocation would be resident forever on hardware that
-    // never uses it.
-    let mut s16_lane_scratch: Vec<i16> = match config.content_bridge_mode {
-        ContentBridgeMode::Direct => Vec::new(),
-        ContentBridgeMode::ShmRing => vec![0i16; content_period_samples],
-    };
     // Ring B: the SHM ping-pong ring content source. Shipped default on
     // eligible stereo topologies (P4 LANDED —
     // docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
@@ -382,20 +370,29 @@ fn run_alsa(
     // against an existing ring is a hard error here — mapped to the config-class
     // exit 78 so the unit parks (RestartPreventExitStatus=78) instead of
     // reboot-looping on a mismatched writer.
+    //
+    // The ring's wire is a per-box DECLARATION, taken from the same
+    // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
+    // ends from — so outputd declares one tuple and the crate's field-by-field
+    // attach is the whole negotiation. The reader owns any staging its wire
+    // needs (see `ShmRingSource`), so a `direct` box — every box the flag does
+    // not arm — allocates nothing for it, which matters under `mlockall`.
     let mut shm_ring = match config.shm_ring.as_ref() {
         Some(ring) => {
             eprintln!(
-                "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} sample_rate={}",
+                "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} format={} sample_rate={}",
                 ring.path,
                 ring.n_slots,
                 config.period_frames,
                 config.content_channels,
+                config.content_format.as_str(),
                 config.sample_rate,
             );
             let src = ShmRingSource::new(
                 &ring.path,
                 config.period_frames,
                 config.content_channels,
+                config.content_format,
                 ring.n_slots,
             )
             .map_err(|e| {
@@ -415,6 +412,7 @@ fn run_alsa(
     };
     if let Some(src) = shm_ring.as_ref() {
         state.mark_shm_ring(src.metrics());
+        state.mark_shm_ring_wire(src.wire_format(), src.channels());
     }
     // Multi-room round-trip lane (Increment 3, HANDOFF-multiroom.md §2):
     // when configured, the DAC is fed from the member-content FIFO with
@@ -549,17 +547,21 @@ fn run_alsa(
         if !served_from_fifo {
             if let Some(src) = shm_ring.as_mut() {
                 // PROTOTYPE: try-read one slot from the SHM ping-pong ring;
-                // empty -> silence (read_period zero-fills). Never blocks, never
-                // errors at runtime (a ring fault degrades to silence + counters
-                // — StartLimitAction=reboot discipline).
+                // empty -> silence (read_period zero-fills). Never blocks, and a
+                // ring fault is never a runtime error (it degrades to silence +
+                // counters — StartLimitAction=reboot discipline).
                 //
-                // The ring wire stays S16 (D5 — `jasper_ring::Geometry::
-                // validate_self` hard-rejects anything else), so this is another
-                // S16 INGRESS: read the slot at the wire's width, then widen onto
-                // the spine. Exact, like every other S16 door.
-                src.read_period(&mut s16_lane_scratch);
+                // The reader delivers onto the spine at its own wire's width —
+                // an S16 ring widens through the same shared door every other
+                // S16 ingress uses, an S32 ring is already the spine's width and
+                // copies straight in. The `?` is the staging-length contract the
+                // widening always carried, unmoved — and, as before, the ring's
+                // counters for THIS period are published before it can
+                // propagate, so a fatal staging fault still leaves `/state`'s
+                // last sample honest.
+                let read = src.read_period(&mut content_buf);
                 state.mark_shm_ring(src.metrics());
-                widen_period(&s16_lane_scratch, &mut content_buf)?;
+                read?;
             } else {
                 let _frames_read = sink.read_content_period(&mut content_buf)?;
             }
@@ -1683,6 +1685,10 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the test `Config` literal names it now that the run loop's ring
+    // staging moved into `ShmRingSource`; importing it at module scope would
+    // be an unused import in a non-test build.
+    use jasper_outputd::config::ContentBridgeMode;
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1697,6 +1703,57 @@ mod tests {
             runtime_error_exit_code(&anyhow::anyhow!("transient runtime fault")),
             None
         );
+    }
+
+    /// A ring WIRE mismatch parks the unit; it does not restart-loop it.
+    ///
+    /// Ring v2 gave the ring geometry two per-box axes (format, channels), so a
+    /// writer and this reader can now disagree on a field that no slot/period
+    /// check would notice. This walks a REAL such disagreement — an S16 ring
+    /// file against an S32 declaration — through the classification the run
+    /// loop applies to it, and pins the exit code at 78, which is what
+    /// `RestartPreventExitStatus=78` in the unit turns into a park. The
+    /// `.context(ConfigClassError)` is constructed here rather than reached
+    /// through `run_alsa` (which needs ALSA), the same bound the sink-startup
+    /// test above has.
+    #[test]
+    fn a_ring_wire_mismatch_classifies_as_a_config_fault_not_a_restart() {
+        use jasper_ring::{Geometry, TestRingWriter, SAMPLE_FORMAT_S16LE};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "jasper-outputd-ring-wire-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("content.ring").to_string_lossy().into_owned();
+
+        // A narrow ring on disk...
+        let _writer = TestRingWriter::create_or_attach(
+            &path,
+            Geometry {
+                rate: 48_000,
+                channels: 2,
+                sample_format: SAMPLE_FORMAT_S16LE,
+                period_frames: 128,
+                n_slots: 2,
+            },
+        )
+        .unwrap();
+        // ...and a wide declaration meeting it.
+        let io_error = match ShmRingSource::new(&path, 128, 2, SampleFormat::S32Le, 2) {
+            Ok(_) => panic!("an S32 declaration must not attach to an S16 ring"),
+            Err(e) => e,
+        };
+        let error = anyhow::Error::new(io_error).context(ConfigClassError);
+
+        assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

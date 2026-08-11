@@ -357,11 +357,16 @@ pub struct AlsaBackend {
     /// lane to have negotiated anything, so `/state` keeps reporting the
     /// declaration rather than claiming a readback that never ran.
     ///
-    /// Read the `None` case honestly: under the SHM-ring source the declared
-    /// value STATUS reports can disagree with the ring's real width, because
-    /// nothing here reads or verifies the ring (the ring wire is S16 by
-    /// contract, and `jasper_ring::Geometry::validate_self` hard-rejects
-    /// anything else). What keeps the pair coherent is upstream, not here:
+    /// Read the `None` case honestly: nothing HERE reads or verifies the ring,
+    /// so `content.format` under the SHM-ring source is a declaration this
+    /// backend never checked. It is checked elsewhere, at the ring itself:
+    /// `ShmRingSource` builds its geometry from the same `Config::content_format`
+    /// and `jasper_ring`'s attach compares every field against the ring header,
+    /// so a declaration that disagrees with the live ring fails startup
+    /// (config-class, exit 78) rather than being reported as a width nobody
+    /// verified. The ring's own attached wire is published separately, as
+    /// `/state.shm_ring.format`/`.channels`. Coherence across the ring's OTHER
+    /// ends is upstream of both:
     /// `jasper.fanin.coupling_reconcile.ring_edge_width_ready` (wide-output-path PR-1,
     /// #2226) runs FIRST in both the unattended auto-arm gate list
     /// (`default_ring_gates()`) and the manual-arm chain. Reworked by PR-6 when
@@ -771,9 +776,9 @@ impl AlsaBackend {
                 config.content_channels,
             ),
             // No ALSA content lane opened ⇒ no ingest staging, whatever the
-            // declaration says. The SHM-ring source feeds `content_buf` directly
-            // and the ring wire is S16 by contract (D5), so its widening happens
-            // in the run loop, not here.
+            // declaration says. The SHM-ring source feeds `content_buf`
+            // directly and owns whatever staging its own wire needs, so
+            // nothing here is sized for it.
             content_widen_buf: if skip_content_pcm {
                 Vec::new()
             } else {
@@ -1012,7 +1017,7 @@ impl AlsaBackend {
             //
             // `io_bytes()` is alsa-rs's documented mechanism for exactly this
             // case: "Call this if you have an unusual format, not supported by the
-            // regular access methods (io_i16 etc)" (alsa-0.11.0 `src/pcm.rs`). It
+            // regular access methods (io_i16 etc)" (alsa 0.12.1 `src/pcm.rs`). It
             // returns `IO<'_, u8>`, and `IO::writei` computes its frame count via
             // `snd_pcm_bytes_to_frames` on the slice's BYTE length — so on a PCM
             // whose installed format is `S24_3LE` the frame arithmetic is

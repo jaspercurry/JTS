@@ -154,6 +154,11 @@ pub struct OutputdState {
     /// is what `content.format` reports only UNTIL outputd opens that lane;
     /// the fake backend and the SHM-ring source never do, so there it is the
     /// whole answer.
+    ///
+    /// Under `shm_ring` the key names no snd-aloop lane at all — it declares
+    /// the RING's wire, which `ShmRingSource` builds its geometry from. That is
+    /// why `shm_ring.format` falls back to this value before the reader
+    /// attaches: the same declaration, read at the other hop.
     declared_content_format: String,
     /// The format the content lane actually NEGOTIATED, read back from the
     /// installed `hw_params` (`SampleFormat::as_str`, hence `&'static str`).
@@ -203,6 +208,28 @@ pub struct OutputdState {
     shm_ring_path: Option<String>,
     shm_ring_slots: AtomicU64,
     shm_ring_slot_frames: AtomicU64,
+    /// The attached ring's WIRE — the two axes ring v2 made per-box, published
+    /// so an operator reads what the ring lane is running instead of inferring
+    /// it from the env. Both come from the reader
+    /// (`ShmRingSource::wire_format`/`channels`) via [`Self::mark_shm_ring_wire`],
+    /// which is the point: the value is sourced from the ring outputd holds,
+    /// not from a second copy of the declaration. They cannot disagree with
+    /// that declaration — attach validates every geometry field against it and
+    /// refuses any other outcome — so this is the wire, not a drift detector.
+    ///
+    /// `OnceLock` for the format because a wire cannot change while a reader
+    /// lives (a re-attach is a new process); `channels` is an atomic seeded
+    /// from the declaration and overwritten at attach, the same shape
+    /// `shm_ring_slots`/`shm_ring_slot_frames` already use.
+    ///
+    /// Before a reader exists, both report the DECLARATION — the format falls
+    /// back to `declared_content_format`, which is the same key the ring
+    /// geometry is built from, so what they report is the wire the reader will
+    /// attach at or exit 78 trying. That window is real, not theoretical: the
+    /// control socket is served before `run_alsa` builds the reader, and the
+    /// fake backend never builds one at all.
+    shm_ring_format: OnceLock<&'static str>,
+    shm_ring_channels: AtomicU64,
     shm_ring_attached: AtomicBool,
     shm_ring_occupancy: AtomicU64,
     shm_ring_frames_read: AtomicU64,
@@ -386,6 +413,14 @@ impl OutputdState {
                     .shm_ring
                     .as_ref()
                     .map(|_| config.period_frames as u64)
+                    .unwrap_or(0),
+            ),
+            shm_ring_format: OnceLock::new(),
+            shm_ring_channels: AtomicU64::new(
+                config
+                    .shm_ring
+                    .as_ref()
+                    .map(|_| config.content_channels as u64)
                     .unwrap_or(0),
             ),
             shm_ring_attached: AtomicBool::new(false),
@@ -840,6 +875,19 @@ impl OutputdState {
         }
     }
 
+    /// Publish the attached ring's wire — see the [`Self::shm_ring_format`]
+    /// field for where the two values come from and why they cannot disagree
+    /// with the declaration.
+    ///
+    /// Called ONCE, beside the first [`Self::mark_shm_ring`], rather than per
+    /// period: the wire is fixed for the reader's lifetime, so re-publishing it
+    /// 375 times a second would be a store that can never change a byte.
+    pub fn mark_shm_ring_wire(&self, format: SampleFormat, channels: u16) {
+        let _ = self.shm_ring_format.set(format.as_str());
+        self.shm_ring_channels
+            .store(u64::from(channels), Ordering::Relaxed);
+    }
+
     pub fn snapshot_json(&self) -> String {
         // Sized for the payload this actually builds: the chip-reference
         // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
@@ -1002,6 +1050,23 @@ impl OutputdState {
                     &mut buf,
                     "slot_frames",
                     self.shm_ring_slot_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // The wire: the two axes ring v2 made per-box. See the
+                // `shm_ring_format` field for their provenance.
+                push_kv_str(
+                    &mut buf,
+                    "format",
+                    self.shm_ring_format
+                        .get()
+                        .copied()
+                        .unwrap_or(self.declared_content_format.as_str()),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "channels",
+                    self.shm_ring_channels.load(Ordering::Relaxed),
                 );
                 buf.push(',');
                 push_kv_u64(
@@ -2755,6 +2820,16 @@ mod tests {
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
+        // Before the reader attaches, the wire is the declaration — the same
+        // key `ShmRingSource` builds the ring geometry from. Read through the
+        // PARSED block, not a substring: `"format":"S16_LE"` also appears in
+        // `content` and `dac`, so a `contains` needle for it would pass on a
+        // ring block that carried no wire at all.
+        let ring = parse_snapshot_json(&state.snapshot_json())["shm_ring"].clone();
+        assert_eq!(ring["format"], "S16_LE");
+        assert_eq!(ring["channels"], 2);
+        // Attach publishes the wire the reader actually holds.
+        state.mark_shm_ring_wire(SampleFormat::S16Le, 2);
         // Empty-read (startup) period: silence path increments startup_empty.
         state.mark_shm_ring(RingMetrics {
             attached: true,
@@ -2773,7 +2848,11 @@ mod tests {
             ..RingMetrics::default()
         });
         let j = state.snapshot_json();
-        let _ = parse_snapshot_json(&j);
+        let parsed = parse_snapshot_json(&j);
+        // The ring WIRE — ring v2's two per-box axes — read off the attached
+        // reader, through the parsed block for the reason above.
+        assert_eq!(parsed["shm_ring"]["format"], "S16_LE");
+        assert_eq!(parsed["shm_ring"]["channels"], 2);
         for needle in [
             r#""content":{"source":"shm_ring""#,
             // Ring B honesty contract: content.ring reports the TRUE Ring B
@@ -2832,6 +2911,39 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+    }
+
+    /// The ring wire is DATA, not two constants spelled into the emitter.
+    ///
+    /// The stereo case above cannot tell a published wire from a hardcoded one:
+    /// `S16_LE` and `2` are also this crate's defaults everywhere else. A wide
+    /// roleful shape shares neither value with the declaration it was built
+    /// from, so it is what pins that both axes carry what the reader reports.
+    #[test]
+    fn snapshot_json_shm_ring_reports_a_wide_wire_as_the_reader_holds_it() {
+        let cfg = Config {
+            content_bridge_mode: ContentBridgeMode::ShmRing,
+            content_channels: 6,
+            content_format: SampleFormat::S32Le,
+            shm_ring: Some(crate::config::ShmRingConfig {
+                path: "/dev/shm/jts-ring/content.ring".to_string(),
+                n_slots: 4,
+            }),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_shm_ring_wire(SampleFormat::S32Le, 6);
+        state.mark_shm_ring(RingMetrics {
+            attached: true,
+            n_slots: 4,
+            slot_frames: 1024,
+            ..RingMetrics::default()
+        });
+        let ring = parse_snapshot_json(&state.snapshot_json())["shm_ring"].clone();
+        assert_eq!(ring["format"], "S32_LE");
+        assert_eq!(ring["channels"], 6);
+        assert_eq!(ring["slots"], 4);
+        assert_eq!(ring["slot_frames"], 1024);
     }
 
     #[test]

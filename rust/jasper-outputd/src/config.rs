@@ -162,6 +162,13 @@ pub struct Config {
     /// match — see `deploy/alsa/asoundrc.jasper`), `S16_LE` on `shm_ring`.
     /// Absence now means a box that has not yet reconciled (fresh install) or
     /// whose probe could not run — not "every box".
+    ///
+    /// It names the content hop, not an ALSA lane specifically: on the
+    /// `shm_ring` coupling no snd-aloop lane is opened at all, and this value
+    /// is the SHM ring's own wire format — [`crate::shm_ring_source::ShmRingSource`]
+    /// builds the ring geometry from it, and the ring's attach validates it
+    /// against the header the writer created. One key, one hop, whichever
+    /// transport carries it.
     pub content_format: SampleFormat,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind
@@ -1477,11 +1484,13 @@ mod tests {
     #[test]
     fn content_format_parses_every_vocabulary_value() {
         // ONE vocabulary for both hops: this axis parses `S24_3LE` because the
-        // enum does, not because a lane can be read at that width. It cannot —
-        // `alsa_backend`'s ingest refuses it park-class, and no writer can emit it
-        // (`jasper.fanin_coupling` answers only S16_LE or S32_LE). The parse and
-        // the refusal are separate layers on purpose; an axis-asymmetric parser
-        // would be a second, silently narrower spelling of the same enum.
+        // enum does, not because a content hop can be read at that width.
+        // Neither transport can — `alsa_backend`'s ingest refuses it
+        // park-class, `shm_ring_source` refuses it for the same reason at the
+        // same exit code — and no writer can emit it (`jasper.fanin_coupling`
+        // answers only S16_LE or S32_LE). The parse and the refusals are
+        // separate layers on purpose; an axis-asymmetric parser would be a
+        // second, silently narrower spelling of the same enum.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),
             ("S24_3LE", SampleFormat::S24_3Le),
