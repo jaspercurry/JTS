@@ -6422,9 +6422,9 @@ class CrossoverV2Conductor:
         # ONE aggregate: the index map, the ordered phases, the group index
         # spans, the accepted phases, the accepted indexes inside an open group,
         # and the applied flag were six correlated fields here and could
-        # disagree. The plan-derived four are exposed below as read-only
-        # properties so the ~35 sites that read them are unchanged and still
-        # resolve to the single owner; every WRITE goes through the journey.
+        # disagree. Every read below goes to ``self._journey`` — its frozen
+        # ``plan`` for the walk, its own methods for progress — and every write
+        # is one of its two transitions.
         #
         # The standard 3-entry session uses the default map; a verify-only
         # re-arm session (§5.2 "Re-verify") maps its single entry
@@ -6463,7 +6463,7 @@ class CrossoverV2Conductor:
         # reads it (nulls → spec → persistence) without changing what PR-3b
         # puts in it. Bounded by the plan's own entry count.
         self._group_positions: dict[str, list[_CloudPosition]] = {
-            phase: [] for phase in self._group_indexes
+            phase: [] for phase in self._journey.plan.group_indexes
         }
         # R16's lateral walk keeps its OWN retention rather than joining the
         # dict above, because a pose is per-driver evidence and a cloud position
@@ -6488,12 +6488,12 @@ class CrossoverV2Conductor:
         # pruning in the retry branch without checking that: the retake
         # normally arrives and overwrites the record anyway.
         self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
-            phase: {} for phase in self._group_indexes
+            phase: {} for phase in self._journey.plan.group_indexes
         }
         # Geometry-locked retakes already spent, per group — the bound behind
         # "up to GEOMETRY_RETRY_POSITIONS extra positions, ONCE".
         self._geometry_retries_used: dict[str, int] = {
-            phase: 0 for phase in self._group_indexes
+            phase: 0 for phase in self._journey.plan.group_indexes
         }
         # The group's closing geometry verdict, as a plain dict for the host to
         # persist/disclose. ``None`` until the group closes.
@@ -6569,7 +6569,7 @@ class CrossoverV2Conductor:
         # proceed without it (``_resolve_spent_slot``), so the group closes with
         # the positions it has instead of the session dying at the mic.
         self._group_unresolved: dict[str, dict[int, str]] = {
-            phase: {} for phase in self._group_indexes
+            phase: {} for phase in self._journey.plan.group_indexes
         }
         self._armed_index: int | None = None
         # The most recent authorized (index, attempt) — the host reads it to
@@ -7191,30 +7191,6 @@ class CrossoverV2Conductor:
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
     # --- journey delegation --------------------------------------------------
-    #
-    # The plan-derived facts, read straight off the single owner. They are
-    # properties rather than fields so there is no copy to fall out of step with
-    # the journey, and private because they are the shape the surrounding
-    # capture code already reads — #2291 Phase 5 retires them along with the
-    # rest of the compatibility shell. Each returns the plan's own stored object
-    # (a tuple, a read-only mapping), so a read costs an attribute lookup and
-    # nothing is rebuilt per access.
-
-    @property
-    def _index_phase_map(self) -> Mapping[int, str]:
-        return self._journey.plan.index_phase_map
-
-    @property
-    def _phases(self) -> tuple[str, ...]:
-        return self._journey.plan.phases
-
-    @property
-    def _group_indexes(self) -> Mapping[str, tuple[int, ...]]:
-        return self._journey.plan.group_indexes
-
-    @property
-    def _post_apply_verifies(self) -> bool:
-        return self._journey.plan.post_apply_verifies
 
     @property
     def post_apply_verifies(self) -> bool:
@@ -7649,7 +7625,7 @@ class CrossoverV2Conductor:
         return self._armed_capture
 
     def _phase_of_index(self, index: int) -> str:
-        phase = self._index_phase_map.get(index)
+        phase = self._journey.plan.phase_for_index(index)
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
@@ -7677,7 +7653,7 @@ class CrossoverV2Conductor:
         than the table), but a defensive fallback keeps a prompt-less capture
         from being a crash rather than a retake.
         """
-        offsets = self._group_indexes.get(phase, ())
+        offsets = self._journey.plan.group_offsets(phase)
         try:
             position = offsets.index(index)
         except ValueError:
@@ -7960,7 +7936,7 @@ class CrossoverV2Conductor:
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
         """The state after an exhausted slot, derived from conductor state."""
-        if phase in self._group_indexes:
+        if self._journey.plan.is_group(phase):
             if index in self._group_unresolved[phase]:
                 return "This position was left out and the group continued."
             if index in self._retained_group_indexes(phase):
@@ -8050,7 +8026,7 @@ class CrossoverV2Conductor:
             # accepted MEASURE that a walk will follow — a rejected capture has
             # no evidence to adjudicate from, and a session with no walk has no
             # lateral robustness term and no close to adjudicate at.
-            if verdict.accepted and PHASE_LATERAL in self._phases:
+            if verdict.accepted and PHASE_LATERAL in self._journey.plan.phases:
                 self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
             verdict = self._consume_lateral_pose(index, attempt, analysis)
@@ -8209,7 +8185,7 @@ class CrossoverV2Conductor:
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
             )
-        if phase not in self._group_indexes:
+        if not self._journey.plan.is_group(phase):
             outcome = "phase_cannot_proceed"
             self._log_slot_spent(
                 phase, index, observed, outcome,
@@ -8320,7 +8296,7 @@ class CrossoverV2Conductor:
 
         Caller holds ``_close_lock``.
         """
-        if index == self._group_indexes[phase][-1]:
+        if self._journey.plan.is_last_index_of_group(phase, index):
             # R16: a dropped LAST pose must still close the walk, or a session
             # whose final capture could not be measured would end with no
             # candidate at all — the anchor's coefficients were never the poses'
@@ -8681,7 +8657,7 @@ class CrossoverV2Conductor:
         # that predates five minutes of evidence the household was just asked to
         # produce — the exact defect the 2026-07-27 decision removed for the
         # cloud. The lateral group's last accepted pose closes it instead.
-        if PHASE_CLOUD_MEASURE in self._phases or PHASE_LATERAL in self._phases:
+        if PHASE_CLOUD_MEASURE in self._journey.plan.phases or PHASE_LATERAL in self._journey.plan.phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         # The pre-cloud 3-entry shape, which NO production caller constructs
@@ -8799,7 +8775,7 @@ class CrossoverV2Conductor:
                 key=lambda p: p.index,
             )
             payload: dict[str, Any] = {"position_id": pose.pose_id}
-            if index == self._group_indexes[PHASE_LATERAL][-1]:
+            if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())
             return PhaseVerdict(True, payload=payload)
 
@@ -8837,7 +8813,7 @@ class CrossoverV2Conductor:
         log_event(
             logger, "correction.crossover_v2_lateral_walk_closed",
             session_id=self.session_id,
-            planned=len(self._group_indexes[PHASE_LATERAL]),
+            planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
             captured=len(self._lateral_poses),
             mark_return_drift_db=self.lateral_mark_return_drift_db(),
         )
@@ -9308,7 +9284,7 @@ class CrossoverV2Conductor:
         # with the re-stash.
         with self._close_lock:
             self._retain_cloud_position(phase, position, analysis, result)
-            if index != self._group_indexes[phase][-1]:
+            if not self._journey.plan.is_last_index_of_group(phase, index):
                 return PhaseVerdict(
                     True, payload={"position_id": position.position_id}
                 )
@@ -11859,7 +11835,7 @@ class CrossoverV2Conductor:
         # recovery for a round that went on to succeed. A session that ends on
         # a terminal rejection writes no round receipt, which is the honest
         # record: its post-apply evidence never completed.
-        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._phases:
+        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._journey.plan.phases:
             return self._grade_round_once(verdict)
         return verdict
 
@@ -13181,8 +13157,8 @@ class CrossoverV2Conductor:
             # tells "no cloud by design" (R15's driver-only path) apart from
             # "a cloud was planned and lost". Both are the host's to answer —
             # the planner cannot see a session's phase list.
-            post_apply_verifies=self._post_apply_verifies,
-            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._phases,
+            post_apply_verifies=self.post_apply_verifies,
+            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             cloud=cloud,
         )
         plan = plan_linearization(request, journal=self._journal_linearization)

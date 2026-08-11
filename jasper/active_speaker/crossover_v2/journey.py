@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Iterable, Mapping
+from typing import AbstractSet, Iterable, Mapping
 
 # --------------------------------------------------------------------------- #
 # phase vocabulary
@@ -364,7 +364,7 @@ class CommissionJourney:
         on walk order and end a session at position 1 of 8 with seven good spots
         still ahead.
         """
-        accepted = self._group_accepted.get(phase, frozenset())
+        accepted: AbstractSet[int] = self._group_accepted.get(phase, frozenset())
         return tuple(
             other
             for other in self.plan.group_indexes.get(phase, ())

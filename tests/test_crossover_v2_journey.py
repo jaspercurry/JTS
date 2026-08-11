@@ -30,7 +30,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM,
     CAPABILITY_ROLLBACK,
-    CAPTURE_PHASES,
     GROUP_PHASES,
     PHASE_APPLYING,
     PHASE_CHECK,

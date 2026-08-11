@@ -65,16 +65,20 @@ from jasper.atomic_io import atomic_write_text
 # paid by nobody new: every shipped consumer imports this module in order to
 # call into it, and its lightest entry point (``crossover_v2_status_block``)
 # already loads numpy on the way to an answer.
+#
+# The four ``X as X`` lines are PEP 484's redundant-alias form: they are
+# re-exports this module names but never calls, and the alias is what says so
+# without spending suppression debt the tree is actively paying down.
 from jasper.active_speaker.crossover_v2.journey import (
-    CAPABILITY_COMMANDED_DELTA,  # noqa: F401 - re-export.
-    CAPABILITY_ENTRY_BASELINE,  # noqa: F401 - re-export.
+    CAPABILITY_COMMANDED_DELTA as CAPABILITY_COMMANDED_DELTA,
+    CAPABILITY_ENTRY_BASELINE as CAPABILITY_ENTRY_BASELINE,
     CAPABILITY_FINDINGS,
-    CAPABILITY_PREDICTED_SUM,  # noqa: F401 - re-export.
+    CAPABILITY_PREDICTED_SUM as CAPABILITY_PREDICTED_SUM,
     CAPABILITY_ROLLBACK,
     STAGE_MEASURE_CAPABILITIES,
     STAGE_VERIFY_CAPABILITIES,
     StageOpening,
-    V2StageCapabilities,  # noqa: F401 - re-export.
+    V2StageCapabilities as V2StageCapabilities,
     available_stage_priors,
     open_stage,
 )
