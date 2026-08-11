@@ -161,8 +161,17 @@ const DIRECT_PERIOD_FRAMES: u32 = 256;
 /// open REQUEST is byte-identical when the period knob is unset, but a
 /// hypothetical negotiation to 512..767 frames that the old floor would have
 /// accepted (with a `buffer_near` warn) now fails validation and sends the lane
-/// Absent. Deliberate — fail-loud beats running the refuted shallow class — and
-/// inert in practice (u_audio negotiates exactly 768 at period 256).
+/// Absent. Deliberate — fail-loud beats running the refuted shallow class.
+///
+/// What the lane actually depends on is this ACCEPTANCE rule — `≥ max(3×period,
+/// 768)` and period-aligned — not on the kernel granting the exact request.
+/// Observed on jts.local 2026-08-11, `/proc/asound/UAC2Gadget/pcm0c/sub0/hw_params`
+/// with the lane open: `period_size: 256`, `buffer_size: 1024`, `format: S32_LE`.
+/// So `u_audio` rounded the 768-frame request UP to four periods and the open was
+/// accepted with the `buffer_near` warn `DirectObservability::buffer_frames`
+/// documents. Do not read that as a negotiation contract: it is one box on one
+/// kernel, which is exactly why the acceptance rule is a range and STATUS reports
+/// the buffer the PCM is really running rather than the one that was asked for.
 const DIRECT_BUFFER_MIN_PERIODS: u32 = 3;
 const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
 
@@ -1929,7 +1938,7 @@ impl Mixer {
 
     /// One period of work: read all inputs, sum, write output.
     fn step(&mut self) -> Result<()> {
-        // 1. Clear the i32 sum scratch.
+        // 1. Clear the sum scratch (i64, in the scale program_width names).
         self.sum_buf.fill(0);
 
         // 2. Drain TTS/control commands once at the period boundary.

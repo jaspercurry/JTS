@@ -238,7 +238,7 @@ def test_step_fills_output_buf_once_above_the_transport_dispatch():
     """`step()`'s narrow saturate is SHARED by both transports, above the match.
 
     The mutant this catches: moving (or duplicating)
-    `saturate_to_i16(&self.sum_buf, &mut self.output_buf)` into the
+    `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)` into the
     `Output::Alsa` arm. `output_buf` is what the `Output::Ring` arm hands
     `write_ring_period` for the lossy aloop mirror — and on the WIDE wire it is
     the mirror's ONLY consumer, since the ring slot itself is filled from
@@ -268,7 +268,7 @@ def test_step_fills_output_buf_once_above_the_transport_dispatch():
     assert sep, "could not find step()'s closing brace"
     assert body.count("fn ") == 1, "the step() slice ran past its own function"
 
-    saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf)"
+    saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)"
     dispatch = "match &mut self.output {"
     assert body.count(saturate) == 1, (
         "step() must fill output_buf with exactly ONE saturate — a second one "

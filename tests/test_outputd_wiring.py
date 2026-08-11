@@ -436,10 +436,10 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
         "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
         in mixer_rs
     )
-    assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
+    assert "tts.mix_period(&mut self.sum_buf, self.program_width)" in mixer_rs
     assert mixer_rs.index(
         "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
-    ) < mixer_rs.index("tts.mix_period(&mut self.sum_buf)")
+    ) < mixer_rs.index("tts.mix_period(&mut self.sum_buf, self.program_width)")
     # The wire layer itself (command vocabulary + parser) lives ONCE in
     # the shared crate; both daemons consume it as a path dependency —
     # the structural guarantee the old byte-twin asserts approximated.
