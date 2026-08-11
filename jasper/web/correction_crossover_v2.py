@@ -6294,6 +6294,52 @@ def _rollback_anchor_available() -> bool:
         return False
 
 
+def _applied_graph_boosts() -> bool:
+    """Does the graph currently on the speaker put energy IN? (#2291)
+
+    #2318's fail-closed cell asks this of the APPLIED intervention, and the
+    grading conductor cannot answer it from its own state: stage 2 builds a
+    fresh conductor whose ``_candidate`` is never set (only stage 1's commit
+    assigns one), so the predicate read ``None`` on every shipped round and
+    the cell was unreachable — a boosted round with unprovable benefit ended
+    accepted, which is exactly the state that rule exists to prevent.
+
+    **One owner for "what did we apply": the applied profile SSOT.** Not the
+    durable ``state["candidate"]``, which is a display summary carrying
+    ``linearization_outcome`` and per-octave figures but not the filters; and
+    not a re-derivation, because
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`
+    already owns which copy of a profile's linearization is authoritative.
+    That mapping is ALREADY reduced, so it goes straight to the shipped
+    predicate with no ``linearization_filters_by_role`` in between — that
+    reducer returns ``{}`` for an already-reduced mapping, which would read as
+    "this graph boosts nothing" and quietly restore the bug.
+
+    **Fails closed.** An unreadable profile answers "boosted", so an
+    intervention nobody can inspect comes off rather than staying on evidence
+    nobody has — the same direction the conductor takes when this seam is
+    absent entirely.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+        profile_linearization,
+    )
+    from jasper.active_speaker.camilla_yaml import linearization_has_boost
+
+    try:
+        return linearization_has_boost(
+            profile_linearization(load_applied_baseline_profile_state())
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            logger,
+            "correction.crossover_v2_applied_boost_unreadable",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return True
+
+
 def bind_v2_stage_seams(
     capabilities: V2StageCapabilities,
     *,
@@ -6384,6 +6430,11 @@ def bind_v2_stage_seams(
         applied_offset_db=_applied_offset_gate,
         record_model_error=_record_live_model_error,
         rollback_available=_rollback_anchor_available,
+        # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
+        # ``entry_graph_fingerprint``'s reason — what is live right now is not
+        # a stage asymmetry — and it is the only way the grading stage can
+        # answer at all, since its conductor never holds the candidate.
+        applied_boosts=_applied_graph_boosts,
         # Unconditional on both stages: "which graph is live right now" is not
         # a stage asymmetry, and #2291's receipt is what lets a LATER round
         # bind the currently-active profile as its own entry graph.

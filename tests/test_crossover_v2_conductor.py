@@ -500,6 +500,15 @@ class FakeSeams:
     # case here, not the normal one — a test that wants it unbound passes
     # ``publish_findings=None`` through ``dataclasses.replace``.
     banked_findings: list = field(default_factory=list)
+    # #2291/#2318: does the APPLIED graph boost? Bound by default and FALSE,
+    # because these fixtures grade rounds whose subject is something else and
+    # the seam's unbound answer is deliberately "boosted" — an intervention
+    # nobody can inspect comes off. Leaving it unbound here would route every
+    # indeterminate round through the fail-closed restore and make each of
+    # these tests assert that rule instead of its own. A test that wants the
+    # rule ITSELF sets this True (or passes ``applied_boosts=None`` through
+    # ``dataclasses.replace`` for the unbound case).
+    applied_boosts: bool = False
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry, *, phase=None):
@@ -523,6 +532,7 @@ class FakeSeams:
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
+            applied_boosts=lambda: self.applied_boosts,
             publish_findings=self.banked_findings.append,
         )
 

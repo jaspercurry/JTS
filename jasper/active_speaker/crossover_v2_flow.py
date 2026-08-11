@@ -4246,6 +4246,13 @@ class V2FlowSeams:
     # than as "there is one" — see that method for why the pessimistic
     # direction is the safe one here.
     rollback_available: Callable[[], bool] | None = None
+    # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
+    # grading time, because the grading conductor cannot answer it from its own
+    # state — stage 2 never holds a candidate (see
+    # :meth:`_applied_candidate_boosts` for the bug this closes). Optional, and
+    # its absence answers "boosted": an intervention this process cannot
+    # inspect comes off rather than staying on evidence nobody has.
+    applied_boosts: Callable[[], bool] | None = None
     # #2291: publish the round receipt and return its artifact fingerprint.
     # The conductor builds the record (one assembler, in the pure layer) and
     # this seam owns WHERE it lands — the evidence bundle, write-once and
@@ -11488,27 +11495,33 @@ class CrossoverV2Conductor:
     def _applied_candidate_boosts(self) -> bool:
         """Does the applied intervention put energy IN? (#2291 ``boosted``)
 
-        Reads the SHIPPED predicate
-        (:func:`~jasper.active_speaker.camilla_yaml.linearization_has_boost`)
-        against the applied candidate's own linearization, reduced by the
-        shipped reducer — no second definition of "boost" on this speaker.
+        **Asked of the HOST, not of this conductor's own state, and that is
+        the whole point.** This originally read ``self._candidate`` — which is
+        assigned in exactly one place, stage 1's commit. The stage that GRADES
+        a round is a different process with a fresh conductor and no ctor
+        parameter for a candidate, so the read was ``None`` on every shipped
+        round, ``boosted`` was always ``False``, and #2318's fail-closed cell
+        was unreachable: a boosted intervention with unprovable benefit ended
+        ``accepted=True`` with the graph live. The test suite was green over it
+        because its harness injected a candidate the production path never
+        supplies.
 
-        Fails CLOSED: a candidate this cannot read is reported as boosted, so
-        an unreadable intervention with an indeterminate benefit is restored
+        The seam answers from the applied-profile SSOT — the one owner of
+        "what did we apply" — through the shipped
+        :func:`~jasper.active_speaker.camilla_yaml.linearization_has_boost`,
+        so there is still no second definition of "boost" on this speaker.
+
+        Fails CLOSED at both levels: an unbound seam and a raising one both
+        answer "boosted", so an intervention nobody can inspect is restored
         rather than left driving a driver on evidence nobody has.
         """
-        from jasper.active_speaker.camilla_yaml import linearization_has_boost
-
-        candidate = self._candidate
-        if candidate is None:
-            return False
+        seam = self._seams.applied_boosts
+        if seam is None:
+            return True
         try:
-            return linearization_has_boost(
-                linearization_filters_by_role(
-                    getattr(candidate, "linearization", None) or {}
-                )
-            )
-        except (TypeError, ValueError, AttributeError):
+            return bool(seam())
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError):
             log_event(
                 logger, "correction.crossover_v2_round_boost_unreadable",
                 level=logging.WARNING, session_id=self.session_id, exc_info=True,
@@ -11709,8 +11722,19 @@ class CrossoverV2Conductor:
                     else ENTRY_GRAPH_FINGERPRINT_UNKNOWN
                 ),
                 rollback_anchor={"available": self._rollback_available()},
-                proposal_fingerprint=str(
-                    getattr(self._candidate, "fingerprint", "") or ""
+                # The APPLIED candidate's identity. ``_tuning_attempt_id``
+                # first, for :meth:`_grade_verify_attempt`'s reason and by the
+                # same chain: on the stage that grades a round it is the only
+                # one populated, read from the durable state's candidate
+                # fingerprint at prepare time. Reading ``self._candidate``
+                # alone was the same dead-stage-2 read that made ``boosted``
+                # unreachable — here it emptied the receipt's
+                # ``proposal_fingerprint``, which the contract refuses, so
+                # every production round lost its receipt to the fail-soft
+                # handler. One bug, two victims.
+                proposal_fingerprint=(
+                    self._tuning_attempt_id
+                    or str(getattr(self._candidate, "fingerprint", "") or "")
                 ),
                 applied_graph_fingerprint=self._entry_graph_fingerprint(),
                 post_measurement=self._post_measurement_identity(),

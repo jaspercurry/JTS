@@ -151,31 +151,39 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     return baseline
 
 
-def _install_applied_candidate(conductor: Any, *, boosts: bool) -> None:
-    """Give a stage-2 conductor the applied candidate it is verifying.
+def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
+    """Put a real applied profile on the speaker — boosted, or cut-only.
 
-    ``prepare_v2_verify`` constructs its conductor with no ``candidate=``: the
-    durable state carries only the applied FINGERPRINT, and stage 2 never
-    builds one. The adoption table's ``boosted`` modifier nevertheless asks
-    what that candidate's linearization does — through the shipped predicate
-    ``camilla_yaml.linearization_has_boost`` — so a round test that wants the
-    fail-closed boost cell has to supply one. The shape is the persisted
-    ``{role: LinearizationFit.to_dict()}`` mapping the shipped reducer takes,
-    not a hand-reduced lookalike, so the predicate under test is the production
-    one end to end.
+    **The input the PRODUCTION predicate reads, not an injection into the
+    conductor.** An earlier version of this helper assigned
+    ``conductor._candidate`` directly, and that is exactly how #2318's
+    fail-closed cell stayed green over dead code: stage 2 builds a fresh
+    conductor with no ``candidate=`` ctor parameter, so the production read was
+    always ``None`` and ``boosted`` was always ``False``, while the suite
+    supplied by hand the one thing the shipped path never has.
+
+    So this sets the applied-profile SSOT instead, and every link after it is
+    production: ``_applied_graph_boosts`` → ``profile_linearization`` (which
+    prefers the recomposition snapshot) → ``camilla_yaml.linearization_has_boost``.
+    Stubbing the loader is unavoidable — there is no profile on disk in a
+    hardware-free test — but it is the boundary of the system, not a step
+    inside the rule under test.
+
+    The mapping is the REDUCED ``{role: [filter_dict, ...]}`` shape a frozen
+    profile actually carries, deliberately not the unreduced candidate shape:
+    passing the latter through ``linearization_filters_by_role`` would be a
+    silent ``{}``, which reads as "this graph boosts nothing".
     """
     gain_db = 3.0 if boosts else -3.0
-    conductor._candidate = SimpleNamespace(
-        fingerprint="fp-stage-1",
-        linearization={"woofer": {"filters": [{"gain": gain_db}]}},
-        # The rest of the surface ``persist_conductor_state`` reads off an
-        # applied candidate. Present so a round test can also persist, not
-        # because the round reads any of it.
-        analysis={},
-        program_id="prog-stage-1",
-        role_attenuations_db={"woofer": -3.0, "tweeter": -6.0},
-        alignment=SimpleNamespace(to_dict=dict),
-        linearization_outcome="fitted",
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "load_applied_baseline_profile_state",
+        lambda *a, **k: {
+            "candidate_fingerprint": "fp-live-graph",
+            "recomposition_snapshot": {
+                "linearization": {"woofer": [{"gain": gain_db}]},
+            },
+        },
     )
 
 
@@ -348,7 +356,7 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
     # 1.5x the deviation before, 1.0x after: measurably flatter, by more than
     # #2291's claim margin.
     _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
@@ -372,7 +380,7 @@ def test_a_measured_regression_restores_and_refuses_under_its_own_code(monkeypat
     conductor, attempts = _restoring_stage_2(monkeypatch)
     # 0.4x before, 1.0x after: the speaker measured BETTER before the apply.
     _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
@@ -399,7 +407,7 @@ def test_an_unproven_boost_with_a_valid_anchor_comes_back_off(monkeypatch):
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     assert conductor.measure_entry_baseline is None  # no comparable before
-    _install_applied_candidate(conductor, boosts=True)
+    _install_applied_graph(monkeypatch, boosts=True)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
@@ -425,7 +433,7 @@ def test_the_same_unproven_round_without_a_boost_asks_instead_of_restoring(
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     assert conductor.measure_entry_baseline is None
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
@@ -447,7 +455,7 @@ def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
     """
     _seed_round_state(anchor=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_applied_candidate(conductor, boosts=True)
+    _install_applied_graph(monkeypatch, boosts=True)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
@@ -490,7 +498,7 @@ def test_a_rejected_verify_keeps_its_own_code_and_burns_no_round(
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_candidate(conductor, boosts=True)
+    _install_applied_graph(monkeypatch, boosts=True)
 
     verdict = _consume_verify(
         conductor,
@@ -525,7 +533,7 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     rejected = _consume_verify(
         conductor,
@@ -587,7 +595,7 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     # Trigger 1: the round's adoption path, on a measured regression.
     first = _consume_verify(conductor, _post_apply_analysis(conductor))
@@ -854,7 +862,7 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
     assert verdict.accepted is True
@@ -890,7 +898,7 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     _consume_verify(conductor, _post_apply_analysis(conductor))
     assert attempts == [1]
@@ -920,7 +928,7 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
 
     def _explode(_receipt):
         raise OSError("no space left on device")
@@ -966,7 +974,7 @@ def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
-    _install_applied_candidate(conductor, boosts=False)
+    _install_applied_graph(monkeypatch, boosts=False)
     conductor._seams = dataclasses.replace(
         _flow_seams(conductor),
         record_model_error=lambda **observation: (
