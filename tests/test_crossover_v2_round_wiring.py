@@ -67,6 +67,11 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    BenefitStatus,
+    RealizationStatus,
+    SpecStatus,
+)
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
@@ -312,6 +317,29 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
     import asyncio
 
     return asyncio.run(coro)
+
+
+def _bare_conductor() -> Any:
+    """The smallest real conductor: the refusal mapping reads no session state.
+
+    Built directly rather than through the two-stage host because
+    ``_round_refusal_for`` is a pure translation from a coordinator kind to a
+    household code — giving it a prepared stage would test the harness.
+    """
+    from tests.test_crossover_v2_conductor import (
+        CAPS, FC_HZ, SESSION, SESSION_VOLUME_DB, FakeSeams, _preset, _roles,
+    )
+
+    return flow.CrossoverV2Conductor(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=FakeSeams().seams(),
+        driver_spacing_m=0.15,
+    )
 
 
 def _restoring_stage_2(monkeypatch) -> tuple[Any, list[int]]:
@@ -1306,3 +1334,251 @@ def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
     v2host.persist_conductor_state(conductor, failure_code=None)
 
     assert calls == ["chmod", "replace"]
+
+
+# --------------------------------------------------------------------------- #
+# 10. the #2331 review ledger — six claims the panel found unpinned
+#
+# Each of these was a sentence in a docstring, a level in a log call, or an
+# exhaustiveness claim that nothing asserted. They are grouped here rather than
+# scattered because they share one origin (the Phase 5a-i round-tail review) and
+# one lesson: a stated guarantee with no test is where the next regression hides.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_failed_restore_is_regraded_with_the_restore_failed_flag(monkeypatch):
+    """C3. The flag is what makes the receipt's "neither graph" claim true.
+
+    ``_regrade_after_failed_restore`` re-runs the SAME table with
+    ``restore_failed=True``, and that argument is the entire mechanism: it is
+    what turns the round into ``RECOVERY_REQUIRED`` and what makes the receipt
+    say the speaker is on neither the entry graph nor a verified one. The
+    OUTCOME was pinned; the argument was not, so a re-grade that dropped the
+    flag would produce a second ordinary restore decision and keep passing.
+    """
+    seen: list[dict[str, Any]] = []
+    real = coordinator.decide_adoption
+
+    def _spy(**kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(coordinator, "decide_adoption", _spy)
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)  # flatter before ⇒ regression
+    _install_applied_graph(monkeypatch, boosts=False)
+    # A rollback seam that reports failure is what routes into the re-grade.
+    conductor._seams = dataclasses.replace(
+        _flow_seams(conductor), rollback=lambda _cause: False,
+    )
+
+    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert [call["restore_failed"] for call in seen] == [True]
+    assert (
+        conductor.round_evaluation.adoption.outcome
+        is AdoptionOutcome.RECOVERY_REQUIRED
+    )
+    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
+
+
+def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
+    """C7. ``rollback_available`` claims BOTH halves fail closed; one was pinned.
+
+    The parametrized table above varies the ``rollback`` seam and the anchor's
+    ANSWER, but always binds an anchor probe. The docstring's other half — no
+    probe bound at all — had no row.
+
+    **The ANSWER alone does not pin it, and finding that out is why this test
+    reads the journal.** Deleting the ``seam is None`` guard still returns
+    ``False``: ``None()`` raises ``TypeError``, which the surrounding handler
+    catches. A first version of this pin asserted only the ``False`` and
+    survived exactly that mutation — pinned for the wrong property, which is the
+    shape of defect the whole ledger exists to close.
+
+    What distinguishes the two is the journal, and the difference is one a
+    support read depends on: an unbound probe is a *configuration* fact (a
+    single-stage or future caller that cannot restore at all), not a failure. It
+    must not spend a WARNING with a traceback, or the log cries wolf in the one
+    place an operator goes looking for a real anchor-read failure.
+    """
+    ports = coordinator.RoundPorts(
+        rollback=lambda _cause: True, rollback_available=None,
+    )
+
+    with caplog.at_level("DEBUG"):
+        answer = coordinator.rollback_available(ports, session_id="cap_x")
+
+    assert answer is False
+    assert not [
+        r for r in caplog.records
+        if "crossover_v2_rollback_available_failed" in r.getMessage()
+    ], "an unbound probe is a configuration fact, not a failure to report"
+
+
+def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
+    """The control for the pin above: a real failure DOES reach the journal.
+
+    Without it, "quietly" could be satisfied by a reader that never logs at all,
+    and the WARN that tells an operator their durable state is unreadable would
+    be free to disappear.
+    """
+
+    def _explode() -> bool:
+        raise RuntimeError("the durable state is unreadable")
+
+    ports = coordinator.RoundPorts(
+        rollback=lambda _cause: True, rollback_available=_explode,
+    )
+
+    with caplog.at_level("DEBUG"):
+        answer = coordinator.rollback_available(ports, session_id="cap_x")
+
+    assert answer is False
+    assert [
+        r.levelname for r in caplog.records
+        if "crossover_v2_rollback_available_failed" in r.getMessage()
+    ] == ["WARNING"]
+
+
+def test_the_no_anchor_escalation_is_logged_at_error(monkeypatch, caplog):
+    """C8. Loudness is the remedy here, so the LEVEL is the pin.
+
+    ``recovery_required`` with no anchor means the speaker is on an unverified
+    graph and the automatic remedy does not exist. Nobody is coming unless the
+    journal shouts; a demotion to WARNING would be invisible in exactly the
+    situation that needs an operator.
+    """
+    _seed_round_state(anchor=False)
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    with caplog.at_level("INFO"):
+        _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    records = [
+        r for r in caplog.records
+        if "crossover_v2_round_recovery_required" in r.getMessage()
+    ]
+    assert records, "the no-anchor escalation must reach the journal"
+    assert [r.levelname for r in records] == ["ERROR"]
+
+
+def test_a_failed_restore_is_logged_at_error_and_a_successful_one_is_not(
+    monkeypatch, caplog,
+):
+    """C9. Same reasoning as C8, and its control.
+
+    A restore that did not complete leaves the speaker on the graph the round
+    just judged bad, with its remedy spent — an operator-visible event. A
+    restore that DID complete is ordinary business at INFO. Pinning only the
+    failure level would pass for a blanket ERROR that cried wolf on every
+    successful undo.
+    """
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+    conductor._seams = dataclasses.replace(
+        _flow_seams(conductor), rollback=lambda _cause: False,
+    )
+
+    with caplog.at_level("INFO"):
+        _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    failed = [
+        r for r in caplog.records
+        if "crossover_v2_round_restore " in r.getMessage() + " "
+    ]
+    assert [r.levelname for r in failed] == ["ERROR"]
+
+    caplog.clear()
+    _seed_round_state()
+    ok_conductor, _ = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(ok_conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    with caplog.at_level("INFO"):
+        _consume_verify(ok_conductor, _post_apply_analysis(ok_conductor))
+
+    succeeded = [
+        r for r in caplog.records
+        if "crossover_v2_round_restore " in r.getMessage() + " "
+    ]
+    assert [r.levelname for r in succeeded] == ["INFO"]
+
+
+def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
+    """C5. ``round_restore_reason``'s docstring claims the map is exhaustive.
+
+    It ends in ``.get(cause, MEASURED_REGRESSION)`` and calls that "a floor, not
+    a branch anything reaches" — a claim about the TABLE, which nothing checked.
+    So walk every corner ``decide_adoption`` can be asked, collect the reasons
+    it returns with a RESTORE intent, and require a deliberate entry for each:
+    any reason other than ``measured_regression`` that lands on the
+    measured-regression code is reaching the fallback, which would tell a
+    household about a regression when the round found a realization failure.
+    """
+    reasons = set()
+    for realization in RealizationStatus:
+        for benefit in BenefitStatus:
+            for spec in SpecStatus:
+                for boosted in (True, False):
+                    decision = coordinator.decide_adoption(
+                        realization=realization, benefit=benefit, spec=spec,
+                        boosted=boosted, rollback_available=True,
+                    )
+                    if decision.outcome is AdoptionOutcome.RESTORE:
+                        reasons.add(decision.reason)
+
+    assert reasons, "the table must be able to ask for a restore at all"
+    for reason in sorted(reasons):
+        code = flow.round_restore_reason(reason)
+        if reason != ADOPTION_MEASURED_REGRESSION:
+            assert code != REASON_CORRECTION_MEASURED_REGRESSION, (
+                f"{reason!r} reaches the fallback rather than its own code"
+            )
+
+
+def test_every_refusal_kind_the_coordinator_can_return_is_mapped():
+    """C6. The catch-all must not answer for a kind nobody wired.
+
+    ``REFUSAL_KINDS`` is the coordinator's own enumeration; the flow maps each
+    to a household code. A kind added there and forgotten here used to fall
+    through an ``else`` and wear ``correction_rollback_failed``'s sentence —
+    telling a household their correction is still applied on evidence that says
+    nothing of the kind.
+    """
+    conductor = _bare_conductor()
+
+    for kind in sorted(coordinator.REFUSAL_KINDS):
+        refusal = coordinator.RoundRefusal(
+            kind=kind, cause=ADOPTION_MEASURED_REGRESSION,
+            rollback_anchor_available=True,
+        )
+        verdict = conductor._round_refusal_for(refusal)
+        assert verdict.accepted is False
+        assert verdict.code
+
+
+def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
+    """The other half of C6: the fallback exists, and it shouts.
+
+    Reached with a kind no released coordinator returns, which is exactly the
+    shape of the future defect — the point is that it cannot arrive quietly.
+    """
+    conductor = _bare_conductor()
+    refusal = coordinator.RoundRefusal(kind="a_kind_from_the_future")
+
+    with caplog.at_level("INFO"):
+        verdict = conductor._round_refusal_for(refusal)
+
+    unmapped = [
+        r for r in caplog.records
+        if "crossover_v2_round_refusal_kind_unmapped" in r.getMessage()
+    ]
+    assert [r.levelname for r in unmapped] == ["ERROR"]
+    # Still refuses, and under the most conservative code available.
+    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED

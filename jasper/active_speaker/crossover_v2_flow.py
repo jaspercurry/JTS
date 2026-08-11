@@ -11332,8 +11332,34 @@ class CrossoverV2Conductor:
         refusal = decision.refusal
         if refusal is None:
             return verdict
+        return self._round_refusal_for(refusal)
+
+    def _round_refusal_for(self, refusal: Any) -> PhaseVerdict:
+        """Map a coordinator refusal KIND to the code the household reads.
+
+        One explicit arm per :data:`coordinator.REFUSAL_KINDS` member, and the
+        fallback is LOUD rather than a catch-all. An `else` that silently
+        answered for an unrecognised kind is how a future kind ships wearing
+        another kind's sentence: every kind the coordinator can return is a
+        deliberate household outcome, so one arriving here unrecognised is a
+        wiring defect and must say so.
+
+        It still refuses rather than raising, and under the most conservative
+        code available — the round already decided something is wrong with this
+        graph, and losing that verdict to a mapping gap would be worse than
+        naming it imprecisely for one release. ``rollback_anchor_available``
+        rides through as-is: ``None`` is the copy owner's "not established" arm.
+        """
+        from jasper.active_speaker.crossover_v2 import coordinator
+
         if refusal.kind == coordinator.REFUSAL_RESTORED:
             return self._round_refusal(round_restore_reason(refusal.cause))
+        if refusal.kind != coordinator.REFUSAL_ROLLBACK_FAILED:
+            log_event(
+                logger, "correction.crossover_v2_round_refusal_kind_unmapped",
+                level=logging.ERROR, session_id=self.session_id,
+                kind=str(refusal.kind),
+            )
         return self._round_refusal(
             REASON_CORRECTION_ROLLBACK_FAILED,
             rollback_anchor_available=refusal.rollback_anchor_available,
@@ -11358,6 +11384,7 @@ class CrossoverV2Conductor:
         self._last_failure_pilot_heard = None
         self._last_failure_rollback_anchor = rollback_anchor_available
         return PhaseVerdict(False, code)
+
     def _log_entry_baseline_diag(
         self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,
     ) -> None:
