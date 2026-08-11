@@ -138,6 +138,7 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
+from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
@@ -1256,262 +1257,32 @@ def _shape_from_kwargs(
 
 # --------------------------------------------------------------------------- #
 # R17 Fc candidate set (plan §4.2 / #1894 / #1675)
+#
+# #2291 Phase 5a-v(b) moved the whole declaration half — the candidate set, the
+# rejection vocabulary, the search-band intersection, and the empty-evaluation
+# refusal — into ``crossover_v2.fc_sweep`` alongside the sweep that reads them,
+# because a pure organ cannot import this module (the dependency runs one way:
+# flow → crossover_v2, never back). They are re-exported here under their
+# historical names, exactly as the Phase 2 planner constants below are, so every
+# existing importer keeps resolving to the single definition rather than growing
+# a second copy.
 # --------------------------------------------------------------------------- #
 
-# How many Fc values the selector may PROPOSE besides the configured one. The
-# ratified direction is "at most five safe candidates" (#1894); this is the
-# proposed half of that, so the evaluated set is at most six.
-MAX_PROPOSED_FC_CANDIDATES = 5
-
-# Why each Fc was refused. Named codes, never a bare number, because every one
-# of these is a household- or operator-actionable declaration rather than an
-# internal detail.
-FC_REJECT_AT_OR_BELOW_FLOOR = "at_or_below_declared_floor"
-FC_REJECT_ABOVE_LOWER_DRIVER_BAND = "above_lower_driver_band"
-FC_REJECT_BEAMING = "beaming_above_ka_ceiling"
-FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
-
-
-@dataclass(frozen=True)
-class FcCandidateSet:
-    """The Fc values the selector may evaluate, and why the others are out.
-
-    ``configured_hz`` is ALWAYS in ``candidates`` (plan §9.8: the configured
-    path stays the golden mode until a multi-candidate path proves equivalence
-    and then improvement), even when it would fail a bound below. That is not
-    an exemption from safety — the declared floor and the lower driver's band
-    are hard, and a configured Fc outside THOSE is a broken declaration the
-    session refuses long before here. It is an exemption from the BEAMING
-    prior, which #1675 defines as guidance to warn on, not a fence.
-
-    ``limits`` carries the derived bounds for disclosure, so a household or an
-    operator can see what the search was allowed to consider rather than being
-    handed a verdict with no visible reasoning.
-    """
-
-    configured_hz: float
-    candidates: tuple[float, ...]
-    rejected: tuple[tuple[float, str], ...]
-    limits: dict[str, float]
-
-    @property
-    def alternatives(self) -> tuple[float, ...]:
-        """Everything the selector could move TO — the set minus configured."""
-        return tuple(fc for fc in self.candidates if fc != self.configured_hz)
-
-
-def fc_candidate_set(
-    *,
-    configured_hz: float,
-    hf_hard_floor_hz: float,
-    lower_driver_hard_ceiling_hz: float,
-    search_band_hz: tuple[float, float] | None = None,
-    lower_driver_diameter_mm: float | None = None,
-    count: int = MAX_PROPOSED_FC_CANDIDATES,
-) -> FcCandidateSet:
-    """Derive the bounded LR4 Fc candidate set from DECLARATIONS only.
-
-    Four bounds, each traceable to something a person confirmed:
-
-    * **strictly above** ``hf_hard_floor_hz`` — the operator-confirmed minimum
-      for the HF driver. Strict because #1654 measured the edge case: at an Fc
-      equal to the floor the candidate's own handoff lands exactly on the
-      evidence band's edge, so it cannot be scored honestly even though the
-      sweep now reaches it;
-    * at or below the lower driver's declared hard ceiling;
-    * inside the declared search band when one is declared;
-    * at or below the **beaming ceiling** from the lower driver's declared
-      diameter (:func:`~jasper.active_speaker.branch_chain.beaming_onset_hz`)
-      — a PROPOSAL bound only, per the paragraph in :class:`FcCandidateSet`.
-
-    Proposals are spaced geometrically, because a crossover argument is a
-    per-octave one and an arithmetic grid would crowd the top of the range.
-
-    Returns an empty ``candidates`` only when the configured value itself is
-    inadmissible; the caller turns that into the ordinary
-    ``no_admissible_candidate`` refusal rather than guessing a crossover.
-    """
-    from jasper.active_speaker.branch_chain import beaming_onset_hz
-
-    lo = float(hf_hard_floor_hz)
-    hi = float(lower_driver_hard_ceiling_hz)
-    limits: dict[str, float] = {
-        "declared_floor_hz": lo,
-        "lower_driver_ceiling_hz": hi,
-    }
-    if search_band_hz is not None:
-        limits["search_lo_hz"], limits["search_hi_hz"] = (
-            float(search_band_hz[0]), float(search_band_hz[1]),
-        )
-        hi = min(hi, float(search_band_hz[1]))
-        lo = max(lo, float(search_band_hz[0]) - _FC_GRID_EPS_HZ)
-    if lower_driver_diameter_mm is not None:
-        ceiling = beaming_onset_hz(float(lower_driver_diameter_mm))
-        limits["beaming_ceiling_hz"] = ceiling
-        hi = min(hi, ceiling)
-
-    rejected: list[tuple[float, str]] = []
-    proposed: list[float] = []
-    if hi > lo and count > 0:
-        # Geometric interior points, excluding both ends: the floor is refused
-        # by the strictness rule above and the ceiling is a bound rather than a
-        # recommendation, so neither is a value to propose.
-        step = (hi / lo) ** (1.0 / (int(count) + 1))
-        proposed = [round(lo * step ** (i + 1), 1) for i in range(int(count))]
-
-    candidates = [float(configured_hz)]
-    for fc in proposed:
-        reason = _fc_rejection(
-            fc, hf_hard_floor_hz, lower_driver_hard_ceiling_hz,
-            search_band_hz, limits.get("beaming_ceiling_hz"),
-        )
-        if reason is None:
-            candidates.append(fc)
-        else:
-            rejected.append((fc, reason))
-    return FcCandidateSet(
-        configured_hz=float(configured_hz),
-        candidates=(
-            float(configured_hz),
-            *sorted(set(candidates) - {float(configured_hz)}),
-        ),
-        rejected=tuple(rejected),
-        limits=limits,
-    )
-
-
-# Half a display digit: the grid rounds proposals to 0.1 Hz, so a search-band
-# edge comparison must not refuse a value it just rounded onto that edge.
-_FC_GRID_EPS_HZ = 0.05
-
-#: One-time serial candidate-sweep wall budget. The capture page separately
-#: owns a 90 s end-to-end result wait, leaving 20 s for anchor analysis, result
-#: publication, polling, and loaded-Pi variance. Post-P0.1 live-Pi all-six
-#: timing is unverified; this is the bounded deployment ceiling.
-FC_SWEEP_COMPUTE_BUDGET_S = 70.0
-
-def _fc_refusal(fc_hz: float, reason: str) -> FcCandidateEvaluation:
-    """A candidate that produced no score, carrying WHY — never a silent drop."""
-    empty = np.zeros(0, dtype=np.float64)
-    return FcCandidateEvaluation(
-        fc_hz=float(fc_hz), freqs_hz=empty, branch_operator_by_role={},
-        anchor_sum_db=empty, scoring_band_hz=None, refusal=reason,
-    )
-
-
-def _fc_rejection(
-    fc_hz: float,
-    hf_hard_floor_hz: float,
-    lower_driver_hard_ceiling_hz: float,
-    search_band_hz: tuple[float, float] | None,
-    beaming_ceiling_hz: float | None,
-) -> str | None:
-    """The FIRST bound ``fc_hz`` violates, hardest first, or ``None``."""
-    if fc_hz <= float(hf_hard_floor_hz):
-        return FC_REJECT_AT_OR_BELOW_FLOOR
-    if fc_hz > float(lower_driver_hard_ceiling_hz):
-        return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
-    if search_band_hz is not None and not (
-        float(search_band_hz[0]) - _FC_GRID_EPS_HZ
-        <= fc_hz
-        <= float(search_band_hz[1]) + _FC_GRID_EPS_HZ
-    ):
-        return FC_REJECT_OUTSIDE_SEARCH_BAND
-    if beaming_ceiling_hz is not None and fc_hz > float(beaming_ceiling_hz):
-        return FC_REJECT_BEAMING
-    return None
-
-
-@dataclass(frozen=True)
-class FcSearchBand:
-    """Which declared search band binds the candidate set, and who narrowed it.
-
-    ``band_hz`` is ``None`` when no proposal may be made at all; the caller
-    then evaluates the configured Fc alone, which is an honest verdict rather
-    than a failure (plan §9.8).
-
-    ``lo_role`` / ``hi_role`` name a role whose own declaration set each
-    surviving edge. They are the whole point of this type: with one number per
-    edge and no owner, a household that has declared a stale band sees only
-    "nothing was proposed" and has nowhere to go. With the owner named, the
-    disclosure can say WHICH driver's declaration is the binding one — the
-    operator edits that declaration, which is where the fact lives.
-
-    There is deliberately no "do the roles disagree?" boolean. In a two-way the
-    intersection is narrower than somebody's declaration almost every time, so
-    such a flag would read ``True`` on nearly every session and mean nothing;
-    and a flag comparing only the two EDGE OWNERS misses the live jts3 case
-    outright, where both roles declare the same upper limit and the
-    disagreement is entirely on the lower one. The two role names carry the
-    actionable fact without either failure mode.
-    """
-
-    band_hz: tuple[float, float] | None
-    lo_role: str | None
-    hi_role: str | None
-    undeclared_roles: tuple[str, ...]
-
-
-def resolve_fc_search_band(
-    declared_band_hz_by_role: Mapping[str, tuple[float, float] | None],
-) -> FcSearchBand:
-    """Intersect the participating roles' declared crossover search bands.
-
-    **The rule, stated once.** A two-way crossover at ``Fc`` puts BOTH drivers
-    at ``Fc`` — the lower driver is low-passed there and the upper driver is
-    high-passed there — so an ``Fc`` is only proposable when EVERY participating
-    role's declaration admits it. The binding band is therefore the
-    intersection, and it is the fail-closed direction: a tweeter's declared low
-    limit is an excursion claim, and the cost of honouring a stale one is a
-    proposal not made, while the cost of ignoring it is a driver asked to cross
-    below what its declaration permits.
-
-    **A participating role with no declared band yields ``None``** — no
-    proposal, disclosed via ``undeclared_roles``. ``crossover_search_band_hz``
-    is a required declaration (``driver_safety._target_issues`` refuses a
-    target without one), so absence here is an anomaly, and the safe reading of
-    an anomaly is "this role has told us nothing about where it may be
-    crossed", never "this role permits everything".
-
-    **An empty intersection also yields ``None``** with both edge owners still
-    named, because "your woofer says at-or-below 1500 and your tweeter says
-    at-or-above 2000" is precisely the actionable sentence, and losing the two
-    role names to a bare ``None`` would throw it away.
-
-    Not a safety gate on its own: :func:`fc_candidate_set` still applies the
-    declared floor, the lower driver's ceiling, and the ka prior on top of
-    whatever this returns. This narrows what may be PROPOSED; it never widens
-    it, and it has no say over the configured Fc, which is always evaluated.
-    """
-    lo_hz = -math.inf
-    hi_hz = math.inf
-    lo_role: str | None = None
-    hi_role: str | None = None
-    undeclared: list[str] = []
-    for role in sorted(declared_band_hz_by_role):
-        band = declared_band_hz_by_role[role]
-        if band is None:
-            undeclared.append(role)
-            continue
-        role_lo, role_hi = float(band[0]), float(band[1])
-        # Strict ">" / "<" keep the FIRST role to set an edge as its owner, so
-        # two roles declaring the same limit name the one that sorts first
-        # rather than whichever happened to be iterated last. Sorted iteration
-        # above is what makes that deterministic; a tie means both roles
-        # declared that limit, so either name is equally true.
-        if role_lo > lo_hz:
-            lo_hz, lo_role = role_lo, role
-        if role_hi < hi_hz:
-            hi_hz, hi_role = role_hi, role
-    if undeclared or lo_role is None or hi_role is None or lo_hz >= hi_hz:
-        return FcSearchBand(
-            band_hz=None, lo_role=lo_role, hi_role=hi_role,
-            undeclared_roles=tuple(undeclared),
-        )
-    return FcSearchBand(
-        band_hz=(lo_hz, hi_hz), lo_role=lo_role, hi_role=hi_role,
-        undeclared_roles=(),
-    )
+from jasper.active_speaker.crossover_v2.fc_sweep import (  # noqa: E402
+    FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+    FC_REJECT_AT_OR_BELOW_FLOOR,
+    FC_REJECT_BEAMING,
+    FC_REJECT_OUTSIDE_SEARCH_BAND,
+    FC_SWEEP_COMPUTE_BUDGET_S,
+    MAX_PROPOSED_FC_CANDIDATES,
+    FcCandidateSet,
+    FcSearchBand,
+    _FC_GRID_EPS_HZ,
+    _fc_rejection,
+    fc_candidate_set,
+    refusal as _fc_refusal,
+    resolve_fc_search_band,
+)
 
 
 def relay_plan_attempts_required(
@@ -6829,38 +6600,14 @@ class CrossoverV2Conductor:
         return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
 
     def _fc_candidate_set(self) -> FcCandidateSet:
-        """This session's proposable Fc set, from DECLARATIONS only (R17).
-
-        Four bounds, all already owned elsewhere and merely gathered here: the
-        HF role's declared hard floor and the lower role's declared ceiling
-        (``roles_bands``, which is what ``resolve_driver_excitation_ceilings``
-        confirmed), the intersected declared search band, and the beaming
-        ceiling from the lower driver's declared diameter.
-
-        The configured Fc is always in the returned set even when every bound
-        would exclude it (§9.8, and on live jts3 the ka ceiling genuinely sits
-        below it) — otherwise this speaker would have no golden candidate to
-        prove equivalence against.
-
-        **``FcSearchBand.band_hz is None`` means NO PROPOSAL, and this is the
-        one place that has to know it.** The same ``None`` reaching
-        :func:`fc_candidate_set` as ``search_band_hz`` would mean the opposite
-        — "no declared band constrains this" — and the set would then be bounded
-        only by the excitation bands, proposing frequencies below the tweeter's
-        own declaration. Translated here to ``count=0``, so the refusal rides
-        the ordinary machinery and the returned ``limits`` still explain the
-        bounds rather than vanishing with the proposals.
-        """
-        search = resolve_fc_search_band(self._crossover_search_band_hz_by_role)
-        return fc_candidate_set(
+        return _fc.candidate_set(
             configured_hz=self._fc_hz,
             hf_hard_floor_hz=self._tweeter.band.lower_hz,
             lower_driver_hard_ceiling_hz=self._woofer.band.upper_hz,
-            search_band_hz=search.band_hz,
+            search_band_hz_by_role=self._crossover_search_band_hz_by_role,
             lower_driver_diameter_mm=self._radiating_diameter_mm_by_role.get(
                 self._woofer.role
             ),
-            count=0 if search.band_hz is None else MAX_PROPOSED_FC_CANDIDATES,
         )
 
     # --- journey delegation --------------------------------------------------
@@ -8488,49 +8235,24 @@ class CrossoverV2Conductor:
 
     # --- R17: the Fc candidate sweep -----------------------------------------
 
+    # Thin argument lists over :mod:`jasper.active_speaker.crossover_v2.fc_sweep`
+    # and :mod:`~jasper.active_speaker.crossover_v2.priors`, which own R17's
+    # decisions — which corners are proposable, what each one does to the
+    # sections and the priors, and what a candidate's model is. What is left
+    # here is this conductor's own reading of its session state, plus the ports
+    # that keep a substituted conductor attribute binding on production (#2354).
+
     def _fc_candidate_sections(
         self, fc_hz: float,
     ) -> dict[str, tuple[CrossoverSection, ...]]:
-        """The configured branch sections, re-cornered at ``fc_hz``.
-
-        Order, direction and role assignment are the preset's — only the corner
-        moves, because R17 adjudicates WHERE to cross, never what shape to
-        cross with (topology search is deferred, #1894).
-        """
-        return {
-            role: tuple(replace(section, fc_hz=float(fc_hz)) for section in sections)
-            for role, sections in sections_by_role(
-                getattr(self._preset, "crossover_regions", ()) or ()
-            ).items()
-        }
+        return _fc.candidate_sections(
+            getattr(self._preset, "crossover_regions", ()) or (), fc_hz,
+        )
 
     def _fc_candidate_priors(
         self, fc_hz: float, sections: Mapping[str, tuple[CrossoverSection, ...]],
     ) -> MeasurementPriors:
-        """MEASURE's priors re-pointed at one candidate — THREE fields move.
-
-        ``configured_polarity_sign_by_role`` and
-        ``measurement_protection_response_by_role`` are carried UNCHANGED:
-        polarity is how the drivers are wired and protection is the filter the
-        graph actually emitted, and neither moves when the crossover corner
-        does. They are also load-bearing here rather than merely harmless —
-        ``_compose_configured_path_ir`` raises on a PARTIAL prior set, so
-        dropping either would refuse the composition outright instead of
-        producing a candidate.
-        """
-        return replace(
-            self._measure_priors(),
-            crossover_fc_hz=float(fc_hz),
-            configured_crossover_response_by_role=_role_transfers(sections),
-            # The same union ``_measure_priors`` takes, at THIS candidate's
-            # corner — asked of its single owner rather than re-spelled. The
-            # twin the #2336 gate named (N2) is closed here: ``priors`` owns
-            # the formula, the session corner and every swept corner ask it,
-            # and there is no second place for the pair to drift apart in.
-            candidate_required_band_hz_by_role=_priors.candidate_required_band_hz(
-                sections, fc_hz=float(fc_hz),
-            ),
-        )
+        return _priors.candidate_priors(self._measure_priors(), fc_hz, sections)
 
     def _fc_branch_operators(
         self,
@@ -8540,149 +8262,44 @@ class CrossoverV2Conductor:
         linearization: Mapping[str, Any],
         trims: Mapping[str, float],
     ) -> dict[str, np.ndarray]:
-        """What this candidate does to one driver's NEUTRAL pose measurement.
-
-        ``sign * (C_c / P) * K * 10**(trim/20)``, plus the alignment's polarity
-        and residual delay on the tweeter — §4.2's re-composition cascaded with
-        everything :func:`predicted_branch_sum` applies to the linearized pair.
-        So ``sum_role M_pose,role * operator_role`` IS this candidate's model at
-        that pose, and the kernel's pose sum is one multiply-add.
-
-        Every factor is evaluated by the SAME function the emitted graph is
-        built from — :func:`crossover_response_complex` for the crossover,
-        :func:`chain_response` for the correction biquads — so this model and
-        the speaker can never disagree about what a filter does.
-        """
-        protection = _role_transfers(self._measurement_protection_sections_by_role) or {}
-        polarity = {
-            role: -1 if inverted else 1
-            for role, inverted in role_polarity(self._preset).items()
-        }
-        filters = linearization_filters_by_role(linearization)
-        residual_us = summed_model_residual_delay_us(
-            analysis.alignment.anchor_delay_us
-            if analysis.alignment.status == ALIGNMENT_OK else None,
-            analysis.alignment.delay_us,
+        return _fc.branch_operators(
+            freqs, analysis, sections, linearization, trims,
+            preset=self._preset,
+            tweeter_role=self._tweeter.role,
+            protection_sections_by_role=(
+                self._measurement_protection_sections_by_role
+            ),
         )
-        operators: dict[str, np.ndarray] = {}
-        for role, section in sections.items():
-            emitted = np.asarray(protection[role](freqs), dtype=np.complex128)
-            configured = np.asarray(
-                crossover_response_complex(freqs, section), dtype=np.complex128
-            )
-            # ``where=`` guards an exact zero only. The CONDITIONING of this
-            # ratio is the analysis's gate, not this function's: a candidate
-            # whose C/P left the composition policy's window never reached here
-            # (it refused as unfittable), and any non-finite bin that survives
-            # is dropped by ``band_flatness``'s own finite mask rather than
-            # scored. Re-stating the policy's ceiling here would put a second
-            # writer on a number that has one.
-            operator = (
-                polarity.get(role, 1)
-                * np.divide(
-                    configured, emitted,
-                    out=np.zeros_like(configured), where=emitted != 0,
-                )
-                * chain_response(filters.get(role, ()), freqs)
-                * 10.0 ** (float(trims.get(role, 0.0)) / 20.0)
-            )
-            if role == self._tweeter.role:
-                operator = (
-                    operator
-                    * analysis.alignment.polarity_sign
-                    * np.exp(-1j * 2.0 * np.pi * freqs * residual_us * 1e-6)
-                )
-            operators[role] = operator
-        return operators
 
     def _evaluate_fc_candidate(
         self, fc_hz: float, anchor: Any, program: Any, result: Any,
     ) -> FcCandidateEvaluation:
-        """One candidate, fitted and reduced to its retained record.
+        """One candidate, fitted and reduced to its retained record — see
+        :func:`~jasper.active_speaker.crossover_v2.fc_sweep.evaluate_candidate`.
 
-        **This method is the release point.** The per-candidate analysis and
-        fit — hundreds of megabytes between them — are locals here, so they are
-        unreachable the moment it returns and the next candidate's allocation
-        never overlaps them. The configured candidate reuses the anchor's own
-        analysis rather than re-running it: it is the same priors, so a second
-        run would buy an identical result for 7 s and 400 MB.
+        The two callables that look like plain state are the point of the
+        signature: ``predicted_spec_report`` and ``sweep_bounds`` are read
+        AFTER the build, and the build writes the spec report, so a value
+        captured here would be the previous candidate's.
         """
-        sections = self._fc_candidate_sections(fc_hz)
-        analysis = (
-            anchor if fc_hz == self._fc_hz
-            else self._seams.analyze(
-                program, result, self._fc_candidate_priors(fc_hz, sections),
-                self._geometry, phase=PHASE_MEASURE,
-            )
-        )
-        cand = analysis.candidate
-        # The SAME hard gate ``_build_candidate`` applies, and applied for the
-        # same reason: ``plan_linearization`` states in its own docstring that
-        # it assumes eligibility and does not re-check, so calling it on a
-        # phone-tier or under-repeated session raises inside the fit engine
-        # rather than declining. An ineligible session simply has no linearized
-        # model to compare candidates with — an honest refusal, never a
-        # fallback to the raw prediction, which would put candidates fitted
-        # differently side by side and call the difference a crossover.
-        if cand is None or self._linearization_ineligible_reason(analysis) is not None:
-            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
-        preset = replace(self._preset, crossover_regions=tuple(
-            replace(region,
-                    id=f"{region.lower_driver}_{region.upper_driver}_{round(fc_hz):.0f}hz",
-                    fc_hz=float(fc_hz))
-            for region in self._preset.crossover_regions))
-        built = self._build_measure_candidate(
-            analysis, None, candidate_sections=sections, source_preset=preset,
-        )
-        candidate = built.candidate
-        if candidate.linearization_outcome == "fit_failed":
-            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
-        trims, linearization = candidate.role_attenuations_db, candidate.linearization
-        grid = lateral_evidence_grid_hz()
-        tweeter_lo, woofer_hi = self._measure_sweep_bounds()
-        # THIS candidate's own linearized prediction, off the state its own
-        # build returned. Until #2291 Phase 2b it was read back off a conductor
-        # field that had to be nulled beforehand and restored afterwards; a
-        # value cannot be another candidate's.
-        anchor_sum = built.linearization.linearized_predicted_sum
-        if anchor_sum is None:
-            # Eligible but the fit still produced no linearized prediction.
-            return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
-        return FcCandidateEvaluation(
-            fc_hz=float(fc_hz),
-            freqs_hz=grid,
-            branch_operator_by_role=self._fc_branch_operators(
-                grid, analysis, sections, linearization, trims,
+        return _fc.evaluate_candidate(
+            fc_hz, anchor,
+            analyze=lambda priors: self._seams.analyze(
+                program, result, priors, self._geometry, phase=PHASE_MEASURE,
             ),
-            anchor_sum_db=np.interp(grid, anchor_sum[0], anchor_sum[1]),
-            # ``overlap_band_hz`` with the REAL sweep bounds, never
-            # ``crossover_region_band_hz``: that one is built for summed
-            # CAPTURES and takes a gate-derived floor, while this scores a
-            # per-branch MODEL on the grid the poses share.
-            scoring_band_hz=overlap_band_hz(
-                float(fc_hz),
-                tweeter_sweep_lo_hz=tweeter_lo,
-                woofer_sweep_hi_hz=woofer_hi,
+            build=self._build_measure_candidate,
+            measure_priors=self._measure_priors,
+            sweep_bounds=self._measure_sweep_bounds,
+            predicted_spec_report=lambda: self._measure_predicted_spec_report,
+            ineligible_reason=self._linearization_ineligible_reason,
+            commanded_delta=_commanded_delta,
+            configured_fc_hz=self._fc_hz,
+            preset=self._preset,
+            tweeter_role=self._tweeter.role,
+            protection_sections_by_role=(
+                self._measurement_protection_sections_by_role
             ),
-            headroom_cost_db=max(
-                (float(fit.get("headroom_cost_db") or 0.0)
-                 for fit in linearization.values() if isinstance(fit, Mapping)),
-                default=0.0,
-            ),
-            candidate=candidate.to_dict(),
-            predicted_sum=(np.asarray(built.predicted_sum[0]).copy(),
-                           np.asarray(built.predicted_sum[1]).copy()),
-            predicted_spec_report=(dict(self._measure_predicted_spec_report)
-                if self._measure_predicted_spec_report is not None else None),
-            commanded_delta=_commanded_delta(analysis.predicted_sum,
-                                             built.predicted_sum),
-            level_frame_finding=built.level_frame_finding,
-            # THIS candidate's realized inter-driver level, which the sweep can
-            # carry since the cutover (#2307 gate note N6): the verdict is a
-            # value on the build's own state rather than a conductor field the
-            # sweep restores, so a selected alternative corner's proposal now
-            # records its OWN evidence instead of an absence.
-            realized_branch_level=built.linearization.realized_branch_level,
+            grid=lateral_evidence_grid_hz(),
         )
 
     def _fc_evaluation_budget_s(self) -> float:
@@ -8690,160 +8307,58 @@ class CrossoverV2Conductor:
         return FC_SWEEP_COMPUTE_BUDGET_S
 
     def _sweep_fc_candidates(self, program: Any, result: Any, anchor: Any) -> None:
-        """Evaluate the proposable Fc set against THIS capture, then release.
+        """Evaluate the proposable Fc set against THIS capture, then release —
+        see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.sweep_candidates`,
+        which owns the budget forecast, the refusal containment, and the
+        "never raises" promise.
 
-        Runs at MEASURE-consume because the raw capture is alive only here: the
-        retained anchor holds derived ``DriverResponse``s, and §4.2's own
-        conditioning policy refuses to un-compose them. Adjudication still
-        happens at the walk's close, so nothing publishes early (§4.4).
-
-        **Never raises.** A sweep that cannot run leaves the disclosure short
-        and says so; no household loses a measured capture because an advisory
-        could not be computed. Nothing here writes an emitted filter; a selected
-        executable candidate waits for Sound-owned acceptance at Review.
+        The three seams are passed as bound attributes rather than reached for
+        inside the organ, so a substituted ``_evaluate_fc_candidate``,
+        ``_fc_candidate_set`` or ``_fc_evaluation_budget_s`` still binds on
+        production — including the two whose raise the organ must catch INSIDE
+        its own guard (#2354).
         """
-        if self._measurement_protection_sections_by_role is None:
-            # No protection map means no §4.2 composition at all, so a
-            # candidate's crossover cannot be substituted for the emitted one.
-            return
-        # No save/restore (#2291 Phase 2b). The fit used to write seven
-        # conductor fields the walk's own candidate build then read, so the
-        # sweep had to snapshot them and put them back — the restore was what
-        # made the published candidate byte-identical to a no-selector run.
-        # Each build now returns its own :class:`_LinearizationState`, so a
-        # swept candidate's values never reach the anchor's and there is
-        # nothing left to restore.
-        started = time.monotonic()
-        slowest_s = 0.0
-        evaluations: list[FcCandidateEvaluation] = []
-        try:
-            # INSIDE the try, with the disclosure log, so "never raises" is
-            # structural rather than a claim about which of these happens to be
-            # total today. Deriving the candidate set reads household
-            # declarations and the budget reads the MEASURE program; both are
-            # ordinary sources of a malformed-input raise, and both used to sit
-            # outside this block — where an advisory could have cost the
-            # household an ACCEPTED MEASURE (resilience lens).
-            candidates = self._fc_candidate_set()
-            budget_s = self._fc_evaluation_budget_s()
-            for fc_hz in candidates.candidates:
-                elapsed = time.monotonic() - started
-                # Forecast, not a bare deadline check: a candidate costs about
-                # what the slowest one so far did, and STARTING one that cannot
-                # finish inside the phone's window is how an advisory becomes a
-                # terminal failure. The first candidate always runs — there is
-                # nothing to forecast from, and a sweep that scores nothing has
-                # no comparison to offer.
-                if evaluations and elapsed + slowest_s > budget_s:
-                    evaluations.extend(
-                        _fc_refusal(rest, EVAL_REFUSED_BUDGET)
-                        for rest in candidates.candidates[len(evaluations):]
-                    )
-                    break
-                try:
-                    evaluations.append(
-                        self._evaluate_fc_candidate(fc_hz, anchor, program, result)
-                    )
-                except (
-                    ArithmeticError, AttributeError, RuntimeError, TypeError,
-                    ValueError, KeyError, IndexError,
-                ) as exc:
-                    log_event(
-                        logger, "correction.crossover_v2_fc_candidate_refused",
-                        level=logging.WARNING, session_id=self.session_id,
-                        fc_hz=round(float(fc_hz), 1), reason=type(exc).__name__,
-                    )
-                    evaluations.append(_fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE))
-                slowest_s = max(slowest_s, time.monotonic() - started - elapsed)
-            attempted = [
-                round(e.fc_hz, 1)
-                for e in evaluations if e.refusal != EVAL_REFUSED_BUDGET
-            ]
-            skipped = [
-                {"fc_hz": round(e.fc_hz, 1), "reason": e.refusal}
-                for e in evaluations if e.refusal == EVAL_REFUSED_BUDGET
-            ]
-            comparison_complete = fc_comparison_complete(
-                evaluations, len(candidates.candidates)
-            )
-            log_event(
-                logger, "correction.crossover_v2_fc_sweep",
-                session_id=self.session_id, configured_hz=round(self._fc_hz, 1),
-                planned=len(candidates.candidates),
-                evaluated=sum(1 for e in evaluations if e.refusal is None),
-                candidate_order=[round(fc, 1) for fc in candidates.candidates],
-                attempted=attempted, skipped=skipped,
-                comparison_complete=comparison_complete,
-                elapsed_s=round(time.monotonic() - started, 2),
-                budget_s=round(budget_s, 2),
-                limits={k: round(v, 1) for k, v in candidates.limits.items()},
-                rejected=[
-                    [round(fc, 1), reason] for fc, reason in candidates.rejected
-                ],
-            )
-        except (
-            ArithmeticError, AttributeError, RuntimeError, TypeError,
-            ValueError, KeyError, IndexError,
-        ) as exc:
-            # The whole advisory declined, loudly. Same caught set as the
-            # per-candidate handler above; ``CrossoverV2FlowError`` is a
-            # ``RuntimeError``, so a refused candidate-set derivation lands here
-            # rather than escaping into the capture's accept path.
-            log_event(
-                logger, "correction.crossover_v2_fc_sweep_refused",
-                level=logging.WARNING, session_id=self.session_id,
-                reason=type(exc).__name__,
-            )
-        finally:
-            self._fc_evaluations = tuple(evaluations)
+        self._fc_evaluations = _fc.sweep_candidates(
+            program, result, anchor,
+            evaluate=self._evaluate_fc_candidate,
+            candidate_set_of=self._fc_candidate_set,
+            budget_s_of=self._fc_evaluation_budget_s,
+            journal=self._journal_linearization,
+            configured_fc_hz=self._fc_hz,
+            protection_declared=(
+                self._measurement_protection_sections_by_role is not None
+            ),
+        )
 
     def _adjudicate_fc(self) -> None:
-        """Turn the retained per-candidate evidence into ONE recommendation.
+        """Turn the retained per-candidate evidence into ONE recommendation —
+        see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.adjudicate`.
 
-        At the walk's close, where §4.4 puts every judgement that reads the
-        whole walk. Releases the evaluations after: the selection is what the
-        review screen renders, and the evidence behind it has done its job.
+        The evaluations are released here, before the judgement runs: the
+        selection is what the review screen renders, and the evidence behind it
+        has done its job. ``select_fc`` is passed rather than imported by the
+        organ so the flow module's own name stays the one production resolves.
         """
         evaluations, self._fc_evaluations = self._fc_evaluations, ()
         if not evaluations:
             return
-        candidates = self._fc_candidate_set()
-        self._fc_selection = select_fc(
+        adjudication = _fc.adjudicate(
             evaluations,
             [pose.curves for pose in self._lateral_poses],
-            configured_hz=self._fc_hz,
-            limits=candidates.limits,
-            planned=len(candidates.candidates),
+            select=select_fc,
+            candidate_set_of=self._fc_candidate_set,
+            journal=self._journal_linearization,
+            configured_fc_hz=self._fc_hz,
         )
-        recommended = self._fc_selection.recommended_hz
-        if recommended is not None:
-            self._fc_selected_evaluation = next(
-                (e for e in evaluations
-                 if math.isclose(e.fc_hz, recommended, abs_tol=0.05)
-                 and e.candidate is not None), None)
-        log_event(
-            logger, "correction.crossover_v2_fc_selection",
-            session_id=self.session_id, verdict=self._fc_selection.verdict,
-            configured_hz=round(self._fc_hz, 1),
-            recommended_hz=(
-                round(self._fc_selection.recommended_hz, 1)
-                if self._fc_selection.recommended_hz is not None else None
-            ),
-            margin_db=(
-                round(self._fc_selection.margin_db, 3)
-                if self._fc_selection.margin_db is not None else None
-            ),
-            evaluated=self._fc_selection.evaluated,
-            planned=self._fc_selection.planned,
-            candidate_order=[round(fc, 1) for fc in self._fc_selection.candidate_order],
-            attempted=[round(fc, 1) for fc in self._fc_selection.attempted],
-            skipped=[
-                {"fc_hz": round(fc, 1), "reason": reason}
-                for fc, reason in self._fc_selection.skipped
-            ],
-            comparison_complete=self._fc_selection.comparison_complete,
-            poses=len(self._lateral_poses),
-        )
+        self._fc_selection = adjudication.selection
+        # Gated on the RECOMMENDATION, not on the match: a verdict that names a
+        # corner whose evaluation cannot be found must CLEAR the field, not
+        # leave whatever was there. The two cases differ only in a shape that
+        # cannot arise today (nothing else writes this field before the close),
+        # and pinning the legacy condition costs one line rather than a trace
+        # argument about why it cannot.
+        if adjudication.selection.recommended_hz is not None:
+            self._fc_selected_evaluation = adjudication.selected_evaluation
 
     @property
     def fc_selection(self) -> FcSelection | None:
