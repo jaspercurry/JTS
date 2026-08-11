@@ -132,8 +132,7 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
-    chain_response,
-    crossover_response_complex,
+    crossover_response_complex,  # noqa: F401 - re-export, see the Fc block below.
     sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
@@ -194,18 +193,13 @@ from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
 )
 from jasper.active_speaker.fc_selector import (
-    EVAL_REFUSED_BUDGET,
-    EVAL_REFUSED_UNFITTABLE,
+    EVAL_REFUSED_BUDGET,  # noqa: F401 - re-export, see the Fc block below.
+    EVAL_REFUSED_UNFITTABLE,  # noqa: F401 - re-export, see the Fc block below.
     FcCandidateEvaluation,
     FcSelection,
-    fc_comparison_complete,
     select_fc,
 )
-from jasper.active_speaker.camilla_yaml import role_polarity
-from jasper.active_speaker.linearization_fit import (
-    linearization_filters_by_role,
-    worst_headroom_cost_db,
-)
+from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -227,8 +221,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    overlap_band_hz,
-    summed_model_residual_delay_us,
+    overlap_band_hz,  # noqa: F401 - re-export, see the Fc block below.
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -1263,12 +1256,21 @@ def _shape_from_kwargs(
 # refusal — into ``crossover_v2.fc_sweep`` alongside the sweep that reads them,
 # because a pure organ cannot import this module (the dependency runs one way:
 # flow → crossover_v2, never back). They are re-exported here under their
-# historical names, exactly as the Phase 2 planner constants below are, so every
+# historical names, exactly as the Phase 2 planner constants above are, so every
 # existing importer keeps resolving to the single definition rather than growing
 # a second copy.
+#
+# These ARE doors, and unlike Phase 2b's two they are doors somebody walks
+# through: ``tests/test_fc_selector.py`` and
+# ``tests/test_crossover_v2_fc_candidates.py`` reach the declaration half by
+# these names. That is the difference Phase 2b's own note turns on — it removed
+# the imports no caller used, not the ones that carry a caller — so the same
+# rule keeps these. The handful of symbols marked ``re-export`` in the import
+# block above are the same case: this module no longer reads them, and a test
+# does.
 # --------------------------------------------------------------------------- #
 
-from jasper.active_speaker.crossover_v2.fc_sweep import (  # noqa: E402
+from jasper.active_speaker.crossover_v2.fc_sweep import (  # noqa: E402,F401
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_AT_OR_BELOW_FLOOR,
     FC_REJECT_BEAMING,

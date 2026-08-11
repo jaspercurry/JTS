@@ -5638,7 +5638,7 @@ class V2ConductorContext:
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
     # Per-role declared ``crossover_search_band_hz`` — the range each driver
     # may be crossed over IN, which R17's Fc selector intersects across the
-    # participating roles (``crossover_v2_flow.resolve_fc_search_band``). Like
+    # participating roles (``crossover_v2.fc_sweep.resolve_fc_search_band``). Like
     # the diameter above it has been a REQUIRED declaration since the safety
     # profile shipped (``driver_safety._target_issues`` refuses a target
     # without one) and had no Python reader; without it the candidate set would

@@ -462,6 +462,102 @@ def test_the_sweep_leaves_no_candidate_state_on_the_conductor():
         assert not hasattr(c, name), name
 
 
+def test_each_evaluation_retains_its_own_predicted_spec_report():
+    """The twin of the realized-level guard below, for the graded prediction.
+
+    **Why this needs a test of its own.** The spec report is not a value the
+    evaluation is handed — it is read back off the conductor AFTER the
+    candidate's own build has written it there, which makes the ORDER of two
+    statements the whole correctness argument. Reading it one line earlier
+    files the PREVIOUS candidate's grading beside this candidate's proposal:
+    the same cross-context leak #2291 exists to close, and the family the
+    2026-08-10 incident belongs to.
+
+    Nothing caught that before this test. Measured while writing it (#2291
+    Phase 5a-v(b)): moving the read above the build leaves the whole
+    ``test_crossover_v2_fc_selector_wiring`` / ``_fc_candidates`` /
+    ``_fc_selector`` / ``_priors`` set green, and shows up only as a 99-line
+    diff in the slice's dual run. That is exactly the shape a guard is for,
+    and it is why ``evaluate_candidate`` takes ``predicted_spec_report`` as a
+    CALLABLE rather than a value — a value cannot be read after the build.
+
+    Asserted against what each build actually wrote, not merely "present":
+    a sweep that stamped every evaluation with the same report, or with the
+    anchor's, satisfies a presence check completely.
+    """
+    fakes = _eligible_seams()
+    c = _selector_conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    written: list[tuple[float, object]] = []
+    original = flow.CrossoverV2Conductor._build_measure_candidate
+
+    def spy(self, analysis, cloud, *, candidate_sections=None, source_preset=None):
+        built = original(
+            self, analysis, cloud,
+            candidate_sections=candidate_sections, source_preset=source_preset,
+        )
+        # The report as it stands the moment this build finished — which is
+        # the only moment it describes THIS candidate.
+        fc_hz = next(
+            iter(section.fc_hz for sections in (candidate_sections or {}).values()
+                 for section in sections),
+            None,
+        )
+        report = self._measure_predicted_spec_report
+        written.append((fc_hz, None if report is None else dict(report)))
+        return built
+
+    with pytest.MonkeyPatch.context() as mp:
+        # The MEASURE consume alone: the sweep's builds happen here, the
+        # anchor's own happens later at the walk's close.
+        mp.setattr(flow.CrossoverV2Conductor, "_build_measure_candidate", spy)
+        _run_phase(c, 2, 1)
+
+    by_fc = {round(fc, 3): report for fc, report in written if fc is not None}
+    assert len(by_fc) >= 2, "the sweep must have built more than one corner"
+    scored = [e for e in c._fc_evaluations if e.refusal is None]
+    assert scored, "the sweep must have produced scoreable candidates"
+    # The reports must not be all-identical, or the identity assertion below
+    # would hold for a sweep that leaked one report into every evaluation.
+    distinct = {repr(report) for report in by_fc.values()}
+    assert len(distinct) >= 2, (
+        "this fixture must grade its corners differently, or the per-candidate "
+        "identity below is unfalsifiable"
+    )
+    for evaluation in scored:
+        assert evaluation.predicted_spec_report == by_fc[
+            round(evaluation.fc_hz, 3)
+        ], evaluation.fc_hz
+
+
+def test_a_speaker_with_no_protection_map_sweeps_nothing():
+    """No §4.2 composition means no candidate crossover can be substituted.
+
+    The sweep's first gate, and previously unpinned in either direction: the
+    conductor simply returned. Worth a guard now that the condition crosses a
+    module boundary as ``protection_declared`` — a parameter that silently
+    stopped being consulted would let an uncomposed capture be re-cornered,
+    which is a model built on a filter the graph never emitted.
+    """
+    fakes = _eligible_seams()
+    unprotected = _selector_conductor(
+        fakes, measurement_protection_sections_by_role=None,
+    )
+    _run_phase(unprotected, 1, 1)
+    accepted = _run_phase(unprotected, 2, 1)
+
+    assert accepted is not None, "the capture must still be accepted"
+    assert PHASE_MEASURE in unprotected.accepted_phases
+    assert unprotected._fc_evaluations == ()
+    # …and the positive control, so this cannot pass by the fixture simply
+    # never sweeping at all.
+    protected = _selector_conductor(_eligible_seams())
+    _run_phase(protected, 1, 1)
+    _run_phase(protected, 2, 1)
+    assert protected._fc_evaluations, "the protected fixture must sweep"
+
+
 def test_each_evaluation_retains_its_own_realized_level_verdict():
     """#2307 gate note N6, closed at the seam that closes it (#2291 Phase 2b).
 
