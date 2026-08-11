@@ -47,6 +47,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "role_transfers",
     "configured_crossover_transfers",
+    "candidate_required_band_hz",
     "measure_sweep_bounds",
     "check_priors",
     "measure_priors",
@@ -89,6 +90,38 @@ def configured_crossover_transfers(
         {role: -1 if inverted else 1
          for role, inverted in role_polarity(source_preset).items()},
     )
+
+
+def candidate_required_band_hz(
+    sections_by_role_map: Mapping[str, Sequence[Any]], *, fc_hz: float,
+) -> dict[str, tuple[float, float]]:
+    """§4.2's candidate-required bins per role, at ONE corner.
+
+    Each role's radiating span (what the fit masks to) UNIONED with the
+    trim/alignment overlap band, which together bound everything a candidate
+    consumes.  The overlap is deliberately UNCLAMPED — a superset is the safe
+    side for a required mask, because the cost of asking for a bin nothing
+    needs is a wasted comparison and the cost of omitting one the fit reads is
+    a candidate graded against a band it was never given.
+
+    **The single owner, as of #2291 Phase 5a-v (the #2336 gate's N2).**  This
+    expression had two writers: :func:`measure_priors` below at the session's
+    configured corner, and the Fc sweep's per-candidate re-pointing at a
+    swept one.  Before 5a-iii they were two call sites in one module; after it
+    they were two call sites in two modules, which is the shape where a pair
+    drifts without either side looking wrong.  Both now ask here, so the
+    session corner and every candidate corner are answered by one formula.
+
+    ``fc_hz`` is coerced rather than trusted: the sweep hands a corner it
+    derived, and the two callers' float-ness should not be able to move a
+    published band.
+    """
+    overlap = overlap_band_hz(float(fc_hz))
+    return {
+        role: (min(radiating_band_hz(sec)[0], overlap[0]),
+               max(radiating_band_hz(sec)[1], overlap[1]))
+        for role, sec in sections_by_role_map.items()
+    }
 
 
 def measure_sweep_bounds(
@@ -158,7 +191,6 @@ def measure_priors(
     half-filled set refuses the composition outright instead of producing a
     candidate.
     """
-    overlap = overlap_band_hz(fc_hz)
     configured_response, configured_polarity = configured_crossover_transfers(
         source_preset
     )
@@ -175,17 +207,14 @@ def measure_priors(
         configured_polarity_sign_by_role=(
             configured_polarity if protection_sections_by_role is not None else None
         ),
-        # §4.2's candidate-required bins: radiating span (what the fit masks to)
-        # union the trim/alignment overlap band, which together bound everything
-        # a candidate consumes. Overlap deliberately UNCLAMPED — the superset is
-        # the safe side for this mask.
+        # §4.2's candidate-required bins, from their single owner above. Gated
+        # with the other configured-path fields for the partial-set reason in
+        # this docstring, never re-derived here.
         candidate_required_band_hz_by_role=(
-            None if protection_sections_by_role is None else {
-                role: (min(radiating_band_hz(sec)[0], overlap[0]),
-                       max(radiating_band_hz(sec)[1], overlap[1]))
-                for role, sec in sections_by_role(
-                    source_preset.crossover_regions).items()
-            }
+            None if protection_sections_by_role is None
+            else candidate_required_band_hz(
+                sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
+            )
         ),
     )
 

@@ -134,7 +134,6 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     chain_response,
     crossover_response_complex,
-    radiating_band_hz,
     sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import priors as _priors
@@ -8648,27 +8647,18 @@ class CrossoverV2Conductor:
         dropping either would refuse the composition outright instead of
         producing a candidate.
         """
-        overlap = overlap_band_hz(float(fc_hz))
         return replace(
             self._measure_priors(),
             crossover_fc_hz=float(fc_hz),
             configured_crossover_response_by_role=_role_transfers(sections),
-            # Same union as ``_measure_priors``, at THIS candidate's corner:
-            # the radiating span the fit masks to, widened by the unclamped
-            # overlap band. A superset is the safe side for a required mask.
-            #
-            # **A TWIN, and now a cross-module one** (#2336 gate, N2): the same
-            # formula lives in ``crossover_v2.priors.measure_priors``. It was one
-            # module's two call sites before 5a-iii and is two modules' now, so
-            # the pair can drift without either side looking wrong. Resolving it
-            # belongs to 5a-v, which moves this method: give the union ONE owner
-            # in ``priors`` and have both callers ask for it, rather than
-            # copying the expression a third time.
-            candidate_required_band_hz_by_role={
-                role: (min(radiating_band_hz(sec)[0], overlap[0]),
-                       max(radiating_band_hz(sec)[1], overlap[1]))
-                for role, sec in sections.items()
-            },
+            # The same union ``_measure_priors`` takes, at THIS candidate's
+            # corner — asked of its single owner rather than re-spelled. The
+            # twin the #2336 gate named (N2) is closed here: ``priors`` owns
+            # the formula, the session corner and every swept corner ask it,
+            # and there is no second place for the pair to drift apart in.
+            candidate_required_band_hz_by_role=_priors.candidate_required_band_hz(
+                sections, fc_hz=float(fc_hz),
+            ),
         )
 
     def _fc_branch_operators(
@@ -9026,13 +9016,20 @@ class CrossoverV2Conductor:
         section that the group close and the eager fit share.
         """
         response = analysis.summed_response
-        # All SEVEN screens stated, though this ladder reads three. A cloud
-        # position plays the summed VERIFY program, whose sweep is
-        # ``KIND_SUMMED_SWEEP``, so the three sweep-domain predicates are
-        # vacuously true here — but that is a fact about the capture, and it is
-        # the caller's to state rather than the record's to assume. See
+        # All SEVEN screens stated, though this ladder reads three. Of the three
+        # sweep-domain predicates, TWO are vacuous here and one is not: a cloud
+        # position plays the summed VERIFY program, so its stimulus locations
+        # are ``KIND_SUMMED_SWEEP`` plus the leading ``KIND_PILOT`` pair and
+        # never ``KIND_SWEEP`` — which is the whole domain of
+        # ``_sweep_locate_confidence_ok`` and ``_sweep_schedule_ok``, so both
+        # answer true over an empty set. ``_any_sweep_clipped`` filters on
+        # ``STIMULUS_KINDS``, which CONTAINS both kinds a cloud position
+        # produces, so it is a live verdict that this ladder simply does not
+        # read. Stating it anyway is the point rather than an accident: a fact
+        # about the capture is the caller's to state, and the day a rung reads
+        # it the answer is already the true one. See
         # :class:`~jasper.active_speaker.crossover_v2.spatial.CaptureScreens`
-        # for what a permissive default would cost the day a rung reads one.
+        # for what a permissive default would cost instead.
         kind = _spatial.cloud_position_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),

@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker.branch_chain import sections_by_role
+from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.crossover_v2 import priors
+from jasper.audio_measurement.program_analysis import overlap_band_hz
 
 from tests.test_crossover_v2_conductor import FC_HZ, _preset
 
@@ -159,6 +160,68 @@ def test_verify_carries_the_design_target_unguarded_by_protection():
     assert got.configured_crossover_response_by_role is not None
     assert got.configured_polarity_sign_by_role is not None
     assert got.measurement_protection_response_by_role is None
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the candidate-required union has ONE owner
+# --------------------------------------------------------------------------- #
+#
+# The #2336 gate's N2: this formula had two writers — ``measure_priors`` at the
+# session's configured corner and the Fc sweep's per-candidate re-pointing —
+# and after 5a-iii they were writers in two different MODULES, which is the
+# shape where a pair drifts with neither side looking wrong.  5a-v gave it one
+# owner.  Until then the priors-side copy had no value-level pin at all (only
+# the present/absent grouping above), so these are the guard that was owed.
+
+
+def test_the_required_band_covers_both_declarations_without_widening():
+    """A superset of radiating ∪ overlap, and no wider than the wider edge.
+
+    Stated as a COVERAGE property against the two declarations obtained
+    independently, not as a restatement of the union expression: a swapped
+    ``min``/``max`` produces the INTERSECTION, which fails the coverage half,
+    and a hard-coded ``(0.0, inf)`` fails the tightness half.  Anchoring on
+    ``candidate_required_band_hz`` itself would pass under both.
+    """
+    sections = sections_by_role(PRESET.crossover_regions)
+    overlap_lo, overlap_hi = overlap_band_hz(float(FC_HZ))
+
+    got = priors.candidate_required_band_hz(sections, fc_hz=FC_HZ)
+
+    assert set(got) == set(sections)
+    for role, section in sections.items():
+        lo, hi = got[role]
+        radiating_lo, radiating_hi = radiating_band_hz(section)
+        # Covers both — the superset direction the docstring calls the safe
+        # side for a required mask.
+        assert lo <= radiating_lo and lo <= overlap_lo, role
+        assert hi >= radiating_hi and hi >= overlap_hi, role
+        # …and is one of the two declared edges rather than something wider,
+        # so "superset" cannot quietly become "everything".
+        assert lo in (radiating_lo, overlap_lo), role
+        assert hi in (radiating_hi, overlap_hi), role
+
+
+def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
+    """The session corner and a swept corner answer from one formula.
+
+    ``measure_priors`` is the configured-corner caller and the flow's
+    ``_fc_candidate_priors`` is the swept-corner one.  This pins the first
+    against the owner directly; the second is pinned at six corners by
+    ``test_crossover_v2_fc_selector_wiring``'s ``REQUIRED_BAND_WOOFER_HI_HZ``
+    golden, which is literal and therefore not self-referential.
+    """
+    got = priors.measure_priors(
+        fc_hz=FC_HZ, source_preset=PRESET,
+        protection_sections_by_role=PROTECTION,
+        ambient_report=None, alignment_delay_bounds_us=None,
+    )
+
+    assert got.candidate_required_band_hz_by_role == (
+        priors.candidate_required_band_hz(
+            sections_by_role(PRESET.crossover_regions), fc_hz=FC_HZ,
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
