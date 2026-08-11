@@ -66,10 +66,17 @@ logger = logging.getLogger(__name__)
 REFUSAL_RESTORED = "restored"
 REFUSAL_ROLLBACK_FAILED = "rollback_failed"
 
-#: The exception family every seam call is guarded against. Wide on purpose and
-#: for one reason: losing the round's verdict is strictly worse than reporting
-#: it with the seam's own answer marked unavailable. Each guard below states
-#: which way it fails and why.
+#: The exception family four of the five seam calls are guarded against. Wide on
+#: purpose and for one reason: losing the round's verdict is strictly worse than
+#: reporting it with the seam's own answer marked unavailable. Each guard below
+#: states which way it fails and why.
+#:
+#: :func:`entry_graph_fingerprint` deliberately does NOT use this tuple — its
+#: guard omits ``AttributeError``, exactly as it did on the conductor. The name
+#: it fills is provenance, never a gate, so a narrower catch there costs a
+#: fingerprint rather than a verdict; the difference is preserved rather than
+#: harmonised because harmonising it would be a behaviour change smuggled in as
+#: tidying.
 _SEAM_ERRORS = (
     OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError,
 )
