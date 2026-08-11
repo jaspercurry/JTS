@@ -138,6 +138,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
@@ -205,7 +206,6 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
-    DEFAULT_PILOT_LEVELS_DB,
     KIND_SWEEP,
     STIMULUS_KINDS,
     VERIFY_PILOT_ROLE,
@@ -301,27 +301,13 @@ CAPTURE_PLAN_MAX_ATTEMPTS = 8
 # never had one.
 PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
 
-# The phases whose excitation is the mono summed sweep played through the LIVE
-# production graph with no program-graph load and no play-time admission gate
-# (see ``jasper.web.correction_crossover_v2.bind_production_play``). VERIFY has
-# always been one; the two cloud groups join it because a spatial cloud measures
-# the SUMMED system — pre-apply for CLOUD_MEASURE ("what the speaker does
-# today"), post-apply for CLOUD_VERIFY. The compose-time min-cap clamp in
-# ``_compose_verify_program`` is the only level guard for all four, and its
-# argument ("a summed signal reaches every driver, so clamp to the most
-# restrictive cap") holds identically before and after apply.
-#
-# ``PHASE_ENTRY_BASELINE`` is a member for a stronger reason than the other
-# three: for the two clouds this is an efficiency (one composed program serves
-# them all), but for the entry baseline it is the CORRECTNESS condition. #2291's
-# before→after comparison is checked by ``program_id`` equality, and equality
-# holds because ``_program_for_phase`` hands both sides the identical
-# ``_verify_program`` OBJECT. Removing it from this set would not merely change
-# the stimulus — it would make every round's benefit verdict
-# :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_PROGRAM_MISMATCH`.
-SUMMED_SWEEP_PHASES = frozenset(
-    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
-)
+# Re-exported. It selects an excitation PROGRAM rather than a place in the walk,
+# so #2291 Phase 5a-ii moved it to
+# :mod:`jasper.active_speaker.crossover_v2.programs` alongside the composer whose
+# min-cap clamp is the only level guard for all four of its members — see that
+# module for why ``PHASE_ENTRY_BASELINE``'s membership is a correctness
+# condition rather than an efficiency.
+SUMMED_SWEEP_PHASES = _programs.SUMMED_SWEEP_PHASES
 
 #: WHERE the two sides of #2291's before→after comparison were measured.
 #:
@@ -2906,15 +2892,13 @@ NON_RETRIABLE_CODES = frozenset(
 # tuning constants (PROVISIONAL pending W6 bench validation)
 # --------------------------------------------------------------------------- #
 
-# The gain solver backs off this far below each driver's exact cap. The W2 gate
-# found ``prepare_driver_excitation_plan``'s strict ``>`` can refuse an
-# exactly-at-cap plan by one ulp, so a hair of headroom keeps an at-cap solve
-# admissible.
-GAIN_CAP_BACKOFF_DB = 0.01
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
+# owns the level policy it belongs to (#2291 Phase 5a-ii).
+GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
 # Per gain-adjusted clip retry, drop the offending program's level by this much.
 CLIP_RETRY_BACKOFF_DB = 3.0
-# The two pilot levels are this far apart (matches the CHECK behavioral check).
-PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
+# Re-exported; see ``crossover_v2.programs`` (#2291 Phase 5a-ii).
+PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
 # A located stimulus below this correlation confidence reads as "couldn't hear
 # the speaker" (locate_failed).
 LOCATE_MIN_CONFIDENCE = 0.1
@@ -3075,22 +3059,12 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # PROVISIONAL pending W6 bench validation.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
-# Pre-capture courtesy tone (issue #1677): default ON, no env/config switch.
-# The owner's live-incident report (a headless session's first sweep started
-# while music was playing, forcing a void + re-run) plus the house
-# "no-silent-failure" / "no speculative flexibility" rules both point the
-# same way — every household benefits from the warning, and there is no
-# stated case for wanting it off. Every ``build_v2_capture_plan`` /
-# ``build_v2_verify_capture_plan`` (phone duration budget) and conductor
-# ``_compose_*_program`` (actual playback) call in this module passes this
-# SAME constant, so the two can never disagree about whether the prelude is
-# present — the phone would otherwise budget a shorter recording window than
-# the program it's actually capturing (see the ``+3.6 s`` proof in
-# ``test_crossover_v2_conductor.py``, mirroring PR-A's ``+15 s`` MEASURE
-# lengthening). ``jasper.audio_measurement.program``'s own composers default
-# ``courtesy_prelude`` to ``False`` so every OTHER caller (tests, future
-# tools) keeps today's byte-identical shape unless it opts in explicitly.
-COURTESY_PRELUDE_ENABLED = True
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
+# owns it and states why it has no switch and why both the phone's duration
+# budget and the actual playback must read the SAME constant (#2291 Phase
+# 5a-ii). The two capture-plan builders in this module are the other pair of
+# readers.
+COURTESY_PRELUDE_ENABLED = _programs.COURTESY_PRELUDE_ENABLED
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -3102,18 +3076,11 @@ class CrossoverV2FlowError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 
-def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
-                  *, margin_db: float = GAIN_CAP_BACKOFF_DB) -> float:
-    """Clamp a per-driver digital gain so its effective peak stays under the cap.
-
-    The effective peak folded through the session volume is
-    ``gain_db + session_volume_db``; admission caps it at the driver's
-    ``cap_dbfs``. The W2 gate found the admission's strict ``>`` can refuse an
-    exactly-at-cap plan by one ulp, so this backs off ``margin_db`` (≥0.01 dB)
-    below the cap — an at-cap solve stays admissible.
-    """
-    ceiling = cap_dbfs - session_volume_db - margin_db
-    return min(float(gain_db), ceiling)
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
+#: owns it beside the three composers that are its only production callers
+#: (#2291 Phase 5a-ii). Every existing ``flow.back_off_gain`` import resolves to
+#: that one function.
+back_off_gain = _programs.back_off_gain
 
 
 def alignment_to_candidate_fields(
@@ -4081,7 +4048,7 @@ class AnalyzeCapture(Protocol):
     ``phase`` is REQUIRED and keyword-only: the CONDUCTOR's own flow phase
     (issue #1855) — NOT ``program.phase``. The two are different
     vocabularies: every cloud position plays ``self._verify_program`` (see
-    ``_program_for_phase``), so ``program.phase`` is always "verify" for
+    ``program_for_phase``), so ``program.phase`` is always "verify" for
     PHASE_VERIFY, PHASE_CLOUD_MEASURE, and PHASE_CLOUD_VERIFY alike. A seam
     that derives a retained capture's label from ``program.phase`` mislabels
     every cloud position as "verify" — the exact bug #1855 fixed. No
@@ -6527,15 +6494,26 @@ class CrossoverV2Conductor:
         # re-closes the group, so the confirm always fits the newest evidence.
         self._group_combined: dict[str, Any] = {}
 
+        # What this session may play, and how loud — the four declarations the
+        # composers read, frozen together so a subset cannot drift (#2291 Phase
+        # 5a-ii; ``crossover_v2.programs`` owns the level policy).
+        self._excitation = _programs.SessionExcitation(
+            roles=self._roles,
+            caps_dbfs=self._caps,
+            session_volume_db=self._session_volume_db,
+            fc_hz=self._fc_hz,
+        )
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
-        # VERIFY on Fc (composable now, played only after apply).
-        self._check_program = self._compose_check_program()
+        # VERIFY on Fc (composable now, played only after apply). Composed ONCE
+        # and held, because ``program_for_phase`` answers by OBJECT IDENTITY
+        # and #2291's before→after comparability depends on it.
+        self._check_program = self._excitation.check_program()
         self._measure_program: ExcitationProgram | None = (
-            self._compose_measure_program(self._gain_plan_db)
+            self._excitation.measure_program(self._gain_plan_db)
             if self._gain_plan_db is not None
             else None
         )
-        self._verify_program = self._compose_verify_program()
+        self._verify_program = self._excitation.verify_program()
 
         # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
         # phase for a single-capture phase and the ``phase:index`` pair inside a
@@ -6871,79 +6849,20 @@ class CrossoverV2Conductor:
 
     # --- program composition -------------------------------------------------
 
-    def _compose_check_program(self) -> ExcitationProgram:
-        # Cap-aware (W6.1): each driver's pilot base is clamped so the loudest
-        # (hi) pilot's effective peak stays under that driver's cap folded
-        # through the session volume — the same ``back_off_gain`` margin the
-        # MEASURE composer uses. The tweeter (compression driver, deep cap)
-        # rides a base ~40 dB below the woofer's; both pilots keep their fixed
-        # ``DEFAULT_PILOT_LEVELS_DB`` offsets against that per-role base, so the
-        # 10 dB behavioral-linearity delta is preserved while the absolute
-        # level degrades honestly (recorded in the segment gains). Before this
-        # the CHECK program used the shared reference base and admission
-        # refused it on the JTS3 tweeter (program_channel_peak_over_cap).
-        role_base = {
-            rb.role: back_off_gain(
-                BASE_STIMULUS_PEAK_DBFS,
-                self._session_volume_db,
-                self._caps.get(rb.role, 0.0),
-            )
-            for rb in self._roles
-        }
-        return build_check_program(
-            self._roles,
-            downstream_gain_db=self._session_volume_db,
-            role_base_peak_dbfs=role_base,
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-        )
-
-    def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
-        return (hi_gain_db - PILOT_LEVEL_DELTA_DB, hi_gain_db)
-
     def _compose_measure_program(
         self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
-        gains = {}
-        for rb in self._roles:
-            cap = self._caps.get(rb.role, 0.0)
-            gains[rb.role] = back_off_gain(
-                float(gain_plan_db[rb.role]) - extra_backoff_db,
-                self._session_volume_db,
-                cap,
-            )
-        return build_measure_program(
-            gains, self._roles,
-            downstream_gain_db=self._session_volume_db,
-            leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
-            leading_pilot_role=self._woofer.role,
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-        )
+        """MEASURE's program at the solved gains.
 
-    def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        # Cap-aware (W6.1): VERIFY plays a MONO summed sweep through the APPLIED
-        # production graph with NO play-time admission gate (it does not ride
-        # ``play_program``/``readmit`` — see ``bind_production_play``), so the
-        # compose-time clamp is the ONLY level guard. A summed signal reaches
-        # every driver, so it is clamped to the MOST RESTRICTIVE (min) cap: at
-        # the worst case (no crossover attenuation) no driver is driven past its
-        # own limit. Without this the summed sweep played at the shared
-        # reference base (effective ~-32 dBFS) would over-drive a deep-cap
-        # tweeter (e.g. the JTS3 B&C DE250 at -65 dBFS effective). The
-        # ``_pilot_gains`` pair rides the same clamped level, so its 10 dB delta
-        # is preserved. A genuinely-too-quiet clamp surfaces as the existing
-        # snr_floor / agc_behavioral_fail verdicts, not a precheck (§5.10).
-        binding_cap = min(self._caps.values()) if self._caps else 0.0
-        gain = back_off_gain(
-            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
-            self._session_volume_db,
-            binding_cap,
-        )
-        return build_verify_program(
-            self._fc_hz,
-            gain_db=gain,
-            downstream_gain_db=self._session_volume_db,
-            leading_pilot_gains_db=self._pilot_gains(gain),
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+        A delegate, kept because MEASURE is the one program with a LIFECYCLE:
+        it cannot be composed until the CHECK solve produces a plan and it is
+        recomposed on the clip-retry rearm, so three call sites here name it.
+        CHECK's and VERIFY's composers had one call site each (the constructor)
+        and were inlined onto :attr:`_excitation` rather than kept as one-line
+        wrappers.
+        """
+        return self._excitation.measure_program(
+            gain_plan_db, extra_backoff_db=extra_backoff_db,
         )
 
     # --- priors per phase ----------------------------------------------------
@@ -7949,37 +7868,36 @@ class CrossoverV2Conductor:
         if index is None:
             raise CrossoverV2FlowError("on_armed with no authorized capture")
         phase = self._phase_of_index(index)
-        program = self._program_for_phase(phase)
+        program = self.program_for_phase(phase)
         log_event(
             logger, "correction.crossover_v2_play",
             session_id=self.session_id, phase=phase, program_id=program.program_id,
         )
         self._seams.play(phase, program)
 
-    def _program_for_phase(self, phase: str) -> ExcitationProgram:
-        if phase == PHASE_CHECK:
-            return self._check_program
-        # R16: a lateral pose replays the ANCHOR's program object VERBATIM —
-        # same stimulus, same solved per-driver gains, same protected-neutral
-        # graph. That identity is not an optimisation: the return-to-mark
-        # bracket and every §4.4 falloff comparison are differences against the
-        # anchor, and a pose measured at a different level or with a different
-        # sweep would make those differences uninterpretable.
-        if phase in (PHASE_MEASURE, PHASE_LATERAL):
-            if self._measure_program is None:
-                raise CrossoverV2FlowError(
-                    "MEASURE armed before the CHECK gain solve produced a program"
-                )
-            return self._measure_program
-        if phase in SUMMED_SWEEP_PHASES:
-            # One composed mono summed sweep serves VERIFY and both position
-            # groups: identical excitation, identical min-cap clamp, identical
-            # ``program.phase`` ("verify") so the analyzer routes it to
-            # ``_analyze_verify`` unchanged. What differs between the three is
-            # the PRIORS the conductor hands the analysis and the verdict it
-            # draws — never the sound the speaker makes.
-            return self._verify_program
-        raise CrossoverV2FlowError(f"no program for phase {phase!r}")
+    def program_for_phase(self, phase: str) -> ExcitationProgram:
+        """The composed program this session plays for ``phase``.
+
+        Public because it is the only honest way to ask "what will this
+        conductor play", which the host's duration budgeting, the identity
+        invariant, and every test that synthesises a capture all need. The
+        answer is BY IDENTITY — see
+        :func:`jasper.active_speaker.crossover_v2.programs.program_for_phase`,
+        which owns the mapping and the reason the summed-sweep phases must all
+        receive one object rather than three equal ones.
+        """
+        try:
+            return _programs.program_for_phase(
+                phase,
+                check=self._check_program,
+                measure=self._measure_program,
+                verify=self._verify_program,
+            )
+        except _programs.NoProgramForPhaseError as exc:
+            # The flow's own error type is what every caller (and the relay
+            # runner above them) already handles; the selector is pure and has
+            # no business knowing it.
+            raise CrossoverV2FlowError(str(exc)) from exc
 
     def consume_capture(
         self, index: int, attempt: int, result: Any, entry: Any = None,
@@ -7987,7 +7905,7 @@ class CrossoverV2Conductor:
         """Analyze one uploaded capture and advance (or reject) the phase."""
         phase = self._phase_of_index(index)
         slot = self._slot_of_index(index)
-        program = self._program_for_phase(phase)
+        program = self.program_for_phase(phase)
         priors = (
             self._measure_priors() if phase == PHASE_MEASURE
             else self._verify_priors() if phase == PHASE_VERIFY
@@ -8004,7 +7922,7 @@ class CrossoverV2Conductor:
         # ``phase=phase`` (issue #1855): the flow's OWN phase, threaded
         # explicitly because ``program.phase`` is not a reliable stand-in —
         # every cloud position plays ``self._verify_program`` and so always
-        # carries ``program.phase == "verify"`` (see ``_program_for_phase``).
+        # carries ``program.phase == "verify"`` (see ``program_for_phase``).
         analysis = self._seams.analyze(
             program, result, priors, self._geometry, phase=phase,
         )
@@ -8517,13 +8435,13 @@ class CrossoverV2Conductor:
         # same silent auto-retry, same reused reason code (§5.2's "never a
         # new user-facing code for a capture-glitch class" convention) — the
         # ``guard`` diag field (below) is what tells telemetry the two apart.
-        # ``_program_for_phase`` (not the bare ``self._measure_program``,
+        # ``program_for_phase`` (not the bare ``self._measure_program``,
         # which mypy types ``ExcitationProgram | None``) is the ALREADY
         # type-narrowed accessor — it raises if MEASURE were somehow armed
         # before CHECK produced a program, which can't happen on this path
         # (we are actively processing a MEASURE analysis).
         if not _sweep_schedule_ok(
-            analysis, self._program_for_phase(PHASE_MEASURE).sample_rate_hz
+            analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
         ):
             self._last_measure_guard = "sweep_schedule"
             self._rearm_measure_after_transient()
@@ -8721,14 +8639,14 @@ class CrossoverV2Conductor:
         if analysis.glitch_detected:
             return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
         if not _sweep_schedule_ok(
-            analysis, self._program_for_phase(PHASE_LATERAL).sample_rate_hz
+            analysis, self.program_for_phase(PHASE_LATERAL).sample_rate_hz
         ):
             return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
         if _any_sweep_clipped(analysis):
             return PhaseVerdict(False, REASON_CLIPPED)
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
-        bands = _primary_sweep_bands(self._program_for_phase(PHASE_LATERAL))
+        bands = _primary_sweep_bands(self.program_for_phase(PHASE_LATERAL))
         curves = [
             lateral_pose_curve(response, bands[response.role])
             for response in analysis.driver_responses
@@ -11404,8 +11322,34 @@ class CrossoverV2Conductor:
         refusal = decision.refusal
         if refusal is None:
             return verdict
+        return self._round_refusal_for(refusal)
+
+    def _round_refusal_for(self, refusal: Any) -> PhaseVerdict:
+        """Map a coordinator refusal KIND to the code the household reads.
+
+        One explicit arm per :data:`coordinator.REFUSAL_KINDS` member, and the
+        fallback is LOUD rather than a catch-all. An `else` that silently
+        answered for an unrecognised kind is how a future kind ships wearing
+        another kind's sentence: every kind the coordinator can return is a
+        deliberate household outcome, so one arriving here unrecognised is a
+        wiring defect and must say so.
+
+        It still refuses rather than raising, and under the most conservative
+        code available — the round already decided something is wrong with this
+        graph, and losing that verdict to a mapping gap would be worse than
+        naming it imprecisely for one release. ``rollback_anchor_available``
+        rides through as-is: ``None`` is the copy owner's "not established" arm.
+        """
+        from jasper.active_speaker.crossover_v2 import coordinator
+
         if refusal.kind == coordinator.REFUSAL_RESTORED:
             return self._round_refusal(round_restore_reason(refusal.cause))
+        if refusal.kind != coordinator.REFUSAL_ROLLBACK_FAILED:
+            log_event(
+                logger, "correction.crossover_v2_round_refusal_kind_unmapped",
+                level=logging.ERROR, session_id=self.session_id,
+                kind=str(refusal.kind),
+            )
         return self._round_refusal(
             REASON_CORRECTION_ROLLBACK_FAILED,
             rollback_anchor_available=refusal.rollback_anchor_available,
@@ -11430,6 +11374,7 @@ class CrossoverV2Conductor:
         self._last_failure_pilot_heard = None
         self._last_failure_rollback_anchor = rollback_anchor_available
         return PhaseVerdict(False, code)
+
     def _log_entry_baseline_diag(
         self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,
     ) -> None:
@@ -12181,7 +12126,7 @@ class CrossoverV2Conductor:
             _driver_response_by_role(analysis, self._tweeter.role)
         )
         sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
-            analysis, self._program_for_phase(PHASE_MEASURE).sample_rate_hz
+            analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
         )
         # First-vs-last per-role epsilon (sweep-composition PR-A, #1668) —
         # diagnostic only, never gated (DriftEstimate.per_role_epsilon_ppm's
@@ -12773,7 +12718,7 @@ class CrossoverV2Conductor:
             )
         )
         context = CandidateAcousticContext.from_sections(sections)
-        measure_program = self._program_for_phase(PHASE_MEASURE)
+        measure_program = self.program_for_phase(PHASE_MEASURE)
         seg_w = measure_program.segment("sweep_w")
         seg_t = measure_program.segment("sweep_t")
         # ProgramSegment.f1_hz/f2_hz are typed float | None (the general
@@ -12927,8 +12872,9 @@ def build_v2_capture_plan(
     roles = tuple(roles_bands)
     # courtesy_prelude=COURTESY_PRELUDE_ENABLED on every composed program below
     # (issue #1677): this is the phone's DURATION BUDGET, so it must agree with
-    # what the conductor's own _compose_*_program methods actually play, or the
-    # phone stops recording before the real (prelude-lengthened) program ends.
+    # what the conductor actually plays — ``crossover_v2.programs``'s
+    # ``SessionExcitation`` composers — or the phone stops recording before the
+    # real (prelude-lengthened) program ends.
     check = build_check_program(roles, courtesy_prelude=COURTESY_PRELUDE_ENABLED)
     nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
     measure = build_measure_program(
@@ -13040,7 +12986,7 @@ def build_v2_capture_plan(
     ]
     # R16's lateral walk (plan §4.4). Same 0-based index arithmetic as the cloud
     # loop below; ``duration_ms`` is the MEASURE program's because each pose
-    # replays it verbatim (``_program_for_phase``), not the summed sweep's.
+    # replays it verbatim (``program_for_phase``), not the summed sweep's.
     lateral_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
     ]
@@ -13081,7 +13027,7 @@ def build_v2_capture_plan(
         )
     # #2291's "before" measurement, LAST. Its duration is the summed sweep's
     # (``verify_ms``) because it replays the VERIFY program verbatim — the
-    # identity ``_program_for_phase`` guarantees and the benefit comparison
+    # identity ``program_for_phase`` guarantees and the benefit comparison
     # depends on. A tap, like every other entry: the household has just walked
     # the lateral poses and has to come back to the mark first, so a countdown
     # would fire into a hand still in flight.

@@ -4727,7 +4727,7 @@ def bind_production_play(
         artifact = evidence_store.identify_artifact(wav_rel)
         if phase in SUMMED_SWEEP_PHASES:
             # Issue #1976. Every SUMMED_SWEEP_PHASES phase plays the SAME
-            # excitation object — ``_program_for_phase`` in
+            # excitation object — ``program_for_phase`` in
             # crossover_v2_flow.py returns ``self._verify_program`` for
             # VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike — so a
             # measure-stage session that walks a pre-apply cloud group
@@ -4785,7 +4785,8 @@ def bind_production_play(
                 # cloud measures the summed system as it stands, which is the
                 # pre-apply graph for CLOUD_MEASURE and the applied one for
                 # CLOUD_VERIFY. Level safety for all three is the compose-time
-                # min-cap clamp in ``_compose_verify_program``.
+                # min-cap clamp in ``crossover_v2.programs``'s
+                # ``SessionExcitation.verify_program``.
                 if on_playback_started is not None:
                     on_playback_started(program)
                 await verified_program_aplay(

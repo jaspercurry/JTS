@@ -141,7 +141,7 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
     """
     conductor = _conductor()
     analysis = _analysis(CANDIDATE_FIT["program_id"])
-    program = conductor._program_for_phase(flow.PHASE_MEASURE)
+    program = conductor.program_for_phase(flow.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
     return iv.request_from_analysis(
         analysis,
@@ -214,7 +214,7 @@ def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
     sections = _sections_at(SELECTED_FC_HZ)
     conductor = _conductor()
     analysis = _analysis(CANDIDATE_FIT["program_id"])
-    program = conductor._program_for_phase(flow.PHASE_MEASURE)
+    program = conductor.program_for_phase(flow.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
     request = iv.request_from_analysis(
         analysis,
@@ -292,7 +292,7 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
     _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
     conductor = _conductor()
     analysis = _analysis(CANDIDATE_FIT["program_id"])
-    program = conductor._program_for_phase(flow.PHASE_MEASURE)
+    program = conductor.program_for_phase(flow.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
     request = iv.request_from_analysis(
         analysis,

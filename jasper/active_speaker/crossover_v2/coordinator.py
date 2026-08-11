@@ -66,6 +66,12 @@ logger = logging.getLogger(__name__)
 REFUSAL_RESTORED = "restored"
 REFUSAL_ROLLBACK_FAILED = "rollback_failed"
 
+#: Every kind above, so the flow's mapping can be checked for completeness
+#: rather than trusted. A kind added here without an arm there is a wiring
+#: defect, and the flow says so loudly instead of answering with another kind's
+#: household sentence.
+REFUSAL_KINDS = frozenset({REFUSAL_RESTORED, REFUSAL_ROLLBACK_FAILED})
+
 #: The exception family four of the five seam calls are guarded against. Wide on
 #: purpose and for one reason: losing the round's verdict is strictly worse than
 #: reporting it with the seam's own answer marked unavailable. Each guard below

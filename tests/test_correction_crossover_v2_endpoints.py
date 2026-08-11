@@ -5191,7 +5191,7 @@ def test_capture_retention_labels_from_flow_phase_not_program_identity(
     tmp_path, monkeypatch, caplog,
 ):
     """Issue #1855 (the byte-identity trap): every cloud position plays
-    ``self._verify_program`` — see ``CrossoverV2Conductor._program_for_phase``'s
+    ``self._verify_program`` — see ``CrossoverV2Conductor.program_for_phase``'s
     ``SUMMED_SWEEP_PHASES`` branch — so the SAME program object/bytes is
     retained during VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike, and
     ``program.phase`` is always "verify" for all three. Before the fix,
@@ -6753,7 +6753,7 @@ def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
 ):
     """Issue #1976: a measure-stage session that walks the pre-apply cloud
     group (CLOUD_MEASURE) plays the SAME excitation object a literal VERIFY
-    capture would — ``_program_for_phase`` in crossover_v2_flow.py returns
+    capture would — ``program_for_phase`` in crossover_v2_flow.py returns
     ``self._verify_program`` for every phase in ``SUMMED_SWEEP_PHASES`` — but
     a session that never arms PHASE_VERIFY itself used to leave that reusable
     stimulus discoverable only under its cloud-phase filename.

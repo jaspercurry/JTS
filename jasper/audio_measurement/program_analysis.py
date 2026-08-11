@@ -2405,7 +2405,8 @@ def _verify_capture_integrity(
     * Anything at all on a LEGACY pilot-less VERIFY program, where the summed
       sweep IS the global-offset anchor and its residual is therefore
       structurally ~0. Every conductor-composed VERIFY program carries the
-      leading pilot pair (``crossover_v2_flow._compose_verify_program`` always
+      leading pilot pair (``crossover_v2.programs.SessionExcitation``'s
+      ``verify_program`` always
       passes ``leading_pilot_gains_db``), so the anchor is a pilot and the
       sweep's residual is a real measurement; the pilot-less shape survives
       only in older fixtures.

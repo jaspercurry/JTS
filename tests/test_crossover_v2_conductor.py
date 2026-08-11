@@ -570,7 +570,7 @@ def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
 
     The program only exists once the conductor is constructed (``__init__``
     composes it), so this cannot ride the ``measure_entry_baseline`` constructor
-    argument without duplicating ``_compose_verify_program`` — and a duplicate
+    argument without duplicating ``SessionExcitation.verify_program`` — and a duplicate
     is exactly the lookalike the comparability check exists to catch. It writes
     the attribute production writes instead.
     """
@@ -1574,7 +1574,7 @@ def test_measure_program_gains_back_off_from_caps():
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    program = c._program_for_phase(PHASE_MEASURE)
+    program = c.program_for_phase(PHASE_MEASURE)
     sweep_t = program.segment("sweep_t")
     # tweeter cap −65, session −20 ⇒ ceiling −45 − backoff.
     assert sweep_t.gain_db == pytest.approx(-45.0 - GAIN_CAP_BACKOFF_DB)
@@ -1622,7 +1622,7 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    gain_before = c._program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
+    gain_before = c.program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
 
     fakes.measure = lambda program: _measure_analysis(program, clipped=True)
     verdict = _run_phase(c, 2, 2)
@@ -1647,7 +1647,7 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
         },
     }
     # The automatic retry is gain-adjusted: 3 dB quieter.
-    gain_after = c._program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
+    gain_after = c.program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
     assert gain_after == pytest.approx(gain_before - 3.0)
     # Retry (same index, next attempt) succeeds.
     fakes.measure = _measure_analysis
@@ -3104,7 +3104,7 @@ def test_resume_within_session_skips_accepted_phases():
     )
     assert resumed.current_phase == PHASE_MEASURE
     # The MEASURE program was recomposed from the persisted gain plan.
-    program = resumed._program_for_phase(PHASE_MEASURE)
+    program = resumed.program_for_phase(PHASE_MEASURE)
     assert program.segment("sweep_w").gain_db == pytest.approx(-11.0)
 
 
@@ -4947,12 +4947,12 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
 
 def test_summed_sweep_phases_share_one_program_object():
     """The byte-safety invariant issue #1976's fix depends on, pinned
-    directly (adversarial-gate SF2, PR #2028): ``_program_for_phase`` must
+    directly (adversarial-gate SF2, PR #2028): ``program_for_phase`` must
     hand VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY the SAME object, not merely
     an equal one. ``self._verify_program`` is composed once in ``__init__``
     (see the "Programs" block) and returned unchanged for every
     ``SUMMED_SWEEP_PHASES`` member — nothing upstream of this test caught a
-    divergence here: mutating ``_program_for_phase`` to hand cloud phases a
+    divergence here: mutating ``program_for_phase`` to hand cloud phases a
     freshly-composed (value-equal, object-distinct) program left the wider
     suite green, because everything else asserts on program CONTENT
     (segments, gains, ``.phase``), never object identity. If this ever goes
@@ -4961,10 +4961,10 @@ def test_summed_sweep_phases_share_one_program_object():
     NOT what a genuine VERIFY capture actually played."""
     fakes = FakeSeams()
     c = _conductor(fakes)
-    assert c._program_for_phase(PHASE_CLOUD_MEASURE) is c._program_for_phase(
+    assert c.program_for_phase(PHASE_CLOUD_MEASURE) is c.program_for_phase(
         PHASE_VERIFY
     )
-    assert c._program_for_phase(PHASE_CLOUD_VERIFY) is c._program_for_phase(
+    assert c.program_for_phase(PHASE_CLOUD_VERIFY) is c.program_for_phase(
         PHASE_VERIFY
     )
 
@@ -6081,7 +6081,8 @@ def test_wide_is_derived_from_the_offset_not_hand_set():
 #
 # The phone's recording window (CapturePlanEntry.duration_ms) is derived from
 # build_v2_capture_plan's OWN nominal composition, entirely separate from the
-# conductor's real _compose_*_program calls that actually play. Both must
+# real playback composition (``crossover_v2.programs``'s SessionExcitation
+# methods, reached through the conductor's ``_excitation``). Both must
 # enable the prelude via the SAME COURTESY_PRELUDE_ENABLED constant, or the
 # phone would stop recording before the real (longer) program finishes --
 # mirrors the existing +15 s MEASURE-lengthening proof from sweep-composition
@@ -6189,7 +6190,7 @@ def test_verify_only_capture_plan_duration_includes_courtesy_prelude():
 def test_conductor_composed_programs_include_courtesy_tone_by_default():
     """The conductor's REAL playback composition (not the nominal planning
     path above) also carries the prelude -- COURTESY_PRELUDE_ENABLED wired
-    into every _compose_*_program call."""
+    into every ``SessionExcitation`` composer."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {
@@ -6798,7 +6799,7 @@ def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
     assert adm_check.allowed, adm_check.refusals
 
     _run_phase(c, 1, 1)  # CHECK solve → MEASURE composed
-    adm_measure = _admit(c._program_for_phase(PHASE_MEASURE))
+    adm_measure = _admit(c.program_for_phase(PHASE_MEASURE))
     assert adm_measure.allowed, adm_measure.refusals
 
     # VERIFY has no admission path by design; its clamp is the only guard.
@@ -7202,7 +7203,8 @@ def test_check_diag_survives_a_gain_plan_without_solves(caplog):
 def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     """#1825's pilot floor reserves `hi_seg.gain_db - lo_seg.gain_db` read off
     the CHECK program — because that is what MEASURE's own leading pair will
-    drop its quiet side by (`_pilot_gains` / `PILOT_LEVEL_DELTA_DB`). If the
+    drop its quiet side by (`SessionExcitation.pilot_gains` /
+    `PILOT_LEVEL_DELTA_DB`). If the
     two ever diverged the floor would be mis-sized in silence, so pin them
     equal at the composers that produce them."""
     from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB
@@ -7211,14 +7213,14 @@ def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     fakes.check = _check_analysis_with_solves
     c = _conductor(fakes)
 
-    check = c._program_for_phase("check")
+    check = c.program_for_phase("check")
     for role in ("woofer", "tweeter"):
         lo = check.segment(f"pilot_{role}_lo")
         hi = check.segment(f"pilot_{role}_hi")
         assert hi.gain_db - lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
 
     assert _run_phase(c, 1, 1)["accepted"] is True
-    measure = c._program_for_phase("measure")
+    measure = c.program_for_phase("measure")
     m_lo = measure.segment("pilot_woofer_lo")
     m_hi = measure.segment("pilot_woofer_hi")
     assert m_hi.gain_db - m_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
@@ -7233,7 +7235,7 @@ def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
     fakes.check = _check_analysis_with_solves
     c = _conductor(fakes)
     assert _run_phase(c, 1, 1)["accepted"] is True
-    measure = c._program_for_phase("measure")
+    measure = c.program_for_phase("measure")
     w_gains = {
         measure.segment(sid).gain_db
         for sid in ("sweep_w", "sweep_w_rep", "sweep_w_rep2")
