@@ -353,7 +353,7 @@ runs AFTER the flattening peaking loop:
   that weights the loudest (least-cut) bins hardest — together dragging the
   average toward the region the shelf barely touches, where its wide RBJ
   transition is not at full depth either.
-- **Guard.** The wild-trim guard in `_fit_linearization`
+- **Guard.** The wild-trim guard in `crossover_v2.intervention.decide_trim`
   ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py)) now
   measures the ripple scan's drift from that ANCHOR (±6 dB), and falls back to
   the anchored pair — never raw + emitted filters (the known VERIFY-mismatch

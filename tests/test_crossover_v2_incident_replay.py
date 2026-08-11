@@ -99,11 +99,13 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.contracts import TrimStrategy
+from jasper.active_speaker.crossover_v2.intervention import (
+    rounded_band_hz as _rounded_band_hz,
+)
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CrossoverV2Conductor,
     V2FlowSeams,
-    _rounded_band_hz,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
 from jasper.active_speaker.profile import ActiveSpeakerPreset

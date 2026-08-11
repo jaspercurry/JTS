@@ -39,6 +39,9 @@ import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2.intervention import (
+    compose_sigma_db as _compose_sigma_db,
+)
 from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
@@ -128,7 +131,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     V2FlowSeams,
     V2PlanShape,
     _analysis_json,
-    _compose_sigma_db,
     _program_duration_ms,
     _worst_pilot_snr_db,
     abandon_measurement_volume,

@@ -1248,7 +1248,7 @@ def applied_program_level_delta_db(
     **Two known incompletenesses, both deliberate, both caught downstream.**
     Per-branch trims are excluded because they are per-branch SHAPE and are
     already inside the predicted summation the probe compares against
-    (``crossover_v2_flow._fit_linearization`` builds the linearized prediction
+    (``crossover_v2.intervention.plan_linearization`` builds the linearized prediction
     at the very trims the graph emits) — counting them here would remove them
     twice. Room-PEQ and preference-EQ headroom are excluded because an
     active-crossover candidate is emitted without them

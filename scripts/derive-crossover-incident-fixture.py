@@ -260,13 +260,13 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
     }
 
     # The trim anchor, recomputed from the banked scalars with the formula
-    # _fit_linearization documents: each branch's own level-match trim, plus
+    # plan_linearization documents: each branch's own level-match trim, plus
     # the level its emitted cascade gave back, plus its offset to the shared
     # level frame, all shifted down so no branch lands positive.
     #
     # Recorded here as an EXPECTATION, not as an authority. The replay test
     # asserts production's own anchor equals it, so a drift in either this
-    # script or _fit_linearization fails that test; --check catches a drift in
+    # script or plan_linearization fails that test; --check catches a drift in
     # this script alone.
     unnormalized = {
         role: (

@@ -4,9 +4,9 @@
 
 """Immutable domain contracts for the crossover-v2 intervention loop (#2291).
 
-**What this module is for.** The v2 conductor currently owns measurement
-context, candidate context, prescription policy, verification semantics, and
-lifecycle in one mutable object.  On 2026-08-10 that produced a candidate whose
+**What this module is for.** The v2 conductor owned measurement context,
+candidate context, prescription policy, verification semantics, and lifecycle
+in one mutable object.  On 2026-08-10 that produced a candidate whose
 crossover sections said 1,648.7 Hz while its trim/level arithmetic still read
 the session's configured 2,000 Hz, and a trim recorded as ``trim_rejected``
 that was nevertheless committed.  Both are single-source-of-truth failures, and
@@ -33,10 +33,13 @@ carrying ``schema_version`` and ``kind``, hashed by that module's canonical
 ``json_fingerprint``.  There is deliberately no second hashing implementation:
 one canonicalizer, one digest domain.
 
-Phase 1 of #2291 introduces these types and wires
-:class:`InterventionProposal` alongside the existing planner.  The types whose
-docstrings name a later phase are defined and validated here but have no
-producer or consumer yet; that is the point of contracts-first.
+Phase 1 of #2291 introduced these types and wired
+:class:`InterventionProposal` alongside the planner; Phase 2b moved the
+prescription policy itself out of the conductor into
+:mod:`.intervention`, which builds a :class:`CandidateAcousticContext` for
+every candidate.  The types whose docstrings name a later phase are defined and
+validated here but have no producer or consumer yet; that is the point of
+contracts-first.
 """
 
 from __future__ import annotations
@@ -406,13 +409,13 @@ class CandidateAcousticContext:
 class TrimStrategy(str, Enum):
     """Which inter-driver trim pair the planner committed, and why.
 
-    **The vocabulary this replaces was actively misleading.** Today
-    ``_fit_linearization`` records ``linearization_outcome =
-    "trim_rejected" if wild else "fitted"``, where ``wild`` means only that the
+    **The vocabulary this replaces was actively misleading.** The retired
+    fitter recorded ``linearization_outcome =
+    "trim_rejected" if wild else "fitted"``, where ``wild`` meant only that the
     ripple scan drifted more than
     ``LINEARIZATION_TRIM_SANITY_MARGIN_DB`` (6 dB) from the level-preserving
-    anchor.  Which pair was *committed* is decided separately and immediately
-    afterwards, by whichever pair realizes the better inter-driver level.  On
+    anchor.  Which pair was *committed* was decided separately and immediately
+    afterwards, by whichever pair realized the better inter-driver level.  On
     2026-08-10 those two facts pointed opposite ways: the artifact said
     ``trim_rejected`` and the −13.013 dB resolved trim was committed anyway.
     The word "rejected" described a drift observation, not an outcome.
@@ -420,13 +423,14 @@ class TrimStrategy(str, Enum):
     Every member below therefore names **what was committed**.  Drift is a
     qualifier on a commitment, never a substitute for one.
 
-    Reachability today: Phase 1 assembles proposals from the persisted
-    candidate artifact, which records drift but *not* the winning pair — so a
-    fitted candidate maps to :attr:`COMMITTED_PAIR_UNRECORDED` or
-    :attr:`COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT`, which is the honest
-    statement of that evidence gap.  The four precise members are the target
-    vocabulary for #2291 Phase 2, when the planner returns the winning pair as
-    data instead of leaving it in a log line.
+    Reachability.  :func:`~.planner_facade.trim_strategy_for_outcome` maps a
+    persisted candidate artifact, which records drift but *not* the winning
+    pair, so an artifact-derived strategy is :attr:`COMMITTED_PAIR_UNRECORDED`
+    or :attr:`COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT` — the honest
+    statement of that evidence gap.  The planner itself returns the winning
+    pair as data since #2291 Phase 2b, so a LIVE plan carries one of the
+    precise members; :attr:`RESOLVED_COMMITTED_AFTER_SANITY_DRIFT` is the one
+    exception and is unreachable from the live path (see its own doc).
     """
 
     NOT_FITTED = "not_fitted"
@@ -448,8 +452,17 @@ class TrimStrategy(str, Enum):
     RESOLVED_COMMITTED_AFTER_SANITY_DRIFT = "resolved_committed_after_sanity_drift"
     """The scan drifted beyond the margin and was committed anyway.
 
-    The 2026-08-10 jts3 case.  Legal under the current level-graded policy, but
-    it must never be recorded under a name containing "rejected".
+    **Historical.** This is the 2026-08-10 jts3 case, and it was legal under
+    the level-graded policy that shipped it — a drifted scan committed whenever
+    it levelled better, while the candidate recorded
+    ``linearization_outcome="trim_rejected"``.  #2291 Phase 2b deleted that
+    policy: the planner commits the anchor beyond the margin, so nothing in the
+    live path can produce this member any more.
+
+    It is RETAINED, not removed, because it is the honest name for what
+    already-persisted artifacts describe — a reader classifying the incident's
+    own candidate needs a member that says what happened.  Whatever else is
+    true of it, it must never be recorded under a name containing "rejected".
     """
 
     COMMITTED_PAIR_UNRECORDED = "committed_pair_unrecorded"

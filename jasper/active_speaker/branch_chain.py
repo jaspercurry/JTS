@@ -22,7 +22,7 @@ that already exists:
 
 **Why one module for both.** They are the same object — the emitted branch
 chain — read two ways, and FOUR call sites need them to agree bit for bit:
-the envelope composer (``crossover_v2_flow._fit_linearization``), the
+the envelope composer (``crossover_v2.intervention.plan_linearization``), the
 disclosure (:attr:`~jasper.active_speaker.linearization_fit.LinearizationFit.
 headroom_cost_db`), the CHARGE
 (``camilla_yaml.linearization_headroom_db``, which sets

@@ -150,7 +150,7 @@ PER_FILTER_CUT_CAP_DB: float = 12.0
 #
 # The CD-horn continuation stage (_hf_continuation_stage) realizes the lift in
 # the cut domain — it cuts everything BELOW the compensation region by `spend`,
-# and the flow's ANCHORED trim give-back (crossover_v2_flow._fit_linearization)
+# and the planner's ANCHORED trim give-back (crossover_v2.intervention.plan_linearization)
 # returns exactly what the emitted cascade removed, so the top octave lands
 # `spend` dB higher RELATIVELY. The spend is a max-SPL LEDGER cost, not a
 # listening-level cost: the system's absolute ceiling drops by ~spend, but
@@ -786,8 +786,8 @@ class LinearizationFit:
     # power-domain-approximate — exact only for a flat core, up to ~1.1 dB
     # under-return on a 12 dB-tilted woofer-shaped core.)
     #
-    # This is the SSOT for the trim give-back: ``crossover_v2_flow.
-    # _fit_linearization`` anchors each branch's linearized trim at
+    # This is the SSOT for the trim give-back: ``crossover_v2.intervention.
+    # plan_linearization`` anchors each branch's linearized trim at
     # ``raw_trim + correction_giveback_db``, returning the branch's audible band
     # to its pre-correction system level — no solver prediction, no overlap-band
     # averaging (measured live on JTS3 2026-07-24: the overlap-band route
@@ -819,7 +819,7 @@ class LinearizationFit:
     # property of the chain it is emitted into — the crossover that follows it
     # and the trim that follows that — and this topology-agnostic core
     # deliberately knows neither (see the module docstring's "the allowed
-    # vocabulary is an INPUT" rule). ``crossover_v2_flow._fit_linearization``
+    # vocabulary is an INPUT" rule). ``crossover_v2.intervention.plan_linearization``
     # fills it through :func:`jasper.active_speaker.branch_chain.
     # branch_headroom_db` once the trim is resolved, using the same function
     # the emitter charges with. A fit evaluated with no branch (a direct
@@ -835,7 +835,7 @@ class LinearizationFit:
     headroom_cost_db: float = 0.0
     # How far this driver had to move to reach the session's SHARED level
     # frame (:class:`SharedLevelFrame`), positive = it was the dark one and
-    # needs lifting. Consumed by ``crossover_v2_flow._fit_linearization``,
+    # needs lifting. Consumed by ``crossover_v2.intervention.plan_linearization``,
     # which adds it into the anchored trim so every branch realizes the same
     # system level BY CONSTRUCTION rather than by later comparison. 0.0 when
     # no frame was supplied (every pre-PR-L5 caller) and for whichever role
@@ -918,7 +918,7 @@ def complex_correction_response(
     than the ~1.7 dB of a no-correction model), where this complex model tracks
     it to ~0.5 dB. So the conductor's linearized-branch model
     (:func:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.
-    _fit_linearization` — the trim re-solve, the ripple-optimal scan, and the
+    intervention.plan_linearization` — the trim re-solve, the ripple-optimal scan, and the
     persisted VERIFY prediction) multiplies each branch by THIS, not a
     magnitude scale. There is no zero-phase branch-correction path.
 
@@ -1065,7 +1065,7 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     a (lo, hi) frequency pair. LOCKSTEP REQUIREMENT: this MUST stay the same
     power-domain mean the trim solver uses, because
     :attr:`LinearizationFit.correction_giveback_db` is consumed by
-    ``crossover_v2_flow._fit_linearization`` as the level a branch's own
+    ``crossover_v2.intervention.plan_linearization`` as the level a branch's own
     correction removed — if the two averaging domains disagreed, the anchored
     trim would systematically mis-level the branch (a linear-dB mean here
     would read ~0.3 dB different on a non-flat correction).
@@ -2792,7 +2792,7 @@ def fit_driver_linearization(
     #
     # One of the numbers below is not report-only, and saying so is the point of
     # this note: ``correction_giveback_db`` below is the SSOT
-    # ``crossover_v2_flow._fit_linearization`` anchors each branch's linearized
+    # ``crossover_v2.intervention.plan_linearization`` anchors each branch's linearized
     # TRIM on. Grading it exactly therefore moves an emitted trim — measured on
     # the banked 2026-07-30 JTS3 session at up to 0.124 dB of give-back and
     # 0.040 dB of committed trim (cut-only vocabulary;

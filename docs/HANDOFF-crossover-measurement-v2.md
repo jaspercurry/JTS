@@ -311,8 +311,8 @@ prediction `_verify_priors` hands VERIFY was still built from the RAW
 measured branches even though the emitted graph carried the Layer-1a
 correction filters (PR-D, above) — so the correctly-linearized measured
 summation was compared against a prediction that never modeled them. Fixed
-in `CrossoverV2Conductor._fit_linearization`
-([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)):
+in `crossover_v2.intervention.plan_linearization`
+([`intervention.py`](../jasper/active_speaker/crossover_v2/intervention.py)):
 whenever it fits (the same eligibility that emits), it now also rebuilds
 the persisted prediction from the SAME linearized branches (`W_lin`/
 `T_lin`, reusing `program_analysis.predicted_branch_sum` — no second
@@ -845,7 +845,7 @@ a per-driver linearization (a rising-slope Highshelf + Peaking cuts, plus the
 CD-horn top-octave give-back stage — a Lowshelf backbone + optional trailing
 Highshelf taper, #1668 — honoring the correction envelope's per-bin depth
 ceiling). It is **cut-only unless the evidence gate grants a lift vocabulary**
-— see `allow_boost` in `crossover_v2_flow._fit_linearization` and the boost
+— see `allow_boost` in `crossover_v2.intervention.plan_linearization` and the boost
 rationale in
 [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md); the
 same envelope ceiling bounds a boost as bounds a cut. Fitted whenever the mic
@@ -921,10 +921,11 @@ pre-PR-D graph.
 
 **Gauge fix (2026-07-24): the WHY travels alongside the WHAT, and the
 OBSERVE-layer honesty ladder reaches the wizard.** Before this fix, the
-conductor's `_last_linearization_outcome` (one of "fitted" /
+conductor's linearization outcome (one of "fitted" /
 "trim_rejected" / "ineligible_mic_tier" / "ineligible_repeats" /
-"fit_failed" / "" — see `crossover_v2_flow.py`'s own `__init__` comment)
-lived only as an in-memory attribute logged once per MEASURE attempt —
+"fit_failed" / "" — since #2291 Phase 2b a field on the build's own
+`_LinearizationState`, a `_last_*` conductor attribute before that)
+lived only in memory, logged once per MEASURE attempt —
 linearization could silently not run while every screen looked the same.
 `MeasuredCrossoverCandidate.linearization_outcome` now carries the SAME
 verdict as a new, era-tolerant, fingerprinted field, threaded verbatim

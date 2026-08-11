@@ -131,23 +131,20 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # under their historical private names so every existing importer keeps
 # resolving to the single definition rather than growing a second copy.
 #
-# Two of them have no reader left INSIDE this module since the Phase 2b
-# cutover deleted the legacy fitter, and they are kept anyway — marked
-# ``noqa`` rather than quietly dropped — because callers outside it still
-# import them from here (``scripts/severed-twin-replay.py`` and the conductor
-# suites). Dropping them would either break those or start a second copy,
-# which is the whole thing the re-export exists to prevent.
+# The Phase 2b cutover deleted the legacy fitter, and with it this module's own
+# last reads of ``compose_sigma_db`` and ``rounded_band_hz``. Rather than keep
+# two imports alive purely as a door for outside callers, those callers now
+# import from the module that OWNS them; only what this module still reads is
+# imported here.
 from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     JournalRecord,
     LinearizationPlan,
-    compose_sigma_db as _compose_sigma_db,  # noqa: F401 - re-export.
     driver_response_by_role as _driver_response_by_role,
     measure_validity_floor_hz as _measure_validity_floor_hz,
     plan_linearization,
     request_from_analysis,
-    rounded_band_hz as _rounded_band_hz,  # noqa: F401 - re-export.
 )
 from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
@@ -3866,7 +3863,8 @@ LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 # the threshold is a product-policy floor instead of a noise margin.
 #
 # 0.5 dB is that floor because it is this model's own measured tracking error:
-# `_fit_linearization` records the complex-correction model tracking the real
+# `crossover_v2.intervention.plan_linearization` records the complex-correction
+# model tracking the real
 # VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
 # mistracked by ~2.0 dB). An improvement smaller than the gap between what we
 # model and what the hardware realizes is not an improvement we can honestly
@@ -10490,7 +10488,9 @@ class CrossoverV2Conductor:
         listener hears (#1967).
 
         **The hole this fills.** Boost permission is granted on ``cloud is not
-        None`` (see :meth:`_fit_linearization`'s gate), whose stated meaning is
+        None`` (see the boost gate in
+        :func:`~jasper.active_speaker.crossover_v2.intervention.plan_linearization`),
+        whose stated meaning is
         that "null-exclusion stays a measured, registry-gated fact". The
         registry's analysis band is floored at
         :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the

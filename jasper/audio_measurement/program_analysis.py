@@ -725,7 +725,7 @@ class MeasurementPriors:
     measured branches by this module's own ``_build_candidate``, but the v2
     conductor OVERRIDES it with a LINEARIZED-branch prediction whenever Layer-1a
     linearization was fitted (#1668 PR-D VERIFY-prediction coherence fix; see
-    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor._fit_linearization``)
+    ``jasper.active_speaker.crossover_v2.intervention.plan_linearization``)
     — the emitted graph carries the correction filters, so the persisted
     prediction must model them too, or VERIFY's tracking comparison reads a
     deterministic mismatch equal to the filters' own in-band response (measured
@@ -3077,7 +3077,7 @@ def predicted_branch_sum(
     Public (#1668 PR-D VERIFY-prediction coherence fix): the v2 conductor
     rebuilds its persisted VERIFY prediction from the LINEARIZED branch pair
     when Layer-1a linearization was fitted
-    (``jasper.active_speaker.crossover_v2_flow``'s ``_fit_linearization``) —
+    (``jasper.active_speaker.crossover_v2.intervention``'s ``plan_linearization``) —
     the exact model of what the emitted graph will do — reusing this SAME
     machinery rather than a second implementation. No logic changed in this
     rename.
