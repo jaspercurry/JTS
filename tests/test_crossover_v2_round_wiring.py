@@ -853,7 +853,10 @@ def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
     seen: list[str] = []
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.5)  # measurably worse ⇒ restore
+    # A baseline FLATTER than the post-apply capture — the graph made the
+    # speaker measurably worse — so the table says restore and the rollback
+    # seam is live. Every other adoption row leaves at least one seam untouched.
+    _install_entry_baseline(conductor, scale=0.5)
     _install_applied_graph(monkeypatch, boosts=False)
     bound = _flow_seams(conductor)
 
