@@ -2,47 +2,42 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Legacy vs pure planner, over identical inputs (#2291 Phase 2).
+"""The pure planner, over the banked 2026-08-10 jts3 inputs (#2291 Phase 2).
 
-**What this proves, and how.** The pure planner in
-:mod:`jasper.active_speaker.crossover_v2.intervention` is a *reimplementation*
-of ``CrossoverV2Conductor._fit_linearization``, not a move, so "it still does
-the same thing" is a claim that has to be measured rather than asserted. Both
-implementations are live in this commit, so this module runs them side by side
-on the banked 2026-08-10 jts3 numbers and classifies every difference.
+**What this module was, and what it is now.** Phase 2a ran the pure planner in
+:mod:`jasper.active_speaker.crossover_v2.intervention` side by side with the
+legacy ``CrossoverV2Conductor._fit_linearization`` it reimplements, and
+classified every difference into the two changes #2291 sanctions — candidate-Fc
+consistency, and the honest trim fallback. That comparison did its job: it
+proved bit-identical output at the candidate's own corner, and it is why the
+cutover could be made with the differences named rather than discovered.
 
-Only two classes of difference are sanctioned by #2291. The harness is built so
-that a third one cannot hide:
+Phase 2b deleted legacy, so the dual run has no second implementation to run.
+The tests that needed one are retired; what remains is everything that was
+always about the planner alone — determinism, input contracts, the Fc
+invariant, the journal port, the trim policy, and the cut-only invariant —
+plus the incident fixture replayed through the planner.
 
-**(a) candidate-Fc consistency.** Legacy reads the SESSION's ``self._fc_hz`` at
-five sites while planning a candidate cornered somewhere else; the planner
-reads the candidate's own context. The isolation trick is that legacy's corner
-is a *field*: point a legacy conductor at the candidate's corner and its Fc
-behaviour becomes the planner's by construction. So
-:func:`_legacy` takes the corner to run at, and
-:func:`test_the_planner_matches_legacy_run_at_the_candidates_own_corner`
-asserts **bit-identical** output — every remaining difference between that and
-a legacy run at the session corner is class (a), and nothing else.
-
-**(b) honest trim fallback.** Beyond
-``LINEARIZATION_TRIM_SANITY_MARGIN_DB`` legacy commits whichever pair levels
-better; the planner commits the anchor. The isolation trick is that a scan
-which lands exactly ON the anchor makes legacy commit the anchor too — so a
-legacy run with ``scan_delta_db=0`` produces, through production code, the very
-pair the planner falls back to. That is the comparison in
-:func:`test_a_wild_scan_commits_exactly_the_pair_legacy_reaches_by_not_drifting`.
+**The replacement for the retired half is
+``tests/test_crossover_v2_incident_replay.py``**, which since the cutover
+drives the same banked numbers through the PRODUCTION path (``_build_candidate``
+at the keyword pair the Fc sweep hands it) and asserts the fixed behaviour
+rather than a delta against something deleted. Retired here, covered there:
+bit-identity at the candidate's corner, the session-corner contrast, the
+wild-scan commit comparison, the difference-classification table, and the
+line-for-line journal parity.
 
 **Where the fixture is synthetic, and what that costs.** The two seams whose
 true inputs are the incident's un-committable per-driver responses —
 ``fit_driver_linearization`` and ``solve_ripple_optimal_trim`` — are stubbed,
-identically for both implementations, exactly as
-``tests/test_crossover_v2_incident_replay.py`` stubs them (see that module's
-docstring for the size argument). The consequence for *this* module is narrow
-and worth naming: because the fit stub ignores its ``radiating_band_hz``, the
-corner's effect on the FIT is not exercised here. That is deliberate — it
-isolates the Fc *arithmetic*, which is what class (a) is about — and the fit's
-own sensitivity to the candidate's sections is already pinned by
-``test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own``.
+exactly as ``tests/test_crossover_v2_incident_replay.py`` stubs them (see that
+module's docstring for the size argument). The consequence for *this* module is
+narrow and worth naming: because the fit stub ignores its ``radiating_band_hz``,
+the corner's effect on the FIT is not exercised here. That is deliberate — it
+isolates the Fc *arithmetic* — and the fit's own sensitivity to the candidate's
+sections is pinned by
+``test_crossover_v2_incident_replay.py::
+test_every_fc_driven_seam_reads_the_candidates_corner_not_the_sessions``.
 
 The ripple stub returns ``seed + scan_delta_db`` rather than a fixed number, so
 a scenario can put the scan inside or outside the sanity margin without
@@ -54,7 +49,7 @@ from __future__ import annotations
 import logging
 import types
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, NamedTuple
+from typing import Any
 
 import numpy as np
 import pytest
@@ -88,76 +83,6 @@ INCIDENT_SCAN_DELTA_DB = float(COMMITTED_DB["tweeter"]) - float(
 )
 
 
-# --------------------------------------------------------------------------- #
-# one comparable result, from either implementation
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class Outcome:
-    """Everything either implementation produces, in one comparable shape.
-
-    Legacy scatters these across a 2-tuple return and seven ``self._last_*``
-    fields; the planner returns them on one object. Normalizing both into this
-    record is what makes "compare complete outputs" a single ``==``.
-    """
-
-    role_attenuations_db: dict[str, float]
-    linearization: dict[str, Any]
-    outcome: str
-    level_frame_disagreement_db: float
-    level_frame_cores: dict[str, Any]
-    level_frame_trims: dict[str, float]
-    level_frame_system_db: float | None
-    level_frame_reference_role: str | None
-    realized_level_match: tuple[Any, ...]
-    predicted_sum_hz: tuple[float, ...]
-    predicted_sum_db: tuple[float, ...]
-
-    def differing_fields(self, other: "Outcome") -> list[str]:
-        """Field names on which these two disagree — the classification input."""
-
-        return [
-            name
-            for name in self.__dataclass_fields__
-            if getattr(self, name) != getattr(other, name)
-        ]
-
-    #: The fields that derive from WHICH trim pair was committed. Everything
-    #: outside this set must be identical between two runs that differ only in
-    #: the commit choice — that is what makes class (b) a *bounded* difference
-    #: rather than "some numbers moved".
-    #:
-    #: A deliberate SUPERSET of what moves on this fixture: three of the four
-    #: differ in cell 3, because ``linearization`` happens not to — both
-    #: committed pairs leave the tweeter's chain peak below unity, so its
-    #: headroom charge floors at 0.0 either way, and the woofer's trim is
-    #: identical. A different trim could raise that peak above unity and move
-    #: it, so the field belongs in the bound; it is simply not exercised here.
-    TRIM_DERIVED = frozenset(
-        {
-            "role_attenuations_db",
-            "linearization",
-            "realized_level_match",
-            "predicted_sum_db",
-        }
-    )
-
-
-def _match_tuple(match: Any) -> tuple[Any, ...]:
-    if match is None:
-        return ()
-    return (
-        bool(match.matched),
-        float(match.level_w_db),
-        float(match.level_t_db),
-        float(match.difference_db),
-        float(match.tolerance_db),
-        tuple(float(v) for v in match.woofer_band_hz),
-        tuple(float(v) for v in match.tweeter_band_hz),
-    )
-
-
 def _sections_at(fc_hz: float) -> dict[str, tuple[Any, ...]]:
     """The session preset's sections, re-cornered — ``_fc_candidate_sections``."""
 
@@ -171,15 +96,14 @@ def _sections_at(fc_hz: float) -> dict[str, tuple[Any, ...]]:
 
 def _install_stubs(
     monkeypatch: pytest.MonkeyPatch, *, scan_delta_db: float
-) -> dict[str, list[float]]:
-    """Stub the two un-replayable seams in BOTH module namespaces.
+) -> list[float]:
+    """Stub the two un-replayable seams, and record the corner each is handed.
 
-    Patching one namespace only would compare two implementations running
-    different arithmetic, which is the failure mode this whole module exists to
-    detect — so every patch is applied to ``flow`` and ``intervention`` from one
-    definition, and the Fc each seam is handed is recorded per namespace.
+    Applied to the planner's namespace alone since #2291 Phase 2b: the legacy
+    fitter it used to be applied to in parallel no longer exists, and there is
+    one implementation left to stub.
     """
-    seen: dict[str, list[float]] = {"legacy": [], "pure": []}
+    seen: list[float] = []
 
     def ripple(freqs, w_lin, t_lin, fc_hz, **kwargs):
         return (
@@ -191,59 +115,21 @@ def _install_stubs(
     def fit(resp, envelope, **kwargs):
         return _incident_fit(resp.role)
 
-    real_overlap = flow.overlap_band_hz
+    real_overlap = iv.overlap_band_hz
 
-    def overlap_for(which: str) -> Callable[..., Any]:
-        def spy(fc_hz, **kwargs):
-            seen[which].append(float(fc_hz))
-            return real_overlap(fc_hz, **kwargs)
+    def overlap_spy(fc_hz, **kwargs):
+        seen.append(float(fc_hz))
+        return real_overlap(fc_hz, **kwargs)
 
-        return spy
-
-    for module, which in ((flow, "legacy"), (iv, "pure")):
-        monkeypatch.setattr(module, "solve_ripple_optimal_trim", ripple)
-        monkeypatch.setattr(module, "fit_driver_linearization", fit)
-        monkeypatch.setattr(module, "overlap_band_hz", overlap_for(which))
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", ripple)
+    monkeypatch.setattr(iv, "fit_driver_linearization", fit)
+    monkeypatch.setattr(iv, "overlap_band_hz", overlap_spy)
     return seen
 
 
 # --------------------------------------------------------------------------- #
 # the two runs
 # --------------------------------------------------------------------------- #
-
-
-def _legacy(fc_hz: float, sections: dict[str, Any]) -> Outcome:
-    """``_fit_linearization`` as it stands, run at the corner ``fc_hz``.
-
-    ``fc_hz`` is written onto the conductor because that is precisely where
-    legacy reads its corner from — the defect and the isolation lever are the
-    same field.
-    """
-    conductor = _conductor()
-    conductor._fc_hz = float(fc_hz)
-    analysis = _analysis(CANDIDATE_FIT["program_id"])
-    trims, linearization = conductor._fit_linearization(
-        analysis, analysis.candidate, None, candidate_sections=sections
-    )
-    frame = conductor._last_level_frame
-    predicted = conductor._last_linearized_predicted_sum
-    return Outcome(
-        role_attenuations_db=dict(trims),
-        linearization=dict(linearization),
-        outcome=conductor._last_linearization_outcome,
-        level_frame_disagreement_db=float(
-            conductor._last_level_frame_disagreement_db
-        ),
-        level_frame_cores=dict(conductor._last_level_frame_cores),
-        level_frame_trims=dict(conductor._last_level_frame_trims),
-        level_frame_system_db=(
-            None if frame is None else float(frame.system_level_db)
-        ),
-        level_frame_reference_role=(None if frame is None else frame.reference_role),
-        realized_level_match=_match_tuple(conductor._last_realized_level_match),
-        predicted_sum_hz=tuple(float(v) for v in predicted[0]),
-        predicted_sum_db=tuple(float(v) for v in predicted[1]),
-    )
 
 
 def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
@@ -274,202 +160,15 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
     )
 
 
-def _pure(sections: dict[str, Any]) -> tuple[Outcome, iv.LinearizationPlan]:
+def _pure(sections: dict[str, Any]) -> iv.LinearizationPlan:
     """:func:`~...intervention.plan_linearization` over the same inputs."""
 
-    plan = iv.plan_linearization(_planner_request(sections))
-    return (
-        Outcome(
-            role_attenuations_db=dict(plan.role_attenuations_db),
-            linearization=dict(plan.linearization),
-            outcome=plan.outcome,
-            level_frame_disagreement_db=float(plan.level_frame_disagreement_db),
-            level_frame_cores=dict(plan.level_frame_cores),
-            level_frame_trims=dict(plan.level_frame_trims),
-            level_frame_system_db=(
-                None
-                if plan.level_frame is None
-                else float(plan.level_frame.system_level_db)
-            ),
-            level_frame_reference_role=(
-                None if plan.level_frame is None else plan.level_frame.reference_role
-            ),
-            realized_level_match=_match_tuple(plan.realized_level_match),
-            predicted_sum_hz=tuple(float(v) for v in plan.linearized_predicted_sum[0]),
-            predicted_sum_db=tuple(float(v) for v in plan.linearized_predicted_sum[1]),
-        ),
-        plan,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# class (a) — the corner, isolated
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "scan_delta_db, label",
-    [
-        (0.0, "scan lands on the anchor"),
-        (-2.5, "scan drifts, inside the margin"),
-        (2.5, "scan drifts upward, inside the margin"),
-    ],
-)
-def test_the_planner_matches_legacy_run_at_the_candidates_own_corner(
-    monkeypatch, scan_delta_db, label
-):
-    """**Zero differences.** The port is faithful; only the corner ever moved.
-
-    This is the load-bearing assertion of the whole extraction. Legacy is run
-    with its ``_fc_hz`` field set to the candidate's corner — the one value the
-    planner reads from its context — and every output must then agree
-    exactly, including the full-resolution predicted-sum arrays.
-
-    Scan deltas are all inside the sanity margin here so the trim policy cannot
-    contribute; class (b) is isolated separately below. A failure here is not a
-    sanctioned difference — it is a defect in the reimplementation.
-    """
-    _install_stubs(monkeypatch, scan_delta_db=scan_delta_db)
-    sections = _sections_at(SELECTED_FC_HZ)
-    legacy = _legacy(SELECTED_FC_HZ, sections)
-    pure, _plan = _pure(sections)
-    assert pure.differing_fields(legacy) == [], (
-        f"#2291 Phase 2 ({label}): the pure planner must be byte-identical to "
-        "legacy run at the same corner; a difference here is unexplained"
-    )
-
-
-def test_the_session_corner_is_what_legacy_reads_and_the_planner_never_does(
-    monkeypatch,
-):
-    """Class (a), named: the same sections, two corners, two different answers.
-
-    Establishes that the corner is *load-bearing* — otherwise the equality
-    above would be vacuous, holding because nothing in the plan depends on Fc.
-    Legacy at the session's 2,000 Hz and legacy at the candidate's 1,648.7 Hz
-    disagree; the planner reproduces the second and never the first.
-    """
-    seen = _install_stubs(monkeypatch, scan_delta_db=-2.5)
-    sections = _sections_at(SELECTED_FC_HZ)
-
-    at_session = _legacy(CONFIGURED_FC_HZ, sections)
-    at_candidate = _legacy(SELECTED_FC_HZ, sections)
-    assert at_session.differing_fields(at_candidate), (
-        "the corner must change the plan, or this suite proves nothing"
-    )
-
-    pure, plan = _pure(sections)
-    assert pure.differing_fields(at_candidate) == []
-    assert pure.differing_fields(at_session) != []
-    assert plan.fc_hz == SELECTED_FC_HZ
-
-    # The seams themselves, not just the numbers downstream of them: legacy saw
-    # both corners across its two runs, the planner only ever the candidate's.
-    assert set(seen["legacy"]) == {CONFIGURED_FC_HZ, SELECTED_FC_HZ}
-    assert set(seen["pure"]) == {SELECTED_FC_HZ}
+    return iv.plan_linearization(_planner_request(sections))
 
 
 # --------------------------------------------------------------------------- #
 # class (b) — the trim policy, isolated
 # --------------------------------------------------------------------------- #
-
-
-def test_a_wild_scan_commits_exactly_the_pair_legacy_reaches_by_not_drifting(
-    monkeypatch,
-):
-    """Class (b), bounded: only the trim-derived fields move, and to the anchor.
-
-    Run at the SESSION's own corner, so class (a) contributes nothing and the
-    trim policy is the only thing that can differ. Two legacy runs bracket the
-    change. One with the incident's own −6.300 dB drift is what shipped: the
-    scan levels better, so legacy commits it under the outcome string
-    ``trim_rejected``. One with ``scan_delta_db=0`` puts the scan ON the anchor,
-    so legacy commits the anchored pair — through production code, not through
-    a number this test chose.
-
-    The planner, given the drifting scan, must equal the second: same anchor,
-    same everything, and differences from the first confined to
-    :attr:`Outcome.TRIM_DERIVED`.
-    """
-    sections = _sections_at(CONFIGURED_FC_HZ)
-
-    with pytest.MonkeyPatch.context() as patch:
-        _install_stubs(patch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
-        legacy_wild = _legacy(CONFIGURED_FC_HZ, sections)
-        pure, plan = _pure(sections)
-
-    # The premise: this scan really is beyond the margin, and legacy really did
-    # commit it. Asserted rather than assumed — a fixture that stopped
-    # reproducing the shape would otherwise silently pass a weaker test.
-    assert abs(INCIDENT_SCAN_DELTA_DB) > iv.LINEARIZATION_TRIM_SANITY_MARGIN_DB
-    assert legacy_wild.outcome == "trim_rejected"
-    assert legacy_wild.role_attenuations_db["tweeter"] == pytest.approx(
-        float(ANCHORED_DB["tweeter"]) + INCIDENT_SCAN_DELTA_DB, abs=1e-9
-    ), "legacy committed the drifted scan — the behaviour #2291 changes"
-
-    # Every difference is trim-derived...
-    moved = set(pure.differing_fields(legacy_wild))
-    assert moved <= Outcome.TRIM_DERIVED, (
-        f"#2291: unexplained non-trim differences {sorted(moved - Outcome.TRIM_DERIVED)}"
-    )
-    assert moved, "the policy change must actually change something"
-
-    # ...and what it moved to is the anchor legacy itself reaches when the scan
-    # does not drift.
-    with pytest.MonkeyPatch.context() as patch:
-        _install_stubs(patch, scan_delta_db=0.0)
-        legacy_anchor = _legacy(CONFIGURED_FC_HZ, sections)
-    assert legacy_anchor.role_attenuations_db["tweeter"] == pytest.approx(
-        ANCHORED_DB["tweeter"], abs=1e-9
-    )
-    for name in Outcome.TRIM_DERIVED:
-        assert getattr(pure, name) == getattr(legacy_anchor, name), (
-            f"#2291: the fallback's {name} is not the anchored pair's"
-        )
-
-    # The outcome string is the one field that legitimately differs from BOTH:
-    # the drift happened (so it is not the no-drift run's "fitted") and the trim
-    # really was rejected (so, unlike legacy's, the word is now true).
-    assert plan.outcome == "trim_rejected"
-    assert legacy_anchor.outcome == "fitted"
-    assert plan.trim.strategy is TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT
-
-
-def test_at_the_candidates_corner_the_level_grading_already_prefers_the_anchor(
-    monkeypatch,
-):
-    """A finding, pinned so it is not mistaken for the policy doing the work.
-
-    The two sanctioned fixes are independent in principle but not on this
-    fixture: at the candidate's own 1,648.7 Hz corner the anchored pair already
-    realizes the better inter-driver level (+2.376 dB against the scan's
-    −3.924 dB), so legacy — run at the right corner — would have committed the
-    anchor by its OWN level grading, before the trim policy is consulted at all.
-
-    Two things follow, and both matter for reading the dual-run table. The
-    incident's −13.013 dB trim is downstream of the corner defect, not only of
-    the trim-policy defect. And class (b)'s effect cannot be isolated at this
-    corner, which is why the test above uses the session's.
-
-    The level errors here are production's arithmetic over the fixture's
-    SYNTHETIC branches (the incident's own responses are too large to commit),
-    so the ORDERING is the claim, not the two dB values.
-    """
-    _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
-    sections = _sections_at(SELECTED_FC_HZ)
-    legacy_at_candidate = _legacy(SELECTED_FC_HZ, sections)
-    pure, plan = _pure(sections)
-
-    assert legacy_at_candidate.role_attenuations_db["tweeter"] == pytest.approx(
-        ANCHORED_DB["tweeter"], abs=1e-9
-    )
-    # Same committed pair, reached two different ways — legacy by grading,
-    # the planner by policy. The strategy is what distinguishes them.
-    assert pure.differing_fields(legacy_at_candidate) == []
-    assert plan.trim.strategy is TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT
-    assert abs(plan.trim.anchored_match.difference_db) < abs(
-        plan.trim.resolved_match.difference_db
-    )
 
 
 def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkeypatch):
@@ -480,7 +179,7 @@ def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkey
     scan was rejected and the anchor committed.
     """
     _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
-    _pure_outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+    plan = _pure(_sections_at(SELECTED_FC_HZ))
 
     assert plan.outcome == "trim_rejected"
     assert plan.role_attenuations_db["tweeter"] != pytest.approx(
@@ -497,72 +196,6 @@ def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkey
     rise_db = plan.role_attenuations_db["tweeter"] - float(COMMITTED_DB["tweeter"])
     assert rise_db == pytest.approx(abs(INCIDENT_SCAN_DELTA_DB), abs=1e-9)
     assert all(v <= 0.0 for v in plan.role_attenuations_db.values())
-
-
-# --------------------------------------------------------------------------- #
-# the classification, as one table
-# --------------------------------------------------------------------------- #
-
-
-def test_every_difference_from_legacy_classifies_into_the_two_sanctioned_fixes(
-    monkeypatch,
-):
-    """The dual-run's summary claim: no third class of difference exists.
-
-    Walks the four corners of the (corner × drift) space against legacy's own
-    session-corner behaviour and asserts each cell's differences are entirely
-    accounted for by (a), (b), or both — where "accounted for" means the
-    planner's output equals a legacy run reconstructed under that classification,
-    not merely that a plausible label was attached.
-    """
-    sections_session = _sections_at(CONFIGURED_FC_HZ)
-    sections_candidate = _sections_at(SELECTED_FC_HZ)
-
-    for sections, corner, drift, classes in (
-        (sections_session, CONFIGURED_FC_HZ, -2.5, set()),
-        (sections_candidate, SELECTED_FC_HZ, -2.5, {"a"}),
-        (sections_session, CONFIGURED_FC_HZ, INCIDENT_SCAN_DELTA_DB, {"b"}),
-        # Cell 4 — the incident — is pure class (a), NOT (a)+(b). Legacy run at
-        # the candidate's own corner reproduces this cell exactly, because there
-        # the anchored pair already levels better and legacy's own grading
-        # commits it (see
-        # ``test_at_the_candidates_corner_the_level_grading_already_prefers_the_anchor``).
-        # The trim policy reaches the same pair by a different route, so it
-        # contributes no DIFFERENCE here; class (b)'s work is done in cell 3,
-        # where the corner is held fixed. Labelling this (a)+(b) overstated the
-        # policy's role and made the cell's own assertion vacuous — ``set() <=
-        # TRIM_DERIVED`` is true of nothing (#2313 panel should-fix 5).
-        (sections_candidate, SELECTED_FC_HZ, INCIDENT_SCAN_DELTA_DB, {"a"}),
-    ):
-        with pytest.MonkeyPatch.context() as patch:
-            _install_stubs(patch, scan_delta_db=drift)
-            baseline = _legacy(CONFIGURED_FC_HZ, sections)
-            reference = _legacy(corner, sections)
-            pure, _plan = _pure(sections)
-
-            moved_from_baseline = set(pure.differing_fields(baseline))
-            if not classes:
-                assert moved_from_baseline == set(), (
-                    "with the session corner and an in-margin scan the planner "
-                    "must be indistinguishable from legacy"
-                )
-                continue
-            if "a" in classes:
-                # Class (a) is fully explained iff legacy at the candidate's
-                # corner accounts for it — and "accounts for" means the planner
-                # EQUALS that run, not merely that the run differs from
-                # baseline.
-                assert set(reference.differing_fields(baseline))
-            if "b" not in classes:
-                assert pure.differing_fields(reference) == [], (
-                    "a cell with no class-(b) component must equal legacy run "
-                    "at its own corner, field for field"
-                )
-            else:
-                moved = set(pure.differing_fields(reference))
-                assert moved, "a class-(b) cell must actually differ"
-                assert moved <= Outcome.TRIM_DERIVED
-            assert moved_from_baseline, "a classified cell must differ from baseline"
 
 
 # --------------------------------------------------------------------------- #
@@ -647,35 +280,6 @@ def test_the_request_snapshots_the_trim_mappings_it_was_handed():
 
     assert request.raw_trim_db == {"woofer": 0.0, "tweeter": -10.0}
     assert request.trim_band_average_db == {"woofer": 0.0, "tweeter": -9.0}
-
-
-def test_the_planner_writes_no_conductor_state(monkeypatch):
-    """No ``_last_*`` field moves while the pure planner runs.
-
-    The scratch fields are the implicit return channel #2291 is removing. This
-    pins that the planner does not use them even incidentally — it is handed no
-    conductor, so the only way it could is through an import, and an import is
-    exactly what a future edit might reach for.
-    """
-    _install_stubs(monkeypatch, scan_delta_db=-2.5)
-    conductor = _conductor()
-    watched = (
-        "_last_level_frame",
-        "_last_level_frame_cores",
-        "_last_level_frame_disagreement_db",
-        "_last_level_frame_trims",
-        "_last_linearization_outcome",
-        "_last_linearized_predicted_sum",
-        "_last_realized_level_match",
-    )
-    sentinels = {name: object() for name in watched}
-    for name, sentinel in sentinels.items():
-        setattr(conductor, name, sentinel)
-
-    _pure(_sections_at(SELECTED_FC_HZ))
-
-    for name, sentinel in sentinels.items():
-        assert getattr(conductor, name) is sentinel, f"the planner touched {name}"
 
 
 def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
@@ -789,7 +393,7 @@ def test_every_fc_driven_seam_reads_the_context_and_no_other_value(monkeypatch):
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", ripple)
     monkeypatch.setattr(iv, "realized_branch_level_match", match)
 
-    _outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+    plan = _pure(_sections_at(SELECTED_FC_HZ))
 
     assert seen["ripple"] == [SELECTED_FC_HZ]
     assert seen["match"] == [SELECTED_FC_HZ, SELECTED_FC_HZ]  # both graded pairs
@@ -817,7 +421,7 @@ def test_the_skipped_scan_journal_names_the_candidate_corner(monkeypatch):
         return (float(fc_hz) + 100.0, float(fc_hz) + 900.0)
 
     monkeypatch.setattr(iv, "overlap_band_hz", one_sided)
-    _outcome, plan = _pure(sections)
+    plan = _pure(sections)
 
     skipped = [
         r
@@ -833,184 +437,6 @@ def test_the_skipped_scan_journal_names_the_candidate_corner(monkeypatch):
     assert plan.trim.ripple_db is None
     assert plan.trim.anchor_drift_db == 0.0
     assert plan.trim.strategy is TrimStrategy.ANCHORED_COMMITTED
-
-
-def test_the_journal_content_matches_legacys_line_for_line(monkeypatch):
-    """The dual-run's last uncompared surface: what each side would LOG.
-
-    :class:`Outcome` compares computed values, not disclosure, so a faithful
-    port could still have quietly dropped a field from a journal line. Legacy
-    logs through ``flow.log_event``, so capturing that call gives its records
-    structurally — no parsing of rendered text — and the two journals can be
-    compared as data.
-
-    ``session_id`` is legacy's alone (the planner has no session; the host adds
-    it). Everything else must agree, so this runs the cell where neither
-    sanctioned class contributes — the session's own corner with an in-margin
-    scan — and demands equality field for field.
-    """
-    _install_stubs(monkeypatch, scan_delta_db=-2.5)
-    sections = _sections_at(CONFIGURED_FC_HZ)
-    legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
-
-    assert [line.event for line in pure_journal] == [
-        line.event for line in legacy_journal
-    ]
-    assert legacy_journal, "the capture must actually have seen legacy log"
-    for pure, legacy in zip(pure_journal, legacy_journal):
-        # Legacy renders tuples where the planner renders lists (both go
-        # through the same ``log_event`` formatter, which stringifies either
-        # identically); compare through a normalizer rather than pretending the
-        # container types match.
-        assert _normalized(pure.fields) == _normalized(legacy.fields), pure.event
-        assert pure.level == legacy.level, pure.event
-
-
-#: The journal lines whose content is a function of WHICH trim pair was
-#: committed. The exact analogue, in disclosure, of ``Outcome.TRIM_DERIVED``.
-_TRIM_DERIVED_EVENTS = [
-    "correction.crossover_v2_linearization_trim_rejected",
-    "correction.crossover_v2_realized_level_match",
-    "correction.crossover_v2_linearization_headroom",
-]
-
-
-def test_only_the_trim_derived_lines_differ_when_the_policy_fires(monkeypatch):
-    """...and where the journals DO diverge, it is class (b)'s own disclosure.
-
-    Same capture, same corner, but a beyond-margin scan. The lines that may
-    differ are exactly the three whose content is a function of the committed
-    pair — which pair was committed, the level that pair realizes, and the
-    headroom that pair costs. The two that describe the FIT rather than the
-    trim (``fit_band``, ``giveback``) must be identical, and that is the
-    load-bearing half: it says the policy change moved the trim and nothing
-    upstream of it.
-    """
-    _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
-    sections = _sections_at(CONFIGURED_FC_HZ)
-    legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
-
-    assert [line.event for line in pure_journal] == [
-        line.event for line in legacy_journal
-    ]
-    differing = [
-        pure.event
-        for pure, legacy in zip(pure_journal, legacy_journal)
-        if _normalized(pure.fields) != _normalized(legacy.fields)
-    ]
-    assert differing == _TRIM_DERIVED_EVENTS
-    assert {line.event for line in pure_journal} - set(differing) == {
-        "correction.crossover_v2_linearization_fit_band",
-        "correction.crossover_v2_linearization_giveback",
-    }
-    # SEVERITY is trim-derived too, on exactly one line, and the difference is
-    # the safety story rather than a defect. Every line that is not trim-derived
-    # keeps its weight...
-    pure_levels = {line.event: line.level for line in pure_journal}
-    legacy_levels = {line.event: line.level for line in legacy_journal}
-    for event in set(pure_levels) - set(_TRIM_DERIVED_EVENTS):
-        assert pure_levels[event] == legacy_levels[event], event
-
-    # ...``trim_rejected`` stays the WARNING an operator greps for — the trim it
-    # names moved, its severity did not...
-    assert pure_levels[_TRIM_DERIVED_EVENTS[0]] == logging.WARNING
-    assert legacy_levels[_TRIM_DERIVED_EVENTS[0]] == logging.WARNING
-
-    # ...and ``realized_level_match`` FLIPS to WARNING, because that line's
-    # severity is conditional on whether the committed pair levels, and the
-    # committed pair changed. Legacy shipped the scan, which matched, and
-    # logged INFO. The planner commits the anchor, which does NOT match on this
-    # fixture — so the line warns, and the accountability seam downstream
-    # refuses the session. That is the "loud refusal, not a loud speaker" path
-    # visible in the journal, one step before it fires.
-    match_event = "correction.crossover_v2_realized_level_match"
-    assert legacy_levels[match_event] == logging.INFO
-    assert pure_levels[match_event] == logging.WARNING
-    pure_match = next(ln for ln in pure_journal if ln.event == match_event)
-    legacy_match = next(ln for ln in legacy_journal if ln.event == match_event)
-    assert legacy_match.fields["matched"] is True
-    assert pure_match.fields["matched"] is False
-
-    rejected = _TRIM_DERIVED_EVENTS[0]
-    pure_fields = dict(next(ln.fields for ln in pure_journal if ln.event == rejected))
-    legacy_fields = dict(
-        next(ln.fields for ln in legacy_journal if ln.event == rejected)
-    )
-    assert legacy_fields["committed"] == "resolved"
-    assert pure_fields["committed"] == "anchored"
-    # Coupled to the decision rather than independently authored: the record
-    # must report what the decision committed, not a string that agrees with it
-    # by inspection.
-    _outcome, plan = _pure(sections)
-    assert pure_fields["committed"] == plan.trim.committed_side
-    assert pure_fields["fallback_trim_db"] == pure_fields["anchored_trim_db"]
-    assert legacy_fields["fallback_trim_db"] == legacy_fields["resolved_trim_db"]
-    # Added, not changed: legacy recorded neither.
-    assert set(pure_fields) - set(legacy_fields) == {"drift_db", "strategy"}
-    assert not set(legacy_fields) - set(pure_fields)
-    assert pure_fields["strategy"] == (
-        TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT.value
-    )
-
-
-def _both_journals(
-    monkeypatch: pytest.MonkeyPatch, sections: dict[str, Any]
-) -> tuple[list[_Line], list[_Line]]:
-    """Legacy's structured log calls and the planner's records, side by side.
-
-    SEVERITY travels with each line, not just its payload. ``log_event``
-    defaults to INFO when no ``level`` is passed, so legacy's effective level is
-    ``kwargs.get("level", INFO)`` — comparing the raw kwargs would read "absent"
-    where the planner reads ``logging.INFO`` and miss the two flips that matter:
-    ``trim_rejected`` is the household-visible WARNING, and
-    ``realized_level_match`` is conditional on whether the pair matched. 2b's
-    host passes ``record.level`` straight through to ``log_event``, so a level
-    the planner got wrong is a severity the journal gets wrong.
-    """
-    captured: list[tuple[str, dict[str, Any]]] = []
-    real_log_event = flow.log_event
-
-    def spy(logger_, event, **kwargs):
-        captured.append((event, dict(kwargs)))
-        return real_log_event(logger_, event, **kwargs)
-
-    monkeypatch.setattr(flow, "log_event", spy)
-    _legacy(CONFIGURED_FC_HZ, sections)
-    monkeypatch.setattr(flow, "log_event", real_log_event)
-    _outcome, plan = _pure(sections)
-
-    legacy_journal = [
-        _Line(
-            event,
-            {k: v for k, v in fields.items() if k not in ("session_id", "level")},
-            int(fields.get("level", logging.INFO)),
-        )
-        for event, fields in captured
-    ]
-    return legacy_journal, [
-        _Line(r.event, dict(r.fields), r.level) for r in plan.journal
-    ]
-
-
-class _Line(NamedTuple):
-    """One journal line as (name, payload, severity)."""
-
-    event: str
-    fields: dict[str, Any]
-    level: int
-
-
-def _normalized(fields: dict[str, Any]) -> dict[str, Any]:
-    """Container-shape-insensitive view of one journal payload."""
-
-    def norm(value: Any) -> Any:
-        if isinstance(value, Mapping):
-            return {k: norm(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [norm(v) for v in value]
-        return value
-
-    return {key: norm(value) for key, value in fields.items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -1254,7 +680,7 @@ def test_a_role_with_no_crossover_section_is_named_in_the_journal(monkeypatch, s
     if shape == "empty":
         one_sided["woofer"] = ()
 
-    _outcome, plan = _pure(one_sided)
+    plan = _pure(one_sided)
 
     named = [
         r
@@ -1275,7 +701,7 @@ def test_both_roles_carrying_sections_names_nobody(monkeypatch):
     """The positive control: the disclosure is conditional, not unconditional."""
 
     _install_stubs(monkeypatch, scan_delta_db=0.0)
-    _outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+    plan = _pure(_sections_at(SELECTED_FC_HZ))
     assert not [
         r
         for r in plan.journal
@@ -1307,7 +733,7 @@ def test_no_committed_trim_is_ever_positive_however_large_the_giveback(
         return replace(_incident_fit(resp.role), correction_giveback_db=giveback_db)
 
     monkeypatch.setattr(iv, "fit_driver_linearization", generous)
-    _outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+    plan = _pure(_sections_at(SELECTED_FC_HZ))
 
     assert plan.role_attenuations_db
     for role, trim_db in plan.role_attenuations_db.items():

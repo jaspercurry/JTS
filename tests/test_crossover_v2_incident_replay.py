@@ -91,7 +91,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_db,

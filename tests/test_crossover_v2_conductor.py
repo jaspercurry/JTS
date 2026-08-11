@@ -8019,7 +8019,6 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     module-level imported name to pin that the call happened exactly once, with
     the anchored woofer trim held fixed and the analysis's own polarity sign
     passed through."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     calls = []
     real_solve = iv.solve_ripple_optimal_trim
@@ -8162,7 +8161,6 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     woofer is deep in its skirt and the summed ripple cannot express the
     handoff level. The scan must not run at all; the anchored give-back
     stands, and the skip is disclosed."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     calls = []
@@ -8492,7 +8490,6 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     committed, and the anchor wins HERE because it levels better — which is what
     the guard was always assuming and never checking.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
     captured: dict = {}
@@ -8562,7 +8559,6 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
     are supplied directly and the physical scenario that used to produce them
     is left retired.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
@@ -8718,7 +8714,6 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     curves the conductor is handed — keeps this test's subject bit-for-bit and
     stops it riding a floor it has nothing to say about.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     def _spy(*args, **kwargs):
         # Commit the anchor itself (no scan drift) so the committed pair is the
@@ -8779,7 +8774,6 @@ def test_wild_trim_boundary_exact_passes_just_above_falls_back(caplog, monkeypat
     resulting 6 dB-mislevelled pair is then refused downstream: the guard's
     bound and the accountability gate are different questions, deliberately.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     def _run_at(drift_db: float):
         caplog.clear()
@@ -9371,7 +9365,6 @@ def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
     fell back to the seed pair -- distinct from "fitted" even though
     linearization is populated in both). Seed-anchored (#1668), so force the
     drift by monkeypatching the ripple-optimal solve."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     monkeypatch.setattr(
         iv, "solve_ripple_optimal_trim",
@@ -9433,7 +9426,6 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
     ``_fit_linearization`` used internally, at the resolved trim -- and must
     differ measurably from the fixture's own raw (all-zero) prediction,
     proving the override actually took effect."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     captured: dict = {}
     real_solve = iv.solve_ripple_optimal_trim
@@ -9494,7 +9486,6 @@ def test_measure_predicted_sum_carries_the_committed_delay(monkeypatch):
     keeping the raw and linearized models one model apart (the correction
     filters) is what the improvement gate and ``_commanded_delta`` depend on.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     # A 20 us residual: comfortably inside the +/-(period/6) snap radius
     # (83.3 us at a 2 kHz Fc) and several times the ~5.5 us snap deltas the
@@ -9575,7 +9566,6 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
     (wild resolved) trim. Force the rejection by monkeypatching the ripple-
     optimal solve to return a far-from-seed value while still capturing the
     linearized branches it received."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     captured: dict = {}
 
@@ -10848,7 +10838,6 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     their two matched drivers sit 6.16 dB apart, and the shipped arm mints none.
     Reverting #1929 fails this test on both.
     """
-    import jasper.active_speaker.crossover_v2_flow as flow
 
     woofer_db, tweeter_db, trim_db = _healthy_crossed_over_pair()
 
