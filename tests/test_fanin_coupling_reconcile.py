@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+# The conf.d this repo actually installs — the honest "box on the shipped wire"
+# fixture for the gates that read both PCM blocks.
+SHIPPED_RING_CONF_D = (
+    Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+)
+
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     FANIN_ENV_PATH,
@@ -34,6 +40,11 @@ from jasper.fanin_coupling import (
 
 @pytest.fixture(autouse=True)
 def _isolate_base_jasper_env(tmp_path, monkeypatch):
+    """Fixture wrapper over :func:`isolate_base_jasper_env` (autouse here)."""
+    isolate_base_jasper_env(tmp_path, monkeypatch)
+
+
+def isolate_base_jasper_env(tmp_path, monkeypatch):
     """Keep effective-env tests independent of the developer host's /etc state."""
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
@@ -654,6 +665,17 @@ def test_cli_auto_aborts_loudly_on_entry_lock_contention(
 
 @pytest.fixture
 def _ring_assets_present(monkeypatch):
+    """Fixture wrapper over :func:`force_ring_gates_pass`.
+
+    The body is a plain function so a sibling suite can build its OWN fixture on
+    it: importing a fixture into another module registers it there but shadows
+    the import with the test's parameter of the same name, which is a lint error
+    and reads as an accident. One implementation, two fixtures.
+    """
+    force_ring_gates_pass(monkeypatch)
+
+
+def force_ring_gates_pass(monkeypatch):
     """Force the shm_ring activation gates to pass (assets + all geometry axes).
 
     Every PREFLIGHT must pass for an arm to proceed: assets present, the conf.d
@@ -663,6 +685,13 @@ def _ring_assets_present(monkeypatch):
     slot-mismatch behaviours have their own dedicated tests below (which do NOT use
     this fixture). The stale-ring-file guard is also stubbed to a no-op so the
     spine tests don't touch /dev/shm.
+
+    ``RING_CONF_D`` points at the SHIPPED conf.d rather than a synthetic one:
+    the four-ends wire gate reads both PCM blocks, and the file this repo
+    actually installs is the honest fixture for "a box on the shipped wire".
+    Claiming assets are present while leaving the path at a location that does
+    not exist would make the spine tests exercise a torn-conf.d refusal instead
+    of the spine.
     """
     import jasper.ring_assets as ra
     import jasper.fanin.coupling_reconcile as cr
@@ -672,6 +701,7 @@ def _ring_assets_present(monkeypatch):
         "ring_asset_presence",
         lambda **kw: ra.RingAssetPresence(True, True, True),
     )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
         ra,
         "ring_geometry_matches_outputd",
@@ -927,8 +957,8 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
 
     real = coupling.capture_kwargs_for_coupling
 
-    def broken(raw, *, topology=None):
-        kwargs = dict(real(raw, topology=topology))
+    def broken(raw):
+        kwargs = dict(real(raw))
         if not kwargs:
             return kwargs
         if playback_format is None:
@@ -975,11 +1005,28 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     assert "keeping loopback" in detail
 
 
-def test_default_ring_gates_registers_edge_width_gate_first():
-    gates = default_ring_gates()
-    names = [name for name, _ in gates]
-    assert names[0] == "ring_edge_width"
-    assert dict(gates)["ring_edge_width"] is ring_edge_width_ready
+def test_default_ring_gates_order_puts_each_gate_after_what_makes_it_meaningful():
+    """Gate ORDER is a diagnostic contract, not an arbitrary tuple.
+
+    Two orderings are load-bearing and both were wrong before R5b generalized
+    the wire gate:
+
+    * ``ring_topology`` BEFORE ``ring_edge_width`` — on a box that resolves no
+      ring width, ``resolve_ring_wire`` falls back to the shipped stereo
+      declaration, so a wire comparison there reports a disagreement that is an
+      artefact of the fallback and names the wrong defect. jts3 (roleful, 6-ch
+      active lane) is the live case: it must be refused for its topology, not
+      for a channel count it never claimed.
+    * ``ring_assets`` BEFORE the two gates that READ those assets — the wire
+      gate parses the conf.d and the capability gate hashes the ioplug, so a
+      missing asset must produce the asset gate's one clear reason rather than a
+      parse failure downstream.
+    """
+    names = [name for name, _ in default_ring_gates()]
+    assert names.index("ring_topology") < names.index("ring_edge_width")
+    assert names.index("ring_assets") < names.index("ring_edge_width")
+    assert names.index("ring_assets") < names.index("ring_wire_caps")
+    assert dict(default_ring_gates())["ring_edge_width"] is ring_edge_width_ready
 
 
 def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
@@ -1205,6 +1252,12 @@ def test_arm_shm_ring_deletes_stale_on_disk_ring_before_arming(tmp_path, monkeyp
         hdr = bytearray(128)
         struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
         struct.pack_into("<I", hdr, 4, 1)  # version
+        # The WIRE axes a real fan-in writer publishes. They are compared
+        # now (R5b), so a header left zeroed here would read as a genuine
+        # format shear rather than as the coherent ring these tests mean.
+        struct.pack_into("<I", hdr, 8, 48000)  # rate
+        struct.pack_into("<I", hdr, 12, 2)  # channels
+        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
         struct.pack_into("<I", hdr, 20, 128)  # period_frames
         struct.pack_into("<I", hdr, 24, n_slots)  # n_slots
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1316,6 +1369,12 @@ def test_confirm_shm_ring_migrates_old_eight_slot_ring_file_to_default_two_slot(
         hdr = bytearray(128)
         struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
         struct.pack_into("<I", hdr, 4, 1)  # version
+        # The WIRE axes a real fan-in writer publishes. They are compared
+        # now (R5b), so a header left zeroed here would read as a genuine
+        # format shear rather than as the coherent ring these tests mean.
+        struct.pack_into("<I", hdr, 8, 48000)  # rate
+        struct.pack_into("<I", hdr, 12, 2)  # channels
+        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
         struct.pack_into("<I", hdr, 20, period_frames)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1480,6 +1539,12 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
         hdr = bytearray(128)
         struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
         struct.pack_into("<I", hdr, 4, 1)  # version
+        # The WIRE axes a real fan-in writer publishes. They are compared
+        # now (R5b), so a header left zeroed here would read as a genuine
+        # format shear rather than as the coherent ring these tests mean.
+        struct.pack_into("<I", hdr, 8, 48000)  # rate
+        struct.pack_into("<I", hdr, 12, 2)  # channels
+        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
         struct.pack_into("<I", hdr, 20, 128)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)
@@ -1544,6 +1609,12 @@ def test_confirm_shm_ring_self_heals_stale_on_disk_period(tmp_path, monkeypatch)
         hdr = bytearray(128)
         struct.pack_into("<I", hdr, 0, 0x4A52_494E)  # magic JRIN
         struct.pack_into("<I", hdr, 4, 1)  # version
+        # The WIRE axes a real fan-in writer publishes. They are compared
+        # now (R5b), so a header left zeroed here would read as a genuine
+        # format shear rather than as the coherent ring these tests mean.
+        struct.pack_into("<I", hdr, 8, 48000)  # rate
+        struct.pack_into("<I", hdr, 12, 2)  # channels
+        struct.pack_into("<I", hdr, 16, 1)  # sample_format = S16LE
         struct.pack_into("<I", hdr, 20, period_frames)
         struct.pack_into("<I", hdr, 24, n_slots)
         path.write_bytes(bytes(hdr) + b"\x00" * 512)

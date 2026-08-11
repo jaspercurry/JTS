@@ -152,7 +152,7 @@ def test_coupling_state_loopback_default_is_coherent(monkeypatch):
     )
     assert block["persisted"] == "loopback"
     assert block["content_bridge"] == "direct"
-    assert block["coherent"] is True
+    assert block["intent_coherent"] is True
     assert block["live_transport"] == "loopback"
 
 
@@ -171,8 +171,134 @@ def test_coupling_state_ring_armed_reports_coherent_pair(monkeypatch, tmp_path):
     )
     assert block["persisted"] == "shm_ring"
     assert block["content_bridge"] == "shm_ring"
-    assert block["coherent"] is True
+    assert block["intent_coherent"] is True
     assert block["live_transport"] == "shm_ring"
+
+
+# The two producers spell the SAME field differently, and `_observed_ring_wire`
+# is the one place that reconciles them. These fixtures mirror the live emitters
+# rather than an idealized shape:
+#
+#   fan-in   rust/jasper-fanin/src/state.rs — the `ring` block nested under
+#            `output`, keys `path` / `slots` / `wire_format` / `channels` / ...
+#   outputd  rust/jasper-outputd/src/state.rs — a TOP-LEVEL `shm_ring` block,
+#            keys `enabled` / `path` / `attached` / `slots` / `format` /
+#            `channels` / ...
+#
+# Getting a path or a key name wrong here is invisible in production: the reader
+# answers None, /state publishes "not observed", and a reader cannot tell that
+# from "the daemon is not on a ring". That is why the positive path is pinned.
+_FANIN_RING_STATUS = {
+    "output": {
+        "transport": "shm_ring",
+        "ring": {
+            "path": "/dev/shm/jts-ring/program.ring",
+            "slots": 2,
+            "wire_format": "S32_LE",
+            "channels": 2,
+            "occupancy": 1,
+            "published": 4096,
+        },
+    }
+}
+_OUTPUTD_RING_STATUS = {
+    "shm_ring": {
+        "enabled": True,
+        "path": "/dev/shm/jts-ring/content.ring",
+        "attached": True,
+        "slots": 2,
+        "format": "S32_LE",
+        "channels": 4,
+        "occupancy": 1,
+    }
+}
+
+
+def test_observed_ring_wire_reads_both_producers_real_status_shapes(monkeypatch, tmp_path):
+    """THE POSITIVE PATH, against the shapes the Rust daemons actually emit.
+
+    Ring A and Ring B are reported independently and may legitimately differ on
+    channels (a stereo program in, per-driver channels out), so the two are not
+    interchangeable and a test that only proved "some dict comes back" would not
+    catch the two being crossed.
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    block = state_aggregate._coupling_state(
+        fanin_status=_FANIN_RING_STATUS, outputd_status=_OUTPUTD_RING_STATUS
+    )
+    assert block["observed"]["ring_a"] == {
+        "sample_format": "S32_LE",
+        "channels": 2,
+        "slots": 2,
+    }
+    assert block["observed"]["ring_b"] == {
+        "sample_format": "S32_LE",
+        "channels": 4,
+        "slots": 2,
+    }
+
+
+def test_observed_ring_wire_distinguishes_not_observed_from_observed():
+    """``None`` means NOT OBSERVED and must never be read as "observed correct".
+
+    Three ways to get there, all real: an unreachable daemon, a loopback daemon
+    that publishes no ring block at all, and a block present but silent on both
+    wire axes. The last one is the interesting one — a partially-populated block
+    must not yield a dict of Nones that a reader would treat as a reading.
+    """
+    observed = state_aggregate._observed_ring_wire
+    assert observed(None, ("output", "ring"), format_key="wire_format") is None
+    # Loopback fan-in: an `output` block with no `ring` child.
+    assert (
+        observed(
+            {"output": {"transport": "loopback"}},
+            ("output", "ring"),
+            format_key="wire_format",
+        )
+        is None
+    )
+    # Present but silent on BOTH axes -> not observed.
+    assert (
+        observed({"shm_ring": {"attached": False}}, ("shm_ring",), format_key="format")
+        is None
+    )
+    # ONE axis present IS an observation — reporting it beats discarding it.
+    assert observed(
+        {"shm_ring": {"channels": 2}}, ("shm_ring",), format_key="format"
+    ) == {"sample_format": None, "channels": 2, "slots": None}
+
+
+def test_observed_ring_wire_uses_each_producers_own_format_key():
+    """The spelling reconciliation is the reason this helper exists.
+
+    Reading fan-in with outputd's key (or the reverse) silently answers "not
+    observed" on a healthy armed box, so the two spellings are pinned against
+    each other rather than each in isolation.
+    """
+    observed = state_aggregate._observed_ring_wire
+    # fan-in's key applied to fan-in's block: found.
+    assert (
+        observed(_FANIN_RING_STATUS, ("output", "ring"), format_key="wire_format")[
+            "sample_format"
+        ]
+        == "S32_LE"
+    )
+    # outputd's key applied to fan-in's block: the format axis goes silent, which
+    # is exactly the invisible failure the reconciliation prevents.
+    assert (
+        observed(_FANIN_RING_STATUS, ("output", "ring"), format_key="format")[
+            "sample_format"
+        ]
+        is None
+    )
 
 
 def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
@@ -189,7 +315,7 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block["persisted"] == "shm_ring"
     assert block["content_bridge"] == "direct"
-    assert block["coherent"] is False
+    assert block["intent_coherent"] is False
 
 
 def test_coupling_state_fail_soft_on_read_error(monkeypatch):
@@ -206,8 +332,9 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
     assert block == {
         "persisted": "loopback",
         "content_bridge": "direct",
-        "coherent": True,
+        "intent_coherent": True,
         "live_transport": None,
+        "observed": {"ring_a": None, "ring_b": None},
         "choice": "auto",
         "combo": {"state": "disarmed"},
     }

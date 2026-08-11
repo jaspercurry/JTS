@@ -31,6 +31,28 @@ SO_NAME = "libasound_module_pcm_jts_ring.so"
 _STALE_MARKER = "REMAINS in place"
 
 
+def _provenance_preamble(tmp_path: Path) -> str:
+    """Point the provenance record at the tmpdir, in EVERY script this file runs.
+
+    ``revoke_ring_ioplug_provenance`` runs on the failure paths these tests
+    exercise, and it ``rm -f``s ``JTS_RING_IOPLUG_PROVENANCE`` — which without
+    an override is the REAL absolute path ``/var/lib/jasper/ring-ioplug.provenance``.
+    A test reaching outside its tmpdir at an absolute system path is the defect
+    regardless of whether that file happens to exist on the machine running it;
+    "harmless here" is a property of the host, not of the test.
+
+    The override goes in ALL THREE, including the two that shadow ``rm`` with a
+    no-op shell function. A stub hides the reach rather than removing it, and a
+    later edit that decides the stub is unnecessary — the third test already
+    makes exactly that call, deliberately, so that a stray ``rm`` of the ``.so``
+    would fail it — would silently restore the reach.
+    """
+    return (
+        f'JTS_RING_IOPLUG_PROVENANCE="{tmp_path}/ring-ioplug.provenance"\n'
+        "export JTS_RING_IOPLUG_PROVENANCE"
+    )
+
+
 def _has_bash() -> bool:
     return shutil.which("bash") is not None
 
@@ -55,6 +77,7 @@ REPO_DIR="{tmp_path}/repo"
 BUILD_USER="nobody"
 JTS_RING_ALSA_PLUGIN_DIR="{plugin_dir}"
 export JTS_RING_ALSA_PLUGIN_DIR
+{_provenance_preamble(tmp_path)}
 # Shadow the privileged / heavy ops so nothing touches the host, and force
 # the contained build to fail (the branch under test).
 mkdir() {{ :; }}
@@ -86,7 +109,12 @@ def test_build_failure_with_prior_so_warns_it_is_stale(tmp_path):
     # Both the generic degrade-to-warn lines AND the distinct stale-.so line.
     assert "ring platform unavailable" in out
     assert _STALE_MARKER in out
-    assert "doctor cannot distinguish" in out
+    # The WARN used to say the doctor "cannot distinguish it from a fresh
+    # build". It can now: a failed build REVOKES the installer's provenance
+    # record, so the plugin reads as unvouched instead of ok. The transcript
+    # says what is true today.
+    assert "provenance record has been revoked" in out
+    assert "doctor cannot distinguish" not in out
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
@@ -97,6 +125,152 @@ def test_first_ever_build_failure_omits_stale_warning(tmp_path):
     out = _run_build_with_failure(tmp_path, stale_so=False)
     assert "ring platform unavailable" in out
     assert _STALE_MARKER not in out
+
+
+# --- the provenance helpers, EXECUTED ---------------------------------------
+#
+# `_jts_ring_ioplug_caps` interrogates the built artifact for diagnostic string
+# literals the compiler embedded at each conf.d field's parse site, and
+# `record_ring_ioplug_provenance` / `revoke_ring_ioplug_provenance` write and
+# withdraw the installer's claim about it. Everything downstream — the doctor's
+# provenance verdict and the coupling reconciler's fail-closed capability gate —
+# reads what these three produce, so they are run rather than eyeballed.
+#
+# The markers are pinned against the C source in test_ring_ioplug_provenance.py;
+# what is proven HERE is that the shell actually finds them and emits the record
+# the Python reader parses.
+_CAP_FORMAT_MARKER = "format %s unsupported (S16_LE|S32_LE)"
+_CAP_CHANNELS_MARKER = "channels out of range 2..=8"
+
+
+def _run_sh(tmp_path: Path, body: str) -> subprocess.CompletedProcess:
+    """Source the installer and run `body`, hermetically and under `set -u`.
+
+    `set -u` is not incidental: the caps helper builds a bash array that is
+    EMPTY for an uncapable plugin, and bash 3.2 (the macOS system bash this lane
+    runs on) aborts on an unguarded empty-array expansion under `set -u`. The
+    uncapable plugin is the whole point of the probe, so running without `set -u`
+    would test the helper on everything except its most important input.
+    """
+    script = f"""
+set -euo pipefail
+REPO_DIR="{tmp_path}/repo"
+BUILD_USER="nobody"
+JTS_RING_ALSA_PLUGIN_DIR="{tmp_path}/plugindir"
+{_provenance_preamble(tmp_path)}
+source "{RING_PLATFORM_SH}"
+{body}
+"""
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=30
+    )
+
+
+def _fake_so(tmp_path: Path, *, markers: tuple[str, ...]) -> Path:
+    """A binary-ish file carrying the given capability marker literals.
+
+    Bytes around the markers, because the real probe greps a compiled ELF and
+    uses `grep -a`; a pure-text fixture would not exercise that.
+    """
+    so = tmp_path / "fake.so"
+    blob = b"\x7fELF\x02\x01\x01\x00\x00\xff\xfe"
+    for m in markers:
+        blob += b"\x00" + m.encode() + b"\x00\xfe"
+    so.write_bytes(blob + b"\x00\x01\x02")
+    return so
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+@pytest.mark.parametrize(
+    ("markers", "expected"),
+    [
+        ((), ""),
+        ((_CAP_FORMAT_MARKER,), "wire_format"),
+        ((_CAP_CHANNELS_MARKER,), "wire_channels"),
+        ((_CAP_FORMAT_MARKER, _CAP_CHANNELS_MARKER), "wire_format,wire_channels"),
+    ],
+)
+def test_caps_probe_reads_capabilities_off_the_artifact(tmp_path, markers, expected):
+    """One case per capability subset, INCLUDING the empty one.
+
+    The empty case is a pre-ring-v2 plugin — the honest answer is no
+    capabilities, and it must be an empty string rather than an abort: the
+    installer runs under `set -euo pipefail`, so a failure here would take the
+    whole deploy step with it.
+    """
+    so = _fake_so(tmp_path, markers=markers)
+    proc = _run_sh(tmp_path, f'_jts_ring_ioplug_caps "{so}"')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == expected
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+def test_record_then_revoke_round_trips_through_the_python_reader(tmp_path):
+    """The installer WRITES what jasper.ring_assets READS, and revoke undoes it.
+
+    The two halves are in different languages, so nothing but an executed
+    round-trip proves the key names and the comma-joined caps value survive the
+    boundary. A record the reader cannot parse answers `recorded=False`, which
+    the reconciler's gate treats as fail-closed — a wide wire would be refused
+    on a box whose plugin is in fact capable, and the installer transcript would
+    say it recorded one.
+    """
+    from jasper import ring_assets
+
+    so = _fake_so(tmp_path, markers=(_CAP_FORMAT_MARKER, _CAP_CHANNELS_MARKER))
+    provenance = tmp_path / "ring-ioplug.provenance"
+
+    proc = _run_sh(tmp_path, f'record_ring_ioplug_provenance "{so}" deadbeefcafe')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "recorded ioplug provenance" in proc.stdout
+    assert "caps=[wire_format,wire_channels]" in proc.stdout
+
+    record = ring_assets.read_ring_ioplug_provenance(str(provenance))
+    assert record.recorded is True
+    assert record.sha256 == "deadbeefcafe"
+    assert record.caps == {
+        ring_assets.RING_CAP_WIRE_FORMAT,
+        ring_assets.RING_CAP_WIRE_CHANNELS,
+    }
+
+    proc = _run_sh(tmp_path, "revoke_ring_ioplug_provenance")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "cannot vouch" in proc.stderr
+    assert not provenance.exists()
+    assert ring_assets.read_ring_ioplug_provenance(str(provenance)).recorded is False
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+def test_recording_an_uncapable_plugin_is_a_record_with_no_caps(tmp_path):
+    """VOUCHED and CAPABILITY-LESS are two different facts.
+
+    A pre-ring-v2 plugin THIS deploy built is genuinely the installed one, so
+    the record must exist (not stale) while claiming nothing (so a wide wire is
+    still refused). Collapsing the two would either vouch for capabilities the
+    plugin lacks or report a fresh build as stale.
+    """
+    from jasper import ring_assets
+
+    so = _fake_so(tmp_path, markers=())
+    proc = _run_sh(tmp_path, f'record_ring_ioplug_provenance "{so}" abc123')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "caps=[none]" in proc.stdout, "the transcript must not print an empty []"
+
+    record = ring_assets.read_ring_ioplug_provenance(
+        str(tmp_path / "ring-ioplug.provenance")
+    )
+    assert record.recorded is True
+    assert record.caps == frozenset()
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+def test_revoking_an_absent_record_is_silent_and_successful(tmp_path):
+    """Revoke runs on paths where there may never have been a record (a first-ever
+    build failure). It must be a clean no-op, not a WARN claiming it withdrew
+    something, and not a non-zero exit inside `set -e`."""
+    proc = _run_sh(tmp_path, "revoke_ring_ioplug_provenance")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "cannot vouch" not in proc.stderr
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
@@ -118,11 +292,15 @@ REPO_DIR="{tmp_path}/repo"
 BUILD_USER="nobody"
 JTS_RING_ALSA_PLUGIN_DIR="{plugin_dir}"
 export JTS_RING_ALSA_PLUGIN_DIR
+{_provenance_preamble(tmp_path)}
 mkdir() {{ :; }}
 chown() {{ :; }}
 rsync() {{ :; }}
 # NOTE: rm is intentionally NOT stubbed here, so a stray `rm -f "${{so_dest}}"`
-# in the failure branch would really delete the file and fail this test.
+# in the failure branch would really delete the file and fail this test. That is
+# also why the provenance override above is load-bearing rather than belt: the
+# revoke on this path runs a REAL rm, and without the override its target is
+# /var/lib/jasper/ring-ioplug.provenance on the host running the test.
 sudo() {{ :; }}
 run_contained_build() {{ return 1; }}
 source "{RING_PLATFORM_SH}"

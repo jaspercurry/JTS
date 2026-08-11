@@ -598,6 +598,29 @@ class FlatCutoverRender:
         return any(item.changed for item in self.rendered)
 
 
+def _roleful_topology(topology: OutputTopology | None) -> bool:
+    """Does this topology drive per-driver (crossover / protected / sub) outputs?
+
+    THE ONE PREDICATE the flat ring config's render may key on. It is deliberately
+    ``requires_roleful_graph`` and deliberately NOT ``topology_supports_shm_ring``:
+    ring eligibility is about whether a ring CAN be armed, and ring v2's later
+    N-channel rung makes exactly the roleful boxes eligible — so keying the render
+    on eligibility would start writing a solo-stereo full-range graph onto
+    crossover boxes at precisely the moment the ring goes live there. Rolefulness
+    is about what the graph would DRIVE, which is the property the file's safety
+    depends on and which no later rung inverts.
+
+    Fails SAFE toward "roleful" only in the sense that an absent topology is not
+    roleful (nothing is declared, so nothing is crossed over) — that is the fresh
+    box, which is exactly where the flat stereo graph is correct.
+    """
+    if topology is None:
+        return False
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+
+    return classify_output_contract(topology).requires_roleful_graph
+
+
 def render_flat_cutover_configs(
     *,
     config_dir: str | Path | None = None,
@@ -609,6 +632,30 @@ def render_flat_cutover_configs(
     the saved topology) and ``outputd-cutover-ring.yml`` (its ``shm_ring``
     sibling, INERT until a coupling arms the rings but required on disk so a
     ring-armed box re-seeds a ring graph instead of reverting to loopback).
+
+    **The ring sibling is written only on a NON-ROLEFUL box** (see
+    :func:`_roleful_topology`). It is a solo-stereo FULL-RANGE graph, and on a
+    crossover box that is full-range content routed to a tweeter — which is why
+    a roleful topology is refused the render. A roleful box's ring graph comes
+    from the active-speaker emitters, which carry the per-driver channels and
+    mutes; it is not this file with a different name.
+
+    THE GATE SKIPS THE WRITE; IT DOES NOT DELETE. Nothing here removes an
+    ``outputd-cutover-ring.yml`` that a previous non-roleful render already
+    wrote, and re-running on the now-roleful topology skips the write again
+    rather than clearing it. So a box that becomes roleful AFTER a ring render
+    keeps that full-range file on disk until something else removes it. That is
+    a KNOWN RESIDUAL, not a claim that it is cleaned up; the rung that gives a
+    roleful box its own ring graph is R7b in
+    ``docs/HANDOFF-audio-graph-consolidation.md``, which is where removing it
+    belongs.
+
+    What the residual cannot do is get SELECTED:
+    ``safe_graph_for_current_topology`` reaches the ring branch only when the
+    contract is not roleful, so the selection gate refuses the file on exactly
+    the boxes this render gate refuses to write it for. It does stay VISIBLE to
+    anything that lists the config directory — a live camillagui picker is the
+    case that makes the residual worth naming rather than leaving implicit.
 
     THREE callers must produce byte-identical files or the box's graph depends
     on which one ran last: ``deploy/install.sh`` at deploy time,
@@ -650,11 +697,13 @@ def render_flat_cutover_configs(
 
         topology = load_output_topology_strict()
     directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent
-    rendered: list[RenderedFlatConfig] = []
-    for name, text in (
+    entries: list[tuple[str, str]] = [
         (BASE_CONFIG_PATH.name, emit_flat_outputd_cutover_config(topology=topology)),
-        (RING_FLAT_CONFIG_NAME, emit_flat_ring_config()),
-    ):
+    ]
+    if not _roleful_topology(topology):
+        entries.append((RING_FLAT_CONFIG_NAME, emit_flat_ring_config()))
+    rendered: list[RenderedFlatConfig] = []
+    for name, text in entries:
         path = directory / name
         try:
             unchanged = path.read_text(encoding="utf-8") == text

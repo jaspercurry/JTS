@@ -114,6 +114,12 @@ RING_WIRE_FORMAT = "S16_LE"
 RING_WIRE_FORMAT_WIDE = "S32_LE"
 RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 
+# fan-in's own declaration of Ring A's wire format (read by the Rust daemon's
+# ``jasper_fanin::config``). Named here so the reconciler's four-ends coherence
+# gate and the daemon spell one key; an unset value declares
+# :data:`RING_WIRE_FORMAT`, matching the daemon's default.
+RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
+
 # Ring A's channel count. Everything upstream of CamillaDSP is a stereo program
 # and fan-in's mixer is stereo (``mixer.rs``'s ``CHANNELS: u32 = 2``, "Not
 # configurable"), so Ring A is 2 on every box — it is not a per-topology axis
@@ -415,11 +421,11 @@ def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
     )
 
 
-def ring_pair_is_coherent(
+def ring_pair_intent_is_coherent(
     coupling_raw: str | None,
     content_bridge_raw: str | None,
 ) -> bool:
-    """True iff the fan-in coupling and outputd content bridge are a coherent pair.
+    """True iff the two persisted INTENT tokens are a coherent pair.
 
     The two must flip together: both ring (``shm_ring`` + ``shm_ring``) or neither
     (``loopback`` + ``direct``). A PARTIAL flip — one end on the
@@ -427,6 +433,17 @@ def ring_pair_is_coherent(
     the artifact binder, the doctor) because it strands one ring end (a silent
     audio outage: outputd reads a ring nobody writes, or CamillaDSP writes a ring
     nobody reads). Returns True for the two coherent states, False for a partial.
+
+    **INTENT, and the name says so.** This compares two env strings, each first
+    passed through its own fail-SAFE resolver, and nothing else: no ring header,
+    no conf.d, no daemon STATUS. It cannot see a wire that shears on format,
+    channels, period or slots, a stale on-disk ring file, or a box whose env pair
+    agrees while the loaded CamillaDSP graph does not. It was called
+    ``ring_pair_is_coherent`` until R5b, which reads as a verdict on the ring; the
+    verdict on the WIRE is
+    :func:`jasper.fanin.coupling_reconcile.ring_edge_width_ready` (all four
+    declaring ends) and the OBSERVED tuple both daemons publish, surfaced at
+    ``/state.audio_graph.coupling.observed``.
     """
     coupling = resolve_coupling(coupling_raw)
     bridge = resolve_outputd_content_bridge(content_bridge_raw)
@@ -436,9 +453,7 @@ def ring_pair_is_coherent(
     return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def capture_kwargs_for_coupling(
-    raw: str | None, *, topology: Any = None
-) -> dict[str, object]:
+def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
     """Return the ``emit_sound_config`` capture kwargs for the resolved coupling.
 
     - ``loopback`` (default): returns ``{}`` so the caller's existing
@@ -455,9 +470,12 @@ def capture_kwargs_for_coupling(
       box, which is what makes the emitted config and the ring's other three
       declaring ends one answer instead of four. (outputd widens a narrow
       consumed slot onto its own i32 program spine after the copy, on its side
-      of the ring.) ``topology`` is threaded into that resolution and may be
-      ``None`` — the shipped stereo geometry — for a caller with no topology in
-      hand. The
+      of the ring.) The resolution is taken with NO topology — the shipped
+      geometry — because nothing this function emits is per-topology: the
+      devices are fixed and the format is one per box. A wire whose format ever
+      became topology-dependent would shear against this emit, and
+      ``ring_edge_width_ready`` is the gate that reports that rather than a
+      parameter here that no caller passes. The
       two rings are ONE coupling: an
       armed box's ``/sound/`` save must emit a config whose capture is the ring
       AND whose playback is the ring — a half-ring config (ring capture + ALSA
@@ -479,7 +497,7 @@ def capture_kwargs_for_coupling(
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:
-        wire = resolve_ring_wire(topology)
+        wire = resolve_ring_wire()
         return {
             "capture_device": RING_CAPTURE_DEVICE,
             "capture_format": wire.sample_format,
@@ -493,9 +511,7 @@ def capture_kwargs_for_coupling(
     return {}
 
 
-def content_lane_format_for_coupling(
-    raw: str | None, *, topology: Any = None
-) -> str:
+def content_lane_format_for_coupling(raw: str | None) -> str:
     """The CamillaDSP→outputd content-hop sample format this coupling carries.
 
     ONE definition of that hop's width, for both of its ends:
@@ -528,7 +544,7 @@ def content_lane_format_for_coupling(
     # contract module is the same one-way direction every other caller uses.
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
 
-    value = capture_kwargs_for_coupling(raw, topology=topology).get("playback_format")
+    value = capture_kwargs_for_coupling(raw).get("playback_format")
     if isinstance(value, str) and value:
         return value
     return DEFAULT_PLAYBACK_FORMAT
@@ -543,12 +559,6 @@ def coupling_capture_kwargs_from_env(
     coupling into a live re-emit. Returns ``{}`` for the default ``loopback``
     coupling (byte-identical to today) and the full ring topology kwargs for
     ``shm_ring``.
-
-    Resolves the ring wire with NO topology, i.e. the shipped geometry. That is
-    not a gap: ``ring_channels_for_topology`` answers the same stereo width for
-    every topology a ring can arm on, and returns "no ring" for the rest, so
-    loading the saved topology here would pay a disk read and the heavy topology
-    import inside a socket-activated wizard for an answer it cannot change.
 
     **Coupling token is resolved FILE-FRESH on the live-env path** (``env`` is
     ``None``). The wizard processes that call this — jasper-web (``/sound/``) and

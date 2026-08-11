@@ -28,6 +28,10 @@ from types import SimpleNamespace
 
 import pytest
 
+SHIPPED_RING_CONF_D = (
+    Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+)
+
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
@@ -358,6 +362,10 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
+    # The wire gate reads both conf.d PCM blocks; claiming assets present
+    # while the path points nowhere would exercise a torn-conf.d refusal
+    # instead of the eligibility path under test.
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
@@ -837,6 +845,10 @@ def _stub_ring_gates_except_route(monkeypatch, *, eligible: bool):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
+    # The wire gate reads both conf.d PCM blocks; claiming assets present
+    # while the path points nowhere would exercise a torn-conf.d refusal
+    # instead of the eligibility path under test.
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
@@ -935,6 +947,10 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
+    # The wire gate reads both conf.d PCM blocks; claiming assets present
+    # while the path points nowhere would exercise a torn-conf.d refusal
+    # instead of the eligibility path under test.
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     # conf.d Ring-A n_slots = 2 (the pinned default); the on-disk `=8` disagrees.
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
 
@@ -975,6 +991,10 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
+    # The wire gate reads both conf.d PCM blocks; claiming assets present
+    # while the path points nowhere would exercise a torn-conf.d refusal
+    # instead of the eligibility path under test.
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
 
     restarts: list[str] = []

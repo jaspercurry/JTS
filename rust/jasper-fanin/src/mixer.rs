@@ -5335,8 +5335,10 @@ mod tests {
     /// `output_buf` sits above the transport match, shared with the ALSA path,
     /// so a "skipped narrow saturate on the wide wire" mutant cannot be written
     /// without first moving that call into the ring branch. `step()` has no
-    /// hardware-free test at all (it needs live ALSA inputs); covering it is
-    /// tracked as follow-up, not closed here.
+    /// hardware-free test at all (it needs live ALSA inputs), so that ordering
+    /// is pinned as a source contract instead:
+    /// `tests/test_fanin_coupling_rust_contract.py`'s
+    /// `test_step_fills_output_buf_once_above_the_transport_dispatch`.
     #[test]
     fn mirror_payload_is_byte_identical_across_ring_wire_formats() {
         let period_frames = 256u32; // 2 slots of 128 frames

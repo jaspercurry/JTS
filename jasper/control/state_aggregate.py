@@ -233,7 +233,9 @@ def _audio_graph_state(
             if isinstance(artifact, dict) and artifact.get("status")
             else "fail"
         )
-    coupling_block = _coupling_state(fanin_status=fanin_status)
+    coupling_block = _coupling_state(
+        fanin_status=fanin_status, outputd_status=outputd_status
+    )
     return {
         "route": {
             "id": plan.route_profile.route_id,
@@ -285,19 +287,35 @@ def _audio_graph_state(
     }
 
 
-def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
+def _coupling_state(
+    *,
+    fanin_status: dict[str, Any] | None,
+    outputd_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2/P4).
 
     Surfaces the persisted intent (``JASPER_FANIN_CAMILLA_COUPLING``, fail-safe to
-    loopback), the outputd content bridge it pairs with, whether the two are a
-    COHERENT pair (both ring, or neither — a partial flip is fail-closed), the live
+    loopback), the outputd content bridge it pairs with, whether those two
+    INTENT tokens are a coherent pair (both ring, or neither — a partial flip is
+    fail-closed), the live
     fan-in STATUS transport for a fleet-wide "which transport is this box on" view,
     and the ``choice`` — whether the current coupling is an explicit ``operator``
     pick or an ``auto``-resolved default (P4 default-flip; read from the
     ``JASPER_FANIN_COUPLING_CHOICE`` marker). Read fresh from the env files (never
     os.environ — jasper-control isn't restarted on a coupling change). Fail-soft:
     any read error degrades to the loopback default rather than erroring the whole
-    /state call."""
+    /state call.
+
+    ``intent_coherent`` is named for what it compares: two env strings. It was
+    published as ``coherent`` until R5b, which reads as a verdict on the ring
+    itself — and the two tokens can agree perfectly while the rings shear on
+    format, channels, period or slots. ``observed`` is where the ring's actual
+    wire lives: both daemons read their attached header back and publish it
+    (fan-in as ``output.ring.wire_format``/``channels``, outputd as
+    ``shm_ring.format``/``channels``), which is a fact about the running
+    transport rather than about what somebody wrote in a file. Both are ``None``
+    when the daemon is unreachable or the ring is not armed — absence here means
+    "not observed", never "observed to agree"."""
     try:
         from pathlib import Path
 
@@ -313,7 +331,7 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
         from ..fanin_coupling import (
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
             resolve_outputd_content_bridge,
-            ring_pair_is_coherent,
+            ring_pair_intent_is_coherent,
         )
         from ..env_file import read_value
 
@@ -338,8 +356,16 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
         return {
             "persisted": coupling,
             "content_bridge": content_bridge,
-            "coherent": ring_pair_is_coherent(coupling, content_bridge),
+            "intent_coherent": ring_pair_intent_is_coherent(coupling, content_bridge),
             "live_transport": live_transport,
+            "observed": {
+                "ring_a": _observed_ring_wire(
+                    fanin_status, ("output", "ring"), format_key="wire_format"
+                ),
+                "ring_b": _observed_ring_wire(
+                    outputd_status, ("shm_ring",), format_key="format"
+                ),
+            },
             "choice": choice,
             "combo": _combo_state(fanin_text=fanin_text),
         }
@@ -352,11 +378,47 @@ def _coupling_state(*, fanin_status: dict[str, Any] | None) -> dict[str, Any]:
         return {
             "persisted": "loopback",
             "content_bridge": "direct",
-            "coherent": True,
+            "intent_coherent": True,
             "live_transport": None,
+            "observed": {"ring_a": None, "ring_b": None},
             "choice": "auto",
             "combo": {"state": "disarmed"},
         }
+
+
+def _observed_ring_wire(
+    status: dict[str, Any] | None,
+    path: tuple[str, ...],
+    *,
+    format_key: str,
+) -> dict[str, Any] | None:
+    """The wire a daemon read back off the ring header it ATTACHED to.
+
+    ``None`` when the daemon is unreachable, the block is absent (loopback
+    publishes no ring block at all), or neither axis is present — all of which
+    mean "not observed", which a reader must not confuse with "observed to be
+    correct".
+
+    ``format_key`` differs per daemon because the two chose different spellings
+    for the same field (fan-in ``wire_format``, outputd ``format``); this is the
+    one place that reconciles them, so /state publishes one shape.
+    """
+    node: Any = status
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    if not isinstance(node, dict):
+        return None
+    sample_format = node.get(format_key)
+    channels = node.get("channels")
+    if sample_format is None and channels is None:
+        return None
+    return {
+        "sample_format": sample_format,
+        "channels": channels,
+        "slots": node.get("slots"),
+    }
 
 
 def _combo_state(*, fanin_text: str) -> dict[str, Any]:

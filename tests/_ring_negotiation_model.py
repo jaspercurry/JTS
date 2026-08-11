@@ -8,13 +8,27 @@ It models the source-derived geometry contract that the product ring emitter,
 the jts_ring ioplug, and CamillaDSP v4.1.3 must all satisfy without opening
 ALSA or touching /dev/shm. Production code does not import this model; the
 contract suite owns it next to the assertions it supports.
+
+The pinned device quantity is BYTES, not frames: the ioplug pins PERIOD_BYTES
+min==max, and the frame count that follows from it depends on the wire
+(``period_bytes / (channels * bytes_per_sample)``). Both wire axes are per-box —
+:func:`jasper.fanin_coupling.resolve_ring_wire` answers the format and Ring B's
+channel count — so the model carries them rather than answering the same frames
+for rings that are 8x apart in bytes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS, RING_SLOT_FRAMES
+from jasper.fanin_coupling import (
+    DEFAULT_FANIN_RING_SLOTS,
+    RING_A_CHANNELS,
+    RING_SLOT_FRAMES,
+    RING_WIRE_FORMAT,
+    RING_WIRE_FORMAT_WIDE,
+    RING_WIRE_FORMATS,
+)
 
 # CamillaDSP v4.1.3 (05e9cfc) source constants:
 # src/alsa_backend/threaded_buffermanager.rs:
@@ -28,20 +42,64 @@ _CAMILLA_BUFFER_CHUNK_FACTOR = 3
 _CAMILLA_BUFFER_MIN_PERIODS = 4
 _CAMILLA_PERIOD_REQUEST_DIVISOR = 8
 
+# Bytes per sample for the two tokens the ring wire vocabulary defines, mirroring
+# c/jts-ring-ioplug/jts_ring_shm.c::jts_ring_bytes_per_sample. Keyed by the ALSA
+# token jasper.fanin_coupling owns rather than by the header's sample_format id,
+# because the token is what the ioplug conf.d block declares and what this model
+# is handed. A token outside this map has no stride here: the C default-arm's
+# fallback to 2 is a defensive branch behind jts_ring_geometry_validate's
+# two-format accept-set, not a width claim this model may repeat.
+_RING_BYTES_PER_SAMPLE = {
+    RING_WIRE_FORMAT: 2,
+    RING_WIRE_FORMAT_WIDE: 4,
+}
+
 
 @dataclass(frozen=True)
 class IoplugConstraints:
-    """The fixed jts_ring ioplug hardware-parameter space."""
+    """The fixed jts_ring ioplug hardware-parameter space.
+
+    ``period_frames`` / ``periods`` / ``buffer_frames`` are the frame view;
+    ``sample_format`` and ``channels`` are the wire that turns it into the BYTE
+    quantity the ioplug actually pins. The byte properties are derived from that
+    one wire, so the two views cannot disagree — what the space CAN fail on is a
+    wire whose stride has no answer here (a format outside the ring's two, or a
+    non-positive channel count).
+    """
 
     period_frames: int
     periods: int
     buffer_frames: int
+    sample_format: str
+    channels: int
+
+    @property
+    def bytes_per_frame(self) -> int:
+        """Bytes per interleaved frame; 0 for a wire this model cannot size.
+
+        c/jts-ring-ioplug/pcm_jts_ring.c::frame_bytes —
+        ``jts_ring_bytes_per_sample(sample_format) * channels``.
+        """
+        if self.channels <= 0:
+            return 0
+        return _RING_BYTES_PER_SAMPLE.get(self.sample_format, 0) * self.channels
+
+    @property
+    def period_bytes(self) -> int:
+        """The pinned PERIOD_BYTES: one slot on this wire."""
+        return self.period_frames * self.bytes_per_frame
+
+    @property
+    def buffer_bytes(self) -> int:
+        """The whole ALSA buffer on this wire: ``periods`` slots."""
+        return self.buffer_frames * self.bytes_per_frame
 
     @property
     def ok(self) -> bool:
         return (
             self.period_frames > 0
             and self.periods > 0
+            and self.bytes_per_frame > 0
             and self.buffer_frames == self.period_frames * self.periods
         )
 
@@ -50,6 +108,13 @@ class IoplugConstraints:
             return f"period_frames must be > 0, got {self.period_frames}"
         if self.periods <= 0:
             return f"periods must be > 0, got {self.periods}"
+        if self.channels <= 0:
+            return f"channels must be > 0, got {self.channels}"
+        if self.sample_format not in _RING_BYTES_PER_SAMPLE:
+            return (
+                f"sample_format {self.sample_format!r} is not a ring wire format "
+                f"({', '.join(RING_WIRE_FORMATS)}), so PERIOD_BYTES has no value"
+            )
         expected = self.period_frames * self.periods
         return (
             f"buffer_frames={self.buffer_frames} is inconsistent with "
@@ -73,19 +138,28 @@ def ioplug_constraints(
     *,
     slot_frames: int = RING_SLOT_FRAMES,
     n_slots: int = DEFAULT_FANIN_RING_SLOTS,
+    sample_format: str = RING_WIRE_FORMAT,
+    channels: int = RING_A_CHANNELS,
 ) -> IoplugConstraints:
     """Build the ioplug's fixed constraint space from product geometry.
 
     c/jts-ring-ioplug/pcm_jts_ring.c::jts_ring_set_hw_constraints pins
-    PERIOD_BYTES min=max to one slot and PERIODS min=max to n_slots, so the ALSA
-    buffer is exactly slot_frames*n_slots. These values are not CamillaDSP
-    choices; they are the device space that CamillaDSP negotiates against.
+    PERIOD_BYTES min=max to ``slot_frames * frame_bytes`` and PERIODS min=max to
+    n_slots, so the ALSA buffer is exactly slot_frames*n_slots frames. FORMAT and
+    CHANNELS are pinned to single values in the same call, which is what lets the
+    one pinned byte count name one frame count: the frames that follow from
+    PERIOD_BYTES depend on the wire, and an S32_LE/8ch ring is 8x an S16_LE/2ch
+    ring in bytes at identical frames. The defaults are the shipped wire. These
+    values are not CamillaDSP choices; they are the device space that CamillaDSP
+    negotiates against.
     """
 
     return IoplugConstraints(
         period_frames=slot_frames,
         periods=n_slots,
         buffer_frames=slot_frames * n_slots,
+        sample_format=sample_format,
+        channels=channels,
     )
 
 
@@ -104,10 +178,17 @@ def negotiate(
     chunksize: int,
     slot_frames: int = RING_SLOT_FRAMES,
     n_slots: int = DEFAULT_FANIN_RING_SLOTS,
+    sample_format: str = RING_WIRE_FORMAT,
+    channels: int = RING_A_CHANNELS,
 ) -> NegotiationOutcome:
     """Model ALSA ``*_near`` negotiation against the jts_ring fixed space."""
 
-    constraints = ioplug_constraints(slot_frames=slot_frames, n_slots=n_slots)
+    constraints = ioplug_constraints(
+        slot_frames=slot_frames,
+        n_slots=n_slots,
+        sample_format=sample_format,
+        channels=channels,
+    )
     requested_buffer = camilla_requested_buffer_frames(
         chunksize=chunksize,
         min_period_frames=constraints.period_frames,
