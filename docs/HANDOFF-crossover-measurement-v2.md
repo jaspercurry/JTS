@@ -1394,7 +1394,13 @@ comparability is structural, not asserted — membership in `SUMMED_SWEEP_PHASES
 routes it to the same `_verify_program` object the post-apply VERIFY replays,
 so both stamp one `program_id`, and `REFERENCE_MARK_DESIGN_AXIS` (one owner) is
 the second identity. It crosses the bridge as `verify_priors.entry_baseline`,
-the one key with a carry-forward, because stage 2 never captures one.
+the sixth key, and — like `predicted_sum` and `commanded_delta` — it needs **no
+carry-forward**, because it is seeded into the same field its own capture
+writes, so a stage-2 persist re-writes the record its conductor was constructed
+with. (A carry-forward branch was written here first and deleted:
+mutation-verified as unreachable, and keeping it would have weakened the pin
+that actually matters — a MEASURING session replaces the previous round's
+"before", so this round's "after" is never differenced against a stale one.)
 
 **Four independent verdicts**, composed once by
 `crossover_v2/round_evidence.evaluate_round` and never by a host:
@@ -3873,7 +3879,8 @@ hardware.
 
 Last verified: 2026-08-11 — #2291 Phase 3c re-verified only the sections it
 changed: "The round, graded" (new), the stage-bridge key list (now six keys,
-with `entry_baseline`'s carry-forward), the stage-1 capture table (now 9
+with `entry_baseline` and why it needs no carry-forward), the stage-1
+capture table (now 9
 captures), the `_decimate_delta` dB-domain paragraph (figures re-derived
 through `linearization_fit.complex_correction_response`), and the #2160
 spatial-grade paragraph — each against `crossover_v2_flow` /

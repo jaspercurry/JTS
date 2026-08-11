@@ -37,9 +37,13 @@ for a conductor handed anything at all.
 
 ``entry_baseline`` is #2291 Phase 3c's sixth key: the summed capture stage 1
 takes at the mark immediately before apply, which stage 2's benefit verdict
-differences its own capture against. It is the one key with a CARRY-FORWARD —
-stage 2 never captures one, so without it stage 2's own first persist would
-erase the measurement it exists to grade against.
+differences its own capture against. Like ``predicted_sum`` and
+``commanded_delta`` it needs NO carry-forward — it is seeded into the same
+conductor field its own capture writes, so a stage-2 persist re-writes the
+record that conductor was constructed with. (A carry-forward branch was
+written first and deleted: mutation-verified as unreachable. See
+``persist_conductor_state``'s own comment for why keeping it would have
+weakened the pin that matters.)
 
 Which stage binds which seam is no longer decided at two hand-assembled call
 sites: ``bind_v2_stage_seams`` builds both, from the ``V2StageCapabilities``

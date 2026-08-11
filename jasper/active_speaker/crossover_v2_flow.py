@@ -9639,12 +9639,13 @@ class CrossoverV2Conductor:
             # gate that cannot fail the capture is not a gate.
             refusal = self._delta_probe_refusal(self._run_delta_probe())
             if refusal is not None:
-                # The probe already rolled back and named itself. Grade the
-                # round anyway — its verdicts and its receipt are owed whatever
-                # the probe found — and ``_act_on_adoption`` leaves an already
-                # refused verdict alone, so the probe's more specific code is
-                # what the household reads.
-                self._grade_round_once(PhaseVerdict(False, refusal))
+                # No round grading on a refusal. The probe already rolled back
+                # and named itself with the more specific code, and a group can
+                # be retaken — so grading here would burn the fire-once guard
+                # on evidence that may yet be replaced, exactly as it would on
+                # a rejected VERIFY (see ``_consume_verify``). The receipt is
+                # write-once, so "grade the first ending" is not a shape this
+                # can safely take twice.
                 return PhaseVerdict(
                     False, refusal,
                     payload={"delta_probe": self._delta_probe.to_dict()}
@@ -11426,11 +11427,13 @@ class CrossoverV2Conductor:
         * Full — the end of :meth:`_close_cloud_group` for
           ``PHASE_CLOUD_VERIFY``, when the spatial arm has landed too.
 
-        And one more, on either tier: a VERIFY that was NOT accepted ends the
-        session there, so it is the last chance to grade and to act. Grading a
-        rejected capture is not a contradiction — the capture verdict is one of
-        the four the round asks, and an unusable capture is exactly what makes
-        the other three UNAVAILABLE rather than a pass.
+        **Both triggers require an ACCEPTED capture.** VERIFY and a position
+        group each carry a retry budget, so a rejected one does not end the
+        session; grading it would burn this guard on evidence the household
+        then replaced, and the receipt — which is write-once — would describe a
+        capture the round did not end on. A session that ends on a terminal
+        rejection therefore writes no round receipt, which is the honest
+        record: its post-apply evidence never completed.
 
         Fail-soft, and the fail direction matters: a grading failure logs and
         returns the caller's own verdict untouched. The round's job is to add
@@ -11537,6 +11540,14 @@ class CrossoverV2Conductor:
     def _act_on_adoption(self, evaluation: Any, verdict: PhaseVerdict) -> PhaseVerdict:
         """Turn the adoption outcome into what the household gets.
 
+        Only ever reached for an ACCEPTED capture — both triggers grade on one
+        (see :meth:`_grade_round_once`), because a rejected capture can be
+        retried and grading one would burn the fire-once guard on evidence the
+        household then replaced. So every bullet below describes a round whose
+        post-apply measurement stands, and #2291's acting half applies exactly
+        where it was meant to: the round that would otherwise have been
+        reported as a SUCCESS.
+
         The table already decided; this carries it out and never re-decides.
         In particular there is no branch here that can keep a graph the table
         said to restore — a realization pass does not override a measured
@@ -11562,22 +11573,6 @@ class CrossoverV2Conductor:
         """
         from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
 
-        if not verdict.accepted:
-            # **A round never overwrites an existing refusal.** The capture
-            # already failed on its own merits, under a code whose copy names
-            # the specific thing that went wrong (``verify_out_of_tolerance``,
-            # a delta-probe verdict, a capture-integrity failure). Replacing
-            # that with the round's own, more general code would cost the
-            # household the actionable half of their screen — and the shipped
-            # path already owns what happens to the speaker in those cases.
-            #
-            # So the round still GRADES and still writes its receipt here: the
-            # four verdicts are owed whatever the capture did. What it does not
-            # do is act. #2291's acting half exists for the round that would
-            # otherwise have been reported as a SUCCESS — the 2026-08-10 shape,
-            # where tracking passed and the speaker was three spec bands out —
-            # and an already-refused capture is not that round.
-            return verdict
         outcome = evaluation.adoption.outcome
         if outcome is AdoptionOutcome.KEEP or outcome is AdoptionOutcome.USER_DECISION:
             return verdict
@@ -11810,12 +11805,19 @@ class CrossoverV2Conductor:
         # closes) from a call that cannot see this capture.
         self._verify_analysis = analysis
         self._grade_verify_attempt(analysis, verdict, capture_attempt=attempt)
-        # Grade the round HERE when this is the last post-apply evidence there
-        # will be: either the session plans no post-apply cloud (Express), or
-        # VERIFY did not pass, which ends the session at this screen. On a Full
-        # session whose VERIFY passed, the cloud close grades it instead — and
-        # the fire-once guard means whichever arrives first is the only one.
-        if not verdict.accepted or PHASE_CLOUD_VERIFY not in self._phases:
+        # Grade the round HERE when this ACCEPTED capture is the last
+        # post-apply evidence there will be — i.e. the session plans no
+        # post-apply cloud. On a Full session the cloud close grades it.
+        #
+        # **Only on an accepted verdict**, and that is load-bearing rather than
+        # tidy. VERIFY has a retry budget, so a rejected capture does NOT end
+        # the session: grading one would burn the fire-once guard on evidence
+        # the household then replaced, and the session would finish carrying a
+        # receipt describing a capture it did not end on — demanding operator
+        # recovery for a round that went on to succeed. A session that ends on
+        # a terminal rejection writes no round receipt, which is the honest
+        # record: its post-apply evidence never completed.
+        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._phases:
             return self._grade_round_once(verdict)
         return verdict
 
