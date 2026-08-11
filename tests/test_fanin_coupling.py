@@ -390,18 +390,18 @@ def test_resolve_outputd_ring_path_and_slots_fail_safe():
             resolve_outputd_ring_slots(bad)
 
 
-def test_ring_pair_is_coherent_only_for_matched_ends():
-    from jasper.fanin_coupling import ring_pair_is_coherent
+def test_ring_pair_intent_is_coherent_only_for_matched_ends():
+    from jasper.fanin_coupling import ring_pair_intent_is_coherent
 
     # Coherent: both ring, or neither.
-    assert ring_pair_is_coherent("shm_ring", "shm_ring") is True
-    assert ring_pair_is_coherent("loopback", "direct") is True
+    assert ring_pair_intent_is_coherent("shm_ring", "shm_ring") is True
+    assert ring_pair_intent_is_coherent("loopback", "direct") is True
     # PARTIAL flips (strand one ring end) are NOT coherent.
-    assert ring_pair_is_coherent("shm_ring", "direct") is False
-    assert ring_pair_is_coherent("loopback", "shm_ring") is False
+    assert ring_pair_intent_is_coherent("shm_ring", "direct") is False
+    assert ring_pair_intent_is_coherent("loopback", "shm_ring") is False
     # A None coupling resolves to loopback -> pairs with direct only.
-    assert ring_pair_is_coherent(None, "direct") is True
-    assert ring_pair_is_coherent(None, "shm_ring") is False
+    assert ring_pair_intent_is_coherent(None, "direct") is True
+    assert ring_pair_intent_is_coherent(None, "shm_ring") is False
 
 
 # --- resolve_ring_wire: one resolution, four declarers -------------------------

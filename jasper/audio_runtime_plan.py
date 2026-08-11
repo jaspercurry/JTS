@@ -58,7 +58,7 @@ from jasper.fanin_coupling import (
     member_kwargs_are_pipe_sink,
     resolve_coupling,
     resolve_outputd_content_bridge,
-    ring_pair_is_coherent,
+    ring_pair_intent_is_coherent,
 )
 
 
@@ -984,7 +984,7 @@ def _route_policy_errors(
     # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
     # stays rejected — including the removed `rate_match` lab transport, which
     # failed the 2026-07-02 USB tuning and was deleted.
-    if normalized_coupling == COUPLING_SHM_RING and ring_pair_is_coherent(
+    if normalized_coupling == COUPLING_SHM_RING and ring_pair_intent_is_coherent(
         normalized_coupling, raw_bridge
     ):
         return tuple(errors)

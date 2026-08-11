@@ -26,11 +26,14 @@ import yaml
 from jasper import ring_assets
 from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
+    RING_A_CHANNELS,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_ENABLE_RATE_ADJUST,
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
     RING_SLOT_FRAMES,
+    RING_WIRE_FORMAT,
+    RING_WIRE_FORMAT_WIDE,
 )
 from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
 from jasper.sound.camilla_yaml import emit_flat_ring_config
@@ -94,6 +97,73 @@ def test_ioplug_constraint_space_derives_from_product_constants():
     assert space.period_frames == RING_SLOT_FRAMES
     assert space.periods == DEFAULT_FANIN_RING_SLOTS
     assert space.buffer_frames == RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
+
+
+def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
+    """The pinned quantity is BYTES, so the wire is a factor in it.
+
+    c/jts-ring-ioplug/pcm_jts_ring.c::jts_ring_set_hw_constraints pins
+    SND_PCM_IOPLUG_HW_PERIOD_BYTES to ``p->period_frames * frame_bytes(p)``, and
+    ``frame_bytes`` is ``jts_ring_bytes_per_sample(p->sample_format) *
+    p->channels`` (jts_ring_shm.c). Both of those are per-box: the wire format is
+    resolved by ``resolve_ring_wire`` and Ring B's channel count follows the
+    topology. A frames-only model answers identically for an S16_LE/2ch ring and
+    an S32_LE/8ch ring, which are 8x apart in the byte the ioplug actually pins.
+
+    The expected byte counts below are computed from the C's own factors rather
+    than from the model's, so a model that dropped either factor fails here
+    instead of agreeing with itself.
+    """
+
+    narrow = ioplug_constraints()
+    wide = ioplug_constraints(sample_format=RING_WIRE_FORMAT_WIDE)
+    eight_channel = ioplug_constraints(channels=8)
+
+    # The frame view is identical across all three — that is the point.
+    assert narrow.period_frames == wide.period_frames == RING_SLOT_FRAMES
+    assert eight_channel.period_frames == RING_SLOT_FRAMES
+    assert narrow.buffer_frames == wide.buffer_frames == eight_channel.buffer_frames
+
+    # The byte view is not. S16_LE is 2 bytes per sample, S32_LE is 4.
+    assert narrow.sample_format == RING_WIRE_FORMAT
+    assert narrow.channels == wide.channels == RING_A_CHANNELS
+    assert narrow.period_bytes == RING_SLOT_FRAMES * RING_A_CHANNELS * 2
+    assert wide.period_bytes == RING_SLOT_FRAMES * RING_A_CHANNELS * 4
+    assert wide.period_bytes == 2 * narrow.period_bytes
+    assert eight_channel.period_bytes == RING_SLOT_FRAMES * 8 * 2
+    assert eight_channel.period_bytes == 4 * narrow.period_bytes
+
+    # The buffer carries the same wire: PERIODS slots of PERIOD_BYTES.
+    assert narrow.buffer_bytes == narrow.period_bytes * DEFAULT_FANIN_RING_SLOTS
+    assert wide.buffer_bytes == 2 * narrow.buffer_bytes
+
+    # The shipped wire is still the default, so every caller that passes neither
+    # axis gets the S16_LE/2ch geometry unchanged.
+    assert narrow.ok
+    assert narrow == ioplug_constraints(
+        sample_format=RING_WIRE_FORMAT, channels=RING_A_CHANNELS
+    )
+
+
+def test_ioplug_space_refuses_a_wire_it_cannot_size():
+    """A format outside the ring's two has no PERIOD_BYTES, so the space is not ok.
+
+    S24_3LE is live on the DAC edge and is NOT a ring wire
+    (``jts_ring_geometry_validate`` accepts only S16LE/S32LE). Sizing it as if it
+    were the narrow default would hand the acceptance layer a byte count the
+    ioplug would never pin.
+    """
+
+    unsizeable = ioplug_constraints(sample_format="S24_3LE")
+
+    assert not unsizeable.ok
+    assert unsizeable.bytes_per_frame == 0
+    assert "S24_3LE" in unsizeable.invalid_reason()
+
+    no_channels = ioplug_constraints(channels=0)
+
+    assert not no_channels.ok
+    assert "channels must be > 0" in no_channels.invalid_reason()
 
 
 def test_camilla_request_is_documented_but_negotiated_outcome_is_fixed():

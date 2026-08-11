@@ -175,9 +175,16 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
         "the ring-open park must stay GATED on error kind, not tag every "
         "create_or_attach failure"
     )
+    # The WHOLE `matches!` block, not a substring of its arm list: a re-widened
+    # accept set (`... | ErrorKind::Other`) still CONTAINS the two-kind
+    # substring, so a containment assertion would pass a gate that no longer
+    # matches its own message. Pinning through the closing paren is what makes
+    # "exactly" true.
     assert (
-        "std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData"
-        in mixer_src
+        "matches!(\n"
+        "        error.kind(),\n"
+        "        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData\n"
+        "    )" in mixer_src
     ), "the config-class gate must accept exactly InvalidInput and InvalidData"
 
 

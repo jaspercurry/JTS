@@ -120,6 +120,239 @@ def ring_asset_presence(
     )
 
 
+# ---------------------------------------------------------------------------
+# ioplug PROVENANCE — what the .so that is INSTALLED can actually parse.
+#
+# Presence is not capability. The ioplug build is deliberately DEGRADE-TO-WARN
+# (``deploy/lib/install/ring-platform.sh``): when the compile fails, the install
+# continues and the PREVIOUS ``.so`` stays in place beside freshly-installed Rust
+# daemons. Presence-only checks — and the doctor's open-probe, which a stale but
+# structurally-valid ioplug passes — cannot see that. The failure that record
+# closes is specific: a conf.d rendered with a ``format`` / ``channels`` key that
+# the old ``.so`` does not know is refused at ``open()`` with ``-EINVAL``
+# ("jts_ring: unknown field %s"), so CamillaDSP cannot start against the ring.
+#
+# So the installer records what it installed, and the reconciler COMPARES
+# records — it never opens a PCM to find out (an open-probe against a live ring
+# hits the ioplug's SPSC guard, and probing from the arm path is exactly the
+# disturbance the doctor's armed-skip exists to avoid).
+RING_IOPLUG_PROVENANCE = "/var/lib/jasper/ring-ioplug.provenance"
+
+# The capability VOCABULARY: one token per conf.d field the ioplug must parse
+# for a wire that declares it to be openable. These are not version numbers —
+# a pre-ring-v2 ``.so`` refuses BOTH fields, and each was added independently,
+# so the record names what is supported rather than when it was built.
+RING_CAP_WIRE_FORMAT = "wire_format"
+RING_CAP_WIRE_CHANNELS = "wire_channels"
+RING_IOPLUG_CAPS = (RING_CAP_WIRE_FORMAT, RING_CAP_WIRE_CHANNELS)
+
+# The provenance file's keys (a plain ``KEY=value`` text file, mode 0644, written
+# by ``record_ring_ioplug_provenance`` in ring-platform.sh).
+RING_PROVENANCE_SHA_KEY = "JTS_RING_IOPLUG_SHA256"
+RING_PROVENANCE_CAPS_KEY = "JTS_RING_IOPLUG_CAPS"
+
+
+@dataclass(frozen=True)
+class RingIoplugProvenance:
+    """What the installer recorded about the ioplug ``.so`` it installed.
+
+    ``recorded`` is False when the file is absent or carries no usable sha —
+    which is the state of every box that has not run an installer carrying this
+    feature, and of every box whose ioplug build failed before a record was ever
+    written. That is NOT an error condition by itself: a wire that needs no
+    capability beyond the ioplug's own defaults never consults this record at
+    all (see :func:`ring_ioplug_wire_supported`).
+    """
+
+    recorded: bool
+    sha256: str = ""
+    caps: frozenset[str] = frozenset()
+
+
+def read_ring_ioplug_provenance(
+    path: str = RING_IOPLUG_PROVENANCE,
+) -> RingIoplugProvenance:
+    """Read the installer's ioplug provenance record. Never raises.
+
+    Unparseable / absent / sha-less content answers ``recorded=False`` rather
+    than a partial record: a record that cannot name WHICH ``.so`` it describes
+    cannot vouch for the one on disk, so there is nothing to trust.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, not an OSError: a truncated or
+        # non-text file at this path must answer "no record", not explode inside
+        # an arm preflight.
+        return RingIoplugProvenance(recorded=False)
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        values[key.strip()] = value.strip().strip('"')
+    sha = values.get(RING_PROVENANCE_SHA_KEY, "")
+    if not sha:
+        return RingIoplugProvenance(recorded=False)
+    caps = frozenset(
+        stripped
+        for token in values.get(RING_PROVENANCE_CAPS_KEY, "").split(",")
+        if (stripped := token.strip())
+    )
+    return RingIoplugProvenance(recorded=True, sha256=sha, caps=caps)
+
+
+def ring_ioplug_so_sha256(*, plugin_dir: str = RING_ALSA_PLUGIN_DIR) -> str | None:
+    """SHA-256 of the installed ioplug ``.so``, or ``None`` if unreadable.
+
+    Chunked read (the ``.so`` is small, but streaming keeps the reconciler's
+    memory bounded on a 1 GB box regardless of what ships there later).
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    try:
+        with open(ring_ioplug_so_path(plugin_dir=plugin_dir), "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
+    """The ioplug capabilities this wire NEEDS, beyond the ioplug's own defaults.
+
+    The conf.d renderer writes a ``format`` / ``channels`` key only where the
+    resolved wire differs from :data:`RING_CONF_DEFAULT_FORMAT` /
+    :data:`RING_CONF_DEFAULT_CHANNELS` (see :func:`render_ring_conf_wire`), and
+    an omitted key is what a pre-ring-v2 ioplug expects. So the capability a wire
+    needs is exactly the set of keys it forces onto the conf.d — which is EMPTY
+    for the shipped wire, on every box today. That emptiness is the whole
+    dormancy story: a narrow box's capability gate short-circuits before it ever
+    looks at a record, so a box with no record behaves exactly as it did before.
+    """
+    needed: set[str] = set()
+    if wire.sample_format != RING_CONF_DEFAULT_FORMAT:
+        needed.add(RING_CAP_WIRE_FORMAT)
+    if (
+        wire.ring_a_channels != RING_CONF_DEFAULT_CHANNELS
+        or wire.ring_b_channels != RING_CONF_DEFAULT_CHANNELS
+    ):
+        needed.add(RING_CAP_WIRE_CHANNELS)
+    return frozenset(needed)
+
+
+@dataclass(frozen=True)
+class RingIoplugWireSupport:
+    """Whether the INSTALLED ioplug can open a conf.d declaring a given wire."""
+
+    ok: bool
+    needed: frozenset[str]
+    detail: str = ""
+
+
+def ring_ioplug_wire_supported(
+    wire: RingWire,
+    *,
+    plugin_dir: str = RING_ALSA_PLUGIN_DIR,
+    provenance_path: str = RING_IOPLUG_PROVENANCE,
+) -> RingIoplugWireSupport:
+    """Can the installed ioplug ``.so`` parse the conf.d this wire renders?
+
+    A RECORD COMPARE, never a probe: hash the installed ``.so`` and check the
+    installer's record both describes THAT file and claims the capabilities the
+    wire needs. Three fail-closed shapes, each with its own remediation:
+
+    - **no record** — nothing describes the installed ``.so``; redeploy;
+    - **stale record** — the recorded sha is not the installed file's, so the
+      ``.so`` was replaced (or survived a failed rebuild) after the record was
+      written and the record vouches for a different binary;
+    - **missing capability** — the record describes this ``.so`` and says it
+      cannot parse a field the wire needs.
+
+    Short-circuits to ``ok`` when the wire needs nothing (:func:`ring_wire_capabilities`
+    is empty), which is every box on the shipped wire — no file is read and no
+    hash is computed on that path.
+    """
+    needed = ring_wire_capabilities(wire)
+    if not needed:
+        return RingIoplugWireSupport(
+            ok=True,
+            needed=needed,
+            detail=(
+                f"wire {wire.sample_format}/{wire.ring_a_channels}ch:"
+                f"{wire.ring_b_channels}ch declares no conf.d field beyond the "
+                "ioplug's own defaults, so any installed ioplug can open it"
+            ),
+        )
+    wanted = ", ".join(sorted(needed))
+    record = read_ring_ioplug_provenance(provenance_path)
+    if not record.recorded:
+        return RingIoplugWireSupport(
+            ok=False,
+            needed=needed,
+            detail=(
+                f"wire {wire.sample_format}/{wire.ring_b_channels}ch needs ioplug "
+                f"capability [{wanted}], but no provenance record describes the "
+                f"installed {ring_ioplug_so_path(plugin_dir=plugin_dir)} "
+                f"({provenance_path} absent or unusable). Redeploy so the "
+                "installer records what it built; a conf.d carrying a field the "
+                "installed ioplug cannot parse is refused at open() with -EINVAL "
+                "and CamillaDSP cannot start against the ring"
+            ),
+        )
+    installed = ring_ioplug_so_sha256(plugin_dir=plugin_dir)
+    if installed is None:
+        return RingIoplugWireSupport(
+            ok=False,
+            needed=needed,
+            detail=(
+                f"wire {wire.sample_format}/{wire.ring_b_channels}ch needs ioplug "
+                f"capability [{wanted}], but "
+                f"{ring_ioplug_so_path(plugin_dir=plugin_dir)} could not be read "
+                "to confirm the provenance record describes it"
+            ),
+        )
+    if installed != record.sha256:
+        return RingIoplugWireSupport(
+            ok=False,
+            needed=needed,
+            detail=(
+                f"STALE ioplug: {ring_ioplug_so_path(plugin_dir=plugin_dir)} "
+                f"hashes {installed[:12]}… but the provenance record describes "
+                f"{record.sha256[:12]}…, so the installed plugin is NOT the one "
+                f"the installer recorded (the ioplug build degrades to a WARN and "
+                f"leaves the previous .so in place). The wire needs [{wanted}]; "
+                "redeploy and check the transcript for a jts_ring ioplug build "
+                "failure"
+            ),
+        )
+    missing = needed - record.caps
+    if missing:
+        return RingIoplugWireSupport(
+            ok=False,
+            needed=needed,
+            detail=(
+                f"the installed ioplug cannot parse [{', '.join(sorted(missing))}]: "
+                f"wire {wire.sample_format}/{wire.ring_b_channels}ch renders a "
+                "conf.d field this plugin refuses at open() with -EINVAL. "
+                f"Recorded capabilities: [{', '.join(sorted(record.caps)) or 'none'}]. "
+                "Redeploy to rebuild the ioplug from current source"
+            ),
+        )
+    return RingIoplugWireSupport(
+        ok=True,
+        needed=needed,
+        detail=(
+            f"the installed ioplug records capability [{wanted}] for sha "
+            f"{record.sha256[:12]}…, which matches the plugin on disk"
+        ),
+    )
+
+
 # The ring's slot geometry IS fixed at ``RING_SLOT_FRAMES`` (128). jasper-fanin
 # creates Ring A with that COMPILE-TIME constant
 # (rust/jasper-fanin/src/config.rs, no env override) and both conf.d PCM blocks
@@ -615,6 +848,13 @@ def ring_geometry_matches_outputd(
     ``open()`` fails against outputd's existing ring — so arming must be refused
     with a crisp reason instead of a confusing rollback. A missing/torn conf.d
     period is a mismatch (fail-closed), not a pass.
+
+    ONE AXIS: ``period_frames``, and it vouches for nothing else. The WIRE axes
+    (``sample_format`` / ``channels``) across the ring's declaring ends belong to
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``, and the on-disk
+    header's agreement with the conf.d belongs to
+    :func:`ring_header_matches_conf`. Restating either here would make two
+    answers for one fact; the arm runs all three.
     """
     conf_path = RING_CONF_D if conf_d is None else conf_d
     conf_period = ring_conf_period_frames(conf_path)
@@ -770,6 +1010,96 @@ def read_ring_header(path: str) -> RingHeader:
 
 
 @dataclass(frozen=True)
+class RingHeaderCoherence:
+    """Whether an ON-DISK ring file's header matches what the ioplug will attach.
+
+    ``present`` is False when there is no coherent ring file to judge (absent,
+    magic-less, or a layout version this parser does not describe) — NOT a
+    mismatch: the writer reclaims such a file itself.
+
+    ``ok`` is only meaningful when ``present``. ``axis`` names the FIRST axis
+    that disagreed, so a caller can log which one without re-deriving it.
+    """
+
+    present: bool
+    ok: bool = True
+    axis: str = ""
+    detail: str = ""
+
+
+def ring_header_matches_conf(
+    path: str,
+    pcm_name: str,
+    *,
+    conf_d: str | None = None,
+    expected_n_slots: int | None = None,
+) -> RingHeaderCoherence:
+    """Compare an on-disk ring header against its conf.d block, ALL FOUR axes.
+
+    THE HOLE THIS CLOSES. The header has carried ``rate``/``channels``/
+    ``sample_format`` since v1 and the Rust and C attach paths compare every one
+    of them field-by-field — but every Python guard compared only ``n_slots``
+    and ``period_frames``. A ring file whose slots and period match while its
+    FORMAT or CHANNEL COUNT does not therefore passed every coherence check we
+    had, and the first thing to notice would have been the ioplug failing the
+    attach at arm. Comparing here is the difference between a shear that is
+    cleared before it can bite and one that crash-loops CamillaDSP.
+
+    ONE COMPARATOR, three callers (the stale-file delete, the CONFIRM-path
+    self-heal predicate, and the doctor's coherence check) so "coherent" cannot
+    mean three things. Axes are checked in the order a reader thinks about them:
+    depth, then timing, then the wire.
+
+    ``expected_n_slots`` overrides the conf.d's own value for the caller that
+    has a better answer (the stale-file guard falls back to fan-in's resolved
+    env when the conf.d is unreadable). An axis whose EXPECTED value is
+    indeterminate is SKIPPED rather than guessed — the conf.d parsers already
+    fold an omitted ``format``/``channels`` into the ioplug's documented
+    default, so indeterminate here means the file or block could not be read at
+    all, which is not evidence of a shear.
+    """
+    header = read_ring_header(path)
+    if not header.valid:
+        return RingHeaderCoherence(present=False)
+
+    expected_slots = (
+        expected_n_slots
+        if expected_n_slots is not None
+        else ring_conf_n_slots(pcm_name, conf_d)
+    )
+    expected_period = ring_conf_period_frames(conf_d)
+    expected_format = ring_conf_format(pcm_name, conf_d)
+    expected_channels = ring_conf_channels(pcm_name, conf_d)
+
+    for axis, on_disk, expected in (
+        ("n_slots", header.n_slots, expected_slots),
+        ("period_frames", header.period_frames, expected_period),
+        ("sample_format", header.sample_format_name, expected_format),
+        ("channels", header.channels, expected_channels),
+    ):
+        if expected is None:
+            continue
+        if on_disk != expected:
+            return RingHeaderCoherence(
+                present=True,
+                ok=False,
+                axis=axis,
+                detail=(
+                    f"on-disk ring {path} has {axis}={on_disk} != expected "
+                    f"{expected} (pcm.{pcm_name})"
+                ),
+            )
+    return RingHeaderCoherence(
+        present=True,
+        ok=True,
+        detail=(
+            f"on-disk ring {path} matches pcm.{pcm_name} on n_slots, "
+            "period_frames, sample_format and channels"
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class RingSlotGeometryMatch:
     """Whether fan-in's resolved Ring-A n_slots matches the conf.d ``n_slots``."""
 
@@ -793,6 +1123,13 @@ def ring_slot_geometry_matches_conf(
     ``attach_fatal reason=ring header does not match expected geometry``) and the
     daemon crash-loops — so arming must be refused with a crisp reason. A
     missing/torn conf.d ``n_slots`` is a mismatch (fail-closed), not a pass.
+
+    ONE AXIS: ``n_slots``, and it vouches for nothing else. The WIRE axes
+    (``sample_format`` / ``channels``) across the ring's declaring ends belong to
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``, and the on-disk
+    header's agreement with the conf.d belongs to
+    :func:`ring_header_matches_conf`. Restating either here would make two
+    answers for one fact; the arm runs all three.
     """
     conf_n_slots = ring_conf_n_slots(pcm_name, conf_d)
     if conf_n_slots is None:

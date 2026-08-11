@@ -152,7 +152,7 @@ def test_coupling_state_loopback_default_is_coherent(monkeypatch):
     )
     assert block["persisted"] == "loopback"
     assert block["content_bridge"] == "direct"
-    assert block["coherent"] is True
+    assert block["intent_coherent"] is True
     assert block["live_transport"] == "loopback"
 
 
@@ -171,7 +171,7 @@ def test_coupling_state_ring_armed_reports_coherent_pair(monkeypatch, tmp_path):
     )
     assert block["persisted"] == "shm_ring"
     assert block["content_bridge"] == "shm_ring"
-    assert block["coherent"] is True
+    assert block["intent_coherent"] is True
     assert block["live_transport"] == "shm_ring"
 
 
@@ -189,7 +189,7 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block["persisted"] == "shm_ring"
     assert block["content_bridge"] == "direct"
-    assert block["coherent"] is False
+    assert block["intent_coherent"] is False
 
 
 def test_coupling_state_fail_soft_on_read_error(monkeypatch):
@@ -206,8 +206,9 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
     assert block == {
         "persisted": "loopback",
         "content_bridge": "direct",
-        "coherent": True,
+        "intent_coherent": True,
         "live_transport": None,
+        "observed": {"ring_a": None, "ring_b": None},
         "choice": "auto",
         "combo": {"state": "disarmed"},
     }

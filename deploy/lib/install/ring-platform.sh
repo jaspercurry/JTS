@@ -39,6 +39,11 @@
 JTS_RING_IOPLUG_SO="libasound_module_pcm_jts_ring.so"
 JTS_RING_ALSA_PLUGIN_DIR="${JTS_RING_ALSA_PLUGIN_DIR:-/usr/lib/aarch64-linux-gnu/alsa-lib}"
 JTS_RING_IOPLUG_SRC_SUBDIR="c/jts-ring-ioplug"
+# The installer's record of WHICH ioplug it installed and what that plugin can
+# parse. Mirrored as jasper.ring_assets.RING_IOPLUG_PROVENANCE (the Python
+# reader); the two literals are pinned equal by
+# tests/test_ring_ioplug_provenance.py.
+JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-ioplug.provenance}"
 
 # Compile + install the jts_ring ALSA ioplug from the on-Pi checkout.
 #
@@ -54,12 +59,14 @@ JTS_RING_IOPLUG_SRC_SUBDIR="c/jts-ring-ioplug"
 #     doctor's `ring platform` check goes `warn` (asset missing). Honest.
 #   - Rebuild fails on a box with a prior good deploy: the pre-build rm -f
 #     below only cleans the CACHE copy, so the PREVIOUS .so stays installed
-#     at so_dest and the doctor open-probes it fine -> `ok`, NOT warn. The
-#     doctor cannot tell a stale .so from a fresh one, so a failed rebuild is
-#     surfaced ONLY by the extra transcript WARN emitted below (the
-#     2026-07-02 stale-binary class). Protocol-drift detection between the
-#     ioplug and the Rust ring is P2's job (when the .so becomes load-bearing),
-#     not P1's.
+#     at so_dest and still open-probes fine. What separates it from a fresh
+#     build is the PROVENANCE record: every path that does not produce the
+#     installed plugin revokes it, so the doctor reports an unvouched ioplug
+#     rather than `ok`, and the coupling reconciler's capability gate fails
+#     closed for a wire needing a conf.d field the plugin may not parse (the
+#     2026-07-02 stale-binary class). The record states which .so and which
+#     conf.d fields — it is not a protocol-version handshake with the Rust
+#     ring, which stays P2's job.
 build_install_jts_ring_ioplug() {
     local src_dir="${REPO_DIR}/${JTS_RING_IOPLUG_SRC_SUBDIR}"
     local cache_dir="/var/cache/jts-ring-ioplug-build"
@@ -69,14 +76,26 @@ build_install_jts_ring_ioplug() {
         prepare_first_party_runtime_bundle || return 1
         if first_party_runtime_artifact_installed "jts-ring-ioplug"; then
             echo "  jts_ring ioplug: using verified first-party ARM64 runtime bundle"
+            # The bundle path installs a plugin this deploy DID produce, so it
+            # gets a record like the source build does — capabilities read off
+            # the artifact, which is what makes the probe indifferent to how the
+            # binary arrived.
+            if [[ -f "${so_dest}" ]]; then
+                record_ring_ioplug_provenance \
+                    "${so_dest}" "$(sha256sum "${so_dest}" | awk '{print $1}')"
+            else
+                revoke_ring_ioplug_provenance
+            fi
             return 0
         fi
     fi
 
     if [[ ! -d "${src_dir}" ]]; then
         # A branch predating the ioplug source. Non-fatal: the ring
-        # platform simply is not available; doctor warns.
+        # platform simply is not available; doctor warns. Any .so still at
+        # so_dest is from an earlier deploy and this one cannot vouch for it.
         echo "  jts_ring ioplug source missing at ${src_dir}; skipping ring platform build (ring stays unavailable)"
+        revoke_ring_ioplug_provenance
         return 0
     fi
 
@@ -106,19 +125,21 @@ build_install_jts_ring_ioplug() {
         echo "  WARN: loopback coupling remains the transport (inert phase) — doctor 'ring platform' will warn" >&2
         # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
         # only cleans the CACHE copy, so on a box with a prior good deploy the
-        # PREVIOUS .so is still installed at so_dest. In P1 nothing runs it, so
-        # this is harmless — but the doctor's `ring platform` check sees all
-        # three assets present and the stale .so open-probes fine, so it reports
-        # `ok`, NOT `warn`: the doctor cannot distinguish a fresh build from a
-        # leftover. Name that explicitly here so the deploy transcript is honest
-        # (a build failure is not silently masked as "unchanged"). We do NOT
-        # remove the stale .so: an installed-but-stale ioplug is strictly less
-        # broken than none in P1 (loopback carries audio either way), and P2 —
-        # where the .so becomes load-bearing — is where ioplug-vs-Rust protocol
-        # drift detection must land (campaign done-criteria dependency), not
-        # here. Until then the transcript is the signal.
+        # PREVIOUS .so is still installed at so_dest. We do NOT remove the stale
+        # .so: an installed-but-stale ioplug is strictly less broken than none
+        # while loopback carries audio either way.
+        #
+        # What we DO remove is the installer's VOUCH for it. The provenance
+        # record is this function's claim about what it installed; a failed
+        # build means the claim can no longer be made, so it is revoked rather
+        # than left describing a binary this deploy did not produce. That is
+        # what turns a stale ioplug from invisible into loud: the doctor reports
+        # an unvouched plugin instead of `ok`, and the coupling reconciler's
+        # capability gate fails closed for any wire needing a conf.d field the
+        # ioplug might not parse.
+        revoke_ring_ioplug_provenance
         if [[ -e "${so_dest}" ]]; then
-            echo "  WARN: a previously-installed ${so_dest} REMAINS in place; the doctor cannot distinguish it from a fresh build and will report 'ring platform' ok — treat the two WARN lines above as the real signal for this deploy" >&2
+            echo "  WARN: a previously-installed ${so_dest} REMAINS in place and this deploy could not rebuild it; its provenance record has been revoked so the doctor reports an unvouched ioplug — treat the two WARN lines above as the real signal for this deploy" >&2
         fi
         return 0
     fi
@@ -126,6 +147,7 @@ build_install_jts_ring_ioplug() {
     local built_so="${cache_dir}/${JTS_RING_IOPLUG_SO}"
     if [[ ! -f "${built_so}" ]]; then
         echo "  WARN: make plugin finished but ${built_so} is missing; ring platform unavailable" >&2
+        revoke_ring_ioplug_provenance
         return 0
     fi
 
@@ -144,6 +166,82 @@ build_install_jts_ring_ioplug() {
         echo "  -> installed ${so_dest} — content changed"
     else
         echo "  -> installed ${so_dest} — content unchanged"
+    fi
+    record_ring_ioplug_provenance "${so_dest}" "${new_sha}"
+}
+
+# Probe an ioplug .so for the conf.d fields it can PARSE.
+#
+# Each capability is proven by a diagnostic string literal the parse site emits,
+# which the compiler embeds in the binary — so this interrogates the ARTIFACT,
+# not the source tree it was supposedly built from. A pre-ring-v2 .so carries
+# neither literal and reports no capabilities, which is the honest answer: it
+# refuses both fields with "jts_ring: unknown field %s" at open().
+#
+# The literals are pinned against c/jts-ring-ioplug/pcm_jts_ring.c by
+# tests/test_ring_ioplug_provenance.py, so a reworded SNDERR cannot silently
+# turn a capable plugin into an uncapable-looking one.
+_jts_ring_ioplug_caps() {
+    local so="$1"
+    local caps=()
+    if LC_ALL=C grep -aqF 'format %s unsupported (S16_LE|S32_LE)' "${so}"; then
+        caps+=("wire_format")
+    fi
+    if LC_ALL=C grep -aqF 'channels out of range 2..=8' "${so}"; then
+        caps+=("wire_channels")
+    fi
+    local IFS=,
+    printf '%s' "${caps[*]}"
+}
+
+# Record what this install just put at ${so_dest}: the sha256 of the installed
+# file plus the conf.d fields it can parse.
+#
+# WHY A RECORD AND NOT A PROBE. The coupling reconciler must know, before it
+# arms, whether the installed ioplug can open the conf.d the resolved wire
+# renders — a conf.d carrying a field the plugin does not know is refused at
+# open() with -EINVAL and CamillaDSP cannot start against the ring. It cannot
+# find that out by opening the PCM: on an armed box the ioplug's SPSC guard
+# EBUSYs the probe, and probing a live ring is the disturbance the doctor's
+# armed-skip already exists to avoid. So the installer states what it installed
+# and the reconciler compares records.
+#
+# The sha is what binds the claim to a specific binary: the ioplug build is
+# degrade-to-warn, so a later failed deploy can leave a DIFFERENT .so at this
+# path, and a record that could not name which file it described would vouch for
+# whatever happened to be there.
+#
+# Reader: jasper.ring_assets.read_ring_ioplug_provenance (the key names and the
+# path are mirrored there and pinned by tests/test_ring_ioplug_provenance.py).
+record_ring_ioplug_provenance() {
+    local so_dest="$1" sha="$2"
+    local caps
+    caps="$(_jts_ring_ioplug_caps "${so_dest}")"
+    install -d -m 0755 "$(dirname "${JTS_RING_IOPLUG_PROVENANCE}")"
+    local tmp="${JTS_RING_IOPLUG_PROVENANCE}.tmp.$$"
+    {
+        echo "# Written by deploy/lib/install/ring-platform.sh. Do not hand-edit:"
+        echo "# this file is the INSTALLER's statement about the ioplug it built,"
+        echo "# and jasper.ring_assets refuses to arm a wide ring wire whose"
+        echo "# capability it cannot find here. Regenerate by redeploying."
+        echo "JTS_RING_IOPLUG_SHA256=${sha}"
+        echo "JTS_RING_IOPLUG_CAPS=${caps}"
+    } >"${tmp}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${JTS_RING_IOPLUG_PROVENANCE}"
+    echo "  -> recorded ioplug provenance (caps=[${caps:-none}]) at ${JTS_RING_IOPLUG_PROVENANCE}"
+}
+
+# Withdraw the installer's vouch for whatever .so is installed.
+#
+# Called on every path where this deploy did NOT produce the installed plugin.
+# Absence of a record is fail-closed for the capability gate and reads as an
+# unvouched ioplug in the doctor, which is the correct verdict: the last thing
+# that could describe the binary on disk just failed.
+revoke_ring_ioplug_provenance() {
+    if [[ -e "${JTS_RING_IOPLUG_PROVENANCE}" ]]; then
+        rm -f "${JTS_RING_IOPLUG_PROVENANCE}"
+        echo "  WARN: revoked ${JTS_RING_IOPLUG_PROVENANCE} — this deploy cannot vouch for the installed ioplug" >&2
     fi
 }
 

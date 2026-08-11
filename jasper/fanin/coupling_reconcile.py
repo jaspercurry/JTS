@@ -563,9 +563,13 @@ def reconcile_coupling(
       — see :func:`_disarm`.
     - CONFIRM (env already at desired): on the happy path, re-run only the
       camilla reconcile to self-heal a drifted loaded config, WITHOUT
-      bouncing fan-in. One exception still bounces: an incoherent shm_ring
-      box (stale ring slots/files) escalates to the full ``_arm_ring``
-      ordered bounce.
+      bouncing fan-in. Three exceptions on an armed shm_ring box, in order:
+      an ioplug that cannot parse the resolved wire recovers to loopback
+      immediately (re-arming would meet the same refusal); an incoherent box
+      (stale ring slots/files) escalates to the full ``_arm_ring`` ordered
+      bounce; and ``RING_CONFIRM_STRIKE_LIMIT`` consecutive camilla-confirm
+      failures recover to loopback, so a box whose CamillaDSP cannot load the
+      ring config stops sitting there silently.
 
     ``apply=False`` writes the env only (no daemon ops) — for staging/migration.
     ``mark_operator_choice=True`` (the explicit CLI/HTTP paths) additionally stamps
@@ -708,6 +712,42 @@ def reconcile_coupling(
         # coherent box skips this and keeps the lightweight camilla-only confirm
         # below (no daemon bounce on every reconcile tick).
         if desired == COUPLING_SHM_RING:
+            # CAPABILITY first, and it does not escalate to an arm: a box armed
+            # on a wire the INSTALLED ioplug cannot open (the degraded-deploy
+            # walk — a stale .so beside new daemons) has CamillaDSP failing to
+            # start, and re-running the arm would meet the same -EINVAL. The only
+            # state that plays audio is loopback, so go there directly.
+            caps_ok, caps_detail = ring_wire_caps_ready(
+                fanin_text=fanin_snapshot.text
+            )
+            if not caps_ok:
+                log_event(
+                    logger,
+                    "fanin.coupling_reconcile",
+                    result="confirm_ring_ioplug_caps_missing",
+                    desired=desired,
+                    reason=reason,
+                    detail=caps_detail,
+                    level=logging.ERROR,
+                )
+                recovered = _recover_to_loopback(
+                    do_restart,
+                    do_restart_outputd,
+                    do_reconcile,
+                    fanin_snapshot.path,
+                    outputd_snapshot.path,
+                    reason,
+                )
+                _clear_ring_confirm_failures()
+                return CouplingResult(
+                    ok=False,
+                    desired=COUPLING_LOOPBACK,
+                    changed=True,
+                    direction="confirm",
+                    recovered=recovered,
+                    detail=caps_detail,
+                )
+
             heal_needed, heal_detail = _ring_confirm_needs_self_heal(
                 fanin_snapshot.text
             )
@@ -734,6 +774,61 @@ def reconcile_coupling(
         # Env already at desired AND coherent: re-confirm camilla only (self-heal a
         # drifted loaded config) — no fan-in bounce on a no-op tick.
         ok, detail = do_confirm_reconcile(desired)
+
+        # A FAILED confirm on an ARMED ring used to end here: logged, ok=False,
+        # box left armed with CamillaDSP unable to load the ring config and
+        # nothing that would ever move it. Count consecutive failures and
+        # escalate to recovery, which is the only outcome that restores audio.
+        if desired == COUPLING_SHM_RING:
+            if ok:
+                _clear_ring_confirm_failures()
+            else:
+                strikes = _record_ring_confirm_failure(detail, reason)
+                if strikes >= RING_CONFIRM_STRIKE_LIMIT:
+                    log_event(
+                        logger,
+                        "fanin.coupling_reconcile",
+                        result="confirm_ring_failure_escalated",
+                        desired=desired,
+                        reason=reason,
+                        strikes=strikes,
+                        limit=RING_CONFIRM_STRIKE_LIMIT,
+                        detail=detail or None,
+                        level=logging.ERROR,
+                    )
+                    recovered = _recover_to_loopback(
+                        do_restart,
+                        do_restart_outputd,
+                        do_reconcile,
+                        fanin_snapshot.path,
+                        outputd_snapshot.path,
+                        reason,
+                    )
+                    _clear_ring_confirm_failures()
+                    return CouplingResult(
+                        ok=False,
+                        desired=COUPLING_LOOPBACK,
+                        changed=True,
+                        direction="confirm",
+                        recovered=recovered,
+                        detail=(
+                            f"CamillaDSP failed to confirm the ring config "
+                            f"{strikes} times in a row ({detail}); recovered the "
+                            "box to loopback so audio returns"
+                        ),
+                    )
+                log_event(
+                    logger,
+                    "fanin.coupling_reconcile",
+                    result="confirm_ring_failure_strike",
+                    desired=desired,
+                    reason=reason,
+                    strikes=strikes,
+                    limit=RING_CONFIRM_STRIKE_LIMIT,
+                    detail=detail or None,
+                    level=logging.WARNING,
+                )
+
         log_event(
             logger,
             "fanin.coupling_reconcile",
@@ -1372,74 +1467,334 @@ def _block_unsupported_coupling(
     )
 
 
-def ring_edge_width_ready() -> tuple[bool, str]:
-    """The shm_ring PREFLIGHT gate for wire WIDTH (D5, wide-output-path program).
+# outputd's own declarations, read from the reconciler-owned outputd.env. The
+# FORMAT key is written by jasper-audio-hardware-reconcile (from
+# ``content_lane_format_for_coupling``), not by this reconciler — which is why
+# the width gate only compares it on an already-armed box. The CHANNELS key is
+# the DacProfile's active-lane width; unset means outputd derives 2
+# (``config.rs``: ``SinkMode::SingleAlsa => active_channels.unwrap_or(2)``).
+#
+# BOTH keys DECLARE A DEFAULT when absent rather than being indeterminate, and
+# the defaults are the daemon's own (``config.rs``): an empty/unset
+# CONTENT_FORMAT resolves ``SampleFormat::S16Le``, and an unset ACTIVE_CHANNELS
+# resolves 2 on a single-ALSA sink. Reading an absent key as "unknown" would
+# refuse the arm on every box whose hardware reconciler has not written the key
+# yet, for a wire the daemon would in fact have declared correctly.
+_OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
+_OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
+_OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
+_OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 
-    Checked BEFORE arming (cheapest gate — an in-process contract check with no
-    I/O — so it runs first). The SHM ring's wire format is whatever
-    ``jasper.fanin_coupling.resolve_ring_wire`` resolves for the box, which is
-    ``RING_WIRE_FORMAT`` (S16_LE) on every box today. The ring LAYOUT admits
-    S16LE and S32LE (``jasper_ring::Geometry::validate_self``), so the narrow
-    wire is a resolver decision, not a structural one — the layout will not
-    catch a box whose ends disagree within its accept-set, which is why the
-    declaring ends are compared rather than assumed.
 
-    WHAT MAKES ARMING LEGAL, and therefore what this gate verifies. A ring-armed
-    box does NOT run the box-wide program-lane width: arming installs the
-    coupling's own CamillaDSP kwargs
-    (``jasper.fanin_coupling.capture_kwargs_for_coupling``), which FORCE both
-    ring ends to the resolved wire format, and the audio-hardware reconciler emits
-    outputd's matching ``JASPER_OUTPUTD_CONTENT_FORMAT`` from the same source
-    (``content_lane_format_for_coupling``). The ring is coherently narrow
-    end-to-end, so a wide program-lane default does not endanger it. This gate's
-    job is to verify that OVERRIDE PATH IS INTACT — refuse only if the kwargs
-    ever stop forcing the ring's own width, which is the one way arming could
-    mis-transcode every sample CamillaDSP emits.
+@dataclass(frozen=True)
+class RingWireDeclaration:
+    """One declaring end's statement of the ring wire, and where it was read.
 
-    THE RULING BEHIND THAT (wide-output-path PR-6, architect, 2026-08-08).
-    This gate first shipped (PR-1) comparing ``RING_WIRE_FORMAT`` against
+    ``sample_format`` / ``channels`` are ``None`` for an axis this end does not
+    declare — not a wildcard that matches anything, but "this end is silent
+    here", which the comparison reports rather than passes.
+
+    ``ring`` is ``"A"`` or ``"B"`` and selects which channel count this end is
+    held to; the two rings differ on that axis by design (a stereo program in,
+    per-driver channels out), so the comparison cannot use one number.
+    """
+
+    end: str
+    source: str
+    ring: str
+    sample_format: str | None = None
+    channels: int | None = None
+    note: str = ""
+
+
+def _load_topology_for_wire():
+    """The saved output topology for a wire resolution, or ``None``.
+
+    Fail-SOFT on every error: ``resolve_ring_wire(None)`` answers the shipped
+    stereo geometry, which is the right question for a box whose topology cannot
+    be read — and refusing to arm on an unreadable topology is
+    :func:`ring_topology_ready`'s decision to make, with its own documented
+    strict/lenient split, not this helper's.
+    """
+    try:
+        from jasper.output_topology import (
+            OutputTopologyError,
+            load_output_topology_strict,
+        )
+
+        return load_output_topology_strict()
+    except (OutputTopologyError, OSError, ValueError, ImportError):
+        return None
+
+
+def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
+    """fan-in's declared Ring-A wire format, and which file declared it.
+
+    Same ``jasper.env`` -> ``fanin.env`` chain systemd gives ``jasper-fanin``
+    (mirrors :func:`resolve_effective_fanin_ring_slots`): looking only at
+    ``fanin.env`` would report the default while an operator's value in the
+    earlier system env still controls the next daemon start. An unset value
+    declares the narrow default, which is what the Rust daemon resolves.
+    """
+    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
+
+    raw = read_value(fanin_text, RING_WIRE_FORMAT_ENV_VAR)
+    source = FANIN_ENV_PATH
+    if raw is None:
+        raw = read_value(
+            _read_snapshot(JASPER_ENV_PATH).text, RING_WIRE_FORMAT_ENV_VAR
+        )
+        source = JASPER_ENV_PATH
+    if raw is None or not raw.strip():
+        return RING_WIRE_FORMAT, "default"
+    return raw.strip(), source
+
+
+def ring_wire_declarations(
+    *, fanin_text: str, outputd_text: str, armed: bool
+) -> tuple[RingWireDeclaration, ...]:
+    """What each of the ring's four declaring ends says the wire is.
+
+    ``armed`` gates the outputd FORMAT axis, and the reason is a real ordering
+    fact rather than caution: ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by
+    ``jasper-audio-hardware-reconcile`` (from ``content_lane_format_for_coupling``),
+    NOT by this reconciler, and while the box is still on loopback it correctly
+    carries the LOOPBACK lane's format. Comparing it against the ring wire at
+    preflight time would refuse every arm on every box — the exact shape of the
+    PR-1 defect this gate's history records. So before the arm that end is
+    reported as not-yet-declared; once armed it is compared, which is where a
+    degraded deploy's half-moved format actually shows up.
+    """
+    from jasper.fanin_coupling import (
+        RING_A_CHANNELS,
+        COUPLING_SHM_RING as _SHM,
+        content_lane_format_for_coupling,
+    )
+    from jasper.ring_assets import (
+        RING_A_CONF_PCM,
+        RING_B_CONF_PCM,
+        RING_CONF_D,
+        ring_asset_presence,
+        ring_conf_channels,
+        ring_conf_format,
+    )
+
+    # An ABSENT conf.d is ``ring_assets_ready``'s refusal to own, not a second
+    # one here — one missing file should produce one reason. A conf.d that is
+    # PRESENT but declares no readable wire is a torn file, which no other gate
+    # inspects, so that one stays this gate's to refuse.
+    conf_present = ring_asset_presence().conf_present
+    conf_absent_note = (
+        ""
+        if conf_present
+        else f"{RING_CONF_D} absent — ring_assets_ready owns that refusal"
+    )
+    fanin_format, fanin_source = resolve_effective_fanin_wire_format(fanin_text)
+    outputd_channels_raw = read_value(outputd_text, _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR)
+    try:
+        outputd_channels = (
+            int(outputd_channels_raw.strip())
+            if outputd_channels_raw and outputd_channels_raw.strip()
+            else _OUTPUTD_DEFAULT_CONTENT_CHANNELS
+        )
+    except ValueError:
+        outputd_channels = None
+    outputd_format_raw = read_value(outputd_text, _OUTPUTD_CONTENT_FORMAT_ENV_VAR)
+    outputd_format = (
+        outputd_format_raw.strip()
+        if outputd_format_raw and outputd_format_raw.strip()
+        else _OUTPUTD_DEFAULT_CONTENT_FORMAT
+    )
+    return (
+        RingWireDeclaration(
+            end="fan-in (Ring A writer)",
+            source=fanin_source,
+            ring="A",
+            sample_format=fanin_format,
+            # fan-in's mixer is stereo and NOT configurable
+            # (``mixer.rs``'s ``CHANNELS: u32 = 2``), mirrored here as
+            # RING_A_CHANNELS. Comparing it catches a resolver that starts
+            # answering a Ring A width the writer cannot produce.
+            channels=RING_A_CHANNELS,
+        ),
+        RingWireDeclaration(
+            end=f"conf.d {RING_A_CONF_PCM}",
+            source=RING_CONF_D,
+            ring="A",
+            sample_format=ring_conf_format(RING_A_CONF_PCM) if conf_present else None,
+            channels=ring_conf_channels(RING_A_CONF_PCM) if conf_present else None,
+            note=conf_absent_note,
+        ),
+        RingWireDeclaration(
+            end=f"conf.d {RING_B_CONF_PCM}",
+            source=RING_CONF_D,
+            ring="B",
+            sample_format=ring_conf_format(RING_B_CONF_PCM) if conf_present else None,
+            channels=ring_conf_channels(RING_B_CONF_PCM) if conf_present else None,
+            note=conf_absent_note,
+        ),
+        RingWireDeclaration(
+            end="CamillaDSP emitted stanzas",
+            source="capture_kwargs_for_coupling(shm_ring)",
+            ring="B",
+            sample_format=content_lane_format_for_coupling(_SHM),
+            note="counterfactual: what arming would emit",
+        ),
+        RingWireDeclaration(
+            end="outputd (Ring B reader)",
+            source=str(OUTPUTD_ENV_PATH),
+            ring="B",
+            sample_format=outputd_format if armed else None,
+            channels=outputd_channels,
+            note=(
+                ""
+                if armed
+                else (
+                    f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares the "
+                    "loopback lane until the hardware reconciler re-emits it on "
+                    "arm, so the format axis is not compared before arming"
+                )
+            ),
+        ),
+    )
+
+
+def ring_edge_width_ready(
+    *, fanin_text: str | None = None, outputd_text: str | None = None
+) -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate: do ALL FOUR declaring ends state one wire?
+
+    THE INVARIANT. For each ring, ``(sample_format, channels)`` is resolved once
+    per box by ``jasper.fanin_coupling.resolve_ring_wire``, and every end that
+    declares a geometry must declare exactly that. Any end that cannot ⇒ refuse
+    to arm, fail-safe to loopback, naming the end and the value it declared.
+    **Equality only, never a ranking**: no width-comparison primitive exists
+    in-repo for ALSA format strings and ``S24_3LE`` — live on the DAC edge —
+    already breaks any ordering by byte count, so this refuses ANY mismatch
+    rather than asserting a direction the code does not independently verify.
+
+    THE FOUR ENDS, and what each contributes:
+
+    - **fan-in** — ``JASPER_FANIN_RING_WIRE_FORMAT`` off the daemon's own env
+      chain, plus its compile-time stereo mixer width;
+    - **the conf.d** — both PCM blocks, PER BLOCK, because Ring A and Ring B may
+      legitimately differ on channels (a stereo program in, per-driver channels
+      out) and only the file can say what the ioplug will attach with;
+    - **CamillaDSP's emitted stanzas** — the counterfactual "what would arming
+      emit", which is what catches the kwargs override path breaking (if
+      ``capture_kwargs_for_coupling`` ever stopped forcing the ring's own
+      format, the emit would silently fall back to the box-wide program-lane
+      default and mis-transcode every sample);
+    - **outputd** — its declared content format (once armed; see
+      :func:`ring_wire_declarations`) and its active-lane channel width.
+
+    WHAT REPLACED WHAT. This gate shipped as a zero-I/O counterfactual comparing
+    two constants that both read one source — coherence by construction, which
+    is not a check. It now reads the conf.d and both env files, so it is no
+    longer the cheapest gate and no longer runs first: it runs after topology
+    eligibility, because on a box that resolves no ring width the wire question
+    is not well-posed (``resolve_ring_wire`` falls back to the shipped stereo
+    declaration there) and a mismatch report would name the wrong defect.
+
+    THE RULING IN ITS HISTORY (wide-output-path PR-6, architect, 2026-08-08).
+    An earlier form compared ``RING_WIRE_FORMAT`` against
     ``DEFAULT_PLAYBACK_FORMAT``, the box-wide program-lane default. That was
     correct while the two were equal, but once PR-6 widened the default it would
     have refused the ring on EVERY ring-eligible box — including jts.local,
-    whose armed ring stays coherently S16 through the kwargs override and which
-    carries a CERTIFIED USB-route latency artifact measured on that ring. That
-    refusal would have traded a proven latency property for a width benefit a
-    ring box cannot use. So: ring-coupled boxes KEEP the ring at coherent S16,
-    and the wide lane is the LOOPBACK path's property until ring v2 (D5's
-    resurrection trigger is unchanged — a ring box that wants the wide lane).
+    whose armed ring stays coherently narrow through the kwargs override and
+    which carries a CERTIFIED USB-route latency artifact measured on that ring.
+    Ring-coupled boxes keep the ring at its own resolved wire; the wide lane is
+    the LOOPBACK path's property.
 
-    Deliberately an EQUALITY check, never a bit-width ranking: no
-    width-comparison primitive exists in-repo for ALSA format strings (see
-    ``captures/PLAN-wide-output-path-2026-08-07.md`` D9 on ``S24_3LE``
-    landing as a genuinely different write path later), so this refuses ANY
-    mismatch rather than asserting a direction ("wider"/"narrower") the code
-    does not independently verify — a claim that would stop being reliably
-    true once a third live format exists.
+    ``fanin_text`` / ``outputd_text`` default to reading the files, so the gate
+    stays callable with no arguments from :func:`default_ring_gates`; the arm
+    path passes the snapshots it has already written so the gate judges the text
+    the daemons will actually load.
     """
-    from jasper.fanin_coupling import (
-        content_lane_format_for_coupling,
-        resolve_ring_wire,
+    from jasper.fanin_coupling import resolve_ring_wire
+
+    if fanin_text is None:
+        fanin_text = _read_snapshot(FANIN_ENV_PATH).text
+    if outputd_text is None:
+        outputd_text = _read_snapshot(OUTPUTD_ENV_PATH).text
+
+    wire = resolve_ring_wire(_load_topology_for_wire())
+    armed = resolve_coupling(read_value(fanin_text, COUPLING_ENV_VAR)) == (
+        COUPLING_SHM_RING
+    )
+    declarations = ring_wire_declarations(
+        fanin_text=fanin_text, outputd_text=outputd_text, armed=armed
     )
 
-    # The COUNTERFACTUAL the gate is asked: "if we arm shm_ring, what width
-    # would the emitted config carry?" Passed explicitly rather than read from
-    # the persisted coupling, which is still loopback at preflight time — and
-    # which keeps this gate free of I/O.
-    emitted = content_lane_format_for_coupling(COUPLING_SHM_RING)
-    resolved = resolve_ring_wire().sample_format
-    if emitted == resolved:
-        return True, (
-            f"the shm_ring coupling forces the emitted program lane to the "
-            f"ring's resolved wire format ({resolved}), so arming stays "
-            "coherent end-to-end"
+    problems: list[str] = []
+    for decl in declarations:
+        if decl.sample_format is not None and decl.sample_format != (
+            wire.sample_format
+        ):
+            problems.append(
+                f"{decl.end} declares format {decl.sample_format} "
+                f"(from {decl.source})"
+            )
+        elif decl.sample_format is None and not decl.note:
+            problems.append(
+                f"{decl.end} declares no format at all (from {decl.source}) — "
+                "an indeterminate end cannot be proven to match"
+            )
+        want_channels = (
+            wire.ring_a_channels if decl.ring == "A" else wire.ring_b_channels
         )
-    return False, (
-        f"the shm_ring coupling would emit a {emitted} program lane, but this "
-        f"box's ring wire resolves to {resolved} — arming "
-        "would mis-transcode every sample. capture_kwargs_for_coupling "
-        "(jasper.fanin_coupling) must force playback_format to "
-        "resolve_ring_wire's sample_format; keeping loopback until it does."
+        if decl.channels is not None and decl.channels != want_channels:
+            problems.append(
+                f"{decl.end} declares {decl.channels} channels, expected "
+                f"{want_channels} (from {decl.source})"
+            )
+    if problems:
+        return False, (
+            f"the ring wire resolves to {wire.sample_format} / Ring A "
+            f"{wire.ring_a_channels}ch / Ring B {wire.ring_b_channels}ch, but "
+            "these ends disagree: "
+            + "; ".join(problems)
+            + ". Every declaring end must state the SAME wire or the ioplug "
+            "attach fails hard at arm; keeping loopback until they agree"
+        )
+    return True, (
+        f"all declaring ends state one ring wire ({wire.sample_format}, Ring A "
+        f"{wire.ring_a_channels}ch, Ring B {wire.ring_b_channels}ch)"
     )
+
+
+def ring_wire_caps_ready(
+    *, fanin_text: str | None = None
+) -> tuple[bool, str]:
+    """The shm_ring PREFLIGHT gate: can the INSTALLED ioplug open this wire?
+
+    A RECORD COMPARE, never an open-probe. The reconciler must never open a ring
+    PCM to find out what the plugin can do: on an armed box the ioplug's SPSC
+    guard EBUSYs the probe, and probing a live ring is exactly the disturbance
+    the doctor's armed-skip exists to avoid. So the installer records the sha and
+    capability set of the ``.so`` it installed
+    (``deploy/lib/install/ring-platform.sh``) and this compares that record
+    against the resolved wire's needs — see
+    :func:`jasper.ring_assets.ring_ioplug_wire_supported`.
+
+    THE WALK IT CLOSES. The ioplug build degrades to a WARN, so a failed rebuild
+    leaves the PREVIOUS ``.so`` installed beside freshly-installed Rust daemons.
+    If the resolved wire renders a conf.d ``format`` / ``channels`` key that old
+    plugin does not parse, it refuses the device at ``open()`` with ``-EINVAL``
+    and CamillaDSP cannot start against the ring — on an ALREADY-armed box that
+    is a crash loop the CONFIRM path used to watch without acting.
+
+    DORMANT TODAY, BY CONSTRUCTION: the shipped wire renders no conf.d field
+    beyond the ioplug's own defaults, so the needed capability set is empty and
+    this returns ok WITHOUT reading the record or hashing anything. A box with no
+    provenance record — every box until the next deploy — is unaffected.
+    """
+    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.ring_assets import ring_ioplug_wire_supported
+
+    del fanin_text  # accepted for call-shape symmetry with the width gate
+    support = ring_ioplug_wire_supported(resolve_ring_wire(_load_topology_for_wire()))
+    return support.ok, support.detail
 
 
 def ring_assets_ready() -> tuple[bool, str]:
@@ -1570,18 +1925,27 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     composes.  Keeping the pure decision module independent of this transition
     owner makes the dependency one-way while still sharing the exact predicates
     used by a manual arm.  The unattended path deliberately uses the strict
-    topology probe so an unreadable topology fails closed.  ``ring_edge_width``
-    (D5, wide-output-path program) runs first — it is an in-process contract
-    check with no I/O, and it passes on every box whose shm_ring kwargs still
-    force the ring's own wire format, so ordering it ahead of the
-    filesystem/topology probes costs nothing and fails fastest if that override
-    is ever broken.
+    topology probe so an unreadable topology fails closed.
+
+    ORDER IS A DIAGNOSTIC DECISION, and it is why ``ring_edge_width`` no longer
+    runs first.  Each gate is ordered ahead of the gates whose answers would be
+    MEANINGLESS or MISLEADING without it: the box class before anything
+    ring-specific; topology eligibility next, because a box that resolves no
+    ring width makes the wire question ill-posed (``resolve_ring_wire`` falls
+    back to the shipped stereo declaration there, so a wire mismatch would name
+    the wrong defect on a roleful box); asset presence before the two gates that
+    READ those assets; capability before width, because a plugin that cannot
+    parse the wire's fields is a blunter refusal than any per-end disagreement.
+    ``ring_edge_width`` was ordered first while it was a zero-I/O check over two
+    constants; it now reads the conf.d and both env files, so "cheapest first"
+    no longer describes it.
     """
     return (
-        ("ring_edge_width", ring_edge_width_ready),
         ("install_profile", ring_install_profile_ready),
-        ("ring_assets", ring_assets_ready),
         ("ring_topology", ring_topology_ready_strict),
+        ("ring_assets", ring_assets_ready),
+        ("ring_wire_caps", ring_wire_caps_ready),
+        ("ring_edge_width", ring_edge_width_ready),
     )
 
 
@@ -1733,6 +2097,16 @@ def _migrate_stale_fanin_ring_slots(
     returns the CURRENT snapshot; the preflight then refuses on the still-stale
     effective value, never a silent bad arm.
 
+    IT DOES NOT CONVERGE A BOX SHEARED ON AN AXIS IT DOES NOT OWN. This writes
+    ONE axis — the Ring-A slot count. If the box also disagrees about the WIRE
+    (fan-in's declared format vs the conf.d's), converging the slots would make
+    the geometry look repaired while the arm still cannot succeed, and the
+    operator would read a ``stale_ring_slots_overridden`` line as progress. So
+    the wire is read first and a shear there DECLINES the write, leaving
+    ``ring_edge_width_ready`` to refuse with the reason that actually describes
+    the box. Declining costs nothing: the slots value it would have written is
+    still writable on the next pass, once the wire agrees.
+
     IMPORTANT: this runs INSIDE ``_arm_ring``, AFTER ``reconcile_coupling`` already
     persisted the coupling flip (``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``) to
     fanin.env. The passed ``fanin_snapshot`` is the PRE-flip snapshot, so we re-read
@@ -1743,10 +2117,52 @@ def _migrate_stale_fanin_ring_slots(
         DEFAULT_FANIN_RING_SLOTS,
         RING_SLOTS_ENV_VAR,
     )
-    from jasper.ring_assets import RING_A_CONF_PCM, ring_conf_n_slots
+    from jasper.ring_assets import (
+        RING_A_CONF_PCM,
+        ring_conf_channels,
+        ring_conf_format,
+    )
+    from jasper.ring_assets import ring_conf_n_slots
 
     # Re-read fresh: the coupling flip was already written to this file above.
     current = _read_snapshot(fanin_snapshot.path)
+
+    # The axes this function does NOT own, read before it writes the one it does.
+    conf_format = ring_conf_format(RING_A_CONF_PCM)
+    conf_channels = ring_conf_channels(RING_A_CONF_PCM)
+    fanin_format, fanin_format_source = resolve_effective_fanin_wire_format(
+        current.text
+    )
+    from jasper.fanin_coupling import RING_A_CHANNELS
+
+    wire_shear = ""
+    if conf_format is not None and conf_format != fanin_format:
+        wire_shear = (
+            f"fan-in declares wire format {fanin_format} (from "
+            f"{fanin_format_source}) but conf.d pcm.{RING_A_CONF_PCM} declares "
+            f"{conf_format}"
+        )
+    elif conf_channels is not None and conf_channels != RING_A_CHANNELS:
+        wire_shear = (
+            f"conf.d pcm.{RING_A_CONF_PCM} declares {conf_channels} channels but "
+            f"fan-in's mixer is fixed at {RING_A_CHANNELS}"
+        )
+    if wire_shear:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="stale_ring_slots_override_declined",
+            reason=reason,
+            key=RING_SLOTS_ENV_VAR,
+            detail=(
+                f"{wire_shear} — converging the slot count alone would report a "
+                "geometry this box does not have; the wire gate refuses the arm "
+                "with the accurate reason"
+            ),
+            level=logging.WARNING,
+        )
+        return current
+
     conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
     if conf_a is None:
         return current  # indeterminate conf.d → the preflight fails closed.
@@ -1807,19 +2223,26 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     recreated by the writer on the next arm, NOT user data — so deleting a
     geometry-mismatched file is safe and lets the arm re-create it fresh.
 
-    Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND whose
-    geometry differs from what fan-in / the conf.d will create. Two axes are
-    compared TODAY: ``n_slots`` and ``period_frames`` (the ring slot IS one outputd
-    period, so a file with matching slots but a stale period also fails the ioplug
-    attach). ``sample_format`` is NOT compared here yet — extending this guard to
-    the format axis is scoped to R5a as a pre-flip precondition (see
-    ``captures/PLAN-ring-v2-rulings-2026-08-10.md``), alongside the header parser
-    and conf.d keys it depends on. Until then a format-mismatched file is left for
-    the writer, which rejects it at attach as a config-class fault and parks — loud,
-    but needing a manual ``rm``. A magic-less / absent / correct-geometry file is
-    left untouched (the writer reclaims a magic-less file itself; a correct file is
-    reused). Best-effort: a delete failure is logged, never raised — the writer's
-    own attach error is the backstop.
+    Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND
+    whose geometry differs from what fan-in / the conf.d will create, on ANY of
+    the four attach-compared axes: ``n_slots``, ``period_frames`` (the ring slot
+    IS one outputd period), ``sample_format`` and ``channels``. The comparison
+    is :func:`jasper.ring_assets.ring_header_matches_conf`, shared with the
+    CONFIRM-path self-heal predicate and the doctor so the three cannot mean
+    different things by "coherent".
+
+    THE FORMAT AXIS IS WHAT MAKES THE ROLLBACK LEVER ONE-SHOT. While this guard
+    was blind to ``sample_format``, forcing the wire narrow again
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) left the WIDE ring file on disk,
+    the writer rejected it at attach as a config-class fault, and the box parked
+    until someone ran ``rm`` by hand — so the lever worked once and then needed
+    an operator. Clearing a format-mismatched file here is what lets the lever be
+    pulled and released.
+
+    A magic-less / absent / correct-geometry file is left untouched (the writer
+    reclaims a magic-less file itself; a correct file is reused). Best-effort: a
+    delete failure is logged, never raised — the writer's own attach error is the
+    backstop.
 
     ``fanin_text`` is the (post-migration) fanin.env text — used ONLY as the
     fallback expected Ring-A slot count when the conf.d is unreadable.
@@ -1830,9 +2253,8 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
         RING_A_PROGRAM_FILE,
         RING_B_CONF_PCM,
         RING_B_CONTENT_FILE,
-        read_ring_header,
         ring_conf_n_slots,
-        ring_conf_period_frames,
+        ring_header_matches_conf,
     )
 
     # Expected Ring-A slot count: the conf.d is the attach authority for what the
@@ -1846,26 +2268,16 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     expected_a = ring_conf_n_slots(RING_A_CONF_PCM)
     if expected_a is None:
         expected_a = fanin_slots
-    expected_b = ring_conf_n_slots(RING_B_CONF_PCM)
-    # Expected period is a single conf.d line shared by both rings (the ring slot is
-    # one outputd period). None (unreadable) → skip the period axis, don't guess.
-    expected_period = ring_conf_period_frames()
 
-    for path, expected in (
-        (RING_A_PROGRAM_FILE, expected_a),
-        (RING_B_CONTENT_FILE, expected_b),
+    for path, pcm_name, expected_slots in (
+        (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, expected_a),
+        (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
     ):
-        if expected is None:
-            continue  # indeterminate expected geometry — leave it for the writer.
-        header = read_ring_header(path)
-        if not header.valid:
-            continue  # absent / magic-less: the writer reclaims it itself.
-        slots_mismatch = header.n_slots != expected
-        period_mismatch = (
-            expected_period is not None and header.period_frames != expected_period
+        verdict = ring_header_matches_conf(
+            path, pcm_name, expected_n_slots=expected_slots
         )
-        if not slots_mismatch and not period_mismatch:
-            continue  # coherent on both axes: reused by the writer.
+        if not verdict.present or verdict.ok:
+            continue  # nothing to judge, or coherent on every axis.
         try:
             os.unlink(path)
         except OSError as e:
@@ -1875,10 +2287,8 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
                 result="stale_ring_unlink_failed",
                 reason=reason,
                 path=path,
-                on_disk_n_slots=header.n_slots,
-                on_disk_period_frames=header.period_frames,
-                expected_n_slots=expected,
-                expected_period_frames=expected_period,
+                axis=verdict.axis,
+                detail=verdict.detail,
                 error=e,
                 level=logging.WARNING,
             )
@@ -1889,10 +2299,8 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
             result="stale_ring_deleted",
             reason=reason,
             path=path,
-            on_disk_n_slots=header.n_slots,
-            on_disk_period_frames=header.period_frames,
-            expected_n_slots=expected,
-            expected_period_frames=expected_period,
+            axis=verdict.axis,
+            detail=verdict.detail,
         )
 
 
@@ -1926,9 +2334,8 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
         RING_A_PROGRAM_FILE,
         RING_B_CONF_PCM,
         RING_B_CONTENT_FILE,
-        read_ring_header,
         ring_conf_n_slots,
-        ring_conf_period_frames,
+        ring_header_matches_conf,
     )
 
     conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
@@ -1955,32 +2362,23 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
                 "the arm slot self-heal"
             )
 
-    # Axis 2 — stale on-disk ring file. A valid header whose geometry differs from
-    # the readable conf.d expectation on EITHER axis (n_slots or period_frames) is
-    # what _delete_stale_ring_files clears; its presence means the writer would hit a
-    # create-or-attach mismatch on next start. (Mirror the delete's two-axis compare
-    # so the CONFIRM path escalates on exactly the files the arm would then remove.)
-    expected_b = ring_conf_n_slots(RING_B_CONF_PCM)
-    expected_period = ring_conf_period_frames()
-    for path, expected in (
-        (RING_A_PROGRAM_FILE, conf_a),
-        (RING_B_CONTENT_FILE, expected_b),
+    # Axis 2 — stale on-disk ring file. A valid header whose geometry differs
+    # from the readable conf.d expectation on ANY attach-compared axis (n_slots,
+    # period_frames, sample_format, channels) is what _delete_stale_ring_files
+    # clears; its presence means the writer would hit a create-or-attach mismatch
+    # on next start. Both call the SAME comparator, so the CONFIRM path escalates
+    # on exactly the files the arm would then remove — a narrower predicate here
+    # would leave a file the arm deletes looking coherent, and a wider one would
+    # escalate to an arm that heals nothing.
+    for path, pcm_name, expected_slots in (
+        (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, conf_a),
+        (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
     ):
-        if expected is None:
-            continue
-        header = read_ring_header(path)
-        if not header.valid:
-            continue
-        if header.n_slots != expected:
-            return True, (
-                f"on-disk ring {path} has n_slots={header.n_slots} != expected "
-                f"{expected} — needs the arm stale-file self-heal"
-            )
-        if expected_period is not None and header.period_frames != expected_period:
-            return True, (
-                f"on-disk ring {path} has period_frames={header.period_frames} != "
-                f"expected {expected_period} — needs the arm stale-file self-heal"
-            )
+        verdict = ring_header_matches_conf(
+            path, pcm_name, expected_n_slots=expected_slots
+        )
+        if verdict.present and not verdict.ok:
+            return True, f"{verdict.detail} — needs the arm stale-file self-heal"
 
     return False, "ring geometry coherent — CONFIRM stays lightweight"
 
@@ -2049,14 +2447,15 @@ def _arm_ring(
     """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
 
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
-    all pass): (0) wire-width coherence (``ring_edge_width_ready`` — D5,
-    wide-output-path program: the shm_ring coupling must still FORCE the emitted
-    program lane to the ring's RESOLVED wire format, or arming would silently
-    mis-transcode);
-    (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
-    ring platform would strand the realtime path); (2) topology ring-eligible
-    (``ring_topology_ready``); (3) conf.d period == outputd period
-    (``ring_geometry_ready``); (4) Ring-A slot count == conf.d n_slots
+    all pass): (0) P1 ring assets present (``ring_assets_ready`` — a
+    half-installed ring platform would strand the realtime path); (1) topology
+    ring-eligible (``ring_topology_ready``); (2) the installed ioplug can parse
+    the wire (``ring_wire_caps_ready`` — a record compare against what the
+    installer built, never an open-probe); (3) all four declaring ends state one
+    wire (``ring_edge_width_ready``: fan-in's env, both conf.d blocks,
+    CamillaDSP's emitted stanzas, outputd's declarations — a disagreement is a
+    hard ioplug attach failure at arm); (4) conf.d period == outputd period
+    (``ring_geometry_ready``); (5) Ring-A slot count == conf.d n_slots
     (``ring_slot_geometry_ready``, after ``_migrate_stale_fanin_ring_slots``
     self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
     defect-A geometry hole); then (5) ``_delete_stale_ring_files`` clears a
@@ -2070,20 +2469,6 @@ def _arm_ring(
     coherence + the ordered restart landing, and the fan-in STATUS transport is
     confirmed by the doctor.
     """
-    width_ok, width_detail = ring_edge_width_ready()
-    if not width_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_edge_width_mismatch",
-            detail=width_detail,
-        )
-
     assets_ok, assets_detail = ring_assets_ready()
     if not assets_ok:
         return _fail_ring_arm(
@@ -2114,6 +2499,48 @@ def _arm_ring(
             outputd_snapshot,
             event_result="arm_ring_topology_ineligible",
             detail=topo_detail,
+        )
+
+    # ioplug CAPABILITY preflight (the degraded-deploy walk): the ring's
+    # resolved wire may render a conf.d `format`/`channels` key the INSTALLED
+    # ioplug cannot parse — the plugin build degrades to a WARN, so a failed
+    # rebuild leaves the previous .so beside new daemons. That plugin refuses the
+    # device at open() with -EINVAL and CamillaDSP cannot start against the ring.
+    # A RECORD compare (installer-written provenance vs the .so on disk), never
+    # an open-probe: probing a ring PCM from the reconciler would disturb a live
+    # arm. No-op on the shipped wire, which renders no such key.
+    caps_ok, caps_detail = ring_wire_caps_ready(fanin_text=fanin_snapshot.text)
+    if not caps_ok:
+        return _fail_ring_arm(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            desired,
+            reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_ioplug_caps_missing",
+            detail=caps_detail,
+        )
+
+    # FOUR-ENDS wire preflight: fan-in's env, both conf.d blocks, CamillaDSP's
+    # emitted stanzas and outputd's declarations must state ONE wire. Runs after
+    # the topology gate because a box that resolves no ring width makes the
+    # comparison ill-posed, and after the asset gate because it reads the conf.d.
+    width_ok, width_detail = ring_edge_width_ready(
+        fanin_text=fanin_snapshot.text, outputd_text=outputd_snapshot.text
+    )
+    if not width_ok:
+        return _fail_ring_arm(
+            do_restart,
+            do_restart_outputd,
+            do_reconcile,
+            desired,
+            reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_edge_width_mismatch",
+            detail=width_detail,
         )
 
     # Period-geometry preflight: the conf.d ring period MUST equal outputd's
@@ -2369,6 +2796,168 @@ def _disarm(
     )
 
 
+# Repeated CONFIRM failure on an ARMED ring escalates to recovery. The limit
+# mirrors fan-in's own two-strike ProbeFail precedent
+# (``host_compliance.rs``'s ``PROBE_FAIL_STRIKE_LIMIT``): one failure can be a
+# transient (CamillaDSP momentarily busy, a lost websocket), two consecutive
+# ones on a box whose audio is already down is evidence, not noise.
+#
+# The reconciler is EVENT-DRIVEN (boot, deploy, a /sources/ toggle, an operator
+# start) — there is no timer — so strikes accumulate across events rather than
+# on a schedule, and the window only DISCARDS evidence too old to be about the
+# same incident. Any success clears the record: these are consecutive strikes.
+RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
+RING_CONFIRM_STRIKE_LIMIT = 2
+RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600
+
+
+def _read_ring_confirm_strikes(path: str | None = None) -> int:
+    """Strikes recorded within the window; 0 for absent / stale / unreadable.
+
+    ``path=None`` resolves :data:`RING_CONFIRM_STRIKE_STATE` at CALL time, not as
+    a bound default — the same rule ``ring_conf_n_slots`` follows, and for the
+    same reason: a default bound at import captures the constant forever, so a
+    caller (or a test) that repoints the module attribute is silently ignored
+    and the write lands on the real path.
+    """
+    import json
+
+    path = RING_CONFIRM_STRIKE_STATE if path is None else path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        count = int(data["count"])
+        first_ts = float(data["first_ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    if time.time() - first_ts > RING_CONFIRM_STRIKE_WINDOW_SEC:
+        return 0  # evidence too old to be about this incident
+    return max(0, count)
+
+
+def _record_ring_confirm_failure(
+    detail: str, reason: str, path: str | None = None
+) -> int:
+    """Add one strike and return the new in-window count. Never raises.
+
+    ``path=None`` resolves the module constant at call time — see
+    :func:`_read_ring_confirm_strikes`.
+    """
+    import json
+
+    path = RING_CONFIRM_STRIKE_STATE if path is None else path
+    prior = _read_ring_confirm_strikes(path)
+    count = prior + 1
+    first_ts = time.time()
+    if prior:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                first_ts = float(json.load(fh)["first_ts"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    try:
+        atomic_write_text(
+            Path(path),
+            json.dumps(
+                {
+                    "count": count,
+                    "first_ts": first_ts,
+                    "last_ts": time.time(),
+                    "last_detail": detail,
+                    "last_reason": reason,
+                }
+            )
+            + "\n",
+            mode=0o644,
+        )
+    except OSError as e:
+        # A strike we cannot persist is a strike we cannot accumulate; say so
+        # rather than let the escalation silently never fire.
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="ring_confirm_strike_write_failed",
+            reason=reason,
+            path=path,
+            error=e,
+            level=logging.WARNING,
+        )
+    return count
+
+
+def _clear_ring_confirm_failures(path: str | None = None) -> None:
+    """Drop the strike record (a successful confirm). Never raises.
+
+    ``path=None`` resolves the module constant at call time — see
+    :func:`_read_ring_confirm_strikes`.
+    """
+    try:
+        os.unlink(RING_CONFIRM_STRIKE_STATE if path is None else path)
+    except OSError:
+        pass
+
+
+def _reseed_loopback_statefile(reason: str) -> tuple[bool, str]:
+    """Re-point CamillaDSP's statefile at a loopback-safe graph, WITHOUT a socket.
+
+    THE CONVERGENCE HOLE THIS CLOSES. Recovery's camilla step goes through
+    ``reconcile_current_dsp``, which talks to the running daemon over its
+    websocket. When the reason we are recovering is that CamillaDSP cannot START
+    — a ring config it cannot open, the degraded-deploy walk — there is no
+    websocket to talk to: the reconcile fails, the statefile still names the ring
+    config, and the daemon's NEXT start comes up on the same ring and fails
+    again. The env said loopback; the graph never moved. So when the live path is
+    unavailable we write the statefile directly, through the same decision the
+    installer's seeder uses (``safe_graph_for_current_topology`` +
+    ``apply_safe_graph_decision_to_statefile``), with the coupling pinned to
+    loopback so the decision selects the loopback flat graph rather than
+    re-reading the persisted token.
+
+    Write-on-change and topology-aware by construction — it is the same seeder,
+    not a second one, so a roleful box gets its roleful/parked graph and not a
+    flat stereo one. Best-effort: a failure here is logged and reported, never
+    raised, because it runs inside a recovery that must not itself explode.
+    """
+    try:
+        from jasper.active_speaker.runtime_contract import (
+            apply_safe_graph_decision_to_statefile,
+            safe_graph_for_current_topology,
+        )
+
+        topology = _load_topology_for_wire()
+        decision = safe_graph_for_current_topology(
+            topology, coupling=COUPLING_LOOPBACK
+        )
+        if not decision.ok:
+            return False, (
+                f"safe-graph decision unusable ({decision.status}: "
+                f"{decision.reason})"
+            )
+        wrote = apply_safe_graph_decision_to_statefile(decision, topology=topology)
+    except (OSError, ValueError, TypeError, AttributeError, ImportError) as e:
+        # Concrete set, not a blind except: an unreadable/corrupt topology
+        # (OutputTopologyError subclasses ValueError), a statefile that cannot be
+        # written, or a missing import are the ways this fails. It still must not
+        # raise — it runs INSIDE a recovery — but swallowing everything would
+        # hide a genuine programming error behind a recovery that reported
+        # "re-seed failed" and moved on.
+        return False, f"statefile re-seed failed: {e}"
+    if wrote:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="recovery_statefile_reseeded",
+            reason=reason,
+            config_path=decision.selected_config_path,
+            decision=decision.status,
+        )
+        return True, f"statefile re-seeded to {decision.selected_config_path}"
+    return True, (
+        f"statefile already names {decision.selected_config_path} — no re-seed "
+        "needed"
+    )
+
+
 def _recover_to_loopback(
     do_restart,
     do_restart_outputd,
@@ -2389,6 +2978,10 @@ def _recover_to_loopback(
     larger fail-safe cushion and less daemon churn instead of another
     oneshot; the content-buffer floor re-emit just waits for the next
     udev/boot/deploy event on this path, same as before #1251.
+
+    When the camilla step FAILS, the CamillaDSP statefile is re-seeded directly
+    (:func:`_reseed_loopback_statefile`) so recovery converges even with no
+    daemon to talk to — the case where recovery matters most.
     """
     try:
         existing = Path(fanin_path).read_text(encoding="utf-8")
@@ -2421,6 +3014,26 @@ def _recover_to_loopback(
         do_restart_outputd,
         do_reconcile,
     )
+    if not daemon_ops.camilla_ok:
+        # The live re-point did not land — most likely because CamillaDSP is not
+        # running to be talked to, which is the shape of the failure we are
+        # recovering FROM. Write the statefile directly so the daemon's next
+        # start comes up on loopback instead of the ring config it cannot open.
+        # Without this the env says loopback while the graph still says ring, and
+        # the box never converges on its own.
+        reseeded, reseed_detail = _reseed_loopback_statefile(reason)
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result=(
+                "recovery_statefile_reseed"
+                if reseeded
+                else "recovery_statefile_reseed_failed"
+            ),
+            reason=reason,
+            detail=reseed_detail,
+            level=logging.WARNING if not reseeded else logging.INFO,
+        )
     if not daemon_ops.ok:
         log_event(
             logger,

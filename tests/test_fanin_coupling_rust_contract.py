@@ -209,6 +209,54 @@ def test_shm_ring_mixer_publishes_slots_and_keeps_mirror():
     assert "RING_SLOT_FRAMES" in text
 
 
+def test_step_fills_output_buf_once_above_the_transport_dispatch():
+    """`step()`'s narrow saturate is SHARED by both transports, above the match.
+
+    The mutant this catches: moving (or duplicating)
+    `saturate_to_i16(&self.sum_buf, &mut self.output_buf)` into the
+    `Output::Alsa` arm. `output_buf` is what the `Output::Ring` arm hands
+    `write_ring_period` for the lossy aloop mirror — and on the WIDE wire it is
+    the mirror's ONLY consumer, since the ring slot itself is filled from
+    `sum_buf` by `fill_wide_ring_payload`. A saturate that ran only on the ALSA
+    path would leave the ring transport publishing a stale (or, on the first
+    period, all-zero) `output_buf` to the mirror while the ring slot stayed
+    correct, so multi-room followers and the mirror capture would go silent with
+    the primary output unaffected.
+
+    This is pinned in Python because `step()` has no hardware-free Rust test at
+    all: it reads live ALSA inputs. The in-crate mirror bit-identity test
+    (`mirror_payload_is_byte_identical_across_ring_wire_formats`) enters at
+    `write_ring_period`, one call BELOW the ordering asserted here, so it cannot
+    see which transport filled the buffer it is handed.
+    """
+    text = _mixer_rs_text()
+
+    opener = "fn step(&mut self) -> Result<()> {"
+    assert opener in text, "the mixer must still have a step() render period"
+    body, sep, _ = text[text.index(opener) :].partition("\n    }\n")
+    # Containment: the slice must stop at step()'s OWN closing brace. A sentinel
+    # that misses it lands on the next method's instead, and the assertions below
+    # would then read text that is not step()'s — a saturate in a later method or
+    # a unit test could satisfy them while step() itself was gutted. (The count is
+    # 1, not 0: the slice starts AT step()'s own opener. It counts `fn `, not
+    # `pub fn `, because mixer.rs's methods are private.)
+    assert sep, "could not find step()'s closing brace"
+    assert body.count("fn ") == 1, "the step() slice ran past its own function"
+
+    saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf)"
+    dispatch = "match &mut self.output {"
+    assert body.count(saturate) == 1, (
+        "step() must fill output_buf with exactly ONE saturate — a second one "
+        "means the call was duplicated into the transport arms"
+    )
+    assert body.count(dispatch) == 1, "step() must dispatch on the transport once"
+    assert body.index(saturate) < body.index(dispatch), (
+        "the saturate that fills output_buf must sit ABOVE the transport match, "
+        "shared by both arms — inside Output::Alsa it would leave the Ring arm "
+        "mirroring a stale output_buf"
+    )
+
+
 def test_input_resampler_status_exports_live_lock_state():
     resampler_text = _lane_resampler_rs_text()
     state_text = _state_rs_text()
@@ -523,7 +571,12 @@ def test_host_compliance_prime_gated_on_host_clock_servo_armed():
     # below loudly rather than passing on a neighbour's text. This pins the
     # other direction: the slice must not run past the function into the next
     # one. (The count is 1, not 0 — the slice starts AT this fn's own opener.)
-    assert armed_body.count("pub fn ") == 1, (
+    #
+    # Counts `fn `, not `pub fn `: a PRIVATE `fn` is the overrun this assertion
+    # is most likely to meet — `config.rs` carries private helpers between its
+    # public ones — and a `pub fn `-only count would run straight past one and
+    # keep reporting containment.
+    assert armed_body.count("fn ") == 1, (
         "the host_clock_servo_armed slice ran past its own function"
     )
     assert "self.host_clock_enabled && self.usb_direct_enabled" in armed_body, (

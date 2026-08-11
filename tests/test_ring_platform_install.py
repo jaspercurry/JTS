@@ -86,7 +86,12 @@ def test_build_failure_with_prior_so_warns_it_is_stale(tmp_path):
     # Both the generic degrade-to-warn lines AND the distinct stale-.so line.
     assert "ring platform unavailable" in out
     assert _STALE_MARKER in out
-    assert "doctor cannot distinguish" in out
+    # The WARN used to say the doctor "cannot distinguish it from a fresh
+    # build". It can now: a failed build REVOKES the installer's provenance
+    # record, so the plugin reads as unvouched instead of ok. The transcript
+    # says what is true today.
+    assert "provenance record has been revoked" in out
+    assert "doctor cannot distinguish" not in out
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")

@@ -7,8 +7,9 @@
 ``check_ring_geometry_coherence`` verifies the Ring-A geometry agrees across
 three axes — fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` through the systemd
 env chain, the conf.d ``jts_ring_capture``, and the on-disk ``program.ring``
-header — when shm_ring is armed. It compares BOTH ``n_slots`` and (on the
-on-disk header) ``period_frames``; a mismatch on any axis is the 2026-07-05
+header — when shm_ring is armed. Against the on-disk header it compares every
+axis the ioplug attach compares: ``n_slots``, ``period_frames``,
+``sample_format`` and ``channels``. A mismatch on any of them is the 2026-07-05
 crash-loop class (hw_params EINVAL + ioplug attach_fatal). It skips cleanly when
 shm_ring is not armed (the ring is inert).
 """
@@ -16,6 +17,8 @@ shm_ring is not armed (the ring is inert).
 from __future__ import annotations
 
 import struct
+
+import pytest
 
 from jasper.cli.doctor import audio_runtime as audio
 
@@ -105,21 +108,48 @@ def test_ok_when_all_three_axes_agree(monkeypatch, tmp_path):
 
 
 def test_ok_detail_reports_the_on_disk_wire(monkeypatch, tmp_path):
-    """The header's format/channels/rate are REPORTED, not compared.
+    """The ok detail names the wire it compared, not just the slot geometry.
 
-    The comparison axes stay slots + period (what this check's callers act on),
-    but a reader that can now see the whole header should say what it saw —
-    otherwise "the Python layer can see the wire" is true only inside tests.
-    Written as a wire the fleet does NOT run, so the detail cannot be passing
-    by echoing a constant.
+    A reader that can see the whole header should say what it saw — otherwise
+    "the Python layer can see the wire" is true only inside tests.
     """
     _arm(monkeypatch)
     _fanin, program = _stage(monkeypatch, tmp_path)
-    _write_ring(program, rate=44100, channels=6, sample_format=2)
+    _write_ring(program)
     res = audio.check_ring_geometry_coherence()
     assert res.status == "ok", res.detail
-    assert "S32_LE/6ch" in res.detail
-    assert "44100 Hz" in res.detail
+    assert "S16_LE/2ch" in res.detail
+    assert "48000 Hz" in res.detail
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "axis"),
+    [
+        ({"sample_format": 2}, "sample_format"),
+        ({"channels": 6}, "channels"),
+    ],
+)
+def test_fail_when_the_on_disk_wire_shears(monkeypatch, tmp_path, kwargs, axis):
+    """THE HOLE R5b CLOSED, and this test used to assert it stayed open.
+
+    Its earlier form wrote a 44.1 kHz / 6-channel / S32_LE header — a wire the
+    fleet does not run — and asserted ``ok``, because the wire axes were
+    REPORTED and compared nowhere. That is exactly the silent hole: a ring file
+    whose slots and period match while its format or channel count does not
+    passed every Python guard, and the first symptom would have been CamillaDSP
+    failing the ioplug attach and crash-looping. The inversion is deliberate.
+
+    ``rate`` is NOT in the parametrize list: the conf.d declares no rate, so
+    there is no expected value to compare against and the comparator skips that
+    axis rather than guessing. It stays reported.
+    """
+    _arm(monkeypatch)
+    _fanin, program = _stage(monkeypatch, tmp_path)
+    _write_ring(program, **kwargs)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "fail", res.detail
+    assert axis in res.detail
+    assert "jasper-fanin-coupling-reconcile" in res.detail
 
 
 def test_fail_when_env_disagrees_with_conf(monkeypatch, tmp_path):

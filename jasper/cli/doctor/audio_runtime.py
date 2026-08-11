@@ -1675,6 +1675,72 @@ def check_ring_platform_assets() -> CheckResult:
     )
 
 
+@doctor_check(order=51.85, group="audio")
+def check_ring_ioplug_provenance() -> CheckResult:
+    """Is the INSTALLED ioplug the one the installer built, and what can it parse?
+
+    THE GAP THIS CLOSES. ``check_ring_platform_assets`` reports presence, and its
+    open-probe passes on a structurally-valid plugin — so a STALE ``.so`` (the
+    ioplug build degrades to a WARN, leaving the previous one installed beside
+    freshly-installed Rust daemons) read as ``ok`` and the only signal was a WARN
+    in a deploy transcript that had long since scrolled away. The installer now
+    records the sha and the conf.d fields of the plugin it installed, and revokes
+    that record on every path where it did NOT produce the installed file, so
+    this check can say "stale" where it used to say nothing.
+
+    ``warn``, not ``fail``, for both unvouched shapes: the shipped wire renders
+    no conf.d field beyond the ioplug's own defaults, so a stale plugin still
+    opens today's ring — the record matters at the moment a box's wire needs a
+    capability, which is where the coupling reconciler's own gate fails closed
+    and refuses the arm. Warning is the honest weight for "cannot vouch".
+
+    Skips when the ``.so`` is absent: that is ``check_ring_platform_assets``'s
+    missing-asset verdict, and one absent file should produce one reason.
+    """
+    label = "ring ioplug provenance"
+    so_path = ring_assets.ring_ioplug_so_path(plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR)
+    if not os.path.exists(so_path):
+        return CheckResult(
+            label, "ok", f"skipped — {so_path} absent (see 'ring platform')"
+        )
+    record = ring_assets.read_ring_ioplug_provenance()
+    if not record.recorded:
+        return CheckResult(
+            label,
+            "warn",
+            f"{so_path} is installed but UNVOUCHED: no usable record at "
+            f"{ring_assets.RING_IOPLUG_PROVENANCE}. Either this box has not been "
+            "redeployed since the installer began recording, or a deploy revoked "
+            "the record because its ioplug build failed — check the deploy "
+            "transcript for a jts_ring ioplug build WARN. Redeploy (bash "
+            "scripts/deploy-to-pi.sh) to rebuild and record.",
+        )
+    installed = ring_assets.ring_ioplug_so_sha256(
+        plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR
+    )
+    if installed is None:
+        return CheckResult(
+            label, "warn", f"{so_path} could not be read to compare against the record"
+        )
+    if installed != record.sha256:
+        return CheckResult(
+            label,
+            "warn",
+            f"STALE ioplug: {so_path} hashes {installed[:12]}… but the installer "
+            f"recorded {record.sha256[:12]}…, so the plugin on disk is NOT the one "
+            "the last successful install produced. The ioplug build degrades to a "
+            "WARN and leaves the previous .so in place — redeploy and check the "
+            "transcript for a jts_ring ioplug build failure.",
+        )
+    caps = ", ".join(sorted(record.caps)) or "none"
+    return CheckResult(
+        label,
+        "ok",
+        f"{so_path} matches the installer's record (sha {record.sha256[:12]}…); "
+        f"conf.d fields it can parse: [{caps}]",
+    )
+
+
 @doctor_check(order=51.9, group="audio")
 def check_ring_geometry_coherence() -> CheckResult:
     """Verify the Ring-A geometry agrees across env, conf.d, and on-disk (defect A).
@@ -1682,15 +1748,16 @@ def check_ring_geometry_coherence() -> CheckResult:
     The ring geometry must match or CamillaDSP's ioplug attach fails hard
     (hw_params EINVAL + ``attach_fatal reason=ring header does not match expected
     geometry`` → crash-loop → start-limit-hit). ``n_slots`` is checked on THREE
-    axes; the on-disk header adds a fourth check on ``period_frames`` (the ring slot
-    IS one outputd period, so a stale period fails the attach even with matching
-    slots — Nit-7, 2026-07-05):
+    axes, and the on-disk header is then compared on EVERY axis the attach
+    compares:
 
       1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (jasper.env -> fanin.env
          systemd env chain, default 2)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
-      3. the on-disk ``program.ring`` header ``n_slots`` (what the writer created)
-      4. the on-disk header ``period_frames`` vs the conf.d ``period_frames``
+      3. the on-disk ``program.ring`` header vs that conf.d block, on ``n_slots``,
+         ``period_frames`` (the ring slot IS one outputd period, so a stale period
+         fails the attach even with matching slots — Nit-7, 2026-07-05),
+         ``sample_format`` and ``channels``
 
     The 2026-07-06 default migration class is old 8-slot state making fan-in or
     the existing ring file present 8 slots while the conf.d pins 2. The coupling
@@ -1772,40 +1839,31 @@ def check_ring_geometry_coherence() -> CheckResult:
             "has no valid ring header yet (fan-in restarting / ring cleared). It "
             "will be created coherently on the next fan-in start.",
         )
-    if header.n_slots != conf_slots:
+    # Axes 3-6: every axis the ioplug attach compares — n_slots, period_frames,
+    # sample_format and channels — through the SAME comparator the coupling
+    # reconciler's stale-file guard and CONFIRM self-heal use, so the doctor
+    # cannot call a file coherent that the reconciler is about to delete (or
+    # vice versa). The wire axes used to be REPORTED here and compared nowhere,
+    # which is precisely how a ring that shears on format or channel count
+    # passed every Python guard and was first noticed as a hard attach failure.
+    verdict = ring_assets.ring_header_matches_conf(
+        ring_assets.RING_A_PROGRAM_FILE,
+        ring_assets.RING_A_CONF_PCM,
+        conf_d=_JTS_RING_CONF_D,
+    )
+    if not verdict.ok:
         return CheckResult(
             label, "fail",
-            f"on-disk Ring A ({ring_assets.RING_A_PROGRAM_FILE}) has n_slots="
-            f"{header.n_slots} but env + conf.d expect {conf_slots}. A stale ring "
-            "file from a prior geometry blocks the ioplug attach. Run: sudo "
+            f"{verdict.detail}. A stale ring file from a prior {verdict.axis} "
+            "geometry blocks the ioplug attach. Run: sudo "
             "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
             "(it deletes a geometry-mismatched ring file before re-arming).",
         )
-    # period_frames is the SECOND on-disk geometry axis (the ring slot IS one
-    # outputd period): a file with matching n_slots but a stale period_frames also
-    # fails the ioplug attach — the exact confusing daemon-level error the
-    # preflights exist to pre-empt. Compare against the conf.d's pinned period when
-    # it is readable (indeterminate conf.d period → skip this axis, don't guess).
-    conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
-    if conf_period is not None and header.period_frames != conf_period:
-        return CheckResult(
-            label, "fail",
-            f"on-disk Ring A ({ring_assets.RING_A_PROGRAM_FILE}) has period_frames="
-            f"{header.period_frames} but conf.d expects {conf_period} (n_slots match "
-            f"at {header.n_slots}). A stale ring file from a prior period geometry "
-            "blocks the ioplug attach. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile shm_ring (it deletes a geometry-"
-            "mismatched ring file before re-arming).",
-        )
-    # The wire axes (format, channels, rate) are REPORTED, not compared: this
-    # check's three comparison axes are the slot-count/period ones its callers
-    # act on, and reporting is what makes the on-disk wire visible without
-    # claiming a verdict about it. They come off the same header read.
     return CheckResult(
         label, "ok",
         f"Ring A geometry coherent across env + conf.d + on-disk header "
-        f"(n_slots={header.n_slots}, period_frames={header.period_frames}); "
-        f"on-disk wire {header.sample_format_name}/{header.channels}ch @ "
+        f"(n_slots={header.n_slots}, period_frames={header.period_frames}, "
+        f"wire {header.sample_format_name}/{header.channels}ch); rate "
         f"{header.rate} Hz",
     )
 
@@ -2173,11 +2231,51 @@ def _outputd_buffer_health(
             bool(shm_ring_block.get("attached", False))
             if isinstance(shm_ring_block, dict) else None
         )
+        # THE WIRE, compared and not merely printed. outputd's shm_ring block
+        # publishes the format/channels it read back off the header it ATTACHED
+        # to; the resolver answers what this box's wire is supposed to be. Those
+        # are two independent sources, so a disagreement is a real shear — the
+        # reader consuming a geometry nobody declared — rather than a constant
+        # echoing itself. Only checked once ATTACHED: before that outputd
+        # reports its own declaration, which proves nothing about a ring that
+        # does not exist yet.
+        if ring_attached and isinstance(shm_ring_block, dict):
+            from jasper.fanin_coupling import resolve_ring_wire
+
+            wire = resolve_ring_wire()
+            observed_format = shm_ring_block.get("format")
+            observed_channels = shm_ring_block.get("channels")
+            if observed_format is not None and observed_format != wire.sample_format:
+                return CheckResult(
+                    "jasper-outputd",
+                    "fail",
+                    f"shm_ring.format={observed_format!r} but this box's ring wire "
+                    f"resolves to {wire.sample_format} — outputd attached to a Ring "
+                    "B geometry nobody declared. Run: sudo /opt/jasper/.venv/bin/"
+                    "jasper-fanin-coupling-reconcile shm_ring (it clears a "
+                    "wire-mismatched ring file before re-arming).",
+                )
+            if (
+                observed_channels is not None
+                and observed_channels != wire.ring_b_channels
+            ):
+                return CheckResult(
+                    "jasper-outputd",
+                    "fail",
+                    f"shm_ring.channels={observed_channels!r} but this box's Ring B "
+                    f"resolves to {wire.ring_b_channels} — outputd attached to a "
+                    "Ring B geometry nobody declared. Run: sudo /opt/jasper/.venv/"
+                    "bin/jasper-fanin-coupling-reconcile shm_ring (it clears a "
+                    "wire-mismatched ring file before re-arming).",
+                )
         ring_detail = (
             f", shm_ring_slots={ring_slots}, shm_ring_slot_frames={ring_slot_frames}"
             f", shm_ring_capacity_frames={ring_capacity}"
             f", shm_ring_occupancy={ring_occupancy}"
             f", shm_ring_attached={ring_attached}"
+            f", shm_ring_wire="
+            f"{shm_ring_block.get('format') if isinstance(shm_ring_block, dict) else None}"
+            f"/{shm_ring_block.get('channels') if isinstance(shm_ring_block, dict) else None}ch"
         )
     elif not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
         return CheckResult(
