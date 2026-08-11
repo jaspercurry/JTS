@@ -6491,7 +6491,18 @@ mod tests {
     fn the_width_fork_narrows_before_the_resampler_and_only_on_the_narrow_route() {
         const PERIOD: u32 = 256;
         const CH: usize = CHANNELS as usize;
-        let hires = 0x1234_5600i32;
+        // The probe is chosen so TRUNCATION AND ROUNDING DISAGREE: its low word
+        // is 0xC000, i.e. three quarters of a step, so `>> 16` keeps 0x1234
+        // while a round-to-nearest would give 0x1235. Without that the test
+        // would pass whether the chunk was narrowed before the resampler or
+        // resampled first and narrowed after — pinned for the wrong property.
+        let hires = 0x1234_C000u32 as i32;
+        assert_ne!(
+            jasper_resampler::s32_high_word_to_s16(hires),
+            jasper_resampler::narrow_i32_to_i16_round(hires),
+            "the probe must distinguish truncation from rounding, or this test \
+             cannot see the narrowing order at all",
+        );
         let build = || {
             LaneResampler::new(
                 CH,
