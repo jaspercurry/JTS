@@ -1800,12 +1800,18 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     geometry-mismatched file is safe and lets the arm re-create it fresh.
 
     Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND whose
-    geometry differs from what fan-in / the conf.d will create — on EITHER axis:
-    ``n_slots`` OR ``period_frames`` (the ring slot IS one outputd period, so a file
-    with matching slots but a stale period also fails the ioplug attach). A magic-
-    less / absent / correct-geometry file is left untouched (the writer reclaims a
-    magic-less file itself; a correct file is reused). Best-effort: a delete failure
-    is logged, never raised — the writer's own attach error is the backstop.
+    geometry differs from what fan-in / the conf.d will create. Two axes are
+    compared TODAY: ``n_slots`` and ``period_frames`` (the ring slot IS one outputd
+    period, so a file with matching slots but a stale period also fails the ioplug
+    attach). ``sample_format`` is NOT compared here yet — extending this guard to
+    the format axis is scoped to R5a as a pre-flip precondition (see
+    ``captures/PLAN-ring-v2-rulings-2026-08-10.md``), alongside the header parser
+    and conf.d keys it depends on. Until then a format-mismatched file is left for
+    the writer, which rejects it at attach as a config-class fault and parks — loud,
+    but needing a manual ``rm``. A magic-less / absent / correct-geometry file is
+    left untouched (the writer reclaims a magic-less file itself; a correct file is
+    reused). Best-effort: a delete failure is logged, never raised — the writer's
+    own attach error is the backstop.
 
     ``fanin_text`` is the (post-migration) fanin.env text — used ONLY as the
     fallback expected Ring-A slot count when the conf.d is unreadable.

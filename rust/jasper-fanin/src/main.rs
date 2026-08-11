@@ -70,15 +70,23 @@ const EXIT_CONFIG: i32 = 78;
 /// CONFIG-class. It covers the Ring A geometry declaration — every rejection
 /// in `Config::from_env`'s ring block (an unparseable
 /// `JASPER_FANIN_RING_WIRE_FORMAT`, an out-of-range `JASPER_FANIN_RING_SLOTS`,
-/// a period that would shear a slot) plus the ring header/geometry mismatch
-/// that `RingWriter::create_or_attach` reports when the ring file on disk was
-/// created against a different geometry. None of those is repairable by
-/// restarting, so [`main`] downcasts for the marker and exits [`EXIT_CONFIG`].
+/// a period that would shear a slot), all of which are pure env parsing, plus
+/// the CONFIG-CLASS SUBSET of what `RingWriter::create_or_attach` can fail
+/// with. None of those is repairable by restarting, so [`main`] downcasts for
+/// the marker and exits [`EXIT_CONFIG`].
 ///
 /// The marker is deliberately narrow. Fan-in's other startup failures (a
 /// missing snd-aloop substream, a de-enumerated USB DAC) DO clear on a retry,
 /// which is exactly what `Restart=on-failure` is for; marking every config
 /// error would park the speaker on a transient hardware blip.
+///
+/// The ring open is the one site where both classes arrive through a single
+/// call, so it does NOT tag blindly: `mixer::ring_open_error` gates the marker
+/// on `io::ErrorKind::{InvalidInput, InvalidData}` — the two kinds
+/// `jasper_ring` sets for a bad geometry declaration and an attach mismatch.
+/// A held open-lock (`WouldBlock`) or an unapplied tmpfs permission
+/// (`PermissionDenied`) is transient and keeps the restart ladder.
+/// `only_config_class_ring_open_errors_park_the_unit` pins both directions.
 #[derive(Debug)]
 pub struct ConfigClassError;
 
@@ -106,10 +114,19 @@ fn config_class_exit_code(error: &anyhow::Error) -> Option<i32> {
 /// every other failure keeps the ordinary `Restart=on-failure` path.
 fn park_on_config_class(error: &anyhow::Error) {
     if let Some(code) = config_class_exit_code(error) {
+        // Both remediations are named, because "fix the config and restart" is
+        // only right for HALF of this class. A stale ring file on tmpfs is not
+        // a config value anyone can edit — an operator who only re-reads the
+        // env file finds nothing wrong and restarts into the same park.
         error!(
             "event=fanin.config_park exit={} detail={:#} — the unit does not \
-             restart on config errors (RestartPreventExitStatus=78); fix the \
-             config and `systemctl restart jasper-fanin`",
+             restart on config errors (RestartPreventExitStatus=78). If the \
+             detail names an env value (JASPER_FANIN_RING_WIRE_FORMAT / \
+             _RING_SLOTS / a slot-shearing period), fix it and \
+             `systemctl restart jasper-fanin`. If it names a ring header or \
+             geometry MISMATCH, the ring file on disk was built against a \
+             different geometry: `rm /dev/shm/jts-ring/program.ring` (or \
+             reboot — /dev/shm is tmpfs), then restart",
             code, error,
         );
         std::process::exit(code);
@@ -576,5 +593,79 @@ mod tests {
         ))
         .context("opening ALSA PCMs");
         assert_eq!(config_class_exit_code(&error), None);
+    }
+
+    /// Drive the REAL ring-open classifier over the `io::ErrorKind`s
+    /// `RingWriter::create_or_attach` can actually return, and assert which
+    /// ones park.
+    ///
+    /// This is the guard on the narrowing. An earlier revision tagged EVERY
+    /// `create_or_attach` failure config-class, which parks the speaker's audio
+    /// on faults that clear themselves — a `.open.lock` still held by the
+    /// outgoing daemon (`WouldBlock`), or a tmpfs directory whose
+    /// mode/group systemd-tmpfiles has not applied yet (`PermissionDenied`).
+    /// Both cases park a unit that `Restart=on-failure` would have recovered in
+    /// 5 s, and the park is silent until someone reads `/state`.
+    ///
+    /// The scenarios are the ones the review probed on a real ring: a stale
+    /// wide ring file (`InvalidData`, parks — correct), a held `.open.lock`
+    /// (`WouldBlock`, restarts), and an unwritable ring directory
+    /// (`PermissionDenied`, restarts).
+    #[test]
+    fn only_config_class_ring_open_errors_park_the_unit() {
+        use crate::mixer::ring_open_error;
+
+        // PARK: no restart can repair either of these.
+        for (kind, detail) in [
+            // A ring file created against a different geometry (stale wide ring
+            // surviving a deploy; a conf.d and daemon that disagree).
+            (
+                std::io::ErrorKind::InvalidData,
+                "ring header sample_format mismatch: file has 2, expected 1",
+            ),
+            // The geometry fan-in built from its own env is invalid.
+            (
+                std::io::ErrorKind::InvalidInput,
+                "ring n_slots 1 out of range 2..=64",
+            ),
+        ] {
+            let error = ring_open_error(
+                "/dev/shm/jts-ring/program.ring",
+                "S32_LE",
+                std::io::Error::new(kind, detail),
+            );
+            assert_eq!(
+                config_class_exit_code(&error),
+                Some(EXIT_CONFIG),
+                "{kind:?} is config-class and must park the unit at exit 78"
+            );
+        }
+
+        // RESTART: transient, and the restart ladder is exactly what clears
+        // them. A park here is a silent outage over a self-healing fault.
+        for (kind, detail) in [
+            (
+                std::io::ErrorKind::WouldBlock,
+                "another process holds the ring open lock",
+            ),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                "Permission denied (os error 13)",
+            ),
+            (std::io::ErrorKind::StorageFull, "No space left on device"),
+            (std::io::ErrorKind::OutOfMemory, "Cannot allocate memory"),
+            (std::io::ErrorKind::AlreadyExists, "File exists"),
+        ] {
+            let error = ring_open_error(
+                "/dev/shm/jts-ring/program.ring",
+                "S16_LE",
+                std::io::Error::new(kind, detail),
+            );
+            assert_eq!(
+                config_class_exit_code(&error),
+                None,
+                "{kind:?} is transient and must keep Restart=on-failure, not park"
+            );
+        }
     }
 }

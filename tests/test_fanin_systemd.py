@@ -113,20 +113,27 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
     """A config-class ring failure must PARK the unit, not climb the restart
     burst into `StartLimitAction=reboot` above.
 
-    fan-in's Ring A geometry declaration has ways to be wrong that no restart
-    can fix: a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` /
-    slot-shearing period, and a ring file on disk whose header geometry differs
-    from the one the daemon builds (a stale ring surviving a deploy, or a
-    conf.d and daemon that disagree about the wire). Before
-    `RestartPreventExitStatus=78` those exited non-zero like any other fault,
-    so five starts in five minutes rebooted the speaker — and kept rebooting
-    it, because the ring file survives the reboot. jasper-outputd took the same
-    treatment for the same reason (jts3, 2026-06-11: a guard-rejected env
-    combination crash-looped it into three Pi reboots).
+    fan-in's Ring A geometry declaration has ways to be wrong that no RESTART
+    can fix, in two shapes:
 
-    Both halves are asserted: the unit stops restarting on 78, and the daemon
-    actually maps that class to 78 (a unit directive for an exit code nothing
-    produces would be a guard that guards nothing).
+    1. A rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` /
+       slot-shearing period. Re-read from the env file on every start, so it is
+       identical across restarts AND across reboots.
+    2. A ring file on disk whose header geometry differs from the one the
+       daemon builds (a stale ring surviving a deploy, or a conf.d and daemon
+       that disagree about the wire). `/dev/shm` is tmpfs, so this one DOES
+       clear on a reboot — but not on a restart, which is the loop that
+       matters here.
+
+    Before `RestartPreventExitStatus=78` both exited non-zero like any other
+    fault, so five starts in five minutes escalated to
+    `StartLimitAction=reboot`. jasper-outputd took the same treatment for the
+    same reason (jts3, 2026-06-11: a guard-rejected env combination
+    crash-looped it into three Pi reboots).
+
+    Both halves of the mechanism are asserted: the unit stops restarting on 78,
+    and the daemon actually maps that class to 78 (a unit directive for an exit
+    code nothing produces would be a guard that guards nothing).
     """
     unit = _read_unit()
     assert "78" in _values_for(unit, "RestartPreventExitStatus"), (
@@ -157,6 +164,21 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
     assert ".context(crate::ConfigClassError)" in mixer_src, (
         "a ring create_or_attach geometry mismatch must be tagged config-class"
     )
+    # ...but ONLY that class. The marker is gated on the two error kinds
+    # jasper_ring sets for a bad geometry; a transient open failure (a held
+    # .open.lock, an unapplied tmpfs permission) must keep Restart=on-failure.
+    # Parking on those takes the speaker's audio down over a fault that heals
+    # itself in 5 s. The behavioural pin is the Rust test
+    # `only_config_class_ring_open_errors_park_the_unit`; this is the
+    # file-level guard that the gate was not simply deleted.
+    assert "fn ring_open_error_is_config_class" in mixer_src, (
+        "the ring-open park must stay GATED on error kind, not tag every "
+        "create_or_attach failure"
+    )
+    assert (
+        "std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData"
+        in mixer_src
+    ), "the config-class gate must accept exactly InvalidInput and InvalidData"
 
 
 def test_oom_score_adj_between_camilla_and_aec_bridge():
