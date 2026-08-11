@@ -783,7 +783,7 @@ class VerificationResult:
     :attr:`BenefitStatus.INDETERMINATE` and
     :attr:`SpecStatus.UNEVALUABLE` rather than a default of success.
 
-    **Nothing produces or consumes this yet.** #2291 Phase 3 computes the four
+    **Nothing consumes this yet.** #2291 Phase 3b computes the four
     statuses independently and feeds them to :class:`AdoptionDecision`; Phase 1
     only fixes the vocabulary and the invariants.
     """
@@ -876,7 +876,7 @@ class AdoptionDecision:
     one.  Its reason is mandatory, mirroring the R21 receipt's
     ``recovery_reason``.
 
-    **Nothing produces or consumes this yet** — #2291 Phase 3 applies the
+    **Nothing consumes this yet** — #2291 Phase 3b applies the
     issue's adoption table.
     """
 
