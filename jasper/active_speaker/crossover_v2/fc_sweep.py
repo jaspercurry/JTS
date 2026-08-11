@@ -776,16 +776,28 @@ def sweep_candidates(
 class Adjudication:
     """The one recommendation a sweep's evidence became, and the corner to commit.
 
-    Two facts rather than one: ``selection`` is what the review screen renders,
-    and ``selected_evaluation`` is the executable candidate Review applies after
-    Sound-owned acceptance. ``None`` there is ordinary — the selector may
-    recommend the configured corner, or none at all — and it is deliberately not
-    derivable from ``selection`` alone, because matching a recommended frequency
-    back to its evaluation is the step that can come up empty.
+    Three facts rather than one: ``selection`` is what the review screen renders,
+    ``selected_evaluation`` is the executable candidate Review applies after
+    Sound-owned acceptance, and ``record`` is the disclosure the host still owes.
+    ``None`` for the evaluation is ordinary — the selector may recommend the
+    configured corner, or none at all — and it is deliberately not derivable
+    from ``selection`` alone, because matching a recommended frequency back to
+    its evaluation is the step that can come up empty.
+
+    **Why the record is RETURNED here and handed to a port in
+    :func:`sweep_candidates`.** The two are not inconsistent, they answer
+    different facts. The sweep's lines are interleaved with the accountability
+    lines each build emits, so batching them to the end would re-order the
+    journal; they must be said at the point. Adjudication's single line is the
+    last thing it does, so returning it re-orders nothing — and it buys back the
+    pre-extraction failure ordering, where the selection is published BEFORE the
+    line is said. A journal that raises then costs the household a log line
+    rather than the recommendation it was about.
     """
 
     selection: FcSelection
     selected_evaluation: FcCandidateEvaluation | None
+    record: GateRecord
 
 
 def adjudicate(
@@ -794,7 +806,6 @@ def adjudicate(
     *,
     select: Callable[..., FcSelection],
     candidate_set_of: Callable[[], FcCandidateSet],
-    journal: Callable[[GateRecord], None],
     configured_fc_hz: float,
 ) -> Adjudication:
     """Turn the retained per-candidate evidence into ONE recommendation.
@@ -802,6 +813,9 @@ def adjudicate(
     At the walk's close, where §4.4 puts every judgement that reads the
     whole walk. The caller releases the evaluations after: the selection is
     what the review screen renders, and the evidence behind it has done its job.
+
+    Says nothing itself — see :class:`Adjudication` for why this one disclosure
+    travels back as data while the sweep's are handed to a port.
     """
     candidates = candidate_set_of()
     selection = select(
@@ -818,7 +832,7 @@ def adjudicate(
             (e for e in evaluations
              if math.isclose(e.fc_hz, recommended, abs_tol=0.05)
              and e.candidate is not None), None)
-    journal(GateRecord(event=EVENT_SELECTION, fields={
+    record = GateRecord(event=EVENT_SELECTION, fields={
         "verdict": selection.verdict,
         "configured_hz": round(configured_fc_hz, 1),
         "recommended_hz": (
@@ -839,5 +853,7 @@ def adjudicate(
         ],
         "comparison_complete": selection.comparison_complete,
         "poses": len(pose_curves),
-    }))
-    return Adjudication(selection=selection, selected_evaluation=selected)
+    })
+    return Adjudication(
+        selection=selection, selected_evaluation=selected, record=record,
+    )

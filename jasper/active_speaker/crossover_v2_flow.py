@@ -8344,6 +8344,10 @@ class CrossoverV2Conductor:
         selection is what the review screen renders, and the evidence behind it
         has done its job. ``select_fc`` is passed rather than imported by the
         organ so the flow module's own name stays the one production resolves.
+
+        The disclosure is said LAST, after both fields are published — the
+        pre-extraction order, kept because a journal that raises should cost a
+        log line rather than the recommendation it was about.
         """
         evaluations, self._fc_evaluations = self._fc_evaluations, ()
         if not evaluations:
@@ -8353,7 +8357,6 @@ class CrossoverV2Conductor:
             [pose.curves for pose in self._lateral_poses],
             select=select_fc,
             candidate_set_of=self._fc_candidate_set,
-            journal=self._journal_linearization,
             configured_fc_hz=self._fc_hz,
         )
         self._fc_selection = adjudication.selection
@@ -8365,6 +8368,7 @@ class CrossoverV2Conductor:
         # argument about why it cannot.
         if adjudication.selection.recommended_hz is not None:
             self._fc_selected_evaluation = adjudication.selected_evaluation
+        self._journal_linearization(adjudication.record)
 
     @property
     def fc_selection(self) -> FcSelection | None:
