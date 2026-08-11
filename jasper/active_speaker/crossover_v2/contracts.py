@@ -55,9 +55,11 @@ __all__ = [
     "AdoptionOutcome",
     "BenefitStatus",
     "CandidateAcousticContext",
+    "CandidateFcDisagreementError",
     "CaptureValidity",
     "CrossoverV2ContractError",
     "InterventionProposal",
+    "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
     "PlanRefusal",
     "RealizationStatus",
@@ -66,13 +68,40 @@ __all__ = [
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",
+    "detached_json",
 ]
 
 SCHEMA_VERSION = 1
 
 
 class CrossoverV2ContractError(ValueError):
-    """A crossover-v2 contract value is malformed, ambiguous, or inconsistent."""
+    """A crossover-v2 contract value is malformed, ambiguous, or inconsistent.
+
+    Carries the :data:`PLAN_REFUSAL_REASONS` member a raise means, so a caller
+    turning one into a :class:`PlanRefusal` reads an attribute set at the raise
+    site instead of parsing the message. The reason is part of the contract;
+    the message is for an operator and may be reworded freely.
+    """
+
+    #: Overridden by the subclasses below. The generic default is honest: an
+    #: error that has not classified itself is exactly "some contract value is
+    #: invalid".
+    refusal_reason = "contract_invalid"
+
+
+class NoCrossoverSectionsError(CrossoverV2ContractError):
+    """A candidate context was asked for from no crossover sections at all."""
+
+    refusal_reason = "no_crossover_sections"
+
+
+class CandidateFcDisagreementError(CrossoverV2ContractError):
+    """Sections in one candidate context name more than one crossover corner.
+
+    The 2026-08-10 defect's shape, refused at construction.
+    """
+
+    refusal_reason = "candidate_fc_disagreement"
 
 
 # --------------------------------------------------------------------------
@@ -104,11 +133,43 @@ def _text(value: Any, *, field_name: str) -> str:
     return value
 
 
-def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
-    """A defensive copy of one JSON-shaped mapping, or ``{}`` for ``None``.
+def detached_json(value: Any) -> Any:
+    """One JSON-shaped value with no container shared with the caller.
 
-    The copy matters: a frozen dataclass holding a caller's live dict is
-    immutable in name only.
+    Recursive on purpose. A shallow ``dict(value)`` detaches only the top
+    level, so a caller holding the *nested* dict it passed in could still
+    mutate a "frozen" proposal after construction — and the fingerprint, taken
+    once at construction, would no longer describe the object a reader sees.
+    That divergence is the exact failure mode these contracts exist to prevent,
+    one level down (#2307 gate note N1).
+
+    Leaves are returned as they are: this normalizes *containers*, not values,
+    so a numpy scalar or a small dataclass passes through untouched.
+
+    A copied list stays a ``list`` rather than becoming a tuple, and that is a
+    requirement rather than a preference: the shared fingerprinter's
+    ``_freeze_json`` admits ``type(value) is list`` exactly and refuses a tuple
+    as a non-JSON value. Detaching therefore changes no type the digest sees,
+    so no existing fingerprint moves. The copy is fresh, which is the whole
+    property — the caller holds no reference to any container inside the
+    result, so nothing it does afterwards can reach in.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: detached_json(item) for key, item in value.items()}
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    if isinstance(value, Sequence):
+        return [detached_json(item) for item in value]
+    return value
+
+
+def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    """A defensive DEEP copy of one JSON-shaped mapping, or ``{}`` for ``None``.
+
+    The copy matters, and its depth matters: a frozen dataclass holding a
+    caller's live dict — at any level — is immutable in name only. See
+    :func:`detached_json`.
     """
 
     if value is None:
@@ -118,7 +179,7 @@ def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     for key in value:
         if not isinstance(key, str):
             raise CrossoverV2ContractError(f"{field_name} keys must be strings")
-    return dict(value)
+    return {key: detached_json(item) for key, item in value.items()}
 
 
 def _trim_map(value: Any, *, field_name: str) -> dict[str, float] | None:
@@ -259,7 +320,7 @@ class CandidateAcousticContext:
                 # anywhere other than this context's Fc is the mixed-Fc defect,
                 # and it fails closed rather than being silently re-cornered.
                 if float(section.fc_hz) != corner:
-                    raise CrossoverV2ContractError(
+                    raise CandidateFcDisagreementError(
                         "candidate section Fc "
                         f"{float(section.fc_hz)!r} Hz disagrees with candidate "
                         f"context Fc {corner!r} Hz for role {name!r}"
@@ -268,9 +329,9 @@ class CandidateAcousticContext:
                 total += 1
             normalized.append((name, tuple(frozen)))
         if not normalized:
-            raise CrossoverV2ContractError("sections_by_role must not be empty")
+            raise NoCrossoverSectionsError("sections_by_role must not be empty")
         if total == 0:
-            raise CrossoverV2ContractError(
+            raise NoCrossoverSectionsError(
                 "a candidate acoustic context needs at least one crossover section"
             )
         object.__setattr__(self, "fc_hz", corner)
@@ -295,11 +356,11 @@ class CandidateAcousticContext:
             for section in sections
         }
         if not corners:
-            raise CrossoverV2ContractError(
+            raise NoCrossoverSectionsError(
                 "a candidate acoustic context needs at least one crossover section"
             )
         if len(corners) != 1:
-            raise CrossoverV2ContractError(
+            raise CandidateFcDisagreementError(
                 f"candidate sections name {len(corners)} different crossover "
                 f"corners: {sorted(corners)!r}"
             )
