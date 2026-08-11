@@ -56,6 +56,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
+# The stage-capability vocabulary this module publishes and binds (#2291 Phase
+# 4). EAGER, unlike every other ``jasper.active_speaker`` import here, because
+# these are module-level NAMES rather than call-time dependencies — a lazy
+# import cannot bind them. The cost is real and worth stating: the
+# ``crossover_v2`` package's convenience re-exports pull ``branch_chain`` and
+# with it numpy, so importing THIS module went from ~0.05 s to ~0.34 s. It is
+# paid by nobody new: every shipped consumer imports this module in order to
+# call into it, and its lightest entry point (``crossover_v2_status_block``)
+# already loads numpy on the way to an answer.
+from jasper.active_speaker.crossover_v2.journey import (
+    CAPABILITY_COMMANDED_DELTA,  # noqa: F401 - re-export.
+    CAPABILITY_ENTRY_BASELINE,  # noqa: F401 - re-export.
+    CAPABILITY_FINDINGS,
+    CAPABILITY_PREDICTED_SUM,  # noqa: F401 - re-export.
+    CAPABILITY_ROLLBACK,
+    STAGE_MEASURE_CAPABILITIES,
+    STAGE_VERIFY_CAPABILITIES,
+    StageOpening,
+    V2StageCapabilities,  # noqa: F401 - re-export.
+    available_stage_priors,
+    open_stage,
+)
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -6172,80 +6194,20 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
 
 
 # --------------------------------------------------------------------------- #
-# stage capabilities — one declaration per commission stage
+# stage capabilities — declared by the journey, bound here
 # --------------------------------------------------------------------------- #
-
-#: The seams a stage may or may not bind, and the priors a stage may need
-#: handed to it. Slugs rather than an enum: they are journal vocabulary before
-#: they are anything else, and one line each is the whole of their behaviour.
-CAPABILITY_FINDINGS = "findings"
-CAPABILITY_ROLLBACK = "rollback"
-CAPABILITY_COMMANDED_DELTA = "commanded_delta"
-CAPABILITY_PREDICTED_SUM = "predicted_sum"
-CAPABILITY_ENTRY_BASELINE = "entry_baseline"
-
-
-@dataclass(frozen=True)
-class V2StageCapabilities:
-    """What ONE commission stage binds, and what it needs handed to it.
-
-    The v2 commission runs as two relay sessions against two conductors
-    (:func:`prepare_v2_session` measures and stops; the household applies;
-    :func:`prepare_v2_verify` verifies). The seams they bind are identical
-    except in two places, and until #2291 Phase 3 both shapes were
-    hand-assembled at their own call site — which is how the rollback seam came
-    to be bound on the stage that never reaches a VERIFY verdict and left off
-    the stage that does.
-
-    ``provides`` lists ONLY the seams that DIFFER between stages — the ones
-    :func:`bind_v2_stage_seams` branches on. Capture, analysis, evidence
-    publication, and the apply gates are unconditional on both stages, so
-    naming them here would restate a constant in a second place rather than
-    record a decision.
-
-    ``requires`` is what a stage needs the PREVIOUS one to have left on disk.
-    It is OBSERVABILITY, not a gate: a stage opens either way, and a missing
-    input is journalled so "the probe reported unavailable" carries a reason
-    instead of reading like a pass. A stage that refused to open on a prior it
-    could still run without would strand a household whose only remaining move
-    is the one being refused.
-    """
-
-    stage: str
-    provides: frozenset[str]
-    requires: frozenset[str] = frozenset()
-
-
-#: Stage 1 — measure, then stop. Binds the findings publisher because a level-
-#: frame finding is banked only by the MEASURE candidate's own gate (#1866);
-#: stage 2 builds no MEASURE candidate, so binding it there would ship a seam
-#: nothing can reach. Requires nothing: it is the first stage, and it hydrates
-#: its own prior snapshot through ``CrossoverV2Conductor.hydrate``.
-STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
-    stage="measure",
-    provides=frozenset({CAPABILITY_FINDINGS}),
-)
-
-#: Stage 2 — the post-apply verdict. Binds rollback because this is the only
-#: stage that reaches the delta probe, and PR-L5's rollback is automatic on the
-#: non-matched verdicts: a conductor without the seam still refuses, but under
-#: ``REASON_CORRECTION_ROLLBACK_FAILED``, whose copy tells the household the
-#: correction is STILL APPLIED. Requires the two stage-1 curves the probe and
-#: the tracking check grade against, plus #2291's entry baseline — the measured
-#: "before" this stage's benefit verdict differences its own capture against.
-#: Without it the round can still say the graph did what it commanded; it
-#: cannot say the speaker got better, which is the question the issue exists
-#: for, so its absence must reach the journal rather than pass unremarked.
-STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
-    stage="verify",
-    provides=frozenset({CAPABILITY_ROLLBACK}),
-    requires=frozenset({
-        CAPABILITY_COMMANDED_DELTA,
-        CAPABILITY_PREDICTED_SUM,
-        CAPABILITY_ENTRY_BASELINE,
-    }),
-)
-
+#
+# The declarations moved to
+# :mod:`jasper.active_speaker.crossover_v2.journey` in #2291 Phase 4: which
+# seams a stage provides and which priors it needs are facts about the
+# COMMISSION, and a host that owns them is a host owning domain semantics.
+# Re-exported here — the same objects, not copies — because these names are
+# this module's published surface and every reader of "which stage binds
+# rollback" should keep finding the one answer.
+#
+# What stays here is the binding itself: which callable implements each seam,
+# and the journal line that says what a stage opened with. Both are the host's,
+# and :func:`bind_v2_stage_seams` remains their single owner.
 
 def _active_graph_fingerprint() -> str:
     """Identity of the Layer-A profile currently on the speaker, or ``""``.
@@ -6359,7 +6321,7 @@ def _applied_graph_boosts() -> bool:
 
 
 def bind_v2_stage_seams(
-    capabilities: V2StageCapabilities,
+    opening: StageOpening,
     *,
     play: Any,
     evidence_store: Any,
@@ -6373,14 +6335,14 @@ def bind_v2_stage_seams(
     publish_candidate: Any,
     run_async: Any,
     camilla_factory: Any,
-    available: Sequence[str] = (),
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
 
     The single source of truth for the two stage shapes. Both preparers call
     it; neither assembles a ``V2FlowSeams`` of its own, so "which stage binds
-    rollback" is answered in exactly one place — the capability constants above
-    — instead of being re-derived at two call sites that were free to disagree.
+    rollback" is answered in exactly one place — the capability declarations in
+    :mod:`~jasper.active_speaker.crossover_v2.journey` — instead of being
+    re-derived at two call sites that were free to disagree.
 
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
@@ -6392,17 +6354,17 @@ def bind_v2_stage_seams(
     seam a plan never exercises costs nothing; omitting one a plan does
     exercise is a silently missing publication.
 
-    ``available`` is what this stage actually got handed, so ``requires``
-    minus it is what is missing. The caller states facts; the verdict is
-    derived here, which is why the declaration and the shortfall cannot
-    disagree. Logging lives here rather than at the call sites for the same
-    reason the seams do: a third caller that bound seams without declaring them
-    would put the journal's account of stage shape back out of one owner's
-    hands.
+    The shortfall is :attr:`~...journey.StageOpening.missing`, derived where the
+    declaration lives so the two cannot disagree. Logging it lives HERE rather
+    than in the journey or at the call sites: the journey is a pure aggregate
+    with no journal of its own, and a third caller that bound seams without
+    declaring them would put the journal's account of stage shape back out of
+    one owner's hands.
     """
     from jasper.active_speaker.crossover_v2_flow import V2FlowSeams
 
-    missing = tuple(sorted(capabilities.requires - set(available)))
+    capabilities = opening.capabilities
+    missing = opening.missing
     log_event(
         logger, "correction.crossover_v2_stage_capabilities",
         stage=capabilities.stage, session_id=relay_session_id,
@@ -6623,6 +6585,24 @@ def prepare_v2_session(
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
         )
+        # This stage's journey, resolved once (#2291 Phase 4). The index→phase
+        # map is built from the SAME resolved plan shape the emitted spec used
+        # — not merely the same function at its own defaults — so the prompt an
+        # entry carries and the phase the conductor runs for that index can
+        # never disagree. ``verify_capture_target`` is the tier's own number,
+        # handed over as a fact: the boost-permission rule that reads it (work
+        # order D2's consequence — this session's phases carry no VERIFY,
+        # because the post-apply sweep is stage 2) belongs to the journey.
+        opening = open_stage(
+            STAGE_MEASURE_CAPABILITIES,
+            index_phase_map=build_v2_cloud_index_phase_map(
+                plan_shape=plan_shape,
+                include_cloud_measure=include_cloud_measure,
+                include_lateral=include_lateral,
+                include_entry_baseline=include_entry_baseline,
+            ),
+            verify_capture_target=plan_shape.verify_capture_target,
+        )
         conductor = CrossoverV2Conductor.hydrate(
             prior_snapshot,
             session_id=relay_session_id,
@@ -6632,7 +6612,7 @@ def prepare_v2_session(
             driver_caps_dbfs=context.driver_caps_dbfs,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
-                STAGE_MEASURE_CAPABILITIES,
+                opening,
                 play=play,
                 evidence_store=evidence_store,
                 relay_session_id=relay_session_id,
@@ -6643,22 +6623,8 @@ def prepare_v2_session(
                 camilla_factory=camilla_factory,
             ),
             tier=plan_shape.tier,
-            # The conductor's index→phase map is built from the SAME resolved
-            # plan shape the emitted spec used — not merely the same function
-            # at its own defaults — so the prompt an entry carries and the
-            # phase the conductor runs for that index can never disagree.
-            index_phase_map=build_v2_cloud_index_phase_map(
-                plan_shape=plan_shape,
-                include_cloud_measure=include_cloud_measure,
-                include_lateral=include_lateral,
-                include_entry_baseline=include_entry_baseline,
-            ),
-            # The boost-permission evidence gate (work order D2's consequence).
-            # This session's own phases carry no VERIFY — the post-apply sweep
-            # is stage 2 — so the measuring host declares from the SHAPE that
-            # the journey does verify. Derived, not asserted: a tier declaring
-            # no post-apply positions would drop boost with them.
-            post_apply_verifies=plan_shape.verify_capture_target >= 1,
+            index_phase_map=opening.plan.index_phase_map,
+            post_apply_verifies=opening.plan.post_apply_verifies,
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
@@ -6900,6 +6866,22 @@ def prepare_v2_verify(
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
         )
+        # This stage's journey (#2291 Phase 4), the same contract stage 1 opens
+        # and differing only in its arguments. ``available`` states facts about
+        # the rehydration above and nothing more — which slug each fact answers
+        # to is the journey's, so the journal's "missing" line cannot drift
+        # from what the conductor was really constructed with. No
+        # ``verify_capture_target``: this plan really does contain VERIFY, so
+        # the phase-derived reading is already the right one.
+        opening = open_stage(
+            STAGE_VERIFY_CAPABILITIES,
+            index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
+            available=available_stage_priors(
+                commanded_delta=commanded_delta is not None,
+                predicted_sum=predicted_sum is not None,
+                entry_baseline=entry_baseline is not None,
+            ),
+        )
         conductor = CrossoverV2Conductor(
             session_id=relay_session_id,
             source_preset=context.preset,
@@ -6908,7 +6890,7 @@ def prepare_v2_verify(
             driver_caps_dbfs=context.driver_caps_dbfs,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
-                STAGE_VERIFY_CAPABILITIES,
+                opening,
                 play=play,
                 evidence_store=evidence_store,
                 relay_session_id=relay_session_id,
@@ -6917,19 +6899,6 @@ def prepare_v2_verify(
                 publish_candidate=publish_candidate,
                 run_async=run_async,
                 camilla_factory=camilla_factory,
-                # What the bridge actually handed this stage. Stated as facts
-                # about the rehydration above, never re-derived here, so the
-                # journal's "missing" line cannot drift from what the conductor
-                # was really constructed with.
-                available=tuple(
-                    slug
-                    for slug, present in (
-                        (CAPABILITY_COMMANDED_DELTA, commanded_delta is not None),
-                        (CAPABILITY_PREDICTED_SUM, predicted_sum is not None),
-                        (CAPABILITY_ENTRY_BASELINE, entry_baseline is not None),
-                    )
-                    if present
-                ),
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
@@ -6938,7 +6907,7 @@ def prepare_v2_verify(
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
             gain_plan_db=state.get("gain_plan_db"),
-            index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
+            index_phase_map=opening.plan.index_phase_map,
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_commanded_delta=commanded_delta,
