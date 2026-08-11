@@ -1437,28 +1437,35 @@ def _jts_ring_path_for(pcm: str) -> str | None:
     return None
 
 
-def _jts_ring_probe_wire(pcm: str) -> tuple[int, str]:
-    """``(channels, format)`` the open-probe must ask this PCM for.
+def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
+    """``(channels, format)`` the open-probe must ask this PCM for, or ``None``
+    when this conf.d block's wire is indeterminate (unreadable file, missing
+    block, or a torn declaration — nothing safe to ask ALSA for).
 
-    From the ring wire resolver, not a literal: the ioplug advertises EXACTLY
-    the conf-declared format and channel count as its hardware constraint, so a
-    probe that asks for anything else fails ``hw_params`` on a perfectly healthy
-    plugin. Ring A and Ring B can legitimately differ on channels, hence the
-    per-PCM answer.
-
-    Resolved without a topology (the shipped stereo geometry), matching what the
-    conf.d on a box that has not been rendered declares. A box whose Ring B is
-    rendered wider is not probed here at all: this path runs only while the ring
-    is INERT, which is the state in which nothing has armed a per-box wire.
+    From the conf.d block itself — :func:`~jasper.ring_assets.ring_conf_channels`
+    / :func:`~jasper.ring_assets.ring_conf_format` — NOT from
+    :func:`~jasper.fanin_coupling.resolve_ring_wire`. The ioplug advertises
+    EXACTLY what THIS conf.d, as it stands on disk, declares as its hw_params
+    constraint, so the probe's question is "what does the file say" — a
+    DIFFERENT question from "what SHOULD this box declare", which is what the
+    resolver answers. Those two answers are independently gated: conf
+    rendering (``render_ring_conf_wire``, driven by a detected DAC's declared
+    ``LatencyFloor``) and ring coupling (the ``shm_ring`` arm) are separate
+    gates, so a box can carry a per-box-rendered Ring B conf.d while still
+    sitting coupling-inert (or the reverse) — probing the resolver's answer on
+    such a box would ask ALSA for the wrong width. An absent
+    ``format``/``channels`` key means the ioplug default
+    (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
+    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
+    already encode, so this answers the shipped, never-rendered file correctly
+    too — no separate "unrendered" branch needed. Ring A and Ring B can
+    legitimately differ on channels, hence the per-PCM lookup.
     """
-    from jasper.fanin_coupling import resolve_ring_wire
-
-    wire = resolve_ring_wire()
-    channels = (
-        wire.ring_b_channels if pcm == ring_assets.RING_B_CONF_PCM
-        else wire.ring_a_channels
-    )
-    return channels, wire.sample_format
+    channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
+    sample_format = ring_assets.ring_conf_format(pcm, _JTS_RING_CONF_D)
+    if channels is None or sample_format is None:
+        return None
+    return channels, sample_format
 
 
 def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
@@ -1485,13 +1492,20 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     """
     if not shutil.which(tool):
         return False, f"{tool} not found"
+    wire = _jts_ring_probe_wire(pcm)
+    if wire is None:
+        return False, (
+            f"ring conf.d ({_JTS_RING_CONF_D}) has no readable pcm.{pcm} "
+            "format/channels to probe with — indeterminate wire (unreadable "
+            "or torn); redeploy to reinstall it"
+        )
+    channels, sample_format = wire
     ring_path = _jts_ring_path_for(pcm)
     pre_existed = ring_path is not None and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
-    # (feed silence in). 48 kHz / 1 s; the width comes from the ring wire
-    # resolver, which is what the ioplug advertises as its only accepted
-    # format/channel pair.
-    channels, sample_format = _jts_ring_probe_wire(pcm)
+    # (feed silence in). 48 kHz / 1 s; the width comes from what THIS
+    # conf.d's own pcm.<name> block declares (an absent key is the ioplug's
+    # own default) — see _jts_ring_probe_wire.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
     try:
         proc = _run(

@@ -750,6 +750,8 @@ pcm.jts_ring_capture {
         show on
         description "JTS ring A"
     }
+    format S16_LE
+    channels 6
 }
 
 pcm.jts_ring_playback {
@@ -766,17 +768,27 @@ def test_block_parsers_survive_a_nested_brace_block(tmp_path):
     """A `hint { ... }` inside a PCM block must not truncate the body.
 
     ALSA conf nests, and a `[^}]*` body — what the block scan used before the
-    per-block wire fields landed — ends at the FIRST closing brace. That would
-    have hidden every field after a nested block, and read Ring B's fields for
-    Ring A when the scan ran past the end of Ring A's own block.
+    per-block wire fields landed — ends at the FIRST closing brace. That
+    truncation can only HIDE fields placed after a nested block, within the
+    SAME PCM's own body — it can never borrow or leak the NEXT block's fields,
+    because the scan stops at the first `}` it meets and so can only fall
+    SHORT of a block's true end, never run past it into Ring B's text.
+
+    Ring A's `channels 6` line sits AFTER the `hint { }` block specifically so
+    this discriminates: an earlier version of this fixture placed every
+    asserted Ring-A field BEFORE the nested block, so the truncation bug this
+    test exists to catch never actually fired under the buggy scan — all 45
+    suite tests, including this one, passed even with the scan reverted to
+    `[^}]*`.
     """
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(NESTED_BLOCK_CONF, encoding="utf-8")
 
     assert ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(conf)) == 2
     assert ring_assets.ring_conf_n_slots(ring_assets.RING_B_CONF_PCM, str(conf)) == 2
-    # Ring A declares no channels (default); Ring B's 4 must NOT leak into it.
-    assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(conf)) == 2
+    # Ring A declares channels PAST the nested block: a truncated scan can't
+    # see it and would silently fall back to the ioplug default (2) instead.
+    assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(conf)) == 6
     assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(conf)) == 4
 
 
@@ -797,6 +809,18 @@ def test_render_survives_a_nested_brace_block(tmp_path):
         "S32_LE"
     )
     assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(conf)) == 6
+    # Ring A's PRE-EXISTING `format S16_LE` / `channels 6` sit past the nested
+    # block. A truncated scan can't see them to substitute in place, so it
+    # blind-INSERTS a second, early `format S32_LE` while leaving the real
+    # line stranded at its stale value — invisible to a parser using the SAME
+    # truncated scan to verify (the parser's own blind spot masks the
+    # corruption it just wrote), which is why these two checks read the RAW
+    # TEXT rather than going back through the parser.
+    assert "S16_LE" not in after, "a stale, un-converged format S16_LE line survived"
+    assert after.count("channels 6") == 1, (
+        "Ring A's stale `channels 6` must converge to 2 (its fixed stereo "
+        "target); a second, unconverted copy means the scan never saw it"
+    )
 
 
 def test_block_parsers_report_nothing_for_an_absent_or_unbalanced_block(tmp_path):

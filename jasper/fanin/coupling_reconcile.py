@@ -1546,8 +1546,10 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # instead of an opaque refusal.
     return False, (
         "saved output topology is not ring-eligible (shm_ring is a full-range "
-        "stereo single-sink coupling; roleful/protected/subwoofer, composite "
-        "dual-DAC, and explicit-mono topologies are excluded until ring v2 / P8). "
+        "stereo single-sink coupling; roleful/protected/subwoofer topologies "
+        "need a per-driver crossover the ring cannot carry, composite dual-DAC "
+        "is excluded pending P8b (composite ring + bonded ingress), and "
+        "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
         "Keeping the coupling on loopback. If this box is actually a plain stereo "
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "
         "`jasper-output-topology-reset` to re-derive a clean passive topology from "

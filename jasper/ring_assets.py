@@ -556,10 +556,17 @@ def render_ring_conf_wire(
         rendered = rendered[: span[0]] + body + rendered[span[1] :]
 
     if rendered == text:
+        # A no-op render (nothing anywhere in the file changed) can only happen
+        # when every period_frames line already read `period_frames`: the
+        # substitution below rewrites EVERY matched line to that one target
+        # value, so a torn `distinct` (2+ original values, or a single value
+        # that differs from the target) would always change at least one line.
+        # `distinct == {period_frames}` is therefore guaranteed here, not a
+        # second condition to re-check.
         return RingConfWireRender(
             changed=False,
             period_frames=period_frames,
-            previous_period_frames=period_frames if distinct == {period_frames} else None,
+            previous_period_frames=period_frames,
             sample_format=sample_format,
             ring_a_channels=ring_a_channels,
             ring_b_channels=ring_b_channels,
