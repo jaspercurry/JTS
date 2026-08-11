@@ -672,7 +672,8 @@ def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
 
 
 def _level_frame_record(**overrides: object) -> dict:
-    """A banked record in the shape ``_level_frame_finding_record`` emits.
+    """A banked record in the shape
+    ``crossover_v2.accountability.level_frame_finding_record`` emits.
 
     Numbers are the conductor fixture's own, measured in
     ``tests/test_crossover_v2_conductor.py`` on a woofer carrying an extra

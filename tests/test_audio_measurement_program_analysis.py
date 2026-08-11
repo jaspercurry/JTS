@@ -675,8 +675,15 @@ def _checkpoint_priors(fc_hz, protection):
             _transfers(protection), _transfers(configured), tweeter_sign=1,
         ),
         crossover_fc_hz=fc_hz,
-        # Mirrors CrossoverV2Conductor._measure_priors, whose own derivation is
-        # pinned by test_measure_priors_compose_configured_path_from_ssots...
+        # An INDEPENDENT reproduction of the union whose one owner is
+        # ``crossover_v2.priors.candidate_required_band_hz`` (it lived on
+        # ``CrossoverV2Conductor._measure_priors`` when this helper was
+        # written, and this citation followed it there and then to
+        # ``priors.measure_priors``). Deliberately not a call to that owner:
+        # this is the KERNEL's own statement of the bins it expects to be
+        # given, so a drift in the owner should make this disagree rather than
+        # follow along. Anchoring it on the thing under test is the blindness
+        # the sweep golden's header records.
         candidate_required_band_hz_by_role={
             role: (min(radiating_band_hz(sec)[0], lo),
                    max(radiating_band_hz(sec)[1], hi))

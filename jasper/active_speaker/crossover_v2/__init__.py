@@ -19,6 +19,13 @@ order — so this list is what exists, not a plan:
 * :mod:`.round_evidence` — the two measurements a round compares, reduced.
 * :mod:`.journey` — the phase walk, its transitions, and the stage capability
   declarations.
+* :mod:`.coordinator` — the round's verify-then-adopt tail, behind typed ports.
+* :mod:`.programs` — what a session plays, how loud, and for which phase.
+* :mod:`.priors` — what the analyzer is told about each capture, and what it
+  is deliberately not told.
+* :mod:`.spatial` — what a capture-consuming phase decides about one take.
+* :mod:`.candidates` — what one candidate build produced, as values.
+* :mod:`.accountability` — whether a built candidate may be proposed at all.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants
