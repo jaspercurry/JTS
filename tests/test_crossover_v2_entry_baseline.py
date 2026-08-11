@@ -25,11 +25,13 @@ What this module pins, in the order the evidence has to survive:
    real stage-2 conductor with its VALUES intact, is not erased by stage 2's
    own persist, and its absence reaches the capability journal.
 
-.. warning::
-   Sections 5's tests drive the REAL preparers through
-   ``tests/test_crossover_v2_stage_bridge.py``'s harness, so this module
-   inherits that module's known residue (issue #2312): it must not share a
-   pytest process with ``tests/test_correction_crossover_v2_endpoints.py``.
+Section 5's tests drive the REAL preparers through
+``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
+leak fakes into any module that first imported them inside its patched window
+(issue #2312), so this file carried a warning not to share a pytest process
+with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
+harness now unwinds every binding by identity, see its own comment — and the
+suites co-run green in either order.
 """
 
 from __future__ import annotations

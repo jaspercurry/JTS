@@ -6,8 +6,8 @@
 
 Phase 5's first vertical.  The issue's sequence is *capture → plan → apply →
 verify → adopt*; this module owns its **tail** — grade the round, act on the
-adoption table, restore if the table says restore, and bank the receipt — and
-grows forward from there as the remaining organs move.
+adoption table, restore if the table says restore, and bank the receipt.  The
+legs before it are still the conductor's.
 
 **Why the tail first.**  It is the leg whose collaborators are already pure:
 :mod:`.round_evidence` grades, :mod:`.verification` decides, and

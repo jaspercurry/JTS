@@ -38,11 +38,13 @@ What is pinned, in the order a round meets it:
 9. **durability, both directions** — the anchor writes fsync, an ordinary
    conductor persist does not.
 
-.. warning::
-   This module drives the REAL preparers through
-   ``tests/test_crossover_v2_stage_bridge.py``'s harness, so it inherits that
-   module's known residue (issue #2312): it must not share a pytest process
-   with ``tests/test_correction_crossover_v2_endpoints.py``.
+This module drives the REAL preparers through
+``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
+leak fakes into any module that first imported them inside its patched window
+(issue #2312), so this file carried a warning not to share a pytest process
+with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
+harness now unwinds every binding by identity, see its own comment — and the
+suites co-run green in either order.
 """
 
 from __future__ import annotations
@@ -804,6 +806,33 @@ def test_an_anchor_seam_that_raises_fails_closed():
     )
 
     assert coordinator.rollback_available(ports, session_id="cap_x") is False
+
+
+@pytest.mark.parametrize(
+    ("seam", "expected", "why"),
+    [
+        (None, True, "no seam bound at all"),
+        (lambda: (_ for _ in ()).throw(RuntimeError("unreadable")), True,
+         "the seam raised"),
+        (lambda: False, False, "the seam answered cut-only"),
+        (lambda: True, True, "the seam answered boosted"),
+    ],
+    ids=["unbound", "raises", "cut-only", "boosted"],
+)
+def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
+    """``boosted`` fails CLOSED, on both of the two ways it can go unanswered.
+
+    ``boosted`` is what routes an unprovable round to a restore rather than to
+    "ask the household" (#2318's fail-closed cell), so the wrong default leaves
+    a driver being driven on evidence nobody has. The two unanswerable shapes —
+    no seam, and a seam that raised — are the ones no end-to-end round reaches,
+    because the production host always binds it and the applied-profile SSOT
+    always answers; a mutation flipping either default survived the whole
+    round suite before this pin existed.
+    """
+    ports = coordinator.RoundPorts(applied_boosts=seam)
+
+    assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
 
 
 def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
