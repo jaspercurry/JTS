@@ -2252,6 +2252,20 @@ _DURABLE_STATE_FACTS = {
     ),
 }
 
+#: The same row, for the arm with NO anchor (#2291). Split rather than
+#: parameterized because the two differ in their remedy, not their wording: one
+#: has an Undo to point at and the other does not, and pointing the second at
+#: Undo sends a household to a control that refuses on the very fact that put
+#: them here. Selected by ``_failure_rollback_anchor_available``; absent or
+#: ``True`` keeps the row above.
+_DURABLE_STATE_FACTS_NO_ANCHOR = {
+    REASON_CORRECTION_ROLLBACK_FAILED: (
+        "the newer tuning is still applied and this speaker has no stored "
+        "previous sound to go back to — measure again, or clear the tuning "
+        "from the Sound page"
+    ),
+}
+
 
 def _record_is_fresh(record: Mapping[str, Any]) -> bool:
     """Is this persisted record the moment the household is in RIGHT NOW?
@@ -2336,7 +2350,15 @@ def _failure_history_note(
     than asserting a change the state cannot confirm.
     """
     when = _record_when_phrase(failure)
-    durable = _DURABLE_STATE_FACTS.get(code)
+    # #2291: the no-anchor arm gets its own row. Read off the record rather
+    # than re-derived, because the anchor can change between the round and the
+    # resume, and this line describes the round.
+    anchor = failure.get("rollback_anchor_available")
+    durable = (
+        _DURABLE_STATE_FACTS_NO_ANCHOR.get(code)
+        if anchor is False
+        else _DURABLE_STATE_FACTS.get(code)
+    )
     if durable is not None and applied:
         # Two sentences, not a third em-dash clause: the fact is the point
         # here, so it gets its own sentence rather than a subordinate one.
@@ -2567,6 +2589,20 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
     return heard if isinstance(heard, bool) else None
 
 
+def _failure_rollback_anchor_available(status: Mapping[str, Any]) -> bool | None:
+    """Which ``correction_rollback_failed`` arm the record describes (#2291).
+
+    ``True`` a restore was attempted against a real anchor and did not
+    complete, so Undo is still a remedy. ``False`` there was never an anchor,
+    so Undo refuses on the very predicate that produced this failure and the
+    copy must not point at it. ``None`` is the third state, read for
+    :func:`_failure_pilot_heard`'s reason: a code the question does not apply
+    to, and every state file written before this shipped, simply do not say.
+    """
+    available = _mapping(_v2(status).get("failure")).get("rollback_anchor_available")
+    return available if isinstance(available, bool) else None
+
+
 def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
@@ -2599,6 +2635,7 @@ def _reason_message(
         code, spec,
         pilot_heard=_failure_pilot_heard(status),
         reflection_measured=_verify_gate_reflection_measured(status),
+        rollback_anchor_available=_failure_rollback_anchor_available(status),
     )
 
 

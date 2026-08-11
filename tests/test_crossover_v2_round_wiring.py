@@ -450,8 +450,7 @@ def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
     Same evidence as the fail-closed boost, one changed fact — the speaker has
     no stashed profile to go back to, which is every first-ever apply. The
     table must escalate rather than issue a restore instruction Undo would then
-    refuse, and the household's sentence becomes the honest "it is still
-    applied, tap Undo" one.
+    refuse.
     """
     _seed_round_state(anchor=False)
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -466,6 +465,65 @@ def test_an_unproven_boost_with_no_anchor_escalates_instead_of_promising(
     # Nothing was attempted, and the record says so rather than implying a
     # restore that silently failed.
     assert attempts == []
+
+
+def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
+    """#2291 SF-A: the remedy on the screen has to be one that EXISTS.
+
+    ``correction_rollback_failed`` covers two situations, and until this was
+    branched they shared one sentence ending "Tap Undo to restore the previous
+    sound." For the arm that got here BECAUSE there is no stored previous
+    sound, Undo refuses on the very predicate that routed them — so the most
+    ordinary case there is, a speaker's first-ever correction, was handed a
+    dead end.
+
+    Pinned on the rendered string rather than on the code, because the code was
+    always right and only the sentence lied.
+    """
+    _seed_round_state(anchor=False)
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_applied_graph(monkeypatch, boosts=True)
+
+    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
+    assert attempts == []
+
+    sentence = _household_sentence(conductor, verdict.code)
+    # No pointer at a control that would refuse.
+    assert "Undo" not in sentence
+    # Still honest about where the speaker actually is.
+    assert "still applied" in sentence.lower()
+    # …and it names remedies that exist.
+    assert "measure again" in sentence.lower()
+    assert "Sound page" in sentence
+
+
+def test_the_attempted_and_failed_arm_keeps_its_undo_pointer(monkeypatch):
+    """The other arm of the same code, and the reason it stays a branch.
+
+    Here a stored previous sound DOES exist and the automatic restore failed
+    against it, so Undo is a real remedy and the copy should still offer it.
+    Pinned beside its sibling because a fix that removed the Undo pointer
+    everywhere would satisfy that test and strand this household with no
+    action at all.
+    """
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+    # The anchor is real, but the restore does not complete.
+    monkeypatch.setattr(
+        v2host, "handle_v2_restore",
+        lambda *a, **k: {"status": "restore_failed"},
+    )
+
+    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
+    assert attempts == []  # the stubbed endpoint never reached the DSP leg
+    sentence = _household_sentence(conductor, verdict.code)
+    assert "Undo" in sentence
+    assert "STILL APPLIED" in sentence
 
 
 # --------------------------------------------------------------------------- #
@@ -950,6 +1008,75 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
         "event=correction.crossover_v2_round_receipt_failed" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
+    monkeypatch, caplog,
+):
+    """The stated safety property of round grading, pinned.
+
+    ``_grade_round_once`` promises that a bug in the grader logs and returns
+    the caller's own verdict untouched — the round exists to ADD an honest
+    answer, and it must never cost the household a verdict the measurement
+    gate already reached. That promise had no coverage, which is exactly where
+    a later refactor turns a fail-soft into a fail-closed and nobody notices
+    until a good capture starts being refused.
+    """
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=2.0)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    def _explode(**kwargs: Any) -> Any:
+        raise RuntimeError("grader is broken")
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.round_evidence.evaluate_round", _explode,
+    )
+
+    with caplog.at_level("WARNING"):
+        verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    # The capture's own verdict survives, unchanged.
+    assert verdict.accepted is True
+    assert verdict.code is None
+    # And nothing was invented from a round that never graded.
+    assert conductor.round_evaluation is None
+    assert conductor.round_receipt_identity is None
+    assert attempts == []
+    assert "correction.crossover_v2_round_grade_failed" in caplog.text
+
+
+def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
+    monkeypatch,
+):
+    """One session, one round — even if the same trigger fires twice.
+
+    The two triggers are mutually exclusive by construction (``_consume_verify``
+    grades only when this session plans no post-apply cloud; the cloud close
+    grades only when it does), so the guard's real job is not arbitrating
+    between them. It is re-entry on ONE trigger: a re-armed VERIFY, a retake,
+    or any future caller reaching the same site twice. Without it the second
+    pass would re-run adoption — a second restore attempt, and a second write
+    to a write-once receipt path.
+    """
+    _seed_round_state()
+    conductor, attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    first = _consume_verify(conductor, _post_apply_analysis(conductor))
+    assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
+    assert attempts == [1]
+    graded = conductor.round_evaluation
+
+    # Same trigger, again. The guard — not the seam's once-guard — is what has
+    # to stop this: adoption must not be re-run at all.
+    second = _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
+
+    assert second.accepted is True, "the second pass grades nothing, so it refuses nothing"
+    assert conductor.round_evaluation is graded, "the round was not re-decided"
+    assert attempts == [1], "no second restore was attempted"
 
 
 # --------------------------------------------------------------------------- #

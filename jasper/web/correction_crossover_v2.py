@@ -2711,6 +2711,15 @@ def persist_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
+    # #2291: which arm of ``correction_rollback_failed`` this is. Gated on the
+    # SAME code-agreement check for the same reason — a terminal arm passing a
+    # different ``failure_code`` must not inherit this round's anchor fact and
+    # render a sentence about a restore that code never attempted.
+    failure_rollback_anchor = (
+        getattr(conductor, "last_failure_rollback_anchor", None)
+        if failure_code == getattr(conductor, "last_failure_code", None)
+        else None
+    )
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
@@ -2945,6 +2954,15 @@ def persist_conductor_state(
                 **(
                     {"pilot_heard": bool(failure_pilot_heard)}
                     if failure_pilot_heard is not None else {}
+                ),
+                # #2291, on exactly the key above's terms: absent is "the
+                # question does not apply to this code, or predates the
+                # record", and the copy owner reads absent as the Undo arm.
+                # Writing a bare False for the unknown case would tell a
+                # household with a perfectly good anchor that they have none.
+                **(
+                    {"rollback_anchor_available": bool(failure_rollback_anchor)}
+                    if failure_rollback_anchor is not None else {}
                 ),
             }
             if failure_code else None

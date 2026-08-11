@@ -2865,12 +2865,49 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
 
+def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
+    """``correction_rollback_failed``'s sentence, branched on the anchor.
+
+    One code, two situations, and until #2291 one sentence — which pointed the
+    wrong half at a control that cannot help it.
+
+    * **A restore was attempted and did not complete** (``True``/``None``):
+      there IS a stored previous sound, the automatic attempt failed, and Undo
+      is a real remedy the household can press. Unchanged copy.
+    * **There was never an anchor** (``False``): the adoption table routed here
+      *because* no previous sound exists, and Undo refuses on that same
+      predicate. Telling this household to tap it sends them to a dead end on
+      the most ordinary case there is — a speaker's first-ever correction. So
+      this arm names no Undo, states what is true about their speaker, and
+      offers the two remedies that DO exist.
+
+    ``None`` takes the Undo arm deliberately: an unestablished fact must not
+    invent the more alarming claim ("nothing to go back to") about a speaker
+    that may well have a perfectly good anchor.
+    """
+    if rollback_anchor_available is False:
+        return (
+            "The new tuning is still applied, and this speaker has no stored "
+            "previous sound to go back to — this was its first measured "
+            "crossover. You can measure again to try for a better result, or "
+            "clear the tuning from the Sound page to return to the standard "
+            "setup."
+        )
+    return (
+        "JTS checked the tuning against what your speaker actually did, and "
+        "they did not match — but it could not put the previous sound back, "
+        "so the newer tuning is STILL APPLIED. Tap Undo to restore the "
+        "previous sound."
+    )
+
+
 def reason_message(
     code: str,
     spec: ReasonSpec,
     *,
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
+    rollback_anchor_available: bool | None = None,
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -2907,6 +2944,8 @@ def reason_message(
         return locate_failed_message(pilot_heard)
     if code == REASON_VERIFY_INCONCLUSIVE:
         return verify_inconclusive_message(reflection_measured)
+    if code == REASON_CORRECTION_ROLLBACK_FAILED:
+        return correction_rollback_failed_message(rollback_anchor_available)
     # ``or spec.banner`` for the silent-auto-retry codes, whose household text
     # IS the banner and whose ``message`` is empty by construction.
     return spec.message or spec.banner
@@ -6688,6 +6727,12 @@ class CrossoverV2Conductor:
         # stays ``None`` when writing failed — an identity for a receipt that
         # does not exist would be worse than no identity.
         self._round_receipt_identity: dict[str, Any] | None = None
+        # Which arm of ``correction_rollback_failed`` this session's refusal is
+        # (#2291): ``True`` a restore attempted against a real anchor and
+        # failed, ``False`` there was never an anchor, ``None`` not established
+        # — the copy owner treats the last as the Undo arm rather than inventing
+        # the more alarming claim about a speaker that may have an anchor.
+        self._last_failure_rollback_anchor: bool | None = None
         # The post-apply VERIFY analysis, retained for the Full tier: its round
         # is graded when the post-apply CLOUD closes, which is a later call
         # with no access to the capture the benefit verdict differences.
@@ -7627,6 +7672,21 @@ class CrossoverV2Conductor:
         ``persist_conductor_state`` makes it.
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
+
+    @property
+    def last_failure_rollback_anchor(self) -> bool | None:
+        """Which ``correction_rollback_failed`` arm this failure is (#2291).
+
+        ``True`` a restore ran against a real anchor and did not complete;
+        ``False`` there was never an anchor to restore to; ``None`` the
+        question does not apply to this code, or predates the record.
+
+        Paired with :attr:`last_failure_code` on exactly
+        :attr:`last_failure_pilot_heard`'s terms — written together, gated on
+        the code being present, and persisted so the envelope can re-render
+        the right sentence in a later process.
+        """
+        return self._last_failure_rollback_anchor if self._last_failure_code else None
 
     def _pilot_heard_for(
         self, code: str | None, *, slot: str | None = None,
@@ -11596,21 +11656,46 @@ class CrossoverV2Conductor:
                     round_restore_reason(evaluation.adoption.reason)
                 )
             self._round_evaluation = self._regrade_after_failed_restore(evaluation)
-            return self._round_refusal(REASON_CORRECTION_ROLLBACK_FAILED)
+            # An anchor existed — the restore was attempted against it and did
+            # not complete — so Undo is still a real remedy.
+            return self._round_refusal(
+                REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=True,
+            )
         # RECOVERY_REQUIRED — the table already knew no restore was possible
-        # (no anchor), so nothing is attempted here; the record says why.
+        # (no anchor), so nothing is attempted here; the record says why, and
+        # the copy must not point at an Undo that refuses on the same fact.
         self._round_restore_result = {
             "attempted": False,
             "restored": False,
             "reason": evaluation.adoption.reason,
         }
-        return self._round_refusal(REASON_CORRECTION_ROLLBACK_FAILED)
+        log_event(
+            logger, "correction.crossover_v2_round_recovery_required",
+            level=logging.ERROR, session_id=self.session_id,
+            reason=evaluation.adoption.reason, rollback_anchor_available=False,
+        )
+        return self._round_refusal(
+            REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=False,
+        )
 
     def _regrade_after_failed_restore(self, evaluation: Any) -> Any:
         """Re-run the table with ``restore_failed=True``, or keep what we had.
 
-        The speaker is now in neither the entry graph nor the intended one, and
-        the table's first row describes exactly that. Re-grading rather than
+        **The speaker is still on the APPLIED graph**, which is what the
+        household copy says ("the newer tuning is STILL APPLIED"). Both
+        reachable failure shapes leave it there: a ``CrossoverV2Refused`` never
+        touches DSP, and ``restore_applied_baseline_profile`` is an atomic
+        transaction that leaves the live config alone when it does not
+        complete. An earlier version of this docstring said "neither the entry
+        graph nor the intended one" — the abstract worst case, not this one —
+        which contradicted the sentence the household actually reads. The
+        sibling wording in ``verification.decide_adoption`` and
+        ``contracts.RoundReceipt`` is the same overstatement, left for their
+        owners rather than edited from here.
+
+        The table's ``restore_failed`` row still describes it: what makes that
+        row right is that the intended graph is live and unverified with its
+        automatic remedy spent, not the stronger claim. Re-grading rather than
         editing the decision in place keeps
         :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
         the only thing that ever produces an
@@ -11788,12 +11873,24 @@ class CrossoverV2Conductor:
             "phase": PHASE_VERIFY,
         }
 
-    def _round_refusal(self, code: str) -> PhaseVerdict:
-        """Stamp a round-driven refusal the way the delta probe already does."""
+    def _round_refusal(
+        self, code: str, *, rollback_anchor_available: bool | None = None,
+    ) -> PhaseVerdict:
+        """Stamp a round-driven refusal the way the delta probe already does.
+
+        ``rollback_anchor_available`` travels with the code because
+        :data:`REASON_CORRECTION_ROLLBACK_FAILED` covers two situations whose
+        household sentences differ — a restore that failed (Undo can still
+        help) and a restore that was never possible (Undo refuses on the very
+        predicate that routed here). The fact is recorded, never re-derived at
+        render time: the anchor can change between the round and the screen,
+        and the screen must describe the round.
+        """
         self._last_failure_code = code
         # A round verdict, not a capture — no pilot evidence belongs to it, and
         # the prior capture's must not trail in (#2085).
         self._last_failure_pilot_heard = None
+        self._last_failure_rollback_anchor = rollback_anchor_available
         return PhaseVerdict(False, code)
 
     def _log_entry_baseline_diag(
