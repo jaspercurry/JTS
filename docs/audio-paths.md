@@ -62,8 +62,17 @@ active-endpoint route.
 On ring-eligible stereo boxes, `jasper-outputd` normally reads Ring B:
 CamillaDSP writes the post-DSP stereo program to `jts_ring_playback`, and
 outputd consumes `/dev/shm/jts-ring/content.ring` one DAC-sized slot at a
-time. The legacy `direct` content capture lane remains the fail-safe path
-for ring-ineligible, operator-frozen, and active-N-ch topologies. Those two
+time. A roleful (active-crossover) box has a ring of its own — the ACTIVE
+ring, `jts_ring_active_playback` → `/dev/shm/jts-ring/active-content.ring`
+— carrying POST-crossover per-driver channels rather than a full-range
+stereo program. It is never armed by the unattended default pass: arming
+it is an explicit `jasper-fanin-coupling-reconcile shm_ring`, and outputd
+admits it only when the hardware reconciler's
+`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The role rides the
+device NAME because it cannot ride the width: on a 2-way speaker both
+rings are 2 channels. The legacy `direct` content capture lane remains
+the fail-safe path for ring-ineligible topologies, operator-frozen boxes,
+and every roleful box that has not been explicitly armed. Those two
 are the whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`: a third value,
 `rate_match` (an outputd-owned bounded ring plus ppm-clamped rate matcher at
 this final content/DAC clock boundary), was **deleted** after it failed the

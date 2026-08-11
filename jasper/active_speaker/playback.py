@@ -78,6 +78,16 @@ DEFAULT_AUDIO_BACKEND = "wav_artifact"
 APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
 APLAY_BINARY_ENV = "JASPER_APLAY"
 APLAY_TIMEOUT_PAD_SEC = 1.0
+# Every daemon-owned lane an audio-lab tone must NEVER be injected into. These
+# are sinks and readers in the RUNTIME graph, not test-tone injection points:
+# writing a tone into one of them puts lab audio on a live speaker path.
+#
+# The two RING devices are here for the sharper version of that: writing into a
+# ring is not merely "wrong output", it is a SECOND WRITER on a single-producer
+# ring. The ring's epoch takeover accepts a new writer rather than refusing it
+# the way a raw ALSA `hw` device refuses with EBUSY, so a stray tone would be
+# admitted, not rejected — and on the ACTIVE ring it would land post-crossover,
+# where a full-range tone reaches a compression driver.
 FORBIDDEN_TEST_PCM_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
@@ -85,6 +95,12 @@ FORBIDDEN_TEST_PCM_TOKENS = (
     "outputd_content_capture",
     "outputd_active_content_capture",
     "outputd_dac",
+    "jts_ring_capture",
+    # Covers the ACTIVE ring too — this is a case-insensitive SUBSTRING test and
+    # "jts_ring_playback" is NOT a substring of "jts_ring_active_playback", so
+    # the active ring needs its own entry rather than riding the stereo one.
+    "jts_ring_playback",
+    "jts_ring_active_playback",
 )
 
 logger = logging.getLogger(__name__)

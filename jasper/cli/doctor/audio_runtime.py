@@ -34,9 +34,15 @@ _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
 _JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
+# Every PCM the ring conf.d defines, with the tool that probes its direction and
+# the ring file it names. The THIRD entry is the ACTIVE ring — a roleful box's
+# post-crossover per-driver hop. It is listed here for the same reason the other
+# two are: the conf.d defines it on every box, so an inert box's open-probe must
+# prove it resolves, and a missing entry would leave one shipped PCM unprobed.
 _JTS_RING_PCMS = (
     ("jts_ring_capture", "arecord", "program.ring"),
     ("jts_ring_playback", "aplay", "content.ring"),
+    ("jts_ring_active_playback", "aplay", "active-content.ring"),
 )
 
 @doctor_check(order=49, group="audio")
@@ -1016,11 +1022,20 @@ def _expected_playback_format(
         DEFAULT_PIPE_SINK_FORMAT,
         DEFAULT_PLAYBACK_FORMAT,
     )
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        resolve_ring_wire,
+    )
 
     if playback_type == "File":
         return DEFAULT_PIPE_SINK_FORMAT, "DEFAULT_PIPE_SINK_FORMAT"
-    if playback_device == RING_PLAYBACK_DEVICE:
+    # MEMBERSHIP over every ring device, not one `==`. Both rings carry the
+    # resolved ring WIRE format — that axis is one per box, shared by all three
+    # ring ends — so a device-specific answer would be wrong, while omitting the
+    # active ring would fall through to DEFAULT_PLAYBACK_FORMAT and red-line a
+    # perfectly healthy armed box whenever the wire is the narrow S16_LE.
+    if playback_device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
         # Named for the RESOLVER, not for a constant: the ring's width is a
         # per-box resolution, and a detail line citing a constant would send a
         # reader to a value that is only one of the answers it can give.
@@ -1294,9 +1309,11 @@ def check_fanin_coupling() -> CheckResult:
         COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
         RING_PLAYBACK_DEVICE,
         resolve_outputd_content_bridge,
+        ring_active_endpoint_armed,
     )
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
     from jasper.env_file import read_value
@@ -1345,10 +1362,21 @@ def check_fanin_coupling() -> CheckResult:
         return CheckResult(label, "ok", f"intent={coupling}; no loaded capture to compare")
 
     if coupling == COUPLING_SHM_RING:
-        # Ring A capture + Ring B playback are BOTH ALSA ioplug devices — the
-        # loaded graph must name jts_ring_capture AND jts_ring_playback, or the
-        # coherent env pair above landed but the loaded config is stale/half-ring
-        # (the built-in-revert class: a camilla restart re-seeded loopback).
+        # Ring A capture + the post-DSP ring playback are BOTH ALSA ioplug
+        # devices — the loaded graph must name jts_ring_capture AND the ring this
+        # box's endpoint marker selects, or the coherent env pair above landed
+        # but the loaded config is stale/half-ring (the built-in-revert class: a
+        # camilla restart re-seeded loopback).
+        #
+        # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's
+        # marker — not "either is fine". Accepting both would read green through
+        # the crossing this rung exists to prevent: a roleful box's graph pointed
+        # at the full-range stereo ring, or a stereo box's at the active ring.
+        expected_playback = (
+            RING_ACTIVE_PLAYBACK_DEVICE
+            if ring_active_endpoint_armed()
+            else RING_PLAYBACK_DEVICE
+        )
         capture_device = _loaded_device_field(config_path, "capture", "device")
         playback_device = _loaded_device_field(config_path, "playback", "device")
         ring_mismatches: list[str] = []
@@ -1357,17 +1385,17 @@ def check_fanin_coupling() -> CheckResult:
                 f"capture={capture}/{capture_device or '(missing)'} "
                 f"(expected Alsa/{RING_CAPTURE_DEVICE})"
             )
-        if playback_device != RING_PLAYBACK_DEVICE:
+        if playback_device != expected_playback:
             ring_mismatches.append(
                 f"playback_device={playback_device or '(missing)'} "
-                f"(expected {RING_PLAYBACK_DEVICE})"
+                f"(expected {expected_playback})"
             )
         if not ring_mismatches:
             return CheckResult(
                 label,
                 "ok",
                 f"{coupling} (capture={RING_CAPTURE_DEVICE}, "
-                f"playback={RING_PLAYBACK_DEVICE}, bridge={outputd_bridge})",
+                f"playback={expected_playback}, bridge={outputd_bridge})",
             )
         return CheckResult(
             label,
@@ -1390,7 +1418,8 @@ def check_fanin_coupling() -> CheckResult:
     stale_ring_devices = [
         f"{lane}={dev}"
         for lane, dev in (("capture", capture_device), ("playback", playback_device))
-        if dev in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE)
+        if dev
+        in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
     ]
     if stale_ring_devices:
         return CheckResult(
@@ -2171,8 +2200,16 @@ def _outputd_buffer_health(
     content_buffer: object,
     dac_buffer: object,
     period_frames: int,
+    outputd_env: dict[str, str] | None = None,
 ) -> str | CheckResult:
-    """Validate ALSA or SHM-ring buffer geometry and return ring detail."""
+    """Validate ALSA or SHM-ring buffer geometry and return ring detail.
+
+    ``outputd_env`` is the reconciled ``outputd.env`` the caller already read.
+    It decides WHICH ring's width the observed channels are compared against —
+    Ring B's or the ACTIVE ring's — via the endpoint marker. Passing the env
+    rather than re-reading it keeps one read per check; ``None`` falls back to a
+    file-fresh read so a focused test can call this helper directly.
+    """
     ring_detail = ""
     if ring_mode:
         # Ring B (SHM ping-pong content ring): outputd reads the post-DSP program
@@ -2247,19 +2284,35 @@ def _outputd_buffer_health(
         # does not exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
             from jasper.fanin.coupling_reconcile import load_topology_for_wire
-            from jasper.fanin_coupling import resolve_ring_wire
+            from jasper.fanin_coupling import (
+                resolve_ring_wire,
+                ring_active_endpoint_armed,
+            )
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
             # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready`` both
-            # pass ``load_topology_for_wire()``). ``ring_b_channels`` is the one
-            # PER-TOPOLOGY axis in the wire, so resolving with ``None`` here
+            # pass ``load_topology_for_wire()``). The channel counts are the
+            # PER-TOPOLOGY axes in the wire, so resolving with ``None`` here
             # would answer the shipped stereo declaration and report a FAIL
-            # against a box whose Ring B legitimately carries a different width
-            # — the doctor contradicting the reconciler that armed it. Threading
-            # the topology is also why the two agree on a box that cannot read
-            # its topology at all: the helper fails soft to ``None`` and both
-            # sides then ask the same shipped-geometry question.
+            # against a box whose post-DSP ring legitimately carries a different
+            # width — the doctor contradicting the reconciler that armed it.
+            # Threading the topology is also why the two agree on a box that
+            # cannot read its topology at all: the helper fails soft to ``None``
+            # and both sides then ask the same shipped-geometry question.
             wire = resolve_ring_wire(load_topology_for_wire())
+            # WHICH ring outputd attached decides which width it is held to.
+            # An armed ACTIVE endpoint reads the post-crossover per-driver ring,
+            # whose width is ``ring_active_channels``; comparing it against Ring
+            # B's stereo width is the same D5 red-line shape as an unrecognized
+            # endpoint — a healthy armed box failing forever on a number nobody
+            # claimed. An armed endpoint whose active width does not resolve
+            # (``None``) has no honest expectation to compare, so the channels
+            # axis is skipped rather than compared against a fallback.
+            active_endpoint = ring_active_endpoint_armed(outputd_env)
+            expected_channels = (
+                wire.ring_active_channels if active_endpoint else wire.ring_b_channels
+            )
+            ring_label = "the active ring" if active_endpoint else "Ring B"
             observed_format = shm_ring_block.get("format")
             observed_channels = shm_ring_block.get("channels")
             if observed_format is not None and observed_format != wire.sample_format:
@@ -2267,23 +2320,24 @@ def _outputd_buffer_health(
                     "jasper-outputd",
                     "fail",
                     f"shm_ring.format={observed_format!r} but this box's ring wire "
-                    f"resolves to {wire.sample_format} — outputd attached to a Ring "
-                    "B geometry nobody declared. Run: sudo /opt/jasper/.venv/bin/"
-                    "jasper-fanin-coupling-reconcile shm_ring (it clears a "
-                    "wire-mismatched ring file before re-arming).",
+                    f"resolves to {wire.sample_format} — outputd attached to "
+                    f"{ring_label} geometry nobody declared. Run: sudo /opt/jasper/"
+                    ".venv/bin/jasper-fanin-coupling-reconcile shm_ring (it clears "
+                    "a wire-mismatched ring file before re-arming).",
                 )
             if (
                 observed_channels is not None
-                and observed_channels != wire.ring_b_channels
+                and expected_channels is not None
+                and observed_channels != expected_channels
             ):
                 return CheckResult(
                     "jasper-outputd",
                     "fail",
-                    f"shm_ring.channels={observed_channels!r} but this box's Ring B "
-                    f"resolves to {wire.ring_b_channels} — outputd attached to a "
-                    "Ring B geometry nobody declared. Run: sudo /opt/jasper/.venv/"
-                    "bin/jasper-fanin-coupling-reconcile shm_ring (it clears a "
-                    "wire-mismatched ring file before re-arming).",
+                    f"shm_ring.channels={observed_channels!r} but this box's "
+                    f"{ring_label} resolves to {expected_channels} — outputd "
+                    f"attached to {ring_label} geometry nobody declared. Run: sudo "
+                    "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
+                    "(it clears a wire-mismatched ring file before re-arming).",
                 )
         ring_detail = (
             f", shm_ring_slots={ring_slots}, shm_ring_slot_frames={ring_slot_frames}"
@@ -2560,6 +2614,7 @@ def check_outputd_service() -> CheckResult:
         content_buffer=content_buffer,
         dac_buffer=dac_buffer,
         period_frames=period_frames,
+        outputd_env=outputd_env,
     )
     if isinstance(buffer_health, CheckResult):
         return buffer_health

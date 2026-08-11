@@ -360,6 +360,72 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     return 0 if decision.ok else 1
 
 
+def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
+    """Re-emit the APPLIED active baseline against the box's current endpoint.
+
+    WHY THIS EXISTS. The applied baseline is a roleful box's BOOT graph — the
+    statefile points at it, and ``safe_graph_for_current_topology`` preserves or
+    re-selects it on every deploy and every CamillaDSP restart. Its on-disk
+    artifact names whichever playback endpoint was resolved when it was emitted.
+    So after the active endpoint MOVES — the ring-v2 arm being the case that
+    creates this — the artifact still names the old lane, and the next Camilla
+    restart quietly de-arms the box: CamillaDSP writes snd-aloop while outputd
+    reads the ring, and the speaker goes silent with every daemon reporting
+    healthy.
+
+    Re-emitting is therefore not tidying, it is the step that makes an arm
+    survive a restart. It is a pure re-emit from the IMMUTABLE applied snapshot —
+    the same seam ``/sound`` and the commissioning host use — so Layer A is
+    rebuilt from the evidence that was applied, not from any current draft. The
+    only thing that changes is the endpoint the graph is emitted against, and
+    that is resolved by ``resolve_output_layout``, the single chooser.
+
+    Prints the emitted path and the device it named; ``--out`` writes elsewhere
+    for inspection without disturbing the live artifact.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.active_speaker.playback_route import resolve_active_playback_device
+
+    topology = load_output_topology_strict(args.topology)
+    applied = load_applied_baseline_profile_state(args.applied_baseline_state)
+    if not applied:
+        print(
+            "ERROR: no APPLIED active-speaker baseline profile is saved; there is "
+            "nothing to re-emit (commission the speaker first)"
+        )
+        return 1
+    device, source = resolve_active_playback_device(topology)
+    yaml, issues = recompose_applied_baseline_yaml(topology, applied_profile=applied)
+    if yaml is None or issues:
+        print("ERROR: could not re-emit the applied baseline:")
+        for issue in issues or []:
+            print(f"  [{issue.get('severity')}] {issue.get('code')}: {issue.get('detail')}")
+        return 1
+    out_path = Path(args.out) if args.out else None
+    if out_path is not None:
+        out_path.write_text(yaml, encoding="utf-8")
+    payload = {
+        "playback_device": device,
+        "playback_device_source": source,
+        "out_path": str(out_path) if out_path else None,
+        "bytes": len(yaml),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Re-emitted applied baseline against playback_device={device}")
+        print(f"  source: {source}")
+        print(f"  bytes:  {len(yaml)}")
+        if out_path:
+            print(f"  wrote:  {out_path}")
+        else:
+            print("  (no --out given; nothing written)")
+    return 0
+
+
 def _camilla_controller() -> Any:
     """Return a CamillaController bound to the live CamillaDSP websocket.
 
@@ -875,6 +941,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runtime.add_argument("--json", action="store_true")
     runtime.set_defaults(func=_cmd_runtime_safe_graph)
+
+    reemit = sub.add_parser(
+        "baseline-reemit",
+        help=(
+            "re-emit the APPLIED active baseline against the box's currently "
+            "resolved playback endpoint (run after the active endpoint moves — "
+            "e.g. after arming the active ring — or the next CamillaDSP restart "
+            "re-seeds a graph naming the old lane)"
+        ),
+    )
+    reemit.add_argument(
+        "--topology",
+        help="optional output-topology JSON path (default: JTS output topology state)",
+    )
+    reemit.add_argument(
+        "--applied-baseline-state",
+        help=(
+            "saved active-speaker baseline profile state "
+            "(default: active_speaker_baseline_profile.json)"
+        ),
+    )
+    reemit.add_argument(
+        "--out",
+        help="write the re-emitted YAML here (omit to emit and report only)",
+    )
+    reemit.add_argument("--json", action="store_true")
+    reemit.set_defaults(func=_cmd_baseline_reemit)
 
     commission_load = sub.add_parser(
         "commission-load",

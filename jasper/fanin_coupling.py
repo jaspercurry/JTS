@@ -40,7 +40,10 @@ via :func:`resolve_coupling`, and the ``--auto`` reconciler converges it loudly
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
@@ -164,6 +167,76 @@ DEFAULT_OUTPUTD_RING_SLOTS = 2
 # after the copy, on its own side of the ring.
 RING_PLAYBACK_DEVICE = "jts_ring_playback"
 
+# ---------------------------------------------------------------------------
+# The ACTIVE ring (ring v2 R7b) — a THIRD ring file and a THIRD ioplug PCM,
+# carrying a roleful box's POST-crossover per-driver program from CamillaDSP to
+# outputd. Ring B above carries a full-range stereo program; this one does not,
+# and the two must never be confused, which is why the role is carried in the
+# NAME rather than inferred from a width.
+#
+# WHY THE NAME AND NOT THE WIDTH. On jts3 — the first box this rung serves —
+# the active lane is TWO channels (woofer + compression-driver tweeter), so
+# ``content_channels == 2`` is true of the active ring and of the stereo ring
+# alike. No channel-count test can tell them apart there. A distinct device
+# name, a distinct ring path, and outputd's allowlist over the pair are what
+# make the distinction structural instead of numeric.
+#
+# THE SPELLING IS LOAD-BEARING. ``_forbidden_playback_token``
+# (:mod:`jasper.active_speaker.camilla_yaml`) is a case-insensitive SUBSTRING
+# test, and ``FORBIDDEN_ACTIVE_PLAYBACK_TOKENS`` carries the STEREO ring's name
+# so an active emitter can never target it. ``"jts_ring_playback" in
+# "jts_ring_active_playback"`` is False, so this spelling is safe — while the
+# equally natural ``jts_ring_playback_active`` would contain the forbidden token
+# and self-block every active emit. Both directions are pinned by
+# ``tests/test_ring_active_endpoint.py``.
+RING_ACTIVE_PLAYBACK_DEVICE = "jts_ring_active_playback"
+DEFAULT_OUTPUTD_ACTIVE_RING_PATH = "/dev/shm/jts-ring/active-content.ring"
+
+# The reconciler's marker that outputd's endpoint IS the active ring. Written by
+# ``deploy/bin/jasper-audio-hardware-reconcile`` in the SAME helper, from the
+# SAME decision, as ``JASPER_OUTPUTD_ACTIVE_LANE`` — the two are one fact with
+# two consumers, never two facts. outputd bails on the incoherent pair (marker
+# without the lane), and under the ``shm_ring`` bridge it enforces the
+# biconditional "the active ring path may be read ONLY by an armed active
+# endpoint, and an armed active endpoint may read ONLY the active ring path".
+OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
+
+
+def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
+    """Is outputd's content endpoint armed as the ACTIVE ring on this box?
+
+    Reads :data:`OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR`, whose single writer is
+    ``jasper-audio-hardware-reconcile``. Truthy is the same vocabulary outputd's
+    ``env_bool`` accepts (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive)
+    so the Python control plane and the Rust reader cannot disagree about what
+    "armed" means; ``tests/test_ring_active_endpoint.py`` pins the two together.
+
+    ``env`` is authoritative when passed — the shape reconcilers and the doctor
+    use, which already hold ``outputd.env``'s parsed values. ``None`` reads the
+    persisted ``outputd.env`` FILE FRESH, for the same reason
+    :func:`coupling_capture_kwargs_from_env` reads ``fanin.env`` fresh: the
+    socket-activated wizards and the long-lived control daemon do not
+    ``EnvironmentFile=`` it and stay alive across a reconcile, so ``os.environ``
+    is a stale reader of this key. Fail-SAFE to False on an unreadable file: an
+    indeterminate marker must never assert an active-ring endpoint.
+    """
+    if env is None:
+        from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH, read_value
+
+        try:
+            with open(OUTPUTD_ENV_PATH, encoding="utf-8") as fh:
+                raw = read_value(fh.read(), OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR)
+        except OSError:
+            return False
+    else:
+        raw = env.get(OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR)
+    return (raw or "").strip().lower() in _ENV_BOOL_TRUE
+
+
+# outputd's ``env_bool`` accept-set (``rust/jasper-outputd/src/config.rs``).
+# Spelled here so "armed" means one thing across the two languages.
+_ENV_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
+
 
 @dataclass(frozen=True)
 class RingWire:
@@ -185,12 +258,22 @@ class RingWire:
     for Ring A, :func:`resolve_outputd_ring_slots` for Ring B) that resolve it
     per-ring from env, which this object has no access to. Restating it would
     make two answers for one fact.
+
+    ``ring_active_channels`` is the FIFTH field and the third ring's width, and
+    it is a SEPARATE field rather than a widening of ``ring_b_channels`` for the
+    same reason: one field per ring END, never one field for two ends. Ring B is
+    a full-range stereo program; the active ring is a roleful box's post-
+    crossover per-driver program. A single field would have to answer both, and
+    on a 2-way box — where the active width is also 2 — the wrong answer is
+    numerically invisible. ``None`` means "this box has no active ring", which is
+    every non-roleful box (and every roleful box whose sink cannot carry one).
     """
 
     sample_format: str
     ring_a_channels: int
     ring_b_channels: int
     period_frames: int
+    ring_active_channels: int | None = None
 
 
 def resolve_ring_wire(topology: Any = None) -> RingWire:
@@ -226,21 +309,35 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       size. Reading it through the resolver is what gives issue #2147 a seam:
       making the slot floor-derived becomes "this axis stops being a constant"
       rather than a change at every declaring end.
+    - ``ring_active_channels`` — from
+      :func:`~jasper.active_speaker.runtime_contract.active_ring_channels_for_topology`,
+      the ACTIVE ring's width, and ``None`` on every box that has no active ring
+      (which is every box that is not roleful). Deliberately a DIFFERENT
+      question from ``ring_b_channels``: the two rings coexist on a roleful box
+      and carry different programs, so one function cannot answer for both — a
+      single answer would stamp the active width into the STEREO ring's conf
+      block, which on a 2-way box is invisible because both are 2.
     """
     ring_b_channels = RING_A_CHANNELS
+    ring_active_channels: int | None = None
     if topology is not None:
         # Lazy import: the topology layer is heavy and this module is imported by
         # the socket-activated wizards (see the module docstring).
-        from jasper.active_speaker.runtime_contract import ring_channels_for_topology
+        from jasper.active_speaker.runtime_contract import (
+            active_ring_channels_for_topology,
+            ring_channels_for_topology,
+        )
 
         resolved = ring_channels_for_topology(topology)
         if resolved is not None:
             ring_b_channels = resolved
+        ring_active_channels = active_ring_channels_for_topology(topology)
     return RingWire(
         sample_format=RING_WIRE_FORMAT,
         ring_a_channels=RING_A_CHANNELS,
         ring_b_channels=ring_b_channels,
         period_frames=RING_SLOT_FRAMES,
+        ring_active_channels=ring_active_channels,
     )
 
 
@@ -494,6 +591,25 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
       CamillaDSP geometry: chunk 128 / target 128 / queue 1 / rate_adjust off.
       Those values are coupled to the 2-slot Ring A default; chunk 256 would span
       the entire 2-slot buffer.
+
+    **These are the STEREO ring's devices, and the ACTIVE ring is deliberately
+    not represented here.** The kwargs feed ``emit_sound_config`` — the FLAT
+    full-range program lane — and are merged LAST by
+    :func:`~jasper.audio_runtime_plan.apply_capture_precedence`, so anything they
+    name overwrites what the caller resolved. That would be a real stomp if this
+    function could ever be asked about a roleful box: it would hand the flat
+    emitter the full-range stereo ring on a box whose ring carries per-driver
+    channels.
+
+    It cannot, and the reason is structural rather than careful ordering: the
+    flat program lane is REFUSED outright on a roleful topology
+    (``flat_program_graph_blocked_reason`` → ``CarrierCannotHostEq``), because a
+    full-range graph on a crossover box would send full-range audio to a
+    protected tweeter. A box with an active ring is a roleful box by definition,
+    so the emit these kwargs serve never runs there. That is also why this
+    function takes no topology — every box it can legitimately answer for has the
+    same stereo answer. An active graph's device is resolved by
+    ``resolve_output_layout`` instead, on the path that emits per-driver graphs.
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:

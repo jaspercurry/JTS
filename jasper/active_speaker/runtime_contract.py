@@ -240,6 +240,23 @@ CONTRACT_PROTECTED_OUTPUTS_PRESENT = "protected_outputs_present"
 CONTRACT_UNKNOWN_OR_INVALID = "unknown_or_invalid"
 
 OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
+# Every playback device a legal outputd ENDPOINT graph may name. Two members,
+# and the difference between them is the transport, not the program: the ALSA
+# active lane (snd-aloop) and the ACTIVE RING (`jts_ring_active_playback`) both
+# carry the same POST-crossover per-driver channels to outputd. Membership, not
+# a single `!=`, because the endpoint width probe must accept either without
+# knowing which coupling the box is on — and must reject anything else, notably
+# the STEREO ring, which carries a full-range program no active graph may target.
+#
+# Redeclared (deliberately, like OUTPUTD_ACTIVE_PLAYBACK_DEVICE itself) rather
+# than imported from jasper.fanin_coupling: this module is the runtime
+# VERIFIER's independent copy of the endpoint vocabulary, and the contract test
+# pins the copies equal.
+OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE = "jts_ring_active_playback"
+OUTPUTD_LEGAL_ENDPOINT_DEVICES = frozenset((
+    OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
+))
 OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS = frozenset((
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_GUARDED_COMMISSIONING,
@@ -403,12 +420,23 @@ class SafeGraphDecision:
 
 @dataclass(frozen=True)
 class OutputdActiveLaneDecision:
+    """Whether outputd may open its active content lane, and at what width.
+
+    ``endpoint_device`` names WHICH legal endpoint the accepted graph targets —
+    the ALSA active lane or the active ring. It exists so the reconciler's
+    ring-endpoint marker derives from THIS decision rather than from a second
+    read of the same graph: two independent classifications of one graph is how
+    the marker and the width would come to describe different things. ``None``
+    whenever the decision is not ``ok`` (there is no accepted endpoint to name).
+    """
+
     ok: bool
     width: int | None
     reason: str
     source: str | None = None
     primary_graph: GraphSafety | None = None
     endpoint_graph: GraphSafety | None = None
+    endpoint_device: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -416,6 +444,7 @@ class OutputdActiveLaneDecision:
             "width": self.width,
             "reason": self.reason,
             "source": self.source,
+            "endpoint_device": self.endpoint_device,
             "primary_graph": (
                 self.primary_graph.to_dict() if self.primary_graph else None
             ),
@@ -632,18 +661,101 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
     return None
 
 
+def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
+    """Channels the ACTIVE ring would carry for this topology, or ``None``.
+
+    The width of the THIRD ring (``jts_ring_active_playback`` /
+    ``active-content.ring``), which carries a roleful box's POST-crossover
+    per-driver program from CamillaDSP to outputd. It is deliberately a SEPARATE
+    function from :func:`ring_channels_for_topology` rather than a widening of
+    it, and the separation is the whole point:
+
+    - ``ring_channels_for_topology`` answers for **Ring B**, the full-range
+      stereo program, and must keep returning ``None`` for a roleful topology.
+      Its answer is stamped into the ``pcm.jts_ring_playback`` conf.d block. If
+      it returned the ACTIVE width for a roleful box, that width would land in
+      the STEREO ring's block — and on a 2-way box, where the active width is
+      also 2, the corruption is numerically invisible.
+    - This function answers for the **active ring** only. One field per ring
+      end; never one field for two ends.
+
+    Returns the topology's COMMISSIONED active width — the number of roleful
+    outputs the saved topology actually assigns — not the DAC profile's declared
+    capability. jts3's DAC8x declares an 8-channel active-lane capability while
+    its commissioned graph drives 2; the ring is built to what is driven.
+
+    ``None`` — no active ring — for:
+
+    - any topology that does not require a roleful graph (plain stereo, mono,
+      unconfigured). Those boxes have Ring B and no active ring at all;
+    - a composite sink (2+ ``hardware.child_devices``): the ring ioplug is a
+      single coherent device spanning one clock domain, which a multi-child
+      composite is not — the same exclusion Ring B carries, for the same reason;
+    - a roleful topology whose assignments do not resolve to a coherent
+      contiguous output width (an output with no assigned physical index, or a
+      declared roleful set the ring layout's ``2..=8`` accept-set cannot carry).
+      Fail-CLOSED: an indeterminate width must never be stamped into a conf.d
+      block that the ioplug attach then compares field-by-field.
+    """
+    contract = classify_output_contract(topology)
+    if not contract.requires_roleful_graph:
+        return None
+    # Composite (multi-child) sinks span >1 clock domain — not the single
+    # coherent device the ring ioplug drives. Same exclusion as Ring B's.
+    if topology_sink_is_composite(topology):
+        return None
+    indices = {
+        int(item.physical_output_index)
+        for item in contract.assignments
+        if item.physical_output_index is not None
+    }
+    if len(indices) != len(contract.assignments) or not indices:
+        # An unassigned output (or a duplicate index) leaves the driven width
+        # indeterminate. Refuse rather than guess.
+        return None
+    width = max(indices) + 1
+    if width != len(indices):
+        # Non-contiguous assignment: outputs 0 and 2 with nothing at 1 is not a
+        # width the emitted graph and the ring can both mean the same thing by.
+        return None
+    if not (MIN_RING_CHANNELS <= width <= MAX_RING_CHANNELS):
+        return None
+    return width
+
+
+# The ring layout's channel accept-set (``jasper_ring::Geometry::validate_self``
+# and the C ioplug's ``JTS_RING_MIN_CHANNELS`` / ``MAX_RING_CHANNELS``). Spelled
+# here so the topology side refuses a width the transport could not carry
+# instead of deferring it to an attach failure.
+MIN_RING_CHANNELS = 2
+MAX_RING_CHANNELS = 8
+
+
 def topology_supports_shm_ring(topology: OutputTopology) -> bool:
-    """True iff the saved topology can be driven by the ``shm_ring`` coupling.
+    """True iff the saved topology can be driven by the STEREO ``shm_ring`` coupling.
 
-    DERIVED from :func:`ring_channels_for_topology` — a topology is ring-eligible
-    exactly when a ring width exists for it. Two functions answering the same
-    question independently is how the boolean and the width would drift; the
-    reasons live in that function's docstring.
+    DERIVED from :func:`ring_channels_for_topology` — a topology is
+    stereo-ring-eligible exactly when a Ring B width exists for it. Two functions
+    answering the same question independently is how the boolean and the width
+    would drift; the reasons live in that function's docstring.
 
-    This predicate is what the default-coupling resolver, multiroom
-    bond-formation prechecks, and the reconciler consult; DEFAULT coupling may
-    resolve to ``shm_ring`` only when this predicate and the ring arm preflights
-    pass, otherwise it remains loopback."""
+    **This stays False for a roleful topology, and widening it is forbidden.**
+    A roleful box's ring is the ACTIVE ring, which is a different transport with
+    a different width, a different device name and a different file — reached
+    through :func:`active_ring_channels_for_topology` and the endpoint marker,
+    never by making this predicate say yes. Two consumers make the one-liner
+    dangerous: the unattended ``--auto`` default pass would AUTO-ARM every
+    roleful box in the fleet through gates that would then pass, and
+    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
+    the boxes a widened predicate would re-expose. Pinned by
+    ``tests/test_ring_active_endpoint.py``.
+
+    The real consumers are TWO: ``jasper.fanin.coupling_reconcile``'s
+    ``ring_topology_ready`` (the arm preflight) and
+    :func:`safe_graph_for_current_topology` (the graph seeder's flat branch).
+    ``resolve_auto_decision`` reaches it only transitively through the injected
+    ``ring_topology`` gate, and multiroom bond-formation checks the PERSISTED
+    coupling value rather than this predicate."""
     return ring_channels_for_topology(topology) is not None
 
 
@@ -4067,19 +4179,33 @@ def _outputd_endpoint_width(
     cap_channels: int,
     *,
     classifications: frozenset[str] = OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
-) -> tuple[int | None, str | None]:
+    devices: frozenset[str] = OUTPUTD_LEGAL_ENDPOINT_DEVICES,
+) -> tuple[int | None, str | None, str | None]:
+    """The width outputd should open, plus WHICH endpoint device was accepted.
+
+    Returns ``(width, problem, device)``. The device is what makes the
+    reconciler's ring-endpoint marker derive from THIS classification rather
+    than a second, independent read of the graph — one classification, one
+    answer, so the marker and the width can never disagree about the graph they
+    describe.
+    """
     if not graph.allowed:
         issue = graph.issues[0]["code"] if graph.issues else graph.classification
-        return None, f"active_graph_unsafe:{issue}"
+        return None, f"active_graph_unsafe:{issue}", None
     if graph.classification not in classifications:
-        return None, f"active_graph_not_outputd_endpoint:{graph.classification}"
-    if graph.playback_device != OUTPUTD_ACTIVE_PLAYBACK_DEVICE:
-        return None, "active_outputd_lane_missing"
+        return None, f"active_graph_not_outputd_endpoint:{graph.classification}", None
+    device = graph.playback_device
+    if device not in devices:
+        return None, "active_outputd_lane_missing", None
 
     got = int(graph.playback_channels or 0)
     if got < 2 or got > cap_channels:
-        return None, f"active_graph_width_out_of_range got={got} cap={cap_channels}"
-    return got, None
+        return (
+            None,
+            f"active_graph_width_out_of_range got={got} cap={cap_channels}",
+            None,
+        )
+    return got, None, device
 
 
 def outputd_active_lane_decision(
@@ -4148,7 +4274,7 @@ def outputd_active_lane_decision(
         statefile_path=primary_statefile,
         **authority,
     )
-    width, problem = _outputd_endpoint_width(primary_graph, cap)
+    width, problem, endpoint_device = _outputd_endpoint_width(primary_graph, cap)
     if width is not None:
         return OutputdActiveLaneDecision(
             ok=True,
@@ -4157,6 +4283,7 @@ def outputd_active_lane_decision(
             source="primary_statefile",
             primary_graph=primary_graph,
             endpoint_graph=primary_graph,
+            endpoint_device=endpoint_device,
         )
 
     if primary_graph.classification != GRAPH_PROGRAM_BAKE_PIPE:
@@ -4206,7 +4333,7 @@ def outputd_active_lane_decision(
             primary_graph=primary_graph,
         )
 
-    width, problem = _outputd_endpoint_width(
+    width, problem, endpoint_device = _outputd_endpoint_width(
         crossover_graph,
         cap,
         classifications=frozenset((GRAPH_DRIVER_DOMAIN_BASELINE,)),
@@ -4227,6 +4354,7 @@ def outputd_active_lane_decision(
         source="crossover_statefile",
         primary_graph=primary_graph,
         endpoint_graph=crossover_graph,
+        endpoint_device=endpoint_device,
     )
 
 
@@ -4328,9 +4456,32 @@ def safe_graph_for_current_topology(
     RING flat config (``ring_flat_config_path``) instead of the loopback
     ``flat_config_path`` — so a ring-armed box's deploy / camilla restart re-seeds
     a ring config instead of reverting to loopback (audit finding 5). A ``None``
-    or non-ring coupling preserves the loopback flat selection byte-for-byte. Only
-    the flat (stereo/passive) branch is ring-aware; roleful/active topologies are
-    P8's ring-v2 concern and always take the driver-domain path here."""
+    or non-ring coupling preserves the loopback flat selection byte-for-byte.
+
+    **A ROLEFUL box's ring is a different question, and this function answers it
+    differently.** The flat branch picks between two PRE-RENDERED files, because
+    a flat graph is the same on every box. A roleful box's graph is per-speaker —
+    its crossover, its corrections — so there is nothing to pick between: the
+    graphs that carry it (the applied baseline, the staged all-muted startup) are
+    emitted by the commissioning path, and after an arm they are RE-EMITTED
+    naming the ring, because ``resolve_output_layout`` is the single place that
+    chooses the active endpoint device. So the roleful branches below are
+    unchanged and correct on an armed box — they preserve or select whatever the
+    box's own graphs declare.
+
+    The residual an armed roleful box carries is therefore a STALE ARTIFACT, not
+    a wrong selection: if its on-disk baseline still names the pre-arm ALSA lane,
+    preserving it is the correct thing to do with the graph the box has, and the
+    box de-arms itself on the next CamillaDSP restart. Re-emitting the baseline
+    after an arm is what closes that (``jasper-active-speaker baseline-reemit``),
+    and the doctor's ``check_fanin_coupling`` is what reports the gap in the
+    meantime — it derives the expected playback device from the endpoint marker,
+    so it names the exact mismatch rather than reading green through it. This
+    function deliberately does NOT add a refusal of its own: blocking here would
+    turn a recoverable stale artifact into a box that cannot seed a graph at all.
+
+    The PARKED shape needs nothing either way — its sink is a ``File``, so it is
+    DAC- and transport-agnostic by construction."""
 
     from jasper.active_speaker.baseline_profile import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path

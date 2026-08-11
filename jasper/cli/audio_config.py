@@ -44,10 +44,21 @@ from jasper.audio_runtime_overrides import (
     set_runtime_override,
 )
 from jasper.env_load import read_env_file_state
-from jasper.fanin_coupling import COUPLING_ENV_VAR, RING_SLOT_FRAMES, resolve_ring_wire
+from jasper.fanin_coupling import (
+    COUPLING_ENV_VAR,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_SLOT_FRAMES,
+    resolve_ring_wire,
+)
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
 
 DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
+# Both transports of the ONE active lane: the snd-aloop active PCM and the
+# ACTIVE RING. A graph naming either is an active-lane graph and must pass the
+# same hardware/topology proof before its pairing is enforced.
+_ACTIVE_ENDPOINT_DEVICES = frozenset(
+    (ACTIVE_OUTPUTD_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
+)
 
 
 def _cmd_explain(args: argparse.Namespace) -> int:
@@ -208,6 +219,7 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     print(f"sample_format {outcome.sample_format}")
     print(f"ring_a_channels {outcome.ring_a_channels}")
     print(f"ring_b_channels {outcome.ring_b_channels}")
+    print(f"ring_active_channels {outcome.ring_active_channels}")
     print(f"topology {topology_reason}")
     print(f"conf {outcome.conf_d}")
     return 0
@@ -232,7 +244,14 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     # safety proof is intentionally demoted to the passive fail-closed route by
     # the output-hardware reconciler. Only enforce the active pairing when the
     # same canonical active-lane decision says that graph is legal for this DAC.
-    if devices and devices.get("playback_device") == ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
+    #
+    # MEMBERSHIP over every legal active endpoint, and the reason is that this
+    # guard FAILS OPEN on a device it does not recognize: an unlisted endpoint
+    # skips the decision entirely and is never demoted, so a graph targeting it
+    # would sail through on a DAC that fails the hardware proof. Adding the
+    # active ring is what keeps the demotion covering both transports of the one
+    # active lane rather than only the snd-aloop one.
+    if devices and devices.get("playback_device") in _ACTIVE_ENDPOINT_DEVICES:
         active_cap = active_outputd_lane_channels_for(
             str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
         )

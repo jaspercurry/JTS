@@ -91,10 +91,19 @@ _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # The probe therefore snapshots each ring path's existence and unlinks only
 # what it created — see _jts_ring_pcm_resolves. Basenames match
 # deploy/alsa/conf.d/60-jts-ring.conf's `path` values (capture -> program.ring
-# via the reader; playback -> content.ring via the writer).
+# via the reader; playback -> content.ring via the writer;
+# active playback -> active-content.ring, likewise via the writer).
+#
+# The ACTIVE ring is the third entry and carries the same create-or-attach
+# hazard as the other two: probing it on an unarmed box would CREATE
+# active-content.ring, and a valid-magic ring at the conf.d placeholder geometry
+# is a fail-closed open error for the first real arm rather than a reclaimable
+# magic-less file. Listing it here is what puts it under the same
+# snapshot-and-unlink discipline.
 _JTS_RING_PCMS = (
     ("jts_ring_capture", "arecord", "program.ring"),
     ("jts_ring_playback", "aplay", "content.ring"),
+    ("jts_ring_active_playback", "aplay", "active-content.ring"),
 )
 
 

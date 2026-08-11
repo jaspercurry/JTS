@@ -64,6 +64,15 @@ pub enum ContentBridgeMode {
 /// Kept in lockstep with `MAX_N_SLOTS` (rust/jasper-ring/src/layout.rs) and
 /// `JTS_RING_MAX_SLOTS` (c/jts-ring-ioplug/jts_ring_shm.h).
 pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
+/// The ACTIVE ring's file — a roleful (crossover) box's POST-crossover
+/// per-driver hop, distinct from `DEFAULT_SHM_RING_PATH`'s full-range stereo
+/// program. Mirrored by `jasper.fanin_coupling.DEFAULT_OUTPUTD_ACTIVE_RING_PATH`
+/// and by `pcm.jts_ring_active_playback`'s `path` in the ring conf.d; the three
+/// literals are pinned equal by `tests/test_ring_active_endpoint.py`.
+///
+/// This constant is READ BY THE ALLOWLIST in `Config::from_env`, which is the
+/// only reason outputd knows the name at all — it never defaults to this path.
+pub const DEFAULT_ACTIVE_SHM_RING_PATH: &str = "/dev/shm/jts-ring/active-content.ring";
 pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
 pub const MIN_SHM_RING_SLOTS: u32 = 2;
 pub const MAX_SHM_RING_SLOTS: u32 = 16;
@@ -267,6 +276,16 @@ pub struct Config {
     /// channel width, so the reconciler does NOT set this for them. Default
     /// false (solo/passive) is byte-identical to today.
     pub active_lane: bool,
+    /// The reconciler's declaration that the post-DSP endpoint is the ACTIVE
+    /// ring (`DEFAULT_ACTIVE_SHM_RING_PATH`) rather than the full-range stereo
+    /// Ring B. Written in the SAME helper, from the SAME decision, as
+    /// `active_lane`; `from_env` bails on the incoherent pair and, under
+    /// `ShmRing`, enforces the ring-path allowlist both ways.
+    ///
+    /// Recorded on the parsed config so the pairing that was ACCEPTED is
+    /// inspectable, rather than surviving only as a control-flow decision
+    /// inside `from_env`. Default false is byte-identical to today.
+    pub ring_active_endpoint: bool,
 }
 
 impl Config {
@@ -626,6 +645,30 @@ impl Config {
         // latent-guard hazard in docs/HANDOFF-distributed-active.md.
         let active_lane = env_bool("JASPER_OUTPUTD_ACTIVE_LANE", false);
 
+        // The reconciler's declaration that this box's post-DSP endpoint is the
+        // ACTIVE ring. Written by the SAME helper, from the SAME decision, as
+        // ACTIVE_LANE above — the two are one fact, so the pair is coherent or
+        // it is a writer bug. Mode-INDEPENDENT because an incoherent pair means
+        // the writer is broken regardless of which content bridge is selected;
+        // there is no bridge under which "active endpoint, no active lane" is a
+        // state a healthy box can be in.
+        let ring_active_endpoint = env_bool("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", false);
+        if ring_active_endpoint && !active_lane {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT is set without \
+                 JASPER_OUTPUTD_ACTIVE_LANE; jasper-audio-hardware-reconcile writes \
+                 both from one decision, so an incoherent pair is a writer fault, \
+                 never a state — refusing to start rather than guess which half is \
+                 right"
+            );
+        }
+        // The ONE condition under which reading the active ring is legal: a
+        // marked active lane on a single coherent ALSA sink. Composite is
+        // excluded (the ring ioplug is one device on one clock domain), and the
+        // marker alone is not enough — the lane must be armed too.
+        let ring_active_ok =
+            active_lane && ring_active_endpoint && sink_mode == SinkMode::SingleAlsa;
+
         // The shared safety predicate for outputd's stereo-only features: they
         // may arm ONLY on a full-range stereo L/R sink — single-ALSA, exactly
         // two channels, and NOT an active-crossover lane. Composite and
@@ -637,13 +680,19 @@ impl Config {
         let is_full_range_stereo_lr_sink =
             sink_mode == SinkMode::SingleAlsa && content_channels == 2 && !active_lane;
 
-        if content_bridge_mode != ContentBridgeMode::Direct && !is_full_range_stereo_lr_sink {
+        if content_bridge_mode != ContentBridgeMode::Direct
+            && !is_full_range_stereo_lr_sink
+            && !ring_active_ok
+        {
             anyhow::bail!(
                 "JASPER_OUTPUTD_CONTENT_BRIDGE={} requires a full-range stereo \
                  L/R sink: JASPER_OUTPUTD_SINK=single_alsa, JASPER_OUTPUTD_ACTIVE_CHANNELS=2, \
                  and JASPER_OUTPUTD_ACTIVE_LANE unset (a content-bridge lane is a stereo-only \
                  path; on an active-crossover lane it would feed full-range audio that \
-                 is then split to the tweeter)",
+                 is then split to the tweeter) — OR an armed ACTIVE-ring endpoint \
+                 (JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT with JASPER_OUTPUTD_ACTIVE_LANE on a \
+                 single_alsa sink), whose ring carries the POST-crossover per-driver \
+                 program and therefore is not the stereo path this predicate guards",
                 content_bridge_mode.as_str()
             );
         }
@@ -698,6 +747,54 @@ impl Config {
             ContentBridgeMode::Direct => None,
         };
 
+        // THE ALLOWLIST — positive equality in BOTH directions, never a
+        // denylist. It refuses two distinct crossings:
+        //
+        //   1. an armed active endpoint reading the STEREO ring, and
+        //   2. anything that is NOT an armed active endpoint reading the ACTIVE
+        //      ring.
+        //
+        // (2) is the load-bearing one and the reason this exists. Without it, a
+        // transient `output_topology.json` read failure clears ACTIVE_LANE (and
+        // the marker), `content_channels` falls back to its default of 2, and
+        // `is_full_range_stereo_lr_sink` goes TRUE — so outputd would attach the
+        // ACTIVE ring as an ordinary stereo sink and unlock the post-crossover
+        // TTS mixer onto a compression driver. On a 2-way box the widths are
+        // equal, so no channel-count check can catch it, and under `shm_ring`
+        // the loud CONTENT-PCM open failure that catches a mis-declaration today
+        // is gone (`skip_content_pcm`). Positive equality against a NAMED path
+        // constant is what keeps a future third ring from slipping through the
+        // way a denylist would let it.
+        //
+        // SCOPED TO ShmRing, deliberately. Under `Direct` there is no ring to
+        // read, so the "is the active path" side is structurally false while
+        // `ring_active_ok` stays TRUE on a healthy roleful box — an unscoped
+        // biconditional would therefore park exactly the documented rollback
+        // (coupling -> loopback, bridge -> direct), and re-running the hardware
+        // reconciler would re-derive the marker and keep it parked. The
+        // incoherent-pair bail above is the one that stays mode-independent,
+        // because a broken writer is broken under every bridge.
+        if content_bridge_mode == ContentBridgeMode::ShmRing {
+            let is_active_path = shm_ring
+                .as_ref()
+                .is_some_and(|r| r.path == DEFAULT_ACTIVE_SHM_RING_PATH);
+            if is_active_path != ring_active_ok {
+                anyhow::bail!(
+                    "the active ring path ({}) may be read ONLY by an armed active \
+                     endpoint, and an armed active endpoint may read ONLY that path: \
+                     JASPER_OUTPUTD_SHM_RING_PATH={:?} (active_path={}), \
+                     JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={}, \
+                     JASPER_OUTPUTD_ACTIVE_LANE={}, JASPER_OUTPUTD_SINK={}",
+                    DEFAULT_ACTIVE_SHM_RING_PATH,
+                    shm_ring.as_ref().map(|r| r.path.as_str()).unwrap_or(""),
+                    is_active_path,
+                    ring_active_endpoint,
+                    active_lane,
+                    sink_mode.as_str(),
+                );
+            }
+        }
+
         let config = Self {
             backend,
             sink_mode,
@@ -736,6 +833,7 @@ impl Config {
                 "/var/lib/jasper/outputd_assistant_volume_reference.json",
             ),
             active_lane,
+            ring_active_endpoint,
         };
         if config.chip_ref_tee_path.is_some() && config.chip_ref_pcm.is_none() {
             anyhow::bail!("JASPER_OUTPUTD_CHIP_REF_TEE_PATH requires JASPER_OUTPUTD_CHIP_REF_PCM");
@@ -1267,6 +1365,188 @@ mod tests {
                 let err = Config::from_env().unwrap_err().to_string();
                 assert!(err.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{err}");
                 assert!(err.contains("JASPER_OUTPUTD_ACTIVE_LANE unset"), "{err}");
+            },
+        );
+    }
+
+    /// Env for an ARMED active-ring endpoint, the shape the reconciler writes.
+    fn armed_active_ring_env() -> Vec<(&'static str, Option<&'static str>)> {
+        vec![
+            ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+            ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+            ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+            ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+            ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+            (
+                "JASPER_OUTPUTD_SHM_RING_PATH",
+                Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+            ),
+        ]
+    }
+
+    #[test]
+    fn an_armed_active_ring_endpoint_is_accepted_at_two_channels() {
+        // The R7b happy path, and the one a width test cannot distinguish from a
+        // full-range stereo sink: jts3's active lane is 2 channels. What admits
+        // it is the MARKER, never the width.
+        with_env(&armed_active_ring_env(), || {
+            let cfg = Config::from_env().unwrap();
+            assert!(cfg.active_lane);
+            assert!(cfg.ring_active_endpoint);
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
+            assert_eq!(
+                cfg.shm_ring.as_ref().unwrap().path,
+                DEFAULT_ACTIVE_SHM_RING_PATH
+            );
+        });
+    }
+
+    #[test]
+    fn the_active_ring_path_is_refused_without_the_endpoint_marker() {
+        // SAFETY-B1, the deepest find, pinned. A transient output_topology.json
+        // read failure clears ACTIVE_LANE (and the marker), content_channels
+        // falls back to 2, and `is_full_range_stereo_lr_sink` goes TRUE — so
+        // WITHOUT the allowlist outputd would attach the ACTIVE ring as an
+        // ordinary stereo sink and unlock its post-crossover TTS mixer onto a
+        // compression driver. Under shm_ring the loud CONTENT-PCM open failure
+        // that catches a mis-declaration today does not happen (skip_content_pcm),
+        // so this bail is the only thing standing there.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("active ring path"), "{err}");
+                assert!(err.contains("armed active endpoint"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn an_armed_active_endpoint_is_refused_on_the_stereo_ring_path() {
+        // The allowlist's OTHER direction. Positive equality both ways, so a
+        // crossed pair fails whichever way it is crossed.
+        let mut env = armed_active_ring_env();
+        env.retain(|(k, _)| *k != "JASPER_OUTPUTD_SHM_RING_PATH");
+        env.push(("JASPER_OUTPUTD_SHM_RING_PATH", Some(DEFAULT_SHM_RING_PATH)));
+        with_env(&env, || {
+            let err = Config::from_env().unwrap_err().to_string();
+            assert!(err.contains("may read ONLY that path"), "{err}");
+        });
+    }
+
+    #[test]
+    fn the_endpoint_marker_without_the_active_lane_is_a_writer_fault() {
+        // MODE-INDEPENDENT: an incoherent pair means the reconciler is broken,
+        // and that is true under every content bridge. Checked under BOTH so the
+        // bail cannot quietly acquire a bridge-mode term (which would let a
+        // direct-bridge box start with a half-written pair).
+        for bridge in ["direct", "shm_ring"] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                    ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                    ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(bridge)),
+                ],
+                || {
+                    let err = Config::from_env().unwrap_err().to_string();
+                    assert!(err.contains("incoherent pair"), "bridge={bridge}: {err}");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn the_documented_rollback_off_the_ring_still_starts() {
+        // E1 — why the biconditional is SCOPED to ShmRing. The documented
+        // rollback puts the coupling back on loopback and the bridge back on
+        // direct while the hardware reconciler still (correctly) reports an
+        // active lane and re-derives the marker. Under an UNSCOPED biconditional
+        // `is_active_path` would be false while `ring_active_ok` stayed true, so
+        // the rolled-back box would park at exit 78 — and re-running the
+        // reconciler would keep it parked. It must simply start.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+                assert!(cfg.shm_ring.is_none());
+                assert!(cfg.ring_active_endpoint);
+            },
+        );
+    }
+
+    #[test]
+    fn an_armed_active_ring_still_refuses_the_post_crossover_tts_mixer() {
+        // The extra door opens the CONTENT BRIDGE and nothing else. The TTS gate
+        // keeps the UNTOUCHED `is_full_range_stereo_lr_sink` predicate, because
+        // active-mode voice rides fan-in upstream of the crossover — mixing
+        // speech in post-crossover would send full-range audio to the tweeter
+        // whether it arrived over snd-aloop or over a ring.
+        let mut env = armed_active_ring_env();
+        env.push(("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")));
+        with_env(&env, || {
+            let err = Config::from_env().unwrap_err().to_string();
+            assert!(err.contains("JASPER_OUTPUTD_TTS_SOCKET"), "{err}");
+            assert!(err.contains("full-range stereo L/R sink"), "{err}");
+        });
+    }
+
+    #[test]
+    fn a_composite_sink_never_reads_the_active_ring() {
+        // `ring_active_ok` carries the single_alsa term because the ring ioplug
+        // is ONE coherent device on ONE clock domain, which a multi-child
+        // composite is not. Without that term the extra door would open here.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("full-range stereo"), "{err}");
+            },
+        );
+    }
+
+    #[test]
+    fn a_stereo_ring_box_is_completely_unaffected() {
+        // THE INERTNESS ROW. Every box in the fleet today has no marker, so the
+        // allowlist's two sides are both false and it is satisfied trivially —
+        // the stereo ring arms exactly as it did before R7b.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert!(!cfg.ring_active_endpoint);
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
+                assert_eq!(cfg.shm_ring.as_ref().unwrap().path, DEFAULT_SHM_RING_PATH);
             },
         );
     }

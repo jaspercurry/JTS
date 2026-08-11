@@ -1864,30 +1864,120 @@ def _resolved_outputd_period_frames(outputd_text: str) -> int:
     return value if value > 0 else DEFAULT_OUTPUTD_PERIOD_FRAMES
 
 
+def active_ring_endpoint_proof() -> tuple[bool, str]:
+    """Is this box's ACTIVE-ring endpoint actually staged? Two independent facts.
+
+    A roleful topology having an active ring WIDTH says only that a ring could
+    exist for it. Arming needs the endpoint to be STAGED, and that is two
+    separate things, owned by two different writers:
+
+    1. **The marker** — ``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`` in
+       ``outputd.env``, written by ``jasper-audio-hardware-reconcile`` from the
+       accepted active-lane decision. It is what tells outputd to expect the
+       active ring, and outputd's own allowlist bails if the ring path and this
+       marker disagree. Arming ahead of it would flip the coupling into a daemon
+       that refuses the pairing — an exit-78 park, not a working ring.
+    2. **The rendered conf.d block** — ``pcm.jts_ring_active_playback`` declaring
+       this box's resolved active width. The ioplug attaches with what the block
+       says; a block still on the shipped default while the graph declares a
+       different width is a guaranteed attach failure.
+
+    Both are checked because they have different failure modes and different
+    remedies, so collapsing them into one reason would send an operator to the
+    wrong fix. Fail-CLOSED on anything indeterminate: an unreadable conf.d
+    declares nothing, which is not proof.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        active_ring_channels_for_topology,
+    )
+    from jasper.fanin_coupling import ring_active_endpoint_armed
+    from jasper.ring_assets import RING_ACTIVE_CONF_PCM, ring_conf_channels
+
+    if not ring_active_endpoint_armed():
+        return False, (
+            "outputd's active-ring endpoint marker "
+            "(JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT in outputd.env) is not set — "
+            "run `sudo systemctl start jasper-audio-hardware-reconcile` first so "
+            "the endpoint pair is written from the active-lane decision, then "
+            "re-arm"
+        )
+    topology = load_topology_for_wire()
+    width = (
+        active_ring_channels_for_topology(topology) if topology is not None else None
+    )
+    if width is None:
+        return False, (
+            "the saved topology resolves no active-ring width, so there is no "
+            "width the conf.d block could be proved against"
+        )
+    declared = ring_conf_channels(RING_ACTIVE_CONF_PCM)
+    if declared is None:
+        return False, (
+            f"the ring conf.d declares no readable channels for "
+            f"pcm.{RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
+            "to reinstall it, then re-run jasper-audio-hardware-reconcile to "
+            "render the per-box wire"
+        )
+    if declared != width:
+        return False, (
+            f"pcm.{RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
+            f"box's active ring resolves to {width} — the ioplug attaches with "
+            "what the block says, so this would fail the attach. Run `sudo "
+            "systemctl start jasper-audio-hardware-reconcile` to render the "
+            "conf.d wire, then re-arm"
+        )
+    return True, (
+        f"active-ring endpoint staged (marker set, pcm.{RING_ACTIVE_CONF_PCM} "
+        f"declares channels={declared})"
+    )
+
+
 def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for topology eligibility.
 
-    Ring A/Ring B carry a full-range STEREO program on a single coherent ALSA
-    sink, so ``shm_ring`` is legal only for the plain-stereo / unconfigured output
-    contract — NOT roleful/protected/subwoofer (needs a per-driver crossover),
-    NOT composite (dual-Apple — the ring is one 2-ch device, not the 4-ch child
-    sink), NOT explicit mono. This consults ``topology_supports_shm_ring`` (the
-    single ring-eligibility predicate) so arming a non-eligible box refuses with a
-    crisp reason here, instead of failing later at outputd's Rust full-range-stereo
-    rejection (a confusing daemon-level rollback).
+    TWO admitting arms, because there are two rings:
+
+    - **the STEREO arm** — Ring A/Ring B carry a full-range stereo program on a
+      single coherent ALSA sink, so this is legal for the plain-stereo /
+      unconfigured output contract only. It consults
+      ``topology_supports_shm_ring``, the single stereo-ring-eligibility
+      predicate, so arming a non-eligible box refuses with a crisp reason here
+      instead of failing later at outputd's Rust full-range-stereo rejection (a
+      confusing daemon-level rollback);
+    - **the ACTIVE arm** — a ROLEFUL topology is admitted iff it resolves an
+      active-ring width AND :func:`active_ring_endpoint_proof` holds. Composite
+      and explicit-mono still resolve no active width, so they stay refused.
+
+    **Why an arm here and NOT a widening of ``topology_supports_shm_ring``.**
+    Making that predicate true for roleful is the forbidden one-liner: it has two
+    other consumers, and both would silently change meaning. The unattended
+    ``--auto`` pass would find every gate passing on a roleful box and AUTO-ARM
+    the fleet — marker absent, so outputd would refuse the pairing and park the
+    speaker with no operator anywhere near it. And ``jasper.sound.camilla_yaml``'s
+    flat-cutover defusal gate protects exactly the boxes that widening would
+    re-expose. The eligibility question genuinely differs per ring, so it is asked
+    per ring, here, where the endpoint proof is also in scope.
 
     Unreadable-topology policy is caller-selectable:
 
-    - ``strict_unreadable=False`` (the DEFAULT, a HUMAN-initiated arm): fail-OPEN —
-      an indeterminate read is not a confirmed non-eligible topology, and outputd's
-      own guard is the backstop. A human accepts that risk when they type the arm.
-    - ``strict_unreadable=True`` (the UNATTENDED ``--auto`` default pass): fail-
-      CLOSED — an unattended default that armed a ring on an unreadable topology
-      would arm→rollback on every boot/deploy the file is transiently corrupt, so
-      the auto pass treats an unreadable topology as ineligible and stays loopback.
-      (See ``jasper.fanin.coupling_auto`` module docstring, FAIL-SAFE DIRECTION.)
+    - ``strict_unreadable=True``: fail-CLOSED. Both the unattended ``--auto``
+      default pass AND the explicit operator arm now use this. For the auto pass
+      it is the original reason — an unattended default that armed on an
+      unreadable topology would arm→rollback on every boot/deploy the file is
+      transiently corrupt. For the OPERATOR arm it is newer: the arm used to
+      fail-OPEN on the stated grounds that outputd's own guard was the backstop,
+      and that backstop was proven to fail open on the very same error (the
+      topology read failure clears the active-lane marker, the stereo predicate
+      then admits the ring). The allowlist restores the backstop, but the operator
+      arm stays fail-CLOSED anyway: a human is present to fix an unreadable
+      topology, and refusing costs them a rerun where admitting costs a park.
+    - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
+      topology's OPINION rather than an arm decision.
     """
-    from jasper.active_speaker.runtime_contract import topology_supports_shm_ring
+    from jasper.active_speaker.runtime_contract import (
+        active_ring_channels_for_topology,
+        topology_supports_shm_ring,
+    )
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -1897,21 +1987,30 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         topology = load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
         if strict_unreadable:
-            # Unattended auto path: an unreadable topology is NOT proven eligible —
-            # fail closed to loopback so the default never arm/rollback-churns.
+            # An unreadable topology is NOT proven eligible — fail closed to
+            # loopback rather than arm a ring we cannot prove is eligible.
             return False, (
-                f"topology unreadable ({exc}); the unattended default resolves "
-                "loopback (fail-closed) rather than arm a ring it cannot prove is "
-                "eligible"
+                f"topology unreadable ({exc}); resolving loopback (fail-closed) "
+                "rather than arm a ring it cannot prove is eligible"
             )
-        # Human arm: indeterminate topology -> don't refuse (fail-open, backstopped
-        # by outputd's own guard).
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
         return True, "topology is ring-eligible (stereo/unconfigured single sink)"
-    # Not ring-eligible. This is CORRECT for a genuinely roleful/composite/mono box
-    # (dac8x active speaker, dual-Apple 4-ch, explicit mono) — the household knows
-    # that setup and loopback is the right coupling. A shipped-default plain stereo
+    if active_ring_channels_for_topology(topology) is not None:
+        proved, detail = active_ring_endpoint_proof()
+        if proved:
+            return True, f"topology is ACTIVE-ring eligible (roleful); {detail}"
+        return False, (
+            f"topology resolves an active-ring width, but the endpoint is not "
+            f"staged: {detail}"
+        )
+    # Neither ring fits. Reaching HERE on a roleful box means it resolved no
+    # ACTIVE-ring width either — a composite (dual-Apple 4-ch, >1 clock domain),
+    # an explicit mono, or a roleful topology whose driven width is
+    # indeterminate; a roleful box that DOES resolve one was answered by the
+    # active arm above, admitted or refused on its endpoint proof. For these
+    # shapes loopback is the right coupling and the household knows the setup.
+    # A shipped-default plain stereo
     # single-sink box (one Apple dongle / one registered DAC) is NOT refused here:
     # ``topology_supports_shm_ring`` reports it eligible above (its lone
     # ``child_devices`` entry is the single coherent sink the ring drives — the
@@ -1938,9 +2037,53 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
 
 
 def ring_topology_ready_strict() -> tuple[bool, str]:
-    """``ring_topology_ready`` for the unattended auto path — fail-CLOSED on an
-    unreadable topology. See the ``strict_unreadable`` note there (defect-F4)."""
+    """``ring_topology_ready`` fail-CLOSED on an unreadable topology.
+
+    Used by BOTH arming paths — the unattended ``--auto`` default pass
+    (defect-F4) and the explicit operator arm. See the ``strict_unreadable`` note
+    on :func:`ring_topology_ready` for why the operator arm stopped failing open.
+    """
     return ring_topology_ready(strict_unreadable=True)
+
+
+def ring_not_roleful_ready() -> tuple[bool, str]:
+    """The UNATTENDED pass's dedicated roleful exclusion — its own gate, on purpose.
+
+    This asks nothing about ring eligibility. It asks whether the box is roleful,
+    and refuses the unattended default if it is, FULL STOP.
+
+    It is deliberately redundant with :func:`ring_topology_ready` today, and the
+    redundancy is the point. That gate now has an arm that ADMITS a roleful
+    topology (when the endpoint is staged), so the auto pass can no longer rely on
+    "roleful boxes fail the topology gate" — and an unattended arm of a roleful
+    box is the C-B2 hazard: a crossover speaker arming itself on boot or deploy
+    with no operator present. Arming the active ring is an explicit-CLI decision;
+    this gate is what keeps that true no matter how the eligibility predicates
+    later evolve.
+
+    Fail-CLOSED on an unreadable topology, matching every other unattended gate:
+    a topology we cannot read is not proof the box is passive.
+    """
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    try:
+        contract = classify_output_contract(load_output_topology_strict())
+    except (OutputTopologyError, OSError, ValueError) as exc:
+        return False, (
+            f"topology unreadable ({exc}); the unattended default cannot prove "
+            "this box is not roleful, so it resolves loopback (fail-closed)"
+        )
+    if contract.requires_roleful_graph:
+        return False, (
+            "roleful/protected/subwoofer topology — the ACTIVE ring is armed by "
+            "an explicit `jasper-fanin-coupling-reconcile shm_ring` only, never "
+            "by the unattended default pass. Keeping the coupling on loopback."
+        )
+    return True, "topology is not roleful"
 
 
 def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
@@ -1964,9 +2107,15 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     ``ring_edge_width`` was ordered first while it was a zero-I/O check over two
     constants; it now reads the conf.d and both env files, so "cheapest first"
     no longer describes it.
+
+    ``ring_not_roleful`` sits immediately after the box class and BEFORE
+    ``ring_topology``, because it is the coarser question and its refusal is the
+    one an operator of a crossover box needs to read. It is independent of every
+    eligibility predicate on purpose — see its docstring.
     """
     return (
         ("install_profile", ring_install_profile_ready),
+        ("ring_not_roleful", ring_not_roleful_ready),
         ("ring_topology", ring_topology_ready_strict),
         ("ring_assets", ring_assets_ready),
         ("ring_wire_caps", ring_wire_caps_ready),
@@ -2276,6 +2425,8 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     from jasper.ring_assets import (
         RING_A_CONF_PCM,
         RING_A_PROGRAM_FILE,
+        RING_ACTIVE_CONF_PCM,
+        RING_ACTIVE_CONTENT_FILE,
         RING_B_CONF_PCM,
         RING_B_CONTENT_FILE,
         ring_conf_n_slots,
@@ -2297,6 +2448,14 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     for path, pcm_name, expected_slots in (
         (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, expected_a),
         (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
+        # The ACTIVE ring is judged like the other two, against ITS OWN conf.d
+        # block — which is the axis that matters here, because the active block
+        # is the one whose CHANNELS legitimately differ per box. A stale
+        # active-content.ring from a prior commissioned width is exactly the
+        # create-or-attach fault this guard exists to clear, and unlike Ring B it
+        # can go stale without anything else changing (a re-commission that moves
+        # a 2-way to a 3-way moves only this file's width).
+        (RING_ACTIVE_CONTENT_FILE, RING_ACTIVE_CONF_PCM, None),
     ):
         verdict = ring_header_matches_conf(
             path, pcm_name, expected_n_slots=expected_slots
@@ -2357,6 +2516,8 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
     from jasper.ring_assets import (
         RING_A_CONF_PCM,
         RING_A_PROGRAM_FILE,
+        RING_ACTIVE_CONF_PCM,
+        RING_ACTIVE_CONTENT_FILE,
         RING_B_CONF_PCM,
         RING_B_CONTENT_FILE,
         ring_conf_n_slots,
@@ -2398,6 +2559,12 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
     for path, pcm_name, expected_slots in (
         (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, conf_a),
         (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
+        # Same three files _delete_stale_ring_files clears, in the same order,
+        # against the same comparator: this predicate must escalate on EXACTLY
+        # the files that self-heal would then remove. A narrower list here leaves
+        # a file the arm deletes looking coherent; a wider one escalates to an
+        # arm that heals nothing.
+        (RING_ACTIVE_CONTENT_FILE, RING_ACTIVE_CONF_PCM, None),
     ):
         verdict = ring_header_matches_conf(
             path, pcm_name, expected_n_slots=expected_slots
@@ -2474,7 +2641,8 @@ def _arm_ring(
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
     all pass): (0) P1 ring assets present (``ring_assets_ready`` — a
     half-installed ring platform would strand the realtime path); (1) topology
-    ring-eligible (``ring_topology_ready``); (2) the installed ioplug can parse
+    ring-eligible (``ring_topology_ready_strict`` — either the STEREO arm or the
+    ACTIVE arm, and fail-CLOSED on an unreadable topology); (2) the installed ioplug can parse
     the wire (``ring_wire_caps_ready`` — a record compare against what the
     installer built, never an open-probe); (3) all four declaring ends state one
     wire (``ring_edge_width_ready``: fan-in's env, both conf.d blocks,
@@ -2508,11 +2676,22 @@ def _arm_ring(
             detail=assets_detail,
         )
 
-    # Topology-eligibility preflight: the ring is a full-range stereo single-sink
-    # coupling. A roleful/composite/mono box would fail outputd's Rust full-range-
-    # stereo rejection later (a confusing rollback); refuse UP FRONT with a crisp
-    # reason. Fail-safe: an unreadable topology does NOT block (outputd guards it).
-    topo_ok, topo_detail = ring_topology_ready()
+    # Topology-eligibility preflight. Two admitting arms (see
+    # ``ring_topology_ready``): a full-range stereo single-sink box takes the
+    # STEREO ring; a roleful box takes the ACTIVE ring, and only once its
+    # endpoint is staged. A composite/mono box fits neither and is refused UP
+    # FRONT with a crisp reason, rather than failing outputd's Rust rejection
+    # later as a confusing rollback.
+    #
+    # STRICT on an unreadable topology, and this is a deliberate change of
+    # direction. The operator arm used to fail OPEN here, justified as
+    # "backstopped by outputd's own guard" — and that backstop was proven to fail
+    # open on the SAME error: a topology read failure clears the active-lane
+    # marker, outputd's stereo predicate then admits the ring, and on a 2-way box
+    # no width check can tell that apart. The allowlist restores the backstop,
+    # but the arm stays fail-closed regardless: an operator is present to fix an
+    # unreadable topology, so refusing costs a rerun where admitting costs a park.
+    topo_ok, topo_detail = ring_topology_ready_strict()
     if not topo_ok:
         return _fail_ring_arm(
             do_restart,
@@ -2853,12 +3032,22 @@ def _disarm(
 #
 # INSTALL DOES NOT CLEAR IT, deliberately. The record survives a deploy inside
 # its window, and that is the honest behaviour: this reconciler is its single
-# owner, install already drives a reconcile whose success clears it through the
-# ordinary path, and an unconditional deploy-time wipe would discard real
-# evidence on exactly the box that needs the escalation — one whose confirm
-# fails, gets redeployed WITHOUT the cause being fixed, and fails again. Those
-# are two consecutive failures of one incident; a deploy in between proves
-# nothing about the ring. The 24 h window is what bounds stale evidence.
+# owner, and an unconditional deploy-time wipe would discard real evidence on
+# exactly the box that needs the escalation — one whose confirm fails, gets
+# redeployed WITHOUT the cause being fixed, and fails again. Those are two
+# consecutive failures of one incident; a deploy in between proves nothing about
+# the ring. The 24 h window is what bounds stale evidence.
+#
+# WHAT DOES clear it is a successful TRANSITION, and a deploy only reaches one on
+# an AUTO-OWNED box. Install drives the `--auto` pass, which delegates to
+# ``reconcile_coupling`` only when the pass OWNS the box; on an OPERATOR-FROZEN
+# box (``JASPER_FANIN_COUPLING_CHOICE=operator``) it preserves the choice and
+# synthesises a confirm result WITHOUT running one, so no deploy clears the
+# record there. That is not a corner case: arming the ACTIVE ring is
+# explicit-CLI-only and stamps that very marker, so every active-ring box is
+# operator-frozen by construction. On such a box the record is cleared by the
+# operator's own next `jasper-fanin-coupling-reconcile <coupling>` — or it ages
+# out of the 24 h window.
 RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
 RING_CONFIRM_STRIKE_LIMIT = 2
 RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600

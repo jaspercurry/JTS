@@ -1685,11 +1685,24 @@ def test_arm_shm_ring_refused_on_ineligible_topology_recovers(
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
 
 
-def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
+def test_arm_shm_ring_topology_unreadable_now_fails_closed(
     tmp_path, monkeypatch, _ring_assets_present
 ):
-    # Fail-safe: an UNREADABLE topology (transient) must NOT refuse a legitimate
-    # arm — outputd's own guard is the backstop. The gate returns eligible.
+    """An UNREADABLE topology REFUSES the operator arm. Direction flipped, on purpose.
+
+    This gate used to fail OPEN here, on the stated grounds that "outputd's own
+    guard is the backstop". That backstop was then proven to fail open on the
+    SAME error: a topology read failure clears the reconciler's active-lane
+    marker, outputd's ``is_full_range_stereo_lr_sink`` predicate goes true, and
+    it attaches whichever ring it was pointed at as an ordinary stereo sink — on
+    a 2-way box the widths are equal, so nothing downstream can tell. The ring-v2
+    allowlist restores a real backstop, but the arm stays fail-CLOSED regardless:
+    an operator is standing at the keyboard when this runs, so a refusal costs
+    them one rerun, where admitting costs a parked speaker.
+
+    Fail-CLOSED means the ordinary recovery: nothing armed, no daemon bounced
+    past the preflight, coupling persisted at loopback.
+    """
     from jasper.output_topology import OutputTopologyError
 
     def _boom(*a, **k):
@@ -1710,9 +1723,12 @@ def test_arm_shm_ring_topology_unreadable_is_failsafe_not_blocking(
         active_leader_check=lambda: False,
     )
 
-    assert result.ok is True
-    assert result.direction == "arm"
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
+    assert result.ok is False
+    assert result.recovered is True
+    assert "topology unreadable" in result.detail
+    assert "fail-closed" in result.detail
+    assert "camilla:shm_ring" not in calls  # never armed
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
 
 
 # --- DEFECT 2: ring_topology_ready end-to-end over REAL on-disk topologies ----

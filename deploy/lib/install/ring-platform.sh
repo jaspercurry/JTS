@@ -266,7 +266,7 @@ install_jts_ring_conf_assets() {
     if [[ -f "${conf_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
         install -m 0644 "${conf_src}" /etc/alsa/conf.d/60-jts-ring.conf
-        echo "  Installed /etc/alsa/conf.d/60-jts-ring.conf (pcm.jts_ring_capture + pcm.jts_ring_playback; inert)"
+        echo "  Installed /etc/alsa/conf.d/60-jts-ring.conf (pcm.jts_ring_capture + pcm.jts_ring_playback + pcm.jts_ring_active_playback; inert)"
     else
         echo "  WARN: ${conf_src} missing; jts_ring PCM definitions not installed" >&2
     fi

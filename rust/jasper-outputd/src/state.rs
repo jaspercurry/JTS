@@ -2218,6 +2218,11 @@ mod tests {
             assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
                 .to_string(),
             active_lane: false,
+            // ACTIVE_LANE's pair. False is the passive/stereo default every box
+            // in the fleet runs; `dual_test_config` below inherits it through
+            // the struct-update, which is correct — a composite sink can never
+            // be an active-ring endpoint.
+            ring_active_endpoint: false,
         }
     }
 

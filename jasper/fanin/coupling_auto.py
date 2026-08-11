@@ -57,11 +57,19 @@ OPERATOR-CHOICE MARKER (the revert lever). Absence-vs-present, mirroring
 
 FAIL-SAFE DIRECTION = loopback + combo-off. Any gate that cannot prove
 eligibility resolves to the byte-identical-to-today path. An unreadable topology
-or config file is NOT treated as eligible — the unattended default fails CLOSED
-where a human-initiated arm (:mod:`jasper.fanin.coupling_reconcile`'s
-``ring_topology_ready``) deliberately fails open (a human accepts the risk of an
-indeterminate read; a boot/deploy pass must not arm a ring on a box it cannot
-prove is eligible, or it would arm→rollback churn every boot).
+or config file is NOT treated as eligible: a boot/deploy pass must not arm a ring
+on a box it cannot prove is eligible, or it would arm→rollback churn every boot.
+
+The human-initiated arm (:mod:`jasper.fanin.coupling_reconcile`'s
+``ring_topology_ready``) used to fail OPEN there on the reasoning that a human
+accepts the risk of an indeterminate read. **It no longer does** — its stated
+backstop (outputd's own guard) was shown to fail open on the same error, so both
+paths are now fail-CLOSED and this module's direction is simply the shared one.
+
+The unattended pass additionally refuses a ROLEFUL box outright
+(``ring_not_roleful_ready``), independent of every eligibility predicate: a
+crossover speaker's ring is armed by an explicit operator command only, never by
+a boot or a deploy.
 """
 
 from __future__ import annotations
@@ -195,11 +203,13 @@ def resolve_auto_decision(
       canonical source intent because the operator marker freezes transport
       topology, not permission to capture a household-Off source.
     - Else the auto pass owns the box:
-        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok`` (assets
-          present, topology ring-eligible, geometry coherent on both axes, route
-          supports the ring); the first failing gate short-circuits to ``loopback``
-          with its detail as the reason (so an ineligible box — jts3 roleful, jts5
-          composite, a grouped box — resolves loopback with a crisp explanation).
+        * ``coupling`` = ``shm_ring`` iff EVERY ring gate returns ``ok`` (not
+          roleful, assets present, topology ring-eligible, geometry coherent on
+          both axes, route supports the ring); the first failing gate
+          short-circuits to ``loopback`` with its detail as the reason, so a box
+          this pass must not arm — jts3 roleful (whose ACTIVE ring is
+          explicit-arm-only), jts5 composite, a grouped box — resolves loopback
+          with a crisp explanation.
         * combo = ARMED iff ``gadget_present AND usb_intent_enabled`` (see
           :func:`combo_is_armed`);
           ``usb_combo_actions`` carries explicit on/off writes either way (the

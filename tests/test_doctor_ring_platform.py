@@ -38,11 +38,21 @@ _VALID_RING_CONF = (
     "    period_frames 128\n"
     "    n_slots 2\n"
     "}\n"
+    "\n"
+    # The ACTIVE ring block. The probe walks every PCM in _JTS_RING_PCMS, so a
+    # stub missing this one leaves it indeterminate exactly as a stub missing
+    # jts_ring_playback used to.
+    "pcm.jts_ring_active_playback {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/active-content.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
 )
 
 
 def _stage_ring_conf(monkeypatch, tmp_path, text=_VALID_RING_CONF):
-    """Point `_JTS_RING_CONF_D` at a tmp conf.d declaring both PCM blocks.
+    """Point `_JTS_RING_CONF_D` at a tmp conf.d declaring every PCM block.
 
     Standalone helper for the probe-mechanics tests below, which don't stage
     the other P1 assets via `_stage_assets` but still need a readable conf.d
@@ -283,9 +293,10 @@ def _probe_that_creates_the_ring(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(audio, "_run", _run_creates)
+    # Derived from the module's own PCM table so a new ring cannot leave this
+    # helper silently covering a subset of what the probe actually opens.
     return {
-        "jts_ring_capture": shm_dir / "program.ring",
-        "jts_ring_playback": shm_dir / "content.ring",
+        pcm: shm_dir / basename for pcm, _tool, basename in audio._JTS_RING_PCMS
     }
 
 
@@ -300,14 +311,19 @@ def test_probe_unlinks_a_ring_it_created(monkeypatch, tmp_path):
 
 
 def test_full_check_leaves_no_ring_files(monkeypatch, tmp_path):
-    # End-to-end: all assets present, the (mocked) open probe creates both
-    # ring files, and after the check NEITHER ring exists on disk.
+    # End-to-end: all assets present, the (mocked) open probe creates EVERY ring
+    # file it opens, and after the check NONE of them exists on disk. Walking
+    # _JTS_RING_PCMS rather than naming two files is what keeps this an
+    # inertness proof for the whole set — including the ACTIVE ring, whose
+    # accidental creation would poison the first real arm exactly as Ring A's
+    # would.
     _stage_assets(monkeypatch, tmp_path)
     rings = _probe_that_creates_the_ring(monkeypatch, tmp_path)
     res = audio.check_ring_platform_assets()
-    assert res.status == "ok"
-    assert not rings["jts_ring_capture"].exists()
-    assert not rings["jts_ring_playback"].exists()
+    assert res.status == "ok", res.detail
+    assert len(rings) == len(audio._JTS_RING_PCMS)
+    for pcm, ring in rings.items():
+        assert not ring.exists(), f"{pcm} left {ring} behind — violates inertness"
 
 
 def test_probe_preserves_a_preexisting_live_ring(monkeypatch, tmp_path):
