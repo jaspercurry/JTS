@@ -4163,6 +4163,13 @@ class V2FlowSeams:
     # speaker honestly must not be rejected because the host could not name the
     # graph it measured — the record then carries "" and says so.
     entry_graph_fingerprint: Callable[[], str] | None = None
+    # #2291: is there a valid anchor to restore TO? The ANCHOR half of the
+    # adoption table's ``rollback_available``; the SEAM half is ``rollback``
+    # above being bound at all, and :meth:`_rollback_available` ANDs them.
+    # Optional, and its absence reads as "cannot confirm an anchor" rather
+    # than as "there is one" — see that method for why the pessimistic
+    # direction is the safe one here.
+    rollback_available: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -11208,6 +11215,47 @@ class CrossoverV2Conductor:
             return ENTRY_GRAPH_FINGERPRINT_UNKNOWN
         value = value.strip()
         return value or ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+
+    def _rollback_available(self) -> bool:
+        """Can this host actually put the previous sound back? (#2291)
+
+        **BOTH-AND**, and each half answers a different question:
+
+        * the ``rollback`` seam is bound — a *process* fact, the flow's own
+          capability idiom (``STAGE_VERIFY_CAPABILITIES`` provides
+          ``CAPABILITY_ROLLBACK``). A single-stage or future caller may reach
+          this decision with no seam at all.
+        * a valid anchor exists — a *state* fact, owned by the host's
+          ``rollback_available`` seam, which reads the very predicate
+          ``handle_v2_restore`` refuses on.
+
+        Either half alone gives a wrong answer to the question
+        :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
+        is actually asking. Seam-only says yes on a speaker whose durable state
+        carries no ``pre_apply_profile``: the round would issue a ``restore``
+        instruction Undo then refuses, and the household would be told the old
+        sound was coming back when nothing could bring it. Anchor-only ignores
+        that some callers cannot restore at all.
+
+        Fails closed on both halves — an unbound anchor seam, or one that
+        raises, means "not available", which routes the adoption table to
+        ``recovery_required`` (loud, operator-visible) rather than to a restore
+        that cannot happen.
+        """
+        if self._seams.rollback is None:
+            return False
+        seam = self._seams.rollback_available
+        if seam is None:
+            return False
+        try:
+            return bool(seam())
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_rollback_available_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return False
 
     def _log_entry_baseline_diag(
         self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,

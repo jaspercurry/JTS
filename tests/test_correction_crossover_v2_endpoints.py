@@ -7412,11 +7412,20 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
 
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
-    """#2292 scope 2: accepting an alternative Fc fsyncs THREE writes at the
+    """#2292 scope 2: accepting an alternative Fc fsyncs FOUR writes at the
     accept/apply seam -- the Sound declaration (apply_measured_crossover_frequency),
     the crossover preview regenerated from it (ensure_crossover_preview_ready),
-    and the applied baseline profile (persist_applied_baseline_profile) -- one
-    file fsync + one parent-directory fsync each."""
+    the applied baseline profile (persist_applied_baseline_profile), and
+    observe_apply_success's own v2-state write -- one file fsync + one
+    parent-directory fsync each.
+
+    The fourth pair is #2291's: that write CREATES the rollback anchor
+    (``pre_apply_profile``) and runs after the new graph is already live, so a
+    power cut that lost it would leave a corrected speaker with nothing to
+    restore to. Counted here rather than merely asserted elsewhere because the
+    count is the only thing that can catch the anchor write quietly losing its
+    ``durable=True``.
+    """
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
@@ -7428,7 +7437,7 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     )
 
     assert payload["status"] == "applied", payload
-    assert len(fsync_calls) == 6
+    assert len(fsync_calls) == 8
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
@@ -8787,10 +8796,15 @@ def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
 
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert restore_payload["sound_declaration"] == "declaration_restored"
-    # 4 = persist_applied_baseline_profile's graph-restore write (always
+    # 6 = persist_applied_baseline_profile's graph-restore write (always
     # durable, file + dir fsync) + apply_measured_crossover_frequency's
-    # declaration-restore write (file + dir fsync) -- both halves of Undo.
-    assert len(fsync_calls) == 4
+    # declaration-restore write (file + dir fsync) -- both halves of Undo --
+    # + observe_restore's own v2-state write, durable since #2291 (file + dir).
+    # That third pair is the anchor bookkeeping: the write CLEARS
+    # pre_apply_profile and flips ``applied`` after the previous graph is
+    # already back on the speaker, so losing it to a power cut would leave the
+    # state claiming a correction the speaker is no longer playing.
+    assert len(fsync_calls) == 6
 
 
 def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(

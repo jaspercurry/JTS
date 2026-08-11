@@ -373,7 +373,29 @@ def load_v2_state() -> dict[str, Any] | None:
     return dict(raw)
 
 
-def save_v2_state(state: Mapping[str, Any]) -> None:
+def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
+    """Write the durable v2 state. ``durable`` decides whether it is fsync'd.
+
+    Atomic is not durable. :func:`~jasper.atomic_io.atomic_write_text` writes a
+    tempfile and renames, so a concurrent reader never sees a partial file —
+    but without ``durable=True`` nothing has told the kernel to put those bytes
+    on the platter, and a power cut can lose the whole write while leaving the
+    speaker's DSP graph changed.
+
+    **The rule for choosing (#2291): durable where power loss would lose the
+    rollback anchor or falsify a receipt; cheap everywhere else.** Two writes
+    qualify, and they are the two that own ``pre_apply_profile`` — the only
+    pointer Undo restores from. :func:`observe_apply_success` CREATES it in the
+    same moment the new graph goes live, so a lost write leaves a corrected
+    speaker with no way back; :func:`observe_restore` clears it and flips
+    ``applied``, so a lost write leaves the state claiming a correction that is
+    no longer on the speaker. Everything else stays cheap on purpose:
+    :func:`persist_conductor_state` runs after every consumed capture, and an
+    fsync per capture buys nothing that the next capture's write does not
+    already redo. :func:`reset_v2_journey_state` PRESERVES the anchor, so
+    losing its write leaves the richer previous state — the anchor survives
+    either way, which is why it is not on the durable list.
+    """
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "kind": STATE_KIND,
@@ -386,6 +408,7 @@ def save_v2_state(state: Mapping[str, Any]) -> None:
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
+            durable=durable,
         )
 
 
@@ -600,7 +623,10 @@ def observe_apply_success(
     state["expected_post_apply_offset_db"] = (
         round(offset_db, 3) if math.isfinite(offset_db) else 0.0
     )
-    save_v2_state(state)
+    # fsync'd (#2291). This write CREATES the rollback anchor, and it happens
+    # after the new graph is already live on the speaker: a power cut that
+    # loses it leaves a corrected speaker with nothing to restore to.
+    save_v2_state(state, durable=True)
     log_event(
         logger,
         "correction.crossover_v2_applied",
@@ -680,7 +706,11 @@ def observe_restore() -> None:
     # reach ``/sound``. The recovery is the household sentence, which names the
     # exact frequency to set, plus the ERROR journal line.
     state["sound_declaration_undo"] = None
-    save_v2_state(state)
+    # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
+    # CLEARS the rollback anchor and flips ``applied`` after the previous graph
+    # is already back on the speaker, so a power cut that loses it leaves the
+    # state claiming a correction the speaker is no longer playing.
+    save_v2_state(state, durable=True)
 
 
 def _applied_gate() -> bool:
@@ -6123,6 +6153,39 @@ def _active_graph_fingerprint() -> str:
     return str(applied.get("candidate_fingerprint") or "")
 
 
+def _rollback_anchor_available() -> bool:
+    """Is there a valid anchor for :func:`handle_v2_restore` to restore FROM?
+
+    #2291's ``rollback_available``, anchor half. The seam half — is the
+    conductor's ``rollback`` bound at all — is the conductor's own to check,
+    and it ANDs the two: the parameter's name asks "can the host actually
+    restore", and either half alone answers that wrongly. A stage-2 conductor
+    on a speaker whose durable state carries no ``pre_apply_profile`` has the
+    seam bound and can restore nothing, so a round trusting seam presence
+    alone would issue a ``restore`` instruction that Undo then refuses.
+
+    Reads :func:`rollback_anchor_refusal` — the same predicate
+    :func:`handle_v2_restore` refuses on — rather than re-deriving the three
+    preconditions, so the answer and the action cannot drift.
+
+    **Fails closed.** Any unexpected error reading the durable state or the
+    output topology means "not available": a round that cannot confirm an
+    anchor must not be told it has one, because the cost of the wrong answer
+    is a restore instruction nothing can carry out, which then surfaces as
+    ``recovery_required`` anyway — one round later and less honestly.
+    """
+    try:
+        return rollback_anchor_refusal(load_v2_state()) is None
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            logger,
+            "correction.crossover_v2_rollback_available_failed",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return False
+
+
 def bind_v2_stage_seams(
     capabilities: V2StageCapabilities,
     *,
@@ -6205,6 +6268,7 @@ def bind_v2_stage_seams(
         ),
         applied_offset_db=_applied_offset_gate,
         record_model_error=_record_live_model_error,
+        rollback_available=_rollback_anchor_available,
         # Unconditional on both stages: "which graph is live right now" is not
         # a stage asymmetry, and #2291's receipt is what lets a LATER round
         # bind the currently-active profile as its own entry graph.
@@ -7332,6 +7396,88 @@ def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     return DECLARATION_RESTORED, ""
 
 
+#: Why a rollback anchor cannot be restored from, as three named codes. On the
+#: journal and the round receipt, so "we could not put the old sound back" says
+#: WHICH of the three it was without re-deriving it from a sentence.
+ANCHOR_NOT_APPLIED = "not_applied"
+ANCHOR_NO_PRE_APPLY_PROFILE = "no_pre_apply_profile"
+ANCHOR_TOPOLOGY_CHANGED = "topology_changed"
+
+
+@dataclass(frozen=True)
+class RollbackAnchorRefusal:
+    """One reason Undo cannot run, with the sentence the household reads."""
+
+    code: str
+    message: str
+
+
+def rollback_anchor_refusal(
+    state: Mapping[str, Any] | None,
+) -> RollbackAnchorRefusal | None:
+    """Why this durable state has no restorable anchor, or ``None`` if it has.
+
+    **One owner for a rule with two readers.** :func:`handle_v2_restore` raises
+    on this, and #2291's ``rollback_available`` seam asks it before the round's
+    adoption decision commits to a ``restore`` instruction. Before this
+    function the two would have been separate transcriptions of the same three
+    preconditions, and a round could have promised a restore that Undo then
+    refused — the exact drift #2291 exists to close.
+
+    The three are, in the order Undo needs them:
+
+    * nothing is applied, so there is no apply to reverse;
+    * nothing was stashed — a genuine first-ever apply on this speaker;
+    * the stash was composed for an output topology that has since changed, so
+      reloading it would realize the WRONG graph (item 2, #1605). A stash that
+      predates the fingerprint carries none, cannot be compared, and is
+      allowed through to the restore path, which validates the config bytes
+      itself.
+
+    Pure and side-effect-free by design: it is called on the read path to
+    answer a capability question, so it must not log, mutate, or apply
+    anything. :func:`handle_v2_restore` owns the journal line for the topology
+    case, because that is the one that fires when a household actually presses
+    the button.
+    """
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.output_topology import load_output_topology
+
+    if not state or not state.get("applied"):
+        return RollbackAnchorRefusal(
+            ANCHOR_NOT_APPLIED,
+            "nothing is applied to undo; measure and apply a crossover first",
+        )
+    pre_apply_profile = state.get("pre_apply_profile")
+    if not isinstance(pre_apply_profile, Mapping):
+        # Now that persist_conductor_state carries pre_apply_profile forward
+        # across every conductor snapshot (W6.12 P0), this branch is reached
+        # ONLY on a genuine first-ever apply — there was never an earlier
+        # profile to stash. Say so plainly rather than reading like a bug
+        # report or a generic "no undo available" error.
+        return RollbackAnchorRefusal(
+            ANCHOR_NO_PRE_APPLY_PROFILE,
+            "this is the first measured crossover on this speaker — there's "
+            "no earlier one to restore; use Speaker setup to remove it instead",
+        )
+    stashed_source = pre_apply_profile.get("source")
+    stashed_topology_fp = (
+        str(stashed_source.get("topology_fingerprint") or "")
+        if isinstance(stashed_source, Mapping)
+        else ""
+    )
+    if stashed_topology_fp:
+        current_topology_fp = topology_config_fingerprint(load_output_topology())
+        if current_topology_fp != stashed_topology_fp:
+            return RollbackAnchorRefusal(
+                ANCHOR_TOPOLOGY_CHANGED,
+                "the speaker's output configuration changed since this "
+                "crossover was applied, so the previous sound can't be safely "
+                "restored — re-measure the crossover instead",
+            )
+    return None
+
+
 def handle_v2_restore(
     run_async: Any,
     camilla_factory: Any,
@@ -7370,53 +7516,28 @@ def handle_v2_restore(
     """
     from jasper.active_speaker.baseline_profile import (
         restore_applied_baseline_profile,
-        topology_config_fingerprint,
     )
-    from jasper.output_topology import load_output_topology
 
     state = load_v2_state()
-    if not state or not state.get("applied"):
-        raise CrossoverV2Refused(
-            "nothing is applied to undo; measure and apply a crossover first"
-        )
-    pre_apply_profile = state.get("pre_apply_profile")
-    if not isinstance(pre_apply_profile, Mapping):
-        # Now that persist_conductor_state carries pre_apply_profile forward
-        # across every conductor snapshot (W6.12 P0), this branch is reached
-        # ONLY on a genuine first-ever apply — there was never an earlier
-        # profile to stash. Say so plainly rather than reading like a bug
-        # report or a generic "no undo available" error.
-        raise CrossoverV2Refused(
-            "this is the first measured crossover on this speaker — there's "
-            "no earlier one to restore; use Speaker setup to remove it instead"
-        )
-    # Item 2 (#1605): the stashed Undo target was composed for the output
-    # topology live at apply time. If the topology's config-determining
-    # fingerprint changed since (a driver swap, a different output device or
-    # channel map), reloading that config would realize the WRONG graph —
-    # refuse with a clear "re-measure" nudge rather than silently restoring a
-    # stale config. A stash predating the fingerprint (no topology_fingerprint
-    # in its ``source``) can't be compared, so it falls through to the existing
-    # restore path, which still validates the config bytes itself.
-    stashed_source = pre_apply_profile.get("source")
-    stashed_topology_fp = (
-        str(stashed_source.get("topology_fingerprint") or "")
-        if isinstance(stashed_source, Mapping)
-        else ""
-    )
-    if stashed_topology_fp:
-        current_topology_fp = topology_config_fingerprint(load_output_topology())
-        if current_topology_fp != stashed_topology_fp:
+    # The three preconditions live in ``rollback_anchor_refusal`` (#2291), so
+    # this endpoint and the round's ``rollback_available`` seam cannot come to
+    # different conclusions about the same state. Item 2 (#1605)'s topology
+    # check is one of them, and its journal line stays HERE: it fires when a
+    # household actually pressed Undo, not on every capability probe.
+    refusal = rollback_anchor_refusal(state)
+    if refusal is not None:
+        if refusal.code == ANCHOR_TOPOLOGY_CHANGED:
             log_event(
                 logger,
                 "correction.crossover_v2_restore_topology_mismatch",
                 level=logging.WARNING,
             )
-            raise CrossoverV2Refused(
-                "the speaker's output configuration changed since this "
-                "crossover was applied, so the previous sound can't be safely "
-                "restored — re-measure the crossover instead"
-            )
+        raise CrossoverV2Refused(refusal.message)
+    # No refusal means the anchor cleared all three checks, so the state is
+    # present and ``pre_apply_profile`` is a Mapping — indexed rather than
+    # re-tested, because a second test here would be a fourth transcription of
+    # the rule this function was extracted to own.
+    pre_apply_profile = (state or {})["pre_apply_profile"]
     cam = camilla_factory()
     payload = run_async(
         restore_applied_baseline_profile(
