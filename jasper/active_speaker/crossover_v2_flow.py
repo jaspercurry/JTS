@@ -9026,11 +9026,24 @@ class CrossoverV2Conductor:
         section that the group close and the eager fit share.
         """
         response = analysis.summed_response
+        # All SEVEN screens stated, though this ladder reads three. A cloud
+        # position plays the summed VERIFY program, whose sweep is
+        # ``KIND_SUMMED_SWEEP``, so the three sweep-domain predicates are
+        # vacuously true here — but that is a fact about the capture, and it is
+        # the caller's to state rather than the record's to assume. See
+        # :class:`~jasper.active_speaker.crossover_v2.spatial.CaptureScreens`
+        # for what a permissive default would cost the day a rung reads one.
         kind = _spatial.cloud_position_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
+                glitch_detected=bool(analysis.glitch_detected),
+                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
+                sweep_schedule_ok=_sweep_schedule_ok(
+                    analysis, self._verify_program.sample_rate_hz
+                ),
+                any_sweep_clipped=_any_sweep_clipped(analysis),
             ),
             has_summed_response=response is not None,
         )

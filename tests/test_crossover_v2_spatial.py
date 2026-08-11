@@ -148,6 +148,75 @@ def test_a_take_nothing_located_is_named_that_whatever_else_is_wrong():
     assert spatial.lateral_pose_screens(broken) == spatial.SCREEN_LOCATE_FAILED
 
 
+#: The resilience lens's repro value, written as a literal rather than as
+#: ``spatial.SCREEN_LOCATE_FAILED``: the test below asks what the ladder
+#: ANSWERS, and comparing it against the module's own constant would pass even
+#: if both moved together.
+SCREEN_LOCATE_FAILED_REPRO = "locate_failed"
+
+
+def test_the_lateral_ladder_answers_before_anything_could_be_built():
+    """The unit half of the screens-before-curves pin.
+
+    :func:`~jasper.active_speaker.crossover_v2.spatial.lateral_curves_sufficient`
+    is a SECOND call precisely so a rejected take never reaches the curve
+    builder, which indexes its input's frequency axis and raises on an empty
+    one. That claim is only true if the ladder returns a refusal from
+    :func:`lateral_pose_screens` alone — with no curve count, and therefore
+    nothing built.
+
+    The conductor-path half, driving a real degenerate response through
+    ``_consume_lateral_pose``, is
+    ``test_a_screened_out_pose_refuses_before_any_curve_is_built`` in
+    ``tests/test_crossover_v2_lateral_evidence.py``. This one pins the seam that
+    makes it possible: a complete answer from an argument list that cannot
+    contain a curve.
+    """
+    assert spatial.lateral_pose_screens(
+        _screens(stimulus_located=False)
+    ) == SCREEN_LOCATE_FAILED_REPRO
+
+    # And the signature is what enforces it: the ladder takes screens only, so a
+    # caller CANNOT hand it a curve count and there is nothing to build first.
+    import inspect
+
+    params = inspect.signature(spatial.lateral_pose_screens).parameters
+    assert list(params) == ["screens"]
+
+
+def test_no_screen_may_be_left_unstated():
+    """Every ``CaptureScreens`` field is required, and none may regain a default.
+
+    A default here is only ever "correct" because the ladder that reads this
+    record today happens to ignore the field — and the day a rung is added that
+    does read it, the caller was never asked, so the default answers for a
+    capture nobody looked at. It would silently never fire while reading as
+    covered from both ends.
+
+    The four that regressed this way once (``glitch_detected``,
+    ``sweep_locate_confidence_ok``, ``sweep_schedule_ok``, ``any_sweep_clipped``)
+    are named rather than counted, because the failure mode is one field
+    quietly acquiring a default, not the total changing.
+    """
+    import dataclasses
+
+    fields = {f.name: f for f in dataclasses.fields(spatial.CaptureScreens)}
+
+    assert set(fields) == {
+        "stimulus_located", "pilot_snr_ok", "linearity_ok", "glitch_detected",
+        "sweep_locate_confidence_ok", "sweep_schedule_ok", "any_sweep_clipped",
+    }
+    defaulted = [
+        name for name, f in fields.items()
+        if f.default is not dataclasses.MISSING
+        or f.default_factory is not dataclasses.MISSING
+    ]
+    assert defaulted == [], (
+        f"these screens can be left unstated: {defaulted} — a caller that omits "
+        "one is asserting something about a capture it never examined"
+    )
+
+
 def test_a_clean_take_clears_every_ladder():
     """The control the four tests above need.
 

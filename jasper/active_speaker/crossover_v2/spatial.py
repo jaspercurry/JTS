@@ -139,25 +139,39 @@ class CaptureScreens:
     shipped code never called the later predicates.  Each of them
     (``_stimulus_locate_ok``, ``_sweep_locate_confidence_ok``,
     ``_sweep_schedule_ok``, ``_any_sweep_clipped``) reads only
-    ``analysis.locations``, returns a bool, and raises on no input — they are
-    total and side-effect-free — so evaluating one whose verdict is then
-    discarded costs a list comprehension and changes nothing observable.  What
-    it buys is that the ORDER lives in exactly one place, as data rather than as
-    control flow spread across a call site.
+    ``analysis.locations``, returns a bool, and **never raises on no input** —
+    they are total and side-effect-free — so evaluating one whose verdict is
+    then discarded costs a list comprehension and changes nothing observable.
+    What it buys is that the ORDER lives in exactly one place, as data rather
+    than as control flow spread across a call site.
 
     ``pilot_snr_ok`` and ``linearity_ok`` are tri-state (``None`` = not
     evaluated) exactly as they are on ``ProgramAnalysis``, because the ladders
     below branch on ``is False`` rather than on falsiness: an unevaluated screen
     is not a failed one.
+
+    **Every field is required, and the four that a shorter ladder does not read
+    are required for the same reason as the three it does.**  An earlier
+    revision defaulted ``glitch_detected``/``sweep_locate_confidence_ok``/
+    ``sweep_schedule_ok``/``any_sweep_clipped`` permissively, so
+    :func:`cloud_position_screens`' call site stated three of seven and inherited
+    four passes.  That reads as covered from either end while being a promise
+    nobody made: the day a rung is added to the cloud ladder reading one of
+    them, it would silently never fire — the caller was never asked, so the
+    default answers for a capture it has not looked at.  A default that is only
+    correct because the current ladder ignores the field is a defect waiting for
+    the ladder to change.  Requiring all seven costs each caller four pure,
+    total predicate calls and makes "what this capture was" a stated fact rather
+    than a partly-assumed one.
     """
 
     stimulus_located: bool
     pilot_snr_ok: bool | None
     linearity_ok: bool | None
-    glitch_detected: bool = False
-    sweep_locate_confidence_ok: bool = True
-    sweep_schedule_ok: bool = True
-    any_sweep_clipped: bool = False
+    glitch_detected: bool
+    sweep_locate_confidence_ok: bool
+    sweep_schedule_ok: bool
+    any_sweep_clipped: bool
 
 
 # --------------------------------------------------------------------------- #
