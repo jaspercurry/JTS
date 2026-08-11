@@ -110,7 +110,7 @@ carries the numbers, the evidence, and what the arc still owes.
 | AirPlay | shairport-sync configured 44.1 kHz `S32`; its private aloop lane is a `plug:` wrapper pinned 48 kHz `S16_LE` |
 | Spotify Connect | librespot requests `S24_3` with its own TPDF dither; the lane is pinned 48 kHz `S16_LE` |
 | Bluetooth | bluealsa-aplay's negotiated PCM is adapted by the `plug:` lane to 48 kHz `S16_LE` |
-| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped fleet default — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11 jts3 alone satisfies both halves — wide wire and DIRECT lane on — and on that day the route carried a 24-bit probe end to end with its 80 dB step intact (numbers and evidence in the U2 arc row). It stays **dormant** on every narrow-wire box. Arming it is the per-box flip, not this row |
+| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped fleet default — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11 jts3 alone satisfies both conditions — wide wire and DIRECT lane on — and on that day the route carried a 24-bit probe end to end with its test step intact (numbers and evidence in the U2 arc row). It stays **dormant** on every narrow-wire box. Arming it is the per-box flip, not this row |
 | Provider TTS | 24 kHz mono S16 in; resampled through float, cast back to S16 before IPC; fan-in applies assistant gain at i16 (`apply_gain_i16`) |
 | Generated earcons | rendered in float, then baked to 24 kHz mono S16 at daemon startup (`_to_pcm16` in `jasper/voice/earcons.py`) |
 | fan-in core | accumulates into an i64 scratch at the scale the box's wire names (`ProgramWidth`). Narrow — the shipped default — is the **S16 numeric scale** exactly as before, with `saturate_to_i16` at the summed write. Wide is the i32 spine scale, promoting each `i16` lane at its own sum entry (`rust/jasper-fanin/src/mixer.rs`) |
@@ -451,7 +451,7 @@ own, and two of those matter to this campaign: `HIFIBERRY_DAC8X_STUDIO`, the
 DAC8x-family member, and `INNOMAKER_HIFI_AMP_PRO` — the profile jts4 and jts5
 both run, whose entry in that same registry says in code that it ships the
 conservative global default instead. Each needs its own declaration and its
-own soak before the ordering binds for it.
+own soak before the ordering is discharged for it.
 **Correction from the R7 repanel:** jts3 runs `aec-init` in **CORPUS mode** — no
 alignment artifact exists (the 2026-08-08 closeout's corpus-exit was
 undone by open trap
@@ -810,8 +810,8 @@ Owned elsewhere; listed so no arc can claim to be done without them.
    box that makes one carries a `usb_low_latency_48k` claim that goes red
    on that box the moment its artifact stops matching. jts.local is the
    known such box and its R6 owes the fresh artifact; an unprobed box's
-   profile is unknown rather than clear — per-box status under the Fleet
-   table.
+   profile is unknown rather than clear — the Fleet rows above carry each
+   box's dated probe state.
 8. **CamillaDSP config drift.** Ring configs come from the emitters,
    never hand-written YAML; `camilladsp --check` and the `volume_limit`
    ceiling stay enforced.
@@ -1107,11 +1107,11 @@ R-RING2's route-latency gate is now legible per box as met/owed/inapplicable
 says so in those words). The same round gave the arm's audible consequence a
 home in jts3's row, added #2348, and moved the USB source-half claim to its
 durable two-condition form after jts3's USB lane was enabled
-(`captures/usb-enable-jts3-20260811T191749Z`). A closing micro-round then
+(`captures/usb-enable-jts3-20260811T191749Z`). A host-occupancy micro-round then
 deleted this file's remaining host-occupancy clauses outright: whether a host is
 attached changes by the hour, which a day-dated document cannot hold honestly,
-and the U2 arc row already owns the open question durably. A fourth round then
-corrected the watch rule once more — it is the **conjunction**, not either
+and the U2 arc row already owns the open question durably. The watch-rule round
+then corrected it once more — it is the **conjunction**, not either
 counter alone, because `saw_filled` is a reader-lifetime latch
 (`rust/jasper-ring/src/lib.rs`), so a writer reattach's drain also lands in
 `empty_reads` and a bare alarm would fire on every deploy; the arm3 capture's
@@ -1120,7 +1120,8 @@ sub-period honesty caveat an earlier fix had deleted, made P9's hard gate
 both-halves (capability *and* arrival), scoped "N-channel" to what has actually
 run (2ch), and folded in two hardware results that landed while it was being
 written: the jts3 USB hi-res validation, which settles Step 0's host-low-bits
-question and meets U2's exit gate on hardware, and the arm surviving an unclean
+question and met what the sweep round below then scoped to the gate's width
+half, and the arm surviving an unclean
 power pull — both from `captures/usb-hires-jts3-20260811T194132Z` and the enable
 capture that precedes it, each read directly rather than from a summary. Two of
 that round's changes went unrecorded here and are added now: the forced-ordering
@@ -1129,11 +1130,13 @@ DAC8x box takes it by deploying), and risk 7's fleet-wide failure claim was
 reconciled with per-box exposure, marking jts4 and jts5 unknown rather than
 clear.
 
-A fifth round, executed by a fresh closer agent against the reviewer's full-file
-sweep, changed no facts and tied each remaining claim back to its source. The
-21-day uptime now cites the capture that holds the raw reading rather than the
-one that summarizes it (jts3's row says which, and why the hi-res capture's
-boot list cannot show it). The floorless-profile illustration names
+The sweep round, executed by a fresh closer agent against the reviewer's
+full-file sweep, corrected two over-claims — how much of U2's exit gate the
+hardware probe settled, and which instrument is authoritative for it — and tied
+the remaining claims back to their sources. The 21-day uptime now cites the
+capture that holds the raw reading rather than the one that summarizes it
+(jts3's row says which, and why the hi-res capture's boot list cannot show
+it). The floorless-profile illustration names
 `INNOMAKER_HIFI_AMP_PRO` beside `HIFIBERRY_DAC8X_STUDIO`, because the registry
 gives it no floor either and it is the profile jts4 and jts5 run — read out of
 `jasper/audio_hardware/dac.py`, not inferred from the DAC8x family name. The USB
@@ -1143,10 +1146,24 @@ arc explicitly not exitable while PR-2 and PR-3 are open, and the bit-pattern
 fixtures are restored as the standing contract the dated probe corroborates
 rather than replaces (`U2_HIRES_VECTORS` and its exit-gate test in
 `rust/jasper-fanin/src/mixer.rs`, in-tree since PR-1). Risk 7's undated
-jts4/jts5 tail becomes a pointer to the dated per-box block, the shape the Gates
-section already uses. And two provenance stamps — the "Current position" heading
-and the surviving-work table's `9cc41b987` — are scoped so they no longer vouch
-for facts added after them. The egress and remaining source-half facts,
+jts4/jts5 tail becomes a pointer to the Fleet rows' dated probe state, the
+shape the Gates section already uses. And two provenance stamps — the "Current
+position" heading and the surviving-work table's `9cc41b987` — are scoped so
+they no longer vouch for facts added after them.
+
+A self-description micro-round then trued what these entries say about
+themselves. The sweep round's "changed no facts" was false on its own terms
+and now names the two over-claims it corrected. The forced-ordering paragraph
+had inverted its own rule in its closing sentence: a floorless profile needs
+its declaration and its soak before the ordering is *discharged* for it, not
+before it binds. The round entries traded ordinals for descriptive labels —
+they had drifted out of step with each other and collided with the pass
+counter above, whose ordinals are cross-referenced and therefore stay. The
+watch-rule entry now points forward to the scoping that superseded it instead
+of restating a met gate; risk 7 points at the Fleet rows, which carry the
+dated probe state its claim rests on; and the USB boundary row drops the last
+number the U2 arc row owns, along with a "both halves" that collided with the
+exit gate's width half. The egress and remaining source-half facts,
 Appendix A, and Appendix B were not re-verified and stand as last verified
 above.
 
