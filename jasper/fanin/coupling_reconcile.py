@@ -1836,8 +1836,9 @@ def ring_assets_ready() -> tuple[bool, str]:
 
     Checked BEFORE arming the ring coupling. Fail-SAFE: if the ioplug ``.so`` /
     conf.d / ``/dev/shm/jts-ring`` are not all present, arming would install a
-    CamillaDSP config whose ``jts_ring_capture`` / ``jts_ring_playback`` devices
-    cannot resolve — CamillaDSP would crash-loop on its statefile and the fan-in
+    CamillaDSP config whose ``jts_ring_capture`` plus post-DSP ring device
+    (``jts_ring_playback``, or ``jts_ring_active_playback`` on an armed roleful
+    box) cannot resolve — CamillaDSP would crash-loop on its statefile and the fan-in
     ``StartLimitAction=reboot`` could compound it. So the reconciler refuses to
     arm and stays on loopback. Presence-only (the doctor owns the deep open-probe);
     ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
@@ -2664,7 +2665,9 @@ def _arm_ring(
     geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
     ordered spine — outputd (the post-DSP ring's reader) first, fan-in (Ring A
     writer) second,
-    CamillaDSP (loads the ring config, opening jts_ring_capture/jts_ring_playback)
+    CamillaDSP (loads the ring config, opening jts_ring_capture plus the post-DSP
+    ring the marker selects — jts_ring_playback, or jts_ring_active_playback on an
+    armed roleful box)
     last — matching the validated ring-proto arm order. Any failure rolls the whole
     box back to loopback + direct (``recovered=True``). The rings are forgiving
     (empty-ring reader/writer emit/drop silence), so there is no queue-drift

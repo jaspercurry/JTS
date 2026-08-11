@@ -27,6 +27,7 @@ from jasper.audio_hardware.dac import (
     latency_floor_for,
 )
 from jasper.cli.doctor import audio_runtime as audio
+from jasper.output_topology import OutputTopologyError
 
 SHIPPED_RING_CONF = (
     Path(__file__).resolve().parents[1]
@@ -223,3 +224,63 @@ def test_a_matching_floor_does_not_claim_ineligibility(monkeypatch, tmp_path):
 
     assert result.status == "ok"
     assert "unavailable" not in result.detail
+
+
+# --- `_requires_roleful_graph` fail-soft DIRECTION ----------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # The real-world case first. It subclasses ValueError, so the bare
+        # ValueError below is the same except-arm — named separately because a
+        # reader should not have to know the hierarchy to see it is covered.
+        OutputTopologyError("topology has an unsupported shape"),
+        OSError("topology unreadable"),
+        ValueError("topology malformed"),
+    ],
+)
+def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path, exc):
+    """The documented direction, pinned — an unreadable topology asserts NOTHING.
+
+    ``_requires_roleful_graph`` only ever SOFTENS a message or adds an
+    eligibility sentence; it gates nothing, and every caller that acts on
+    rolefulness reads the fail-CLOSED loaders instead. So its ``except`` arm must
+    return False: a box whose topology cannot be read must keep the generic
+    wording rather than be told, on no evidence, that it is an active-crossover
+    box whose ring is explicit-arm-only. Failing soft to True would print a
+    remediation ladder at every box with a torn topology file.
+
+    Asserted at BOTH surfaces — the helper's own answer and the detail string it
+    feeds — so flipping the arm cannot pass by only breaking the private half.
+    """
+    import jasper.output_topology as output_topology
+
+    def _raise(*_a, **_kw):
+        raise exc
+
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", _raise)
+    _stage(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    assert audio._requires_roleful_graph() is False
+    assert "ROLEFUL" not in audio.check_ring_conf_floor_render().detail
+
+
+def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
+    """The other direction, so the fail-soft pin cannot be satisfied by a stub.
+
+    Without this, ``return False`` unconditionally would pass the test above and
+    the helper would be pinned to a constant. This runs the real classifier over
+    a real roleful topology.
+    """
+    import jasper.output_topology as output_topology
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setattr(
+        output_topology, "load_output_topology_strict", lambda *a, **kw: topology
+    )
+    _stage(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    assert audio._requires_roleful_graph() is True
+    assert "ROLEFUL" in audio.check_ring_conf_floor_render().detail

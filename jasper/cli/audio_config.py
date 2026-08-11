@@ -31,7 +31,7 @@ from jasper.audio_runtime_plan import (
     outputd_latency_floor_actions,
     route_owned_env_actions,
     resolve_audio_route_profile,
-    transport_coherence_errors,
+    transport_coherence_report,
 )
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
@@ -268,14 +268,23 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         if decision is None or not decision.ok:
             devices = None
     merged_outputd = {**base.values, **outputd.values}
-    transport_errors = transport_coherence_errors(
+    report = transport_coherence_report(
         coupling=fanin.values.get(COUPLING_ENV_VAR),
         outputd_env=merged_outputd,
         camilla_devices=devices,
     )
-    if transport_errors:
-        print("; ".join(transport_errors))
+    if report.errors:
+        print("; ".join(report.errors))
         return 1
+    # A note is a coherent-but-transient state (today: the ACTIVE-ring arm
+    # waypoint), so this EXITS 0 — the reconciler must be allowed to derive the
+    # marker that is the ladder's own next step. Printed on the ok path so the
+    # caller's captured stdout carries it: `jasper-audio-hardware-reconcile`
+    # logs it as event=audio_hardware_reconcile.outputd_env_note, which is the
+    # journal line an operator standing mid-ladder actually reads.
+    if report.notes:
+        print("ok note=" + "; ".join(report.notes))
+        return 0
     print("ok")
     return 0
 

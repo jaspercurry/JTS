@@ -2023,8 +2023,11 @@ def check_ring_conf_floor_render() -> CheckResult:
     ring, and that is explicit-arm-only. So on a roleful box a green period line
     means "the conf.d is ready", NOT "this box will ring" — and saying only the
     former is how an operator concludes the arm is broken when nothing is. Every
-    branch below therefore carries the rolefulness sentence when it applies,
-    read from the saved topology (:func:`_requires_roleful_graph`).
+    OK branch below therefore carries the rolefulness sentence when it applies,
+    read from the saved topology (:func:`_requires_roleful_graph`). The two WARN
+    branches deliberately do not: each is a concrete render failure with one
+    remedy, and appending "…and even then it would not ring on its own" would
+    bury the action the operator has to take.
 
     (This supersedes R7a's scope note, which said a roleful topology "has no
     ring width at all" and that the reason was one this check could not see.
@@ -2056,8 +2059,9 @@ def check_ring_conf_floor_render() -> CheckResult:
     dac_id = _active_audio_dac_id()
     floor = latency_floor_for(dac_id)
     # The eligibility half this check cannot read off the conf.d. Appended to
-    # every branch, so an operator never has to already know that the floor is
-    # only one of the two gates.
+    # every OK branch, so an operator never has to already know that the floor is
+    # only one of the two gates. The WARN branches leave it off on purpose — see
+    # the docstring.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
         "does not make it ring on its own: the ACTIVE ring is armed only by an "
@@ -2526,7 +2530,7 @@ def _outputd_transport_health(
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
-        transport_coherence_errors,
+        transport_coherence_report,
         transport_topology_for_coupling,
     )
 
@@ -2564,17 +2568,28 @@ def _outputd_transport_health(
             "post-DSP transport coherence unknown: " + evidence_detail
         )
     else:
-        transport_errors = transport_coherence_errors(
+        transport_report = transport_coherence_report(
             coupling=coupling,
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
         )
-        if transport_errors:
+        if transport_report.errors:
             return CheckResult(
                 "jasper-outputd",
                 "fail",
-                "; ".join(transport_errors) + _transport_route_remedy(),
+                "; ".join(transport_report.errors) + _transport_route_remedy(),
             )
+        # A note is coherent but NOT steady, and today's only note — the
+        # ACTIVE-ring arm waypoint — is a box that goes silent at its next
+        # CamillaDSP load. Warn rather than pass, precisely because it is not
+        # audible yet: the statefile repoint is durable, so the box can sit in
+        # the waypoint indefinitely and come back silent from a reboot that
+        # nothing else here would flag — fan-in and outputd both keep looping
+        # over the missing stage. Warn rather than fail because it is a
+        # documented rung of an operator ladder with two named exits, not a
+        # broken box; the note carries both.
+        if transport_report.notes:
+            transport_evidence_warning = "; ".join(transport_report.notes)
     local_pipe_detail = f"content_source={actual_content_source}"
     if content.get("pcm") != expected_content_pcm:
         return CheckResult(

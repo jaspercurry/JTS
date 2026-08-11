@@ -181,7 +181,7 @@ def _empty_transport() -> dict[str, Any]:
     single append anywhere would report the box as parked on every later
     degraded read for the lifetime of the process.
     """
-    return {"coherence_errors": [], "capability_gap": None}
+    return {"coherence_errors": [], "coherence_notes": [], "capability_gap": None}
 
 
 def _transport_state(
@@ -193,27 +193,32 @@ def _transport_state(
 ) -> dict[str, Any]:
     """Pair the post-DSP transport contradictions with their actionable cause.
 
-    ``transport_coherence_errors`` is the single detector — doctor reads the
+    ``transport_coherence_report`` is the single detector — doctor reads the
     same function — so this offers no second opinion about what "disconnected"
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
+
+    ``coherence_notes`` carries the report's non-error half verbatim: coherent
+    but not steady, so it is published for whoever curls ``/state`` and is
+    deliberately NOT fed to :func:`_parked_signal` — the household card would
+    say "parked" about a rung of an operator-only ladder the household cannot
+    act on.  ``jasper-doctor`` is the loud surface for that state.
 
     ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
     loosely because this module imports the topology layer lazily.
     """
     from ..active_speaker.playback_route import active_lane_capability_gap
-    from ..audio_runtime_plan import transport_coherence_errors
+    from ..audio_runtime_plan import transport_coherence_report
 
-    errors = list(
-        transport_coherence_errors(
-            coupling=coupling,
-            outputd_env=dict(outputd_env),
-            camilla_devices=camilla_devices,
-        )
+    report = transport_coherence_report(
+        coupling=coupling,
+        outputd_env=dict(outputd_env),
+        camilla_devices=camilla_devices,
     )
     gap = active_lane_capability_gap(topology)
     return {
-        "coherence_errors": errors,
+        "coherence_errors": list(report.errors),
+        "coherence_notes": list(report.notes),
         "capability_gap": gap.to_dict() if gap is not None else None,
     }
 
@@ -246,6 +251,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
             "has no staged startup graph, so every output is muted "
             f"({PARKED_MUTED_EXITS})"
         ],
+        "coherence_notes": [],
         "capability_gap": gap.to_dict() if gap is not None else None,
     }
 
