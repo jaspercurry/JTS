@@ -126,6 +126,13 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    InterventionProposal,
+    PlanRefusal,
+)
+from jasper.active_speaker.crossover_v2.planner_facade import (
+    plan_intervention_proposal,
+)
 from jasper.active_speaker.fc_selector import (
     EVAL_REFUSED_BUDGET,
     EVAL_REFUSED_UNFITTABLE,
@@ -6498,6 +6505,10 @@ class CrossoverV2Conductor:
         # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
+        # The #2291 Phase 1 proposal contract for whatever ``_candidate`` holds.
+        # Written only by ``commit_intervention_proposal``, so it can never
+        # describe a candidate that was planned but not committed.
+        self._intervention_proposal: InterventionProposal | PlanRefusal | None = None
         # HAS THE HOUSEHOLD CONFIRMED? — the held-set predicate, decoupled from
         # the fire-once guard above by the eager-fit rider (owner UX direction,
         # 2026-07-30). ``cloud_measure_group_awaiting_confirm`` used to answer
@@ -7247,6 +7258,23 @@ class CrossoverV2Conductor:
     @property
     def measure_commanded_delta(self) -> Any:
         return self._measure_commanded_delta
+
+    @property
+    def last_intervention_proposal(self) -> "InterventionProposal | PlanRefusal | None":
+        """The #2291 contract for the committed candidate, or why there is none.
+
+        ``None`` before any candidate is committed; an
+        :class:`~jasper.active_speaker.crossover_v2.contracts.InterventionProposal`
+        after; a
+        :class:`~jasper.active_speaker.crossover_v2.contracts.PlanRefusal` when
+        the committed candidate could not satisfy the contract.  Both the
+        configured-Fc walk and the alternative-Fc selection produce it through
+        the same :meth:`commit_intervention_proposal` seam.
+
+        Read-only and immutable, so unlike the ``_last_*`` scratch fields this
+        cannot be a caller's return channel.
+        """
+        return self._intervention_proposal
 
     @property
     def delta_probe(self) -> DeltaProbeMap | None:
@@ -9761,19 +9789,88 @@ class CrossoverV2Conductor:
             level_frame_finding=level_frame_finding,
         )
 
+    def commit_intervention_proposal(
+        self,
+        candidate: Any,
+        *,
+        predicted_sum: Any,
+        commanded_delta: Any,
+        level_frame_finding: Mapping[str, Any] | None,
+        realized_level_match: Any = None,
+    ) -> None:
+        """The ONE seam through which a planned candidate becomes real (#2291).
+
+        Both commit sites — the configured-Fc walk
+        (:meth:`_commit_measure_candidate`) and the alternative-Fc selection
+        (:meth:`_commit_fc_candidate`) — install a candidate through here, so
+        Phase 2 has a single place to hollow rather than two near-duplicate
+        inline blocks that had already drifted.
+
+        **What this seam covers, exactly:** the three conductor state writes
+        that were byte-identical at both sites (``_candidate``,
+        ``_measure_predicted_sum``, ``_measure_commanded_delta``), the two
+        irreversible seam fires (``publish_candidate`` then
+        ``_publish_level_frame_finding``), and — new, and consuming nothing —
+        the #2291 proposal contract.
+
+        **What it deliberately does NOT cover:** ``_measure_predicted_spec_
+        report``, and the ``correction.crossover_v2_candidate_built``
+        disclosure.  Both differ between the two sites today — the walk installs
+        the spec report out-of-band from inside ``_assert_accountable``
+        (``_stash_predicted_spec_report``) while the selection installs it here,
+        and the two log lines carry different fields.  Folding either in would
+        be a behavior change, which Phase 1 is not; they stay at their call
+        sites until Phase 2 makes the planner return them as data.
+
+        Ordering is preserved rather than merely similar: every conductor
+        attribute write still completes before ``publish_candidate``, the first
+        observable side effect, so a re-entrant reader sees exactly what it saw
+        before.  The proposal is assembled last, after every pre-existing side
+        effect, and cannot raise — see :func:`plan_intervention_proposal`.
+        """
+        self._candidate = candidate
+        self._measure_predicted_sum = predicted_sum
+        self._measure_commanded_delta = commanded_delta
+        self._seams.publish_candidate(candidate)
+        self._publish_level_frame_finding(level_frame_finding)
+        self._intervention_proposal = plan_intervention_proposal(
+            candidate,
+            session_id=self.session_id,
+            predicted_response_after=predicted_sum,
+            predicted_spec_after=self._measure_predicted_spec_report,
+            commanded_delta=commanded_delta,
+            accountability=level_frame_finding,
+            realized_branch_level=(
+                realized_level_match.to_dict()
+                if realized_level_match is not None
+                else None
+            ),
+            evidence_identities={
+                "session_id": self.session_id,
+                "program_id": str(getattr(candidate, "program_id", "") or ""),
+            },
+        )
+
     def _commit_fc_candidate(self, evaluation: FcCandidateEvaluation) -> dict[str, Any]:
         from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 
         if evaluation.candidate is None or evaluation.predicted_sum is None:
             raise CrossoverV2FlowError("selected Fc has no executable candidate")
         candidate = MeasuredCrossoverCandidate.from_mapping(evaluation.candidate)
-        self._candidate = candidate
-        self._measure_predicted_sum = evaluation.predicted_sum
         self._measure_predicted_spec_report = dict(
             evaluation.predicted_spec_report or {}) or None
-        self._measure_commanded_delta = evaluation.commanded_delta
-        self._seams.publish_candidate(candidate)
-        self._publish_level_frame_finding(evaluation.level_frame_finding)
+        # ``realized_level_match`` is deliberately NOT passed here. The sweep
+        # restores ``_FC_SWEEP_CONDUCTOR_FIELDS`` when it ends, so
+        # ``_last_realized_level_match`` holds the ANCHOR's match, not this
+        # selected candidate's, and ``FcCandidateEvaluation`` does not carry
+        # one. Reading it would re-create exactly the cross-context leak #2291
+        # exists to close; the proposal records the absence instead.
+        self.commit_intervention_proposal(
+            candidate,
+            predicted_sum=evaluation.predicted_sum,
+            commanded_delta=evaluation.commanded_delta,
+            level_frame_finding=evaluation.level_frame_finding,
+        )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
             session_id=self.session_id, candidate_fingerprint=candidate.fingerprint,
@@ -9801,13 +9898,16 @@ class CrossoverV2Conductor:
         predicted_sum = built.predicted_sum
         analysis = built.analysis
         cloud = built.cloud
-        self._candidate = candidate
-        self._measure_predicted_sum = predicted_sum
-        self._measure_commanded_delta = _commanded_delta(
-            analysis.predicted_sum, predicted_sum,
+        # Unlike the selected-Fc path, ``_last_realized_level_match`` here DOES
+        # belong to this candidate: the fit that produced it ran moments ago on
+        # this same build, with no sweep save/restore in between.
+        self.commit_intervention_proposal(
+            candidate,
+            predicted_sum=predicted_sum,
+            commanded_delta=_commanded_delta(analysis.predicted_sum, predicted_sum),
+            level_frame_finding=built.level_frame_finding,
+            realized_level_match=self._last_realized_level_match,
         )
-        self._seams.publish_candidate(candidate)
-        self._publish_level_frame_finding(built.level_frame_finding)
         log_event(
             logger, "correction.crossover_v2_candidate_built",
             session_id=self.session_id,
