@@ -12003,17 +12003,11 @@ class CrossoverV2Conductor:
         ``record.fields`` is spread as keyword arguments rather than handed to
         ``log_event``'s ``fields=`` parameter so the rendered order matches
         what this module emitted before the extraction: ``session_id`` first,
-        then the payload in the planner's own order.
-
-        A payload key colliding with one of ``log_event``'s own keyword
-        parameters (``level``, ``exc_info``, ``fields``) or with ``session_id``
-        would raise ``TypeError`` here. That is contained rather than fatal and
-        deliberately so: ``TypeError`` is a stdlib type, so the planner's port
-        guard catches it, the record still reaches the returned plan, and the
-        loss is named on ``journal_dropped`` — which
-        :meth:`_plan_linearization` then discloses. No planner field collides
-        today; the point is that one added later degrades a log line rather
-        than a household's candidate.
+        then the payload in the planner's own order. A payload key colliding
+        with ``session_id`` or one of ``log_event``'s own keywords would raise
+        ``TypeError`` — a stdlib type, so the planner's port guard contains it
+        and names the loss on ``journal_dropped`` rather than costing a
+        household its candidate.
         """
         log_event(
             logger, record.event, level=record.level,
@@ -12095,12 +12089,10 @@ class CrossoverV2Conductor:
         )
         plan = plan_linearization(request, journal=self._journal_linearization)
         if plan.journal_dropped:
-            # The disclosure port refused lines. The plan is sound and the
-            # records are on it; what is lost is this session's journal copy,
-            # and a loss nobody is told about is indistinguishable from a
-            # planner that never spoke. Emitted with plain scalars only, so a
-            # collision in one record's payload cannot also swallow the notice
-            # that the collision happened.
+            # The port refused lines. Plain scalars only, so whatever broke one
+            # record's payload cannot also swallow the notice about it. This is
+            # ``journal_dropped``'s only reader — without it the planner would
+            # be returning a loss nobody is told about.
             log_event(
                 logger, "correction.crossover_v2_linearization_journal_dropped",
                 level=logging.WARNING, session_id=self.session_id,
