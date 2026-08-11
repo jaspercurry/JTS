@@ -892,6 +892,15 @@ def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
 # Captured from the pre-extraction conductor (origin/main at 53eb2d980) and
 # written as literals. Re-derive them by re-running that comparison; editing a
 # number here to make a test pass deletes the evidence it exists to be.
+#
+# THE CAMPAIGN PATTERN, recorded here because this is where the next slice will
+# read it: **a strangler phase's goldens must anchor on the DECLARED source of
+# truth, never on the method under test — self-referential pins are blind to
+# uniform drift.** Earned: the first cut of the re-cornering test below compared
+# ``_fc_candidate_sections(fc)`` against ``_fc_candidate_sections(FC_HZ)``, and a
+# uniform ``order += 2`` applied to every section passed it (measured: 6 passed
+# with that anchor, 6 failed with the declared one). A port that changed the
+# whole family the same way — which is what a port does — would have shipped.
 # --------------------------------------------------------------------------- #
 
 #: ``declaration shape -> (bands, ordered candidates, declared limits)``.
@@ -973,7 +982,12 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
     changes).
     """
     c = _selector_conductor(FakeSeams(), bands=WIDENED_BANDS)
-    configured = c._fc_candidate_sections(FC_HZ)
+    # The DECLARED sections, not ``_fc_candidate_sections(FC_HZ)``. Anchoring on
+    # the method under test makes this blind to any UNIFORM change to the
+    # re-cornering — a ``+2`` applied to every section's order compares equal to
+    # itself and passes. That is precisely the 5a-v port failure mode this golden
+    # exists to catch, so the anchor is the preset.
+    configured = flow.sections_by_role(_preset().crossover_regions)
 
     sections = c._fc_candidate_sections(fc_hz)
 
