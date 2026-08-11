@@ -787,8 +787,10 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
         # anchor, fan-in asked for +5.0 and the peak cap allowed +3.0. Positive
         # and peak-capped is the contract working, not a clamp leak.
         ({"requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.0}, False),
-        # Every dB field is published at 0.1 resolution, so 0.1 of disagreement
-        # between independently rounded values is not a fault.
+        # Today's publish rounding is monotone, so the comparison is exact and
+        # this 0.1 disagreement cannot arise in the field. The tolerance is a
+        # cushion against future publish-path drift, not a derived bound; this
+        # case is what pins it.
         ({"requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.1}, False),
         # Louder than the peak cap allowed — the hearing-safety failure the check
         # exists for.
