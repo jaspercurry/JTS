@@ -788,13 +788,31 @@ pub(crate) struct ProgramWidthAudit {
 ///   allocate a spine-scale period buffer, and the mixer reads exactly that
 ///   allocation (`read_buf_wide.is_empty()`) to pick a lane's sum entry.
 ///
-/// Neither can legitimately differ from the declared width, and the lane axis in
-/// particular is guarded by a pure helper with its own test
-/// ([`lane_wants_spine_buffer`]). But "cannot" is worth a check rather than an
-/// assumption, because what it guards is a lane contributing at the wrong
-/// numeric scale — one source 96 dB louder than the rest of the mix. The
-/// `debug_assert` in `mix_into_wide` states the same contract but is compiled
-/// OUT of the release build the Pi runs, so it is a developer aid, not this.
+/// The two axes are checked DIFFERENTLY, and the asymmetry is the whole point.
+///
+/// * The OUTPUT axis is an EQUALITY. The sum's scale and the wire's scale must
+///   match in both directions: a narrow sum on a wide wire under-drives it by
+///   96 dB, a wide sum on a narrow wire over-drives it by the same.
+/// * The LANE axis is a ONE-WAY IMPLICATION — `any_lane_is_wide` implies
+///   `declared_wide`, never the reverse. A spine-scale lane feeding a
+///   narrow-scale sum is the +96 dB fault worth parking for. The reverse, a
+///   wide sum with no wide lane, is **the ordinary configuration**: only the
+///   USB DIRECT lane ever allocates a spine-scale buffer, and USB Audio Input
+///   is off by default and resolved by a different reconciler than the wire, so
+///   a wide box with USB off has zero wide lanes and is perfectly correct. Every
+///   i16 lane promotes at `mix_into`'s Wide arm; that is exactly what
+///   `wide_payload_is_information_equivalent_to_the_narrow_payload` pins.
+///
+/// Requiring equality on the lane axis would therefore park a CORRECT box:
+/// arming a wire while USB Audio Input is off — or a household simply toggling
+/// USB off at `/sources/` on an armed box — would exit 78 with no audio path and
+/// no self-recovery. Fail-closed is right for the fault; it is a liveness
+/// hazard when pointed at a legal state.
+///
+/// What the surviving check guards is a lane contributing at the wrong numeric
+/// scale. The `debug_assert` in `mix_into_wide` states the same contract but is
+/// compiled OUT of the release build the Pi runs, so it is a developer aid, not
+/// this.
 ///
 /// # Why the error carries the config-class marker
 ///
@@ -813,7 +831,12 @@ pub(crate) struct ProgramWidthAudit {
 /// hardware-free test — which is how the over-wide marker shipped.
 pub(crate) fn program_width_disagreement(audit: ProgramWidthAudit) -> Option<anyhow::Error> {
     let declared_wide = matches!(audit.declared, ProgramWidth::Wide);
-    if declared_wide == audit.output_is_wide && declared_wide == audit.any_lane_is_wide {
+    // Output: equality, both directions are faults.
+    let output_disagrees = declared_wide != audit.output_is_wide;
+    // Lane: implication only. A wide lane in a narrow sum is the +96 dB fault;
+    // a wide sum with no wide lane is the ordinary USB-off configuration.
+    let lane_disagrees = audit.any_lane_is_wide && !declared_wide;
+    if !output_disagrees && !lane_disagrees {
         return None;
     }
     warn!(
@@ -6690,25 +6713,62 @@ mod tests {
         assert!(!lane_wants_spine_buffer(false));
     }
 
-    /// SF-B/SF-C: agreement across BOTH axes passes, at either width.
+    /// Every COHERENT shape constructs — including the one that has no wide lane
+    /// at all on a wide wire.
     #[test]
     fn a_coherent_program_width_constructs() {
-        assert!(program_width_disagreement(ProgramWidthAudit {
-            declared: ProgramWidth::Narrow,
-            output_is_wide: false,
-            any_lane_is_wide: false,
-        })
-        .is_none());
-        assert!(program_width_disagreement(ProgramWidthAudit {
-            declared: ProgramWidth::Wide,
-            output_is_wide: true,
-            any_lane_is_wide: true,
-        })
-        .is_none());
+        let coherent = [
+            // (declared, output_is_wide, any_lane_is_wide)
+            (ProgramWidth::Narrow, false, false),
+            (ProgramWidth::Wide, true, true),
+            // A wide wire with NO wide lane. Legal, and the common case — see
+            // the dedicated test below.
+            (ProgramWidth::Wide, true, false),
+        ];
+        for (declared, output_is_wide, any_lane_is_wide) in coherent {
+            assert!(
+                program_width_disagreement(ProgramWidthAudit {
+                    declared,
+                    output_is_wide,
+                    any_lane_is_wide,
+                })
+                .is_none(),
+                "{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must construct",
+            );
+        }
     }
 
-    /// SF-B: EVERY disagreement, on EITHER axis, in EITHER direction, fails
-    /// construction — and does so as CONFIG-CLASS.
+    /// A WIDE WIRE WITH USB AUDIO INPUT OFF MUST START. This is not a corner
+    /// case — it is the shape an armed box has by default.
+    ///
+    /// Only the USB DIRECT lane ever allocates a spine-scale buffer, and USB
+    /// Audio Input is off by default and resolved by a different reconciler than
+    /// the wire; the two are not coupled anywhere. So arming a box's wire while
+    /// USB is off — jts3's documented configuration — yields `declared=Wide,
+    /// output_is_wide=true, any_lane_is_wide=false`, and every i16 lane simply
+    /// promotes at `mix_into`'s Wide arm.
+    ///
+    /// An earlier revision of this check required equality on the lane axis and
+    /// would have exited 78 here: no audio path, no self-recovery, operator-only
+    /// — on a correct configuration, and reachable by a household toggling USB
+    /// off at `/sources/`. Fail-closed is right for a fault and a liveness
+    /// hazard when pointed at a legal state, which is why the lane axis is an
+    /// implication and this test names the shape it must never park.
+    #[test]
+    fn a_wide_wire_with_usb_audio_input_off_constructs() {
+        assert!(
+            program_width_disagreement(ProgramWidthAudit {
+                declared: ProgramWidth::Wide,
+                output_is_wide: true,
+                any_lane_is_wide: false,
+            })
+            .is_none(),
+            "a wide box with USB Audio Input off must start, not park",
+        );
+    }
+
+    /// SF-B: every genuine disagreement fails construction — and does so as
+    /// CONFIG-CLASS.
     ///
     /// The marker is the load-bearing half. Without it the error reaches `main`
     /// as an ordinary failure, the unit takes `Restart=on-failure`, and five
@@ -6716,16 +6776,22 @@ mod tests {
     /// unrepairable-by-restarting condition rebooting the Pi in a loop, which is
     /// exactly what happened to `jasper-outputd` on 2026-06-11. Asserting only
     /// "it returns Some" would pass with the marker deleted.
+    ///
+    /// `(Wide, output wide, no wide lane)` is deliberately NOT here — it is the
+    /// legal USB-off shape, pinned by
+    /// `a_wide_wire_with_usb_audio_input_off_constructs`.
     #[test]
     fn every_program_width_disagreement_parks_as_config_class() {
         let cases = [
             // (declared, output_is_wide, any_lane_is_wide)
+            // Header axis, both directions.
             (ProgramWidth::Narrow, true, false),
-            (ProgramWidth::Narrow, false, true),
             (ProgramWidth::Narrow, true, true),
-            (ProgramWidth::Wide, false, true),
-            (ProgramWidth::Wide, true, false),
             (ProgramWidth::Wide, false, false),
+            (ProgramWidth::Wide, false, true),
+            // Lane axis, the +96 dB direction: a spine-scale lane feeding a
+            // narrow-scale sum.
+            (ProgramWidth::Narrow, false, true),
         ];
         for (declared, output_is_wide, any_lane_is_wide) in cases {
             let error = program_width_disagreement(ProgramWidthAudit {

@@ -162,7 +162,13 @@ fn build_sinc_table() -> Vec<[f64; TAPS]> {
 }
 
 /// Round-to-nearest, saturating to the `i16` range — the exact rounding the
-/// daemon path uses, so cross-language output matches at the LSB.
+/// daemon path uses.
+///
+/// It once said "so cross-language output matches at the LSB". There is no
+/// second language left to match: the C++/usbsink mirror and its Python
+/// contract test were cut (see this crate's "What this crate is NOT"), and
+/// `golden_vector_is_stable` is now an exact-equality tripwire rather than a
+/// ±1 LSB agreement check.
 pub fn clamp_i16(value: f64) -> i16 {
     value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
@@ -1058,15 +1064,18 @@ pub fn resample_i16(input: &[i16], channels: usize, ratio: f64, table: &SincTabl
     resampler.resample_block(input, ratio)
 }
 
-/// The cross-language contract fixture: one canonical deterministic input and
-/// the ratios at which the Rust [`resample_i16`] output and the C++/usbsink
-/// `RateResampler.resample_block` output must agree to ≤1 LSB.
+/// The golden contract fixture: one canonical deterministic input and the
+/// ratios the in-crate golden test pins [`resample_i16`]'s output at.
 ///
-/// This is the SINGLE definition of the fixture — the in-crate golden test, the
-/// `golden_vector` example (which the Python contract test shells out to), and
-/// the C++ side (which re-derives the same input) all reference it, so the three
-/// can never silently drift apart. Doc-hidden: it is test/tooling surface, not
-/// a runtime API.
+/// Formerly a CROSS-LANGUAGE fixture, agreeing with the C++/usbsink
+/// `RateResampler.resample_block` to ≤1 LSB. Both that mirror and the Python
+/// contract test that drove it were cut, and with one implementation left the
+/// tolerance had no reason to exist — `golden_vector_is_stable` now asserts
+/// exact equality, which is what makes it a tripwire rather than a formality.
+///
+/// This is the SINGLE definition of the fixture — the in-crate golden test and
+/// the `golden_vector` example both reference it, so the two can never silently
+/// drift apart. Doc-hidden: it is test/tooling surface, not a runtime API.
 #[doc(hidden)]
 pub mod golden {
     use super::clamp_i16;
