@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -454,6 +455,24 @@ def test_save_and_load_crossover_preview_round_trips(tmp_path: Path) -> None:
     assert saved["status"] == "ready_for_protected_staging"
     assert loaded["kind"] == CROSSOVER_PREVIEW_KIND
     assert raw["safety"]["authorizes_playback"] is False
+
+
+def test_save_crossover_preview_durable_fsyncs_the_write(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2292 scope 2: ``durable=True`` reaches ``atomic_write_text``'s fsync
+    (file + parent directory); the default save does not fsync at all."""
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    path = tmp_path / "crossover_preview.json"
+
+    save_crossover_preview(_draft(), path=path, created_at="2026-06-10T12:30:00Z")
+    assert fsync_calls == []
+
+    save_crossover_preview(
+        _draft(), path=path, created_at="2026-06-10T12:31:00Z", durable=True,
+    )
+    assert len(fsync_calls) == 2  # file fsync + parent-directory fsync
 
 
 def test_load_crossover_preview_marks_changed_design_draft_stale(tmp_path: Path) -> None:

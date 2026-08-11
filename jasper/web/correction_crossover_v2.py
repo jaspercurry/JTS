@@ -5284,8 +5284,14 @@ class V2ConductorContext:
     tweeter_measurement_band_hz: tuple[float, float] | None = None
 
 
-def ensure_crossover_preview_ready() -> dict[str, Any]:
+def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
     """Ensure a ready crossover preview exists before a v2 session reads one.
+
+    ``durable`` only matters on the regenerate branch (a reused preview
+    writes nothing) and passes straight through to
+    :func:`~jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`.
+    The default keeps the session-open/verify-re-arm callers cheap;
+    :func:`handle_v2_apply`'s crossover-accept branch opts in.
 
     ``/sound/``'s Preview button was the ONLY historical writer of
     ``active_speaker_crossover_preview.json``; the v2 flow never called it, so
@@ -5321,7 +5327,7 @@ def ensure_crossover_preview_ready() -> dict[str, Any]:
     preview = load_crossover_preview(current_design_draft=load_design_draft())
     outcome = "reused"
     if preview.get("status") != "ready_for_protected_staging":
-        preview = regenerate_crossover_preview_from_current_draft()
+        preview = regenerate_crossover_preview_from_current_draft(durable=durable)
         outcome = (
             "generated"
             if preview.get("status") == "ready_for_protected_staging"
@@ -6572,7 +6578,11 @@ def handle_v2_apply(
             "applied_hz": float(selected_fc),
             "previous_hz": float(configured_hz),
         }
-        preview = _before_dsp(ensure_crossover_preview_ready)
+        # durable=True: this branch just accepted a new Fc onto the Sound
+        # declaration (apply_measured_crossover_frequency above), so the
+        # preview regenerated from it is part of the same crossover-accept
+        # seam and gets the same power-loss-durable write.
+        preview = _before_dsp(lambda: ensure_crossover_preview_ready(durable=True))
         draft = _before_dsp(lambda: load_design_draft(topology=topology))
     else:
         # An ordinary configured-Fc apply writes nothing to Sound, so it has

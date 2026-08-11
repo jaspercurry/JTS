@@ -780,8 +780,16 @@ def save_crossover_preview(
     *,
     path: str | Path | None = None,
     created_at: str | None = None,
+    durable: bool = False,
 ) -> dict[str, Any]:
-    """Persist a crossover preview atomically. This does not authorize audio."""
+    """Persist a crossover preview atomically. This does not authorize audio.
+
+    ``durable=True`` fsyncs the write before it is visible (see
+    :func:`jasper.atomic_io.atomic_write_text`). The default stays ``False``
+    for the routine Preview regenerations; the crossover-accept seam opts in
+    explicitly so the accepted preview survives a power loss, not just a torn
+    write.
+    """
 
     target = crossover_preview_path(path)
     prior = load_crossover_preview(target)
@@ -799,5 +807,6 @@ def save_crossover_preview(
         target,
         json.dumps(preview, indent=2, sort_keys=True) + "\n",
         mode=0o640,
+        durable=durable,
     )
     return preview

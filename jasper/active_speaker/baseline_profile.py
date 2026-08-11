@@ -2694,7 +2694,15 @@ def persist_applied_baseline_profile(
     state_path: str | Path | None = None,
     applied_at: str | None = None,
 ) -> dict[str, Any]:
-    """Persist one already-read-back compiler candidate as the Layer-A SSOT."""
+    """Persist one already-read-back compiler candidate as the Layer-A SSOT.
+
+    Always durable (fsync-before-rename, see
+    :func:`jasper.atomic_io.atomic_write_text`): this write IS the apply
+    seam — the moment a successfully loaded CamillaDSP graph becomes the
+    record JTS trusts as "what's actually running" — so unlike the
+    draft/preview writers upstream, there is no non-accept caller for this
+    function to keep cheap for.
+    """
 
     if (
         candidate.get("kind") != BASELINE_PROFILE_KIND
@@ -2733,6 +2741,7 @@ def persist_applied_baseline_profile(
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+        durable=True,
     )
     return applied
 
@@ -2850,6 +2859,47 @@ def _prune_baseline_candidate_siblings(
             reason=str(exc),
             canonical_path=canonical,
         )
+
+
+def _load_unless_already_active(
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]] | None,
+    expected_path: str,
+) -> Callable[[str], Awaitable[bool]]:
+    """Wrap ``load_config`` to skip a redundant reload of an already-active config.
+
+    Crash-window double-load guard: a process crash between a successful
+    CamillaDSP load and this transaction's own state persistence can leave a
+    retried apply/restore re-issuing the SAME load. ``get_current_config_path``
+    is the exact same live query :func:`~jasper.dsp_apply.apply_dsp_config`
+    already uses to CONFIRM a load succeeded -- CamillaDSP's own truth, not a
+    second/derived source -- so a retry that finds the target already active
+    there can skip commanding another reload instead of re-triggering an
+    audible DSP graph swap for no reason.
+
+    ``expected_path`` pins the skip to the ONE path this transaction is
+    trying to reach. :func:`~jasper.dsp_apply.apply_dsp_config` also calls
+    ``load_config`` during rollback, with the PRIOR config path -- that call
+    must never be silently skipped just because the prior config happens to
+    still be what is currently live; requiring ``path == expected_path`` in
+    addition to ``active == path`` keeps rollback honest.
+    """
+
+    async def load_unless_already_active(path: str) -> bool:
+        if get_current_config_path is not None:
+            try:
+                active = await get_current_config_path()
+            except Exception:  # noqa: BLE001 -- the apply transaction diagnoses it
+                active = None
+            if (
+                active
+                and Path(active) == Path(path)
+                and Path(path) == Path(expected_path)
+            ):
+                return True
+        return await load_config(path)
+
+    return load_unless_already_active
 
 
 async def apply_baseline_profile(
@@ -3159,11 +3209,14 @@ async def _apply_baseline_profile_locked(
         graph_fingerprint=graph_fingerprint,
         candidate_fingerprint=candidate_identity,
     )
+    candidate_config_path = str((candidate.get("config") or {}).get("path"))
     try:
         apply_state = await apply_dsp_config(
             source="active_speaker_baseline_apply",
-            candidate_path=str((candidate.get("config") or {}).get("path")),
-            load_config=load_config,
+            candidate_path=candidate_config_path,
+            load_config=_load_unless_already_active(
+                load_config, get_current_config_path, candidate_config_path
+            ),
             get_current_config_path=get_current_config_path,
             acquire_lock=False,
             expected_candidate_sha256=str(
@@ -3369,7 +3422,9 @@ async def restore_applied_baseline_profile(
             apply_state = await apply_dsp_config(
                 source="active_speaker_baseline_restore",
                 candidate_path=candidate_path,
-                load_config=load_config,
+                load_config=_load_unless_already_active(
+                    load_config, get_current_config_path, candidate_path
+                ),
                 get_current_config_path=get_current_config_path,
                 acquire_lock=False,
                 expected_candidate_sha256=candidate_sha256,

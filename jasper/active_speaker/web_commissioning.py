@@ -248,7 +248,9 @@ def request_missing_software_guards(
     return updated, changed
 
 
-def regenerate_crossover_preview_from_current_draft() -> dict[str, Any]:
+def regenerate_crossover_preview_from_current_draft(
+    *, durable: bool = False
+) -> dict[str, Any]:
     """Rebuild and persist a fresh crossover preview from the saved design draft.
 
     This is the exact machinery ``/sound/``'s Preview button drives
@@ -261,6 +263,10 @@ def regenerate_crossover_preview_from_current_draft() -> dict[str, Any]:
     session-start preview ensure) can reuse it without importing a wizard page
     — the same reason this module already re-exposes
     :func:`request_missing_software_guards` for its own startup-anchor use.
+
+    ``durable`` passes straight through to :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`;
+    the default keeps routine Preview regenerations cheap, and the v2 flow's
+    crossover-accept caller opts in.
 
     Returns whatever :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
     produces, ready or not — callers decide what a non-ready result means.
@@ -284,7 +290,7 @@ def regenerate_crossover_preview_from_current_draft() -> dict[str, Any]:
             created_at=draft.get("created_at"),
         )
         draft["revision"] = saved_revision
-    return save_crossover_preview(draft)
+    return save_crossover_preview(draft, durable=durable)
 
 
 def _stage_startup_config(

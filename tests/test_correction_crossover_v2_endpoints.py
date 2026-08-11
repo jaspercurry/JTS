@@ -32,6 +32,7 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import replace
@@ -7398,6 +7399,26 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
     state = v2host.load_v2_state()
     assert state["accepted_sound_revision"] == 2
     assert state["applied"] is True
+
+
+def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
+    """#2292 scope 2: accepting an alternative Fc fsyncs THREE writes at the
+    accept/apply seam -- the Sound declaration (apply_measured_crossover_frequency),
+    the crossover preview regenerated from it (ensure_crossover_preview_ready),
+    and the applied baseline profile (persist_applied_baseline_profile) -- one
+    file fsync + one parent-directory fsync each."""
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    payload = _apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, lambda: _FakeApplyCam(),
+    )
+
+    assert payload["status"] == "applied", payload
+    assert len(fsync_calls) == 6
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(

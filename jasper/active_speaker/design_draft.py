@@ -1403,8 +1403,16 @@ def save_design_draft(
     expected_revision: Any = _REVISION_UNSET,
     path: str | Path | None = None,
     created_at: str | None = None,
+    durable: bool = False,
 ) -> dict[str, Any]:
-    """Persist a design draft atomically. This does not authorize playback."""
+    """Persist a design draft atomically. This does not authorize playback.
+
+    ``durable=True`` fsyncs the write before it is visible (see
+    :func:`jasper.atomic_io.atomic_write_text`). The default stays ``False``
+    for ordinary editing saves; callers that are accepting a value onto the
+    Sound declaration (the crossover-accept seam) opt in explicitly so that
+    acceptance survives a power loss, not just a torn write.
+    """
 
     target = _design_draft_path(path)
     with _DESIGN_DRAFT_WRITE_LOCK:
@@ -1450,5 +1458,6 @@ def save_design_draft(
             target,
             json.dumps(draft, indent=2, sort_keys=True) + "\n",
             mode=0o640,
+            durable=durable,
         )
     return draft

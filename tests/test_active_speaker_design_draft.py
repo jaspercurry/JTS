@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -110,6 +111,20 @@ def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path
     assert payload["safety"]["applies_filters"] is False
     assert loaded["status"] == "ready_for_review"
     assert raw["operator_inputs"]["tweeter"] == "Eminence F110M-8"
+
+
+def test_save_design_draft_durable_fsyncs_the_write(tmp_path: Path, monkeypatch) -> None:
+    """#2292 scope 2: ``durable=True`` reaches ``atomic_write_text``'s fsync
+    (file + parent directory); the default save does not fsync at all."""
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    path = tmp_path / "active_speaker_design_draft.json"
+
+    save_design_draft(_topology(), path=path)
+    assert fsync_calls == []
+
+    save_design_draft(_topology(), path=path, durable=True)
+    assert len(fsync_calls) == 2  # file fsync + parent-directory fsync
 
 
 def test_driver_research_cannot_weaken_human_review_requirements():
