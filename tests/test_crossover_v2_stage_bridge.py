@@ -829,9 +829,13 @@ def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, ca
     ]
     assert len(declared) == 1
     assert "stage=verify" in declared[0]
-    assert "provides=rollback" in declared[0]
-    assert "requires=commanded_delta,predicted_sum" in declared[0]
-    assert "missing=commanded_delta" in declared[0]
+    # Anchored on the NEXT field, so a widened list cannot satisfy these by
+    # prefix: ``provides=rollback`` is a substring of ``provides=findings,
+    # rollback``, and a mutation that bound rollback on both stages slipped
+    # through an unanchored form of this assertion.
+    assert "provides=rollback requires=" in declared[0]
+    assert "requires=commanded_delta,predicted_sum missing=" in declared[0]
+    assert declared[0].endswith("missing=commanded_delta")
 
     unavailable = [
         line for line in lines
@@ -861,7 +865,8 @@ def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
         if "event=correction.crossover_v2_stage_capabilities" in line
     ]
     assert len(declared) == 1
-    assert "requires=commanded_delta,predicted_sum" in declared[0]
+    assert "provides=rollback requires=" in declared[0]
+    assert "requires=commanded_delta,predicted_sum missing=" in declared[0]
     assert 'missing=""' in declared[0]
     assert not [
         line for line in lines
@@ -880,11 +885,12 @@ def test_stage_1_declares_itself_too(monkeypatch, caplog):
     ]
     assert len(declared) == 1
     assert "stage=measure" in declared[0]
-    assert "provides=findings" in declared[0]
+    # Anchored on the next field — see the stage-2 declaration test for why an
+    # unanchored ``provides=findings`` is satisfied by ``findings,rollback``.
     # logfmt renders an empty field value as ``""`` — stage 1 is the first
     # stage, so it needs nothing handed to it and can be missing nothing.
-    assert 'requires=""' in declared[0]
-    assert 'missing=""' in declared[0]
+    assert "provides=findings requires=" in declared[0]
+    assert 'requires="" missing=""' in declared[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -892,19 +898,29 @@ def test_stage_1_declares_itself_too(monkeypatch, caplog):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum():
+@pytest.mark.parametrize(
+    "n_bins",
+    # Deliberately a CLASS of lengths, not one. The block width is
+    # ``ceil(n / 512)``, which is a step function — so a single length is a
+    # lucky point that a drifted rule can land on unchanged (measured: at
+    # n=3000, ``ceil(n/512)`` and ``ceil(n/511)`` are both 6, and a one-off
+    # version of this test could not see the difference at all). These span the
+    # identity path (n below the ceiling), an exact multiple, and three lengths
+    # whose block width moves under a perturbed divisor.
+    [400, 512, 513, 1023, 1536, 4096],
+)
+def test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum(n_bins):
     """The grid agreement ``_decimate_delta``'s docstring promises.
 
     The two curves cross the bridge together, and their block rule lives in
     ``_decimate_to_analysis_grid`` but is restated in ``_decimate_delta`` (which
     must average in dB, not in linear power, because it reduces a DIFFERENCE of
     dB curves). This is the guard on that restatement: if the shared owner's
-    blocking ever changes, the two persisted curves stop lining up and this
-    fails.
+    blocking ever changes, the two persisted curves stop lining up.
     """
     import numpy as np
 
-    freqs = np.linspace(20.0, 24000.0, 3000)
+    freqs = np.linspace(20.0, 24000.0, n_bins)
     curve = np.sin(np.log10(freqs) * 7.0)
 
     reduced_delta = v2host._decimate_delta((freqs, curve))
