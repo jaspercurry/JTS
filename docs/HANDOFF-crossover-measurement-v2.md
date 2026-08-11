@@ -1335,6 +1335,33 @@ ungradeable — **never a pass** — and an ungradeable prediction emits
 (nothing was predicted) or `why=evaluator_refused` (the evaluator would not
 grade the curve). The `review` screen below renders it.
 
+**The stage bridge.** Stage 1 and stage 2 are two relay sessions with two
+conductors and nothing shared in memory, so `verify_priors` — written by
+`persist_conductor_state`, read by `prepare_v2_verify` — is the *only* channel
+between them. It carries five keys: `predicted_sum`, `predicted_spec`,
+`gate_window_ms`, `pilot_transfer_reference`, and (since #2291 Phase 3a)
+`commanded_delta`, the delta probe's commanded axis. Before Phase 3a that fifth
+curve was produced in stage 1 and consumed in stage 2 with no key to travel in,
+so every shipped stage 2 reported the probe `unavailable` — grading a correction
+with the shortfall-vs-model-error discriminator switched off. It is reduced to
+the same 512-point ceiling on the same block grid as `predicted_sum`, but
+averaged **in dB rather than in linear power**: it is a difference of two dB
+predictions, where the power mean is biased by up to 0.27 dB against a 0.5 dB
+commanded floor — enough to move which bins the probe grades.
+
+Which seams each stage binds is declared once, in `STAGE_MEASURE_CAPABILITIES` /
+`STAGE_VERIFY_CAPABILITIES`, and built by `bind_v2_stage_seams`; the two
+preparers are thin callers. Only two seams differ — the findings publisher
+(stage 1, because only the MEASURE candidate's gate banks one) and `rollback`
+(stage 2, because only it reaches the delta probe). Each stage open emits
+`event=correction.crossover_v2_stage_capabilities` naming what it provides and
+requires, plus
+`event=correction.crossover_v2_stage_capability_unavailable` when a required
+prior did not cross. `requires` is observability, never a gate: a state file
+written before Phase 3a still opens stage 2 and still verifies, it just cannot
+run the probe, and the journal says so instead of leaving an `unavailable`
+verdict unexplained.
+
 **The `closing` screen** (PR-T3) is the measuring session's own TAIL, and it
 exists because the review screen used to render there. Accepting the final
 cloud position marks every stage-1 phase accepted, so `_phase_from_state`
@@ -1806,10 +1833,12 @@ post-apply VERIFY's relay is sitting there complete, so setting it once would
 show it for one turn of the event loop. The journal line is
 `event=correction.crossover_v2_restore_sound_declaration outcome=…`. On an
 AUTOMATIC rollback (`bind_delta_probe_rollback`) the outcome is journal-only:
-that seam returns a bool, and no rollback that RUNS is bound today — the
-measuring conductor binds the seam but never reaches the delta probe, and the
-verifying conductor reaches the probe but binds no rollback. The two halves
-meet in #2291 Phase 3.
+that seam returns a bool. #2291 Phase 3a bound the seam on the stage that
+actually reaches the delta probe — the two halves used to sit on different
+stages, with the measuring conductor holding the binding it could never use and
+the verifying conductor reaching the probe with no binding at all — so an
+automatic rollback now genuinely runs. Which stage binds it is declared once, in
+`STAGE_VERIFY_CAPABILITIES`; see "The stage bridge" below.
 
 **Where each piece lives.**
 
@@ -3753,7 +3782,12 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-10 — #2292 re-verified only "Recommending an Fc" (the
+Last verified: 2026-08-10 — #2291 Phase 3a re-verified only the stage-bridge
+prose (the new "The stage bridge" block and the automatic-rollback sentence in
+the Undo/declaration contract) against `persist_conductor_state` /
+`prepare_v2_verify` / `bind_v2_stage_seams` and
+`tests/test_crossover_v2_stage_bridge.py`; no live-Pi run, and no other section
+was re-read. 2026-08-10: #2292 re-verified only "Recommending an Fc" (the
 Undo/declaration two-leg contract) and gotcha 8 against `handle_v2_apply` /
 `handle_v2_restore` / `persist_conductor_state` / `reset_v2_journey_state` and
 focused offline tests; no live-Pi run. 2026-08-09: R21 re-verified only

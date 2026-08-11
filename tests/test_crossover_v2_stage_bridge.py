@@ -13,22 +13,30 @@ memory: the only channel is the durable state file
 :func:`~jasper.web.correction_crossover_v2.persist_conductor_state` writes and
 ``prepare_v2_verify`` reads back.
 
-So the bridge is a contract, and this module pins it — the survivals AND the
-losses — by driving the REAL production preparers rather than restating the
-source. Two of the pins below record CURRENT DEFECTS (the commanded delta and
-the rollback seam do not reach stage 2); they are marked as such and tagged to
-issue #2291 Phase 3, which is the change that would fix them. Until then these
-tests describe what the shipped host does, so Phase 3 has to extend this file
-deliberately instead of moving the bridge in silence.
+So the bridge is a contract, and this module pins it by driving the REAL
+production preparers rather than restating the source.
+
+**#2291 Phase 3 closed the two holes this module was written to hold open.**
+Until then, two pins recorded CURRENT DEFECTS — the commanded delta reached no
+state key, and the rollback seam was bound on the stage that never verifies —
+and they were tagged to the change that would fix them. Phase 3a is that
+change, so those pins are now flipped to their fixed shape, with the same
+discriminating rigor: the commanded delta is asserted to arrive with its VALUES
+intact and the probe is asserted to actually RUN, because "not None" would pass
+for a conductor handed anything at all.
 
 **Read as a table**::
 
-    verify_priors.predicted_sum             survives   -> measure_predicted_sum
-    verify_priors.predicted_spec            survives   -> measure_predicted_spec_report
-    verify_priors.gate_window_ms            survives   -> measure_gate_window_ms
-    verify_priors.pilot_transfer_reference  survives   -> verify_pilot_transfer_prior
-    the commanded delta                     LOST       (defect, #2291 Phase 3)
-    the rollback seam                       LOST       (defect, #2291 Phase 3)
+    verify_priors.predicted_sum             survives  -> measure_predicted_sum
+    verify_priors.predicted_spec            survives  -> measure_predicted_spec_report
+    verify_priors.gate_window_ms            survives  -> measure_gate_window_ms
+    verify_priors.pilot_transfer_reference  survives  -> verify_pilot_transfer_prior
+    verify_priors.commanded_delta           survives  -> measure_commanded_delta
+    the rollback seam                       bound on the stage that VERIFIES
+
+Which stage binds which seam is no longer decided at two hand-assembled call
+sites: ``bind_v2_stage_seams`` builds both, from the ``V2StageCapabilities``
+declarations, and this module pins those declarations too.
 
 Related-but-different coverage, deliberately not duplicated here:
 ``tests/test_correction_crossover_v2_endpoints.py`` pins the host-owned apply
@@ -44,7 +52,8 @@ from typing import Any
 
 import pytest
 
-from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
+from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
+from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.crossover_v2_flow import (
@@ -326,6 +335,20 @@ _PILOT_AT = 1_760_000_000.0
 _GATE_WINDOW_MS = 6.5
 _PREDICTED_SPEC = {"overall_passed": True, "bands": [{"f_lo_hz": 1000.0, "passed": True}]}
 
+# A commanded delta shaped like one the fit really emits — a rising shelf, with
+# a quiet skirt at the bottom. Ten of its thirteen bins clear
+# ``DELTA_PROBE_MIN_COMMANDED_DB`` (0.5 dB), which is what puts it over
+# ``DELTA_PROBE_MIN_BINS`` (8) and lets the probe reach a verdict rather than
+# report ``nothing_commanded``. A flat or tiny delta would rehydrate just as
+# well and prove nothing about the probe downstream of it.
+_COMMANDED_FREQS_HZ = [
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0,
+    2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
+]
+_COMMANDED_DELTA_DB = [
+    0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.0, 2.2, 2.4, 2.5, 2.5, 2.5, 2.5,
+]
+
 
 def _seed_applied_stage_1_state() -> dict[str, Any]:
     state = {
@@ -341,6 +364,10 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
                 "magnitude_db": [-1.0, -0.5, 0.5, 1.0],
             },
             "predicted_spec": dict(_PREDICTED_SPEC),
+            "commanded_delta": {
+                "freqs_hz": list(_COMMANDED_FREQS_HZ),
+                "delta_db": list(_COMMANDED_DELTA_DB),
+            },
             "gate_window_ms": _GATE_WINDOW_MS,
             "pilot_transfer_reference": {
                 "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
@@ -356,12 +383,20 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_four_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has FOUR keys.
+def test_persisted_verify_priors_carries_exactly_the_five_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has FIVE keys.
 
-    Named exhaustively rather than checked for presence, because the whole
-    point of the pin is that a fifth key (a commanded delta, say) is a
+    Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
+
+    **Deliberate widening (#2291 Phase 3a): ``commanded_delta``.** It is the
+    fifth key this pin's earlier four-key form anticipated by name — the delta
+    probe's commanded axis, produced by the stage-1 fit and consumed by the
+    stage-2 probe, which is a different process against a conductor that never
+    ran a fit. The top-level payload is unchanged by that widening: the new key
+    is nested inside ``verify_priors``, so
+    ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
+    pins the same set.
     """
     _conductor, state = _stage_1(monkeypatch)
 
@@ -370,6 +405,7 @@ def test_persisted_verify_priors_carries_exactly_the_four_bridge_keys(monkeypatc
         "predicted_spec",
         "gate_window_ms",
         "pilot_transfer_reference",
+        "commanded_delta",
     }
 
 
@@ -398,21 +434,25 @@ def test_all_four_verify_priors_reach_the_stage_2_conductor(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 2. what is LOST — the commanded delta (CURRENT DEFECT, #2291 Phase 3)
+# 2. the commanded delta — CROSSES (was a defect until #2291 Phase 3a)
 # --------------------------------------------------------------------------- #
 
 
-def test_a_commanded_delta_is_not_persisted_by_the_bridge(monkeypatch):
-    """CURRENT DEFECT (#2291 Phase 3): the commanded delta reaches no state key.
+def test_a_commanded_delta_is_persisted_by_the_bridge(monkeypatch):
+    """The commanded delta reaches a durable state key, values intact.
 
     The delta probe's commanded axis — ``_commanded_delta``'s
     ``(freqs_hz, delta_db)``, the shape the applied filters ask the speaker for
-    — is produced in stage 1 and consumed in stage 2, but the durable state has
-    no key for it, so it dies with the measuring session's process.
+    — is produced in stage 1 and consumed in stage 2. Before #2291 Phase 3a the
+    durable state had no key for it, so it died with the measuring session's
+    process; this is the write half of the repair.
 
-    The conductor here is given a real commanded delta before the persist, so
-    the pin says "a value that EXISTS is dropped" rather than the vacuous "a
-    conductor with nothing to persist persisted nothing".
+    The VALUES are asserted, not the key's presence: a persist that wrote the
+    right key with someone else's numbers in it would be exactly as broken as
+    one that wrote nothing, and the whole point of a bridge pin is that what
+    arrives is what left. The key is named ``delta_db`` rather than
+    ``magnitude_db`` because the curve is a difference of two dB predictions,
+    not a magnitude.
     """
     conductor, _state = _stage_1(monkeypatch)
     _install_commanded_delta(conductor, ([500.0, 4000.0], [0.25, -1.75]))
@@ -421,58 +461,205 @@ def test_a_commanded_delta_is_not_persisted_by_the_bridge(monkeypatch):
     v2host.persist_conductor_state(conductor, failure_code=None)
     state = v2host.load_v2_state() or {}
 
-    assert "commanded_delta" not in state["verify_priors"]
-    assert not [key for key in state if "commanded" in key]
+    assert state["verify_priors"]["commanded_delta"] == {
+        "freqs_hz": [500.0, 4000.0],
+        "delta_db": [0.25, -1.75],
+    }
 
 
-def test_stage_2_conductor_has_no_commanded_delta_and_no_delta_probe(monkeypatch):
-    """CURRENT DEFECT (#2291 Phase 3): stage 2 cannot run the delta probe.
+def test_a_conductor_with_no_commanded_delta_persists_none(monkeypatch):
+    """The control for the pin above: absent stays absent, never invented.
 
-    Two assertions, one mechanism. The input is absent
-    (``measure_commanded_delta is None`` — there is no ctor argument for it on
-    this path, and nothing on disk to fill one), and the consequence is that
-    the probe reports unavailable even once its other input is in hand. Per
-    ``_run_delta_probe``'s own docstring, ``None`` here is
-    ``VERDICT_UNAVAILABLE``: no evidence to refuse on, and no permission
-    granted either — so today's stage 2 grades a correction with the
+    ``None`` is the probe's ``VERDICT_UNAVAILABLE`` — no evidence to refuse on,
+    and no permission granted either — and a trims-only candidate legitimately
+    commands nothing. A persist that manufactured an empty curve here would
+    hand stage 2 a commanded axis the fit never produced.
+    """
+    conductor, _state = _stage_1(monkeypatch)
+    assert conductor.measure_commanded_delta is None
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    assert (v2host.load_v2_state() or {})["verify_priors"]["commanded_delta"] is None
+
+
+def test_stage_2_rehydrates_the_commanded_delta_and_the_delta_probe_runs(monkeypatch):
+    """The read half: stage 2 gets the axis, and the probe reaches a verdict.
+
+    Two assertions, one mechanism — the mirror of the shape this pin held while
+    the bridge was broken. The input arrives with the seeded numbers on it, and
+    the consequence is that the probe RUNS once its other input is in hand,
+    instead of reporting unavailable and grading the correction with the
     shortfall-vs-model-error discriminator switched off.
+
+    The tracking curve is measured == predicted, so the graded error is zero
+    and the verdict is ``matched``. That is a real verdict off a real
+    classification, not a "not None" that any object would satisfy —
+    ``test_the_rehydrated_commanded_delta_is_what_the_probe_grades_against``
+    below moves the measurement away from the prediction and shows the verdict
+    follows.
     """
     _seed_applied_stage_1_state()
 
     conductor, _state = _stage_2(monkeypatch)
 
-    assert conductor.measure_commanded_delta is None
-    tracked = (
-        [500.0, 1000.0, 2000.0, 4000.0],
-        [-1.0, -0.6, 0.4, 0.8],
-        [-1.0, -0.5, 0.5, 1.0],
+    freqs, delta = conductor.measure_commanded_delta
+    assert list(freqs) == _COMMANDED_FREQS_HZ
+    assert list(delta) == _COMMANDED_DELTA_DB
+
+    predicted = [-1.0, -0.9, -0.7, -0.4, 0.0, 0.3, 0.6, 0.8, 1.0, 1.1, 1.1, 1.1, 1.1]
+    probe = _delta_probe_given_a_tracking_curve(
+        conductor, (list(_COMMANDED_FREQS_HZ), list(predicted), list(predicted)),
     )
-    assert _delta_probe_given_a_tracking_curve(conductor, tracked) is None
+
+    assert probe is not None
+    assert probe.verdict == delta_probe.VERDICT_MATCHED
+    assert conductor.delta_probe is probe
+
+
+def test_the_rehydrated_commanded_delta_is_what_the_probe_grades_against(monkeypatch):
+    """The rehydrated axis is USED, not merely carried.
+
+    Same seeded bridge, same tracking grid, one change: the speaker measured
+    2 dB below the prediction across the band. That is a shortfall against what
+    the filters commanded, and it has to stop being ``matched`` — otherwise the
+    curve could be arriving intact and being ignored, which reads identically
+    to a working probe from the assertion above alone.
+    """
+    _seed_applied_stage_1_state()
+
+    conductor, _state = _stage_2(monkeypatch)
+
+    predicted = [-1.0, -0.9, -0.7, -0.4, 0.0, 0.3, 0.6, 0.8, 1.0, 1.1, 1.1, 1.1, 1.1]
+    measured = [value - 2.0 for value in predicted]
+    probe = _delta_probe_given_a_tracking_curve(
+        conductor, (list(_COMMANDED_FREQS_HZ), measured, list(predicted)),
+    )
+
+    assert probe is not None
+    assert probe.verdict != delta_probe.VERDICT_MATCHED
+
+
+def test_a_pre_phase_3a_state_file_leaves_the_probe_unavailable(monkeypatch):
+    """A state file written before this key shipped stays honest.
+
+    The era case, and the reason ``requires`` is observability rather than a
+    gate: a household mid-journey across the deploy has an applied correction
+    and a state file with no commanded axis in it. Stage 2 still opens and
+    still verifies — it simply cannot run the delta probe, which is the exact
+    pre-Phase-3a behaviour and is reported as unavailable rather than passed.
+    """
+    state = _seed_applied_stage_1_state()
+    del state["verify_priors"]["commanded_delta"]
+    v2host.save_v2_state(state)
+
+    conductor, _state = _stage_2(monkeypatch)
+
+    assert conductor.measure_commanded_delta is None
+    probe = _delta_probe_given_a_tracking_curve(
+        conductor,
+        (list(_COMMANDED_FREQS_HZ), list(_COMMANDED_DELTA_DB), list(_COMMANDED_DELTA_DB)),
+    )
+    assert probe is None
     assert conductor.delta_probe is None
 
 
+def test_the_commanded_delta_survives_a_real_stage_1_persist_into_stage_2(monkeypatch):
+    """END TO END through the two REAL preparers, with no seeded state file.
+
+    Every other pin in this section seeds one side of the bridge by hand. This
+    one drives the whole channel: stage 1 opens for real, is given a commanded
+    delta, and persists; the host then marks it applied exactly as the apply
+    endpoint does; stage 2 opens for real and reads whatever stage 1 actually
+    left behind. If the write shape and the read shape ever disagree — a
+    renamed key, a changed serialization — the two half-tests above would both
+    still pass and only this one would fail.
+    """
+    conductor, _state = _stage_1(monkeypatch)
+    _install_commanded_delta(
+        conductor, (list(_COMMANDED_FREQS_HZ), list(_COMMANDED_DELTA_DB)),
+    )
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    applied = v2host.load_v2_state() or {}
+    applied["applied"] = True
+    applied["candidate"] = {"fingerprint": "fp-stage-1"}
+    v2host.save_v2_state(applied)
+
+    stage_2_conductor, _state2 = _stage_2(monkeypatch)
+
+    freqs, delta = stage_2_conductor.measure_commanded_delta
+    assert list(freqs) == _COMMANDED_FREQS_HZ
+    assert list(delta) == _COMMANDED_DELTA_DB
+
+
 # --------------------------------------------------------------------------- #
-# 3. what is LOST — the rollback seam (CURRENT DEFECT, #2291 Phase 3)
+# 3. the rollback seam — bound where VERIFY runs (#2291 Phase 3a)
 # --------------------------------------------------------------------------- #
 
 
-def test_only_stage_1_binds_the_rollback_seam(monkeypatch):
-    """CURRENT DEFECT (#2291 Phase 3): rollback authority is on the wrong stage.
+def test_only_stage_2_binds_the_rollback_seam(monkeypatch):
+    """Rollback authority sits on the stage that reaches a verdict.
 
-    ``bind_delta_probe_rollback`` is wired into exactly one set of seams — the
-    STAGE-1 ones, whose own comment says that session carries no VERIFY. Stage
-    2 is the session that actually reaches a post-apply verdict, and it is the
-    one that cannot press Undo: per ``_delta_probe_refusal``, a conductor with
-    no rollback seam still refuses, but under
-    ``REASON_CORRECTION_ROLLBACK_FAILED`` — the copy that tells the household
-    the correction is STILL APPLIED.
+    ``bind_delta_probe_rollback`` is wired into exactly one set of seams, and
+    #2291 Phase 3a moved it to the right one. Stage 1 carries no VERIFY, so it
+    can never reach the delta probe that presses this button; stage 2 is the
+    session that produces the post-apply verdict. Per ``_delta_probe_refusal``,
+    a conductor with no rollback seam still refuses — but under
+    ``REASON_CORRECTION_ROLLBACK_FAILED``, the copy that tells the household
+    the correction is STILL APPLIED. That sentence is now true only when the
+    restore genuinely failed, rather than being the only sentence available.
+
+    Both directions, because "stage 2 binds it" alone would keep passing if the
+    seam were bound on both and the duplication is the thing the capability
+    declarations exist to prevent.
     """
     stage_1_conductor, _state = _stage_1(monkeypatch)
     _seed_applied_stage_1_state()
     stage_2_conductor, _state2 = _stage_2(monkeypatch)
 
-    assert callable(_flow_seams(stage_1_conductor).rollback)
-    assert _flow_seams(stage_2_conductor).rollback is None
+    assert _flow_seams(stage_1_conductor).rollback is None
+    assert callable(_flow_seams(stage_2_conductor).rollback)
+
+
+def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
+    """The other asymmetry, pinned the same way and for the same reason.
+
+    A level-frame finding is banked only by the MEASURE candidate's own gate
+    (#1866), and stage 2 builds no MEASURE candidate. The two asymmetries now
+    live in one place (``V2StageCapabilities.provides``), so this pins the
+    second one alongside the first rather than leaving it implicit.
+    """
+    stage_1_conductor, _state = _stage_1(monkeypatch)
+    _seed_applied_stage_1_state()
+    stage_2_conductor, _state2 = _stage_2(monkeypatch)
+
+    assert callable(_flow_seams(stage_1_conductor).publish_findings)
+    assert _flow_seams(stage_2_conductor).publish_findings is None
+
+
+def test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile(monkeypatch):
+    """#1863's neighbour: an automatic rollback with nothing to roll back to.
+
+    Binding rollback on stage 2 means it can now actually FIRE, so what it does
+    on a first-ever apply — where no ``pre_apply_profile`` was stashed — is part
+    of this PR's contract rather than a hypothetical. The seam reports "not
+    restored" and does NOT raise: ``handle_v2_restore`` refuses with
+    ``CrossoverV2Refused``, which is the ordinary outcome for an automatic
+    caller, and ``bind_delta_probe_rollback`` catches exactly that. The verdict
+    that asked for the rollback then still reaches the household under
+    ``REASON_CORRECTION_ROLLBACK_FAILED``, with the Undo button on the screen.
+
+    Issue #1863 proper — not OFFERING Undo when no restorable profile exists —
+    is a render-side affordance question on the done / verify-fail / applied-
+    failure screens, and is untouched here.
+    """
+    _seed_applied_stage_1_state()  # applied, but no ``pre_apply_profile``
+    conductor, _state = _stage_2(monkeypatch)
+
+    rollback = _flow_seams(conductor).rollback
+
+    assert rollback("model_error") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -571,6 +758,180 @@ def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     _conductor2, stage_2_state = _stage_2(monkeypatch)
 
     assert set(stage_2_state) == _PERSISTED_TOP_LEVEL_KEYS
+
+
+# --------------------------------------------------------------------------- #
+# 6. the stage declarations themselves (#2291 Phase 3a)
+#
+# ``bind_v2_stage_seams`` builds both stage shapes from these two constants, so
+# they are now the single place "which stage binds what" is decided. Pinning
+# them is pinning the decision; the seam assertions in section 3 pin that the
+# preparers really route through it.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_two_stages_declare_the_capabilities_that_differ():
+    """Exhaustive per stage, both fields.
+
+    Named as whole sets rather than membership checks, for the same reason the
+    ``verify_priors`` pin is exhaustive: a capability appearing on both stages
+    is the duplication this factory removed, and a capability appearing on
+    neither is a seam that silently stopped being bound.
+    """
+    measure = v2host.STAGE_MEASURE_CAPABILITIES
+    verify = v2host.STAGE_VERIFY_CAPABILITIES
+
+    assert measure.stage == "measure"
+    assert measure.provides == {v2host.CAPABILITY_FINDINGS}
+    assert measure.requires == frozenset()
+
+    assert verify.stage == "verify"
+    assert verify.provides == {v2host.CAPABILITY_ROLLBACK}
+    assert verify.requires == {
+        v2host.CAPABILITY_COMMANDED_DELTA, v2host.CAPABILITY_PREDICTED_SUM,
+    }
+
+
+def test_no_capability_is_provided_by_both_stages():
+    """The property the factory exists to hold, stated as a property.
+
+    The rollback defect was one seam bound in the wrong place; the shape of the
+    bug was two hand-assembled lists free to disagree. This asserts the thing
+    that was actually wrong — an overlap — rather than re-listing the members
+    a third time.
+    """
+    measure = v2host.STAGE_MEASURE_CAPABILITIES
+    verify = v2host.STAGE_VERIFY_CAPABILITIES
+
+    assert not (measure.provides & verify.provides)
+
+
+def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, caplog):
+    """One declaration line per stage open, plus a warning when a prior is absent.
+
+    The observable half of the repair. A stage that opens without a required
+    prior still runs — ``requires`` is observability, not a gate — so without
+    this line the resulting ``unavailable`` verdict would have nothing anywhere
+    saying why. Asserted on the rendered event line because that string is what
+    a support read actually greps for.
+    """
+    state = _seed_applied_stage_1_state()
+    del state["verify_priors"]["commanded_delta"]
+    v2host.save_v2_state(state)
+
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        _conductor, _state = _stage_2(monkeypatch)
+
+    lines = [record.getMessage() for record in caplog.records]
+    declared = [
+        line for line in lines
+        if "event=correction.crossover_v2_stage_capabilities" in line
+    ]
+    assert len(declared) == 1
+    assert "stage=verify" in declared[0]
+    assert "provides=rollback" in declared[0]
+    assert "requires=commanded_delta,predicted_sum" in declared[0]
+    assert "missing=commanded_delta" in declared[0]
+
+    unavailable = [
+        line for line in lines
+        if "event=correction.crossover_v2_stage_capability_unavailable" in line
+    ]
+    assert len(unavailable) == 1
+    assert "missing=commanded_delta" in unavailable[0]
+
+
+def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
+    monkeypatch, caplog,
+):
+    """The control: the warning is about a real absence, not about opening.
+
+    Without this, the assertion above would keep passing if the unavailable
+    event fired unconditionally — which would make the one line a support read
+    depends on mean nothing.
+    """
+    _seed_applied_stage_1_state()
+
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        _conductor, _state = _stage_2(monkeypatch)
+
+    lines = [record.getMessage() for record in caplog.records]
+    declared = [
+        line for line in lines
+        if "event=correction.crossover_v2_stage_capabilities" in line
+    ]
+    assert len(declared) == 1
+    assert "requires=commanded_delta,predicted_sum" in declared[0]
+    assert 'missing=""' in declared[0]
+    assert not [
+        line for line in lines
+        if "event=correction.crossover_v2_stage_capability_unavailable" in line
+    ]
+
+
+def test_stage_1_declares_itself_too(monkeypatch, caplog):
+    """Both stages declare; the measuring one needs nothing handed to it."""
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        _conductor, _state = _stage_1(monkeypatch)
+
+    declared = [
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_stage_capabilities" in record.getMessage()
+    ]
+    assert len(declared) == 1
+    assert "stage=measure" in declared[0]
+    assert "provides=findings" in declared[0]
+    # logfmt renders an empty field value as ``""`` — stage 1 is the first
+    # stage, so it needs nothing handed to it and can be missing nothing.
+    assert 'requires=""' in declared[0]
+    assert 'missing=""' in declared[0]
+
+
+# --------------------------------------------------------------------------- #
+# 7. the commanded delta's persist-time reduction
+# --------------------------------------------------------------------------- #
+
+
+def test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum():
+    """The grid agreement ``_decimate_delta``'s docstring promises.
+
+    The two curves cross the bridge together, and their block rule lives in
+    ``_decimate_to_analysis_grid`` but is restated in ``_decimate_delta`` (which
+    must average in dB, not in linear power, because it reduces a DIFFERENCE of
+    dB curves). This is the guard on that restatement: if the shared owner's
+    blocking ever changes, the two persisted curves stop lining up and this
+    fails.
+    """
+    import numpy as np
+
+    freqs = np.linspace(20.0, 24000.0, 3000)
+    curve = np.sin(np.log10(freqs) * 7.0)
+
+    reduced_delta = v2host._decimate_delta((freqs, curve))
+    reduced_sum = v2host._decimate_sum((freqs, curve))
+
+    assert len(reduced_delta["freqs_hz"]) <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert reduced_delta["freqs_hz"] == reduced_sum["freqs_hz"]
+
+
+def test_the_commanded_delta_is_block_averaged_in_db_not_in_power():
+    """The domain choice, pinned by the case that distinguishes them.
+
+    A curve that swings symmetrically about 0 dB inside one block has an
+    arithmetic mean of 0 and a POWER mean strictly above it (Jensen), so the two
+    estimators are separable here by construction. Against a commanded floor of
+    0.5 dB, that difference decides which bins the probe grades at all.
+    """
+    import numpy as np
+
+    freqs = np.linspace(20.0, 24000.0, 2 * v2host.MAX_PERSISTED_SUM_POINTS)
+    swing = np.tile([6.0, -6.0], v2host.MAX_PERSISTED_SUM_POINTS)
+
+    reduced_delta = v2host._decimate_delta((freqs, swing))
+    reduced_sum = v2host._decimate_sum((freqs, swing))
+
+    assert reduced_delta["delta_db"] == pytest.approx([0.0] * len(swing[::2]))
+    assert reduced_sum["magnitude_db"][0] > 1.0
 
 
 def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
