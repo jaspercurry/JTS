@@ -38,11 +38,23 @@
 //! # What this crate is NOT
 //!
 //! No I/O, no ALSA, no threads, no allocation on the hot path beyond the output
-//! `Vec` the caller asked for. It is fed interleaved `i16` and a ratio and
-//! returns interleaved `i16`; *where* the samples come from and *how* the ratio
-//! is decided (a queue depth, an `snd_pcm_delay` reading) are the caller's
+//! `Vec` the caller asked for. It is fed interleaved samples and a ratio and
+//! returns interleaved samples; *where* they come from and *how* the ratio is
+//! decided (a queue depth, an `snd_pcm_delay` reading) are the caller's
 //! concern. Same doctrine as the sibling [`jasper_clock`] crate, so it compiles
 //! and unit-tests on any host.
+//!
+//! # Sample width
+//!
+//! [`AudioRing`] stores **i32 spine-scale** samples and
+//! [`SincTable::interpolate`] returns its raw `f64` accumulator, so the ONE
+//! kernel serves both widths and the caller owns its own single rounding: an
+//! S16 producer pushes via [`AudioRing::push_interleaved_narrow`] and narrows
+//! back with [`spine_acc_to_i16`], a wide one pushes [`AudioRing::push_interleaved`]
+//! and rounds with [`clamp_i32`]. The narrow round trip is bit-transparent —
+//! [`SPINE_SCALE_F64`] explains why, and `golden_vector_is_stable` proves it
+//! end to end. [`BlockResampler`] and [`resample_i16`] keep their `i16`-in,
+//! `i16`-out signatures on top of that.
 //!
 //! # The capture-follower ratio convention
 //!
