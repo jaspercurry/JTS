@@ -45,7 +45,7 @@ def _walked_to_measure():
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    analysis = _eligible_measure_analysis(c._program_for_phase(flow.PHASE_MEASURE))
+    analysis = _eligible_measure_analysis(c.program_for_phase(flow.PHASE_MEASURE))
     return c, analysis
 
 
@@ -92,7 +92,7 @@ def test_the_request_carries_the_measure_programs_own_sweep_bands():
     speaker was never swept over.
     """
     c, analysis = _walked_to_measure()
-    program = c._program_for_phase(flow.PHASE_MEASURE)
+    program = c.program_for_phase(flow.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
 
     seen: list[iv.LinearizationRequest] = []
@@ -128,7 +128,7 @@ def test_the_request_carries_the_two_facts_the_analysis_cannot_know():
         c = _conductor(fakes, post_apply_verifies=verifies)
         _run_phase(c, 1, 1)
         analysis = _eligible_measure_analysis(
-            c._program_for_phase(flow.PHASE_MEASURE)
+            c.program_for_phase(flow.PHASE_MEASURE)
         )
 
         seen: list[iv.LinearizationRequest] = []

@@ -125,7 +125,7 @@ def _refuse_at_cloud_measure() -> dict:
     """Drive one prompted pre-apply cloud position with a non-linear capture.
 
     A cloud position plays the summed VERIFY program, so ``FakeSeams`` routes
-    it through the ``verify`` analysis factory — see ``_program_for_phase``.
+    it through the ``verify`` analysis factory — see ``program_for_phase``.
     """
 
     fakes = FakeSeams()

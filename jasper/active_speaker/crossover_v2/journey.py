@@ -93,7 +93,7 @@ PHASE_LATERAL = "lateral"
 #
 # Membership in ``SUMMED_SWEEP_PHASES`` (which stays with the flow, because it
 # selects an excitation program rather than a place in the walk) is what makes
-# the pair comparable at all: it routes ``_program_for_phase`` to the very same
+# the pair comparable at all: it routes ``program_for_phase`` to the very same
 # ``_verify_program`` object, so the two captures share a ``program_id`` — a
 # SHA-256 over the whole excitation schedule including every segment's gain —
 # and that equality IS the comparability check

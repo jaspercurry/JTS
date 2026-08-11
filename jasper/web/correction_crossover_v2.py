@@ -4727,7 +4727,7 @@ def bind_production_play(
         artifact = evidence_store.identify_artifact(wav_rel)
         if phase in SUMMED_SWEEP_PHASES:
             # Issue #1976. Every SUMMED_SWEEP_PHASES phase plays the SAME
-            # excitation object — ``_program_for_phase`` in
+            # excitation object — ``program_for_phase`` in
             # crossover_v2_flow.py returns ``self._verify_program`` for
             # VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike — so a
             # measure-stage session that walks a pre-apply cloud group

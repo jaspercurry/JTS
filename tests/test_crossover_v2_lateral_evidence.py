@@ -496,7 +496,7 @@ def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity()
         range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1)
     )
     grid = lateral_evidence_grid_hz()
-    program = c._program_for_phase(PHASE_LATERAL)
+    program = c.program_for_phase(PHASE_LATERAL)
     bands = {
         s.role: (s.f1_hz, s.f2_hz)
         for s in program.segments if s.kind == KIND_SWEEP and s.role
@@ -538,7 +538,7 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)
     _walk(c, through=FIRST_LATERAL_INDEX)
-    program = c._program_for_phase(PHASE_LATERAL)
+    program = c.program_for_phase(PHASE_LATERAL)
     pilots = [s for s in program.segments if s.kind == "pilot" and s.role]
     assert pilots, "the fixture must actually carry a leading pilot pair"
     honest = flow._primary_sweep_bands(program)

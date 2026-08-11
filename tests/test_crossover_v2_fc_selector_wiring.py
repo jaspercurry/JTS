@@ -443,7 +443,7 @@ def test_the_sweep_leaves_no_candidate_state_on_the_conductor():
     c = _selector_conductor(fakes)
     _run_phase(c, 1, 1)
     c._sweep_fc_candidates(
-        c._program_for_phase(PHASE_MEASURE), object(), c._measure_analysis,
+        c.program_for_phase(PHASE_MEASURE), object(), c._measure_analysis,
     )
     assert c._fc_evaluations, "the sweep must still have produced evidence"
     for name in retired:

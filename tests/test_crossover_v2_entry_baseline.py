@@ -205,8 +205,8 @@ def test_the_entry_baseline_replays_the_verify_program_object_itself():
     # CHECK's gain solve is what composes the programs; run it for real.
     _run_phase(conductor, 1, 1)
 
-    entry_program = conductor._program_for_phase(PHASE_ENTRY_BASELINE)
-    verify_program = conductor._program_for_phase(PHASE_VERIFY)
+    entry_program = conductor.program_for_phase(PHASE_ENTRY_BASELINE)
+    verify_program = conductor.program_for_phase(PHASE_VERIFY)
 
     assert entry_program is verify_program
     assert entry_program is not None
@@ -283,7 +283,7 @@ def test_a_usable_capture_records_a_baseline_stamped_with_program_and_mark():
     assert outcome["accepted"] is True
     baseline = conductor.measure_entry_baseline
     assert baseline is not None
-    analysis = fakes.verify(conductor._program_for_phase(PHASE_ENTRY_BASELINE))
+    analysis = fakes.verify(conductor.program_for_phase(PHASE_ENTRY_BASELINE))
     assert baseline.program_id == analysis.program_id
     assert baseline.reference_mark == REFERENCE_MARK_DESIGN_AXIS
     # A real reduced curve, not an empty husk.
