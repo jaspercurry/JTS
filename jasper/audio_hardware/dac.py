@@ -473,6 +473,12 @@ HIFIBERRY_DAC8X = DacProfile(
     # specific evidence about a USB path and not an I2S result. It transfers as
     # caution — a reason not to spend a soak window probing downward — not as
     # evidence about this board.
+    #
+    # Consequence: this also shifts jts3's corpus-mode chip-AEC alignment
+    # ~58.7 ms, since the chip's reference geometry (16 kHz, 128/256) is
+    # untouched while the DAC leg's presentation latency moves — corpus mode
+    # has no alignment check, so its fixed JASPER_AEC_CORPUS_CHIP_SYS_DELAY
+    # (picked at the old geometry) needs re-deriving. Tracked as #2327.
     latency_floor=LatencyFloor(
         camilla_chunksize=256,
         camilla_target_level=1536,
