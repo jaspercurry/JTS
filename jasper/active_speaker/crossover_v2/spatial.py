@@ -89,6 +89,7 @@ __all__ = [
     "entry_baseline_screens",
     "group_position_floor",
     "geometry_retake",
+    "retained_take_id",
     "cloud_position_record",
     "entry_baseline_record",
     "boost_excluded_bands_hz",
@@ -480,6 +481,17 @@ def geometry_retake(
 # --------------------------------------------------------------------------- #
 
 
+def retained_take_id(position_id: str, attempt: int) -> str:
+    """Mint the identity shared by retained-position record builders.
+
+    The record owns this shape: once ``take_id`` is present, storage consumers
+    persist it verbatim rather than rebuilding it.  The helper is also the one
+    compatibility fallback for direct retention callers whose older metadata
+    omits the key, so that fallback cannot become another shape owner.
+    """
+    return f"{position_id}_a{int(attempt):02d}"
+
+
 def cloud_position_record(
     *,
     position_id: str,
@@ -535,7 +547,7 @@ def cloud_position_record(
         "phase": phase,
         "index": index,
         "attempt": attempt,
-        "take_id": f"{position_id}_a{int(attempt):02d}",
+        "take_id": retained_take_id(position_id, attempt),
         "prompt": prompt,
         "wide": wide,
         # The position's named question (attribution-stage plan §5's promotion
@@ -587,7 +599,7 @@ def entry_baseline_record(
     graph it went through (``graph_fingerprint``).  A before→after claim is only
     as good as those three matching on both sides.
     """
-    take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
+    take_id = retained_take_id(f"{PHASE_ENTRY_BASELINE}_{index:02d}", attempt)
     return {
         "position_id": take_id,
         "phase": PHASE_ENTRY_BASELINE,

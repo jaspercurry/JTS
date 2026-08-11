@@ -3985,7 +3985,7 @@ def bind_position_retention(
 
     Placement follows the shipped bundle scheme —
     ``bundles.capture_artifact_relpath("summed", group, role)`` with the TAKE
-    id (position id + attempt) as ``group``, so a cloud WAV lands beside the
+    id from the position record as ``group``, so a cloud WAV lands beside the
     flow's other summed captures rather than in a private layout — and the
     metadata sidecar
     carries the prompt the operator was given, which is the only durable record
@@ -4001,24 +4001,42 @@ def bind_position_retention(
     continues so a full disk cannot turn an acoustically-good position into a
     retake. Keeping the boundary there rather than here means the strictness the
     store was built for is preserved for every OTHER caller.
+
+    The record owns the take-id shape.  Direct callers predating that field may
+    omit it; only that missing-key case falls back to the record owner's minting
+    helper and writes the resolved id into the sidecar.  A present malformed id
+    is rejected rather than silently replaced, because replacement would make
+    the conductor's identity and this write-once path disagree again.
     """
     from jasper.active_speaker.bundles import capture_artifact_relpath
+    from jasper.active_speaker.crossover_v2.spatial import retained_take_id
 
     def retain_position(
         position_id: str, result: Any, metadata: Mapping[str, Any]
     ) -> None:
         wav = getattr(result, "wav", None)
         record = dict(metadata)
-        # A geometry retake re-uses its position id — same prompted spot,
-        # measured again from further out — so the id alone does NOT identify a
-        # take. The evidence store is write-once (a repeated path is a
-        # PATH_CONFLICT refusal), which would have dropped the retake's sidecar
-        # and left the REPLACED take as the only record of a curve that is not
-        # in the cloud. Qualify by attempt: every take gets its own sidecar,
-        # the superseded one stays on disk as the honest walk record, and the
-        # conductor's `group_position_takes` names which attempt survived.
         attempt = int(record.get("attempt") or 0)
-        take_id = f"{position_id}_a{attempt:02d}"
+        if "take_id" in record:
+            take_id = record["take_id"]
+            if (
+                not isinstance(take_id, str)
+                or not take_id
+                or take_id != take_id.strip()
+                or take_id in {".", ".."}
+                or "/" in take_id
+                or "\\" in take_id
+                or "\x00" in take_id
+            ):
+                raise ValueError(
+                    "metadata take_id must be a non-empty, trimmed single "
+                    "path component"
+                )
+        else:
+            # Compatibility for callers that predate the record field.  Use
+            # the record owner's helper, never a second copy of its shape.
+            take_id = retained_take_id(position_id, attempt)
+            record["take_id"] = take_id
         wav_rel = ""
         if isinstance(wav, (bytes, bytearray)):
             wav_rel = capture_artifact_relpath("summed", take_id, None)

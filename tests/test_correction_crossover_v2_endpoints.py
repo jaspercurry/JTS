@@ -44,6 +44,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2_flow import (
     STAGE1_INCLUDES_CLOUD_MEASURE,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
@@ -1620,22 +1621,9 @@ def test_a_spent_final_slot_close_refusal_ends_the_real_runner_immediately():
     assert "could hear the speaker" not in terminal["reason"]
 
 
-def test_position_retention_survives_a_retake_through_the_real_evidence_store(
-    tmp_path,
-):
-    """The retention seam against the REAL, write-once store — not a lambda.
-
-    Round-1 review blocker B3: every other test substitutes a recorder for
-    ``retain_position``, so nothing exercised the store's write-once contract.
-    Against the real one, two takes of a retaken position used to collide on a
-    single path: the second write was refused (fail-soft, so the session
-    survived) and the ONLY surviving sidecar described the REPLACED take — its
-    wav, its prompt — while the curve actually in the cloud had no record at
-    all. That inverts the forensic honesty the retention bump was paid for.
-
-    What this pins: both takes persist, under distinguishable paths, each
-    describing itself.
-    """
+@pytest.fixture
+def real_position_retention(tmp_path):
+    """The production retention seam bound to its real write-once store."""
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
@@ -1654,6 +1642,155 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     )
     refs: dict = {}
     retain = v2host.bind_position_retention(store, "cap_retake_session", refs)
+    return Path(info["bundle_dir"]), refs, retain
+
+
+def _cloud_position_record(*, position_id: str, index: int, attempt: int):
+    return spatial.cloud_position_record(
+        position_id=position_id,
+        phase=PHASE_CLOUD_MEASURE,
+        index=index,
+        attempt=attempt,
+        prompt="Stand at the marked position.",
+        wide=False,
+        role="onax",
+        captured_at=1.0,
+        session_id="cap_retake_session",
+        gate_window_ms=8.0,
+        gate_floor_source="reflection",
+        gate_disclosure="A reflection set the gate.",
+        validity_floor_hz=140.0,
+        gating_applied=True,
+        summed_ripple_db=1.0,
+        glitch_detected=False,
+        wav_sha256="cloud-sha",
+    )
+
+
+def test_the_position_record_shape_names_the_sidecar_path(
+    real_position_retention,
+):
+    """The spatial record's take-id shape, not a host derivation, names JSON.
+
+    Mutation pin: changing ``retained_take_id`` in ``spatial.py`` must change
+    the path below and therefore make this independent golden expectation red.
+    """
+    bundle_dir, _refs, retain = real_position_retention
+    position_id = f"{PHASE_CLOUD_MEASURE}_03"
+    record = _cloud_position_record(position_id=position_id, index=3, attempt=7)
+
+    retain(position_id, CaptureResult(wav=None), record)
+
+    sidecars = bundle_dir / "evidence" / "v1" / "artifacts" / (
+        "crossover_v2/cap_retake_session/positions"
+    )
+    assert [path.name for path in sidecars.glob("*.json")] == [
+        "cloud_measure_03_a07.json"
+    ]
+
+
+def test_record_take_id_names_the_wav_sidecar_payload_and_refs(
+    real_position_retention,
+):
+    """The record owns every persisted reference, including entry baseline.
+
+    An intentionally different cloud ``take_id`` must move its write-once JSON
+    sidecar and WAV prefix.  The entry record then proves the same seam does not
+    append its attempt a second time.
+    """
+    bundle_dir, refs, retain = real_position_retention
+    cloud_position_id = f"{PHASE_CLOUD_MEASURE}_04"
+    cloud = _cloud_position_record(
+        position_id=cloud_position_id, index=4, attempt=7
+    )
+    cloud["take_id"] = "cloud_measure_04_record_owned_a07"
+    entry = spatial.entry_baseline_record(
+        index=9,
+        attempt=2,
+        session_id="cap_retake_session",
+        program_id="entry-program",
+        reference_mark="design_axis",
+        graph_fingerprint="entry-graph",
+        captured_at="2026-08-11T00:00:00Z",
+        validity_floor_hz=140.0,
+        gate_window_ms=8.0,
+        summed_ripple_db=1.0,
+        glitch_detected=False,
+        wav_sha256="entry-sha",
+    )
+
+    retain(cloud_position_id, CaptureResult(wav=b"cloud-take"), cloud)
+    retain(str(entry["position_id"]), CaptureResult(wav=b"entry-take"), entry)
+
+    positions_dir = (
+        bundle_dir / "evidence" / "v1" / "artifacts"
+        / "crossover_v2" / "cap_retake_session" / "positions"
+    )
+    expected = {
+        "cloud_measure_04_record_owned_a07": b"cloud-take",
+        "entry_baseline_09_a02": b"entry-take",
+    }
+    assert sorted(path.name for path in positions_dir.glob("*.json")) == [
+        f"{take_id}.json" for take_id in sorted(expected)
+    ]
+    assert not (positions_dir / "cloud_measure_04_a07.json").exists()
+    assert not (positions_dir / "entry_baseline_09_a02_a02.json").exists()
+
+    refs_by_take = {
+        row["take_id"]: row for row in refs["position_artifacts"]
+    }
+    assert set(refs_by_take) == set(expected)
+    for take_id, wav_bytes in expected.items():
+        payload = json.loads((positions_dir / f"{take_id}.json").read_text())
+        ref = refs_by_take[take_id]
+        assert payload["take_id"] == take_id
+        assert ref["take_id"] == take_id
+        assert ref["wav_path"] == payload["wav_path"]
+        assert Path(payload["wav_path"]).name.startswith(f"summed_{take_id}_")
+        assert (bundle_dir / payload["wav_path"]).read_bytes() == wav_bytes
+
+
+@pytest.mark.parametrize(
+    "take_id",
+    [
+        None,
+        7,
+        "",
+        " padded",
+        "padded ",
+        ".",
+        "..",
+        "two/parts",
+        "two\\parts",
+        "bad\x00id",
+    ],
+)
+def test_position_retention_rejects_a_present_malformed_take_id(
+    tmp_path, take_id,
+):
+    """A declared identity is authoritative; malformed never means absent."""
+    retain = v2host.bind_position_retention(
+        SimpleNamespace(bundle_dir=tmp_path), "cap_retake_session", {}
+    )
+
+    with pytest.raises(ValueError, match="non-empty, trimmed single path component"):
+        retain(
+            f"{PHASE_CLOUD_MEASURE}_03",
+            CaptureResult(wav=None),
+            {"attempt": 7, "take_id": take_id},
+        )
+
+
+def test_position_retention_survives_a_retake_through_the_real_evidence_store(
+    real_position_retention,
+):
+    """Missing ``take_id`` keeps the direct-caller compatibility behavior.
+
+    This is the no-op control for callers predating the record field: the
+    fallback uses the spatial owner, inserts the resolved id into each payload,
+    and retains both attempts exactly where they landed before this change.
+    """
+    bundle_dir, refs, retain = real_position_retention
 
     position_id = f"{PHASE_CLOUD_MEASURE}_10"
     base = {
@@ -1683,7 +1820,7 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
 
     # The strict store namespaces every artifact under evidence/v1/artifacts/.
     sidecars = sorted(
-        (Path(info["bundle_dir"]) / "evidence" / "v1" / "artifacts"
+        (bundle_dir / "evidence" / "v1" / "artifacts"
          / "crossover_v2" / "cap_retake_session" / "positions").glob("*.json")
     )
     assert [p.name for p in sidecars] == [
@@ -1697,15 +1834,23 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     assert second["wide"] is True
     # The role rides the sidecar — it is the durable half of the promotion.
     assert first["role"] == "onax" and second["role"] == "offax"
+    assert first["take_id"] == f"{position_id}_a10"
+    assert second["take_id"] == f"{position_id}_a11"
+    assert [row["take_id"] for row in refs["position_artifacts"]] == [
+        f"{position_id}_a10", f"{position_id}_a11",
+    ]
     assert first["wav_path"] != second["wav_path"]
     for record in (first, second):
-        wav = Path(info["bundle_dir"]) / record["wav_path"]
+        assert Path(record["wav_path"]).name.startswith(
+            f"summed_{record['take_id']}_"
+        )
+        wav = bundle_dir / record["wav_path"]
         assert wav.is_file() and wav.stat().st_size == record["wav_bytes"]
     assert (
-        Path(info["bundle_dir"]) / first["wav_path"]
+        bundle_dir / first["wav_path"]
     ).read_bytes() == b"first-take"
     assert (
-        Path(info["bundle_dir"]) / second["wav_path"]
+        bundle_dir / second["wav_path"]
     ).read_bytes() == b"wider-retake"
 
 
