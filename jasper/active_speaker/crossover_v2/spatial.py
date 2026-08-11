@@ -355,6 +355,14 @@ def entry_baseline_screens(
     reduction reads the summed response.  Handing over a
     :class:`CaptureScreens` and then the analysis as well would state one fact
     twice.
+
+    ``stimulus_located`` is nonetheless a separate argument, and the split is
+    the same one :class:`CaptureScreens` makes: it is the answer of a flow-side
+    PREDICATE (``_stimulus_locate_ok``, which also serves MEASURE's and
+    VERIFY's verdicts and so keeps its owner there), whereas ``pilot_snr_ok``
+    and ``linearity_ok`` are plain attributes of the analysis this function was
+    handed.  Reading a field off an argument is not reaching; importing the
+    predicate would be.
     """
     if not stimulus_located:
         return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
