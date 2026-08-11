@@ -1161,19 +1161,28 @@ def test_a_journal_record_detaches_the_fields_it_was_handed():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_role_with_no_crossover_section_is_named_in_the_journal(monkeypatch):
+@pytest.mark.parametrize("shape", ["empty", "absent"])
+def test_a_role_with_no_crossover_section_is_named_in_the_journal(monkeypatch, shape):
     """Legacy's ``no_crossover`` WARNING, emitted where the condition is seen.
 
     ``_branch_crossover_sections`` is legacy's SEVENTH reader of the session
     corner and the disclosure's only production home; it loses its last caller
     at the 2b cutover. The planner emits the same event, with the CANDIDATE's
     corner — which is the point: legacy named the session's.
+
+    Both shapes are exercised because production only produces one of them:
+    ``_fc_candidate_sections`` OMITS a role with no region rather than mapping
+    it to ``()``. Legacy's ``sections_by_role(...).get(role, ())`` collapses the
+    two, and ``sections_for`` must collapse them the same way — otherwise the
+    disclosure would fire in tests and not in the field.
     """
     _install_stubs(monkeypatch, scan_delta_db=0.0)
     both = _sections_at(SELECTED_FC_HZ)
     # The woofer runs full range; the tweeter still carries the corner, so the
     # context is buildable and its invariant holds.
-    one_sided = {"woofer": (), "tweeter": both["tweeter"]}
+    one_sided: dict[str, Any] = {"tweeter": both["tweeter"]}
+    if shape == "empty":
+        one_sided["woofer"] = ()
 
     _outcome, plan = _pure(one_sided)
 
