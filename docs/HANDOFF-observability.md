@@ -324,9 +324,14 @@ per-source probe cadence. Missing or unreadable mux state fails closed as
 it is never presented as healthy idle. A broken post-DSP transport — CamillaDSP
 and outputd on different loopback lanes, so nothing reaches the drivers however
 healthy each daemon looks — is read on the slow cadence from the same
-`transport_coherence_errors` detector `jasper-doctor` uses, on the same evidence
+`transport_coherence_report` detector `jasper-doctor` uses, on the same evidence
 (both statefiles, plus outputd's live capture PCM), and reported as a parked
-signal path rather than "Audio is ready". When the cause is a saved layout the
+signal path rather than "Audio is ready". Only that detector's `errors` reach
+the parked wording. Its `notes` — coherent-but-transient states, today just the
+ACTIVE-ring arm waypoint — are published as `coherence_notes` for whoever reads
+`/state` and deliberately do NOT trip the household card: it is a rung of an
+operator-only ladder the household cannot act on, so `jasper-doctor` is the loud
+surface for it (it warns). When the cause is a saved layout the
 DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
 because no reconcile or restart can clear that one. A CamillaDSP that is simply
 *stopped* is read off the same cached systemd snapshot and reported the same

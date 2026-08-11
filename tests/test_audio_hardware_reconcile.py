@@ -2010,6 +2010,54 @@ def test_reconciler_gets_latency_floor_actions_from_runtime_plan() -> None:
     assert "from jasper.audio_hardware.dac import latency_floor_for" not in text
 
 
+def test_the_note_prefix_the_script_matches_is_the_one_the_cli_prints(
+    tmp_path: Path, capsys
+) -> None:
+    """The bash/Python seam for the waypoint note, pinned from BOTH sides.
+
+    ``validate_outputd_env_stage`` recognises a coherent-but-transient result by
+    the literal prefix the CLI prints on its exit-0 path. Nothing else couples
+    them, so a reworded CLI would silently stop the reconciler logging
+    ``outputd_env_note`` — a silent-failure path, not a loud one. Asserting the
+    literal in the script alone would be half a guard (it would still pass if the
+    CLI changed), so this also PRODUCES a real note and checks the CLI's actual
+    bytes start with the same prefix.
+    """
+    from tests.test_ring_active_endpoint import (
+        _active_topology,
+        _emit_active_baseline,
+        _mono_two_way_preset,
+        _run_validate_outputd_env,
+    )
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    # Matched anywhere, not as a prefix: the capture merges stderr, so a warning
+    # emitted before stdout would push the marker off the front and silently drop
+    # the event.
+    assert '*"ok note="*' in script_text
+    assert 'log_event "outputd_env_note"' in script_text
+
+    # A REAL emitted graph, not a hand-written stanza: the CLI demotes any
+    # active-endpoint graph that fails `outputd_active_lane_decision` to
+    # devices=None, and a stub stanza fails it — so a stub would print a bare
+    # "ok" and make this contract vacuous.
+    topology = _active_topology("mono", "active_2_way")
+    rc, out = _run_validate_outputd_env(
+        tmp_path,
+        capsys,
+        graph_yaml=_emit_active_baseline(
+            _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE
+        ),
+        topology=topology,
+        coupling="loopback",
+        marker=None,
+    )
+
+    assert rc == 0, out
+    assert out.startswith("ok note="), out
+
+
 def test_outputd_env_validation_rejects_active_writer_passive_reader(
     tmp_path: Path,
     capsys,
@@ -2167,9 +2215,24 @@ def test_reconcile_usb_low_latency_route_emits_content_buffer(tmp_path: Path):
     assert "outputd_content_buffer_frames=1536" in result.stderr
 
 
-def test_reconcile_parks_before_innomaker_render_when_candidate_is_invalid(
+def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
     tmp_path: Path,
 ):
+    """A REFUSED reconcile leaves the box running exactly as it was found.
+
+    The candidate is rejected, so ``preserved=1``: the runtime outputd.env is
+    byte-unchanged and the script exits before any render. Nothing this run did
+    reached a daemon, so stopping one would silence a healthy box on behalf of a
+    change that never landed.
+
+    This used to ``park_output_audio`` — stop jasper-voice AND jasper-outputd —
+    and on jts3 (2026-08-11) that took the assistant down with no cue, no doctor
+    delta, and nothing to bring it back; recovery needed a hand-run
+    ``systemctl start jasper-aec-reconcile``
+    (``captures/r7b-jts3-arm-20260811T111338Z``, files 15 and 18). The loud
+    signal is unchanged: exit 78 plus the ``outputd_env_invalid preserved=1``
+    line naming the contradiction.
+    """
     prior_outputd = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
@@ -2216,15 +2279,24 @@ def test_reconcile_parks_before_innomaker_render_when_candidate_is_invalid(
         tmp_path / "outputd.env"
     ).read_text(encoding="utf-8")
     assert "event=audio_hardware_reconcile.outputd_candidate_rejected" in result.stderr
-    assert "action=park_before_asound_render" in result.stderr
+    assert "action=preserve_runtime_env" in result.stderr
+    # The log line PRINTS the promise the assertion below proves.
+    assert "services=unchanged" in result.stderr
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=8" in (
         tmp_path / "outputd.env"
     ).read_text(encoding="utf-8")
     assert not (tmp_path / "asoundrc.jasper.template").exists()
     assert _render_log(tmp_path) == ""
-    assert "stop jasper-voice.service jasper-outputd.service" in _systemctl_log(
-        tmp_path
-    )
+    # No unit stopped, so none can stay stopped. Matched on the systemctl VERB
+    # (argv-token `stop`), never a substring, so a unit name containing "stop"
+    # could not make this pass vacuously.
+    stopped = [
+        line
+        for line in _systemctl_log(tmp_path).splitlines()
+        if "stop" in line.split()
+    ]
+    assert stopped == [], stopped
+    assert "jasper-voice.service" not in _systemctl_log(tmp_path)
 
 
 def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(

@@ -404,14 +404,84 @@ after that is derivation. (Ratified as Option B in the R7b panel round 2;
 it amends E1's earlier coupling-first rollback ordering for the same
 reason the arm needs it.)
 
-**Why every intermediate state is safe.** After step 1 the graph names
-the ring while the coupling is still loopback: CamillaDSP writes a ring
-nobody reads and outputd reads an unwritten ALSA lane — silence, not
-wrong audio. After step 2 the marker is set but the bridge is still
-`direct`, and outputd's ring-path allowlist is scoped to the `shm_ring`
-bridge, so the marker grants nothing and the box keeps playing. Only step
-3 moves audio. A crash between any two steps leaves silence and re-running
-the ladder converges.
+**Why every intermediate state is safe.** After step 1 the graph on disk
+names the ring while the coupling is still loopback. Nothing in steps 1 or
+2 reloads CamillaDSP — `baseline-reemit` writes the artifact and repoints
+the statefile, and `jasper-audio-hardware-reconcile` bounces outputd but
+never `jasper-camilla` — so the *running* Camilla is still on the previous
+graph and the box usually keeps playing through both rungs. At the next
+Camilla load the new graph takes effect: Camilla writes a ring nobody reads
+and outputd reads an unwritten ALSA lane — silence, not wrong audio. After
+step 2 the marker is set but the bridge is still `direct`, and outputd's
+ring-path allowlist is scoped to the `shm_ring` bridge, so the marker grants
+nothing. Only step 3 moves audio. A crash between any two steps leaves
+silence (the restart is itself a Camilla load) and re-running the ladder
+converges.
+
+That split — playing now, silent after the next load — is why the waypoint
+needs a standing surface rather than an operator's memory: the box that
+looks fine while you are standing at it is the box that comes back silent.
+
+The ROLLBACK side's step-2 window is louder than silence, in one of two
+ways depending on whether the validator can read the graph:
+
+- **When it can** (the ordinary armed box), rollback step 2 is **refused**.
+  Its candidate is validated against the coupling, which is still
+  `shm_ring` until step 3, while step 1 has already moved the graph to the
+  ALSA lane — so it fails the ring-plan endpoint comparison (`transport
+  plan is shm_ring but Camilla playback='outputd_active_content_playback'`)
+  and exits 78 with the marker preserved. This is a real rough edge, not a
+  dead end: step 3 does not gate on the marker, so running
+  `jasper-fanin-coupling-reconcile loopback` anyway completes the rollback,
+  the box validates clean again, and a later hardware reconcile clears the
+  stale marker. Verified through `validate-outputd-env` in a scratch probe,
+  not on hardware.
+- **When it cannot** (graph evidence unreadable, so the endpoint comparison
+  is skipped), the marker clears and outputd restarts onto a cleared marker
+  against a still-armed active ring path — the crossed pair its startup
+  biconditional refuses — so **outputd** exits 78 and parks.
+  `RestartPreventExitStatus=78` means restarting outputd does not clear it
+  (the crossed declaration is still on disk); running step 3 does.
+
+Either way the refusal is now non-destructive — see the refusal promise
+below.
+
+**The mid-arm waypoint is a NOTE, not an error.** The post-step-1 state
+above is also what `jasper-audio-hardware-reconcile` validates against
+when you run step 2, and until 2026-08-11 that validator called it a
+contradiction — so step 2 refused the state step 1 has to create, step 3
+refuses without step 2's marker, and **no ordering completed**. Observed
+on jts3 at `8f021e6ac`: exit 78, `preserved=1`, detail `post-DSP route has
+no registered outputd capture for Camilla playback jts_ring_active_playback`
+(`captures/r7b-jts3-arm-20260811T111338Z`). `transport_coherence_report`
+(`jasper/audio_runtime_plan.py`) now recognizes `jts_ring_active_playback`
+under a loopback plan **by name** and reports it as a note: the CLI exits 0
+printing `ok note=…`, the reconciler logs
+`event=audio_hardware_reconcile.outputd_env_note` (only on a pass that
+actually stages a changed `outputd.env` — the validator runs on the staged
+candidate, so a reconcile of an already-converged waypoint box logs
+nothing), and `jasper-doctor`'s
+`jasper-outputd` check **warns** — because the statefile repoint survives a
+reboot, so a box left at the waypoint comes back silent even though it was
+playing when the operator walked away. `jts_ring_playback`
+(the full-range stereo ring) under a loopback plan keeps the hard error:
+no ladder creates it, so there is no next step that makes it coherent.
+
+The note is name-only on purpose. It does **not** re-check rolefulness,
+conf.d staging, or ring width — `outputd_active_lane_decision` in step 2 is
+the one arm authority, and a second derivation in the validator is the
+drift that produced the deadlock.
+
+**A refused reconcile leaves the box running exactly as before.** When
+`jasper-audio-hardware-reconcile` rejects a staged `outputd.env` it logs
+`outputd_env_invalid … preserved=1`, then
+`outputd_candidate_rejected action=preserve_runtime_env services=unchanged`,
+and exits 78 **without stopping anything**. The runtime env is
+byte-unchanged and the exit precedes every render, so the box is still
+running the configuration it was running a second ago. It used to park
+(stop `jasper-voice` *and* `jasper-outputd`) first; on jts3 that took the
+assistant down cleanly and silently, and recovery needed a hand-run
+`systemctl start jasper-aec-reconcile`.
 
 **What holds the pair coherent.** outputd enforces a biconditional at
 startup: the active ring file may be read only by an armed active
@@ -421,6 +491,40 @@ coupling reconciler owns the path — so the path is DERIVED from the marker
 (`_outputd_ring_path_for`) rather than preserved. A preserved path is how
 an armed box gets handed the full-range stereo ring and parks at exit 78
 with every daemon reporting healthy.
+
+**How to verify step 2 landed.** Read `/var/lib/jasper/outputd.env`. The
+single field that moves is `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`, from the
+explicit-empty `''` to `1`. Two traps, both hit on jts3:
+
+- **`JASPER_OUTPUTD_ACTIVE_LANE=1` is not the arm.** It is already `1` on
+  an UNARMED roleful box — it means "this box has an active lane", not
+  "the ring is armed". Checking it tells you nothing about step 2.
+- **`jts_ring_active_playback` is a graph PCM name, never an env value.**
+  It appears in the CamillaDSP config the statefile points at (and in the
+  reconciler's `active_endpoint=` log field); grepping `outputd.env` for it
+  will always come up empty, armed or not.
+
+Cleared means the explicit-empty `=''`, not an absent key.
+
+**Running either ladder pins the box to operator coupling.** Any explicit
+`jasper-fanin-coupling-reconcile <coupling>` — including step 3 of the
+rollback — stamps `JASPER_FANIN_COUPLING_CHOICE=operator` into
+`/var/lib/jasper/fanin.env`, and that survives deploys. A pinned box is
+skipped by every later `--auto` pass (boot and install), so it holds the
+coupling it was pinned to.
+
+**The way back is deleting the key, and nothing does that for you.** The
+marker is binary by construction: present-and-`operator` vs absent, with
+absent meaning auto-owned (`is_operator_choice` in
+`jasper/fanin/coupling_auto.py`). But the single write site hardcodes
+`operator`, `--auto` never clears it (it declines to stamp, which is not
+the same as unstamping), and both positional values re-stamp it — so
+"re-run the reconciler to go back to auto" does not work. Today the only
+route is to remove the `JASPER_FANIN_COUPLING_CHOICE=operator` line from
+`/var/lib/jasper/fanin.env` as root and then run
+`jasper-fanin-coupling-reconcile --auto`. That is a hand-edit of a file the
+reconciler is meant to own solely; a proper `--release` affordance is
+tracked as a follow-up.
 
 **Operator symptom → step.** `jasper-doctor`'s `fan-in coupling` check
 warns when the loaded graph does not name the ring the marker selects, and
@@ -701,7 +805,12 @@ Scope: the live plan, H1 through "Cross-program coordination" — egress
 facts, source-half boundaries, ring v1 wire and header,
 `ring_edge_width_ready` semantics, P-row inventory, doctor-check
 locations, the dither inventory, and the DAC edge-format table were
-re-read against `9cc41b987`. Fleet rows came from a same-day probe of
+re-read against `9cc41b987`. The ACTIVE-ring arm/rollback lifecycle
+section was separately re-verified at `8f021e6ac` against the jts3 arm
+attempt (`captures/r7b-jts3-arm-20260811T111338Z`): the waypoint,
+step-2 verification, refusal, and coupling-pin paragraphs are from that
+run plus the code, except the rollback step-2 window, which is a scratch
+probe of `validate-outputd-env` and outputd's unit — not hardware. Fleet rows came from a same-day probe of
 jts3 and jts.local only; jts4 and jts5 were not probed, and jts3's
 wide-chain row is derived, as its cell says. Appendix A was carried
 forward with only its ring/ioplug constants and `Input` shape

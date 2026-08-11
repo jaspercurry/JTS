@@ -865,6 +865,49 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
 
 
+def test_outputd_warns_but_does_not_fail_at_the_active_ring_arm_waypoint(
+    monkeypatch,
+):
+    """The waypoint must WARN — not pass, and not fail. The exit code is the point.
+
+    `jasper-doctor` exits non-zero on a fail and zero on a warn, and that exit
+    code is what deploy verification and the R7b runbook read. Both wrong answers
+    are costly and they are opposite:
+
+      - `ok` hides a box that comes back silent from its next CamillaDSP load,
+        which nothing else on this check can see (fan-in and outputd both keep
+        looping over the missing stage);
+      - `fail` reds the box for standing on a documented rung of an operator
+        ladder, which teaches an operator that the arm is broken when it is not.
+
+    Pinned through the real `check_outputd_service`, so the note has to survive
+    the whole `_outputd_transport_health` path — not just the detector.
+    """
+    from jasper import audio_runtime_plan
+    from jasper.audio_runtime_plan import OutputEndpointEvidence
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "output_endpoint_evidence_from_statefiles",
+        lambda *paths: OutputEndpointEvidence(
+            devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
+            errors=(),
+            endpoint_recognized=True,
+        ),
+    )
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn", r.detail
+    assert "arm waypoint" in r.detail
+    # The remediation the operator needs is carried, not just the diagnosis.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in r.detail
+    assert "baseline-reemit --endpoint aloop" in r.detail
+
+
 def test_outputd_content_bridge_detail_reports_every_mode():
     """The surviving `/state.content_bridge` readout is a plain mode string.
 

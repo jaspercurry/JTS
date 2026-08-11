@@ -416,6 +416,22 @@ validate_outputd_env_stage() {
             --camilla2-statefile "$CAMILLA2_STATEFILE" \
             --output-topology "$OUTPUT_TOPOLOGY_PATH" 2>&1
     )"; then
+        # The validator accepted the candidate, and MAY have reported a
+        # coherent-but-transient state (`ok note=...` — today the ACTIVE-ring arm
+        # waypoint). Log it so the journal carries the whole reason a mid-ladder
+        # box goes silent at its next Camilla load; the reconcile proceeds either way.
+        #
+        # Matched ANYWHERE in the captured stream, not as a prefix: this capture
+        # merges stderr (`2>&1`) so the error path can log a Python traceback, and
+        # any interpreter or library warning emitted first would push the marker
+        # off the front. A prefix match would then drop this line silently — the
+        # exact silent-failure shape this event exists to prevent. The literal is
+        # pinned on both sides by
+        # test_the_note_prefix_the_script_matches_is_the_one_the_cli_prints.
+        if [[ "$detail" == *"ok note="* ]]; then
+            log_event "outputd_env_note" \
+                "outputd_env=${OUTPUTD_ENV_FILE} detail=$(jasper_asound_log_token "${detail#*ok note=}")"
+        fi
         return 0
     fi
     log_event "outputd_env_invalid" \
@@ -1503,9 +1519,38 @@ else
     trap - EXIT
 fi
 if [[ "$OUTPUTD_ENV_STAGE_REJECTED" == "1" ]]; then
+    # A REFUSED reconcile leaves the box running exactly as it was found.
+    #
+    # The staged candidate was rejected, so `preserved=1`: the runtime
+    # outputd.env is byte-unchanged and this exit precedes every render. The box
+    # is therefore still running the configuration it was running a second ago —
+    # and it was running it because an earlier pass of THIS validator accepted
+    # it. Stopping anything here converts a healthy box into a silent one on
+    # behalf of a change that never landed.
+    #
+    # `preserved=1` scopes to outputd.env, which is the staged file. A DAC
+    # identity move (JASPER_AUDIO_DAC_ID/_CARD) is written straight to
+    # $ENV_FILE above and is NOT rolled back here — but it was not rolled back
+    # by the old park either, which only silenced outputd rather than resolving
+    # the split. outputd keeps its own previously-validated env against an
+    # unchanged asound.conf, so a geometry or missing-card mismatch fails its
+    # open loudly: silence or a loud failure, never wrong audio.
+    #
+    # It used to `park_output_audio` (stop jasper-voice + jasper-outputd) before
+    # exiting. On jts3 2026-08-11 that stopped jasper-voice cleanly — Result=success,
+    # NRestarts=0 — and nothing restarted it: the household lost the assistant
+    # with no cue, no doctor delta, and no journal line saying so, until an
+    # operator ran `systemctl start jasper-aec-reconcile` by hand
+    # (captures/r7b-jts3-arm-20260811T111338Z, files 15 and 18).
+    #
+    # Ordering, not restoration: this was the FIRST stop this run would perform.
+    # Every remaining call site that can stop a unit is downstream of this exit —
+    # gate_role_services (`disable --now`), restart_audio_if_needed, and the
+    # unrecognized-DAC park_output_audio — so validating before it is free and no
+    # unit needs restoring. The loud signal is unchanged: exit 78 fails the unit,
+    # and `outputd_env_invalid preserved=1 detail=...` names the contradiction.
     log_event "outputd_candidate_rejected" \
-        "action=park_before_asound_render output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
-    park_output_audio
+        "action=preserve_runtime_env services=unchanged output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
     exit 78
 fi
 repair_generated_env_permissions

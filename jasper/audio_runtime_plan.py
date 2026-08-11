@@ -71,7 +71,7 @@ from jasper.fanin_coupling import (
 # ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
 # endpoint MARKER — deliberately NOT on the observed ``camilla_playback_device``.
 # Selecting on the observed device would make
-# :func:`transport_coherence_errors`' playback comparison vacuous: it would
+# :func:`transport_coherence_report`' playback comparison vacuous: it would
 # derive the expectation from the very value it is checking, so a Camilla graph
 # pointed at the wrong ring would define itself correct.
 TRANSPORT_SHM_RING = COUPLING_SHM_RING
@@ -93,8 +93,14 @@ def _unpaired_post_dsp_playback_devices() -> frozenset[str]:
     The active ALSA lane belongs here defensively (the pairing registry does
     carry it, so reaching this set means the registry was edited without this
     layer). Both RING devices belong here structurally: outputd reads a ring
-    FILE, so a ring PCM never has an outputd capture PCM — which is exactly why
-    naming one under a loopback plan is a contradiction worth reporting.
+    FILE, so a ring PCM never has an outputd capture PCM.
+
+    This set answers PAIRING only — "is there a registered outputd capture for
+    this playback device" — never disposition. The two rings get opposite
+    dispositions from the same absent pairing: under a loopback plan the ACTIVE
+    ring is the documented arm waypoint (a note) while the STEREO ring is a
+    half-flipped box (an error), and :func:`transport_coherence_report` owns that
+    split. Do not encode disposition here by removing a member.
     """
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE
 
@@ -1399,7 +1405,7 @@ def transport_topology_for_coupling(
     ``camilla_playback_device`` is the OBSERVED Camilla playback endpoint and is
     consulted by the LOOPBACK arm only, where it names the concrete lane whose
     outputd capture pairing is being derived. Under either ring shape it is
-    deliberately ignored: it is the value :func:`transport_coherence_errors`
+    deliberately ignored: it is the value :func:`transport_coherence_report`
     checks against this function's answer, so feeding it back in would make that
     check compare a value with itself.
     """
@@ -1519,12 +1525,54 @@ def transport_topology_for_coupling(
     )
 
 
+@dataclass(frozen=True)
+class TransportCoherenceReport:
+    """One transport comparison's contradictions AND its non-error observations.
+
+    ``errors`` are contradictions: a caller that reports them refuses, parks, or
+    fails. ``notes`` are states that are coherent but not steady — today exactly
+    one, the ACTIVE-ring arm waypoint — so a caller PROCEEDS while still saying
+    what the box is sitting in. The split exists because those two need opposite
+    dispositions from the same comparison, and the box that motivated it (jts3,
+    2026-08-11) proved that collapsing them into ``errors`` deadlocks the
+    documented arm ladder.
+
+    Notes are not "soft errors". A note means the state is safe-by-construction
+    at this instant and has a documented next step, not that a contradiction was
+    downgraded.
+    """
+
+    errors: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+
 def transport_coherence_errors(
     *,
     coupling: str | None,
     outputd_env: Mapping[str, str] | None = None,
     camilla_devices: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
+    """The ``errors`` half of :func:`transport_coherence_report`.
+
+    Thin accessor, deliberately NOT a second derivation: every rule lives in the
+    report. Callers that only refuse-or-proceed keep this signature; callers that
+    also want to SAY what a coherent-but-transient box is sitting in read the
+    report.
+    """
+
+    return transport_coherence_report(
+        coupling=coupling,
+        outputd_env=outputd_env,
+        camilla_devices=camilla_devices,
+    ).errors
+
+
+def transport_coherence_report(
+    *,
+    coupling: str | None,
+    outputd_env: Mapping[str, str] | None = None,
+    camilla_devices: Mapping[str, Any] | None = None,
+) -> TransportCoherenceReport:
     """Return contradictions across the complete Camilla/outputd transport.
 
     ``TransportTopology`` is the policy source. This function compares its two
@@ -1543,7 +1591,13 @@ def transport_coherence_errors(
     own ring PATH to be the active ring's — the Python-side twin of outputd's
     startup allowlist, reported here at reconcile time instead of at a daemon
     bail.
+
+    Returns a :class:`TransportCoherenceReport`: contradictions in ``errors``,
+    coherent-but-transient states in ``notes``. :func:`transport_coherence_errors`
+    is the thin ``errors`` accessor for callers that only refuse-or-proceed.
     """
+
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     outputd_values = dict(outputd_env or {})
     devices = dict(camilla_devices or {})
@@ -1555,6 +1609,7 @@ def transport_coherence_errors(
         camilla_playback_device=playback_device,
     )
     errors: list[str] = []
+    notes: list[str] = []
     normalized = topology.name
     raw_bridge = str(
         outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
@@ -1650,7 +1705,7 @@ def transport_coherence_errors(
                     "header's channel count is compared field-by-field at attach, "
                     "so the ioplug open fails"
                 )
-        return tuple(errors)
+        return TransportCoherenceReport(errors=tuple(errors), notes=tuple(notes))
 
     if raw_bridge == COUPLING_SHM_RING:
         errors.append(
@@ -1674,6 +1729,51 @@ def transport_coherence_errors(
                     f"requires outputd capture={paired_capture!r}, got "
                     f"{actual_capture!r}"
                 )
+        elif playback_device == RING_ACTIVE_PLAYBACK_DEVICE:
+            # BY NAME, and this branch must sit BEFORE the membership test below.
+            #
+            # The ACTIVE ring under a loopback plan is the documented mid-arm
+            # waypoint, not a wreck: it is the state the ladder's step 1
+            # (`baseline-reemit --endpoint ring`) creates on purpose and steps 2
+            # and 3 consume. Reported as an error it was a DEADLOCK — step 2
+            # refused the state step 1 had to create, and step 3 refuses without
+            # step 2's marker, so no ordering completed (observed on jts3
+            # 2026-08-11, exit 78; captures/r7b-jts3-arm-20260811T111338Z).
+            #
+            # Safe by construction rather than by permission: once the graph is
+            # loaded CamillaDSP writes the active ring, outputd is still reading
+            # its ALSA lane, and outputd's ring-path allowlist is scoped to the
+            # shm_ring bridge — so the waypoint is SILENCE, never wrong audio.
+            #
+            # WHEN it goes silent is a separate question, and this layer cannot
+            # see the answer: the evidence is the graph ON DISK (the statefile),
+            # not the graph CamillaDSP currently has loaded. Neither
+            # `baseline-reemit` nor `jasper-audio-hardware-reconcile` reloads
+            # Camilla, so at both waypoint rungs the running Camilla is usually
+            # still on the previous graph and the box is still playing. It goes
+            # silent at the next Camilla load and stays silent until the ladder
+            # finishes. The note says exactly that rather than asserting a
+            # runtime state from on-disk evidence.
+            #
+            # Deliberately name-only. It does NOT re-check rolefulness, conf.d
+            # staging, or ring width: `outputd_active_lane_decision` (step 2) is
+            # the ONE arm authority, and a second derivation here is precisely
+            # the drift that produced this defect. A hand-edited graph naming the
+            # active ring on a box that cannot host it lands on silence or a loud
+            # failure (Camilla's device open fails, or the marker never arms and
+            # the doctor names it) — never on wrong audio.
+            notes.append(
+                f"Camilla playback={playback_device!r} under a "
+                f"{TRANSPORT_LOOPBACK} plan is the ACTIVE-ring arm waypoint: the "
+                "graph on disk names the active ring while outputd still reads "
+                "its ALSA lane. The running CamillaDSP may still be on the "
+                "previously-loaded graph, so this box goes silent at the next "
+                "CamillaDSP load and stays silent until the ladder finishes. "
+                "Complete it with `systemctl start "
+                "jasper-audio-hardware-reconcile` then "
+                "`jasper-fanin-coupling-reconcile shm_ring`, or roll back with "
+                "`jasper-active-speaker baseline-reemit --endpoint aloop`."
+            )
         elif playback_device in _unpaired_post_dsp_playback_devices():
             # MEMBERSHIP, not one `==`. Two distinct contradictions land here and
             # both must be reported:
@@ -1681,17 +1781,23 @@ def transport_coherence_errors(
             #   - the ACTIVE ALSA lane with no registered outputd capture —
             #     defensive completeness if the pairing registry is edited
             #     without updating this plan layer;
-            #   - either RING device under a LOOPBACK plan. A ring PCM has no
+            #   - the STEREO ring device under a LOOPBACK plan. A ring PCM has no
             #     outputd capture pairing by construction (outputd reads the
             #     ring file, not an ALSA capture), so a Camilla graph pointed at
-            #     one while the plan says loopback is a half-flipped box: the
+            #     it while the plan says loopback is a half-flipped box: the
             #     graph writes a ring nobody reads. Before this membership that
             #     case fell through to silence.
+            #
+            # The ACTIVE ring is handled by the branch above and never reaches
+            # here; the stereo ring keeps this error because no ladder ever
+            # creates that pairing — `jts_ring_playback` is a forbidden token for
+            # every active emitter, so a roleful graph naming it is the
+            # loaded-gun state with no documented next step.
             errors.append(
                 f"post-DSP route has no registered outputd capture for "
                 f"Camilla playback={playback_device!r}"
             )
-    return tuple(errors)
+    return TransportCoherenceReport(errors=tuple(errors), notes=tuple(notes))
 
 
 def output_endpoint_devices_from_statefiles(

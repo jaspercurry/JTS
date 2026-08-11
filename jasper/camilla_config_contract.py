@@ -73,9 +73,11 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 # ABSENT and this is a decision, not an omission: a ring has no outputd capture
 # PCM at all — outputd reads the ring FILE directly (`skip_content_pcm`), so
 # there is no second half to pair. Adding an entry would invent a snd-aloop lane
-# that nothing opens, and `transport_coherence_errors` reads the ABSENCE as
+# that nothing opens, and `transport_coherence_report` reads the ABSENCE as
 # meaningful: a Camilla graph naming a ring under a LOOPBACK plan has no
-# registered capture, which is exactly the contradiction it reports.
+# registered capture. What that means then depends on WHICH ring — the stereo
+# ring is the contradiction it reports, the ACTIVE ring is the documented arm
+# waypoint it notes — but either way the absence is what routes it there.
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
     DEFAULT_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE: ACTIVE_OUTPUTD_CAPTURE_DEVICE,

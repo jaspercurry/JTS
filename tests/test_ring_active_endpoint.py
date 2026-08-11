@@ -762,22 +762,65 @@ def test_a_crossed_ring_path_is_a_coherence_error_before_the_daemon_bails():
 def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
     """Both rings have NO outputd capture pairing, and the absence is meaningful.
 
-    outputd reads a ring FILE, so no ring PCM has a paired snd-aloop capture. A
-    Camilla graph naming one while the plan says loopback is a half-flipped box:
-    the graph writes a ring nobody reads. Before the membership fix this fell
-    through to silence.
-    """
-    from jasper.audio_runtime_plan import transport_coherence_errors
+    outputd reads a ring FILE, so no ring PCM has a paired snd-aloop capture, and
+    a Camilla graph naming one while the plan says loopback writes a ring nobody
+    reads. Before the membership fix this fell through to silence.
 
-    for device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
-        errors = transport_coherence_errors(
+    The two rings get OPPOSITE dispositions from that same absence, and the split
+    is the whole point of this test:
+
+    - ``jts_ring_playback`` (stereo) stays a hard ERROR. No ladder creates that
+      pairing — it is a forbidden token for every active emitter — so a graph
+      naming it is a half-flipped box with no documented next step.
+    - ``jts_ring_active_playback`` is a NOTE. It is the mid-arm waypoint the
+      documented ladder's step 1 creates on purpose; reporting it as an error
+      deadlocked the ladder on jts3 (2026-08-11, exit 78).
+    """
+    from jasper.audio_runtime_plan import (
+        transport_coherence_errors,
+        transport_coherence_report,
+    )
+
+    stereo = transport_coherence_report(
+        coupling="loopback",
+        outputd_env={},
+        camilla_devices={"playback_device": RING_PLAYBACK_DEVICE},
+    )
+    assert any("no registered outputd capture" in e for e in stereo.errors), stereo
+    assert stereo.notes == (), stereo
+    # The thin accessor carries the SAME verdict — a caller that only
+    # refuses-or-proceeds must not see the stereo ring soften.
+    assert any(
+        "no registered outputd capture" in e
+        for e in transport_coherence_errors(
             coupling="loopback",
             outputd_env={},
-            camilla_devices={"playback_device": device},
+            camilla_devices={"playback_device": RING_PLAYBACK_DEVICE},
         )
-        assert any("no registered outputd capture" in e for e in errors), (
-            f"{device}: {errors}"
-        )
+    )
+
+    active = transport_coherence_report(
+        coupling="loopback",
+        outputd_env={},
+        camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
+    )
+    assert active.errors == (), active
+    assert len(active.notes) == 1, active
+    note = active.notes[0]
+    assert RING_ACTIVE_PLAYBACK_DEVICE in note, note
+    # The note names the state AND both exits, because a box can be LEFT here.
+    #
+    # The silence claim is deliberately CONDITIONAL. This layer's evidence is the
+    # graph on DISK (the statefile), never the graph CamillaDSP has loaded, and
+    # neither ladder rung reloads Camilla — so a box at the waypoint is usually
+    # still playing, and goes silent at the next load. Asserting a bare "this box
+    # is SILENT" here would pin an overclaim into doctor's WARN detail.
+    assert "on disk" in note, note
+    assert "goes silent at the next CamillaDSP load" in note, note
+    assert "is SILENT" not in note, note
+    assert "jasper-audio-hardware-reconcile" in note, note
+    assert "jasper-fanin-coupling-reconcile shm_ring" in note, note
+    assert "baseline-reemit --endpoint aloop" in note, note
 
 
 def test_the_active_ring_is_a_recognized_output_endpoint():
@@ -1684,6 +1727,171 @@ def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
     # reaching a compression driver.
     unmarked = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker=""))
     assert _ring_path_written(unmarked) != DEFAULT_OUTPUTD_ACTIVE_RING_PATH
+
+
+def _run_validate_outputd_env(
+    tmp_path,
+    capsys,
+    *,
+    graph_yaml: str,
+    topology,
+    coupling: str,
+    marker: str | None,
+    dac_id: str = "hifiberry_dac8x",
+) -> tuple[int, str]:
+    """Run the REAL validator `jasper-audio-hardware-reconcile` shells to.
+
+    The bash reconciler's ``validate_outputd_env_stage`` runs exactly
+    ``python -m jasper.cli.audio_config validate-outputd-env`` with these six
+    path flags; this drives that same entry point in-process. It is the layer
+    the ladder walks above do NOT touch — they call ``_outputd_actions`` and the
+    marker derivation directly — which is why all four of them passed while the
+    real ladder deadlocked at step 2 on jts3.
+    """
+    from jasper.cli.audio_config import main as audio_config_main
+    from jasper.output_topology import save_output_topology
+
+    graph = tmp_path / "graph.yml"
+    graph.write_text(graph_yaml, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {graph}\n", encoding="utf-8")
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    base_env = tmp_path / "jasper.env"
+    base_env.write_text(f"JASPER_AUDIO_DAC_ID={dac_id}\n", encoding="utf-8")
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(_outputd_env(marker=marker), encoding="utf-8")
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(
+        f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n", encoding="utf-8"
+    )
+
+    capsys.readouterr()
+    rc = audio_config_main(
+        [
+            "validate-outputd-env",
+            "--base-env",
+            str(base_env),
+            "--outputd-env",
+            str(outputd_env),
+            "--fanin-env",
+            str(fanin_env),
+            "--camilla-statefile",
+            str(statefile),
+            "--camilla2-statefile",
+            str(tmp_path / "crossover-statefile.yml"),
+            "--output-topology",
+            str(topology_path),
+        ]
+    )
+    return rc, capsys.readouterr().out
+
+
+def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
+    tmp_path, capsys
+):
+    """The missing layer: the ladder walked THROUGH `validate-outputd-env`.
+
+    The four walks above drive the emit, marker-derivation, and coupling layers
+    and all passed — while the real ladder deadlocked on jts3 (2026-08-11) at
+    step 2 with exit 78, ``preserved=1``, detail ``post-DSP route has no
+    registered outputd capture for Camilla playback jts_ring_active_playback``
+    (``captures/r7b-jts3-arm-20260811T111338Z``, file 15). None of them called
+    the validator, so none could see it.
+
+    Both waypoint states run here, because the marker does NOT change which
+    branch the validator takes — the transport plan is chosen from the persisted
+    COUPLING, which is still loopback until step 3:
+
+      ARM-1  graph names the active ring, marker ABSENT   (after step 1)
+      ARM-2  graph names the active ring, marker = "1"    (after step 2)
+
+    Both must validate CLEAN, or the ladder cannot advance.
+    """
+    from jasper.cli.active_speaker import _baseline_reemit_endpoint
+    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+
+    topology = _active_topology("mono", "active_2_way")
+    preset = _mono_two_way_preset()
+
+    # --- Step 1: the operator names the endpoint; the graph moves first. ---
+    armed_device, _source = _baseline_reemit_endpoint(topology, "ring")
+    assert armed_device == RING_ACTIVE_PLAYBACK_DEVICE
+    ring_graph = _emit_active_baseline(preset, armed_device)
+
+    # --- ARM-1: marker absent. The state step 1 leaves behind. -------------
+    rc, out = _run_validate_outputd_env(
+        tmp_path,
+        capsys,
+        graph_yaml=ring_graph,
+        topology=topology,
+        coupling="loopback",
+        marker=None,
+    )
+    assert rc == 0, out
+    assert out.startswith("ok note="), out
+    assert "arm waypoint" in out, out
+
+    # --- Step 2: the marker derives from that same graph. ------------------
+    assert _derived_marker(ring_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
+
+    # --- ARM-2: marker set, coupling still loopback. The jts3 state. -------
+    rc, out = _run_validate_outputd_env(
+        tmp_path,
+        capsys,
+        graph_yaml=ring_graph,
+        topology=topology,
+        coupling="loopback",
+        marker="1",
+    )
+    assert rc == 0, out
+    assert out.startswith("ok note="), out
+    # The note names the state and BOTH exits — a box can be left here.
+    assert "goes silent at the next CamillaDSP load" in out, out
+    assert "jasper-fanin-coupling-reconcile shm_ring" in out, out
+    assert "baseline-reemit --endpoint aloop" in out, out
+
+    # --- Step 3: with step 2's marker on disk, the path converges. ---------
+    actions = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker="1"))
+    assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
+
+
+def test_the_stereo_ring_under_a_loopback_plan_still_fails_the_validator(
+    tmp_path, capsys
+):
+    """The loaded gun keeps its refusal, through the SAME entry point.
+
+    Softening the ACTIVE ring must not soften ``jts_ring_playback``. That device
+    carries a full-range stereo program an active emitter may never target, no
+    ladder produces it, and there is no next step that makes it coherent — so a
+    graph naming it under a loopback plan stays a hard refusal with the verbatim
+    detail the reconciler logs.
+    """
+    stereo_ring_graph = (
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  channels: 2\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        "    device: jasper_dsp_in\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        f"    device: {RING_PLAYBACK_DEVICE}\n"
+    )
+
+    rc, out = _run_validate_outputd_env(
+        tmp_path,
+        capsys,
+        graph_yaml=stereo_ring_graph,
+        topology=_active_topology("mono", "active_2_way"),
+        coupling="loopback",
+        marker=None,
+    )
+
+    assert rc == 1, out
+    assert "no registered outputd capture" in out, out
+    assert RING_PLAYBACK_DEVICE in out, out
+    assert "note=" not in out, out
 
 
 def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="graph: 1\n"):
