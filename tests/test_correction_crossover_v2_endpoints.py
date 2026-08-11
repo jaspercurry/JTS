@@ -305,6 +305,15 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
                 None if retained is None
                 else lambda pid, result, meta: retained.append((pid, dict(meta)))
             ),
+            # #2291/#2318: bound, and FALSE. The seam's UNBOUND answer is
+            # deliberately "boosted" — an intervention nobody can inspect comes
+            # off — so leaving it out would route every round whose benefit is
+            # indeterminate (which is every fixture here: none carries an entry
+            # baseline) through the fail-closed restore, and each of these
+            # tests would end up asserting that rule instead of its own
+            # subject. The rule itself is pinned against the REAL host seams in
+            # tests/test_crossover_v2_round_wiring.py.
+            applied_boosts=lambda: False,
         ),
         index_phase_map=(
             build_v2_cloud_index_phase_map() if index_phase_map is None
