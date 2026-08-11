@@ -158,11 +158,11 @@ both ring ends to the ring's wire format, so ring boxes stay coherently
 S16 — keeping their certified latency — until ring v2 arms them wide.
 Wide is the loopback path's property in the interim.
 
-#2285's banner also still says the plan owns "U0–U9 sequencing" — drifted
-copy; the sequencing this plan actually ships is **U0–U4** (see
-"Sequencing — the U arcs" below). GitHub-side text is not this file's
-contract, so the mismatch isn't fixed here; the banner gets corrected to
-U0–U4 at merge.
+#2285's banner is corrected: an earlier draft said the plan owns "U0–U9
+sequencing", but the sequencing this plan actually ships is **U0–U4**
+(see "Sequencing — the U arcs" below). The banner was fixed to U0–U4 on
+2026-08-10, when this plan merged as canonical via PR
+[#2293](https://github.com/jaspercurry/JTS/pull/2293).
 
 ### Fleet
 
@@ -224,7 +224,7 @@ continuity — issues and PRs reference them) and the width workstream.
 | Arc | Delivers | Rolls up | Exit gate |
 |---|---|---|---|
 | **U0 — stabilize + replan** — **COMPLETE** | this document (PR [#2293](https://github.com/jaspercurry/JTS/pull/2293), merged, gate 0/0 after fix round); the P5c deletion (PR [#2302](https://github.com/jaspercurry/JTS/pull/2302), merged, gate 0/0 after fix round); PR [#2281](https://github.com/jaspercurry/JTS/pull/2281), merged, gate 0/0 after delta | P5c | doc merged; `rate_match` + adaptive-buffer + stale cushion prose gone. jts.local commission + route-latency revalidation no longer gates U0 — it now proceeds under U1's R6 rung below, since ring v2 width activation needs exactly that fresh artifact and a bare pre-ring-v2 commission would be thrown away |
-| **U1 — ring v2** | the R-RING2 design, build, and per-box activation (design ratified 2026-08-10 — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) | P8 | jts.local width first (R6, owner-gated) — jts3 (R7a/R7b) is resequenced after it: blocked on a missing DAC8x `LatencyFloor` declaration, and R7b needs its own redesign + re-panel before scheduling. jts3 still kills the measured ~17.5-minute content-fill splice class once it lands. Then jts4 Zero-class validation. jts5 / bonded per the P8 scope ruling |
+| **U1 — ring v2** | the R-RING2 design, build, and per-box activation (design ratified 2026-08-10 — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) | P8 | jts.local width first (R6, owner-gated) — jts3 (R7a/R7b) is resequenced after it: blocked on a missing DAC8x `LatencyFloor` declaration, and R7a/R7b together are the daytime redesign package, repaneled before either is scheduled. jts3 still kills the measured ~17.5-minute content-fill splice class once it lands. Then jts4 Zero-class validation. jts5 / bonded per the P8 scope ruling |
 | **U2 — source width** | #2223's 3-PR ladder plus its Step 0 descriptor check; the TTS/earcon tail | width workstream | bit-pattern fixtures prove low bits survive fan-in. Loopback boxes may flip before U1 completes; ring boxes flip after |
 | **U3 — renderer ring ingress** | P6a–d, one lane at a time, **AirPlay LAST** with offset re-derivation | P6 | per-lane source pass; AirPlay adds a Music.app local-track loop + resync-log watch + bonded A/V spot-check |
 | **U4 — delete** | P7 dsnoop re-points, P9 snd-aloop removal after fleet burn-in, P10 polish + `audio-paths.md` rewrite | P7, P9, P10 | full-fleet deploy + doctor + every-source pass; reboot test per box |
@@ -250,7 +250,7 @@ composite edge).
 | P6a–d | Renderer lanes → ring ingress (librespot, bluealsa, correction, shairport LAST) | **OPEN — U3.** Net-new build: fan-in's `Input` is aloop-PCM-or-USB-DIRECT only, with no ring-reader variant |
 | P7 | Re-point dsnoop consumers; drop the fan-in aloop mirror | **OPEN — U4** |
 | P8 | Ring v2 | **OPEN — U1**, rescoped by R-RING2 to cover format and channels in one design. R1/R2 merged — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below |
-| P9 | snd-aloop removal | **OPEN — U4**, hard-gated on P6 + P7 + P8 |
+| P9 | snd-aloop removal | **OPEN — U4**, hard-gated on P6 + P7 + P8 (P8b specifically, per the P8a/P8b split — see [Ring v2 design outcome](#ring-v2-design-outcome-u1) below) |
 | P10 | Polish sweep + `audio-paths.md` rewrite | **OPEN — U4** |
 
 Deletions stay separate PRs by repo guardrail.
@@ -269,16 +269,16 @@ at them rather than restating them.
 
 **The R-ladder P8 rescopes to:**
 
-| Rung | Scope | Status |
+| Rung | Scope | Status (2026-08-10) |
 |---|---|---|
 | R1 | `rust/jasper-ring` crate | **DONE** — PR [#2297](https://github.com/jaspercurry/JTS/pull/2297), merged, gate 0/0 |
 | R2 | C ioplug | **DONE** — PR [#2296](https://github.com/jaspercurry/JTS/pull/2296), merged, gate 0/0 |
-| R3 | fan-in | in flight |
-| R4 | outputd | in flight |
+| R3 | fan-in | in flight — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308) |
+| R4 | outputd | in flight — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310) |
 | R5a | schemas / parsers / renderer | queued |
 | R5b | gates / recovery / observability | queued |
 | R6 | jts.local width activation | **owner-gated** |
-| R7a | DAC8x `LatencyFloor` + the one jts3 chip-AEC recommission | **owner-gated** |
+| R7a | DAC8x `LatencyFloor` + the one jts3 chip-AEC recommission | **REDESIGN PACKAGE** (bundled with R7b) — owner-gated, then panel re-review before scheduling |
 | R7b | jts3 active-half | **REDESIGN REQUIRED**, then its own panel re-review, before scheduling |
 
 R1 and R2 land the ring transport layer v2-capable in both languages —
@@ -304,11 +304,17 @@ out to later, and still hard-gates P9; jts5 stays on aloop lanes 5/6
 until P8b.
 
 **Forced ordering: jts.local (R6) before jts3 (R7).** jts3 is blocked
-on a missing `DacProfile.latency_floor` declaration
-(`LatencyFloor(period 128, dac_buffer 256)`) for `HIFIBERRY_DAC8X`.
-Fixing it at R7a forces the one jts3 chip-AEC recommission the
-identity change causes — which is what makes R7b identity-neutral.
-All three panel lenses verified that resequencing independently.
+on a missing `DacProfile.latency_floor` declaration for
+`HIFIBERRY_DAC8X`: the full 4-field `LatencyFloor` (`camilla_chunksize`,
+`camilla_target_level`, `outputd_period_frames`,
+`outputd_dac_buffer_frames`, with `camilla_target_level` enforced ≥4×
+`camilla_chunksize`). Per the ring v2 rulings record's round-2 amendment
+(`captures/PLAN-ring-v2-rulings-2026-08-10.md`), declaring it for
+`HIFIBERRY_DAC8X` also sets jts3's CamillaDSP chunk/target — it touches
+the **active graph's** chunksize, not just outputd's period. Fixing it
+at R7a forces the one jts3 chip-AEC recommission the identity change
+causes — which is what makes R7b identity-neutral. All three panel
+lenses verified that resequencing independently.
 
 **Key ratified rulings** (rationale in the rulings file): R-WIDTH
 stands unchanged, including its no-cross-daemon-format-negotiation-ever
@@ -461,7 +467,7 @@ latency and caused the ~60 s resync glitch storm until
 conf by `derive_audio_backend_latency_offset` in
 `deploy/bin/jasper-apply-airplay-mode`, re-run on every shairport-sync
 start via the unit's `ExecStartPre` (`renderers.sh` installs the
-template and the renderer, and seeds once) — MUST be re-derived for the
+template and the renderer script, and seeds once) — MUST be re-derived for the
 ring graph, because the ring holds frames the offset math attributed to
 the aloop ring; and the 0.2 threshold may be revisitable afterwards, but
 only on measurement — keep 0.2 through the migration. This is why
