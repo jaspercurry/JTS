@@ -29,8 +29,6 @@ from jasper.bass_extension.profile import (
     evaluate_bass_extension_profile,
 )
 from jasper.camilla_config_contract import (
-    DEFAULT_CAPTURE_DEVICE,
-    DEFAULT_CAPTURE_FORMAT,
     FilterSpec,
     PeqFilter,
 )
@@ -1570,8 +1568,8 @@ def build_baseline_profile_candidate(
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     playback_device: str | None = None,
-    capture_device: str = DEFAULT_CAPTURE_DEVICE,
-    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    capture_device: str | None = None,
+    capture_format: str | None = None,
     driver_domain: bool = False,
     program_channel: str | None = None,
     driver_domain_pair_trim_db: float = 0.0,
@@ -1589,12 +1587,18 @@ def build_baseline_profile_candidate(
     """Build or write a baseline candidate from current accepted evidence.
 
     ``capture_device`` is the CamillaDSP capture source the emitted baseline
-    reads from. The default (``DEFAULT_CAPTURE_DEVICE`` = ``plug:jasper_capture``,
-    the solo fan-in tap) keeps the solo baseline byte-identical; the multiroom
-    reconciler passes a round-trip loopback device for a wireless follower (gap 1
-    of ``docs/HANDOFF-distributed-active.md``). The graph shape — crossover,
-    per-driver limiters, tweeter high-pass, 0 dB ceiling — is unaffected; only
-    the capture source line changes.
+    reads from. ``None`` (the default) takes it — with the rest of the
+    ``devices:`` block — from :func:`active_emit_devices` against the RESOLVED
+    playback device, so both halves of the emit follow one derivation instead of
+    a marker-aware sink meeting a hardcoded tap: on an armed box that pairing
+    emits playback=ring with capture=the snd-aloop tap fan-in has stopped
+    feeding, the half-moved graph. Every non-ring device answers the emitter's
+    own defaults, so a candidate on a box that is not armed is byte-identical.
+    An explicit value still wins for the one caller that owns its own capture
+    lane: the multiroom reconciler passes a round-trip loopback device for a
+    wireless follower (gap 1 of ``docs/HANDOFF-distributed-active.md``). The
+    graph shape — crossover, per-driver limiters, tweeter high-pass, 0 dB
+    ceiling — is unaffected; only the capture source line changes.
 
     ``driver_domain`` switches the emit to the **driver-domain-only** graph
     (``emit_active_speaker_driver_domain_config``, Slice 2): a wireless active
@@ -1653,6 +1657,37 @@ def build_baseline_profile_candidate(
         topology,
         playback_device=playback_device,
     )
+    # BOTH DEVICE HALVES follow the RESOLVED sink, in the same ONE derivation
+    # the re-emit seam reads — the second production emit site learning the
+    # lesson the first one already carries. The sink here is marker-aware
+    # (``resolve_active_playback_device`` answers the ring on an armed box)
+    # while the capture lane and the whole wire/latency geometry used to take
+    # the emitter's ALSA-lane defaults, which is a candidate naming the ring and
+    # sourcing the snd-aloop tap fan-in stops feeding the moment the coupling
+    # arms. The arm ladder never traverses this builder and
+    # ``recompose_applied_baseline_yaml``'s mirror check catches such a graph
+    # loudly, so this closes a drift, not an outage — but two emit sites where
+    # only one has learned is how the next one gets written.
+    #
+    # Every non-ring device (every box that is not armed, and every lab
+    # override) answers exactly the emitter's own defaults, so this is
+    # byte-identical there. Derived BEFORE ``candidate_graph_context`` because
+    # the fingerprint has to describe the graph that will actually be emitted:
+    # recording the caller's ``None`` would let two different capture lanes
+    # share one candidate identity.
+    #
+    # A ring device whose declared wire this repo cannot parse raises out of
+    # here rather than resolving to something plausible. Only an armed box with
+    # a typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` can reach it, jasper-fanin
+    # parks on that same value, and the alternative is emitting the half-moved
+    # graph this derivation exists to prevent.
+    devices = active_emit_devices(resolved_playback_device, topology=topology)
+    emit_capture_device = (
+        devices.capture_device if capture_device is None else capture_device
+    )
+    emit_capture_format = (
+        devices.capture_format if capture_format is None else capture_format
+    )
     saved = _load_saved_state(state_target)
     candidate_graph_context = {
         "playback_device": resolved_playback_device,
@@ -1661,8 +1696,8 @@ def build_baseline_profile_candidate(
         "driver_domain_pair_trim_db": (
             driver_domain_pair_trim_db if driver_domain else 0.0
         ),
-        "capture_device": capture_device,
-        "capture_format": capture_format,
+        "capture_device": emit_capture_device,
+        "capture_format": emit_capture_format,
         "measured_candidate_fingerprint": (
             measured_candidate.fingerprint if measured_candidate is not None else None
         ),
@@ -2195,8 +2230,13 @@ def build_baseline_profile_candidate(
                 program_channel=program_channel,
                 pair_trim_db=driver_domain_pair_trim_db,
                 corrections=corrections,
-                capture_device=capture_device,
-                capture_format=capture_format,
+                capture_device=emit_capture_device,
+                capture_format=emit_capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize,
+                target_level=devices.target_level,
+                queuelimit=devices.queuelimit,
+                enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension_profile=bass_extension_profile,
@@ -2206,8 +2246,13 @@ def build_baseline_profile_candidate(
                 preset,
                 playback_device=resolved_playback_device,
                 corrections=corrections,
-                capture_device=capture_device,
-                capture_format=capture_format,
+                capture_device=emit_capture_device,
+                capture_format=emit_capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize,
+                target_level=devices.target_level,
+                queuelimit=devices.queuelimit,
+                enable_rate_adjust=devices.enable_rate_adjust,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension_profile=bass_extension_profile,
@@ -2964,8 +3009,8 @@ async def apply_baseline_profile(
     get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
-    capture_device: str = DEFAULT_CAPTURE_DEVICE,
-    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    capture_device: str | None = None,
+    capture_format: str | None = None,
     driver_domain: bool = False,
     program_channel: str | None = None,
     driver_domain_pair_trim_db: float = 0.0,
@@ -3038,8 +3083,8 @@ async def _apply_baseline_profile_locked(
     get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
-    capture_device: str = DEFAULT_CAPTURE_DEVICE,
-    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    capture_device: str | None = None,
+    capture_format: str | None = None,
     driver_domain: bool = False,
     program_channel: str | None = None,
     driver_domain_pair_trim_db: float = 0.0,
@@ -3057,8 +3102,10 @@ async def _apply_baseline_profile_locked(
     """Apply the saved baseline candidate through the shared DSP transaction.
 
     ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
-    so the reconciler can apply a follower's round-trip-loopback baseline; the
-    default keeps the solo apply byte-identical.
+    so the reconciler can apply a follower's round-trip-loopback baseline. It
+    stays ``None`` by default rather than materialising the tap here, so the
+    apply path reaches that function's one device derivation instead of pinning
+    the capture half against a sink it does not look at.
 
     ``driver_domain`` + ``program_channel`` switch the emit to a wireless active
     follower's driver-domain-only Layer-A graph (Slice 2 emitter). The optional
