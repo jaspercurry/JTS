@@ -76,14 +76,21 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     below), so dropping either thread is silent: the session would still
     build, and it would build the no-walk shape while the flag says otherwise.
 
-    Source-inspected rather than driven, for the reason the existing guard
-    gives — trusting the call site to stay wired is the desync this guards.
-    That choice is also forced here: both call sites live inside
-    ``prepare_v2_session``'s ``_open`` closure, and no test invokes it. The
-    three tests that call ``prepare_v2_session`` at all either refuse before
-    reaching ``_open`` or stop at ``prepared.label``; nothing calls
-    ``prepared.open()``. That structural testability hole belongs to #2291's
-    Phase 3/4 stage-capability factory, not to this characterization pass.
+    Source-inspected rather than driven, mirroring the sibling guard's own
+    choice — trusting the call site to stay wired is the desync it guards.
+
+    A behavioral version is possible and is strictly stronger: both call sites
+    live in ``prepare_v2_session``'s ``_open`` closure, and
+    ``tests/test_crossover_v2_stage_bridge.py``'s ``_stage_1`` harness drives
+    that real ``_open``, so asserting ``PHASE_LATERAL in
+    conductor.session_phases`` catches wiring breaks this textual guard cannot
+    see (a hard-coded ``True``, the wrong flag read). It is deliberately NOT
+    added here: running that harness's fixtures in this module makes it fail 36
+    tests of ``tests/test_correction_crossover_v2_endpoints.py`` in a shared
+    process — a residue of the real ``_open`` that also afflicts the
+    stage-bridge module itself, with or without any production mutation. Adding
+    it would be a second instance of a defect that belongs to that harness, so
+    it is reported there instead of duplicated here.
     """
 
     source = inspect.getsource(v2host.prepare_v2_session)

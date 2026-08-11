@@ -12,11 +12,16 @@ runs through ``bind_delta_probe_rollback`` — the closure the conductor calls
 when the delta probe measures that an applied correction is not doing what its
 filters commanded.
 
-**It has no test.** There is no reference to ``bind_delta_probe_rollback`` or
-to either of its ``event=`` names anywhere in ``tests/``. The conductor's own
-probe tests inject a fake ``rollback=lambda reason: ...`` and never reach this
-function, so the binding between the conductor's seam and the household's Undo
-path is asserted nowhere.
+**What exists is binding-level; this is behavior-level.**
+``tests/test_crossover_v2_stage_bridge.py``'s
+``test_only_stage_1_binds_the_rollback_seam`` asserts *where* the closure is
+wired — that stage 1 gets it and stage 2, the stage that actually reaches a
+post-apply verdict, does not (a current defect it tags to #2291 Phase 3). What
+no test exercises is what the closure *does* once called: neither of its
+``event=`` names appears anywhere in ``tests/``, and the conductor's own probe
+tests inject a fake ``rollback=lambda reason: ...`` rather than this one. So
+the status mapping, the refusal swallow, and the propagation boundary below
+are unasserted.
 
 **Not re-pinned here**, because they already are: the apply transaction's
 ordering and failure behavior, and ``handle_v2_restore``'s own three refusal
@@ -82,24 +87,37 @@ def test_the_probes_rollback_runs_the_households_own_undo_path(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "status",
-    ["restore_failed", "restore_target_missing", "restore_target_invalid", "blocked"],
+    "payload",
+    [
+        pytest.param({"status": "blocked"}, id="blocked"),
+        pytest.param({"status": "restore_failed"}, id="restore_failed"),
+        pytest.param({}, id="status_absent"),
+        pytest.param({"status": "Restored"}, id="wrong_case"),
+    ],
 )
-def test_only_a_restored_status_is_reported_as_restored(monkeypatch, status: str):
+def test_only_a_restored_status_is_reported_as_restored(monkeypatch, payload: dict):
     """Fail-closed on the return value, which is the whole safety property.
 
-    The conductor reads this bool to decide whether the speaker is back on
-    its previous graph. Every non-``restored`` status must read False — a
-    seam that returned True on ``restore_failed`` would tell the journey the
-    speaker was recovered while it is still running the regressed graph, the
-    exact outcome #2291 lists as "never reported as restored."
+    The conductor reads this bool to decide whether the speaker is back on its
+    previous graph. Anything other than the literal ``"restored"`` must read
+    False — a seam that returned True on ``restore_failed`` would tell the
+    journey the speaker was recovered while it is still running the regressed
+    graph, the exact outcome #2291 lists as "never reported as restored."
 
-    Parameterized over the statuses ``restore_applied_baseline_profile`` can
-    actually return, rather than one representative, so a mapping that
-    special-cased a single string is not mistaken for a fail-closed rule.
+    ``restore_applied_baseline_profile``'s own docstring is the SSOT for the
+    vocabulary and names exactly three statuses: ``{"restored", "blocked",
+    "restore_failed"}``. The two failure statuses are rows here; ``restored``
+    is the true case covered above. (``restore_target_invalid`` and
+    ``restore_target_missing`` are *issue codes* nested inside a ``blocked``
+    payload, not statuses — an earlier revision of this test listed them as
+    statuses and was wrong.)
+
+    The last two rows are not vocabulary but shape: a payload with no
+    ``status`` at all, and one differing only in case. Both must read False,
+    because "we could not tell" is not "we restored it".
     """
 
-    rollback, _ = _bound(monkeypatch, {"status": status})
+    rollback, _ = _bound(monkeypatch, payload)
 
     assert rollback("model_error") is False
 
