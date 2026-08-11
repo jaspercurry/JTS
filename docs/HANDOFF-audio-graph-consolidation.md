@@ -213,24 +213,32 @@ sequencing", but the sequencing this plan actually ships is **U0–U4**
 
 | Box | Hardware / role | State (dated) |
 |---|---|---|
-| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | **ARMED WIDE 2026-08-11** — the campaign's first wide ring box. Installed `5dcd872a4` at the arm; coupling `shm_ring` + `shm_ring` with `choice=operator`; wire `S32_LE` on both ends; `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1` against `active-content.ring`. DAC8x `LatencyFloor` live (outputd period/DAC buffer 128/256; DAC presentation **5.167 ms**), ring runtime chunk/target 128/128. `jasper-doctor` exit 0 — six pre-existing warnings plus the expected permanent arm-signature plan warn, no failures. `aec-init` runs in **CORPUS mode** — no alignment artifact, so no commissioned identity ([#2254](https://github.com/jaspercurry/JTS/issues/2254); corpus exit is an owner decision, out of campaign scope). Evidence `captures/r7b-jts3-arm3-20260811T162742Z` |
+| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | **ARMED WIDE 2026-08-11** — the campaign's first wide ring box. Installed `7afec75d8` (armed at `5dcd872a4`, then **proven to survive a deploy and two `/sound/` saves** the same day — see below); coupling `shm_ring` + `shm_ring` with `choice=operator`; wire `S32_LE` on both ends; `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1` against `active-content.ring`. DAC8x `LatencyFloor` live (outputd period/DAC buffer 128/256; DAC presentation **5.167 ms**), ring runtime chunk/target 128/128. `jasper-doctor` exit 0 with no failures; the arm-signature plan warn is expected and permanent. `aec-init` runs in **CORPUS mode** — no alignment artifact, so no commissioned identity ([#2254](https://github.com/jaspercurry/JTS/issues/2254); corpus exit is an owner decision, out of campaign scope). Evidence `captures/r7b-jts3-arm3-20260811T162742Z` |
 | **jts.local** | Pi + single Apple dongle (card `A`), passive, USB-in box | Narrow, unchanged, **re-validated 2026-08-11**. Installed `5dcd872a4`; coupling `shm_ring` + `shm_ring`; combo ARMED; the ring header stayed byte-identical `S16_LE` across the deploy and doctor was check-for-check identical pre/post, with ~5 min of real USB DIRECT playback at zero xruns / clips / drops (`captures/u2-jtslocal-regression-20260811T162805Z`). Still owed and unchanged by that pass: voice INACTIVE (parked; **commission owed**), the live dongle edge unconfirmed against the registry's `S24_3LE`, and the **route-latency revalidation artifact** (stale and failing both before and after) |
 | **jts4** | Zero 2 W streambox + InnoMaker, loopback | Not probed since 2026-08-10. Zero-class validation target for U1 |
 | **jts5** | InnoMaker HAT, S32 edge live, composite/active testbox | Not probed since 2026-08-10. **Parked by owner intent — do not commission or play it for tests** |
 
-**Interim restrictions on jts3 while it is armed** (2026-08-11): the
-arm-preserving fix for `/eq/` and `/sound/` saves and for deploy-time
-`reconcile-current-dsp` merged as PR
-[#2343](https://github.com/jaspercurry/JTS/pull/2343) (closing
+**What is and is not safe on jts3 while it is armed** (2026-08-11). Deploys and
+`/eq/` / `/sound/` saves are **safe**, and the interim restriction on them is
+**lifted as of 2026-08-11**. PR
+[#2343](https://github.com/jaspercurry/JTS/pull/2343) put every re-emit seam on
+the live transport endpoint, and both halves were then proven on the armed box
+the same day: one full deploy and two household-path `/sound/apply` saves each
+left every armed-state field unchanged, both graph halves still naming the ring
+at `S32_LE`, `writer_alive` true throughout
+(`captures/endpoint-deploy-jts3-20260811T185255Z`). The #2339 seam fired exactly
+as it had at arm3 and the outcome inverted — the statefile pointer still moved,
+but to a graph whose sha256 is identical on both sides. An EQ save costs no
+writer epoch: the apply is a live websocket load, not a CamillaDSP restart.
 [#2337](https://github.com/jaspercurry/JTS/issues/2337) and
-[#2339](https://github.com/jaspercurry/JTS/issues/2339)) — the restriction on
-those flows lifts with the first deploy-preserves-arm hardware proof, which was
-dispatched the same day (`captures/endpoint-deploy-jts3-20260811T185255Z`). The
-measurement/commissioning **wizard** flows stay off the armed box until
-[#2344](https://github.com/jaspercurry/JTS/issues/2344) is resolved: that graph
-swap sweeps into the unfed aloop lane and would measure silence. The arm3
-finale's `correction_substream` sweep is not affected — it traverses the armed
-ring, which is what proved the lane clean.
+[#2339](https://github.com/jaspercurry/JTS/issues/2339) are closed against that
+evidence.
+
+The measurement/commissioning **wizard** flows are a separate case and stay off
+the armed box until [#2344](https://github.com/jaspercurry/JTS/issues/2344) is
+resolved: that graph swap sweeps into the unfed aloop lane and would measure
+silence. The arm3 finale's `correction_substream` sweep is not affected — it
+traverses the armed ring, which is what proved the lane clean.
 
 Certified USB route-latency baseline to compare against: **p50 36.35 /
 p95 37.93 / p99 38.29 ms** over 1094 impulses / 32.6 minutes. The quick
@@ -382,11 +390,12 @@ detail.
 | [#2319](https://github.com/jaspercurry/JTS/issues/2319) | `camillagui.socket` — unauthenticated root listener on `0.0.0.0:5005` with `ReadWritePaths=/etc/camilladsp` | Open. Pre-existing, surfaced by the R7 hearing-safety repanel, out of R7 scope; the jts3 hardware runbooks stop the socket for their sequence |
 | [#2327](https://github.com/jaspercurry/JTS/issues/2327) | jts3's corpus-mode chip-AEC `sys_delay` needs re-derivation after the DAC8x floor changed the period geometry | Open and **live-owed** from the 2026-08-11 floor deploy — jts3 has been running post-floor since then |
 | [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open — architect call deferred: validator symmetry vs the documented refuse-then-complete route. The route out is in the lifecycle section below; still unverified on hardware, since no rollback has run from a fully-armed box |
-| [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11). The jts3 operating restriction lifts with that fix's hardware proof — see the Fleet notes above |
+| [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) and proven on armed jts3 the same day — two household-path `/sound/apply` saves preserved every armed-state field. The jts3 operating restriction is **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | Open — filed at #2335's merge, same family as #2337/#2339 |
-| [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm |
+| [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | Open. Found in the 2026-08-11 jts.local pass; the workaround is to deploy over the Wi-Fi address |
-| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open — the reason the wizard measurement flows stay off armed jts3 |
+| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open — the reason the wizard measurement flows stay off armed jts3, and the one armed-box restriction the 2026-08-11 proofs did **not** lift |
+| [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | Open. Surfaced 2026-08-11 by the deploy proof's own probe tone becoming the loudness anchor, so the trigger was synthetic; whether ordinary music re-anchors it is **inference, not measurement** — that is what makes it a real clamp bug or not |
 
 **P8 splits.** P8a is this ladder — solo-stereo width plus active
 N-channel. P8b — composite ring plus bonded round-trip ingress — moves
@@ -1020,8 +1029,12 @@ USB source row's "so every box", the #2285 correction's "ring boxes stay
 coherently S16", and the R1/R2 paragraph's "no conf.d on the fleet declares a
 non-default format". The ACTIVE-ring arm/rollback lifecycle section was
 deliberately NOT re-touched: #2329, #2335, and #2343 wrote it, and it stands as
-their record. The egress and source-half facts (apart from that one row),
-Appendix A, and Appendix B were not re-verified and stand as last verified
-above.
+their record. The same pass was then amended when the deploy-preserves-arm and
+EQ-save proofs returned green: the armed-box restriction on deploys and `/eq/` /
+`/sound/` saves is recorded as lifted, jts3's row carries its post-deploy build,
+and #2345 joins the register — each read from
+`captures/endpoint-deploy-jts3-20260811T185255Z` rather than from a summary of
+it. The egress and source-half facts (apart from that one row), Appendix A, and
+Appendix B were not re-verified and stand as last verified above.
 
 Last verified: 2026-08-11
