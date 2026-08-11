@@ -89,23 +89,23 @@ gated 0/0, 3-lens panels on the audio path). Its sealed record is
   librespot's own renderer-side `--dither tpdf`, which is a renderer-local
   policy the source-width arc audits, not an outputd policy.
 
-### The source half is still narrow
+### The source half is narrow, with one conditional exception
 
-Every music lane still enters at 48 kHz `S16_LE`, so the `S32` container
-CamillaDSP captures does not describe surviving precision. The one lane with a
-wide route built (USB DIRECT, since U2 PR-1) needs **two** things to use it, and
+Every music lane enters at 48 kHz `S16_LE` except one: a USB DIRECT lane on a
+box that is both wide-wired and USB-enabled. On every other lane the `S32`
+container CamillaDSP captures does not describe surviving precision. The one
+lane with a wide route built (USB DIRECT, since U2 PR-1) needs **two** things to use it, and
 that pairing is the durable statement: the box's wire must resolve `S32_LE`
 **and** its USB DIRECT lane must be on. Either alone leaves the lane narrow. As
 of 2026-08-11 jts3 is the only box that is both — armed wide, then USB-enabled
-the same day (`captures/usb-enable-jts3-20260811T191749Z`) — and no host was
-attached yet, so nothing has yet carried wide content through it.
+the same day (`captures/usb-enable-jts3-20260811T191749Z`).
 
 | Boundary | Position at 2026-08-10 (ring wire and USB rows re-dated inline) |
 |---|---|
 | AirPlay | shairport-sync configured 44.1 kHz `S32`; its private aloop lane is a `plug:` wrapper pinned 48 kHz `S16_LE` |
 | Spotify Connect | librespot requests `S24_3` with its own TPDF dither; the lane is pinned 48 kHz `S16_LE` |
 | Bluetooth | bluealsa-aplay's negotiated PCM is adapted by the `plug:` lane to 48 kHz `S16_LE` |
-| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped fleet default — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11 jts3 alone satisfies both halves — wide wire and DIRECT lane on — and no host has been attached to it yet, so the route is live-capable but has carried nothing; it stays **dormant** on every narrow-wire box. Arming it is the per-box flip, not this row |
+| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped fleet default — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. As of 2026-08-11 jts3 alone satisfies both halves — wide wire and DIRECT lane on; it stays **dormant** on every narrow-wire box. Arming it is the per-box flip, not this row |
 | Provider TTS | 24 kHz mono S16 in; resampled through float, cast back to S16 before IPC; fan-in applies assistant gain at i16 (`apply_gain_i16`) |
 | Generated earcons | rendered in float, then baked to 24 kHz mono S16 at daemon startup (`_to_pcm16` in `jasper/voice/earcons.py`) |
 | fan-in core | accumulates into an i64 scratch at the scale the box's wire names (`ProgramWidth`). Narrow — the shipped default — is the **S16 numeric scale** exactly as before, with `saturate_to_i16` at the summed write. Wide is the i32 spine scale, promoting each `i16` lane at its own sum entry (`rust/jasper-fanin/src/mixer.rs`) |
@@ -220,7 +220,7 @@ sequencing", but the sequencing this plan actually ships is **U0–U4**
 
 | Box | Hardware / role | State (dated) |
 |---|---|---|
-| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | **ARMED WIDE 2026-08-11** — the campaign's first wide ring box. Installed `7afec75d8` (armed at `5dcd872a4`, then **proven to survive a deploy and two `/sound/` saves** the same day — see below); coupling `shm_ring` + `shm_ring` with `choice=operator`; wire `S32_LE` on both ends; `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1` against `active-content.ring`. DAC8x `LatencyFloor` live (outputd period/DAC buffer 128/256; DAC presentation **5.167 ms**), ring runtime chunk/target 128/128. `jasper-doctor` exit 0 with no failures; the arm-signature plan warn is expected and permanent. `aec-init` runs in **CORPUS mode** — no alignment artifact, so no commissioned identity ([#2254](https://github.com/jaspercurry/JTS/issues/2254); corpus exit is an owner decision, out of campaign scope). **The arm changed how the box sounds**, and that is its largest user-visible consequence: the re-emit published jts3's own adopted-but-never-published profile for the first time (treble −5.536 dB, crossover Fc 2000 → 1649 Hz, broadband within 0.24 dB), because the live graph had been ~22 h staler than the profile the box had already adopted. Not a ring artifact and not a volume bug — measurements and gain structures in `captures/endpoint-deploy-jts3-20260811T185255Z` (files 21, 24). [#2291](https://github.com/jaspercurry/JTS/issues/2291) owns the voicing question and identifies that profile as its 2026-08-10 incident-era artifact (the −13 dB tweeter trim being defect-downstream); the owner reviewed the change on 2026-08-11 and elected to **keep the current voicing**. USB Audio Input was enabled here later the same day, with the arm preserved (`captures/usb-enable-jts3-20260811T191749Z`). Arm evidence `captures/r7b-jts3-arm3-20260811T162742Z` |
+| **jts3** | Pi 5 + DAC8x + XVF3800, active 2-way, the horn | **ARMED WIDE 2026-08-11** — the campaign's first wide ring box. Installed `7afec75d8` (armed at `5dcd872a4`, then **proven to survive a deploy and two `/sound/` saves** the same day — see below); coupling `shm_ring` + `shm_ring` with `choice=operator`; wire `S32_LE` on both ends; `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1` against `active-content.ring`. DAC8x `LatencyFloor` live (outputd period/DAC buffer 128/256; DAC presentation **5.167 ms**), ring runtime chunk/target 128/128. `jasper-doctor` exit 0 with no failures; the arm-signature plan warn is expected and permanent. `aec-init` runs in **CORPUS mode** — no alignment artifact, so no commissioned identity ([#2254](https://github.com/jaspercurry/JTS/issues/2254); corpus exit is an owner decision, out of campaign scope). **The arm changed how the box sounds**, and that is its largest user-visible consequence: the re-emit published jts3's own adopted-but-never-published profile for the first time (treble −5.536 dB, crossover Fc 2000 → 1649 Hz, broadband within 0.24 dB), because the live graph had been ~22 h staler than the profile the box had already adopted. Not a ring artifact and not a volume bug — measurements and gain structures in `captures/endpoint-deploy-jts3-20260811T185255Z` (files 21, 24). [#2291](https://github.com/jaspercurry/JTS/issues/2291) owns the voicing question and identifies that profile as its 2026-08-10 incident-era artifact (the −13 dB tweeter trim being defect-downstream); the owner reviewed the change on 2026-08-11 and elected to **keep the current voicing** (recorded in [#2348](https://github.com/jaspercurry/JTS/issues/2348), which is scoped around that decision). USB Audio Input was enabled here later the same day, with the arm preserved (`captures/usb-enable-jts3-20260811T191749Z`). Arm evidence `captures/r7b-jts3-arm3-20260811T162742Z` |
 | **jts.local** | Pi + single Apple dongle (card `A`), passive, USB-in box | Narrow, unchanged, **re-validated 2026-08-11**. Installed `5dcd872a4`; coupling `shm_ring` + `shm_ring`; combo ARMED; the ring header stayed byte-identical `S16_LE` across the deploy and doctor was check-for-check identical pre/post, with ~5 min of real USB DIRECT playback at zero xruns / clips / drops (`captures/u2-jtslocal-regression-20260811T162805Z`). Still owed and unchanged by that pass: voice INACTIVE (parked; **commission owed**), the live dongle edge unconfirmed against the registry's `S24_3LE`, and the **route-latency revalidation artifact** (stale and failing both before and after) |
 | **jts4** | Zero 2 W streambox + InnoMaker, loopback | Not probed since 2026-08-10. Zero-class validation target for U1 |
 | **jts5** | InnoMaker HAT, S32 edge live, composite/active testbox | Not probed since 2026-08-10. **Parked by owner intent — do not commission or play it for tests** |
@@ -1088,8 +1088,11 @@ R-RING2's route-latency gate is now legible per box as met/owed/inapplicable
 says so in those words). The same round gave the arm's audible consequence a
 home in jts3's row, added #2348, and moved the USB source-half claim to its
 durable two-condition form after jts3's USB lane was enabled
-(`captures/usb-enable-jts3-20260811T191749Z`). The egress and remaining
-source-half facts, Appendix A, and Appendix B were not re-verified and stand as
-last verified above.
+(`captures/usb-enable-jts3-20260811T191749Z`). A closing micro-round then
+deleted this file's remaining host-occupancy clauses outright: whether a host is
+attached changes by the hour, which a day-dated document cannot hold honestly,
+and the U2 arc row already owns the open question durably. The egress and
+remaining source-half facts, Appendix A, and Appendix B were not re-verified and
+stand as last verified above.
 
 Last verified: 2026-08-11
