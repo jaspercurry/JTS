@@ -8773,6 +8773,43 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     assert v2host.load_v2_state()["sound_declaration_undo"] is None
 
 
+def test_entry_graph_fingerprint_names_the_applied_profile(monkeypatch):
+    """#2291: the entry baseline records WHICH graph it was measured through.
+
+    The conductor's three fallbacks (no seam, seam raised, no applied profile)
+    each have coverage; the seam's REAL path — the one production binds on both
+    stages — did not, so nothing pinned that it reads the applied SSOT's own
+    recomputed ``candidate_fingerprint`` rather than inventing an identity.
+    That field is the one `load_applied_baseline_profile_state` re-derives from
+    the immutable source, which is precisely why this reads the stored value
+    instead of hashing anything itself: one hash function, one definition of
+    "which graph".
+
+    The empty answer is pinned beside it because it is not an error. A speaker
+    with no applied profile is on its first-ever round, where the entry graph
+    genuinely has no identity to name; the conductor turns "" into its own
+    ``unknown`` word rather than this function inventing one.
+    """
+    calls: list[int] = []
+
+    def _applied() -> dict[str, Any]:
+        calls.append(1)
+        return {"candidate_fingerprint": "fp-live-graph", "status": "applied"}
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        _applied,
+    )
+    assert v2host._active_graph_fingerprint() == "fp-live-graph"
+    assert calls == [1], "the applied SSOT is the only thing consulted"
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda: None,
+    )
+    assert v2host._active_graph_fingerprint() == ""
+
+
 def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
     """#2292 scope 2 SF2: apply_measured_crossover_frequency has TWO
     production callers -- handle_v2_apply's accept (pinned by
