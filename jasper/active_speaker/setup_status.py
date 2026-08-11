@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from .baseline_profile import (
@@ -35,6 +36,7 @@ from .crossover_contract import (
 )
 from .design_draft import load_design_draft
 from .measurement import load_measurement_state
+from .profile import ActiveSpeakerConfigError
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
 ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
@@ -94,11 +96,22 @@ def setup_blocked_only_by_in_sequence_anchor(
         and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
         and status.get("capture_entry_pending") is True
     )
+# ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``
+# and was therefore already caught. Since ``_applied_layer_a_binding`` began
+# passing the COMPARED graph's playback device into the recomposer, that device
+# crosses the emitter's own legality guard — a graph naming a forbidden lane
+# (``jts_ring_playback``, reachable via a stale statefile or the flat-ring
+# cutover class) makes the emitter refuse, and this surface is household-facing:
+# an indeterminate input must return the ``unavailable`` snapshot, never a
+# traceback. Naming the class keeps that guarantee legible at the one site where
+# narrowing this tuple would silently reopen it.
+# ``test_a_forbidden_playback_lane_is_unverifiable_never_a_traceback`` pins it.
 _READINESS_DERIVATION_ERRORS = (
     OSError,
     RuntimeError,
     TypeError,
     ValueError,
+    ActiveSpeakerConfigError,
     KeyError,
 )
 _CROSSOVER_SETUP_HREF = "/correction/crossover/"
@@ -552,9 +565,31 @@ def _applied_layer_a_binding(
                 "expected_fingerprint": None,
                 "loaded_fingerprint": None,
             }
+        # THE TRANSPORT AXIS IS NEUTRALIZED, not compared. This projection binds
+        # ``output_devices``, which carries the playback device and the sink's
+        # whole CamillaDSP geometry — so an ACTIVE-ring-armed box could never
+        # match an expectation built against the device its immutable snapshot
+        # recorded, and this check reported ``mismatch``, blocking room
+        # correction with "Apply that crossover again" for a transport move
+        # nobody asked about (#2339/#2337 family). Layer A is crossover and
+        # protection evidence; whether the graph names the RIGHT transport is
+        # judged by ``check_fanin_coupling`` and ``ring_edge_width_ready``
+        # against the marker and the ring's declaring ends.
+        #
+        # The endpoint is taken from the graph being COMPARED rather than from
+        # the box (the re-emit seams' ``resolve_live_active_endpoint``): this is
+        # a two-way comparison of snapshot evidence against a caller-supplied
+        # readback, and a third opinion — the statefile — would make a box whose
+        # device resolution merely drifted from its snapshot report crossover
+        # drift. ``None`` (an unparseable devices block) falls through to the
+        # snapshot default, exactly as before.
+        loaded_playback = parse_camilla_devices_config(loaded_yaml).get(
+            "playback_device"
+        )
         expected_yaml, expected_issues = recompose_applied_baseline_yaml(
             topology,
             applied_profile=applied_profile,
+            playback_device=loaded_playback or None,
         )
         if expected_yaml is None or expected_issues:
             return unavailable

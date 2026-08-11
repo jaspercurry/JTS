@@ -18,10 +18,12 @@ it adds the speaker-group demand accounting and the route-fit issues.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from jasper.audio_hardware.dac import by_id as _dac_by_id
+from jasper.log_event import log_event
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     EXPLICIT_SOURCE,
@@ -35,6 +37,8 @@ from jasper.output_topology import (
 
 from ._common import issue as _issue
 
+logger = logging.getLogger(__name__)
+
 # Re-exported for backwards compatibility — these constants moved to
 # jasper.output_topology (the resolution owner) but several active-speaker
 # callers import them from here.
@@ -42,6 +46,7 @@ __all__ = [
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PLAYBACK_ROUTE_KIND",
     "EXPLICIT_SOURCE",
+    "LOADED_GRAPH_SOURCE",
     "MISSING_SOURCE",
     "OUTPUTD_ACTIVE_LANE_SOURCE",
     "ActiveLaneCapabilityGap",
@@ -49,9 +54,18 @@ __all__ = [
     "active_lane_capability_gap",
     "active_playback_route_capability",
     "resolve_active_playback_device",
+    "resolve_live_active_endpoint",
 ]
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
+
+# The witness that answered :func:`resolve_live_active_endpoint`: the durable
+# CamillaDSP graph itself. Its own token rather than a reuse of
+# ``OUTPUTD_ACTIVE_LANE_SOURCE`` because the two are different claims — "the
+# marker selects this transport" vs "the box's graph IS on this transport" —
+# and a test that could not tell them apart would pass on an unarmed box, where
+# both witnesses answer the same device, while proving nothing.
+LOADED_GRAPH_SOURCE = "loaded_graph"
 
 
 def _active_main_groups(topology: OutputTopology) -> list[SpeakerGroup]:
@@ -149,6 +163,99 @@ def resolve_active_playback_device(
         playback_device=playback_device,
     )
     return layout.playback_device, layout.playback_device_source
+
+
+def resolve_live_active_endpoint(
+    topology: OutputTopology,
+) -> tuple[str | None, str]:
+    """The playback endpoint this box's active graph is CURRENTLY on.
+
+    ONE derivation, for every seam that RE-EMITS or RE-DERIVES an active graph
+    the box is already running. Those seams must not *choose* an endpoint — the
+    box is on one, and a re-emit that answers a different one moves the speaker
+    without anyone asking. :func:`resolve_active_playback_device` answers the
+    other question ("which endpoint should a graph be emitted against?") and
+    stays the right call for a FRESH emit.
+
+    THE GRAPH IS UPSTREAM TRUTH, so it is asked first. The endpoint marker
+    (``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT``) is *derived by*
+    ``jasper-audio-hardware-reconcile`` from the classification of the graph the
+    statefile points at, so in every state where the two disagree the graph is
+    the half the reconcilers are converging toward:
+
+    * Mid-arm (``baseline-reemit --endpoint ring`` has run, the hardware
+      reconciler has not): graph=ring, marker=clear. Following the marker here
+      re-emits the ALSA lane over the rung that was just completed and the
+      ladder cannot finish — which is exactly how a deploy landing in this
+      window used to de-arm a box.
+    * Mid-rollback (``--endpoint aloop`` has run, marker still set): graph=aloop,
+      marker=ring. Following the marker re-arms a box the operator just
+      released.
+    * Marker set, graph moved back by something else: following the graph
+      converges with the next hardware reconcile, which will clear the marker
+      from that same graph.
+
+    ONLY THE ACTIVE LANE'S OWN TWO TRANSPORTS are adopted from the graph
+    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`),
+    because those two are the whole question this function exists to answer.
+    Anything else the graph might name — a stale stereo lane left in the
+    statefile, a lab PCM, a grouped pipe sink — is not a third answer to
+    "which transport", and adopting it would hand the active emitter a device
+    its own forbidden-token guard then refuses mid-save. Those fall through to
+    the chooser below, which already honours an explicit
+    ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`` override, so a lab box reaches the
+    same device by the route that owns lab overrides.
+
+    The MARKER is the second witness, not a peer: it answers only when the graph
+    does not. A fresh box has no statefile at all and must still deploy, so this
+    is DEFAULT-SAFE rather than fail-loud — and it is never worse than the
+    alternative it replaced, because an armed box with an unreadable statefile
+    still reads its ring endpoint off the marker where the applied snapshot
+    would have named the ALSA lane.
+
+    ``(None, MISSING_SOURCE)`` — a topology that resolves no active endpoint at
+    all — is passed through rather than invented over, so a caller threading
+    this into ``recompose_applied_baseline_yaml(playback_device=...)`` lands on
+    that function's own snapshot default and stays byte-identical to before.
+
+    COST: one statefile read plus one config read, fresh, per call — nothing is
+    cached, deliberately, because a re-emit that acted on a stale endpoint is the
+    defect this exists to prevent. That is right for the three cold seams that
+    call it (a deploy reconcile, a wizard save, a bass-extension apply); a future
+    caller on a warm path should know it is paying two file reads each time and
+    snapshot the answer itself rather than making this one lie.
+    """
+
+    # Lazy: coupling_reconcile is the arm/disarm transition module and pulls in
+    # the whole fan-in env layer; this reader is one function on it and every
+    # caller here is a cold path. runtime_contract is the owner of which devices
+    # are legal active endpoints — read, never restated.
+    from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES
+    from jasper.fanin.coupling_reconcile import read_loaded_camilla_graph
+
+    graph = read_loaded_camilla_graph()
+    device = graph.devices.get("playback_device")
+    if isinstance(device, str) and device.strip():
+        named = device.strip()
+        if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
+            return named, LOADED_GRAPH_SOURCE
+        # The graph names a sink that is not one of the active lane's two
+        # transports — a stale stereo lane, a lab PCM, a pipe. Declining it is
+        # correct (see above), but the moment of observation should be visible:
+        # the doctor's coupling check will report the incoherence later, and a
+        # journal line here is what says the endpoint derivation SAW it and
+        # deferred to the chooser rather than never having looked. DEBUG, not
+        # WARNING: a lab box is in this branch legitimately on every call.
+        log_event(
+            logger,
+            "active_speaker.live_endpoint",
+            level=logging.DEBUG,
+            result="declined_non_endpoint_device",
+            observed=named,
+            config=graph.path or "",
+            answered_by="playback_route_chooser",
+        )
+    return resolve_active_playback_device(topology)
 
 
 @dataclass(frozen=True)

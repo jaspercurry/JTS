@@ -970,7 +970,14 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
 6. Skips unchanged or flat no-op current graphs.
 7. Re-emits `sound_current.yml` through the same validation/reload/rollback
    transaction as `/sound/apply`, but does not persist profile JSON.
-8. install.sh runs the CLI fail-open under an outer process timeout; a failed
+8. On a roleful (active-crossover) box, re-emits through the playback endpoint
+   the box is LIVE on rather than the one its immutable applied snapshot
+   recorded, so a deploy cannot return an ACTIVE-ring-armed speaker to the
+   snd-aloop lane. The endpoint derivation and why the graph outranks the
+   reconciler's marker live in
+   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+   ("The ACTIVE-ring arm/rollback lifecycle").
+9. install.sh runs the CLI fail-open under an outer process timeout; a failed
    reconcile leaves the current legal graph in place and does not gate install.
 
 `/correction/apply`:

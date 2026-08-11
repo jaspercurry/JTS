@@ -283,8 +283,20 @@ all active-graph shape decisions stay in `active_speaker.camilla_yaml`. The
 carrier composes via
 [`recompose_applied_baseline_yaml`](../jasper/active_speaker/baseline_profile.py)
 — a thin helper that rebuilds the structural baseline from the immutable preset,
-corrections, playback device, and topology fingerprint captured by the explicit
-Layer-A apply, then inserts the room and preference bands. Mutable design drafts,
+corrections, and topology fingerprint captured by the explicit
+Layer-A apply, then inserts the room and preference bands. The **playback
+endpoint is the one axis that does not come from that snapshot**: it is
+transport state, not applied evidence, so every carrier re-emit passes the
+box's live endpoint
+(`jasper.active_speaker.playback_route.resolve_live_active_endpoint`, which reads
+the statefile-pointed graph first and the reconciler's marker only when it
+cannot). The snapshot's recorded device remains the fallback for a box that
+resolves no live endpoint, which is byte-identical to a single-transport box.
+Why it must not be inherited — an armed ACTIVE-ring box was silently returned to
+the snd-aloop lane by an ordinary deploy or EQ save (#2339 / #2337) — lives with
+the arm/rollback lifecycle in
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md),
+not restated here. Mutable design drafts,
 crossover previews, and candidate measurements are deliberately not inputs, so
 a later capture cannot alter production audio during an unrelated EQ recompose.
 While a replacement candidate is staged, its state and content-addressed config

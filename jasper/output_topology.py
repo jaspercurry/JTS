@@ -1775,16 +1775,23 @@ def resolve_output_layout(
        ``OutputTransportPlan``.
     3. Otherwise the route is missing (no width, no subwoofer support).
 
-    **Case 2 has two TRANSPORTS and this is the one place that chooses between
+    **Case 2 has two TRANSPORTS and this is where a FRESH emit chooses between
     them.** The active lane is reached over snd-aloop by default, and over the
     ACTIVE RING when the reconciler's endpoint marker says so. Both carry the
     same post-crossover per-driver program at the same width to the same reader,
-    so only the device name differs — which is precisely why the choice lives
-    here rather than being threaded through every emitter: every active graph is
-    emitted through this one resolution, so a re-emit after an arm produces the
-    ring graph with no caller edits, and ``playback_device_source`` stays
+    so only the device name differs, and ``playback_device_source`` stays
     ``OUTPUTD_ACTIVE_LANE_SOURCE`` so nothing keyed on the SOURCE has to learn
     about the ring.
+
+    A RE-EMIT of a graph the box is already running asks a different question and
+    does not come through here first. It reads
+    :func:`jasper.active_speaker.playback_route.resolve_live_active_endpoint`,
+    which prefers the statefile-pointed GRAPH — the marker is derived from that
+    graph, so a marker read would be a rung behind mid-ladder — and falls back to
+    this resolution when the graph does not answer. (An earlier version of this
+    note claimed every active graph was emitted through this one resolution;
+    it was not, and the seams that bypassed it silently de-armed a live box —
+    issues #2339 / #2337.)
     """
 
     env = env if env is not None else os.environ
