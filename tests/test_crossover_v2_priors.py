@@ -299,34 +299,21 @@ def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
 # --------------------------------------------------------------------------- #
 
 
-def test_no_class_in_the_flow_defines_a_method_twice():
-    """A shadowed method is a silent extraction failure, and it happened here.
+def shadowed_methods(source: str) -> dict[str, list[str]]:
+    """Class name → the method names a LATER definition silently shadows.
 
-    This phase's first cut replaced five priors methods with delegates but left
-    the originals further down the class body — the slice ran to a marker that
-    turned out to sit in the middle of the group. Python's later definition won,
-    so the delegates were dead and the originals were still running, and EVERY
-    signal was green for the wrong reason: the suites passed because the old
-    code was executing, and the byte-identical dual-run compared the old
-    behaviour against itself. Only a mutation aimed at a delegate — which did
-    not change the result — exposed it.
+    The guard's predicate, factored out so its positive control can exercise
+    **this function** rather than ``ast`` in general. A control that re-walks the
+    tree by hand proves the standard library works; it says nothing about
+    whether the rule below still finds anything.
 
-    A whole strangler phase moves methods out of one class one organ at a time,
-    so this is a defect the process can produce again. Parsed rather than
-    imported, because a duplicate definition is legal Python: ``ast`` is the
-    only place it is visible at all.
+    Parsed rather than imported, because a duplicate definition is legal Python
+    and leaves no runtime trace: ``ast`` is the only place it is visible at all.
     """
     import ast
-    from pathlib import Path
-
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "active_speaker" / "crossover_v2_flow.py"
-    )
-    tree = ast.parse(module.read_text(), filename=str(module))
 
     duplicates: dict[str, list[str]] = {}
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.ClassDef):
             continue
         seen: set[str] = set()
@@ -343,29 +330,104 @@ def test_no_class_in_the_flow_defines_a_method_twice():
             if item.name in seen:
                 duplicates.setdefault(node.name, []).append(item.name)
             seen.add(item.name)
+    return duplicates
+
+
+#: The defect this guard exists for, in the shape it actually took: a delegate
+#: written where the original was expected to have been removed, with the
+#: original still further down the class body. Private name, decorated exactly
+#: as the real pair was, and separated by an unrelated method — every property
+#: a naive predicate could be blind to.
+SHADOW_PROBE = '''\
+class CrossoverV2Conductor:
+    def _check_priors(self):
+        return _priors.check_priors(fc_hz=self._fc_hz)
+
+    def _fc_candidate_set(self):
+        return ()
+
+    def _check_priors(self):
+        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+
+    @property
+    def tier(self):
+        return self._tier
+
+    @tier.setter
+    def tier(self, value):
+        self._tier = value
+'''
+
+
+def test_no_class_in_the_flow_defines_a_method_twice():
+    """A shadowed method is a silent extraction failure, and it happened here.
+
+    This phase's first cut replaced five priors methods with delegates but left
+    the originals further down the class body — the slice ran to a marker that
+    turned out to sit in the middle of the group. Python's later definition won,
+    so the delegates were dead and the originals were still running, and EVERY
+    signal was green for the wrong reason: the suites passed because the old
+    code was executing, and the byte-identical dual-run compared the old
+    behaviour against itself. Only a mutation aimed at a delegate — which did
+    not change the result — exposed it.
+
+    A whole strangler phase moves methods out of one class one organ at a time,
+    so this is a defect the process can produce again.
+    """
+    from pathlib import Path
+
+    module = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "active_speaker" / "crossover_v2_flow.py"
+    )
+
+    duplicates = shadowed_methods(module.read_text())
 
     assert duplicates == {}, (
         f"a later definition silently shadows an earlier one: {duplicates}"
     )
 
 
-def test_the_duplicate_guard_sees_a_planted_shadow(tmp_path):
-    """The guard's positive control — an ``ast`` walk that matched nothing would
-    report every class clean and read exactly like compliance."""
-    import ast
+def test_the_guard_finds_the_defect_it_exists_for():
+    """The positive control, on the REAL shape and through the REAL predicate.
 
-    planted = tmp_path / "_shadow_probe.py"
-    planted.write_text(
-        "class C:\n"
-        "    def f(self):\n        return 1\n"
-        "    def f(self):\n        return 2\n"
-    )
-    names = [
-        item.name
-        for node in ast.walk(ast.parse(planted.read_text()))
-        if isinstance(node, ast.ClassDef)
-        for item in node.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
+    :data:`SHADOW_PROBE` is the 5a-iii defect reproduced: a private,
+    underscore-named delegate; its original further down; an unrelated method
+    between them; and a legitimate property/setter pair alongside, so a
+    predicate that went blind to any of those would show here.
 
-    assert names == ["f", "f"], "the walk must see both definitions"
+    Verified against three deliberate breaks of :func:`shadowed_methods` — the
+    decorator skip replaced with an unconditional ``continue``, a
+    leading-underscore exclusion, and dropping the ``seen.add`` that makes the
+    second definition detectable at all. Each one turns this assertion red,
+    which is the property a control has to have: it controls the GUARD, not the
+    parser.
+    """
+    assert shadowed_methods(SHADOW_PROBE) == {
+        "CrossoverV2Conductor": ["_check_priors"]
+    }
+
+
+def test_the_guard_does_not_cry_wolf_on_a_property_setter():
+    """The other direction, which is what stops the guard from being deleted.
+
+    A property and its setter share a name legitimately and appear in every
+    conductor-shaped class; a guard that flagged them would be turned off within
+    a week, and then the real defect walks through.
+    """
+    legitimate = '''\
+class C:
+    @property
+    def tier(self):
+        return self._tier
+
+    @tier.setter
+    def tier(self, value):
+        self._tier = value
+
+    @tier.deleter
+    def tier(self):
+        del self._tier
+'''
+
+    assert shadowed_methods(legitimate) == {}

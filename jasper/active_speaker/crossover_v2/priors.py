@@ -38,6 +38,7 @@ import functools
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
+from ..camilla_yaml import role_polarity
 from jasper.audio_measurement.program_analysis import MeasurementPriors, overlap_band_hz
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -83,14 +84,6 @@ def configured_crossover_transfers(
     must be the same filters, or "the measurement matches the design" is about a
     design nothing emitted.
     """
-    # Lazy, and not because of a cycle — ``camilla_yaml`` names this package
-    # only in a docstring. It is the package-shallowness discipline
-    # ``round_evidence`` and ``verification`` are reached under: the emitter
-    # pulls yaml, camilla_emit, graph_safety, profile and test_signal_plan, and
-    # a module whose other six functions need none of that should not make every
-    # importer of this package pay for them.
-    from ..camilla_yaml import role_polarity
-
     return (
         role_transfers(sections_by_role(source_preset.crossover_regions)),
         {role: -1 if inverted else 1

@@ -6949,6 +6949,8 @@ class CrossoverV2Conductor:
             count=0 if search.band_hz is None else MAX_PROPOSED_FC_CANDIDATES,
         )
 
+    # --- journey delegation --------------------------------------------------
+
     @property
     def post_apply_verifies(self) -> bool:
         """Will this session's correction be MEASURED after it is applied?
@@ -8620,6 +8622,14 @@ class CrossoverV2Conductor:
             # Same union as ``_measure_priors``, at THIS candidate's corner:
             # the radiating span the fit masks to, widened by the unclamped
             # overlap band. A superset is the safe side for a required mask.
+            #
+            # **A TWIN, and now a cross-module one** (#2336 gate, N2): the same
+            # formula lives in ``crossover_v2.priors.measure_priors``. It was one
+            # module's two call sites before 5a-iii and is two modules' now, so
+            # the pair can drift without either side looking wrong. Resolving it
+            # belongs to 5a-v, which moves this method: give the union ONE owner
+            # in ``priors`` and have both callers ask for it, rather than
+            # copying the expression a third time.
             candidate_required_band_hz_by_role={
                 role: (min(radiating_band_hz(sec)[0], overlap[0]),
                        max(radiating_band_hz(sec)[1], overlap[1]))
