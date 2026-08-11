@@ -10245,7 +10245,7 @@ def test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud():
         # "``cloud`` came back ``None``" — is what the gate reads, and it is what
         # separates this fixture from its planned-and-lost sibling above.
         assert PHASE_CLOUD_MEASURE not in c.session_phases
-        assert c._post_apply_verifies is True
+        assert c.post_apply_verifies is True
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 2)
 

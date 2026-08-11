@@ -144,7 +144,7 @@ def test_the_request_carries_the_two_facts_the_analysis_cannot_know():
 
         assert seen[0].post_apply_verifies is verifies
         assert seen[0].cloud_phase_planned is (
-            flow.PHASE_CLOUD_MEASURE in c._phases
+            flow.PHASE_CLOUD_MEASURE in c.session_phases
         )
 
 
