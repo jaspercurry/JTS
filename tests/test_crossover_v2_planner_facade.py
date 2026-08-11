@@ -112,12 +112,21 @@ def test_the_proposal_corner_comes_from_the_candidate_not_the_session():
 
 
 def test_the_walk_path_records_the_realized_level_evidence_it_owns():
+    """And it is THIS candidate's, taken from the plan its own build returned.
+
+    The right-hand side used to be ``conductor._last_realized_level_match`` —
+    a scratch field whose correctness here rested on nothing having run in
+    between. Since #2291 Phase 2b there is no such field; the verdict travels
+    on the build's ``_LinearizationState``, which is why re-deriving it
+    independently below is a real comparison rather than a tautology.
+    """
     conductor, _ = _walked()
     proposal = conductor.last_intervention_proposal
     assert isinstance(proposal, InterventionProposal)
-    assert proposal.realized_branch_level == (
-        conductor._last_realized_level_match.to_dict()
-    )
+    recorded = proposal.realized_branch_level
+    assert recorded, "the walk path owns a realized-level verdict and must record it"
+    assert set(recorded) >= {"matched", "difference_db", "level_w_db", "level_t_db"}
+    assert recorded["matched"] is True
 
 
 def test_the_predicted_spec_before_is_honestly_empty_until_entry_baseline():
@@ -196,33 +205,58 @@ def test_the_selected_fc_path_commits_through_the_same_seam(monkeypatch):
     assert conductor.measure_predicted_spec_report == {"overall_passed": False}
 
 
-def test_the_selected_fc_path_records_no_realized_level_evidence():
-    """It must not borrow the anchor's.
+def _selected_fc_evaluation(conductor, real, **overrides) -> FcCandidateEvaluation:
+    grid = np.array([100.0, 200.0])
+    kwargs = dict(
+        fc_hz=float(conductor.last_intervention_proposal.fc_hz),
+        freqs_hz=grid,
+        branch_operator_by_role={},
+        anchor_sum_db=np.zeros(2),
+        scoring_band_hz=(100.0, 200.0),
+        candidate=real.to_dict(),
+        predicted_sum=(grid, np.array([-1.0, -2.0])),
+        commanded_delta=None,
+        level_frame_finding=None,
+    )
+    kwargs.update(overrides)
+    return FcCandidateEvaluation(**kwargs)
 
-    ``_sweep_fc_candidates`` restores ``_FC_SWEEP_CONDUCTOR_FIELDS`` when it
-    ends, so ``_last_realized_level_match`` belongs to the anchor by the time
-    the selected candidate commits, and ``FcCandidateEvaluation`` carries none
-    of its own. Reading it would be the same cross-context leak in a new
-    place; the proposal reports the absence instead.
+
+def test_the_selected_fc_path_records_its_own_realized_level_evidence():
+    """And it is the SELECTED candidate's, never the anchor's (#2307 note N6).
+
+    Before #2291 Phase 2b the sweep restored the conductor's scratch fields
+    when it ended, so the only realized-level verdict reachable at this commit
+    belonged to the ANCHOR, and ``FcCandidateEvaluation`` carried none of its
+    own — the proposal recorded the absence rather than borrow a verdict about
+    a different crossover. Each candidate's plan is now a value the sweep can
+    retain, so the selected corner's proposal describes the selected corner.
     """
     conductor, _ = _walked()
     real = conductor.candidate
-    assert conductor._last_realized_level_match is not None  # the anchor's
+    own = {"matched": True, "difference_db": -0.5}
 
-    grid = np.array([100.0, 200.0])
     conductor._commit_fc_candidate(
-        FcCandidateEvaluation(
-            fc_hz=float(conductor.last_intervention_proposal.fc_hz),
-            freqs_hz=grid,
-            branch_operator_by_role={},
-            anchor_sum_db=np.zeros(2),
-            scoring_band_hz=(100.0, 200.0),
-            candidate=real.to_dict(),
-            predicted_sum=(grid, np.array([-1.0, -2.0])),
-            commanded_delta=None,
-            level_frame_finding=None,
-        )
+        _selected_fc_evaluation(conductor, real, realized_branch_level=own)
     )
+    proposal = conductor.last_intervention_proposal
+    assert isinstance(proposal, InterventionProposal)
+    assert proposal.realized_branch_level == own
+
+
+def test_a_selected_fc_candidate_with_no_verdict_records_the_absence():
+    """The other half: absent evidence is reported as absent, never invented.
+
+    An evaluation that carries no verdict — a candidate whose plan produced
+    none — must still commit, with the proposal saying so. This is the shape
+    the previous test asserted for EVERY selected candidate; keeping it for the
+    genuinely-empty case is what stops the field from quietly defaulting to the
+    walk's own verdict now that one is reachable at this seam.
+    """
+    conductor, _ = _walked()
+    real = conductor.candidate
+
+    conductor._commit_fc_candidate(_selected_fc_evaluation(conductor, real))
     proposal = conductor.last_intervention_proposal
     assert isinstance(proposal, InterventionProposal)
     assert proposal.realized_branch_level == {}

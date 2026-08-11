@@ -21,10 +21,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import CrossoverSection
-from jasper.active_speaker.crossover_v2_flow import (
-    PHASE_MEASURE,
-    _FC_SWEEP_CONDUCTOR_FIELDS,
-)
+from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
 from tests.test_crossover_v2_conductor import (
     FC_HZ,
     FakeSeams,
@@ -186,11 +183,18 @@ def test_a_candidates_sections_move_only_the_corner():
 def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
     """Without the ``candidate_sections`` kwarg every candidate is corrected
     toward the CONFIGURED corner, and the comparison measures the fit's
-    mismatch instead of the crossover's."""
+    mismatch instead of the crossover's.
+
+    Since #2291 Phase 2b the sections do more than bound the fit: the conductor
+    derives the planner's whole
+    :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
+    from them, so they are also the only place the corner every Fc-driven seam
+    reads comes from. This spies the seam that receives them.
+    """
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     seen: list[dict[str, tuple[CrossoverSection, ...]] | None] = []
-    original = flow.CrossoverV2Conductor._fit_linearization
+    original = flow.CrossoverV2Conductor._plan_linearization
 
     def spy(self, analysis, cand, cloud=None, *, candidate_sections=None):
         seen.append(candidate_sections)
@@ -199,7 +203,7 @@ def test_the_fit_targets_each_candidates_own_branch_not_the_configured_one():
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_fit_linearization", spy)
+        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
 
@@ -294,7 +298,7 @@ def test_the_operator_divides_out_the_protection_filter_the_graph_emitted():
 
 
 def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
-    """``_fit_linearization`` states that it ASSUMES eligibility and does not
+    """``plan_linearization`` states that it ASSUMES eligibility and does not
     re-check, so calling it on a phone-tier or under-repeated session raises
     inside the fit engine instead of declining — six spurious WARNING refusals
     per capture, and a documented precondition violated. The sweep applies the
@@ -303,11 +307,11 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     fakes = FakeSeams()  # the DEFAULT measure fixture: no mic tier, no repeats
     c = _selector_conductor(fakes)
     calls: list[object] = []
-    original = flow.CrossoverV2Conductor._fit_linearization
+    original = flow.CrossoverV2Conductor._plan_linearization
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_fit_linearization",
+            flow.CrossoverV2Conductor, "_plan_linearization",
             lambda self, *a, **k: (calls.append(1), original(self, *a, **k))[1],
         )
         _run_phase(c, 1, 1)
@@ -330,11 +334,12 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
     Compared against a run with the sweep replaced by a no-op — the same
     fixture, the same captures, so any difference is the selector's doing.
 
-    **This test does NOT prove the ``_last_*`` restore.** On the ordinary
-    eligible path the anchor's own fit re-runs at the walk's close and
-    overwrites all seven fields anyway, so deleting the restore leaves this
-    green (verified by mutation). What it covers is everything else the sweep
-    touches; the restore has its own two guards below.
+    **What it does NOT prove** is that a swept candidate's values cannot reach
+    the anchor: on the ordinary eligible path the anchor's own fit runs at the
+    walk's close and produces its own state anyway. That separation is the
+    subject of the two guards below, which since #2291 Phase 2b assert the
+    stronger structural property — there is no shared channel to leak through —
+    rather than that a save/restore put seven fields back.
     """
     def walk(sweep: bool) -> dict:
         fakes = _eligible_seams()
@@ -362,36 +367,40 @@ def test_the_anchors_published_candidate_is_unchanged_by_the_sweep():
 
 
 def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
-    """The restore's REAL failure mode, which the comparison above cannot see.
+    """The leak the comparison above cannot see, guarded at its worst case.
 
-    ``_build_candidate``'s SF2 degrade clears six of the seven fields when the
-    anchor's own fit raises — but not ``_last_linearized_predicted_sum``. So
-    without the restore, a session whose sweep succeeded and whose anchor fit
-    then failed publishes the LAST CANDIDATE's predicted sum as the anchor's
-    VERIFY prior: a prediction for a crossover this speaker does not have,
+    A session whose sweep succeeded and whose ANCHOR fit then failed must
+    publish the raw two-branch prediction as its VERIFY prior — never the last
+    swept candidate's, which models a crossover this speaker does not have and
     which VERIFY would then grade the real one against.
+
+    Until #2291 Phase 2b this was a save/restore promise: the fit wrote
+    ``_last_linearized_predicted_sum`` on the conductor, ``_build_candidate``'s
+    SF2 degrade cleared six of the seven fields but not that one, and only the
+    sweep's restore stood between a swept prediction and the anchor's artifact.
+    It is now structural — each build's prediction is a value on the state it
+    returns, and the SF2 degrade returns a state with none — so this asserts
+    the outcome rather than the mechanism, and stays honest whichever way the
+    mechanism is built next.
     """
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._fit_linearization
+    original = flow.CrossoverV2Conductor._plan_linearization
     swept: list = []
 
     def anchor_fit_fails(self, analysis, cand, cloud=None, *, candidate_sections=None):
         # Raise ONLY for the anchor's own close (no candidate sections), so
-        # the sweep's successful fits stay exactly as they were. Each
-        # candidate's prediction is captured the moment it is written —
-        # ``_last_linearized_predicted_sum`` cannot be read afterwards,
-        # because the restore under test has already put it back.
+        # the sweep's successful fits stay exactly as they were.
         if candidate_sections is None:
             raise ValueError("forced anchor fit failure")
-        out = original(
+        plan = original(
             self, analysis, cand, cloud, candidate_sections=candidate_sections
         )
-        swept.append(self._last_linearized_predicted_sum)
-        return out
+        swept.append(plan.linearized_predicted_sum)
+        return plan
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_fit_linearization", anchor_fit_fails)
+        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", anchor_fit_fails)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert swept and swept[-1] is not None, "the sweep must have fitted first"
@@ -406,21 +415,51 @@ def test_a_candidates_prediction_never_becomes_the_anchors_when_its_fit_fails():
         )
 
 
-def test_the_seven_conductor_fields_are_restored_after_the_sweep():
-    """The mechanism behind the promise above, asserted directly so a
-    regression names WHICH field leaked rather than only that one did."""
+def test_the_sweep_leaves_no_candidate_state_on_the_conductor():
+    """The mechanism behind the promise above, asserted directly (#2291 2b).
+
+    This replaces ``test_the_seven_conductor_fields_are_restored_after_the_
+    sweep``, whose subject no longer exists: the sweep used to snapshot seven
+    ``self._last_*`` fields and put them back, and the fields are gone. The
+    stronger property is that there is nothing to restore — a build's
+    linearization output is a value it returns, so no swept candidate can leave
+    a trace on the conductor for the anchor to read.
+
+    Asserted by NAME so a regression says which channel came back. The
+    conductor has no ``__slots__``, so a re-introduced ``self._last_* = …``
+    anywhere on the build path fails this immediately, which is the mutation
+    that motivates it.
+    """
+    retired = (
+        "_last_level_frame",
+        "_last_level_frame_cores",
+        "_last_level_frame_disagreement_db",
+        "_last_level_frame_trims",
+        "_last_linearization_outcome",
+        "_last_linearized_predicted_sum",
+        "_last_realized_level_match",
+    )
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
     _run_phase(c, 1, 1)
-    sentinels = {name: object() for name in _FC_SWEEP_CONDUCTOR_FIELDS}
-    for name, value in sentinels.items():
-        setattr(c, name, value)
     c._sweep_fc_candidates(
         c._program_for_phase(PHASE_MEASURE), object(), c._measure_analysis,
     )
-    for name, value in sentinels.items():
-        assert getattr(c, name) is value, name
     assert c._fc_evaluations, "the sweep must still have produced evidence"
+    for name in retired:
+        assert not hasattr(c, name), (
+            f"{name} is back — a candidate's planner output is on the conductor "
+            "again, which is the channel #2291 removed"
+        )
+
+    # …and it stays absent through the walk's own close, where the anchor's
+    # build runs. A sweep that leaked nothing and a close that leaked instead
+    # would be the same defect one call later.
+    _run_phase(c, 2, 1)
+    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+        _run_phase(c, index, 1)
+    for name in retired:
+        assert not hasattr(c, name), name
 
 
 def _retained_bytes(evaluation) -> int:
@@ -506,7 +545,7 @@ def test_the_sweep_retains_no_analysis_sized_object():
 def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction():
     fakes = _eligible_seams()
     c = _selector_conductor(fakes)
-    original = flow.CrossoverV2Conductor._fit_linearization
+    original = flow.CrossoverV2Conductor._plan_linearization
     calls = 0
 
     def fail_after_first(self, analysis, cand, cloud=None, *, candidate_sections=None):
@@ -519,7 +558,7 @@ def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction()
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_fit_linearization", fail_after_first)
+        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", fail_after_first)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 1)
         assert c._fc_evaluations[0].refusal is None
