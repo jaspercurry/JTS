@@ -2782,8 +2782,8 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
 #: their code's name: a glitched timeline renders as
 #: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
 #:
-#: Completeness is CHECKED, not trusted — see
-#: :func:`_screen_refusal_code` and ``test_every_screen_kind_has_a_reason_code``.
+#: Completeness is CHECKED, not trusted — see :func:`_screen_refusal_code` and
+#: ``test_every_screen_kind_has_a_household_sentence``.
 SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
     _spatial.SCREEN_PILOT_LEVEL_COLLAPSE: REASON_PILOT_LEVEL_COLLAPSE,
@@ -2812,6 +2812,7 @@ def _screen_refusal_code(kind: str) -> str:
         level=logging.ERROR, kind=str(kind),
     )
     return REASON_LOCATE_FAILED
+
 
 def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
     """``correction_rollback_failed``'s sentence, branched on the anchor.
@@ -8499,21 +8500,19 @@ class CrossoverV2Conductor:
     ) -> PhaseVerdict:
         """One pose of the R16 lateral walk (plan §4.4).
 
-        The screens are MEASURE's own capture-integrity gates, in MEASURE's
-        order, because a pose replays MEASURE's program: a pose that did not
-        record cleanly is not evidence, wherever the microphone was standing.
+        The screens — MEASURE's own capture-integrity gates in MEASURE's order,
+        minus the three that judge the alignment solve §4.4 forbids re-running —
+        belong to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.lateral_pose_screens`,
+        and the two-curve floor to its
+        :func:`~jasper.active_speaker.crossover_v2.spatial.lateral_curves_sufficient`
+        (which runs after the build, for the reason stated there).
 
-        Three MEASURE gates are deliberately NOT applied — the delay-search
-        status, the GCC trust floor and the plausibility backstop — because all
-        three judge the ALIGNMENT SOLVE, which §4.4 forbids re-running here. The
-        search window is a geometry prior about the MARK, so a microphone 40 cm
-        to the side legitimately fails it; refusing on those would quietly keep
-        only the poses that happen to align like the anchor, which is precisely
-        the off-axis consequence these samples exist to expose.
-
-        Nor does a rejected pose re-arm MEASURE with a level backoff: the pose
-        must be measured at the ANCHOR'S level or its curve is not comparable to
-        the anchor's, and a quieter retake would answer a different question.
+        What stays here is the retain-and-close half, and one rule that is this
+        method's rather than the ladder's: a rejected pose does NOT re-arm
+        MEASURE with a level backoff. The pose must be measured at the ANCHOR'S
+        level or its curve is not comparable to the anchor's, and a quieter
+        retake would answer a different question.
         """
         program = self.program_for_phase(PHASE_LATERAL)
         kind = _spatial.lateral_pose_screens(
@@ -10778,57 +10777,16 @@ class CrossoverV2Conductor:
     ) -> PhaseVerdict:
         """#2291's "before" capture: screen it, reduce it, retain it.
 
-        **The accept rule reuses shipped gates; it invents none.** Which of
-        :meth:`_verify_verdict`'s this mirrors, and which it drops:
+        The accept rule reuses shipped gates and invents none; which of
+        VERIFY's it mirrors, which it drops, and why each drop is safe belong
+        to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.entry_baseline_screens`.
+        Every refusal it returns becomes an ordinary rejected
+        :class:`PhaseVerdict` with a shipped ``REASON_*``, so the slot's normal
+        retry budget and household copy apply with no new machinery.
 
-        * ``_stimulus_locate_ok`` — **reused**. A capture whose stimulus was
-          never located is not evidence about the speaker, whatever is being
-          asked of it.
-        * ``pilot_snr_ok is False`` — **reused**, and ahead of everything but
-          the locate check, for issue #1810's reason: a pilot pair that never
-          cleared the room floor is a room/level problem, and reporting it as
-          anything else sends the household to fix the wrong thing.
-        * capture integrity — **reused**, through
-          :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_capture_validity`,
-          which is the shipped comparability rule and the same function the
-          post-apply side is graded by. One difference from
-          ``_verify_verdict``, deliberate: an **absent** integrity record is
-          UNUSABLE here where VERIFY treats it as no-evidence-and-continue.
-          That evaluator owns the "``None`` means no evidence, never clean"
-          convention, and this capture exists only to be compared — a
-          before-side nobody graded cannot carry a before→after claim, so it
-          fails closed rather than seeding one.
-        * ``linearity_ok is False`` — **reused**. AGC in the recording chain
-          bends the curve this capture exists to measure.
-        * gate-comparability, §5.2 (VERIFY's gate shorter than MEASURE's ⇒
-          inconclusive) — **dropped**. It protects an OVERLAY of the measured
-          summed response against MEASURE's per-driver model, and this capture
-          makes no such overlay. Its partner is stage 2's VERIFY, which is
-          still graded against MEASURE's window by that rule; adding a second,
-          differently-motivated refusal here would cost retakes without
-          protecting a claim.
-        * the G3 pilot-transfer step — **dropped**. G3 asks whether the
-          recording chain moved BETWEEN two replays of the identical program
-          within one conductor's lifetime, and it exists to protect the
-          tracking comparison it immediately precedes. There is no tracking
-          comparison here, and stage 1 runs exactly one summed capture, so the
-          gate could only ever record a reference that stage 2's own fresh
-          conductor is forbidden to inherit (#1927).
-        * the tracking-max tolerance comparison — **dropped**, structurally:
-          :meth:`_entry_baseline_priors` withholds ``predicted_sum``, so
-          ``analysis.verify_tracking`` is ``None`` and there is nothing to
-          grade.
-
-        One more refusal that is this phase's own: the reduction
-        (:func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`)
-        must produce a side. It returns ``None`` for a missing summed response
-        or a degenerate curve — the same "located, but carries no curve"
-        condition :meth:`_cloud_position_verdict` already answers with
-        ``locate_failed``, and this reuses that code rather than minting one.
-
-        Every refusal is an ordinary rejected :class:`PhaseVerdict` with a
-        shipped ``REASON_*``, so the slot's normal retry budget and household
-        copy apply with no new machinery.
+        What stays here is the order of the three steps — screen, retain only
+        on an accept, and journal either way.
         """
         verdict, measured = self._entry_baseline_verdict(analysis)
         if verdict.accepted and measured is not None:
