@@ -62,7 +62,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     TRACKING_COMPARATOR_KEY,
     MeasurementComparand,
     Verdict,
-    _ADOPTION_INTENTS,
+    _ADOPTION_TABLE,
     decide_adoption,
     evaluate_benefit,
     evaluate_capture_validity,
@@ -868,9 +868,16 @@ def test_the_table_covers_every_realization_and_benefit_pair():
     """No combination falls through to a default, and a new enum member
     fails here rather than landing quietly on an existing row."""
 
-    assert set(_ADOPTION_INTENTS) == set(
+    assert set(_ADOPTION_TABLE) == set(
         itertools.product(RealizationStatus, BenefitStatus)
     )
+
+
+def test_every_table_cell_states_its_own_cause():
+    """The reason rides in the cell, so there is no second table to drift."""
+
+    for cell, (_intent, reason) in _ADOPTION_TABLE.items():
+        assert reason.strip(), cell
 
 
 @pytest.mark.parametrize(

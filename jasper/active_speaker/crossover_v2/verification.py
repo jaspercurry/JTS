@@ -653,15 +653,28 @@ class _Intent(str, Enum):
     UNPROVEN = "unproven"
 
 
+ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
+ADOPTION_REALIZATION_FAILED = "realization_failed"
+ADOPTION_MEASURED_REGRESSION = "measured_regression"
+ADOPTION_UNPROVEN = "benefit_unproven"
+ADOPTION_UNPROVEN_BOOST = "unproven_boost_failed_closed"
+ADOPTION_RESTORE_FAILED = "restore_failed"
+ADOPTION_NO_ROLLBACK_ANCHOR = "restore_required_without_rollback_anchor"
+
 #: #2291's adoption table, transcribed. Every (realization, benefit) pair
 #: exists here — all nine — so a combination cannot fall through to a
 #: default, and a new enum member fails the exhaustiveness test rather than
-#: silently landing on one. Read against the issue's rows:
+#: silently landing on one. Each cell carries its own cause alongside its
+#: intent, so a receipt says *why* the graph stayed or came off rather than
+#: only that it did, and there is no second table to drift. Read against the
+#: issue's rows:
 #:
 #: * ``matched | improved | pass or fail | keep`` — the one keep row. Spec is
 #:   "pass or fail", which is why spec is not a key: "improved but out of
 #:   spec" is an honest first pass.
-#: * ``failed | any | any | restore`` — all three ``FAILED`` rows.
+#: * ``failed | any | any | restore`` — all three ``FAILED`` rows, which state
+#:   the realization failure rather than the benefit, because that is the
+#:   stronger and more specific cause.
 #: * ``matched or unavailable | clearly regressed | any | restore``.
 #: * ``unavailable | indeterminate | any | do not claim success``.
 #: * ``any | indeterminate ... | any | do not claim success`` — so every
@@ -672,34 +685,45 @@ class _Intent(str, Enum):
 #: better, but with no realization evidence the round cannot say the graph
 #: it applied is why. Not claiming success is the conservative reading of a
 #: table whose whole purpose is to stop success being claimed.
-_ADOPTION_INTENTS: Mapping[tuple[RealizationStatus, BenefitStatus], _Intent] = {
-    (RealizationStatus.MATCHED, BenefitStatus.IMPROVED): _Intent.KEEP,
-    (RealizationStatus.MATCHED, BenefitStatus.REGRESSED): _Intent.RESTORE,
-    (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE): _Intent.UNPROVEN,
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED): _Intent.UNPROVEN,
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED): _Intent.RESTORE,
-    (RealizationStatus.UNAVAILABLE, BenefitStatus.INDETERMINATE): _Intent.UNPROVEN,
-    (RealizationStatus.FAILED, BenefitStatus.IMPROVED): _Intent.RESTORE,
-    (RealizationStatus.FAILED, BenefitStatus.REGRESSED): _Intent.RESTORE,
-    (RealizationStatus.FAILED, BenefitStatus.INDETERMINATE): _Intent.RESTORE,
-}
-
-ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"
-ADOPTION_REALIZATION_FAILED = "realization_failed"
-ADOPTION_MEASURED_REGRESSION = "measured_regression"
-ADOPTION_UNPROVEN = "benefit_unproven"
-ADOPTION_UNPROVEN_BOOST = "unproven_boost_failed_closed"
-ADOPTION_RESTORE_FAILED = "restore_failed"
-ADOPTION_NO_ROLLBACK_ANCHOR = "restore_required_without_rollback_anchor"
-
-#: The reason each restoring intent states, so a receipt says *why* the
-#: graph came off rather than only that it did.
-_RESTORE_REASONS: Mapping[tuple[RealizationStatus, BenefitStatus], str] = {
-    (RealizationStatus.MATCHED, BenefitStatus.REGRESSED): ADOPTION_MEASURED_REGRESSION,
-    (
-        RealizationStatus.UNAVAILABLE,
-        BenefitStatus.REGRESSED,
-    ): ADOPTION_MEASURED_REGRESSION,
+_ADOPTION_TABLE: Mapping[
+    tuple[RealizationStatus, BenefitStatus], tuple[_Intent, str]
+] = {
+    (RealizationStatus.MATCHED, BenefitStatus.IMPROVED): (
+        _Intent.KEEP,
+        ADOPTION_REALIZED_AND_IMPROVED,
+    ),
+    (RealizationStatus.MATCHED, BenefitStatus.REGRESSED): (
+        _Intent.RESTORE,
+        ADOPTION_MEASURED_REGRESSION,
+    ),
+    (RealizationStatus.MATCHED, BenefitStatus.INDETERMINATE): (
+        _Intent.UNPROVEN,
+        ADOPTION_UNPROVEN,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.IMPROVED): (
+        _Intent.UNPROVEN,
+        ADOPTION_UNPROVEN,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.REGRESSED): (
+        _Intent.RESTORE,
+        ADOPTION_MEASURED_REGRESSION,
+    ),
+    (RealizationStatus.UNAVAILABLE, BenefitStatus.INDETERMINATE): (
+        _Intent.UNPROVEN,
+        ADOPTION_UNPROVEN,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.IMPROVED): (
+        _Intent.RESTORE,
+        ADOPTION_REALIZATION_FAILED,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.REGRESSED): (
+        _Intent.RESTORE,
+        ADOPTION_REALIZATION_FAILED,
+    ),
+    (RealizationStatus.FAILED, BenefitStatus.INDETERMINATE): (
+        _Intent.RESTORE,
+        ADOPTION_REALIZATION_FAILED,
+    ),
 }
 
 
@@ -774,23 +798,16 @@ def decide_adoption(
             outcome=AdoptionOutcome.RECOVERY_REQUIRED, reason=ADOPTION_RESTORE_FAILED
         )
 
-    intent = _ADOPTION_INTENTS[(realization, benefit)]
+    intent, reason = _ADOPTION_TABLE[(realization, benefit)]
     if intent is _Intent.KEEP:
-        return AdoptionDecision(
-            outcome=AdoptionOutcome.KEEP, reason=ADOPTION_REALIZED_AND_IMPROVED
-        )
+        return AdoptionDecision(outcome=AdoptionOutcome.KEEP, reason=reason)
     if intent is _Intent.RESTORE:
-        reason = _RESTORE_REASONS.get(
-            (realization, benefit), ADOPTION_REALIZATION_FAILED
-        )
         return _restore_or_recover(reason, rollback_available=rollback_available)
     if boosted:
         return _restore_or_recover(
             ADOPTION_UNPROVEN_BOOST, rollback_available=rollback_available
         )
-    return AdoptionDecision(
-        outcome=AdoptionOutcome.USER_DECISION, reason=ADOPTION_UNPROVEN
-    )
+    return AdoptionDecision(outcome=AdoptionOutcome.USER_DECISION, reason=reason)
 
 
 def _restore_or_recover(
