@@ -489,6 +489,72 @@ def test_the_declared_kinds_are_the_ones_the_ladders_can_return():
 
 
 # --------------------------------------------------------------------------- #
+# 5b. the boost derivation's journal fields — ORDER included
+# --------------------------------------------------------------------------- #
+
+#: The field names ``event=correction.crossover_v2_boost_evidence`` carried, in
+#: the order it carried them, read off the PRE-EXTRACTION call site
+#: (``origin/main`` at 5dcd872a4, ``_boost_excluded_bands_hz``). Anchored on
+#: that declaration rather than on what the module returns today, for the reason
+#: the fc-selector golden states: a pin that reads the thing under test is blind
+#: to uniform drift, which is exactly what a port produces.
+#:
+#: Order is load-bearing, not cosmetic — ``log_event``'s own contract is
+#: "keyword fields become ``k=v`` pairs in the order given", so a reshuffled
+#: mapping silently reshuffles every line an operator greps.
+_BOOST_EVIDENCE_FIELDS = (
+    "registry_band_hz",
+    "registry_classification",
+    "registry_reason",
+    "unadjudicated_span_hz",
+    "variance_reason",
+    "n_dips",
+    "n_position_dependent",
+    "boost_excluded_bands_hz",
+)
+
+
+def test_the_boost_diagnostics_render_the_shipped_event_unchanged():
+    """The derivation moved; its journal line must not have.
+
+    ``spatial`` is side-effect-free, so it hands these back as data and the flow
+    expands them into the event it still owns. That expansion preserves dict
+    order, which makes the mapping's key order the line's field order — so this
+    asserts the ORDER, not just the set.
+
+    ``variance_check_failed`` is the one key that is NOT a field: it routes the
+    second, separate event and the flow pops it before expanding. It is asserted
+    here too, because a key that stopped being popped would silently append a
+    ninth field to every line.
+    """
+    exclusion = spatial.boost_excluded_bands_hz(
+        object(), {}, echo_band_hz=(4000.0, 16000.0),
+    )
+
+    keys = list(exclusion.diagnostics)
+    assert keys[-1] == "variance_check_failed"
+    assert tuple(keys[:-1]) == _BOOST_EVIDENCE_FIELDS
+
+
+def test_a_cloud_with_no_grid_fails_open_rather_than_banning_boost():
+    """The fail-OPEN arm, which is the one with a hearing consequence.
+
+    A span too narrow to analyse, a cloud that never retained per-position
+    curves, or a numeric failure must all yield NO exclusions — i.e. exactly the
+    permission the gate already grants. Failing closed would blanket-ban boost
+    below 4 kHz on a computation hiccup, which is the blunt outcome the whole
+    function exists to avoid.
+    """
+    exclusion = spatial.boost_excluded_bands_hz(
+        object(), {}, echo_band_hz=(4000.0, 16000.0),
+    )
+
+    assert exclusion.bands == ()
+    assert exclusion.diagnostics["variance_reason"] == "no_blind_span"
+    assert exclusion.diagnostics["variance_check_failed"] is False
+
+
+# --------------------------------------------------------------------------- #
 # 6. the module's own boundary
 # --------------------------------------------------------------------------- #
 
