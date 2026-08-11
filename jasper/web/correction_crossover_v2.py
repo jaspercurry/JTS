@@ -6004,7 +6004,11 @@ def bind_v2_stage_seams(
     play: Any,
     evidence_store: Any,
     relay_session_id: str,
-    refs: Mapping[str, Any],
+    # ``dict``, not ``Mapping``: the four evidence binders below take the
+    # MUTABLE refs dict ``bind_evidence_publishers`` returns and write artifact
+    # fingerprints into it. Widening this to ``Mapping`` would type-check here
+    # and lie about that.
+    refs: dict[str, Any],
     publish_check: Any,
     publish_candidate: Any,
     run_async: Any,
