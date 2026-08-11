@@ -1053,10 +1053,11 @@ posture) as filed and open, alongside re-verified-current
 re-touch the egress/source-half facts, the fleet probe, or Appendix
 A/B.
 
-A fifth pass (2026-08-11, the E7 ruling — this PR) rewrote the
+A fifth pass (2026-08-11, the E7 ruling —
+[#2335](https://github.com/jaspercurry/JTS/pull/2335)) rewrote the
 lifecycle and wire-resolution paragraphs against the code it changed,
 and nothing else: the wire-resolution section's "coherently narrow"
-claim (the resolver took no per-box input at all until this PR; it now
+claim (the resolver took no per-box input at all until #2335; it now
 reads `JASPER_FANIN_RING_WIRE_FORMAT`, the same key `jasper-fanin`
 parses); the lifecycle's step-1 paragraph (the re-emit now moves BOTH
 device halves, what it declares, and which gate refuses a shear); the
