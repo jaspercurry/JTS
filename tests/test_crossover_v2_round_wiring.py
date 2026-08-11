@@ -91,16 +91,19 @@ from tests.test_crossover_v2_conductor import (
 )
 
 # The stage-bridge harness: one definition of "what a real preparer needs
-# stubbed". The autouse fixtures come with it by name.
-from tests.test_crossover_v2_stage_bridge import (  # noqa: F401  (autouse fixtures)
+# stubbed". The two autouse fixtures come with it by name — pytest activates
+# an autouse fixture by its presence in this namespace, and nothing here calls
+# one, so they are re-exported under the redundant-alias form. That is the
+# idiom for "this module-level name is deliberate", and it says so without
+# spending a lint suppression against the repo's frozen noqa budget.
+from tests.test_crossover_v2_stage_bridge import (
     _COMMANDED_FREQS_HZ,
     _MINTED_RELAY_SESSION_ID,
     _flow_seams,
-    _isolated_v2_state,
+    _isolated_v2_state as _isolated_v2_state,
     _open_prepared,
-    _production_host_seams,
+    _production_host_seams as _production_host_seams,
     _seed_applied_stage_1_state,
-    _stage_2,
     _status,
 )
 
@@ -609,15 +612,16 @@ def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     assert second.accepted is False
     # ONE Undo, not two.
     assert attempts == [1]
-    # The second asker was handed the FIRST outcome, so its verdict keeps its
-    # own specific code…
-    assert second.code != REASON_CORRECTION_ROLLBACK_FAILED
-    # …and the household is not told their speaker is still corrected.
+    # The sentence FIRST, because it is the claim: the household must not be
+    # told their speaker is still corrected when it has already been put back.
     sentence = _household_sentence(conductor, second.code)
     still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
-    assert sentence != still_applied
     assert "STILL APPLIED" not in sentence
+    assert sentence != still_applied
     assert "the previous sound has been put back" in sentence
+    # …which happens because the second asker was handed the FIRST outcome, so
+    # its verdict kept its own specific code.
+    assert second.code != REASON_CORRECTION_ROLLBACK_FAILED
 
 
 def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
@@ -637,21 +641,43 @@ def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
     assert attempts == [1]
 
 
-def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch):
+def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog):
     """…and in the other direction, which is the one that must stay loud.
 
     A first attempt that could NOT restore must keep answering "not restored",
     so the household keeps getting the "still applied" sentence and the Undo
     button. A guard that cached only successes would let a later asker retry
     into a different answer about the same speaker.
+
+    The return values alone cannot see this — a re-attempted Undo on a speaker
+    with no anchor refuses identically every time, so ``False`` twice is what a
+    MISSING guard produces too (a mutation removing the memo left an earlier
+    version of this test green). What separates them is whether the endpoint
+    was entered a second time, and the seam already says so in the journal: one
+    ``restore_refused`` for the real attempt, then ``restore_repeat`` for every
+    asker handed the remembered answer.
     """
     _seed_round_state(anchor=False)  # nothing stashed to go back to
     conductor, attempts = _restoring_stage_2(monkeypatch)
     rollback = _flow_seams(conductor).rollback
 
-    assert rollback("first") is False
-    assert rollback("second") is False
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        assert rollback("first") is False
+        assert rollback("second") is False
     assert attempts == []
+
+    lines = [record.getMessage() for record in caplog.records]
+    refused = [
+        line for line in lines
+        if "event=correction.crossover_v2_delta_probe_restore_refused" in line
+    ]
+    repeats = [
+        line for line in lines
+        if "event=correction.crossover_v2_delta_probe_restore_repeat" in line
+    ]
+    assert len(refused) == 1
+    assert len(repeats) == 1
+    assert "restored=false" in repeats[0]
 
 
 # --------------------------------------------------------------------------- #

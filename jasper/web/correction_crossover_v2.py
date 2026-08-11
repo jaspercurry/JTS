@@ -383,18 +383,27 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     speaker's DSP graph changed.
 
     **The rule for choosing (#2291): durable where power loss would lose the
-    rollback anchor or falsify a receipt; cheap everywhere else.** Two writes
-    qualify, and they are the two that own ``pre_apply_profile`` — the only
-    pointer Undo restores from. :func:`observe_apply_success` CREATES it in the
-    same moment the new graph goes live, so a lost write leaves a corrected
-    speaker with no way back; :func:`observe_restore` clears it and flips
-    ``applied``, so a lost write leaves the state claiming a correction that is
-    no longer on the speaker. Everything else stays cheap on purpose:
-    :func:`persist_conductor_state` runs after every consumed capture, and an
-    fsync per capture buys nothing that the next capture's write does not
-    already redo. :func:`reset_v2_journey_state` PRESERVES the anchor, so
-    losing its write leaves the richer previous state — the anchor survives
-    either way, which is why it is not on the durable list.
+    rollback anchor or falsify a receipt; cheap everywhere else.** Three writes
+    qualify — one per half of that rule:
+
+    * the ANCHOR pair, which own ``pre_apply_profile``, the only pointer Undo
+      restores from. :func:`observe_apply_success` CREATES it in the same
+      moment the new graph goes live, so a lost write leaves a corrected
+      speaker with no way back; :func:`observe_restore` clears it and flips
+      ``applied``, so a lost write leaves the state claiming a correction that
+      is no longer on the speaker.
+    * the RECEIPT identity, written by :func:`persist_conductor_state` — but
+      **only on a persist that carries a new one**. A receipt lives in the
+      write-once evidence bundle, so losing the pointer to it leaves an
+      immutable record nothing can find: the "falsifies a receipt" half.
+
+    Everything else stays cheap on purpose, including
+    :func:`persist_conductor_state`'s ordinary path — it runs after every
+    consumed capture, and an fsync per capture buys nothing that the next
+    capture's write does not already redo. :func:`reset_v2_journey_state`
+    PRESERVES the anchor, so losing its write leaves the richer previous
+    state — the anchor survives either way, which is why it is not on the
+    durable list.
     """
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
