@@ -132,7 +132,6 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
-    crossover_response_complex,  # noqa: F401 - re-export, see the Fc block below.
     sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
@@ -193,8 +192,6 @@ from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
 )
 from jasper.active_speaker.fc_selector import (
-    EVAL_REFUSED_BUDGET,  # noqa: F401 - re-export, see the Fc block below.
-    EVAL_REFUSED_UNFITTABLE,  # noqa: F401 - re-export, see the Fc block below.
     FcCandidateEvaluation,
     FcSelection,
     select_fc,
@@ -221,7 +218,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    overlap_band_hz,  # noqa: F401 - re-export, see the Fc block below.
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -1264,27 +1260,35 @@ def _shape_from_kwargs(
 # through: ``tests/test_fc_selector.py`` and
 # ``tests/test_crossover_v2_fc_candidates.py`` reach the declaration half by
 # these names. That is the difference Phase 2b's own note turns on — it removed
-# the imports no caller used, not the ones that carry a caller — so the same
-# rule keeps these. The handful of symbols marked ``re-export`` in the import
-# block above are the same case: this module no longer reads them, and a test
-# does.
+# the imports no caller used, not the ones that carry a caller. Everything the
+# move orphaned outright is gone from the import block above instead, and the
+# four names only a *test* still read there were repointed at their owners
+# rather than left as doors this module does not use.
+#
+# The ``X as X`` spelling is the explicit-re-export form, which is why no lint
+# suppression appears here: a plain ``import X`` would read as dead, and a
+# suppression marker would spend the repository's frozen budget
+# (``test_lint_contracts.test_noqa_debt_does_not_grow``) on something that is
+# not a suppression at all. ``_fc_refusal`` cannot use it — it is a RENAME to
+# the historical private name — so it is an ordinary assignment below.
 # --------------------------------------------------------------------------- #
 
-from jasper.active_speaker.crossover_v2.fc_sweep import (  # noqa: E402,F401
-    FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    FC_REJECT_AT_OR_BELOW_FLOOR,
-    FC_REJECT_BEAMING,
-    FC_REJECT_OUTSIDE_SEARCH_BAND,
-    FC_SWEEP_COMPUTE_BUDGET_S,
-    MAX_PROPOSED_FC_CANDIDATES,
-    FcCandidateSet,
-    FcSearchBand,
-    _FC_GRID_EPS_HZ,
-    _fc_rejection,
-    fc_candidate_set,
-    refusal as _fc_refusal,
-    resolve_fc_search_band,
+from jasper.active_speaker.crossover_v2.fc_sweep import (
+    FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+    FC_REJECT_AT_OR_BELOW_FLOOR as FC_REJECT_AT_OR_BELOW_FLOOR,
+    FC_REJECT_BEAMING as FC_REJECT_BEAMING,
+    FC_REJECT_OUTSIDE_SEARCH_BAND as FC_REJECT_OUTSIDE_SEARCH_BAND,
+    FC_SWEEP_COMPUTE_BUDGET_S as FC_SWEEP_COMPUTE_BUDGET_S,
+    MAX_PROPOSED_FC_CANDIDATES as MAX_PROPOSED_FC_CANDIDATES,
+    FcCandidateSet as FcCandidateSet,
+    FcSearchBand as FcSearchBand,
+    _FC_GRID_EPS_HZ as _FC_GRID_EPS_HZ,
+    _fc_rejection as _fc_rejection,
+    fc_candidate_set as fc_candidate_set,
+    resolve_fc_search_band as resolve_fc_search_band,
 )
+
+_fc_refusal = _fc.refusal
 
 
 def relay_plan_attempts_required(

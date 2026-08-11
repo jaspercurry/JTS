@@ -20,8 +20,19 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection,
+    crossover_response_complex,
+)
 from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+# From the kernel that OWNS them rather than through the flow's namespace: the
+# flow stopped reading these when #2291 Phase 5a-v(b) moved the sweep, and
+# keeping an import alive purely as a door is what that phase's own note
+# declines to do.
+from jasper.active_speaker.fc_selector import (
+    EVAL_REFUSED_BUDGET,
+    EVAL_REFUSED_UNFITTABLE,
+)
 from tests.test_crossover_v2_conductor import (
     FC_HZ,
     FakeSeams,
@@ -288,7 +299,7 @@ def test_the_operator_divides_out_the_protection_filter_the_graph_emitted():
         FakeSeams(), measurement_protection_sections_by_role=protection,
     ))
     bare = _operators(_selector_conductor(FakeSeams()))
-    p_response = flow.crossover_response_complex(grid, protection["tweeter"])
+    p_response = crossover_response_complex(grid, protection["tweeter"])
 
     assert not np.allclose(guarded["tweeter"], bare["tweeter"]), (
         "the emitted protection filter is not reaching the operator at all"
@@ -320,7 +331,7 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     assert calls == [], "the fit was called outside its own precondition"
     assert c._fc_evaluations, "the candidates must still be disclosed"
     assert all(
-        e.refusal == flow.EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
+        e.refusal == EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
     )
 
 
@@ -669,7 +680,7 @@ def test_the_sweep_retains_no_analysis_sized_object():
     planned = c._fc_candidate_set().candidates
     assert tuple(e.fc_hz for e in c._fc_evaluations) == planned
     assert len(planned) == len(set(planned)) == 6
-    assert all(e.refusal != flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
+    assert all(e.refusal != EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
     grid = flow.lateral_evidence_grid_hz()
     for evaluation in c._fc_evaluations:
         assert isinstance(evaluation, flow.FcCandidateEvaluation)
@@ -710,7 +721,7 @@ def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction()
         _run_phase(c, 2, 1)
         assert c._fc_evaluations[0].refusal is None
         assert all(
-            item.refusal == flow.EVAL_REFUSED_UNFITTABLE
+            item.refusal == EVAL_REFUSED_UNFITTABLE
             and item.predicted_sum is None
             and item.candidate is None
             for item in c._fc_evaluations[1:]
@@ -769,7 +780,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
     assert len(c._fc_evaluations) == planned, "a skipped candidate is disclosed"
     assert c._fc_evaluations[0].fc_hz == c._fc_hz
     assert [e.refusal for e in c._fc_evaluations[1:]] == (
-        [flow.EVAL_REFUSED_BUDGET] * (planned - 1)
+        [EVAL_REFUSED_BUDGET] * (planned - 1)
     )
     for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
         _run_phase(c, index, 1)
@@ -781,7 +792,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
     assert summary["comparison_complete"] is False
     assert summary["recommended_hz"] is None
     assert summary["attempted"] == [c._fc_hz]
-    assert all(item["reason"] == flow.EVAL_REFUSED_BUDGET for item in summary["skipped"])
+    assert all(item["reason"] == EVAL_REFUSED_BUDGET for item in summary["skipped"])
 
 
 def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
@@ -818,7 +829,7 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
     assert attempted[0] == 2000.0
     assert [e.fc_hz for e in c._fc_evaluations] == list(candidates.candidates)
     assert all(
-        e.refusal == flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations[2:]
+        e.refusal == EVAL_REFUSED_BUDGET for e in c._fc_evaluations[2:]
     )
     sweep_log = next(
         record.getMessage() for record in caplog.records
