@@ -486,7 +486,11 @@ accepted volume context and stamp, held content/assistant values, the live
 `envelope_offset_lu`, and `volume_context_rejected`. `/state.fanin`
 embeds that STATUS block verbatim.
 
-`jasper-doctor` warns if that telemetry is missing or malformed. Use
+`jasper-doctor` warns if that telemetry is missing or malformed, and if
+`final_gain_db` disagrees with the decision it came from — the published gain
+must equal `max(gain floor, min(requested_gain_db, peak_cap_gain_db))`. It has
+no fixed range to check against, because the ceiling is the per-decision peak
+cap, not a literal. Use
 that surface first when debugging a provider loudness report; it shows
 whether the system used a calibrated profile, what content baseline it
 matched, which reference won (`live_content`, `held_content`,
@@ -769,7 +773,11 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-08-08 (DAC8x Studio routing corrected against the kernel —
+Last verified: 2026-08-11 (the assistant-gain debugging text re-verified against
+`jasper-tts-protocol`'s `decide_gain`/`sanitize_tts_gain_db` and
+`jasper/cli/doctor/audio_runtime.py`: the doctor asserted a fixed `[-60, 0]`
+clamp the engine stopped enforcing on 2026-07-01 and now asserts the
+per-decision contract instead, #2345; prior 2026-08-08 pass: DAC8x Studio routing corrected against the kernel —
 the Studio board has its own `hifiberry-studio-dac8x` overlay and machine
 driver, not the base board's, and the base profile's card-label regexes were
 narrowed to the one name its driver emits so Studio silicon no longer inherits
