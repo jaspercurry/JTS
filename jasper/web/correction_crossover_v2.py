@@ -2247,6 +2247,18 @@ def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(record) if isinstance(record, Mapping) else None
 
 
+def _round_receipt_identity(conductor: Any) -> dict[str, Any] | None:
+    """The conductor's round-receipt identity, or ``None`` (#2291).
+
+    ``getattr`` for :func:`_predicted_spec_prior`'s reason: this persistence
+    helper runs against conductor doubles carrying only the surfaces a given
+    test exercises, and a missing property must read as "no receipt", never
+    raise mid-persist and lose the whole snapshot.
+    """
+    record = getattr(conductor, "round_receipt_identity", None)
+    return dict(record) if isinstance(record, Mapping) else None
+
+
 def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
     """The stage-1 entry baseline, as the conductor's ctor takes it (#2291).
 
@@ -3243,13 +3255,31 @@ def persist_conductor_state(
         if prior.get("session_id") == snap.session_id
         else None
     )
+    # #2291: WHERE this round's receipt landed — round id plus the bundle
+    # artifact's fingerprint, so the next round resolves the previous one by
+    # identity instead of scanning bundles. Carried forward like the anchor
+    # keys above rather than session-scoped: the receipt describes the graph
+    # currently on the speaker, and that outlives the session that wrote it.
+    # A conductor that graded no round contributes ``None``, which must not
+    # erase the identity a previous one recorded.
+    receipt_identity = _round_receipt_identity(conductor)
+    state["round_receipt"] = (
+        receipt_identity
+        if receipt_identity is not None
+        else prior.get("round_receipt")
+    )
     prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
     prior_outcome = (
         str(prior_grade.get("outcome") or "")
         if isinstance(prior_grade, Mapping)
         and prior.get("session_id") == snap.session_id else ""
     )
-    save_v2_state(state)
+    # Durable (#2291): this write records an immutable receipt's identity. A
+    # power cut that lost it would leave a receipt in the bundle that nothing
+    # points at, which is the "falsifies a receipt" half of save_v2_state's
+    # durability rule. Only when there IS a new identity — the ordinary
+    # per-capture persist stays cheap.
+    save_v2_state(state, durable=receipt_identity is not None)
     from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
 
     grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
@@ -3816,6 +3846,41 @@ def bind_evidence_publishers(
         )
 
     return publish_check, publish_candidate, refs
+
+
+def bind_round_receipt(
+    store: Any, relay_session_id: str, refs: dict[str, Any]
+) -> Callable[[Mapping[str, Any]], str]:
+    """The conductor's ``publish_round_receipt`` seam (#2291).
+
+    Writes ONE immutable receipt per round as a bundle artifact at
+    ``crossover_v2/<relay_session_id>/round_receipt.json``, through
+    :meth:`publish_json_artifact` + reopen-and-compare — the R21 accept-receipt
+    pattern verbatim (``commissioning_verification._receipt``). That store is
+    write-once, canonical-JSON, fsync'd (file **and** parent directory) and
+    tamper-checked on the way out, which is what a receipt needs and what a
+    ``/var/lib/jasper/*.json`` file is not. It also puts the receipt beside
+    ``check.json``, ``candidate.json`` and the retained positions — the
+    artifacts its own ``evidence_identities`` name, which is what makes them
+    resolvable at all.
+
+    Raises rather than swallowing: the store is deliberately strict, and the
+    fail-soft boundary is the conductor's ``_write_round_receipt``, exactly as
+    it is for :func:`bind_position_retention`. Keeping the boundary there
+    preserves the strictness for every other caller of this store.
+    """
+
+    def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/round_receipt.json", dict(receipt)
+        )
+        reopened = store.reopen_json_artifact(artifact)
+        if reopened != dict(receipt):
+            raise RuntimeError("published round receipt changed on exact readback")
+        refs["round_receipt_artifact"] = artifact.fingerprint
+        return str(artifact.fingerprint)
+
+    return publish_round_receipt
 
 
 def bind_position_retention(
@@ -6258,6 +6323,13 @@ def bind_v2_stage_seams(
             evidence_store, relay_session_id, refs
         ),
         publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
+        # #2291's round receipt. Bound on both stages rather than gated on a
+        # capability: only the stage that GRADES a round ever calls it, and a
+        # binding that exists everywhere cannot be the reason a receipt went
+        # unwritten on the stage that needed it.
+        publish_round_receipt=bind_round_receipt(
+            evidence_store, relay_session_id, refs
+        ),
         publish_findings=(
             bind_findings_publisher(evidence_store, relay_session_id, refs)
             if CAPABILITY_FINDINGS in capabilities.provides else None
@@ -7223,9 +7295,45 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     ``_delta_probe_refusal`` catches that wider family on the other side of
     the seam (it has to — a conductor with a different binding gets the same
     protection). Two honest halves rather than one dishonest "never raises".
+
+    **Exactly once per binding, and the reason is the copy (#2291).** Three
+    conductor sites can reach this closure in one Full session — the delta
+    probe's refusal at VERIFY, the same refusal when the post-apply cloud
+    closes, and the round's adoption path. ``handle_v2_restore`` is NOT
+    idempotent: a successful restore sets ``applied = False``, so the SECOND
+    call refuses with "nothing is applied to undo", this closure returns
+    ``False``, and ``_delta_probe_refusal`` re-labels the verdict
+    :data:`REASON_CORRECTION_ROLLBACK_FAILED` — whose household copy says the
+    correction is **still applied**. It is not. That false sentence about
+    their own speaker is the defect, not the extra call, so the guard fixes
+    the sentence rather than merely the reachability: the restore is attempted
+    once, and every later caller is handed the FIRST call's outcome verbatim,
+    so a successful restore keeps reporting success and the verdict keeps its
+    own "the previous sound has been put back" copy.
+
+    Remembering the outcome rather than suppressing the repeat is also what
+    lets the shipped delta-probe rollback and the new adoption-driven restore
+    coexist without either one having to know about the other.
     """
+    lock = threading.Lock()
+    outcome: dict[str, bool] = {}
 
     def _rollback(reason: str) -> bool:
+        with lock:
+            if "restored" in outcome:
+                remembered = outcome["restored"]
+                log_event(
+                    logger,
+                    "correction.crossover_v2_delta_probe_restore_repeat",
+                    level=logging.INFO,
+                    reason=reason, restored=remembered,
+                )
+                return remembered
+            restored = _restore_once(reason)
+            outcome["restored"] = restored
+            return restored
+
+    def _restore_once(reason: str) -> bool:
         try:
             payload = handle_v2_restore(run_async, camilla_factory)
         except CrossoverV2Refused as exc:

@@ -783,6 +783,12 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "kind",
     "measure",
     "pre_apply_profile",
+    # Deliberate widening (#2291 Phase 3c). WHERE this round's receipt landed —
+    # round id plus the bundle artifact's fingerprint — so the next round can
+    # resolve the previous one by identity rather than scanning bundles. It
+    # crosses for ``pre_apply_profile``'s reason: it describes the graph
+    # currently on the speaker, which outlives the session that wrote it.
+    "round_receipt",
     "schema_version",
     "session_id",
     "session_phases",
