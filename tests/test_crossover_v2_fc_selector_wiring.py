@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import replace
@@ -858,6 +859,38 @@ def test_the_result_wait_is_named_once_and_exceeds_the_compute_budget():
 
 
 # --- the recommendation, and what it may not do -------------------------------
+
+
+def test_the_walk_close_discloses_the_selection_under_its_grep_name(caplog):
+    """The adjudication's own journal line, which nothing asserted before.
+
+    ``fc_sweep.EVENT_SELECTION``'s comment calls a journal name a grep contract —
+    the field runbooks match on it — and a contract nothing asserts is a promise
+    with no keeper. Measured while moving the sweep (#2291 Phase 5a-v(b)):
+    deleting this emission entirely left the whole fc test set green.
+
+    Pinned as the LINE, not just the event name, because the summary's own
+    fields are what a triage reads: the verdict, the configured corner, and
+    whether the comparison was complete. The sibling ``_fc_sweep`` line is
+    pinned by ``test_budget_exhaustion_never_skips_the_configured_baseline``.
+    """
+    caplog.set_level(logging.INFO)
+    c = _selector_conductor(_eligible_seams())
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+        _run_phase(c, index, 1)
+
+    lines = [
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_fc_selection " in record.getMessage()
+    ]
+    assert len(lines) == 1, "exactly one recommendation per walk"
+    line = lines[0]
+    assert f"verdict={c.fc_selection.verdict}" in line
+    assert f"configured_hz={round(FC_HZ, 1)}" in line
+    assert "comparison_complete=" in line
+    assert "poses=" in line
 
 
 def test_the_walk_close_publishes_a_recommendation_that_names_sound_settings():
