@@ -2359,8 +2359,16 @@ def apply_measured_crossover_frequency(
     *, expected_revision: int, between_roles: tuple[str, str],
     configured_hz: float, selected_hz: float,
 ) -> dict[str, Any]:
-    """Accept a measured Fc onto the Sound declaration. Durable: this IS the
-    crossover-accept seam, so the write is fsynced before it is visible."""
+    """Write a measured Fc onto the Sound declaration. Durable: every write
+    through this function is fsynced before it is visible.
+
+    Two production callers, both accept/apply-seam actions on the Sound
+    declaration: ``handle_v2_apply``'s alternative-Fc accept (the forward
+    write), and ``_restore_sound_declaration``'s Undo leg (the SAME write run
+    backwards, with ``configured_hz``/``selected_hz`` swapped, to put the
+    declaration back to what it said before the accept). Both correctly get
+    the durable write -- there is no separate, cheaper path into this
+    function."""
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft(topology=load_output_topology())

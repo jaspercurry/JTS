@@ -196,23 +196,7 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # broad-exception boundaries elsewhere. Keeping the old slack would let nine
 # total suppressions and five BLE001 suppressions return without tripping this
 # contract.
-#
-# 2026-08-10 (#2292 scope 2, durable accept persistence): +1 BLE001 for the
-# baseline-profile apply/restore crash-window double-load guard
-# (jasper.active_speaker.baseline_profile._load_unless_already_active). The
-# guard probes get_current_config_path() to let a retried apply/restore skip
-# a redundant CamillaDSP reload once the target is provably already active;
-# the probe is a caller-supplied callable with an unbounded exception
-# surface, mirroring dsp_apply.apply_dsp_config's OWN existing broad catch
-# around the identical get_current_config_path() call in its "snapshot"
-# phase. A probe failure must fall through to the real load rather than
-# abort a transaction that would otherwise have succeeded — never silent,
-# since the fallthrough always attempts the real load_config and any genuine
-# failure surfaces there through the transaction's existing error handling.
-# The tree carried 808 noqa markers and 618 BLE001 markers (one below its
-# ceiling) before this change, so only the noqa ceiling needed to move.
-# Ceilings 808 -> 809 / 619 unchanged (already at capacity).
-MAX_NOQA_MARKERS = 809
+MAX_NOQA_MARKERS = 808
 MAX_BLE001_MARKERS = 619
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)

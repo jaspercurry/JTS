@@ -1463,72 +1463,20 @@ async def test_apply_baseline_profile_persists_applied_state_durably(
     assert len(fsync_calls) == 2
 
 
-async def test_apply_baseline_profile_skips_reload_when_target_already_active(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """#2292 scope 2 crash-window double-load guard: re-applying an
-    identical candidate must not re-command a CamillaDSP reload once
-    get_current_config_path proves the target is already active."""
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
-    )
-    state_path = tmp_path / "baseline_profile.json"
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    calls: list[str] = []
-    current_path: str | None = None
-
-    async def load_config(path: str) -> bool:
-        nonlocal current_path
-        calls.append(path)
-        current_path = path
-        return True
-
-    async def current_config_path() -> str | None:
-        return current_path
-
-    first = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-    assert first["status"] == "applied"
-    assert calls == [first["profile"]["config"]["path"]]
-
-    second = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        load_config=load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert second["status"] == "applied"
-    # Identical candidate content -> the same content-addressed sibling path
-    # (#1666) -> already active -> no second reload command.
-    assert second["profile"]["config"]["path"] == first["profile"]["config"]["path"]
-    assert calls == [first["profile"]["config"]["path"]]
-
-
 async def test_apply_baseline_profile_reloads_when_target_config_differs(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """The double-load guard must never suppress a legitimate config change:
-    a genuinely different candidate still commands a real reload."""
+    """Sequential applies of genuinely different candidates each command
+    their own real CamillaDSP reload -- pre-PR-#2292 behavior: this
+    transaction never skips a load based on the candidate's path (#2292
+    scope 2 tried a same-path double-load guard; an adversarial review
+    demonstrated the candidate filename is a SOURCE fingerprint that does
+    not cover every input to the compiled graph -- e.g. bass_extension_profile
+    -- so two different graphs can share one filename, and get_config_file_path
+    also does not see set_active_config_raw loads (camilla.py), together
+    making path equality an unsafe proxy for graph equality. The guard was
+    dropped rather than repaired; #2291 Phase 3/4 owns any future guard built
+    on a live graph-identity oracle instead of a path)."""
     topology = _dual_apple_topology()
     measurements = _measurements(topology, tmp_path)
     monkeypatch.setenv(
@@ -5681,10 +5629,11 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
 async def test_restore_applied_baseline_profile_reloads_when_target_differs_from_active(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """#2292 scope 2: restoring a profile whose config differs from what is
-    CURRENTLY active (run-8's, per ``_apply_prior_then_run8``) must still
-    command a real reload -- the double-load guard never suppresses a
-    legitimate config change on the restore/Undo seam either."""
+    """Restoring a profile whose config differs from what is CURRENTLY active
+    (run-8's, per ``_apply_prior_then_run8``) commands a real reload -- the
+    restore/Undo seam never skips a load based on the target's path (see
+    ``test_apply_baseline_profile_reloads_when_target_config_differs`` for
+    why path equality is not a safe graph-equality proxy)."""
     (
         state_path, config_path, load_config, current_config_path,
         _prior_payload, _run8_payload, retained,
@@ -5705,47 +5654,6 @@ async def test_restore_applied_baseline_profile_reloads_when_target_differs_from
     )
 
     assert payload["status"] == "restored", payload.get("issues")
-    assert calls == [retained["config"]["path"]]
-
-
-async def test_restore_applied_baseline_profile_skips_reload_when_already_active(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """#2292 scope 2 crash-window double-load guard: restoring the SAME
-    target twice must not re-command a reload once get_current_config_path
-    proves it is already active (mirrors the apply-path guard)."""
-    (
-        state_path, config_path, load_config, current_config_path,
-        _prior_payload, _run8_payload, retained,
-    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    calls: list[str] = []
-
-    async def counting_load_config(path: str) -> bool:
-        calls.append(path)
-        return await load_config(path)
-
-    first = await restore_applied_baseline_profile(
-        retained,
-        load_config=counting_load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-    assert first["status"] == "restored", first.get("issues")
-    assert calls == [retained["config"]["path"]]
-
-    second = await restore_applied_baseline_profile(
-        retained,
-        load_config=counting_load_config,
-        get_current_config_path=current_config_path,
-        state_path=state_path,
-        config_path=config_path,
-        validate=_valid_config,
-    )
-
-    assert second["status"] == "restored", second.get("issues")
-    # Already active from the first restore -> no second reload command.
     assert calls == [retained["config"]["path"]]
 
 
