@@ -292,3 +292,80 @@ def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
     assert got.alignment_delay_bounds_us is not None, (
         "the fixture preset must declare a delay range, or this pins nothing"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 6. the guard this extraction earned
+# --------------------------------------------------------------------------- #
+
+
+def test_no_class_in_the_flow_defines_a_method_twice():
+    """A shadowed method is a silent extraction failure, and it happened here.
+
+    This phase's first cut replaced five priors methods with delegates but left
+    the originals further down the class body — the slice ran to a marker that
+    turned out to sit in the middle of the group. Python's later definition won,
+    so the delegates were dead and the originals were still running, and EVERY
+    signal was green for the wrong reason: the suites passed because the old
+    code was executing, and the byte-identical dual-run compared the old
+    behaviour against itself. Only a mutation aimed at a delegate — which did
+    not change the result — exposed it.
+
+    A whole strangler phase moves methods out of one class one organ at a time,
+    so this is a defect the process can produce again. Parsed rather than
+    imported, because a duplicate definition is legal Python: ``ast`` is the
+    only place it is visible at all.
+    """
+    import ast
+    from pathlib import Path
+
+    module = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "active_speaker" / "crossover_v2_flow.py"
+    )
+    tree = ast.parse(module.read_text(), filename=str(module))
+
+    duplicates: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        seen: set[str] = set()
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # A property and its setter legitimately share a name; they are
+            # distinguished by the decorator, not by the ``def``.
+            if any(
+                isinstance(d, ast.Attribute) and d.attr in {"setter", "deleter"}
+                for d in item.decorator_list
+            ):
+                continue
+            if item.name in seen:
+                duplicates.setdefault(node.name, []).append(item.name)
+            seen.add(item.name)
+
+    assert duplicates == {}, (
+        f"a later definition silently shadows an earlier one: {duplicates}"
+    )
+
+
+def test_the_duplicate_guard_sees_a_planted_shadow(tmp_path):
+    """The guard's positive control — an ``ast`` walk that matched nothing would
+    report every class clean and read exactly like compliance."""
+    import ast
+
+    planted = tmp_path / "_shadow_probe.py"
+    planted.write_text(
+        "class C:\n"
+        "    def f(self):\n        return 1\n"
+        "    def f(self):\n        return 2\n"
+    )
+    names = [
+        item.name
+        for node in ast.walk(ast.parse(planted.read_text()))
+        if isinstance(node, ast.ClassDef)
+        for item in node.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+    assert names == ["f", "f"], "the walk must see both definitions"
