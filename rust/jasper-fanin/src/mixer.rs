@@ -2841,8 +2841,10 @@ impl Input {
 /// headroom: two full-scale lanes would saturate at the mix, and a subsequent
 /// 25 dB duck would then be attenuating an already-clipped value. `i64` keeps
 /// the same headroom argument true at both widths (32 bits of it at spine
-/// scale), at the cost of one extra kilobyte of per-period scratch and no
-/// measurable arithmetic. It also retires the clamp-before-shift hazard the
+/// scale), at the cost of 4 more bytes per sample of per-period scratch —
+/// 2 KiB at the default 256-frame stereo period, allocated once in
+/// `Mixer::new` — and no measurable arithmetic on a 64-bit ARM core. It also
+/// retires the clamp-before-shift hazard the
 /// write-time promotion had to defend against: `widen_i16_to_i32` into an `i64`
 /// cannot wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
