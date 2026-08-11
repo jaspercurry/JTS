@@ -69,16 +69,22 @@ from tests.test_crossover_v2_conductor import (
 )
 
 # The stage-bridge harness, imported rather than re-implemented so there is one
-# definition of "what a real preparer needs stubbed". The autouse fixtures come
-# with it by name.
-from tests.test_crossover_v2_stage_bridge import (  # noqa: F401  (autouse fixtures)
+# definition of "what a real preparer needs stubbed".
+#
+# The two autouse fixtures are imported under the redundant-alias re-export
+# form, which is what tells the linter they are deliberate module-level names
+# rather than dead imports: pytest activates an autouse fixture by its presence
+# in the module namespace, so nothing here CALLS them and a plain import reads
+# as unused. The alias form says the same thing a lint-suppression comment
+# would, without adding to the repo's frozen suppression debt.
+from tests.test_crossover_v2_stage_bridge import (
     _ENTRY_BASELINE_DB,
     _ENTRY_BASELINE_EXCLUDED,
     _ENTRY_BASELINE_FREQS_HZ,
     _ENTRY_BASELINE_GRAPH,
     _ENTRY_BASELINE_PROGRAM_ID,
-    _isolated_v2_state,
-    _production_host_seams,
+    _isolated_v2_state as _isolated_v2_state,
+    _production_host_seams as _production_host_seams,
     _seed_applied_stage_1_state,
     _stage_1,
     _stage_2,

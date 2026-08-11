@@ -53,6 +53,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
+    PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -71,16 +72,20 @@ from tests.test_crossover_v2_conductor import (
 )
 
 # Every phase whose admission predicate carries the PLAIN rule. CHECK is
-# excluded on purpose (it has the room-vs-microphone split); the four below
+# excluded on purpose (it has the room-vs-microphone split); the five below
 # are the identical branch.
 PLAIN_LINEARITY_PHASES = (
     PHASE_MEASURE,
     PHASE_LATERAL,
     PHASE_CLOUD_MEASURE,
     PHASE_VERIFY,
+    # #2291's entry baseline. It copied the branch, which is exactly the
+    # adjacency this file's tripwire exists to catch — so it gets a ROW and a
+    # driver, not a bumped count.
+    PHASE_ENTRY_BASELINE,
 )
 
-# The four plain sites plus CHECK's split version.
+# The five plain sites plus CHECK's split version.
 LINEARITY_SITE_COUNT = len(PLAIN_LINEARITY_PHASES) + 1
 
 
@@ -143,11 +148,34 @@ def _refuse_at_verify() -> dict:
     return _run_phase(conductor, 3, 3)
 
 
+def _refuse_at_entry_baseline() -> dict:
+    """Drive #2291's pre-apply capture with a non-linear one.
+
+    Routed through the ``verify`` analysis factory for ``_refuse_at_cloud_measure``'s
+    reason: the entry baseline replays the summed VERIFY program, so
+    ``program.phase`` is ``"verify"`` there too.
+    """
+
+    fakes = FakeSeams()
+    conductor = _conductor(
+        fakes,
+        index_phase_map=build_v2_cloud_index_phase_map(
+            tier="full", include_cloud_measure=False, include_lateral=False,
+            include_entry_baseline=True,
+        ),
+    )
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 1)
+    fakes.verify = lambda program: _verify_analysis(program, linearity=False)
+    return _run_phase(conductor, 3, 1)
+
+
 DRIVERS = {
     PHASE_MEASURE: _refuse_at_measure,
     PHASE_LATERAL: _refuse_at_lateral,
     PHASE_CLOUD_MEASURE: _refuse_at_cloud_measure,
     PHASE_VERIFY: _refuse_at_verify,
+    PHASE_ENTRY_BASELINE: _refuse_at_entry_baseline,
 }
 
 
