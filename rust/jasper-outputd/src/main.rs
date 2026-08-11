@@ -77,10 +77,22 @@ const CHIP_REF_WORKER_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
 const EXIT_CONFIG: i32 = 78;
 
 /// Marker attached (via `anyhow::Context`) to a runtime error that is actually
-/// a CONFIG-class fault surfacing after `Config::from_env` — currently only the
-/// PROTOTYPE SHM-ring header/geometry mismatch, which can only be detected once
-/// we attach to the writer's ring at DAC-loop setup. `main` downcasts for it and
-/// exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
+/// a CONFIG-class fault surfacing after `Config::from_env`. `main` downcasts for
+/// it and exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
+///
+/// ONE site attaches it — the SHM content ring's construction — and only to the
+/// config-class half of what that can return: a ring geometry/format/channel
+/// declaration this reader refuses (the `S24_3LE` wire the ring layout has no
+/// format for, refused before the filesystem is touched) or one the writer's
+/// existing ring disagrees with field-by-field, which is only visible once
+/// outputd attaches at DAC-loop setup. Both are `InvalidInput`/`InvalidData`,
+/// and restarting cannot repair either.
+///
+/// Everything ELSE attach can fail with — a missing ring directory, EACCES,
+/// ENOSPC, ENOMEM, a bare OS error — stays an ordinary error and takes
+/// `Restart=on-failure`, because those CAN clear without an operator editing
+/// env. `alsa_backend::FinalSinkStartupConfigError` is the same treatment for
+/// the DAC edge, and `main` maps both to [`EXIT_CONFIG`].
 #[derive(Debug)]
 struct ConfigClassError;
 
@@ -142,6 +154,45 @@ fn main() -> Result<()> {
         }
     }
     result
+}
+
+/// Decide whether a failed SHM-ring attach parks the unit or lets it restart,
+/// and log the outcome under an event that says which one happened.
+///
+/// The split is the error KIND, because that is what separates "an operator has
+/// to change something" from "the environment can recover on its own":
+///
+/// * `InvalidInput` / `InvalidData` — the declaration is unusable (`S24_3LE`) or
+///   disagrees with the writer's ring on a geometry field. Marked
+///   [`ConfigClassError`] -> exit 78 -> `RestartPreventExitStatus=78` parks the
+///   unit, because a restart re-reads the SAME env against the SAME ring.
+/// * anything else — `WouldBlock`, `PermissionDenied`, `NotFound`,
+///   `StorageFull`, `OutOfMemory`, a bare OS error — is left unmarked, so
+///   `Restart=on-failure` (plus outputd's bounded `ExecStopPost` retry) gets to
+///   try again. A ring directory that is not mounted yet, a tmpfs that is
+///   momentarily full, a peer that has not created the ring: each clears
+///   without an edit, and parking on them would need an operator to un-park a
+///   box that fixed itself.
+///
+/// Two events rather than one, because the journal line is the readable surface
+/// during a park and the two outcomes are not the same fault:
+/// `outputd.shm_ring.config_error` means parked-for-config, and
+/// `outputd.shm_ring.attach_error` carries `kind=` so a restart loop names what
+/// it is retrying against.
+fn classify_shm_ring_attach_error(path: &str, e: io::Error) -> anyhow::Error {
+    if matches!(
+        e.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ) {
+        eprintln!("event=outputd.shm_ring.config_error path={path} detail={e}");
+        anyhow::Error::new(e).context(ConfigClassError)
+    } else {
+        eprintln!(
+            "event=outputd.shm_ring.attach_error path={path} kind={:?} detail={e}",
+            e.kind()
+        );
+        anyhow::Error::new(e).context("attaching to the SHM content ring")
+    }
 }
 
 fn runtime_error_exit_code(error: &anyhow::Error) -> Option<i32> {
@@ -366,10 +417,12 @@ fn run_alsa(
     // eligible stereo topologies (P4 LANDED —
     // docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
     // policy. Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
-    // None leaves the loop byte-identical. A geometry/version/size mismatch
-    // against an existing ring is a hard error here — mapped to the config-class
-    // exit 78 so the unit parks (RestartPreventExitStatus=78) instead of
-    // reboot-looping on a mismatched writer.
+    // None leaves the loop byte-identical. A declaration this reader refuses, or
+    // a geometry/version/size disagreement with the writer's existing ring, is a
+    // hard error here — mapped to the config-class exit 78 so the unit parks
+    // (RestartPreventExitStatus=78) instead of reboot-looping on a mismatched
+    // writer. Any OTHER attach failure keeps Restart=on-failure (see
+    // `ConfigClassError`).
     //
     // The ring's wire is a per-box DECLARATION, taken from the same
     // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
@@ -395,17 +448,7 @@ fn run_alsa(
                 config.content_format,
                 ring.n_slots,
             )
-            .map_err(|e| {
-                // A header/geometry/size mismatch is a configuration fault, not a
-                // transient runtime error: tag it so main() exits 78 (EX_CONFIG)
-                // and the unit parks (RestartPreventExitStatus=78) instead of
-                // reboot-looping against a mismatched writer.
-                eprintln!(
-                    "event=outputd.shm_ring.config_error path={} detail={e}",
-                    ring.path
-                );
-                anyhow::Error::new(e).context(ConfigClassError)
-            })?;
+            .map_err(|e| classify_shm_ring_attach_error(&ring.path, e))?;
             Some(src)
         }
         None => None,
@@ -546,7 +589,7 @@ fn run_alsa(
         }
         if !served_from_fifo {
             if let Some(src) = shm_ring.as_mut() {
-                // PROTOTYPE: try-read one slot from the SHM ping-pong ring;
+                // Try-read one slot from the SHM ping-pong ring;
                 // empty -> silence (read_period zero-fills). Never blocks, and a
                 // ring fault is never a runtime error (it degrades to silence +
                 // counters — StartLimitAction=reboot discipline).
@@ -1710,12 +1753,11 @@ mod tests {
     /// Ring v2 gave the ring geometry two per-box axes (format, channels), so a
     /// writer and this reader can now disagree on a field that no slot/period
     /// check would notice. This walks a REAL such disagreement — an S16 ring
-    /// file against an S32 declaration — through the classification the run
-    /// loop applies to it, and pins the exit code at 78, which is what
-    /// `RestartPreventExitStatus=78` in the unit turns into a park. The
-    /// `.context(ConfigClassError)` is constructed here rather than reached
-    /// through `run_alsa` (which needs ALSA), the same bound the sink-startup
-    /// test above has.
+    /// file against an S32 declaration — through the SAME
+    /// `classify_shm_ring_attach_error` the run loop applies to it, and pins the
+    /// exit code at 78, which is what `RestartPreventExitStatus=78` in the unit
+    /// turns into a park. Only the classifier is exercised here, not `run_alsa`
+    /// (which needs ALSA) — the same bound the sink-startup test above has.
     #[test]
     fn a_ring_wire_mismatch_classifies_as_a_config_fault_not_a_restart() {
         use jasper_ring::{Geometry, TestRingWriter, SAMPLE_FORMAT_S16LE};
@@ -1748,12 +1790,69 @@ mod tests {
             Ok(_) => panic!("an S32 declaration must not attach to an S16 ring"),
             Err(e) => e,
         };
-        let error = anyhow::Error::new(io_error).context(ConfigClassError);
+        assert_eq!(io_error.kind(), io::ErrorKind::InvalidData);
+        let error = classify_shm_ring_attach_error(&path, io_error);
 
         assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// An attach failure the ENVIRONMENT can clear is NOT a park.
+    ///
+    /// The other half of the classifier, and the reason it is a kind check
+    /// rather than "anything `ShmRingSource::new` returns". Parking on these
+    /// would strand a box that fixed itself: `WouldBlock` is a ring the peer has
+    /// not finished creating, `PermissionDenied` is a `/dev/shm` mode that a
+    /// tmpfiles/udev pass repairs — a restart re-attaches, an operator un-park
+    /// is needed only for a bad declaration. `StorageFull`/`OutOfMemory`/a raw
+    /// OS errno ride the same arm; two kinds are enough to pin the boundary, and
+    /// a raw errno is included because it is the shape that arrives with NO
+    /// mapped kind at all.
+    ///
+    /// It also pins that they take the other EVENT: a non-config fault logging
+    /// `config_error` would read, in the journal, as a park that never happened.
+    #[test]
+    fn a_recoverable_attach_failure_restarts_rather_than_parking() {
+        for kind in [
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::StorageFull,
+        ] {
+            let error = classify_shm_ring_attach_error(
+                "/dev/shm/jts-ring/content.ring",
+                io::Error::new(kind, "synthetic attach failure"),
+            );
+            assert_eq!(
+                runtime_error_exit_code(&error),
+                None,
+                "{kind:?} must not park the unit"
+            );
+        }
+
+        // A bare errno with NO mapped `ErrorKind` (EIO): the shape a raw syscall
+        // failure arrives in, and the one an `Uncategorized`-defaults-to-park
+        // classifier would get wrong.
+        let raw = classify_shm_ring_attach_error(
+            "/dev/shm/jts-ring/content.ring",
+            io::Error::from_raw_os_error(5),
+        );
+        assert_eq!(runtime_error_exit_code(&raw), None);
+
+        // ...and the config-class kinds still do, so the assertion above is a
+        // boundary rather than "the classifier marks nothing".
+        for kind in [io::ErrorKind::InvalidInput, io::ErrorKind::InvalidData] {
+            let error = classify_shm_ring_attach_error(
+                "/dev/shm/jts-ring/content.ring",
+                io::Error::new(kind, "synthetic declaration fault"),
+            );
+            assert_eq!(
+                runtime_error_exit_code(&error),
+                Some(EXIT_CONFIG),
+                "{kind:?} must park the unit"
+            );
+        }
     }
 
     #[test]

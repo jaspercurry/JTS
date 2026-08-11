@@ -471,22 +471,6 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-outputd/src/shm_ring_source.rs",
-        "out.len(), self.samples_per_slot",
-    ): (
-        "read_period's own doc comment states the exact contract "
-        "(\"out.len() must be period_frames * channels\"); this checks the "
-        "CALLER's buffer-sizing contract, distinct from the function's "
-        "actual runtime-fault handling right below (ring empty/corrupt), "
-        "which the same doc comment says already degrades to silence + "
-        "counters rather than panicking. In release, where the debug "
-        "assertion is compiled out, the same mismatch is still caught: the "
-        "S16 arm's widen_period returns the crate's anyhow error, and the "
-        "S32 arm's byte view is derived from `out` itself, so it can only "
-        "under-fill (jasper_ring's copy_slot_bytes clamps to the "
-        "destination) rather than overrun."
-    ),
-    (
-        "jasper-outputd/src/shm_ring_source.rs",
         "the ring wire is LE",
     ): (
         "Compile-time const-context assert (`const _: () = assert!(...)`), "

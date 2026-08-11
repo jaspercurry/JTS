@@ -208,7 +208,15 @@ impl ShmRingSource {
     /// The `Result` is the CALLER-contract fault only, and it is exactly the one
     /// the run loop already propagated when the widening lived at the call site:
     /// a staging length that does not match the period would emit a short or
-    /// stale period, so it fails loud rather than playing it.
+    /// stale period, so it fails loud rather than playing it. That check is
+    /// hoisted ABOVE the wire branch — one `bail!` covering both arms, in the
+    /// same family as [`widen_period`]'s message — rather than a `debug_assert`
+    /// plus two different release behaviours. CI builds this crate with
+    /// `cargo test --release`, where a debug assertion is compiled out; on the
+    /// wide arm the byte view is derived from `out` itself, so an under-sized
+    /// destination there would have been silently UNDER-FILLED (the crate's
+    /// `copy_slot_bytes` clamps to the destination) — a short period at the
+    /// speaker, with every counter still reporting a filled slot.
     ///
     /// Both wires land on the same i32 spine, and neither adds a conversion:
     /// - **S16LE** — consume into the narrow scratch, then widen by `<< 16`
@@ -219,7 +227,14 @@ impl ShmRingSource {
     ///   [`ProgramSample`] is (see its "left-justified" doc), so the copy is an
     ///   identity: no shift, no scale, nothing left to convert.
     pub fn read_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
-        debug_assert_eq!(out.len(), self.samples_per_slot);
+        if out.len() != self.samples_per_slot {
+            anyhow::bail!(
+                "outputd ring period is {} samples but the slot is {}; writing \
+                 that would emit a short or stale period",
+                out.len(),
+                self.samples_per_slot
+            );
+        }
         let read = match self.kind {
             WireKind::S16 => {
                 let read = self.reader.try_consume_slot(&mut self.s16_scratch);
@@ -483,6 +498,44 @@ mod tests {
         assert_eq!(src.read_period(&mut out).unwrap(), 4);
         assert_eq!(out, period);
         cleanup(&path);
+    }
+
+    /// A destination that is not one slot is an ERROR on BOTH wires — in
+    /// release, where a debug assertion is not there to catch it.
+    ///
+    /// The wide arm is why this is a `bail!` and not a `debug_assert`: its byte
+    /// view is derived from `out`, so a short destination would be quietly
+    /// under-filled (`copy_slot_bytes` clamps to the destination) and the period
+    /// written short at the speaker, with `frames_read` still counting a full
+    /// slot. Both directions of wrong on each wire — short and long — since a
+    /// one-sided check passes written as `<`.
+    #[test]
+    fn a_destination_that_is_not_one_slot_is_an_error_on_either_wire() {
+        for (format, label) in [(SampleFormat::S16Le, "S16"), (SampleFormat::S32Le, "S32")] {
+            let path = tmp_path();
+            // 4 frames x 2 ch = 8 samples per slot.
+            let mut src = ShmRingSource::new(&path, 4, 2, format, 2).unwrap();
+
+            for wrong in [7usize, 9] {
+                let mut out = vec![0 as ProgramSample; wrong];
+                let err = match src.read_period(&mut out) {
+                    Ok(_) => panic!("{label} wire must refuse a {wrong}-sample destination"),
+                    Err(e) => e,
+                };
+                let text = err.to_string();
+                assert!(
+                    text.contains(&format!("ring period is {wrong} samples")),
+                    "{label}: {text}"
+                );
+                assert!(text.contains("the slot is 8"), "{label}: {text}");
+            }
+
+            // ...and the right length still reads (so the guard is a boundary,
+            // not a blanket refusal).
+            let mut out = vec![0 as ProgramSample; 8];
+            assert_eq!(src.read_period(&mut out).unwrap(), 0, "{label}");
+            cleanup(&path);
+        }
     }
 
     /// A wide ring pays no narrow-staging residency, and a narrow one still
