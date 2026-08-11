@@ -119,21 +119,41 @@ __all__ = [
 #: whose justification is about something else is a threshold nobody can
 #: defend when it fires.
 #:
-#: **Nothing in this repository measures the quantity this constant wants.**
-#: The nearest thing is
-#: :class:`~jasper.active_speaker.attempts_loop.FloorStats` — a real
-#: repeatability floor with a ``median_db``/``p95_db`` and a basis — but it
-#: grades ``max_db_notch_excluded`` (a measured-vs-predicted deviation), not a
-#: pooled spec residual, and :func:`~jasper.active_speaker.attempts_loop.decide_next`
-#: refuses a comparison whose metric does not match its floor's for exactly
-#: that reason.
+#: **What the repository HAS measured, and what it has not.** The 2026-07-31
+#: fixed-mic repeat study on jts3 is a real capture-to-capture study of exactly
+#: the right shape — one unchanged applied profile, the UMIK-2 bolted in place
+#: and never moved, sixteen back-to-back captures at the shipped operating
+#: point, pushed through the production analyzer. Its numbers are banked
+#: in-repo at ``tests/test_active_speaker_attempts_loop.py`` (``BANKED_P95_DB``
+#: 0.08508, ``BANKED_MEDIAN_DB`` 0.05183) and summarized in
+#: :mod:`~jasper.active_speaker.attempts_loop`'s header. Two things follow:
 #:
-#: **TODO(#2291, Definition-of-Done hardware run):** capture the same at-the-mark
-#: VERIFY program twice in a row on jts3 against an unchanged graph, difference
-#: the two pooled :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual`
-#: values, repeat, and set this to that distribution's p95. Until that run
-#: exists this value is an assumption wearing its own name, which is the point
-#: of the name.
+#: * **It grades a different metric.** Those are consecutive-pair deviations of
+#:   ``max_db_notch_excluded``, not of the pooled spec residual this margin
+#:   bounds — the same mismatch
+#:   :func:`~jasper.active_speaker.attempts_loop.decide_next` refuses a
+#:   comparison over (``REASON_FLOOR_METRIC_MISMATCH``). The replay CLI that
+#:   adopts floors says so in as many words: *no repeat study has measured a
+#:   floor for this metric.*
+#: * **The nearest pooled numbers say 0.5 dB is conservative, not calibrated.**
+#:   Two back-to-back post-apply pairs about a minute apart agreed on the
+#:   pooled scalar to 0.040 dB and 0.006 dB, against a per-bin floor of roughly
+#:   0.15 dB rms. So this margin sits an order of magnitude above the noise it
+#:   is guarding against — which errs the safe way (a real small improvement is
+#:   called :attr:`~.contracts.BenefitStatus.INDETERMINATE` rather than noise
+#:   being called an improvement) but does mean the round will decline to claim
+#:   wins it could honestly claim. The house rule for turning a measured p95
+#:   into a claim floor is
+#:   :data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`
+#:   (2×); applied to that study's pooled-rms arm it would land near 0.05 dB.
+#:
+#: **TODO(#2291, Definition-of-Done hardware run — owner: the jts3 pass on the
+#: DoD runbook):** capture the same at-the-mark VERIFY program twice in a row
+#: against an unchanged graph, difference the two pooled
+#: :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` values,
+#: repeat, and set this to 2× that distribution's p95 through the same house
+#: rule. Until that run exists this value is an assumption wearing its own
+#: name, which is the point of the name.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
 
 #: Resolution of both sides of the benefit comparison.
