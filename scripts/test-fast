@@ -186,8 +186,9 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_${module}.py"
       add_globbed_tests "test_${module}_*.py" >/dev/null || true
       ;;
-    .github/workflows/tests.yml|pyproject.toml|uv.lock|CONTRIBUTING.md|AGENTS.md|scripts/test-*|scripts/_test_lane.sh|scripts/rust-ci-needed)
+    .github/workflows/tests.yml|pyproject.toml|uv.lock|CONTRIBUTING.md|AGENTS.md|scripts/test-*|scripts/_test_lane.sh|scripts/check-rust.sh|scripts/rust-ci-needed)
       add_test_if_present "tests/test_dependency_groups.py"
+      add_test_if_present "tests/test_check_rust_script.py"
       # `scripts/test-*` does not match the leading-underscore resolver, and
       # nothing else routes the lanes' own guards — so editing the lanes ran
       # everything except the tests written for them (issue #1836).

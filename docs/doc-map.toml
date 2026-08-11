@@ -67,13 +67,16 @@ code = [
   "scripts/_test_lane.sh",
   "scripts/ci-classify.py",
   "scripts/check-js-syntax.sh",
+  "scripts/check-rust.sh",
+  "scripts/rust-ci-needed",
 ]
 docs = [
   "CONTRIBUTING.md",
   "AGENTS.md",
+  "docs/testing-tooling.md",
 ]
 requires_docs_when = [
-  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, branch-protection expectation, or what a named test lane (`scripts/test-fast` / `scripts/test-merge`) actually runs changes.",
+  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, branch-protection expectation, or what a named test lane (`scripts/test-fast` / `scripts/test-merge` / `scripts/check-rust.sh`) actually runs changes.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",

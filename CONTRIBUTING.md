@@ -90,8 +90,9 @@ blank SD card to working speaker.
    work, also run the full Python merge lane: `scripts/test-merge`.
    Use `ruff check .` and `mypy` for explicit Python static-check spot
    runs. For JS or Rust edits, run the matching fast lint gate:
-   `scripts/check-js-syntax.sh` or Rustfmt/Clippy. `pre-commit run
-   --all-files` covers the Python and static-JS checks locally.
+   `scripts/check-js-syntax.sh` or `scripts/check-rust.sh`.
+   `pre-commit run --all-files` covers the Python and static-JS checks
+   locally.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
@@ -179,13 +180,13 @@ Two operational notes:
   but new unbaselined errors fail the job. `scripts/test-merge` now runs
   the same `mypy` gate locally too; `ruff check .` stays covered locally
   by `scripts/test-fast` and `pre-commit`.
-- **Rust audio-daemon gate** (`cargo fmt --all -- --check`, then
-  `cargo clippy --release --locked --all-targets -- --no-deps
-  -D warnings` (build+lint, no separate `cargo build` step), then
-  `cargo test --release --locked`) — runs through the internal `rust`
-  CI job when
-  Rust-relevant surfaces change, and on every `main` push. Covers the
-  production fan-in/outputd daemons and shared protocol crate.
+- **Rust gate** — `scripts/check-rust.sh` owns the pinned-toolchain
+  formatting and Clippy pass for all nine CI crates. It works natively on
+  Linux and cross-checks the ALSA-backed crates from macOS without linking;
+  use it before pushing any Rust edit. The internal `rust` CI job invokes the
+  same script, then runs `cargo test --release --locked` on Linux when
+  Rust-relevant surfaces change and on every `main` push. The linked Rust
+  unit tests still require Linux or CI.
 - **Static JavaScript gate** (`scripts/check-js-syntax.sh`) — CI runs
   `node --check` over the browser ES modules and Node harnesses, then
   runs the small JS harnesses for the sound-profile and shared-dialog

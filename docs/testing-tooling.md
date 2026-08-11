@@ -20,6 +20,7 @@
 
 | If you want to … | Start with |
 |---|---|
+| Format, type-check, and Clippy-lint every Rust crate locally, including ALSA-backed crates on macOS | [Rust formatting and Clippy cross-check](#rust-formatting-and-clippy-cross-check) |
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
 | Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
 | Export wake-corpus recordings for off-Pi training | [Wake-corpus training bundle export](#wake-corpus-training-bundle-export) |
@@ -61,6 +62,40 @@
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture directly from the raw chip path | [Capture: alternative sources](#capture-alternative-sources) |
 | Sweep files changed on a branch for roadmap-dated comment/doc phrasing that may have gone stale ("not yet", "until X lands") before publishing a PR | [`scripts/tense-grep.sh`](../scripts/tense-grep.sh) — advisory, always exits 0 |
+
+---
+
+## Rust formatting and Clippy cross-check
+
+[`scripts/check-rust.sh`](../scripts/check-rust.sh) is the local and CI
+source of truth for Rust formatting and Clippy:
+
+```sh
+scripts/check-rust.sh
+```
+
+The script reads the pinned `RUST_TOOLCHAIN` from
+`.github/workflows/tests.yml`, checks all nine crates in the CI Rust job, and
+uses that toolchain for both `cargo fmt --all -- --check` and release,
+locked, all-target Clippy with warnings denied. `jasper-host-clock` alone is
+checked with `--all-features`, matching CI's ALSA-actuator coverage.
+
+On Linux the script uses the host's real ALSA development metadata. On
+macOS it maps Apple Silicon to `aarch64-unknown-linux-gnu` and Intel to
+`x86_64-unknown-linux-gnu`, then supplies `alsa-sys` a temporary stub
+`alsa.pc`. The Linux target is load-bearing: the Rust `alsa` crate rejects a
+Darwin target before type-checking. The stub is safe only because this lane
+does not link, and the temporary directory is removed on success or failure.
+
+The script fails before Cargo with an exact `rustup` command when the pinned
+toolchain, `rustfmt`/Clippy components, or macOS cross target is missing. It
+also requires `pkg-config`; Linux additionally needs real ALSA headers
+(`libasound2-dev` on Debian/Ubuntu or `alsa-lib-devel` on Fedora).
+
+This catches type errors in `#[cfg(test)]` modules because Clippy runs with
+`--all-targets`, but it does **not** execute Rust unit tests. Those tests link
+against ALSA and remain a Linux/CI gate (`cargo test --release --locked` in
+the Rust CI job).
 
 ---
 

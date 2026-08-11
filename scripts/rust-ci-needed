@@ -47,7 +47,7 @@ if [[ "${event_name}" == "pull_request" ]]; then
       rust/*|c/jts-ring-ioplug/*|deploy/install.sh|\
       deploy/systemd/jasper-fanin.service|\
       deploy/systemd/jasper-outputd.service|.github/workflows/tests.yml|\
-      scripts/rust-ci-needed)
+      scripts/check-rust.sh|scripts/rust-ci-needed)
         run="true"
         reason="PR touches ${path}"
         break
