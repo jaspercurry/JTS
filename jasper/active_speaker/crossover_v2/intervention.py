@@ -62,6 +62,14 @@ instead of swallowed. A consumer that **mutates** what it is handed cannot
 reach the plan either: :class:`JournalRecord` detaches its fields at
 construction. Determinism therefore holds whatever the host's logger does.
 
+**A port must raise stdlib exception types, or wrap its own.** The guard
+enumerates them in :data:`_PORT_ERRORS` rather than catching a bare
+``Exception``, because the repository's lint contract freezes its broad-except
+budget and an enumeration is the shape that leaves. A consumer raising a
+*custom* exception class therefore escapes the guard and does abort the plan —
+by design, not by oversight: a consumer with its own exception hierarchy knows
+what it is doing and can raise a stdlib type or wrap.
+
 **Dependency direction.** This module imports the DSP primitives and
 :mod:`.contracts`. It must never import
 :mod:`jasper.active_speaker.crossover_v2_flow` (the flow imports *this*) or
@@ -416,12 +424,22 @@ class JournalRecord:
       throwaway.
 
     The detach alone leaves the record's own dict mutable, which is exactly the
-    hole the panel found. A ``MappingProxyType`` would close the top level but
-    change how the host's ``log_event`` renders nested values
-    (``mappingproxy({...})`` instead of the plain mapping legacy logged), so the
-    copy-on-read is the shape that is both safe and rendering-neutral. Payloads
-    are a handful of scalars and small mappings; the copy is not a cost worth
-    trading correctness for.
+    hole the panel found. A ``MappingProxyType`` would close the top level, and
+    the reason it is not used is narrower than it first appears — measured
+    rather than assumed:
+
+    * ``render_logfmt`` is **unaffected**. It formats values through ``str``,
+      and a proxy's ``str`` delegates to the underlying dict, so the logfmt
+      line is byte-identical either way.
+    * ``render_json`` (``JASPER_LOG_JSON=1``) is where it breaks. That sink is
+      ``json.dumps(..., default=str)``, and a proxy is not JSON-serializable —
+      so a nested mapping that renders as a real object ``{"woofer": [...]}``
+      degrades to a quoted Python repr ``"{'woofer': [...]}"``. Machine
+      consumers of the journal would silently start receiving strings where
+      they had objects.
+
+    Copy-on-read has neither problem. Payloads are a handful of scalars and
+    small mappings; the copy is not a cost worth trading correctness for.
     """
 
     event: str
@@ -614,10 +632,11 @@ class LinearizationRequest:
         :func:`plan_linearization` names it in the journal rather than passing
         over it silently — the same disposition, and the same event, that
         ``CrossoverV2Conductor._branch_crossover_sections`` gives the condition
-        today. That method is the planner's seventh reader of the session
-        corner and loses its only production caller at the #2291 Phase 2b
-        cutover; emitting the disclosure here keeps it at the detection site,
-        and the host inherits it with the rest of the journal.
+        today. That method is LEGACY's seventh reader of the session corner —
+        the planner has none, which is this module's central invariant — and it
+        loses its only production caller at the #2291 Phase 2b cutover;
+        emitting the disclosure here keeps it at the detection site, and the
+        host inherits it with the rest of the journal.
 
         The *context* separately guarantees that every section which does exist
         names this candidate's corner.

@@ -52,8 +52,9 @@ changing anything else. ``scan_delta_db`` defaults to the incident's own
 from __future__ import annotations
 
 import logging
+import types
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NamedTuple
 
 import numpy as np
 import pytest
@@ -852,14 +853,17 @@ def test_the_journal_content_matches_legacys_line_for_line(monkeypatch):
     sections = _sections_at(CONFIGURED_FC_HZ)
     legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
 
-    assert [e for e, _ in pure_journal] == [e for e, _ in legacy_journal]
+    assert [line.event for line in pure_journal] == [
+        line.event for line in legacy_journal
+    ]
     assert legacy_journal, "the capture must actually have seen legacy log"
-    for (event, pure_fields), (_, legacy_fields) in zip(pure_journal, legacy_journal):
+    for pure, legacy in zip(pure_journal, legacy_journal):
         # Legacy renders tuples where the planner renders lists (both go
         # through the same ``log_event`` formatter, which stringifies either
         # identically); compare through a normalizer rather than pretending the
         # container types match.
-        assert _normalized(pure_fields) == _normalized(legacy_fields), event
+        assert _normalized(pure.fields) == _normalized(legacy.fields), pure.event
+        assert pure.level == legacy.level, pure.event
 
 
 #: The journal lines whose content is a function of WHICH trim pair was
@@ -886,23 +890,52 @@ def test_only_the_trim_derived_lines_differ_when_the_policy_fires(monkeypatch):
     sections = _sections_at(CONFIGURED_FC_HZ)
     legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
 
-    assert [e for e, _ in pure_journal] == [e for e, _ in legacy_journal]
+    assert [line.event for line in pure_journal] == [
+        line.event for line in legacy_journal
+    ]
     differing = [
-        event
-        for (event, pure_fields), (_, legacy_fields) in zip(
-            pure_journal, legacy_journal
-        )
-        if _normalized(pure_fields) != _normalized(legacy_fields)
+        pure.event
+        for pure, legacy in zip(pure_journal, legacy_journal)
+        if _normalized(pure.fields) != _normalized(legacy.fields)
     ]
     assert differing == _TRIM_DERIVED_EVENTS
-    assert {e for e, _ in pure_journal} - set(differing) == {
+    assert {line.event for line in pure_journal} - set(differing) == {
         "correction.crossover_v2_linearization_fit_band",
         "correction.crossover_v2_linearization_giveback",
     }
+    # SEVERITY is trim-derived too, on exactly one line, and the difference is
+    # the safety story rather than a defect. Every line that is not trim-derived
+    # keeps its weight...
+    pure_levels = {line.event: line.level for line in pure_journal}
+    legacy_levels = {line.event: line.level for line in legacy_journal}
+    for event in set(pure_levels) - set(_TRIM_DERIVED_EVENTS):
+        assert pure_levels[event] == legacy_levels[event], event
+
+    # ...``trim_rejected`` stays the WARNING an operator greps for — the trim it
+    # names moved, its severity did not...
+    assert pure_levels[_TRIM_DERIVED_EVENTS[0]] == logging.WARNING
+    assert legacy_levels[_TRIM_DERIVED_EVENTS[0]] == logging.WARNING
+
+    # ...and ``realized_level_match`` FLIPS to WARNING, because that line's
+    # severity is conditional on whether the committed pair levels, and the
+    # committed pair changed. Legacy shipped the scan, which matched, and
+    # logged INFO. The planner commits the anchor, which does NOT match on this
+    # fixture — so the line warns, and the accountability seam downstream
+    # refuses the session. That is the "loud refusal, not a loud speaker" path
+    # visible in the journal, one step before it fires.
+    match_event = "correction.crossover_v2_realized_level_match"
+    assert legacy_levels[match_event] == logging.INFO
+    assert pure_levels[match_event] == logging.WARNING
+    pure_match = next(ln for ln in pure_journal if ln.event == match_event)
+    legacy_match = next(ln for ln in legacy_journal if ln.event == match_event)
+    assert legacy_match.fields["matched"] is True
+    assert pure_match.fields["matched"] is False
 
     rejected = _TRIM_DERIVED_EVENTS[0]
-    pure_fields = dict(next(f for e, f in pure_journal if e == rejected))
-    legacy_fields = dict(next(f for e, f in legacy_journal if e == rejected))
+    pure_fields = dict(next(ln.fields for ln in pure_journal if ln.event == rejected))
+    legacy_fields = dict(
+        next(ln.fields for ln in legacy_journal if ln.event == rejected)
+    )
     assert legacy_fields["committed"] == "resolved"
     assert pure_fields["committed"] == "anchored"
     # Coupled to the decision rather than independently authored: the record
@@ -922,9 +955,18 @@ def test_only_the_trim_derived_lines_differ_when_the_policy_fires(monkeypatch):
 
 def _both_journals(
     monkeypatch: pytest.MonkeyPatch, sections: dict[str, Any]
-) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
-    """Legacy's structured log calls and the planner's records, side by side."""
+) -> tuple[list[_Line], list[_Line]]:
+    """Legacy's structured log calls and the planner's records, side by side.
 
+    SEVERITY travels with each line, not just its payload. ``log_event``
+    defaults to INFO when no ``level`` is passed, so legacy's effective level is
+    ``kwargs.get("level", INFO)`` — comparing the raw kwargs would read "absent"
+    where the planner reads ``logging.INFO`` and miss the two flips that matter:
+    ``trim_rejected`` is the household-visible WARNING, and
+    ``realized_level_match`` is conditional on whether the pair matched. 2b's
+    host passes ``record.level`` straight through to ``log_event``, so a level
+    the planner got wrong is a severity the journal gets wrong.
+    """
     captured: list[tuple[str, dict[str, Any]]] = []
     real_log_event = flow.log_event
 
@@ -938,10 +980,24 @@ def _both_journals(
     _outcome, plan = _pure(sections)
 
     legacy_journal = [
-        (event, {k: v for k, v in fields.items() if k not in ("session_id", "level")})
+        _Line(
+            event,
+            {k: v for k, v in fields.items() if k not in ("session_id", "level")},
+            int(fields.get("level", logging.INFO)),
+        )
         for event, fields in captured
     ]
-    return legacy_journal, [(r.event, dict(r.fields)) for r in plan.journal]
+    return legacy_journal, [
+        _Line(r.event, dict(r.fields), r.level) for r in plan.journal
+    ]
+
+
+class _Line(NamedTuple):
+    """One journal line as (name, payload, severity)."""
+
+    event: str
+    fields: dict[str, Any]
+    level: int
 
 
 def _normalized(fields: dict[str, Any]) -> dict[str, Any]:
@@ -1119,6 +1175,20 @@ def test_a_mutating_journal_consumer_cannot_rewrite_the_plan(monkeypatch):
         dict(r.fields) for r in reference.journal
     ]
     assert all("injected" not in r.fields for r in plan.journal)
+
+
+def test_cloud_evidence_without_a_boost_bound_fails_closed():
+    """No ``getattr`` default: a missing boost bound raises, never reads empty.
+
+    Empty means "nothing contradicted a boost" and grants the lift stage the
+    full band, so defaulting to it on an absent attribute would fail OPEN in
+    the one direction this bound must never fail in.
+    """
+    incomplete = types.SimpleNamespace(
+        excluded_bands_hz=(), band_spread=(), n_positions=0
+    )
+    with pytest.raises(AttributeError, match="boost_excluded_bands_hz"):
+        iv.CloudFitTerms.from_evidence(incomplete)
 
 
 def test_a_journal_record_detaches_the_fields_it_was_handed():
