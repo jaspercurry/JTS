@@ -561,22 +561,44 @@ def topology_sink_is_composite(topology: OutputTopology) -> bool:
     return len(topology.hardware.child_devices) >= 2
 
 
-def topology_supports_shm_ring(topology: OutputTopology) -> bool:
-    """True iff the saved topology can be driven by the ``shm_ring`` coupling.
+# The channel count Ring B carries for a ring-eligible topology. The rings move
+# a full-range STEREO program: everything upstream of CamillaDSP is stereo (the
+# fan-in mixer is 2-channel and says so — ``mixer.rs``'s ``CHANNELS: u32 = 2``,
+# "Not configurable"), and on a ring-eligible box CamillaDSP's output is the
+# same stereo program. Named rather than spelled ``2`` at each site so the one
+# place that decides ring width is greppable.
+RING_STEREO_PROGRAM_CHANNELS = 2
+
+
+def ring_channels_for_topology(topology: OutputTopology) -> int | None:
+    """Channels Ring B would carry for this topology, or ``None`` if no ring can.
+
+    The single ring-eligibility answer, phrased as a WIDTH rather than a
+    boolean: the ring's four ends (fan-in, the two ioplug PCMs, outputd) must
+    each declare the same geometry, and a predicate that only says yes/no leaves
+    every one of them to re-derive the number. ``None`` means no ring geometry
+    exists for this topology at all — :func:`topology_supports_shm_ring` is
+    derived from exactly that.
 
     The topology-contract citizenship for rings (audio-graph consolidation P2):
-    Ring A/Ring B carry a full-range **stereo** program on a single coherent ALSA
-    sink. So ring is legal ONLY for the plain stereo full-range contract, and
-    NOT for:
+    Ring A/Ring B carry a full-range **stereo** program on a single coherent
+    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer for the
+    plain stereo full-range contract and for an UNCONFIGURED topology (no
+    speaker groups — the common fresh-install shape, which uses the flat stereo
+    graph, exactly the shape ring replaces).
 
-    - roleful / protected / subwoofer topologies (``requires_roleful_graph`` — the
-      ring is stereo-pinned and cannot carry a per-driver crossover; the Rust
-      outputd config.rs likewise requires a full-range stereo L/R sink for
-      ``shm_ring``, and the statefile seeder sends these to the driver-domain graph,
-      never the ring flat config);
+    Everything else has no ring:
+
+    - roleful / protected / subwoofer topologies (``requires_roleful_graph``).
+      A ring for one of these would have to carry POST-crossover per-driver
+      channels, and the transport for that does not exist: the conf.d ships two
+      PCMs and both are the full-range stereo program, outputd refuses the
+      content bridge on an active lane, and the statefile seeder sends these
+      boxes to the driver-domain graph rather than the ring flat config. So the
+      honest answer today is "no ring", not "a wider ring";
     - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``): the ring
-      ioplug is a single coherent 2-ch device, not the 4-ch composite the two
-      child DACs need. That is P8's ring-v2 (N-channel) problem. The exclusion is
+      ioplug is a single coherent device, not the 4-ch composite the two
+      child DACs need. The exclusion is
       keyed on ``len(child_devices) >= 2`` — a *plurality* of child DACs, each its
       own USB clock domain (``dac.py``'s only ``kind="composite"`` profile is the
       dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A *single* child
@@ -586,28 +608,43 @@ def topology_supports_shm_ring(topology: OutputTopology) -> bool:
       stable serial identity, and that single entry must NOT disqualify the ring.
       (Pre-2026-07 this read ``if child_devices:`` — a bare truthiness check that
       wrongly refused every shipped-default box, since observed hardware always
-      records its one child. See DEFECT 2.)
-
-    An UNCONFIGURED topology (no speaker groups — the common fresh-install shape)
-    IS ring-eligible: it uses the flat stereo graph, exactly the shape ring
-    replaces. This predicate is what the default-coupling resolver, multiroom
-    bond-formation prechecks, and the reconciler consult; DEFAULT coupling may
-    resolve to ``shm_ring`` only when this predicate and the ring arm preflights
-    pass, otherwise it remains loopback."""
+      records its one child. See DEFECT 2.);
+    - an explicit mono full-range topology: the ring layout's accept-set starts
+      at 2 channels (``jasper_ring``'s ``validate_self``, mirrored by the C
+      ioplug's ``JTS_RING_MIN_CHANNELS``), so a 1-channel ring is not
+      representable, and no consumer asks for one.
+    """
     contract = classify_output_contract(topology)
     if contract.requires_roleful_graph:
-        return False
+        return None
     # Composite (dual-Apple, kind="composite") is excluded even when nominally
     # stereo: a MULTI-child sink spans >1 USB clock domain and is not the single
     # coherent L/R sink the ring drives.
     if topology_sink_is_composite(topology):
-        return False
+        return None
     # Stereo full-range OR unconfigured (flat stereo fallback) are the ring-legal
     # shapes; an explicit mono full-range cannot be driven by a stereo ring.
-    return contract.classification in (
+    if contract.classification in (
         CONTRACT_NORMAL_STEREO_FULL_RANGE,
         CONTRACT_UNCONFIGURED,
-    )
+    ):
+        return RING_STEREO_PROGRAM_CHANNELS
+    return None
+
+
+def topology_supports_shm_ring(topology: OutputTopology) -> bool:
+    """True iff the saved topology can be driven by the ``shm_ring`` coupling.
+
+    DERIVED from :func:`ring_channels_for_topology` — a topology is ring-eligible
+    exactly when a ring width exists for it. Two functions answering the same
+    question independently is how the boolean and the width would drift; the
+    reasons live in that function's docstring.
+
+    This predicate is what the default-coupling resolver, multiroom
+    bond-formation prechecks, and the reconciler consult; DEFAULT coupling may
+    resolve to ``shm_ring`` only when this predicate and the ring arm preflights
+    pass, otherwise it remains loopback."""
+    return ring_channels_for_topology(topology) is not None
 
 
 def _protected_tweeter_outputs(contract: OutputContract) -> set[int]:

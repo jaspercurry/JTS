@@ -1016,12 +1016,15 @@ def _expected_playback_format(
         DEFAULT_PIPE_SINK_FORMAT,
         DEFAULT_PLAYBACK_FORMAT,
     )
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, RING_WIRE_FORMAT
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
 
     if playback_type == "File":
         return DEFAULT_PIPE_SINK_FORMAT, "DEFAULT_PIPE_SINK_FORMAT"
     if playback_device == RING_PLAYBACK_DEVICE:
-        return RING_WIRE_FORMAT, "RING_WIRE_FORMAT"
+        # Named for the RESOLVER, not for a constant: the ring's width is a
+        # per-box resolution, and a detail line citing a constant would send a
+        # reader to a value that is only one of the answers it can give.
+        return resolve_ring_wire().sample_format, "resolve_ring_wire"
     return DEFAULT_PLAYBACK_FORMAT, "DEFAULT_PLAYBACK_FORMAT"
 
 
@@ -1043,13 +1046,14 @@ def check_camilla_playback_format() -> CheckResult:
       graph's ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT`` — pinned
       narrow by the snapserver wire contract (D4) regardless of the general
       program lane;
-    - the SHM ring's playback device (``RING_PLAYBACK_DEVICE``) expects
-      ``RING_WIRE_FORMAT`` — an ARMED RING IS ``type: Alsa``, so the File split
-      alone does not cover it. Its width is forced narrow by the coupling's own
-      kwargs (``capture_kwargs_for_coupling``) and hard-enforced by
-      ``jasper_ring::Geometry::validate_self``, which is exactly why a
-      ring-coupled box keeps a coherent S16 lane on a box whose general default
-      is wide (the PR-6 ring ruling);
+    - the SHM ring's playback device (``RING_PLAYBACK_DEVICE``) expects the ring
+      wire ``resolve_ring_wire`` resolves — an ARMED RING IS ``type: Alsa``, so
+      the File split alone does not cover it. Its width comes from the coupling's
+      own kwargs (``capture_kwargs_for_coupling``), which read that same
+      resolver, which is exactly why a ring-coupled box keeps a coherent lane on
+      a box whose general default is wide (the PR-6 ring ruling). The ring
+      LAYOUT accepts S16LE and S32LE, so this check is what catches a ring
+      config that drifted to the other one — the attach would not;
     - every other sink — the ALSA loopback lane, every real active-speaker DAC
       graph — expects ``DEFAULT_PLAYBACK_FORMAT``.
 
@@ -1102,7 +1106,7 @@ def check_camilla_playback_format() -> CheckResult:
         f"({expected_name}) — a half-flipped box: {path} was generated "
         f"against a different {expected_name} than the one currently in "
         "force. Regenerate the config (sudo /opt/jasper/.venv/bin/jasper-sound "
-        "reconcile-current-dsp) or investigate why the constant and the "
+        f"reconcile-current-dsp) or investigate why {expected_name} and the "
         "loaded config disagree.",
     )
 
@@ -1433,6 +1437,37 @@ def _jts_ring_path_for(pcm: str) -> str | None:
     return None
 
 
+def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
+    """``(channels, format)`` the open-probe must ask this PCM for, or ``None``
+    when this conf.d block's wire is indeterminate (unreadable file, missing
+    block, or a torn declaration — nothing safe to ask ALSA for).
+
+    From the conf.d block itself — :func:`~jasper.ring_assets.ring_conf_channels`
+    / :func:`~jasper.ring_assets.ring_conf_format` — NOT from
+    :func:`~jasper.fanin_coupling.resolve_ring_wire`. The ioplug advertises
+    EXACTLY what THIS conf.d, as it stands on disk, declares as its hw_params
+    constraint, so the probe's question is "what does the file say" — a
+    DIFFERENT question from "what SHOULD this box declare", which is what the
+    resolver answers. Those two answers are independently gated: conf
+    rendering (``render_ring_conf_wire``, driven by a detected DAC's declared
+    ``LatencyFloor``) and ring coupling (the ``shm_ring`` arm) are separate
+    gates, so a box can carry a per-box-rendered Ring B conf.d while still
+    sitting coupling-inert (or the reverse) — probing the resolver's answer on
+    such a box would ask ALSA for the wrong width. An absent
+    ``format``/``channels`` key means the ioplug default
+    (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
+    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
+    already encode, so this answers the shipped, never-rendered file correctly
+    too — no separate "unrendered" branch needed. Ring A and Ring B can
+    legitimately differ on channels, hence the per-PCM lookup.
+    """
+    channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
+    sample_format = ring_assets.ring_conf_format(pcm, _JTS_RING_CONF_D)
+    if channels is None or sample_format is None:
+        return None
+    return channels, sample_format
+
+
 def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     """Open-probe one inert jts_ring PCM. Success means ALSA resolved the
     conf.d name AND dlopen()ed the ioplug .so AND the writer-dead/no-reader
@@ -1457,15 +1492,25 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     """
     if not shutil.which(tool):
         return False, f"{tool} not found"
+    wire = _jts_ring_probe_wire(pcm)
+    if wire is None:
+        return False, (
+            f"ring conf.d ({_JTS_RING_CONF_D}) has no readable pcm.{pcm} "
+            "format/channels to probe with — indeterminate wire (unreadable "
+            "or torn); redeploy to reinstall it"
+        )
+    channels, sample_format = wire
     ring_path = _jts_ring_path_for(pcm)
     pre_existed = ring_path is not None and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
-    # (feed silence in). Both 2ch/48k/S16_LE/1s, matching the lab probe.
+    # (feed silence in). 48 kHz / 1 s; the width comes from what THIS
+    # conf.d's own pcm.<name> block declares (an absent key is the ioplug's
+    # own default) — see _jts_ring_probe_wire.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
     try:
         proc = _run(
-            [tool, "-D", pcm, "-c", "2", "-r", "48000", "-f", "S16_LE",
-             "-d", "1", sink],
+            [tool, "-D", pcm, "-c", str(channels), "-r", "48000",
+             "-f", sample_format, "-d", "1", sink],
             timeout=6.0,
         )
     except subprocess.TimeoutExpired:
@@ -1528,7 +1573,9 @@ def check_ring_platform_assets() -> CheckResult:
     so the ioplug's SPSC guard EBUSYs the open-probe — which is NOT a defect. In
     that state this check does NOT open-probe (the live ring must not be
     disturbed); it verifies asset PRESENCE only and defers the "is the armed ring
-    coherent + alive" verdict to check_ring_coupling_coherent. The open-probe path
+    coherent + alive" verdict to `check_fanin_coupling` (intent vs the loaded
+    config) and `check_ring_geometry_coherence` (env vs conf.d vs the on-disk
+    header). The open-probe path
     below runs only in the INERT phase (loopback default), where an EBUSY genuinely
     would indicate a stray lab arm or a stuck ring.
     """
@@ -1577,12 +1624,14 @@ def check_ring_platform_assets() -> CheckResult:
     if ring_armed:
         # Assets present AND armed: do NOT open-probe (the live ring EBUSYs the
         # SPSC guard — expected, not a defect). Report ok here; the coherence
-        # + liveness verdict is check_ring_coupling_coherent's job.
+        # + liveness verdict belongs to `check_fanin_coupling` and
+        # `check_ring_geometry_coherence`.
         return CheckResult(
             label,
             "ok",
             "ioplug + conf.d + /dev/shm/jts-ring present; shm_ring ARMED "
-            "(open-probe skipped — live ring; see 'ring coupling' check)",
+            "(open-probe skipped — live ring; see the 'fanin coupling' and "
+            "'ring geometry' checks)",
         )
 
     # All assets present AND inert — the .so being installed means it MUST dlopen
@@ -1597,9 +1646,10 @@ def check_ring_platform_assets() -> CheckResult:
         # experiment live, or after P2 arms a coupling) the ring already has a
         # live foreign reader/writer, and the ioplug's SPSC guard refuses the
         # probe with -EBUSY ("Device or resource busy"). The .so is fine — the
-        # ring is simply in use. (check_ring_platform_assets and its "probe is
-        # safe anytime" docstring assume the inert phase; P2 must make this check
-        # armed-state-aware so an armed ring reports ok/skip, not fail.)
+        # ring is simply in use. A ring armed through the PRODUCT path never
+        # reaches here (the armed branch above returns before the probe), so an
+        # EBUSY at this point means a reader/writer the persisted coupling does
+        # not account for — a stray lab arm, or a stuck ring.
         joined = "; ".join(probe_failures)
         if re.search(r"resource busy|EBUSY|Device or resource busy", joined, re.I):
             remediation = (
@@ -1747,10 +1797,16 @@ def check_ring_geometry_coherence() -> CheckResult:
             "jasper-fanin-coupling-reconcile shm_ring (it deletes a geometry-"
             "mismatched ring file before re-arming).",
         )
+    # The wire axes (format, channels, rate) are REPORTED, not compared: this
+    # check's three comparison axes are the slot-count/period ones its callers
+    # act on, and reporting is what makes the on-disk wire visible without
+    # claiming a verdict about it. They come off the same header read.
     return CheckResult(
         label, "ok",
         f"Ring A geometry coherent across env + conf.d + on-disk header "
-        f"(n_slots={header.n_slots}, period_frames={header.period_frames})",
+        f"(n_slots={header.n_slots}, period_frames={header.period_frames}); "
+        f"on-disk wire {header.sample_format_name}/{header.channels}ch @ "
+        f"{header.rate} Hz",
     )
 
 
@@ -1780,6 +1836,14 @@ def check_ring_conf_floor_render() -> CheckResult:
               independently preflights this and fail-closes to loopback rather
               than arming a mismatched geometry.
 
+    An ``ok`` that means "this box can never ring" SAYS SO (issue #2294). Both
+    no-floor and non-matching-floor are ok — the conf.d is right either way —
+    but they also decide ring eligibility, because outputd's period then cannot
+    equal the fixed slot and the arm preflight refuses. Reporting only "nothing
+    to render" left the household's actual question ("why is this box on
+    loopback?") answered nowhere; jts3 (HIFIBERRY_DAC8X, no declared floor) is
+    the live case.
+
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
     override), so only a floor that EQUALS it is renderable. A DAC declaring
@@ -1795,6 +1859,10 @@ def check_ring_conf_floor_render() -> CheckResult:
     on-disk axis), not this check's.
     """
     label = "ring conf floor"
+    # Local import: audio_runtime_plan is heavy and the doctor's other ring
+    # checks already reach for it lazily.
+    from ...audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
+
     dac_id = _active_audio_dac_id()
     floor = latency_floor_for(dac_id)
     if floor is None:
@@ -1802,7 +1870,13 @@ def check_ring_conf_floor_render() -> CheckResult:
             label,
             "ok",
             f"{dac_id} declares no latency floor — {_JTS_RING_CONF_D} keeps its "
-            "shipped default (no declared floor, nothing to render)",
+            "shipped default (no declared floor, nothing to render). With no "
+            f"floor, outputd resolves its default period "
+            f"{DEFAULT_OUTPUTD_PERIOD_FRAMES}, which cannot equal the fixed ring "
+            f"slot {RING_SLOT_FRAMES}, so shm_ring is unavailable on this box "
+            "and loopback coupling is correct — until issue #2147 makes the ring "
+            "slot floor-derived, or this DAC declares a "
+            f"{RING_SLOT_FRAMES}-frame floor.",
         )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(

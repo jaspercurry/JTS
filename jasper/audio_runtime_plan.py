@@ -1344,23 +1344,27 @@ def transport_topology_for_coupling(
     normalized = resolve_coupling(coupling)
     if normalized == COUPLING_SHM_RING:
         # Ring A (fan-in -> CamillaDSP, jts_ring_capture) + Ring B (CamillaDSP ->
-        # outputd, jts_ring_playback). Both S16_LE ALSA ioplug devices; the
-        # concrete ring paths live in the daemons' env (fan-in RING_PATH, outputd
-        # SHM_RING_PATH), surfaced here so /state names the resolved transport.
+        # outputd, jts_ring_playback). Their wire — format, and a channel count
+        # that is per-ring — comes from the one resolver every declaring end
+        # reads, so /state reports the geometry the ring is actually built to
+        # rather than a literal that can silently disagree with it. The concrete
+        # ring paths live in the daemons' env (fan-in RING_PATH, outputd
+        # SHM_RING_PATH).
         from jasper.fanin_coupling import (
             OUTPUTD_RING_PATH_ENV_VAR,
             RING_CAPTURE_DEVICE,
             RING_PATH_ENV_VAR,
             RING_PLAYBACK_DEVICE,
-            RING_WIRE_FORMAT,
             resolve_outputd_ring_path,
             resolve_ring_path,
+            resolve_ring_wire,
         )
 
         capture_ring = resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR))
         content_ring = resolve_outputd_ring_path(
             outputd_values.get(OUTPUTD_RING_PATH_ENV_VAR)
         )
+        wire = resolve_ring_wire()
         return TransportTopology(
             name=COUPLING_SHM_RING,
             fanin_to_camilla={
@@ -1368,8 +1372,8 @@ def transport_topology_for_coupling(
                 "path": capture_ring,
                 "writer": "jasper-fanin",
                 "camilla_capture_device": RING_CAPTURE_DEVICE,
-                "format": RING_WIRE_FORMAT,
-                "channels": 2,
+                "format": wire.sample_format,
+                "channels": wire.ring_a_channels,
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
             camilla_to_outputd={
@@ -1377,8 +1381,8 @@ def transport_topology_for_coupling(
                 "path": content_ring,
                 "camilla_playback_device": RING_PLAYBACK_DEVICE,
                 "reader": "jasper-outputd",
-                "format": RING_WIRE_FORMAT,
-                "channels": 2,
+                "format": wire.sample_format,
+                "channels": wire.ring_b_channels,
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
             camilla={
@@ -1437,10 +1441,11 @@ def transport_coherence_errors(
     ``TransportTopology`` is the policy source. This function compares its two
     runtime consumers without re-deriving endpoint strings in reconcilers or
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
-    contradiction is. Under ``shm_ring`` this also carries a FORMAT axis: the
-    ring's fixed wire format (``RING_WIRE_FORMAT``) must MATCH the width the
-    shm_ring coupling emits (``content_lane_format_for_coupling``) — see the
-    comment on that check for the wide-output-path program rationale.
+    contradiction is. Under ``shm_ring`` that comparison covers the WIRE as well
+    as the endpoints: the resolved format against outputd's own declared
+    ``JASPER_OUTPUTD_CONTENT_FORMAT``, and each ring's resolved channel count
+    against the channels CamillaDSP's loaded config declares — see the comment
+    on those checks for why the evidence is per-end.
     """
 
     outputd_values = dict(outputd_env or {})
@@ -1482,34 +1487,54 @@ def transport_coherence_errors(
                 f"expected {expected_playback!r}"
             )
         # D5 belt-and-suspenders (wide-output-path program): an ARMED ring's
-        # transport must still carry the width the shm_ring coupling actually
-        # emits. jasper.fanin.coupling_reconcile's ring_edge_width_ready gate
-        # refuses to ARM when that override is broken; this is the standing
-        # coherence check for a box already armed.
+        # DECLARING ENDS must agree with the wire the resolver resolved.
+        # jasper.fanin.coupling_reconcile's ring_edge_width_ready gate refuses to
+        # ARM when the emitter's override path is broken; this is the standing
+        # coherence check for a box already armed, and it asks a different
+        # question — not "does the emitter still force the ring's width" but "do
+        # the ends this function can actually observe declare that width".
         #
-        # Compared against content_lane_format_for_coupling(shm_ring) — what the
-        # coupling's own kwargs force onto the emitted config — NOT against the
-        # box-wide DEFAULT_PLAYBACK_FORMAT. A ring box does not run the
-        # program-lane default: the coupling forces both ring ends to
-        # RING_WIRE_FORMAT, so once PR-6 widened that default, comparing against
-        # it would have red-lined EVERY healthy armed ring box (jts.local
-        # included) in doctor, /state, and audio_health. Deliberately an equality
-        # check, never a "wider/narrower" claim — see ring_edge_width_ready's
-        # docstring for why: no width-ranking primitive exists in-repo, and a
-        # directional claim would stop being reliably true once a third live
-        # format exists (D9, S24_3LE).
-        from jasper.fanin_coupling import content_lane_format_for_coupling
-
+        # That distinction is why the comparison is against per-end evidence and
+        # not against another derivation of the same constant: outputd's declared
+        # JASPER_OUTPUTD_CONTENT_FORMAT (the reader's own env — the value that
+        # decides which sample_format its attach demands) and CamillaDSP's
+        # observed channel counts from the config actually loaded. An end that
+        # shears from the resolved wire fails the ring attach; an end this
+        # function cannot see (key absent, no Camilla evidence) is not itself an
+        # error, matching this module's missing-evidence doctrine.
+        #
+        # Deliberately equality on every axis, never a "wider/narrower" claim —
+        # see ring_edge_width_ready's docstring for why: no width-ranking
+        # primitive exists in-repo, and a directional claim would stop being
+        # reliably true once a third live format exists (D9, S24_3LE).
         ring_format = str(topology.camilla_to_outputd.get("format") or "")
-        emitted_format = content_lane_format_for_coupling(COUPLING_SHM_RING)
-        if ring_format and ring_format != emitted_format:
+        outputd_format = str(
+            outputd_values.get(OUTPUTD_CONTENT_FORMAT_KEY, "") or ""
+        ).strip()
+        if ring_format and outputd_format and outputd_format != ring_format:
             errors.append(
                 f"transport plan is shm_ring with wire format={ring_format!r}, "
-                f"but the shm_ring coupling emits a {emitted_format!r} program "
-                "lane — the ring cannot carry it without silently "
-                "mis-transcoding it; see ring_edge_width_ready "
+                f"but {OUTPUTD_CONTENT_FORMAT_KEY}={outputd_format!r}; outputd "
+                "attaches Ring B demanding its own declared format, so the ends "
+                "shear and the attach fails — see ring_edge_width_ready "
                 "(jasper.fanin.coupling_reconcile)"
             )
+        for lane, observed_key in (
+            (topology.fanin_to_camilla, "capture_channels"),
+            (topology.camilla_to_outputd, "playback_channels"),
+        ):
+            expected_channels = lane.get("channels")
+            observed = devices.get(observed_key)
+            if not isinstance(expected_channels, int) or not isinstance(observed, int):
+                continue
+            if observed != expected_channels:
+                errors.append(
+                    f"transport plan is shm_ring with "
+                    f"{observed_key.split('_')[0]} channels={expected_channels}, "
+                    f"but Camilla's loaded config declares {observed} — the ring "
+                    "header's channel count is compared field-by-field at attach, "
+                    "so the ioplug open fails"
+                )
         return tuple(errors)
 
     if raw_bridge == COUPLING_SHM_RING:

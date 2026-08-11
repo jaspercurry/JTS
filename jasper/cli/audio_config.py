@@ -44,8 +44,8 @@ from jasper.audio_runtime_overrides import (
     set_runtime_override,
 )
 from jasper.env_load import read_env_file_state
-from jasper.fanin_coupling import COUPLING_ENV_VAR, RING_SLOT_FRAMES
-from jasper.ring_assets import RING_CONF_D, render_ring_conf_period
+from jasper.fanin_coupling import COUPLING_ENV_VAR, RING_SLOT_FRAMES, resolve_ring_wire
+from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
 
 DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
@@ -122,8 +122,28 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
-    """Render the shm-ring conf.d slot period from a DAC's DECLARED floor.
+def _load_topology_for_ring_wire(path: str) -> tuple[object | None, str]:
+    """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
+
+    An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
+    an empty draft for it, because "no saved topology" means "not configured
+    yet" — a ring-eligible shape in its own right, not an unknown one. Only a
+    CORRUPT or unreadable file yields ``None``, which resolves the
+    SHIPPED stereo ring wire — the geometry already on disk in the conf.d. That
+    is the fail-safe direction for a RENDERER: an indeterminate topology must
+    never move the conf.d off what the box is running, and the arm preflights
+    (which do read the topology, strictly) are what refuse to arm on one.
+    """
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    try:
+        return load_output_topology_strict(path), "loaded"
+    except (OutputTopologyError, OSError, ValueError):
+        return None, "topology_unreadable"
+
+
+def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
+    """Render the shm-ring conf.d wire from a DAC's DECLARED floor + the topology.
 
     The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
     declared ``LatencyFloor`` whose ``outputd_period_frames`` equals
@@ -131,6 +151,12 @@ def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
     id) leaves the SHIPPED conf.d untouched and therefore keeps whatever
     coupling that box has today — so this command is a no-op until floor data
     exists for a profile.
+
+    The floor gates the render; the WIRE it renders comes from
+    ``jasper.fanin_coupling.resolve_ring_wire`` — format plus a per-ring channel
+    count, resolved from the saved output topology. Joining them here rather
+    than in either owner is why this command re-reads both instead of taking
+    values on the command line.
 
     Why the second condition: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env override).
@@ -165,11 +191,13 @@ def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
         print(f"period_frames {floor.outputd_period_frames}")
         print(f"conf {conf_d}")
         return 0
+    topology, topology_reason = _load_topology_for_ring_wire(args.output_topology)
+    # The floor gate above has already established that this box's declared
+    # period is RING_SLOT_FRAMES, and the renderer refuses any other; the wire
+    # carries the same axis, so it needs no second comparison here.
+    wire = resolve_ring_wire(topology)
     try:
-        outcome = render_ring_conf_period(
-            floor.outputd_period_frames,
-            conf_d=conf_d,
-        )
+        outcome = render_ring_conf_wire(wire, conf_d=conf_d)
     except (OSError, ValueError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -177,6 +205,10 @@ def _cmd_render_ring_conf_period(args: argparse.Namespace) -> int:
     print(f"period_frames {outcome.period_frames}")
     if outcome.previous_period_frames is not None:
         print(f"previous_period_frames {outcome.previous_period_frames}")
+    print(f"sample_format {outcome.sample_format}")
+    print(f"ring_a_channels {outcome.ring_a_channels}")
+    print(f"ring_b_channels {outcome.ring_b_channels}")
+    print(f"topology {topology_reason}")
     print(f"conf {outcome.conf_d}")
     return 0
 
@@ -322,10 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
 
     render_ring_conf = sub.add_parser(
-        "render-ring-conf-period",
+        "render-ring-conf-wire",
         help=(
-            "render the shm-ring conf.d slot period from the DAC profile's "
-            "declared latency floor (no declared floor leaves it untouched)"
+            "render the shm-ring conf.d wire (slot period, format, per-ring "
+            "channels) from the DAC profile's declared latency floor and the "
+            "saved output topology (no declared floor leaves it untouched)"
         ),
     )
     render_ring_conf.add_argument("--profile-id", default="")
@@ -334,7 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="override the ring conf.d path (default: the ring_assets SSOT)",
     )
-    render_ring_conf.set_defaults(func=_cmd_render_ring_conf_period)
+    render_ring_conf.add_argument(
+        "--output-topology",
+        default=DEFAULT_OUTPUT_TOPOLOGY_PATH,
+        help="saved output topology the Ring B channel count is resolved from",
+    )
+    render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
 
     validate_outputd = sub.add_parser(
         "validate-outputd-env",

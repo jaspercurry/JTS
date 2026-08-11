@@ -2332,7 +2332,8 @@ def test_reconcile_apple_leaves_the_shipped_ring_conf_byte_identical(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test "
         "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
-        "previous_period_frames=128"
+        "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
+        "ring_b_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2359,7 +2360,8 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
     assert (
         "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
         "output_dac_id=hifiberry_dac8x period_frames=none "
-        "previous_period_frames=none reason=no_declared_floor"
+        "previous_period_frames=none sample_format=none ring_a_channels=none "
+        "ring_b_channels=none topology=none reason=no_declared_floor"
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
@@ -2394,7 +2396,7 @@ def test_reconcile_leaves_ring_conf_untouched_when_no_dac_is_recognized(
 def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
-    assert "render-ring-conf-period" in text
+    assert "render-ring-conf-wire" in text
     # The INSTALLED conf.d path is NOT a fourth copy in bash: the only --conf-d
     # the script passes is the (empty by default) test override, so the Python
     # SSOT jasper.ring_assets.RING_CONF_D resolves the real path and reports
@@ -2402,12 +2404,30 @@ def test_reconciler_delegates_the_ring_conf_render_to_the_python_layer() -> None
     assert "/etc/alsa/conf.d" not in text
     assert 'RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"' in text
     assert '--conf-d "$RING_CONF_D_OVERRIDE"' in text
+    # Ring B's channel count is topology-resolved, so the render needs the
+    # saved topology the rest of this script already resolves.
+    assert '--output-topology "$OUTPUT_TOPOLOGY_PATH"' in text
+    # The `key value` protocol is a WHITELIST — an unmatched key is dropped
+    # silently. Every key the renderer emits needs an arm, or the wire it
+    # resolved never reaches the journal.
+    for key in (
+        "result",
+        "period_frames",
+        "previous_period_frames",
+        "sample_format",
+        "ring_a_channels",
+        "ring_b_channels",
+        "topology",
+        "reason",
+        "conf",
+    ):
+        assert f"            {key}) " in text, key
     # The render must not feed a restart flag: arming is the coupling
     # reconciler's job, and ALSA re-reads the conf.d at the next PCM open.
     assert "render_ring_conf_if_needed && " not in text
 
 
-# --- render-ring-conf-period: the floor is DATA -------------------------------
+# --- render-ring-conf-wire: the floor is DATA -------------------------------
 
 
 def _render_ring_conf(conf: Path) -> int:
@@ -2415,7 +2435,7 @@ def _render_ring_conf(conf: Path) -> int:
 
     return audio_config_main(
         [
-            "render-ring-conf-period",
+            "render-ring-conf-wire",
             "--profile-id",
             "hifiberry_dac8x",
             "--conf-d",
@@ -2512,19 +2532,26 @@ def test_render_subcommand_refuses_a_floor_the_ring_slot_cannot_carry(
     assert conf.stat().st_mtime_ns == before_mtime
 
 
-def test_render_ring_conf_period_itself_refuses_a_non_slot_period(
+def test_render_ring_conf_wire_itself_refuses_a_non_slot_period(
     tmp_path: Path,
 ) -> None:
     # Defence in depth: the writer cannot emit a period the ring transport
     # will not carry, even if a future caller forgets the floor gate.
     from jasper import ring_assets
+    from jasper.fanin_coupling import RingWire
 
     conf = _staged_ring_conf(tmp_path)
     before_bytes = conf.read_bytes()
 
     with pytest.raises(ValueError, match="RING_SLOT_FRAMES"):
-        ring_assets.render_ring_conf_period(
-            2 * RING_SLOT_FRAMES, conf_d=str(conf)
+        ring_assets.render_ring_conf_wire(
+            RingWire(
+                sample_format="S16_LE",
+                ring_a_channels=2,
+                ring_b_channels=2,
+                period_frames=2 * RING_SLOT_FRAMES,
+            ),
+            conf_d=str(conf),
         )
     assert conf.read_bytes() == before_bytes
 
@@ -3089,3 +3116,112 @@ def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_prob
     assert "event=audio_hardware_reconcile.runtime_env" in result.stderr
     assert "mode=dual_apple" in result.stderr
     assert "dac_format=S24_3LE" in result.stderr
+
+
+# --- render-ring-conf-wire: the topology arm ---------------------------------
+
+
+def _render_ring_conf_with_topology(conf: Path, topology_path: Path) -> int:
+    from jasper.cli.audio_config import main as audio_config_main
+
+    return audio_config_main(
+        [
+            "render-ring-conf-wire",
+            "--profile-id",
+            "hifiberry_dac8x",
+            "--conf-d",
+            str(conf),
+            "--output-topology",
+            str(topology_path),
+        ]
+    )
+
+
+def test_render_subcommand_reports_the_full_wire_it_resolved(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Every axis the renderer resolved is emitted for the shell to log. A key
+    # the CLI does not print is a key the reconcile journal reports as `none`,
+    # which is how a per-box wire becomes invisible at the exact moment it
+    # starts differing between boxes.
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+
+    assert _render_ring_conf(conf) == 0
+    out = capsys.readouterr().out
+    assert "sample_format S16_LE" in out
+    assert "ring_a_channels 2" in out
+    assert "ring_b_channels 2" in out
+    assert "topology " in out
+
+
+def test_render_subcommand_fails_safe_on_a_corrupt_topology(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """An indeterminate topology renders the SHIPPED wire and says so.
+
+    Fail-safe direction for a RENDERER: a topology it cannot read must never
+    move the conf.d off what the box is already running. Refusing to ARM on one
+    is the preflights' job (they read it strictly); this only writes a file.
+
+    CORRUPT, not absent — `load_output_topology_strict` deliberately returns an
+    empty draft for a missing file ("not configured yet" is a real, ring-
+    eligible shape), so an absent path is the `loaded` arm, not this one.
+    """
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+    corrupt = tmp_path / "output_topology.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+
+    assert _render_ring_conf_with_topology(conf, corrupt) == 0
+    out = capsys.readouterr().out
+    assert "topology topology_unreadable" in out
+    assert "sample_format S16_LE" in out
+    assert "ring_b_channels 2" in out
+
+    from jasper import ring_assets
+
+    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
+        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S16_LE"
+        assert ring_assets.ring_conf_channels(pcm, str(conf)) == 2
+
+
+def test_render_subcommand_reads_a_readable_topology(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # The other arm: a topology that loads reports `loaded`, so the two cases
+    # are distinguishable in the journal rather than both reading as "fine".
+    import json
+
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    conf = _drifted_ring_conf(tmp_path)
+    synthetic = _synthetic_floor(RING_SLOT_FRAMES)
+    monkeypatch.setattr(
+        "jasper.cli.audio_config.latency_floor_for",
+        lambda profile_id: synthetic if profile_id == "hifiberry_dac8x" else None,
+    )
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps(_full_range_stereo().to_dict()), encoding="utf-8"
+    )
+
+    assert _render_ring_conf_with_topology(conf, topology_path) == 0
+    out = capsys.readouterr().out
+    assert "topology loaded" in out
+    assert "ring_b_channels 2" in out

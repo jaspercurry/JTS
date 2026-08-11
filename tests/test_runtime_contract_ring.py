@@ -20,7 +20,9 @@ from pathlib import Path
 from jasper.active_speaker.runtime_contract import (
     CONTRACT_SUBWOOFER_PRESENT,
     DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
+    RING_STEREO_PROGRAM_CHANNELS,
     classify_output_contract,
+    ring_channels_for_topology,
     safe_graph_for_current_topology,
     topology_supports_shm_ring,
 )
@@ -121,6 +123,69 @@ def test_active_topologies_do_not_support_ring():
 def test_composite_dual_apple_does_not_support_ring():
     # Composite (4-ch across two child DACs) is P8's ring-v2 problem, not P2.
     assert topology_supports_shm_ring(_dual_apple_stereo()) is False
+
+
+# --- ring_channels_for_topology: the WIDTH the boolean is derived from --------
+#
+# The eligibility table, asserted as widths rather than as yes/no, plus the
+# derivation itself. The two must not be able to disagree: a predicate that
+# answered True where no width exists (or vice versa) is exactly the shear this
+# rung replaces, so the derivation is pinned over the WHOLE table, not spot-
+# checked on one shape.
+
+
+def _eligibility_table():
+    return [
+        ("unconfigured", _topology([]), RING_STEREO_PROGRAM_CHANNELS),
+        ("full_range_stereo", _full_range_stereo(), RING_STEREO_PROGRAM_CHANNELS),
+        ("full_range_mono", _full_range_mono(), None),
+        ("subwoofer", _subwoofer_topology(), None),
+        ("composite_dual_apple", _dual_apple_stereo(), None),
+        ("active_2_way_stereo", _active_topology("stereo", "active_2_way"), None),
+        ("active_3_way_mono", _active_topology("mono", "active_3_way"), None),
+    ]
+
+
+def test_ring_channels_for_topology_answers_the_eligibility_table():
+    for label, topology, expected in _eligibility_table():
+        assert ring_channels_for_topology(topology) == expected, label
+
+
+def test_topology_supports_shm_ring_is_derived_from_the_width():
+    """The boolean is exactly "a width exists", on every shape in the table.
+
+    Not a spot check: two independent answers to one question is how a
+    ring-eligible box and a ring width drift apart, and the drift would only
+    show up as an arm that builds a geometry no other end declares.
+    """
+    for label, topology, expected in _eligibility_table():
+        assert topology_supports_shm_ring(topology) is (expected is not None), label
+
+
+def test_roleful_topology_has_no_ring_width_despite_a_declared_active_lane():
+    """An active-crossover box is ineligible, not "eligible at N channels".
+
+    Its DAC may well declare an active outputd lane, but the ring transport for
+    post-crossover per-driver channels does not exist: both shipped conf.d PCMs
+    are the full-range stereo program. Reporting a width here would make the
+    derived predicate arm a box onto a ring nothing builds.
+    """
+    active = _active_topology("stereo", "active_2_way")
+    assert ring_channels_for_topology(active) is None
+    assert topology_supports_shm_ring(active) is False
+
+
+def test_ring_stereo_program_channels_agrees_with_the_ring_a_declaration():
+    """One number, reached from the topology side and from the wire side.
+
+    ``RING_STEREO_PROGRAM_CHANNELS`` (this module) and ``RING_A_CHANNELS``
+    (jasper.fanin_coupling) are the same fact — the program upstream of
+    CamillaDSP is stereo — declared where each side needs it. Pin them equal so
+    a change to one is a failing test, not a shear on the wire.
+    """
+    from jasper.fanin_coupling import RING_A_CHANNELS
+
+    assert RING_STEREO_PROGRAM_CHANNELS == RING_A_CHANNELS
 
 
 # --- DEFECT 2: the SHIPPED-DEFAULT box must be ring-eligible ------------------

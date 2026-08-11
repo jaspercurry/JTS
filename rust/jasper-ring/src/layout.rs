@@ -27,9 +27,13 @@ pub const VERSION: u32 = 1;
 /// mmap base is page-aligned, so every atomic field is naturally aligned.
 pub const HEADER_BYTES: usize = 128;
 
-/// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE). Chosen
-/// because it matches what CamillaDSP emits on its ALSA playback lane today
-/// (`DEFAULT_PLAYBACK_FORMAT="S16_LE"`), so the reader copy is conversion-free.
+/// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE). The
+/// ring wire ships this format because `resolve_ring_wire` (the Python
+/// control plane) holds it narrow by policy — NOT because it matches the
+/// box's general ALSA playback lane, which is wide
+/// (`DEFAULT_PLAYBACK_FORMAT = "S32_LE"` since the wide-output-path program).
+/// The narrow peer it does agree with is the pipe/File sink
+/// (`DEFAULT_PIPE_SINK_FORMAT = "S16_LE"`).
 pub const SAMPLE_FORMAT_S16LE: u32 = 1;
 
 /// `sample_format` = 2: interleaved signed 32-bit little-endian (S32LE).

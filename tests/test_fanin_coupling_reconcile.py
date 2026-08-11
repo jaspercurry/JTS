@@ -927,8 +927,8 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
 
     real = coupling.capture_kwargs_for_coupling
 
-    def broken(raw):
-        kwargs = dict(real(raw))
+    def broken(raw, *, topology=None):
+        kwargs = dict(real(raw, topology=topology))
         if not kwargs:
             return kwargs
         if playback_format is None:

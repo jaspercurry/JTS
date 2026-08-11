@@ -13,9 +13,45 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 from jasper.cli.doctor import audio_runtime as audio
+
+# A minimal but COMPLETE two-block conf.d: both PCM names resolve, and neither
+# declares `format`/`channels`, so the ioplug's own absent-key defaults
+# (2ch/S16_LE) answer both. Needed because the probe now reads its wire off
+# THIS text (`_jts_ring_probe_wire` sources `ring_conf_format`/
+# `ring_conf_channels`, not the resolver) — a stub declaring only
+# `jts_ring_capture` left `jts_ring_playback` indeterminate.
+_VALID_RING_CONF = (
+    "pcm.jts_ring_capture {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/program.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
+    "\n"
+    "pcm.jts_ring_playback {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/content.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
+)
+
+
+def _stage_ring_conf(monkeypatch, tmp_path, text=_VALID_RING_CONF):
+    """Point `_JTS_RING_CONF_D` at a tmp conf.d declaring both PCM blocks.
+
+    Standalone helper for the probe-mechanics tests below, which don't stage
+    the other P1 assets via `_stage_assets` but still need a readable conf.d
+    now that the probe's wire lookup reads one.
+    """
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(conf))
+    return conf
 
 
 def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
@@ -27,7 +63,7 @@ def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
         so_path.write_bytes(b"\x7fELF fake so")
     conf_path = tmp_path / "60-jts-ring.conf"
     if conf:
-        conf_path.write_text("pcm.jts_ring_capture { type jts_ring }\n")
+        conf_path.write_text(_VALID_RING_CONF, encoding="utf-8")
     shm_dir = tmp_path / "jts-ring"
     if shm:
         shm_dir.mkdir()
@@ -139,7 +175,8 @@ def test_fail_names_the_failing_pcm(monkeypatch, tmp_path):
 # --- _jts_ring_pcm_resolves (the open-probe helper) -------------------
 
 
-def test_probe_ok_on_zero_exit(monkeypatch):
+def test_probe_ok_on_zero_exit(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(
         audio, "_run",
@@ -149,7 +186,8 @@ def test_probe_ok_on_zero_exit(monkeypatch):
     assert ok is True and detail == "resolved"
 
 
-def test_probe_reports_stderr_on_nonzero_exit(monkeypatch):
+def test_probe_reports_stderr_on_nonzero_exit(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(
         audio, "_run",
@@ -169,7 +207,24 @@ def test_probe_fails_closed_when_tool_missing(monkeypatch):
     assert "not found" in detail
 
 
-def test_probe_reports_hang_on_timeout(monkeypatch):
+def test_probe_fails_closed_when_conf_wire_is_indeterminate(monkeypatch, tmp_path):
+    # No conf.d staged at all: `_JTS_RING_CONF_D` still points at its
+    # production default, which is unreadable in the test environment. The
+    # probe must refuse with a crisp reason rather than pass `None` to ALSA.
+    monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
+
+    def _must_not_be_called(cmd, timeout=5.0):  # pragma: no cover - must never run
+        raise AssertionError("probe ran with an indeterminate wire")
+
+    monkeypatch.setattr(audio, "_run", _must_not_be_called)
+    ok, detail = audio._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is False
+    assert "indeterminate" in detail
+
+
+def test_probe_reports_hang_on_timeout(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
 
     def _timeout(cmd, timeout=5.0):
@@ -181,7 +236,8 @@ def test_probe_reports_hang_on_timeout(monkeypatch):
     assert "hung" in detail
 
 
-def test_probe_uses_devnull_for_capture_and_devzero_for_playback(monkeypatch):
+def test_probe_uses_devnull_for_capture_and_devzero_for_playback(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
     seen = {}
 
@@ -210,6 +266,10 @@ def _probe_that_creates_the_ring(monkeypatch, tmp_path):
     shm_dir = tmp_path / "jts-ring"
     shm_dir.mkdir(exist_ok=True)  # _stage_assets may have created it already
     monkeypatch.setattr(audio, "_JTS_RING_SHM_DIR", str(shm_dir))
+    # Re-stage the conf.d even when _stage_assets already did (same content,
+    # so this is a no-op then): the probe now reads its wire off the conf.d
+    # text, and the standalone callers below never call _stage_assets at all.
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
 
     def _run_creates(cmd, timeout=5.0):
@@ -269,6 +329,7 @@ def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
     shm_dir = tmp_path / "jts-ring"
     shm_dir.mkdir()
     monkeypatch.setattr(audio, "_JTS_RING_SHM_DIR", str(shm_dir))
+    _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
     ring = shm_dir / "program.ring"
 
@@ -354,3 +415,100 @@ def test_inert_missing_asset_stays_warn(monkeypatch, tmp_path):
     res = audio.check_ring_platform_assets()
     assert res.status == "warn"
     assert "inert" in res.detail
+
+
+# --- The open-probe asks for what the CONF.D DECLARES, never the resolver ----
+
+
+def test_probe_sources_the_conf_declared_wire_not_the_resolver(monkeypatch, tmp_path):
+    """The ioplug advertises EXACTLY the conf-declared format/channels as its
+    hardware constraint, so the probe must read `ring_conf_format` /
+    `ring_conf_channels` off THIS box's conf.d — never `resolve_ring_wire`.
+    The two answer different questions ("what does the file say" vs. "what
+    SHOULD this box declare") that are independently gated: conf rendering and
+    ring-coupling arm are separate gates, so a box can carry a per-box-rendered
+    Ring B conf.d while still sitting coupling-inert. Stage a conf.d rendered
+    wide (S32_LE, Ring B 6ch) and make the resolver explode if touched; the
+    probe argv must still follow the conf.d, per PCM."""
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n"
+        "    type jts_ring\n"
+        '    path "/dev/shm/jts-ring/program.ring"\n'
+        "    period_frames 128\n"
+        "    n_slots 2\n"
+        "    format S32_LE\n"
+        "}\n"
+        "\n"
+        "pcm.jts_ring_playback {\n"
+        "    type jts_ring\n"
+        '    path "/dev/shm/jts-ring/content.ring"\n'
+        "    period_frames 128\n"
+        "    n_slots 2\n"
+        "    format S32_LE\n"
+        "    channels 6\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio.shutil, "which", lambda t: f"/usr/bin/{t}")
+
+    import jasper.fanin_coupling as fc
+
+    def _must_not_be_called(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError(
+            "the probe must never consult resolve_ring_wire — its answer is "
+            "independently gated from what the conf.d actually declares"
+        )
+
+    monkeypatch.setattr(fc, "resolve_ring_wire", _must_not_be_called)
+
+    seen = {}
+
+    def _capture_cmd(cmd, timeout=5.0):
+        seen[cmd[2]] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(audio, "_run", _capture_cmd)
+
+    audio._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    audio._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+
+    ring_a = seen["jts_ring_capture"]
+    ring_b = seen["jts_ring_playback"]
+    assert ring_a[ring_a.index("-f") + 1] == "S32_LE"
+    assert ring_b[ring_b.index("-f") + 1] == "S32_LE"
+    # Ring A declares no `channels` -> the ioplug default (2); Ring B's
+    # explicit `channels 6` line must be honored.
+    assert ring_a[ring_a.index("-c") + 1] == "2"
+    assert ring_b[ring_b.index("-c") + 1] == "6"
+
+
+def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
+    """DORMANCY: on the REAL shipped (never-rendered) conf.d, the probe still
+    asks for 2 channels / S16_LE — reached via the ioplug's absent-key
+    default (both parsers' `absent=` contract), not a literal and not the
+    resolver. Cross-checked against `resolve_ring_wire`'s answer for the
+    shipped topology, which still coincides today (a drift between the two
+    independent policies would show up here as a failing cross-check, not as
+    the probe's own source)."""
+    from jasper.fanin_coupling import resolve_ring_wire
+
+    shipped = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_bytes(shipped.read_bytes())
+    monkeypatch.setattr(audio, "_JTS_RING_CONF_D", str(conf))
+
+    wire = resolve_ring_wire()
+    for pcm in ("jts_ring_capture", "jts_ring_playback"):
+        channels, sample_format = audio._jts_ring_probe_wire(pcm)
+        assert channels == 2
+        assert sample_format == "S16_LE"
+    assert (wire.sample_format, wire.ring_a_channels, wire.ring_b_channels) == (
+        "S16_LE",
+        2,
+        2,
+    )

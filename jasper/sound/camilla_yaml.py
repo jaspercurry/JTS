@@ -545,15 +545,23 @@ def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
         RING_PLAYBACK_DEVICE,
-        RING_WIRE_FORMAT,
+        resolve_ring_wire,
     )
+
+    # The wire comes from the same resolver ``capture_kwargs_for_coupling``
+    # reads, so the seeded startup graph and a live ``/sound/`` re-emit cannot
+    # declare different widths for the same box. Resolved with NO topology —
+    # this emitter is the SOLO-STEREO flat graph by construction (a roleful box
+    # is seeded from the driver-domain emitters instead), so it has no
+    # per-topology width to ask for.
+    wire = resolve_ring_wire()
 
     return emit_sound_config(
         SoundProfile(enabled=False),
         capture_device=RING_CAPTURE_DEVICE,
-        capture_format=RING_WIRE_FORMAT,
+        capture_format=wire.sample_format,
         playback_device=RING_PLAYBACK_DEVICE,
-        playback_format=RING_WIRE_FORMAT,
+        playback_format=wire.sample_format,
         chunksize=RING_CAMILLA_CHUNKSIZE,
         target_level=RING_CAMILLA_TARGET_LEVEL,
         queuelimit=RING_CAMILLA_QUEUELIMIT,

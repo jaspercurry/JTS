@@ -97,9 +97,10 @@ the paired sink; until then the invariant the registry enforces is the narrower
 one — no composite declares a width its transport refuses.
 
 **Ingress** widens whatever arrives narrow: the SHM ring (`S16_LE` on every box
-today because `jasper.fanin_coupling.content_lane_format_for_coupling` forces
-that wire on the `shm_ring` coupling — since ring v2's R1 the *layout* accepts
-`S32LE` too, so the pin is the resolver's, not
+today because `jasper.fanin_coupling.resolve_ring_wire` holds that wire narrow
+by policy — `content_lane_format_for_coupling` only delegates to it for the
+`shm_ring` coupling — since ring v2's R1 the *layout* accepts `S32LE` too, so
+the pin is the resolver's, not
 `jasper_ring::Geometry::validate_self`'s), the snapclient round-trip
 FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
 TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
@@ -1797,6 +1798,16 @@ datum: how much assistant audio was actually heard.
 Newest first. Each entry names what that pass re-checked; a claim not
 re-touched since carries forward from its most recent entry below.
 
+- **2026-08-10 (one-clause truth-up, ring v2 R5a's fix round —
+  [#2314](https://github.com/jaspercurry/JTS/pull/2314)).** The Ingress
+  paragraph attributed the SHM ring's `S16_LE` pin to
+  `jasper.fanin_coupling.content_lane_format_for_coupling`. R5a introduced
+  `resolve_ring_wire` as the one resolution every declaring end reads;
+  `content_lane_format_for_coupling` (via `capture_kwargs_for_coupling`) now
+  delegates to it rather than computing the format itself, so the pin is
+  `resolve_ring_wire`'s — re-verified against `jasper/fanin_coupling.py`.
+  **Nothing else in this pass**; the footer date below is the last
+  FULL-document pass and is deliberately not bumped.
 - **2026-08-10 (one-clause truth-up, ring v2 R4's fix round —
   [#2310](https://github.com/jaspercurry/JTS/pull/2310)).** The Ingress
   paragraph attributed the SHM ring's `S16_LE` wire to

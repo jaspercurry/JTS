@@ -95,7 +95,6 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
-    RING_WIRE_FORMAT,
     coupling_value_removed,
     resolve_coupling,
     resolve_outputd_content_bridge,
@@ -1377,16 +1376,19 @@ def ring_edge_width_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for wire WIDTH (D5, wide-output-path program).
 
     Checked BEFORE arming (cheapest gate — an in-process contract check with no
-    I/O — so it runs first). The SHM ring is pinned to
-    :data:`RING_WIRE_FORMAT` (S16_LE) until ring v2 (S32 slots + a matching
-    ioplug/Rust rewrite; ``captures/PLAN-wide-output-path-2026-08-07.md`` D5),
-    which ``jasper_ring::Geometry::validate_self`` hard-enforces at attach.
+    I/O — so it runs first). The SHM ring's wire format is whatever
+    ``jasper.fanin_coupling.resolve_ring_wire`` resolves for the box, which is
+    ``RING_WIRE_FORMAT`` (S16_LE) on every box today. The ring LAYOUT admits
+    S16LE and S32LE (``jasper_ring::Geometry::validate_self``), so the narrow
+    wire is a resolver decision, not a structural one — the layout will not
+    catch a box whose ends disagree within its accept-set, which is why the
+    declaring ends are compared rather than assumed.
 
     WHAT MAKES ARMING LEGAL, and therefore what this gate verifies. A ring-armed
     box does NOT run the box-wide program-lane width: arming installs the
     coupling's own CamillaDSP kwargs
     (``jasper.fanin_coupling.capture_kwargs_for_coupling``), which FORCE both
-    ring ends to ``RING_WIRE_FORMAT``, and the audio-hardware reconciler emits
+    ring ends to the resolved wire format, and the audio-hardware reconciler emits
     outputd's matching ``JASPER_OUTPUTD_CONTENT_FORMAT`` from the same source
     (``content_lane_format_for_coupling``). The ring is coherently narrow
     end-to-end, so a wide program-lane default does not endanger it. This gate's
@@ -1414,25 +1416,29 @@ def ring_edge_width_ready() -> tuple[bool, str]:
     does not independently verify — a claim that would stop being reliably
     true once a third live format exists.
     """
-    from jasper.fanin_coupling import content_lane_format_for_coupling
+    from jasper.fanin_coupling import (
+        content_lane_format_for_coupling,
+        resolve_ring_wire,
+    )
 
     # The COUNTERFACTUAL the gate is asked: "if we arm shm_ring, what width
     # would the emitted config carry?" Passed explicitly rather than read from
     # the persisted coupling, which is still loopback at preflight time — and
     # which keeps this gate free of I/O.
     emitted = content_lane_format_for_coupling(COUPLING_SHM_RING)
-    if emitted == RING_WIRE_FORMAT:
+    resolved = resolve_ring_wire().sample_format
+    if emitted == resolved:
         return True, (
             f"the shm_ring coupling forces the emitted program lane to the "
-            f"ring's own wire format ({RING_WIRE_FORMAT}), so arming stays "
+            f"ring's resolved wire format ({resolved}), so arming stays "
             "coherent end-to-end"
         )
     return False, (
-        f"the shm_ring coupling would emit a {emitted} program lane, but the "
-        f"SHM ring carries {RING_WIRE_FORMAT} only until ring v2 — arming "
+        f"the shm_ring coupling would emit a {emitted} program lane, but this "
+        f"box's ring wire resolves to {resolved} — arming "
         "would mis-transcode every sample. capture_kwargs_for_coupling "
         "(jasper.fanin_coupling) must force playback_format to "
-        "RING_WIRE_FORMAT; keeping loopback until it does."
+        "resolve_ring_wire's sample_format; keeping loopback until it does."
     )
 
 
@@ -1540,8 +1546,10 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # instead of an opaque refusal.
     return False, (
         "saved output topology is not ring-eligible (shm_ring is a full-range "
-        "stereo single-sink coupling; roleful/protected/subwoofer, composite "
-        "dual-DAC, and explicit-mono topologies are excluded until ring v2 / P8). "
+        "stereo single-sink coupling; roleful/protected/subwoofer topologies "
+        "need a per-driver crossover the ring cannot carry, composite dual-DAC "
+        "is excluded pending P8b (composite ring + bonded ingress), and "
+        "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
         "Keeping the coupling on loopback. If this box is actually a plain stereo "
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "
         "`jasper-output-topology-reset` to re-derive a clean passive topology from "
@@ -2043,7 +2051,7 @@ def _arm_ring(
     PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
     all pass): (0) wire-width coherence (``ring_edge_width_ready`` — D5,
     wide-output-path program: the shm_ring coupling must still FORCE the emitted
-    program lane to the ring's fixed S16 wire format, or arming would silently
+    program lane to the ring's RESOLVED wire format, or arming would silently
     mis-transcode);
     (1) P1 ring assets present (``ring_assets_ready`` — a half-installed
     ring platform would strand the realtime path); (2) topology ring-eligible
