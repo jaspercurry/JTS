@@ -514,6 +514,15 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     checks one shared way to inspect samplerate/chunksize/target level
     and ALSA endpoints. Ambiguous duplicate ``devices`` or direct
     ``volume_limit`` keys omit the limit so safety callers fail closed.
+
+    ``capture_format`` / ``playback_format`` join ``*_device`` / ``*_channels``
+    in the per-lane subset because the ring's width gate
+    (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) has to judge
+    device, channels and format off ONE snapshot of the loaded graph — reading
+    the same file three times through the single-field reader would let the
+    three answers come from three different revisions of it. Keys are omitted
+    entirely when the block declares no such field, exactly like the others, so
+    every existing caller is unaffected.
     """
 
     text = textwrap.dedent(text)
@@ -606,6 +615,10 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
             if key == "device":
                 result[f"{nested}_device"] = value
                 continue
+            if key == "format":
+                if value:
+                    result[f"{nested}_format"] = value
+                continue
             if key == "channels":
                 try:
                     result[f"{nested}_channels"] = int(value)
@@ -636,8 +649,11 @@ def read_camilla_device_field(
     Tiny indent-aware scan (no YAML dep): find the 2-space device block, return
     its first 4-space ``field:`` value with quotes stripped. Deliberately
     narrower than :func:`parse_camilla_devices_config`, which returns a fixed
-    observability subset — this reads an arbitrary named field (``format``,
-    ``type``, ``filename``) that no fixed subset has to grow a key for.
+    observability subset — this reads an arbitrary named field (``type``,
+    ``filename``) that no fixed subset has to grow a key for. One field per
+    call is one FILE READ per call, so a caller that needs several fields of
+    one graph revision wants the subset parser over a single snapshot instead
+    (which is why ``format`` moved into that subset).
 
     The SSOT for that scan: ``jasper.cli.doctor.audio_runtime._loaded_device_field``
     delegates here, and the wiring test that pins the shipped flat-cutover seed

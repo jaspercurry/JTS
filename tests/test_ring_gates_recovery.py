@@ -17,7 +17,7 @@ Three failure walks the coupling reconciler could not previously get out of:
   the statefile still named the ring config, so the next start came up on the
   ring again.
 
-Plus the four-ends wire gate that decides the first of those before an arm.
+Plus the every-end wire gate that decides the first of those before an arm.
 """
 
 from __future__ import annotations
@@ -889,4 +889,347 @@ def test_wire_gate_passes_on_the_shipped_wire(monkeypatch):
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
     assert ok is True, detail
-    assert "all declaring ends state one ring wire" in detail
+    assert "declaring ends state one ring wire" in detail
+    # An unarmed fleet box loads a NON-ring graph, so the graph is not one of
+    # the ends — and the message says which ends it actually had, by name.
+    assert "fan-in (Ring A writer)" in detail
+    assert "outputd (Ring B reader)" in detail
+    assert "loaded CamillaDSP graph was NOT one of them" in detail
+
+
+# --- the LOADED graph as a declaring end (defect B) --------------------------
+
+
+def _mono_two_way_topology():
+    """The jts3 shape: a roleful mono 2-way on a single coherent 8-ch DAC.
+
+    Built from the suite's shared fixture rather than re-declared here, so the
+    active-ring width this gate is held to is the same one every other
+    active-speaker test means by "the bench box".
+    """
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return mono_output_topology()
+
+
+def _ring_graph_text(*, device, sample_format, channels=2):
+    return (
+        "---\n"
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 128\n"
+        "  target_level: 128\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        "    channels: 2\n"
+        '    device: "plug:jasper_capture"\n'
+        "    format: S32_LE\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        f"    channels: {channels}\n"
+        f'    device: "{device}"\n'
+        f"    format: {sample_format}\n"
+    )
+
+
+def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
+    monkeypatch, tmp_path
+):
+    """THE DEFECT-B SHAPE, verbatim: resolver says S16_LE, the loaded ACTIVE-ring
+    graph says S32_LE, every env end agrees.
+
+    On jts3 (2026-08-11, ``captures/r7b-jts3-arm2-20260811T132227Z`` files 12 and
+    13) this exact box returned ``(True, 'all declaring ends state one ring wire
+    (S16_LE, Ring A 2ch, Ring B 2ch)')`` — the gate proved two of the three ends
+    that mattered and reported three, so step 3 would have attached CamillaDSP to
+    the ring at ``S32_LE`` against an ioplug opening at its ``S16_LE`` default.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT,
+        RING_WIRE_FORMAT_WIDE,
+    )
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT_WIDE,
+        ),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    # The gate reads the graph itself when no snapshot is handed to it, so this
+    # walks the same path the arm takes.
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+
+    assert ok is False, detail
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+    assert f"declares format {RING_WIRE_FORMAT_WIDE}" in detail
+    assert str(config) in detail, "the refusal must name the file to fix"
+
+    # CONTROL: the same box with the resolver's own answer in the graph passes,
+    # and the ok message now COUNTS the graph instead of excusing it. Without
+    # this, a gate that refused every ring graph would satisfy the assertions
+    # above while blocking every legitimate arm.
+    config.write_text(
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE, sample_format=RING_WIRE_FORMAT
+        ),
+        encoding="utf-8",
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is True, detail
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+    assert "was NOT one of them" not in detail
+
+
+def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
+    monkeypatch, tmp_path
+):
+    """The CHANNELS axis of the same end, held to the ACTIVE ring's width.
+
+    The active ring's width is a THIRD number — not Ring A's stereo program and
+    not Ring B's — so a graph declaring 4 post-crossover outputs on a box whose
+    topology drives 2 must be refused against ``ring_active_channels``, never
+    quietly compared to a stereo 2 that happens to match.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_WIRE_FORMAT
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT,
+            channels=4,
+        ),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+
+    assert ok is False, detail
+    assert "declares 4 channels, expected 2" in detail
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+
+
+def _three_way_topology():
+    """A roleful mono 3-WAY: the one shape where the ring widths disagree.
+
+    Ring B resolves 2 (a roleful box has no stereo ring, so the wire falls back
+    to the shipped stereo declaration) while the ACTIVE ring resolves 3. Every
+    other fixture in this campaign is a 2-way, where both are 2 — so every pin
+    written on one of those passes just as well against code that reads the
+    wrong ring's width. This is the fixture that can tell them apart.
+    """
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return mono_output_topology(mode="active_3_way")
+
+
+def _stage_graph(monkeypatch, tmp_path, text):
+    """Point the statefile at a graph the gate will read on its own."""
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return config
+
+
+def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
+    monkeypatch, tmp_path
+):
+    """THE ONE COINCIDENCE THIS CAMPAIGN KEEPS RESTING ON: active width == 2.
+
+    ``_wire_channels_for_ring`` must answer ``ring_active_channels`` for the
+    ACTIVE ring, never ``ring_b_channels``. On every 2-way fixture in this suite
+    those are both 2, so a mutation swapping them survives the entire file — it
+    did survive 306 tests when the resilience lens ran it. A 3-way box is where
+    they separate: Ring B resolves 2 (a roleful box has no stereo ring), the
+    active ring resolves 3.
+
+    Both directions, because either alone is satisfiable by the wrong constant:
+    the CORRECT graph (3 outputs) must be accepted, and a graph declaring Ring
+    B's 2 must be REFUSED.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT,
+        resolve_ring_wire,
+    )
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _three_way_topology)
+
+    wire = resolve_ring_wire(_three_way_topology())
+    assert wire.ring_active_channels == 3 and wire.ring_b_channels == 2, (
+        "this fixture stopped discriminating the two ring widths; the test below "
+        "would pass against code reading either one"
+    )
+
+    # The box's OWN active width is accepted.
+    _stage_graph(
+        monkeypatch,
+        tmp_path,
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT,
+            channels=3,
+        ),
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is True, detail
+
+    # Ring B's width is NOT the active ring's, and stating it is refused —
+    # naming the active end and both numbers.
+    _stage_graph(
+        monkeypatch,
+        tmp_path,
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT,
+            channels=2,
+        ),
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is False, detail
+    assert "declares 2 channels, expected 3" in detail
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+
+
+def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
+    """The dormancy control for the graph end.
+
+    A loaded graph on the ALSA active lane declares S32_LE for a transport that
+    is not the ring. Holding it to the ring's wire would refuse the arm on every
+    box that has not run step 1 yet — the PR-1 defect shape, re-introduced from
+    the other side.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(
+        _ring_graph_text(
+            device="outputd_active_content_playback", sample_format="S32_LE"
+        ),
+        encoding="utf-8",
+    )
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+
+    assert ok is True, detail
+    assert "it names no ring PCM on either lane" in detail
+
+
+def test_a_declared_wide_wire_moves_the_resolver_and_the_refusal(
+    monkeypatch, tmp_path
+):
+    """The R6/R7 activation input, walked: one env key moves the whole answer.
+
+    Before 2026-08-11 ``resolve_ring_wire`` pinned the format narrow with no
+    input, so declaring the wide wire to ``jasper-fanin`` moved fan-in and
+    nothing else — the arm was unreachable rather than refused. Now the resolver
+    reads the same key the daemon does, so the box resolves WIDE and the refusal
+    moves to the end that has not caught up: the still-narrow conf.d, whose
+    remedy is the hardware reconciler's render.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        RING_WIRE_FORMAT_ENV_VAR,
+        RING_WIRE_FORMAT_WIDE,
+        resolve_ring_wire,
+    )
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+
+    assert resolve_ring_wire().sample_format == RING_WIRE_FORMAT_WIDE
+
+    ok, detail = ring_edge_width_ready(
+        fanin_text=fanin_env.read_text(encoding="utf-8"), outputd_text=""
+    )
+    assert ok is False, detail
+    assert f"resolves to {RING_WIRE_FORMAT_WIDE}" in detail
+    # fan-in agrees (it IS the input); the shipped conf.d does not.
+    assert "fan-in (Ring A writer)" not in detail
+    assert "conf.d jts_ring_capture" in detail
+
+
+def test_an_unparseable_declared_wire_refuses_instead_of_raising(
+    monkeypatch, tmp_path
+):
+    """A typo must REFUSE the arm, not traceback out of it.
+
+    ``resolve_ring_wire`` fails loud on a token neither language recognizes —
+    correct for an emitter, and the same verdict ``jasper-fanin`` reaches before
+    parking. But the arm has already written the ring env by the time the
+    preflights run, so an uncaught exception here would skip the snapshot restore
+    that makes a refused arm non-destructive: the box would be left holding the
+    partial flip. Both wire-reading gates resolve through ``resolve_wire_for_gate``
+    for exactly that reason.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s16le\n", encoding="utf-8")
+    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+
+    for gate in (cr.ring_edge_width_ready, cr.ring_wire_caps_ready):
+        ok, detail = gate()
+        assert ok is False, f"{gate.__name__} did not refuse"
+        assert RING_WIRE_FORMAT_ENV_VAR in detail
+        assert "keeping loopback" in detail
+
+
+def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_path):
+    """An unreadable graph costs the MESSAGE its claim, never the arm its verdict.
+
+    A fresh box has no statefile at all, so refusing here would refuse the
+    unattended pass on every new speaker. What must not happen is the gate
+    reporting agreement it never checked — which is defect B in one sentence.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+
+    assert ok is True, detail
+    assert "was NOT one of them" in detail
+    assert "is unreadable" in detail
