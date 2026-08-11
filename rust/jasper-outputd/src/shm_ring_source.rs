@@ -213,10 +213,13 @@ impl ShmRingSource {
     /// same family as [`widen_period`]'s message — rather than a `debug_assert`
     /// plus two different release behaviours. CI builds this crate with
     /// `cargo test --release`, where a debug assertion is compiled out; on the
-    /// wide arm the byte view is derived from `out` itself, so an under-sized
-    /// destination there would have been silently UNDER-FILLED (the crate's
-    /// `copy_slot_bytes` clamps to the destination) — a short period at the
-    /// speaker, with every counter still reporting a filled slot.
+    /// wide arm the byte view is derived from `out` itself, so a mismatched
+    /// destination there would have been silently wrong either way, with
+    /// every counter still reporting a filled slot: the crate's
+    /// `copy_slot_bytes` clamps to the shorter side, so an over-sized
+    /// destination would be silently under-filled with a stale tail and an
+    /// under-sized one would be fully filled from a truncated slot. Both
+    /// directions are now refused by the guard above.
     ///
     /// Both wires land on the same i32 spine, and neither adds a conversion:
     /// - **S16LE** — consume into the narrow scratch, then widen by `<< 16`
