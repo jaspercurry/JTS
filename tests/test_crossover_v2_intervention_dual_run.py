@@ -905,6 +905,11 @@ def test_only_the_trim_derived_lines_differ_when_the_policy_fires(monkeypatch):
     legacy_fields = dict(next(f for e, f in legacy_journal if e == rejected))
     assert legacy_fields["committed"] == "resolved"
     assert pure_fields["committed"] == "anchored"
+    # Coupled to the decision rather than independently authored: the record
+    # must report what the decision committed, not a string that agrees with it
+    # by inspection.
+    _outcome, plan = _pure(sections)
+    assert pure_fields["committed"] == plan.trim.committed_side
     assert pure_fields["fallback_trim_db"] == pure_fields["anchored_trim_db"]
     assert legacy_fields["fallback_trim_db"] == legacy_fields["resolved_trim_db"]
     # Added, not changed: legacy recorded neither.
@@ -1284,6 +1289,14 @@ def test_the_trim_policy_table(
     )
     assert decision.strategy is expected_strategy
     assert decision.committed_db["tweeter"] == pytest.approx(expected_tweeter)
+    # ``committed_side`` is what the journal's ``committed`` field reads, so it
+    # is pinned over BOTH outcomes here rather than only where the record is
+    # emitted — the record only ever carries the anchored case, which is why a
+    # literal there was indistinguishable from the derivation under mutation.
+    assert decision.committed_side == (
+        "anchored" if decision.committed_db == dict(anchored) else "resolved"
+    )
+    assert decision.committed_side in ("anchored", "resolved")
     assert decision.anchor_drift_db == pytest.approx(drift_db)
     assert decision.beyond_sanity_margin is (
         drift_db > iv.LINEARIZATION_TRIM_SANITY_MARGIN_DB
