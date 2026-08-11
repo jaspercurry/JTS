@@ -12,8 +12,13 @@ owner of their own and were answered from six places on
 * **How loud may a driver be driven?**  :func:`back_off_gain` — the one clamp
   that folds a per-driver digital gain through the session volume and holds it
   under that driver's cap.
-* **What does each phase play?**  The three composers below, which are the only
-  callers of ``jasper.audio_measurement.program``'s builders in the v2 flow.
+* **What does each phase play?**  The three composers below, which are what the
+  speaker actually plays.  They are not the flow's only callers of
+  ``jasper.audio_measurement.program``'s builders: ``build_v2_capture_plan`` and
+  ``build_v2_verify_capture_plan`` compose their own NOMINAL programs to derive
+  the phone's recording window.  That second pair is the whole reason
+  :data:`COURTESY_PRELUDE_ENABLED` is one shared constant rather than a default
+  in each place — see its own note below.
 * **Which composed program does a phase get?**  :func:`program_for_phase`.
 
 **This module is hearing-safety territory, and its invariants are stated so
@@ -87,20 +92,25 @@ GAIN_CAP_BACKOFF_DB = 0.01
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
-#: Every v2 program plays the spoken courtesy prelude.
+#: Every v2 program plays the spoken courtesy prelude (issue #1677): default ON,
+#: no env/config switch.
 #:
-#: The household hears what is about to happen before it happens (the 2026-07-14
-#: bench run started a sweep while music was playing, forcing a void + re-run)
-#: plus the house "no-silent-failure" / "no speculative flexibility" rules both
-#: point the same way — every household benefits from the warning, and there is
-#: no stated case for wanting it off. Every ``build_v2_capture_plan`` /
-#: ``build_v2_verify_capture_plan`` (phone duration budget) and every composer
-#: below (actual playback) passes this SAME constant, so the two can never
-#: disagree about whether the prelude is present — the phone would otherwise
-#: budget a shorter recording window than the program it is actually capturing.
-#: ``jasper.audio_measurement.program``'s own composers default
+#: The owner's live-incident report (a headless session's first sweep started
+#: while music was playing, forcing a void + re-run) plus the house
+#: "no-silent-failure" / "no speculative flexibility" rules both point the same
+#: way — every household benefits from the warning, and there is no stated case
+#: for wanting it off.
+#:
+#: **Why it is one shared constant rather than a default in each place.** Every
+#: ``build_v2_capture_plan`` / ``build_v2_verify_capture_plan`` call (the phone's
+#: DURATION BUDGET) and every composer below (the actual playback) passes this
+#: SAME object, so the two can never disagree about whether the prelude is
+#: present — the phone would otherwise budget a shorter recording window than
+#: the program it is actually capturing (see the ``+3.6 s`` proof in
+#: ``tests/test_crossover_v2_conductor.py``, mirroring PR-A's ``+15 s`` MEASURE
+#: lengthening). ``jasper.audio_measurement.program``'s own composers default
 #: ``courtesy_prelude`` to ``False`` so every OTHER caller (tests, future tools)
-#: keeps today's byte-identical shape unless it opts in explicitly.
+#: keeps its byte-identical shape unless it opts in explicitly.
 COURTESY_PRELUDE_ENABLED = True
 
 

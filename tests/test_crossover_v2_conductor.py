@@ -6081,7 +6081,8 @@ def test_wide_is_derived_from_the_offset_not_hand_set():
 #
 # The phone's recording window (CapturePlanEntry.duration_ms) is derived from
 # build_v2_capture_plan's OWN nominal composition, entirely separate from the
-# conductor's real _compose_*_program calls that actually play. Both must
+# real playback composition (``crossover_v2.programs``'s SessionExcitation
+# methods, reached through the conductor's ``_excitation``). Both must
 # enable the prelude via the SAME COURTESY_PRELUDE_ENABLED constant, or the
 # phone would stop recording before the real (longer) program finishes --
 # mirrors the existing +15 s MEASURE-lengthening proof from sweep-composition
@@ -6189,7 +6190,7 @@ def test_verify_only_capture_plan_duration_includes_courtesy_prelude():
 def test_conductor_composed_programs_include_courtesy_tone_by_default():
     """The conductor's REAL playback composition (not the nominal planning
     path above) also carries the prelude -- COURTESY_PRELUDE_ENABLED wired
-    into every _compose_*_program call."""
+    into every ``SessionExcitation`` composer."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {

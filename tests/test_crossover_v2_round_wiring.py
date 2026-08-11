@@ -1542,7 +1542,7 @@ def test_every_restore_the_table_can_ask_for_has_its_own_household_code():
             )
 
 
-def test_every_refusal_kind_the_coordinator_can_return_is_mapped():
+def test_every_refusal_kind_the_coordinator_can_return_is_mapped(caplog):
     """C6. The catch-all must not answer for a kind nobody wired.
 
     ``REFUSAL_KINDS`` is the coordinator's own enumeration; the flow maps each
@@ -1550,17 +1550,40 @@ def test_every_refusal_kind_the_coordinator_can_return_is_mapped():
     through an ``else`` and wear ``correction_rollback_failed``'s sentence —
     telling a household their correction is still applied on evidence that says
     nothing of the kind.
+
+    **The journal is the assertion, not the verdict, and admitting why is the
+    point.** This pin's first version checked only that every kind produced
+    *some* refusal with *some* code — which an unmapped kind does too, because
+    the conservative fallback is still a refusal. It was the wrong-property
+    class that :func:`test_an_unbound_anchor_probe_fails_closed_QUIETLY` twenty
+    lines below documents, written twenty lines above it, in the same sitting.
+
+    So the completeness claim is asserted where completeness is actually
+    observable: **no kind may raise the unmapped event.** That guard cannot be
+    vacuous, because its sibling
+    (:func:`test_an_unrecognised_refusal_kind_is_loud_rather_than_silent`)
+    proves the event fires for a kind with no arm.
     """
     conductor = _bare_conductor()
 
-    for kind in sorted(coordinator.REFUSAL_KINDS):
-        refusal = coordinator.RoundRefusal(
-            kind=kind, cause=ADOPTION_MEASURED_REGRESSION,
-            rollback_anchor_available=True,
-        )
-        verdict = conductor._round_refusal_for(refusal)
-        assert verdict.accepted is False
-        assert verdict.code
+    with caplog.at_level("INFO"):
+        for kind in sorted(coordinator.REFUSAL_KINDS):
+            refusal = coordinator.RoundRefusal(
+                kind=kind, cause=ADOPTION_MEASURED_REGRESSION,
+                rollback_anchor_available=True,
+            )
+            verdict = conductor._round_refusal_for(refusal)
+            assert verdict.accepted is False
+            assert verdict.code
+
+    unmapped = [
+        r.getMessage() for r in caplog.records
+        if "crossover_v2_round_refusal_kind_unmapped" in r.getMessage()
+    ]
+    assert unmapped == [], (
+        "a declared refusal kind reached the fallback instead of its own arm: "
+        f"{unmapped}"
+    )
 
 
 def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
