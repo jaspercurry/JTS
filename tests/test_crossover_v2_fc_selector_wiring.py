@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import replace
@@ -20,8 +21,20 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection,
+    crossover_response_complex,
+)
+from jasper.active_speaker.crossover_v2 import fc_sweep
 from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+# From the kernel that OWNS them rather than through the flow's namespace: the
+# flow stopped reading these when #2291 Phase 5a-v(b) moved the sweep, and
+# keeping an import alive purely as a door is what that phase's own note
+# declines to do.
+from jasper.active_speaker.fc_selector import (
+    EVAL_REFUSED_BUDGET,
+    EVAL_REFUSED_UNFITTABLE,
+)
 from tests.test_crossover_v2_conductor import (
     FC_HZ,
     FakeSeams,
@@ -288,7 +301,7 @@ def test_the_operator_divides_out_the_protection_filter_the_graph_emitted():
         FakeSeams(), measurement_protection_sections_by_role=protection,
     ))
     bare = _operators(_selector_conductor(FakeSeams()))
-    p_response = flow.crossover_response_complex(grid, protection["tweeter"])
+    p_response = crossover_response_complex(grid, protection["tweeter"])
 
     assert not np.allclose(guarded["tweeter"], bare["tweeter"]), (
         "the emitted protection filter is not reaching the operator at all"
@@ -320,7 +333,7 @@ def test_an_ineligible_session_refuses_candidates_without_calling_the_fit():
     assert calls == [], "the fit was called outside its own precondition"
     assert c._fc_evaluations, "the candidates must still be disclosed"
     assert all(
-        e.refusal == flow.EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
+        e.refusal == EVAL_REFUSED_UNFITTABLE for e in c._fc_evaluations
     )
 
 
@@ -462,6 +475,102 @@ def test_the_sweep_leaves_no_candidate_state_on_the_conductor():
         assert not hasattr(c, name), name
 
 
+def test_each_evaluation_retains_its_own_predicted_spec_report():
+    """The twin of the realized-level guard below, for the graded prediction.
+
+    **Why this needs a test of its own.** The spec report is not a value the
+    evaluation is handed — it is read back off the conductor AFTER the
+    candidate's own build has written it there, which makes the ORDER of two
+    statements the whole correctness argument. Reading it one line earlier
+    files the PREVIOUS candidate's grading beside this candidate's proposal:
+    the same cross-context leak #2291 exists to close, and the family the
+    2026-08-10 incident belongs to.
+
+    Nothing caught that before this test. Measured while writing it (#2291
+    Phase 5a-v(b)): moving the read above the build leaves the whole
+    ``test_crossover_v2_fc_selector_wiring`` / ``_fc_candidates`` /
+    ``_fc_selector`` / ``_priors`` set green, and shows up only as a 99-line
+    diff in the slice's dual run. That is exactly the shape a guard is for,
+    and it is why ``evaluate_candidate`` takes ``predicted_spec_report`` as a
+    CALLABLE rather than a value — a value cannot be read after the build.
+
+    Asserted against what each build actually wrote, not merely "present":
+    a sweep that stamped every evaluation with the same report, or with the
+    anchor's, satisfies a presence check completely.
+    """
+    fakes = _eligible_seams()
+    c = _selector_conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    written: list[tuple[float, object]] = []
+    original = flow.CrossoverV2Conductor._build_measure_candidate
+
+    def spy(self, analysis, cloud, *, candidate_sections=None, source_preset=None):
+        built = original(
+            self, analysis, cloud,
+            candidate_sections=candidate_sections, source_preset=source_preset,
+        )
+        # The report as it stands the moment this build finished — which is
+        # the only moment it describes THIS candidate.
+        fc_hz = next(
+            iter(section.fc_hz for sections in (candidate_sections or {}).values()
+                 for section in sections),
+            None,
+        )
+        report = self._measure_predicted_spec_report
+        written.append((fc_hz, None if report is None else dict(report)))
+        return built
+
+    with pytest.MonkeyPatch.context() as mp:
+        # The MEASURE consume alone: the sweep's builds happen here, the
+        # anchor's own happens later at the walk's close.
+        mp.setattr(flow.CrossoverV2Conductor, "_build_measure_candidate", spy)
+        _run_phase(c, 2, 1)
+
+    by_fc = {round(fc, 3): report for fc, report in written if fc is not None}
+    assert len(by_fc) >= 2, "the sweep must have built more than one corner"
+    scored = [e for e in c._fc_evaluations if e.refusal is None]
+    assert scored, "the sweep must have produced scoreable candidates"
+    # The reports must not be all-identical, or the identity assertion below
+    # would hold for a sweep that leaked one report into every evaluation.
+    distinct = {repr(report) for report in by_fc.values()}
+    assert len(distinct) >= 2, (
+        "this fixture must grade its corners differently, or the per-candidate "
+        "identity below is unfalsifiable"
+    )
+    for evaluation in scored:
+        assert evaluation.predicted_spec_report == by_fc[
+            round(evaluation.fc_hz, 3)
+        ], evaluation.fc_hz
+
+
+def test_a_speaker_with_no_protection_map_sweeps_nothing():
+    """No §4.2 composition means no candidate crossover can be substituted.
+
+    The sweep's first gate, and previously unpinned in either direction: the
+    conductor simply returned. Worth a guard now that the condition crosses a
+    module boundary as ``protection_declared`` — a parameter that silently
+    stopped being consulted would let an uncomposed capture be re-cornered,
+    which is a model built on a filter the graph never emitted.
+    """
+    fakes = _eligible_seams()
+    unprotected = _selector_conductor(
+        fakes, measurement_protection_sections_by_role=None,
+    )
+    _run_phase(unprotected, 1, 1)
+    accepted = _run_phase(unprotected, 2, 1)
+
+    assert accepted is not None, "the capture must still be accepted"
+    assert PHASE_MEASURE in unprotected.accepted_phases
+    assert unprotected._fc_evaluations == ()
+    # …and the positive control, so this cannot pass by the fixture simply
+    # never sweeping at all.
+    protected = _selector_conductor(_eligible_seams())
+    _run_phase(protected, 1, 1)
+    _run_phase(protected, 2, 1)
+    assert protected._fc_evaluations, "the protected fixture must sweep"
+
+
 def test_each_evaluation_retains_its_own_realized_level_verdict():
     """#2307 gate note N6, closed at the seam that closes it (#2291 Phase 2b).
 
@@ -573,7 +682,7 @@ def test_the_sweep_retains_no_analysis_sized_object():
     planned = c._fc_candidate_set().candidates
     assert tuple(e.fc_hz for e in c._fc_evaluations) == planned
     assert len(planned) == len(set(planned)) == 6
-    assert all(e.refusal != flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
+    assert all(e.refusal != EVAL_REFUSED_BUDGET for e in c._fc_evaluations)
     grid = flow.lateral_evidence_grid_hz()
     for evaluation in c._fc_evaluations:
         assert isinstance(evaluation, flow.FcCandidateEvaluation)
@@ -614,7 +723,7 @@ def test_a_failed_later_fc_cannot_reuse_or_publish_the_prior_fitted_prediction()
         _run_phase(c, 2, 1)
         assert c._fc_evaluations[0].refusal is None
         assert all(
-            item.refusal == flow.EVAL_REFUSED_UNFITTABLE
+            item.refusal == EVAL_REFUSED_UNFITTABLE
             and item.predicted_sum is None
             and item.candidate is None
             for item in c._fc_evaluations[1:]
@@ -651,6 +760,111 @@ def test_a_failing_sweep_never_costs_the_household_an_accepted_measure():
         assert c._fc_evaluations == (), broken
 
 
+def _sweep_ports(**overrides):
+    """Minimal working ports for :func:`fc_sweep.sweep_candidates`.
+
+    Direct on the organ rather than through a conductor: the subject is the
+    guard, and a fixture that has to fit a real fit engine cannot make a
+    *logging* port fail on demand.
+    """
+    ports = {
+        "evaluate": lambda fc, anchor, program, result: fc_sweep.refusal(
+            fc, "evaluation_invalid",
+        ),
+        "candidate_set_of": lambda: fc_sweep.FcCandidateSet(
+            configured_hz=FC_HZ, candidates=(FC_HZ, 1700.0),
+            rejected=(), limits={"declared_floor_hz": 300.0},
+        ),
+        "budget_s_of": lambda: 70.0,
+        "journal": lambda record: None,
+        "configured_fc_hz": FC_HZ,
+        "protection_declared": True,
+    }
+    ports.update(overrides)
+    return ports
+
+
+def test_a_logging_port_out_of_disk_refuses_the_candidate_instead_of_escaping():
+    """``OSError`` is in the caught set, and it has to be.
+
+    The ``journal`` port is a LOGGING delegate, and a handler with nowhere to
+    write raises ``OSError`` — the ENOSPC shape. The pre-extraction tuple did
+    not carry it, so a full disk turned the one advisory that is supposed to be
+    unable to cost a household anything into the thing that failed their
+    completed MEASURE. Both sibling port guards in this package
+    (``intervention._PORT_ERRORS``, ``coordinator._SEAM_ERRORS``) already
+    carried it; this is the third.
+
+    Asserted at BOTH sites the port is called from inside the loop — the
+    per-candidate refusal line and the evaluation itself — because a set that
+    covered only one of them would look right from either test alone.
+    """
+    # (a) the per-candidate disclosure raises.
+    def out_of_disk(record):
+        if record.event == fc_sweep.EVENT_CANDIDATE_REFUSED:
+            raise OSError(28, "No space left on device")
+
+    def boom(fc, anchor, program, result):
+        raise ValueError("forced candidate failure")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(evaluate=boom, journal=out_of_disk),
+    )
+    # The candidate-refusal line could not be said, so the whole advisory
+    # declined — but it declined, it did not escape.
+    assert got == ()
+
+    # (b) the evaluation itself raises OSError.
+    def evaluate_out_of_disk(fc, anchor, program, result):
+        raise OSError(28, "No space left on device")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(evaluate=evaluate_out_of_disk),
+    )
+    assert [e.refusal for e in got] == [EVAL_REFUSED_UNFITTABLE] * 2, (
+        "an OSError candidate must be refused per-candidate, not end the sweep"
+    )
+
+
+def test_a_journal_that_fails_inside_the_handler_does_not_double_fault():
+    """The #2313 SF1 shape: the handler's own disclosure goes through the port
+    that may be exactly what just failed.
+
+    Unguarded, a journal raising in the refusal arm replaces a CONTAINED
+    advisory failure with an escaping one — the household loses the completed
+    MEASURE to the second fault rather than the first. There is nowhere left to
+    report the loss to, so it is swallowed; what must survive is the return.
+    """
+    def always_fails(record):
+        raise OSError(28, "No space left on device")
+
+    def broken_set():
+        raise ValueError("forced candidate-set failure")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(),
+        **_sweep_ports(candidate_set_of=broken_set, journal=always_fails),
+    )
+
+    assert got == (), "the refusal must still return its (empty) evidence"
+
+    # …and the same when the failure is the SUMMARY line rather than the
+    # candidate set: the handler is reached by a different route and must
+    # contain the second fault the same way.
+    def summary_fails(record):
+        if record.event == fc_sweep.EVENT_SWEEP:
+            raise OSError(28, "No space left on device")
+        if record.event == fc_sweep.EVENT_SWEEP_REFUSED:
+            raise OSError(28, "No space left on device")
+
+    got = fc_sweep.sweep_candidates(
+        object(), object(), object(), **_sweep_ports(journal=summary_fails),
+    )
+    assert len(got) == 2, "the evaluations survive a disclosure that cannot be said"
+
+
 def test_the_evaluation_budget_has_one_explicit_owner():
     c = _selector_conductor(_eligible_seams())
     assert c._fc_evaluation_budget_s() == flow.FC_SWEEP_COMPUTE_BUDGET_S
@@ -673,7 +887,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
     assert len(c._fc_evaluations) == planned, "a skipped candidate is disclosed"
     assert c._fc_evaluations[0].fc_hz == c._fc_hz
     assert [e.refusal for e in c._fc_evaluations[1:]] == (
-        [flow.EVAL_REFUSED_BUDGET] * (planned - 1)
+        [EVAL_REFUSED_BUDGET] * (planned - 1)
     )
     for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
         _run_phase(c, index, 1)
@@ -685,7 +899,7 @@ def test_zero_budget_attempts_configured_then_discloses_every_skip():
     assert summary["comparison_complete"] is False
     assert summary["recommended_hz"] is None
     assert summary["attempted"] == [c._fc_hz]
-    assert all(item["reason"] == flow.EVAL_REFUSED_BUDGET for item in summary["skipped"])
+    assert all(item["reason"] == EVAL_REFUSED_BUDGET for item in summary["skipped"])
 
 
 def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
@@ -722,7 +936,7 @@ def test_budget_exhaustion_never_skips_the_configured_baseline(caplog):
     assert attempted[0] == 2000.0
     assert [e.fc_hz for e in c._fc_evaluations] == list(candidates.candidates)
     assert all(
-        e.refusal == flow.EVAL_REFUSED_BUDGET for e in c._fc_evaluations[2:]
+        e.refusal == EVAL_REFUSED_BUDGET for e in c._fc_evaluations[2:]
     )
     sweep_log = next(
         record.getMessage() for record in caplog.records
@@ -751,6 +965,38 @@ def test_the_result_wait_is_named_once_and_exceeds_the_compute_budget():
 
 
 # --- the recommendation, and what it may not do -------------------------------
+
+
+def test_the_walk_close_discloses_the_selection_under_its_grep_name(caplog):
+    """The adjudication's own journal line, which nothing asserted before.
+
+    ``fc_sweep.EVENT_SELECTION``'s comment calls a journal name a grep contract —
+    the field runbooks match on it — and a contract nothing asserts is a promise
+    with no keeper. Measured while moving the sweep (#2291 Phase 5a-v(b)):
+    deleting this emission entirely left the whole fc test set green.
+
+    Pinned as the LINE, not just the event name, because the summary's own
+    fields are what a triage reads: the verdict, the configured corner, and
+    whether the comparison was complete. The sibling ``_fc_sweep`` line is
+    pinned by ``test_budget_exhaustion_never_skips_the_configured_baseline``.
+    """
+    caplog.set_level(logging.INFO)
+    c = _selector_conductor(_eligible_seams())
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+    for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1):
+        _run_phase(c, index, 1)
+
+    lines = [
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_fc_selection " in record.getMessage()
+    ]
+    assert len(lines) == 1, "exactly one recommendation per walk"
+    line = lines[0]
+    assert f"verdict={c.fc_selection.verdict}" in line
+    assert f"configured_hz={round(FC_HZ, 1)}" in line
+    assert "comparison_complete=" in line
+    assert "poses=" in line
 
 
 def test_the_walk_close_publishes_a_recommendation_that_names_sound_settings():

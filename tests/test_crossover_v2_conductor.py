@@ -165,6 +165,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     session_wall_clock_ceiling_s,
     tier_display_info,
 )
+from jasper.active_speaker.branch_chain import crossover_response_complex
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -190,6 +191,7 @@ from jasper.audio_measurement.program_analysis import (
     RoleGainSolve,
     SegmentLocation,
     _verify_capture_integrity,
+    overlap_band_hz,
     predicted_branch_sum,
     solve_branch_trims,
     summed_model_residual_delay_us,
@@ -1447,18 +1449,18 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     for role, section in (("woofer", woofer), ("tweeter", tweeter)):
         np.testing.assert_allclose(
             priors.measurement_protection_response_by_role[role](freqs),
-            flow.crossover_response_complex(freqs, (section,)),
+            crossover_response_complex(freqs, (section,)),
         )
     for role, sections in flow.sections_by_role(preset.crossover_regions).items():
         np.testing.assert_allclose(
             priors.configured_crossover_response_by_role[role](freqs),
-            flow.crossover_response_complex(freqs, sections),
+            crossover_response_complex(freqs, sections),
         )
     assert priors.configured_polarity_sign_by_role == {"woofer": 1, "tweeter": -1}
     # Pins the WIRING of §4.2's candidate-required mask: every role's band must
     # be derived, and must cover the overlap band it is unioned with (a None
     # derivation silently returns the policy to the whole driven band).
-    overlap = flow.overlap_band_hz(priors.crossover_fc_hz)
+    overlap = overlap_band_hz(priors.crossover_fc_hz)
     required = priors.candidate_required_band_hz_by_role
     assert required is not None and required.keys() == {"woofer", "tweeter"}
     for role, (lo, hi) in required.items():

@@ -35,6 +35,7 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 from __future__ import annotations
 
 import functools
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
@@ -51,6 +52,7 @@ __all__ = [
     "measure_sweep_bounds",
     "check_priors",
     "measure_priors",
+    "candidate_priors",
     "lateral_priors",
     "verify_priors",
     "cloud_priors",
@@ -215,6 +217,43 @@ def measure_priors(
             else candidate_required_band_hz(
                 sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
             )
+        ),
+    )
+
+
+def candidate_priors(
+    base: MeasurementPriors,
+    fc_hz: float,
+    sections: Mapping[str, tuple[Any, ...]],
+) -> MeasurementPriors:
+    """MEASURE's priors re-pointed at one candidate — THREE fields move.
+
+    The swept-corner sibling of :func:`measure_priors`, and the only member of
+    this family that takes an already-built set rather than building one: the
+    session's own MEASURE priors ARE the base, and a candidate differs from
+    them in exactly three fields. Re-deriving the other seven here would put a
+    second writer on each.
+
+    ``configured_polarity_sign_by_role`` and
+    ``measurement_protection_response_by_role`` are carried UNCHANGED:
+    polarity is how the drivers are wired and protection is the filter the
+    graph actually emitted, and neither moves when the crossover corner
+    does. They are also load-bearing here rather than merely harmless —
+    ``_compose_configured_path_ir`` raises on a PARTIAL prior set, so
+    dropping either would refuse the composition outright instead of
+    producing a candidate.
+    """
+    return replace(
+        base,
+        crossover_fc_hz=float(fc_hz),
+        configured_crossover_response_by_role=role_transfers(sections),
+        # The same union :func:`measure_priors` takes, at THIS candidate's
+        # corner — asked of its single owner rather than re-spelled. The
+        # twin the #2336 gate named (N2) is closed here: this module owns
+        # the formula, the session corner and every swept corner ask it,
+        # and there is no second place for the pair to drift apart in.
+        candidate_required_band_hz_by_role=candidate_required_band_hz(
+            sections, fc_hz=float(fc_hz),
         ),
     )
 

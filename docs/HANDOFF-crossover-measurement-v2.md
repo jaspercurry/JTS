@@ -1945,7 +1945,8 @@ automatic rollback now genuinely runs. Which stage binds it is declared once, in
   conductor state, no I/O. `FcCandidateEvaluation` is the memory contract.
   A retained winning record also carries its compact executable candidate and
   bounded prediction so publication never re-analyzes a different Fc.
-- `fc_candidate_set` / `resolve_fc_search_band` in the flow module — the set,
+- `fc_candidate_set` / `resolve_fc_search_band` in `crossover_v2/fc_sweep.py`
+  (re-exported from the flow module under the same names) — the set,
   bounded by four declarations: the HF driver's hard floor, the lower driver's
   ceiling, the INTERSECTED declared `crossover_search_band_hz` (a two-way Fc
   puts both drivers at Fc, so every participating role must admit it, and an
