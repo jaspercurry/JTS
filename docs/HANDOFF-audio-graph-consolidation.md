@@ -295,7 +295,7 @@ at them rather than restating them.
 | R2 | C ioplug | **DONE** — PR [#2296](https://github.com/jaspercurry/JTS/pull/2296), merged, gate 0/0 |
 | R3 | fan-in | **DONE** — PR [#2308](https://github.com/jaspercurry/JTS/pull/2308), merged |
 | R4 | outputd | **DONE** — PR [#2310](https://github.com/jaspercurry/JTS/pull/2310), merged |
-| R5a | schemas / parsers / renderer | queued |
+| R5a | schemas / parsers / renderer | in flight — PR [#2314](https://github.com/jaspercurry/JTS/pull/2314) |
 | R5b | gates / recovery / observability | queued |
 | R6 | jts.local width activation | **owner-gated** |
 | R7a | DAC8x `LatencyFloor` + the one jts3 chip-AEC recommission | **REDESIGN PACKAGE** (bundled with R7b) — owner-gated, then panel re-review before scheduling |
