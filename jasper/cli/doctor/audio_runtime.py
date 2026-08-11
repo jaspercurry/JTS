@@ -1899,8 +1899,14 @@ def check_ring_conf_floor_render() -> CheckResult:
     but they also decide ring eligibility, because outputd's period then cannot
     equal the fixed slot and the arm preflight refuses. Reporting only "nothing
     to render" left the household's actual question ("why is this box on
-    loopback?") answered nowhere; jts3 (HIFIBERRY_DAC8X, no declared floor) is
-    the live case.
+    loopback?") answered nowhere; the InnoMaker HiFi AMP Pro (no declared
+    floor) is the live case.
+
+    Scope note: a MATCHING floor answers only this check's axis. A box can
+    still be ring-ineligible for a reason this check does not see — a roleful
+    topology has no ring width at all
+    (``ring_channels_for_topology`` -> ``topology_supports_shm_ring``) — so a
+    matching-floor ``ok`` is not a statement that the box can ring.
 
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env

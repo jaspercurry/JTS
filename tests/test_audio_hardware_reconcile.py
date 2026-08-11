@@ -2024,35 +2024,45 @@ def _outputd_env_key_present(outputd_env: str, key: str) -> bool:
     )
 
 
-def test_reconcile_dac8x_clears_floor_keys_no_profile_floor(tmp_path: Path):
-    # A DAC8x declares NO floor — the reconciler does not write the keys, so the
-    # shipped global default applies. (When a prior DAC left a floor in
-    # outputd.env, the keys are dropped — see
-    # test_reconcile_no_floor_drops_stale_floor_keys.)
+def test_reconcile_dac8x_emits_the_soak_validated_floor(tmp_path: Path):
+    # R7a: the DAC8x floor the jts3 soak validated reaches outputd.env through
+    # the SAME bash plumbing (apply_latency_floor_env) the Apple dongle uses —
+    # the four declared values verbatim. This is the end-to-end pin for the
+    # outputd half of the floor: the soak moved these keys by hand, and this
+    # asserts the reconciler now moves them on its own.
     result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    # No floor for this DAC and no prior entry => the key is simply absent. It is
-    # NOT written as an empty `KEY=`: an empty assignment in outputd.env (loaded
-    # AFTER jasper.env) would override any operator value with empty.
-    for key in (
-        "JASPER_CAMILLA_CHUNKSIZE",
-        "JASPER_CAMILLA_TARGET_LEVEL",
-        "JASPER_OUTPUTD_PERIOD_FRAMES",
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
-        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
+    for key, value in (
+        ("JASPER_CAMILLA_CHUNKSIZE", "256"),
+        ("JASPER_CAMILLA_TARGET_LEVEL", "1536"),
+        ("JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
+        ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
     ):
-        assert not _outputd_env_key_present(outputd_env, key), key
+        assert f"{key}={value}" in outputd_env, (key, outputd_env)
+    # The content buffer is NOT pinned: it stays at outputd's packaged 4096, so
+    # the content capture runs the 128/4096 pair the soak's Stage B ran.
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+    )
+    assert (
+        "event=audio_hardware_reconcile.latency_floor "
+        "reason=test output_dac_id=hifiberry_dac8x camilla_chunksize=256 "
+        "camilla_target_level=1536 outputd_period_frames=128 "
+        "outputd_content_buffer_frames=4096 outputd_dac_buffer_frames=256"
+    ) in result.stderr
 
 
 def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
     # A DAC with no declared floor must DROP a stale floor a prior DAC wrote into
     # outputd.env, not leave it as `=''` (which would clobber an operator value)
-    # and not leave the stale numbers.
+    # and not leave the stale numbers. INNOMAKER is the floorless case: pointing
+    # this at a profile that later declares a floor would make the loop below
+    # unreachable rather than failing (what an R7a DAC8x floor did here).
     result = _run_reconcile(
         tmp_path,
-        DAC8X_AND_APPLE_LISTING,
+        INNOMAKER_LISTING,
         "--reason",
         "test",
         initial_outputd_env=(
@@ -2343,7 +2353,42 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
     tmp_path: Path,
 ):
     # A recognized DAC that declares NO latency floor keeps the shipped conf.d
-    # — no same-content rewrite, no mtime churn.
+    # — no same-content rewrite, no mtime churn. INNOMAKER is the floorless
+    # case; a profile that later declares a floor would take the RENDER branch
+    # instead of this skip branch, so the id is part of the assertion.
+    conf = _staged_ring_conf(tmp_path)
+    before_bytes = conf.read_bytes()
+    before_mtime = conf.stat().st_mtime_ns
+
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_RING_CONF_D": str(conf)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
+        "output_dac_id=innomaker_hifi_amp_pro period_frames=none "
+        "previous_period_frames=none sample_format=none ring_a_channels=none "
+        "ring_b_channels=none topology=none reason=no_declared_floor"
+    ) in result.stderr
+    assert conf.read_bytes() == before_bytes
+    assert conf.stat().st_mtime_ns == before_mtime
+
+
+def test_reconcile_leaves_the_shipped_ring_conf_byte_identical_for_dac8x(
+    tmp_path: Path,
+):
+    # R7a's conf.d consequence, stated as a test rather than left to be
+    # discovered: declaring a 128-frame floor moves a DAC8x box from the
+    # SKIP branch to the RENDER branch — and the render is a no-op, because the
+    # shipped conf.d already carries this box's wire (period 128, and a roleful
+    # topology has no ring width, so Ring B keeps the shipped stereo
+    # declaration). Byte AND mtime identical: no ALSA file churn on any DAC8x
+    # box at floor-deploy.
     conf = _staged_ring_conf(tmp_path)
     before_bytes = conf.read_bytes()
     before_mtime = conf.stat().st_mtime_ns
@@ -2358,10 +2403,10 @@ def test_reconcile_leaves_ring_conf_untouched_for_a_floorless_dac(
 
     assert result.returncode == 0, result.stderr
     assert (
-        "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
-        "output_dac_id=hifiberry_dac8x period_frames=none "
-        "previous_period_frames=none sample_format=none ring_a_channels=none "
-        "ring_b_channels=none topology=none reason=no_declared_floor"
+        "event=audio_hardware_reconcile.ring_conf reason=test "
+        "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
+        "previous_period_frames=128 sample_format=S16_LE ring_a_channels=2 "
+        "ring_b_channels=2 topology="
     ) in result.stderr
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime

@@ -68,10 +68,13 @@ class LatencyFloor:
     anti-pattern), so a fresh box silently got the conservative global default.
 
     The CamillaDSP floor is a (chunksize, target_level) PAIR: ``target_level``
-    is the resampler's steady-state fill and must be ~4x ``chunksize`` so the
-    adjuster has headroom (chunk 256 -> target 1024; 1024 -> 2048). A smaller
+    is the resampler's steady-state fill and must be >= 4x ``chunksize`` so the
+    adjuster has headroom (chunk 256 -> target 1024; 1024 -> 4096). A smaller
     target relative to chunk starves the resampler and re-introduces dropouts,
-    so the pairing is validated, not just documented.
+    so the pairing is validated, not just documented — the constructor rejects
+    a below-4x pair. Both worked examples above are that 4x MINIMUM, not a
+    recommendation: a profile may declare more cushion, and each declaring
+    profile's own comment carries the measurement that chose its pair.
     """
 
     camilla_chunksize: int
@@ -448,6 +451,34 @@ HIFIBERRY_DAC8X = DacProfile(
     chip_aec_qualification="approved",
     chip_aec_detail="HiFiBerry DAC8x is a measured JTS3 known-good chip-AEC profile",
     dtoverlay="hifiberry-dac8x",
+    # Hardware evidence: the same four values the Apple dongle declares, here
+    # measured on I2S silicon rather than transferred. A three-window jts3 soak
+    # (2026-08-11; operator-local record `captures/r7-jts3-20260811T051852Z/`,
+    # untracked like every capture) ran 30 minutes at the shipped global
+    # default (Camilla 1024/2048, outputd 1024/3072), 30 at Camilla 256/1536
+    # alone, then 30 at the full floor, on the live active 2-way with real
+    # program material. Every window: zero DAC xruns, zero CamillaDSP clipped
+    # samples, zero DAC-clock unlock and zero fan-in xrun delta. The content
+    # lane's counters at the full floor were indistinguishable from the
+    # baseline window's own rate (1 xrun / 2 empty / <=2 partial / 1 eagain per
+    # 30 minutes, against this box's ~3.4 content-xruns/hour steady state), so
+    # the 128-frame period costs the content capture nothing measurable here
+    # even though it multiplies that lane's wakeups. DAC presentation latency
+    # 63.833 ms -> 5.167 ms, a 58.67 ms reduction.
+    #
+    # The (256, 1536) pair keeps a 6x cushion instead of the validator's 4x
+    # minimum, and this profile DECLINES TO RE-TEST the exact-4x (256, 1024)
+    # pair rather than claiming it would fail here: the recorded 1024 failure
+    # is the Apple profile's USB bridge playback xruns, which is transport-
+    # specific evidence about a USB path and not an I2S result. It transfers as
+    # caution — a reason not to spend a soak window probing downward — not as
+    # evidence about this board.
+    latency_floor=LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=256,
+    ),
     # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
     # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
     # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
@@ -457,10 +488,15 @@ HIFIBERRY_DAC8X = DacProfile(
     # datasheet); the S32_LE word's bottom byte beyond that 24-bit
     # resolution spans <= -138.5 dBFS — sub-analog at any plausible silicon
     # depth, so this datasheet inference is not load-bearing for safety even
-    # if the chip's real resolution differs from spec. jts3's production
-    # graph is 6-channel active; that (S32_LE, 6ch) combination has not
-    # been separately hardware-probed, so it fails closed rather than being
-    # pre-verified if the pairing turns out not to be jointly satisfiable.
+    # if the chip's real resolution differs from spec. What the probe did NOT
+    # cover is width: this profile's CAPABILITY is 8 channels
+    # (`active_outputd_lane_channels` above), while the one lab box on it runs
+    # a 2-channel active 2-way (`JASPER_OUTPUTD_ACTIVE_CHANNELS=2`), so no
+    # channel count above 2 has been paired with S32_LE on this silicon. That
+    # pairing fails closed at the ALSA open rather than being pre-verified: if
+    # (S32_LE, 8ch) turns out not to be jointly satisfiable, outputd parks at
+    # exit 78 instead of converting silently.
+    #
     # Declaring S32_LE here lets outputd's i32 program spine reach the DAC
     # edge with zero narrowing (wide-output-path PR-7) — the intended fix
     # for the horn-lane undithered-16-bit-requantization crackle (acoustic
@@ -470,14 +506,17 @@ HIFIBERRY_DAC8X = DacProfile(
     # Consequence: this field is part of the chip-AEC alignment identity
     # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
     # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the
-    # identity force-recommissions the fleet"), so every artifact
-    # commissioned against the old S16_LE edge is now invalid. jts3 — the
-    # only commissioned box on this profile at the time of writing — parks
-    # its managed-XVF stack (voice stopped, wake gated off via
-    # /var/lib/jasper/voice-input-absent) until a human runs
-    # `sudo jasper-aec-commission` in the foreground (~2 minutes of audible
-    # sweeps). See plan captures/PLAN-wide-output-path-2026-08-07.md §6
-    # PR-7 for the recommission drill.
+    # identity force-recommissions the fleet"), so a box holding an artifact
+    # commissioned against the old S16_LE edge parks its managed-XVF stack
+    # (voice stopped, wake gated off via /var/lib/jasper/voice-input-absent)
+    # until a human runs `sudo jasper-aec-commission` in the foreground (~2
+    # minutes of audible sweeps). See plan
+    # captures/PLAN-wide-output-path-2026-08-07.md §6 PR-7 for the
+    # recommission drill. jts3, the lab box on this profile, is NOT such a
+    # box: it holds no alignment artifact and reaches chip-AEC through the
+    # corpus escape (JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1, re-confirmed on
+    # the box 2026-08-11), so it has no identity to invalidate and does not
+    # park.
     final_edge_format="S32_LE",
 )
 

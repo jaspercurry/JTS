@@ -726,10 +726,23 @@ def test_latency_floor_for_round_trips_for_bash() -> None:
 
 
 def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
-    # A DAC that declares no floor (DAC8x) keeps the global default — None is
-    # the non-breaking signal the reconciler treats as "use shipped default".
-    assert dac.latency_floor_for(HIFIBERRY_DAC8X_ID) is None
+    # A DAC that declares no floor keeps the global default — None is the
+    # non-breaking signal the reconciler treats as "use shipped default".
+    assert dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
+
+
+def test_dac8x_declares_the_soak_validated_floor() -> None:
+    # The R7a jts3 soak (2026-08-11) validated the Apple dongle's four values on
+    # I2S silicon: three 30-min windows, zero DAC xruns, DAC presentation
+    # latency 63.833 -> 5.167 ms. Same numbers as the dongle, independently
+    # measured — this pins the DECLARATION, not the transfer.
+    assert HIFIBERRY_DAC8X.latency_floor == LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=128,
+        outputd_dac_buffer_frames=256,
+    )
 
 
 # --- final-edge format (PR-1, final-edge format program) ---------------------

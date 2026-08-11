@@ -506,9 +506,10 @@ What exists:
   (wide-output-path PR-7), because that is the intended horn-lane crackle
   fix (acoustic verdict pending the conductor's post-merge listen — see
   plan §6 PR-7): a 2-channel `aplay --dump-hw-params` open test on jts3
-  confirmed the S32 edge opens cleanly (2026-08-07). jts3's production
-  graph is 6-channel active; that specific (S32_LE, 6ch) combination has
-  not been separately hardware-probed, so it fails closed rather than
+  confirmed the S32 edge opens cleanly (2026-08-07). The profile's
+  *capability* is 8 channels while jts3 runs a 2-channel active 2-way, so
+  no width above 2 has been paired with S32_LE on this silicon; an
+  (S32_LE, 8ch) combination fails closed at the ALSA open rather than
   being pre-verified if the pairing turns out not to be jointly
   satisfiable. Declaring it lets outputd's i32 program spine reach the
   DAC with zero narrowing where the crackle-causing undithered 16-bit
