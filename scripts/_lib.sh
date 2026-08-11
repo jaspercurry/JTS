@@ -459,3 +459,77 @@ oom_unit_is_production() {
             ;;
     esac
 }
+
+# ── USB gadget management-network deploy advisory ────────────────────────
+#
+# deploy-to-pi.sh warns (never blocks) when PI_HOST resolves inside the USB
+# gadget's management subnet. Issue #2340 (2026-08-11 U2 deploy):
+# install.sh rebuilds the composite USB gadget mid-install, which tears
+# down ncm.usb0 out from under a deploy whose own ssh session is riding
+# that same link — the transport dies with no FIN while the install
+# itself keeps going and succeeds on the Pi, which reads as a wedged
+# deploy that actually landed. These are the pure classification helpers;
+# PI_HOST resolution and the printed advisory live in deploy-to-pi.sh
+# (they need python3 and PI_HOST's live value, not just REPO_ROOT).
+
+# usb_gadget_management_cidr
+# Echo the gadget management network's CIDR ("10.12.194.1/24"), parsed
+# from its single source of truth —
+# deploy/usb-network/jts-usb.nmconnection's `address1=` line — so this
+# advisory can never carry its own, possibly-stale copy of the address.
+# Echoes nothing and returns 1 when the file is missing or its address1=
+# line is absent/unparsed (a fresh/atypical checkout); the caller must
+# read that as "can't determine" and skip its advisory quietly, never as
+# "not the gadget subnet."
+usb_gadget_management_cidr() {
+    local nmfile="${REPO_ROOT}/deploy/usb-network/jts-usb.nmconnection"
+    local line cidr
+    [[ -f "$nmfile" ]] || return 1
+    line="$(grep -m1 '^address1=' "$nmfile" 2>/dev/null || true)"
+    cidr="${line#address1=}"
+    [[ "$cidr" == *.*.*.*/* ]] || return 1
+    printf '%s\n' "$cidr"
+}
+
+# _ipv4_to_int <ip>
+# Convert a dotted-quad IPv4 address to its unsigned 32-bit integer form.
+# Echoes the integer; returns 1 on anything that isn't exactly four
+# 1-3-digit 0-255 octets — including inputs that would otherwise reach
+# bash arithmetic and either misparse (a leading zero reads as octal) or
+# error out (an overlong digit run), instead of failing cleanly.
+_ipv4_to_int() {
+    local ip="$1" o1 o2 o3 o4 rest
+    IFS=. read -r o1 o2 o3 o4 rest <<< "$ip"
+    [[ -z "$rest" ]] || return 1
+    local o
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+        [[ "$o" =~ ^[0-9]{1,3}$ ]] || return 1
+        (( 10#$o <= 255 )) || return 1
+    done
+    echo $(( (10#$o1 << 24) | (10#$o2 << 16) | (10#$o3 << 8) | 10#$o4 ))
+}
+
+# ipv4_in_cidr <ip> <cidr>
+# Pure IPv4 subnet-membership test (e.g. "10.12.194.5" inside
+# "10.12.194.1/24") — no external tools, so it works identically on
+# macOS/BSD and Linux (no ipcalc, no getent). Returns 0 when <ip> falls
+# inside <cidr>, 1 otherwise — INCLUDING any malformed input (garbage IP,
+# garbage/missing prefix), so a caller looping over resolved addresses can
+# treat this as a plain boolean and never needs to pre-validate.
+ipv4_in_cidr() {
+    local ip="$1" cidr="$2"
+    local net="${cidr%/*}" prefix="${cidr#*/}"
+    [[ "$cidr" == */* ]] || return 1
+    [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+    (( prefix <= 32 )) || return 1
+
+    local ip_int net_int mask
+    ip_int="$(_ipv4_to_int "$ip")" || return 1
+    net_int="$(_ipv4_to_int "$net")" || return 1
+    if (( prefix == 0 )); then
+        mask=0
+    else
+        mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+    fi
+    (( (ip_int & mask) == (net_int & mask) ))
+}

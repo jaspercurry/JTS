@@ -908,6 +908,31 @@ interactive-sudo deploys skip it too. The helper
 [`scripts/_lib.sh`](scripts/_lib.sh) and is pinned by
 `tests/test_lib_deploy_direction.py`.
 
+**USB-gadget-network deploy advisory:** the preflight also warns (never
+blocks) when `PI_HOST` resolves inside the USB gadget's management subnet
+— `10.12.194.1/24` on `usb0`, see
+[docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md). Deploying over
+that link is risky: `install.sh` rebuilds the composite USB gadget
+mid-install, which can tear down `ncm.usb0` out from under the deploy's
+own ssh session. The install itself keeps going and **succeeds on the
+Pi** — but the laptop's ssh half-opens with no FIN, and the transcript
+freezes around `event=install.usb_gadget_baseline`, which reads as a
+wedged deploy that actually landed (issue #2340, the 2026-08-11 U2
+deploy). The advisory never blocks — `SKIP_INSTALL=1` rsync-only deploys
+never touch the gadget, and deploying over USB anyway is sometimes the
+only option — but the fix is to deploy over the Wi-Fi/LAN address instead
+(`PI_HOST=<lan-hostname-or-ip>`). `SSH_BATCH_OPTS` also now carries
+`ServerAliveInterval=15`/`ServerAliveCountMax=4`, so a severed transport
+surfaces as an ssh error in about a minute instead of an unbounded hang;
+that keepalive is transport-level only (the encrypted probe gets a reply
+as long as sshd is alive), so it does not touch a live-but-quiet install
+phase such as a long, silent Rust build. Helpers
+(`usb_gadget_management_cidr`, `ipv4_in_cidr`) live in
+[`scripts/_lib.sh`](scripts/_lib.sh), parse the subnet out of
+[`deploy/usb-network/jts-usb.nmconnection`](deploy/usb-network/jts-usb.nmconnection)
+at runtime so it can't drift from that single source of truth, and are
+pinned by `tests/test_lib_usb_gadget_advisory.py`.
+
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
 `SKIP_RESTART=1` (install but don't restart/reconcile; forwarded into
 install.sh, where it also skips the changed-Rust-binary service restart),

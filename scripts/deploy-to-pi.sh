@@ -48,7 +48,14 @@ AIRPLAY_HEALTH_SUPPRESS_PATH="/run/jasper-airplay-health-suppress-until"
 AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC:-2700}"
 AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC:-120}"
 SSH_TARGET="${PI_USER}@${PI_HOST}"
-SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+# ServerAlive keepalives bound a severed transport (e.g. install.sh's
+# mid-install USB gadget rebuild tearing down ncm.usb0 under a deploy
+# riding that link, issue #2340) to a ~60s ssh error instead of an
+# unbounded hang. Transport-level only: the encrypted probe gets a reply
+# as long as sshd is alive, so a live-but-quiet install phase (a long,
+# silent Rust build) is never touched — only a genuinely dead connection
+# is (verified against `man ssh_config`; see PR body).
+SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 SUDO_INTERACTIVE=0
 HOSTNAME_FOR_INSTALL=""
 REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-}"
@@ -314,6 +321,89 @@ EOF
     return 0
 }
 
+# Portable across macOS/Linux without getent (Linux-only) or dig (not
+# always installed): python3's socket.getaddrinfo ships on both. Prints
+# one IPv4 address per line, de-duplicated; prints nothing on any
+# resolution failure (unknown host, offline) — the Python side itself
+# exits 0 in that case. The `|| true` at the call site below still
+# matters: if python3 itself is missing, the command substitution fails
+# with a real "command not found" (127), and under `set -e` an unguarded
+# `var=$(...)` assignment would propagate that as a script-aborting
+# failure (verified by hand with a stubbed-missing python3; see PR body).
+resolve_pi_host_ipv4_addrs() {
+    python3 - "$PI_HOST" <<'PY' 2>/dev/null
+import socket
+import sys
+
+host = sys.argv[1]
+try:
+    infos = socket.getaddrinfo(host, None, socket.AF_INET)
+except OSError:
+    sys.exit(0)
+seen = set()
+for info in infos:
+    addr = info[4][0]
+    if addr not in seen:
+        seen.add(addr)
+        print(addr)
+PY
+}
+
+# USB-gadget-network deploy advisory (non-blocking, prints BEFORE rsync).
+# See _lib.sh's usb_gadget_management_cidr/ipv4_in_cidr docstrings for the
+# "why" (issue #2340): install.sh's mid-install gadget rebuild can sever a
+# deploy whose own ssh session is riding ncm.usb0. Only a deploy that runs
+# install.sh can hit that failure mode — SKIP_INSTALL=1 rsync-only never
+# touches the gadget — so the caller invokes this only inside that guard.
+# Degrades to a quiet skip whenever the subnet or PI_HOST's address can't
+# be determined (a checkout missing deploy/usb-network/, offline, an
+# unresolvable hostname): the goal is to warn when we KNOW, never to guess
+# or fail a deploy over a DNS hiccup. When PI_HOST is a hostname with
+# multiple resolved addresses (a dual-homed mDNS name), this warns on the
+# first in-subnet match rather than trying to determine which one ssh
+# will actually pick — ssh resolves DNS internally with no introspection
+# hook, so "warn on any match, name which" is the honest simplest answer.
+warn_if_pi_host_on_gadget_network() {
+    local cidr matched="" addr addrs
+    cidr="$(usb_gadget_management_cidr)" || return 0
+
+    if is_ipv4_host "$PI_HOST"; then
+        if ipv4_in_cidr "$PI_HOST" "$cidr"; then
+            matched="$PI_HOST"
+        fi
+    else
+        addrs="$(resolve_pi_host_ipv4_addrs)" || true
+        [[ -n "$addrs" ]] || return 0
+        while IFS= read -r addr; do
+            [[ -z "$addr" ]] && continue
+            if ipv4_in_cidr "$addr" "$cidr"; then
+                matched="$addr"
+                break
+            fi
+        done <<< "$addrs"
+    fi
+
+    [[ -n "$matched" ]] || return 0
+
+    cat <<EOF >&2
+─────────────────────────────────────────────────────────────
+ ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
+   management network (${cidr}).
+   If that's this deploy's own transport: install.sh rebuilds the
+   composite USB gadget mid-install and tears down that link out
+   from under it. The ssh session dies with no FIN, this script's
+   keepalive bounds the resulting error to about a minute (see
+   SSH_BATCH_OPTS) instead of hanging forever, and the transcript
+   will look wedged around event=install.usb_gadget_baseline — even
+   though install.sh keeps going and succeeds on the Pi (#2340).
+   Workaround: deploy over the Wi-Fi/LAN address instead, e.g.
+     PI_HOST=<pi-lan-hostname-or-ip> bash scripts/deploy-to-pi.sh
+   Proceeding — this is advisory only. If ssh does exit early, check
+   the Pi directly before assuming the deploy failed.
+─────────────────────────────────────────────────────────────
+EOF
+}
+
 mark_airplay_health_maintenance() {
     local ttl_sec="$1"
     local marker_command
@@ -475,6 +565,11 @@ if [[ -n "$HOSTNAME_FOR_INSTALL" ]]; then
 fi
 
 if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
+    # USB-gadget-network advisory — before rsync, before sudo/ssh preflight,
+    # since it only needs PI_HOST resolution. See warn_if_pi_host_on_gadget_network
+    # above for the "why" (issue #2340).
+    warn_if_pi_host_on_gadget_network
+
     preflight_sudo
 
     # Identity guard: never deploy to the WRONG Pi. mDNS names are
