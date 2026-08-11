@@ -2805,8 +2805,6 @@ impl Input {
     }
 }
 
-/// Sum input samples into the running i32 accumulator with saturating
-/// arithmetic. Pulled out for unit testability — no ALSA needed.
 /// The numeric scale fan-in's program sum carries this run — the ONE width
 /// decision every stage between a lane's read and the summed write consults
 /// (U2 / #2223).
@@ -2874,10 +2872,11 @@ impl ProgramWidth {
     }
 }
 
-/// Accumulate one lane's i16 period into the sum at the sum's own scale.
+/// Accumulate one lane's i16 period into the sum at the sum's own scale, with
+/// saturating arithmetic. Pulled out for unit testability — no ALSA needed.
 ///
-/// `Narrow` adds the sample as-is (today's behaviour, unchanged). `Wide`
-/// promotes it with the shared `widen_i16_to_i32` primitive first — the same
+/// `Narrow` adds the sample as-is (unchanged behaviour). `Wide` promotes it with
+/// the shared `widen_i16_to_i32` primitive first — the same
 /// information-preserving `<< 16` the wide wire used to apply at the write, done
 /// per lane so a wide lane's own bits are not forced through the narrow scale.
 fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
