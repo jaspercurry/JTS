@@ -1487,7 +1487,7 @@ def linearization_headroom_db(
     # without evaluating anything — and without this module importing numpy,
     # which it otherwise does not (see branch_chain's module docstring on why
     # that dependency is kept lazy on a 1 GB Pi).
-    if not _linearization_has_boost(linearization):
+    if not linearization_has_boost(linearization):
         return 0.0
     from .branch_chain import branch_headroom_db
 
@@ -1504,7 +1504,7 @@ def linearization_headroom_db(
     return worst
 
 
-def _linearization_has_boost(
+def linearization_has_boost(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> bool:
     """Does any emitted linearization filter carry positive gain?
@@ -1516,6 +1516,15 @@ def _linearization_has_boost(
     because a cut cascade, a Linkwitz-Riley section, and a non-positive trim
     are each <= 0 dB everywhere: that chain cannot reach unity, so its charge
     is 0.0 without evaluating anything.
+
+    **Public because #2291's adoption table asks the same question of the
+    APPLIED candidate.** A boosted intervention whose measured benefit is
+    indeterminate fails closed and comes back off
+    (:func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`'s
+    ``boosted`` modifier). "Does this graph put energy in" has one definition
+    on this speaker; a second copy of the rule in the host is precisely the
+    drift that would let the emitter and the adoption decision disagree about
+    the same graph.
     """
     for filters in (linearization or {}).values():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
@@ -1619,10 +1628,10 @@ def _emit_baseline_filter_definitions(
             linearization,
             # Built only when there is a boost to charge for: the context
             # itself imports branch_chain, and with it numpy, which the
-            # cut-only path must not pay for (see _linearization_has_boost).
+            # cut-only path must not pay for (see linearization_has_boost).
             branch_context=(
                 _branch_context(preset, corrections)
-                if _linearization_has_boost(linearization)
+                if linearization_has_boost(linearization)
                 else {}
             ),
         )

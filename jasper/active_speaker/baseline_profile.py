@@ -1202,19 +1202,47 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
     their contributions cancel in the difference this exists to serve
     (:func:`applied_program_level_delta_db`).
     """
-    if not isinstance(profile, Mapping):
+    linearization = profile_linearization(profile)
+    if not linearization:
         return 0.0
+    return linearization_headroom_db(
+        linearization, branch_context=_profile_branch_context(profile),
+    )
+
+
+def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """One profile's AUTHORITATIVE reduced linearization, or ``{}``.
+
+    The ``{role: [filter_dict, ...]}`` mapping the emitter takes — ALREADY
+    reduced, so callers must not pass it through
+    :func:`~jasper.active_speaker.linearization_fit.linearization_filters_by_role`
+    (that helper's own docstring warns it silently returns ``{}`` for an
+    already-reduced mapping, which would read as "this graph boosts nothing").
+
+    The preference rule lives here and nowhere else, because it decides WHICH
+    copy is authoritative and a second transcription is how two readers start
+    disagreeing about what a speaker is playing:
+    ``recomposition_snapshot["linearization"]`` is the copy
+    :func:`recompose_applied_baseline_yaml` re-emits from, so it wins; the
+    top-level key is an era-older convenience mirror for a frozen profile that
+    carries one without a snapshot. Both are written from a single variable,
+    so the preference is about authority, never about reconciling a
+    disagreement.
+
+    ``{}`` for a cut-only or absent linearization — every profile written
+    before PR-L5 — and that is a true answer rather than a failure: both
+    questions asked of this mapping (what does it cost, does it boost) are
+    correct for a profile that linearizes nothing.
+    """
+    if not isinstance(profile, Mapping):
+        return {}
     snapshot = profile.get("recomposition_snapshot")
     linearization = (
         snapshot.get("linearization") if isinstance(snapshot, Mapping) else None
     )
     if not isinstance(linearization, Mapping):
         linearization = profile.get("linearization")
-    if not isinstance(linearization, Mapping):
-        return 0.0
-    return linearization_headroom_db(
-        linearization, branch_context=_profile_branch_context(profile),
-    )
+    return linearization if isinstance(linearization, Mapping) else {}
 
 
 def applied_program_level_delta_db(

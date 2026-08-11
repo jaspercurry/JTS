@@ -767,7 +767,7 @@ def decide_adoption(
         that permuting it changes no decision. If it ever *should* matter,
         that is a table change with evidence attached, not a quiet read.
       boosted: does the applied intervention contain a boost? Computed by the
-        host with the shipped predicate (``camilla_yaml._linearization_has_boost``
+        host with the shipped predicate (``camilla_yaml.linearization_has_boost``
         — any filter whose numeric ``gain`` exceeds 0 dB); this module keeps
         no second copy of that rule. Read **only** when
         :attr:`~.contracts.BenefitStatus.INDETERMINATE`, which is the scope

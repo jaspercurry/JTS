@@ -42,6 +42,11 @@ from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.intervention import (
     compose_sigma_db as _compose_sigma_db,
 )
+from jasper.active_speaker.crossover_v2.round_evidence import (
+    MEASURED_BENEFIT_MARGIN_DB,
+    EntryBaseline,
+    measured_response_from_analysis,
+)
 from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
@@ -495,6 +500,15 @@ class FakeSeams:
     # case here, not the normal one — a test that wants it unbound passes
     # ``publish_findings=None`` through ``dataclasses.replace``.
     banked_findings: list = field(default_factory=list)
+    # #2291/#2318: does the APPLIED graph boost? Bound by default and FALSE,
+    # because these fixtures grade rounds whose subject is something else and
+    # the seam's unbound answer is deliberately "boosted" — an intervention
+    # nobody can inspect comes off. Leaving it unbound here would route every
+    # indeterminate round through the fail-closed restore and make each of
+    # these tests assert that rule instead of its own. A test that wants the
+    # rule ITSELF sets this True (or passes ``applied_boosts=None`` through
+    # ``dataclasses.replace`` for the unbound case).
+    applied_boosts: bool = False
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry, *, phase=None):
@@ -518,14 +532,67 @@ class FakeSeams:
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
+            applied_boosts=lambda: self.applied_boosts,
             publish_findings=self.banked_findings.append,
         )
+
+
+#: The entry baseline's pooled spec residual, in dB, and the post-apply
+#: fixture's. Quoted from the shipped reducer rather than asserted by eye, for
+#: the reason ``_ROOM_SCALE_EXPECTED_RMS_DB`` above is quoted: a "the before was
+#: worse" fixture is worthless if nobody checked which way worse runs. Higher is
+#: worse (measured through ``spec_convergence_residual``), so 4.32 → 2.69 is a
+#: 1.63 dB win — over three times #2291's 0.5 dB claim margin.
+_ENTRY_BASELINE_SCALE = 1.5
+_ENTRY_BASELINE_RESIDUAL_DB = 4.321
+_POST_APPLY_RESIDUAL_DB = 2.691
+
+
+def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
+    """The pre-apply capture #2291 Phase 3c grades every round against.
+
+    **Why a conductor fixture carries one at all.** Since Phase 3c, stage 1
+    always captures an entry baseline immediately before the household applies,
+    so a stage-2 conductor without one is no longer a state production can
+    reach. A fixture that omitted it graded every round
+    ``entry_baseline_unavailable`` — an INDETERMINATE benefit — and the adoption
+    table fails that closed for a boosted candidate, so the round replaced the
+    verdict under test with a refusal about the missing baseline rather than
+    about anything the test was asking.
+
+    Built the way ``_retain_entry_baseline`` builds it: this session's OWN
+    ``_verify_program`` reduced through the shipped reducer, so ``program_id``,
+    grid, and mask agree with the post-apply side by construction instead of by
+    resemblance — a lookalike program would grade ``incomparable_program`` and a
+    lookalike mark ``incomparable_reference_mark``. The curve is the fixture's
+    in-room sum at ``_ENTRY_BASELINE_SCALE`` times the deviation: a speaker that
+    measurably improved, which is what makes the round grade a real benefit.
+
+    The program only exists once the conductor is constructed (``__init__``
+    composes it), so this cannot ride the ``measure_entry_baseline`` constructor
+    argument without duplicating ``_compose_verify_program`` — and a duplicate
+    is exactly the lookalike the comparability check exists to catch. It writes
+    the attribute production writes instead.
+    """
+    measured = measured_response_from_analysis(
+        _verify_analysis(
+            conductor._verify_program,
+            summed_db=_in_room_summed_db() * _ENTRY_BASELINE_SCALE,
+        ),
+        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+    )
+    return EntryBaseline.from_measurement(
+        measured,
+        graph_fingerprint="fixture_entry_graph",
+        captured_at="2026-08-10T00:00:00Z",
+    )
 
 
 def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
-    return CrossoverV2Conductor(
+    supplied_baseline = "measure_entry_baseline" in kwargs
+    conductor = CrossoverV2Conductor(
         session_id=SESSION,
         source_preset=source_preset,
         roles_bands=_roles(),
@@ -536,6 +603,16 @@ def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
         driver_spacing_m=0.15,
         **kwargs,
     )
+    # A session that walks ``PHASE_ENTRY_BASELINE`` is stage ONE: it captures
+    # its own "before", so starting it with one pre-banked would hide the very
+    # thing those tests measure (``tests/test_crossover_v2_entry_baseline.py``
+    # imports this helper). Every other session is a stage 2, which production
+    # only ever reaches carrying a baseline stage 1 already took.
+    if not supplied_baseline and (
+        flow.PHASE_ENTRY_BASELINE not in conductor.session_phases
+    ):
+        conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
+    return conductor
 
 
 def _attempt_floor() -> FloorStats:
@@ -621,6 +698,56 @@ def _confirm_cloud(conductor) -> dict:
     returns ``None`` rather than re-fitting.
     """
     return conductor.confirm_cloud_measure_group() or {}
+
+
+# --- the shared fixture's own premise ------------------------------------------
+
+
+def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one():
+    """``_fixture_entry_baseline``'s whole reason to exist, made falsifiable.
+
+    Every conductor this file builds grades its #2291 round against that
+    baseline, and the grading is only honest if the "before" really is the worse
+    measurement — by more than the claim margin. Nothing else in the file would
+    notice if it stopped being true: ``_in_room_summed_db`` changing, the
+    reducer's grid changing, or the sign of ``spec_convergence_residual``
+    flipping would all turn every round into a measured REGRESSION, which the
+    adoption table restores on, and the failures would surface far from here as
+    refusals about rollback anchors.
+
+    It also pins the two decimals the fixture's comment quotes, so those are
+    checked numbers rather than remembered ones.
+    """
+    fakes = FakeSeams()
+    conductor = _conductor(fakes)
+    baseline = conductor.measure_entry_baseline
+    assert baseline is not None
+
+    post = measured_response_from_analysis(
+        _verify_analysis(conductor._verify_program),
+        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+    )
+    # Comparable by construction, or the benefit verdict is about the fixture
+    # rather than about the speaker.
+    assert baseline.program_id == post.program_id
+    assert baseline.reference_mark == post.reference_mark
+    assert baseline.curve.hz == post.curve.hz
+
+    def residual_db(hz, db, excluded) -> float:
+        report = evaluate_flat_spec(
+            np.asarray(hz, dtype=np.float64),
+            np.asarray(db, dtype=np.float64),
+            np.asarray(excluded, dtype=bool),
+        )
+        convergence = spec_convergence_residual(report)
+        assert convergence.evaluable and convergence.rms_db is not None
+        return float(convergence.rms_db)
+
+    before_db = residual_db(baseline.curve.hz, baseline.curve.db, baseline.excluded)
+    after_db = residual_db(post.curve.hz, post.curve.db, post.excluded)
+    assert before_db == pytest.approx(_ENTRY_BASELINE_RESIDUAL_DB, abs=0.001)
+    assert after_db == pytest.approx(_POST_APPLY_RESIDUAL_DB, abs=0.001)
+    assert (before_db - after_db) > MEASURED_BENEFIT_MARGIN_DB
 
 
 # --- live attempts loop -------------------------------------------------------
@@ -1394,12 +1521,14 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     """
     info = flow.tier_display_info()
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # DERIVED from the two flags rather than hardcoded, so the chooser is
-    # pinned to whatever stage 1 actually runs. R16's walk is off until R17
-    # lands (see STAGE1_INCLUDES_LATERAL), so today this is 2; the day it
-    # flips, this test moves with it instead of going stale.
-    expected_stage1 = 2 + (
-        len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0
+    # DERIVED from the three stage-1 flags rather than hardcoded, so the
+    # chooser is pinned to whatever stage 1 actually runs and this test moves
+    # with a flag flip instead of going stale. R17's walk is on and #2291's
+    # entry baseline is on, so today this is 9.
+    expected_stage1 = (
+        2
+        + (len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0)
+        + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     )
     # The tiers genuinely no longer differ in stage 1 — so the numbers must not
     # imply that they do. (The lateral walk would not change that: it is the
@@ -5644,6 +5773,7 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
                 roles, fc_hz, plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
                 include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
             minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
@@ -6254,7 +6384,14 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     coupled: PR-3a sized ``MAX_CAPTURE_PLAN_ATTEMPTS`` from PR-3b's declared
     maxima, so raising a cloud constant past what the relay can carry must fail
     here — hardware-free — rather than stranding an operator on a refused blob
-    index at position 20."""
+    index at position 20.
+
+    The worst case is the WHOLE journey's draw and it is now EXACTLY at the
+    ceiling — 32 of 32 — which is why ``MAX_CLOUD_MEASURE_POSITIONS`` came down
+    to 11 when #2291 added a stage-1 entry (see that constant's own arithmetic).
+    The equality is asserted rather than the inequality alone: at zero headroom
+    the next entry anyone adds must be a deliberate decision about what to spend
+    it out of, not a test that quietly still passes."""
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
     assert_cloud_plan_fits_relay_capacity()
@@ -6270,15 +6407,20 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         + DEFAULT_CLOUD_VERIFY_POSITIONS
         + GEOMETRY_RETRY_POSITIONS
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert worst_entries == 19
+    assert worst_entries == 18
     assert (
         cloud_plan_max_attempts(
             cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
             cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
         )
-        == 26
+        == 25
         <= MAX_CAPTURE_PLAN_ATTEMPTS
     )
+    # …and the two stage-1 groups the cloud arithmetic above does not count.
+    assert flow.relay_plan_attempts_required(
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    ) == MAX_CAPTURE_PLAN_ATTEMPTS == 32
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
@@ -6312,10 +6454,12 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
-    # 1800 + (13 - 3) * 120 = 3000 s: the biggest stage-1 plan no longer
-    # reaches the hard cap, so the cap is exercised on a plan long enough to
-    # need it rather than left unpinned.
-    assert session_wall_clock_ceiling_s(biggest) == 3000.0
+    # 1800 + (12 - 3) * 120 = 2880 s: the biggest CLOUD-configured stage-1 plan
+    # does not reach the hard cap, so the cap is exercised on a plan long enough
+    # to need it (the synthetic 100 below) rather than left unpinned. 12, down
+    # from 13, because #2291's stage-1 entry brought
+    # ``MAX_CLOUD_MEASURE_POSITIONS`` to 11 — see that constant's arithmetic.
+    assert session_wall_clock_ceiling_s(biggest) == 2880.0
     assert MAX_WALL_CLOCK_CEILING_S == 3600.0
     assert session_wall_clock_ceiling_s(
         types.SimpleNamespace(capture_target=100)

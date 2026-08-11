@@ -86,9 +86,28 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterable,
+    Mapping,
+    Protocol,
+    Sequence,
+)
 
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Type-only, and imported lazily at the one runtime use site
+    # (``_consume_entry_baseline``): ``crossover_v2.round_evidence`` reaches
+    # :mod:`jasper.active_speaker.flat_spec` through
+    # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
+    # already imports ``flat_spec`` lazily everywhere else for that reason.
+    from jasper.active_speaker.crossover_v2.round_evidence import (
+        EntryBaseline,
+        MeasuredResponse,
+    )
 
 from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
@@ -232,6 +251,25 @@ PHASE_CLOUD_VERIFY = "cloud_verify"
 # a summed curve cannot answer. So it is NOT in ``SUMMED_SWEEP_PHASES``: same
 # protected-neutral commissioning graph, same stimulus, same gains as MEASURE.
 PHASE_LATERAL = "lateral"
+# #2291's "before" measurement: ONE summed sweep at the design-axis mark, taken
+# as the last thing stage 1 does — immediately before the household applies.
+#
+# It exists because a round could not say whether the speaker got BETTER. The
+# 2026-08-10 jts3 round retained CHECK/MEASURE, the lateral walk, VERIFY, and
+# five post-apply cloud positions and still had no answer, because none of that
+# evidence was *the same summed acoustic question, at the same program and
+# level, at the same mark, before and after the graph change*. This phase is
+# that question's first half; stage 2's ``PHASE_VERIFY`` is its second.
+#
+# Membership in ``SUMMED_SWEEP_PHASES`` (below) is what makes the pair
+# comparable at all: it routes ``_program_for_phase`` to the very same
+# ``_verify_program`` object, so the two captures share a ``program_id`` — a
+# SHA-256 over the whole excitation schedule including every segment's gain —
+# and that equality IS the comparability check
+# :func:`jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
+# runs. It is deliberately NOT a ``GROUP_PHASES`` member: it is one capture at
+# one mark, not a walk.
+PHASE_ENTRY_BASELINE = "entry_baseline"
 # The two-stage commission flow's untimed INTERLUDE (work order D3, issue
 # #1806): a measure-only session has closed, a candidate exists, and NOTHING
 # has been applied — the household is being shown what was measured, what is
@@ -311,6 +349,11 @@ CAPTURE_PHASES = (
     PHASE_MEASURE,
     PHASE_LATERAL,
     PHASE_CLOUD_MEASURE,
+    # LAST in stage 1, and so immediately before apply — that adjacency is the
+    # whole point of the entry baseline (#2291), not a layout preference: the
+    # less the room, the mic, and the household have moved between it and the
+    # graph change, the more of the before→after difference is the graph.
+    PHASE_ENTRY_BASELINE,
     PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
 )
@@ -333,12 +376,62 @@ PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
 # always been one; the two cloud groups join it because a spatial cloud measures
 # the SUMMED system — pre-apply for CLOUD_MEASURE ("what the speaker does
 # today"), post-apply for CLOUD_VERIFY. The compose-time min-cap clamp in
-# ``_compose_verify_program`` is the only level guard for all three, and its
+# ``_compose_verify_program`` is the only level guard for all four, and its
 # argument ("a summed signal reaches every driver, so clamp to the most
 # restrictive cap") holds identically before and after apply.
+#
+# ``PHASE_ENTRY_BASELINE`` is a member for a stronger reason than the other
+# three: for the two clouds this is an efficiency (one composed program serves
+# them all), but for the entry baseline it is the CORRECTNESS condition. #2291's
+# before→after comparison is checked by ``program_id`` equality, and equality
+# holds because ``_program_for_phase`` hands both sides the identical
+# ``_verify_program`` OBJECT. Removing it from this set would not merely change
+# the stimulus — it would make every round's benefit verdict
+# :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_PROGRAM_MISMATCH`.
 SUMMED_SWEEP_PHASES = frozenset(
-    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
 )
+
+#: WHERE the two sides of #2291's before→after comparison were measured.
+#:
+#: The mark is the one spot CHECK asks the household to stand the microphone on
+#: and MEASURE names ("this spot is the mark"), and both the entry baseline and
+#: the post-apply VERIFY are taken there. ``program_id`` equality cannot see
+#: position — a capture a metre away replays the identical program — so
+#: :class:`~jasper.active_speaker.crossover_v2.verification.MeasurementComparand`
+#: carries this second identity and
+#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
+#: refuses a pair whose marks disagree.
+#:
+#: **One owner, deliberately.** Both sides must stamp the SAME string or every
+#: round grades
+#: :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_MARK_MISMATCH`,
+#: so the post-apply side imports this constant rather than spelling the
+#: literal a second time. It is a stable identity, not a coordinate: nothing
+#: measures where the mark physically is, and the flow makes no claim that two
+#: sessions' marks are the same place — only that within ONE round the mic did
+#: not move between the two captures, which is what the round's own
+#: choreography (baseline last in stage 1, VERIFY first in stage 2, no prompted
+#: move between them) is for.
+REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
+
+#: What the entry baseline records when the host cannot name the graph the
+#: capture was measured through.
+#:
+#: The three ways that happens are all honest and none is a defect: no
+#: ``entry_graph_fingerprint`` seam is bound (every conductor unit test), the
+#: seam raised, or the speaker has no applied Layer-A profile yet (its
+#: first-ever round). A capture that measured the speaker correctly must not be
+#: rejected because its provenance could not be named — provenance is on the
+#: record, never a gate.
+#:
+#: A NAMED sentinel rather than ``""`` because
+#: :class:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline`
+#: requires a non-empty trimmed identity on both the write and the read side:
+#: an empty string would make ``from_dict`` refuse the whole record, so the
+#: round would silently lose its baseline to a missing *fingerprint*. This word
+#: survives the round trip and says exactly what is true.
+ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
 
 # --------------------------------------------------------------------------- #
 # position-group choreography (flat-linearization PR-3b)
@@ -378,7 +471,25 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 # The ceiling a caller may configure. Sized so the worst-case plan still fits
 # the relay's blob-index space — see ``assert_cloud_plan_fits_relay_capacity``,
 # which is the executable form of that claim.
-MAX_CLOUD_MEASURE_POSITIONS = 12
+#
+# **12 → 11 when #2291's entry baseline landed**, because that claim is what
+# this number IS, and one more stage-1 entry left the old value one blob index
+# over. The arithmetic the guard runs, spelled out:
+#
+#     cloud_plan_max_attempts(N, M=6)                  = 1 + N + 6 + 2 + 5
+#     + len(LATERAL_POSE_PROMPTS)                      = 6
+#     + the entry baseline                             = 1
+#     ------------------------------------------------------------------
+#     N=12 -> 33, N=11 -> 32 = MAX_CAPTURE_PLAN_ATTEMPTS
+#
+# Nothing shipped changes: ``DEFAULT_CLOUD_MEASURE_POSITIONS`` is 9 and stage 1
+# does not run the pre-apply cloud at all (``STAGE1_INCLUDES_CLOUD_MEASURE``).
+# What is spent is one step of configuration headroom — the cheapest of the
+# three ways to pay, the other two being a household-visible retake
+# (``CLOUD_RETAKE_ALLOWANCE``) and a lockstep raise of the relay Worker's own
+# ceiling, which is a deployed cross-system contract and not something a flow
+# change gets to assume.
+MAX_CLOUD_MEASURE_POSITIONS = 11
 # Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included — so
 # the plan emits ``M − 1`` additional prompted positions after VERIFY, and the
 # group combines ``M − 1`` curves (see the positions-are-not-curves note
@@ -1515,11 +1626,19 @@ def relay_plan_attempts_required(
     the poses unconditionally and the doctor did not, so a flipped build would
     under-report by six and pass a Pi whose Worker ceiling sat in [23, 28]:
     green in the diagnostic, refused mid-walk.
+
+    #2291's entry baseline is one more stage-1 entry and counts on exactly the
+    same terms — flag-guarded here so the guard and the doctor cannot disagree
+    about it either.
     """
-    return cloud_plan_max_attempts(
-        cloud_measure_positions=cloud_measure_positions,
-        cloud_verify_positions=cloud_verify_positions,
-    ) + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+    return (
+        cloud_plan_max_attempts(
+            cloud_measure_positions=cloud_measure_positions,
+            cloud_verify_positions=cloud_verify_positions,
+        )
+        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
+    )
 
 
 def assert_cloud_plan_fits_relay_capacity() -> None:
@@ -1536,12 +1655,17 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     """
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
-    # R16's walk is stage-1 entries too. Flag-aware via the shared producer
-    # below, so this and jasper-doctor can never disagree about the number.
-    entries = cloud_capture_target(
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    ) + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+    # R16's walk and #2291's entry baseline are stage-1 entries too. Flag-aware
+    # via the shared producer below, so this and jasper-doctor can never
+    # disagree about the number.
+    entries = (
+        cloud_capture_target(
+            cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+            cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+        )
+        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
+    )
     if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2FlowError(
             f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
@@ -1666,6 +1790,23 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
 STAGE1_INCLUDES_LATERAL = True
 
+# #2291's minimum new measurement: stage 1 takes ONE summed sweep at the mark
+# immediately before the household applies, so the round has a "before" to
+# grade its "after" against. Its own flag beside the two above, and ON, for the
+# reason the issue gives — without it every round's benefit verdict is
+# ``entry_baseline_unavailable``, which is exactly the blind spot that let the
+# 2026-08-10 jts3 round report success over a speaker three spec bands out.
+#
+# Gate 0's producer/consumer pairing is satisfied: the consumer
+# (:mod:`jasper.active_speaker.crossover_v2.verification`'s benefit verdict and
+# adoption table) is already merged, and the capture is what it has been
+# waiting on.
+#
+# Applied at the PRODUCTION seams (``_stage1_capture_target``,
+# ``prepare_v2_session``) exactly like its two siblings — the builders below
+# keep whatever a caller asks for.
+STAGE1_INCLUDES_ENTRY_BASELINE = True
+
 
 def _stage1_capture_target(shape: Any) -> int:
     """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
@@ -1673,6 +1814,7 @@ def _stage1_capture_target(shape: Any) -> int:
         plan_shape=shape,
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ))
 
 
@@ -1684,6 +1826,7 @@ def build_v2_cloud_index_phase_map(
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
+    include_entry_baseline: bool = False,
 ) -> dict[int, str]:
     """Capture-plan index → conductor phase for a STAGE-1 (measure) session.
 
@@ -1695,10 +1838,18 @@ def build_v2_cloud_index_phase_map(
         2                    MEASURE            (design-axis anchor)
         3 .. L+2             LATERAL            (L prompted poses, R16 §4.4)
         L+3 .. L+N+1         CLOUD_MEASURE      (N-1 prompted positions)
+        (last)               ENTRY_BASELINE     (#2291's "before", at the mark)
 
     The lateral walk runs BEFORE any pre-apply cloud because it is the anchor's
     own robustness sample: it replays the anchor program, and the sooner it runs
     after the anchor the less the household and the room have had to drift.
+
+    The entry baseline runs LAST — after the walk and after any cloud — because
+    #2291 asks for the summed capture *immediately before apply*, and every
+    entry it followed would otherwise be time the room and the microphone had
+    to drift between the "before" and the graph change it is meant to bracket.
+    It prompts the household back to the mark, so it is one held-still capture
+    rather than a group.
 
     **There is deliberately no VERIFY entry** (two-stage commission work order
     D1, issue #1806). Stage 1 measures and stops at the group-close confirm;
@@ -1726,10 +1877,12 @@ def build_v2_cloud_index_phase_map(
         for offset in range(len(LATERAL_POSE_PROMPTS)):
             mapping[nxt + offset] = PHASE_LATERAL
         nxt += len(LATERAL_POSE_PROMPTS)
-    if not include_cloud_measure:
-        return mapping
-    for offset in range(n - 1):
-        mapping[nxt + offset] = PHASE_CLOUD_MEASURE
+    if include_cloud_measure:
+        for offset in range(n - 1):
+            mapping[nxt + offset] = PHASE_CLOUD_MEASURE
+        nxt += n - 1
+    if include_entry_baseline:
+        mapping[nxt] = PHASE_ENTRY_BASELINE
     return mapping
 
 
@@ -1975,6 +2128,55 @@ REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
 # precedent: a failed automatic restore must continue to say the correction is
 # still applied, and name the manual action.
 REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
+# #2291's round verdict, and the one cause no code above can carry: the
+# correction was applied, MEASURED at the same mark with the same program, and
+# the speaker is measurably worse than it was before — so it came back off.
+# Distinct from ``REASON_CORRECTION_NOT_AN_IMPROVEMENT``, whose copy says "it
+# was not applied" and which grades a PREDICTED response before the apply, and
+# distinct from the three delta-probe codes, which say the graph did not do
+# what its own filters commanded. Here the graph did exactly what it was told
+# and the room liked it less, which is a different sentence to the household
+# and a different next step.
+REASON_CORRECTION_MEASURED_REGRESSION = "correction_measured_regression"
+# #2291's fail-closed boost. The benefit could not be measured — no comparable
+# "before", or a capture that could not be compared — and the applied
+# intervention puts energy INTO a driver. An unverified cut can wait for a
+# household to decide; an unverified boost cannot, so it comes off. Its own
+# code because "we could not tell, and erred toward your drivers" is a
+# different and more honest sentence than "it measured worse".
+REASON_CORRECTION_UNPROVEN_BOOST = "correction_unproven_boost"
+
+def round_restore_reason(cause: str) -> str:
+    """#2291 adoption cause → the code a SUCCESSFUL round restore surfaces.
+
+    Only the three causes the table can reach with a ``restore`` intent exist,
+    and each maps to the code whose copy states that cause truthfully. A
+    realization failure IS the graph not doing what its own filters commanded,
+    which is :data:`REASON_CORRECTION_MODEL_ERROR`'s existing sentence, so it
+    is reused rather than duplicated.
+
+    A function with a lazy import rather than a module-level dict, because
+    :mod:`~jasper.active_speaker.crossover_v2.verification` reaches
+    :mod:`~jasper.active_speaker.flat_spec`, which this module imports lazily
+    everywhere for that reason.
+
+    Anything unlisted falls back to the measured-regression code — the weakest
+    true statement available for "the round asked for a restore". The mapping
+    is exhaustive today and pinned by a test, so the fallback is a floor, not
+    a branch anything reaches.
+    """
+    from jasper.active_speaker.crossover_v2.verification import (
+        ADOPTION_MEASURED_REGRESSION,
+        ADOPTION_REALIZATION_FAILED,
+        ADOPTION_UNPROVEN_BOOST,
+    )
+
+    return {
+        ADOPTION_MEASURED_REGRESSION: REASON_CORRECTION_MEASURED_REGRESSION,
+        ADOPTION_REALIZATION_FAILED: REASON_CORRECTION_MODEL_ERROR,
+        ADOPTION_UNPROVEN_BOOST: REASON_CORRECTION_UNPROVEN_BOOST,
+    }.get(cause, REASON_CORRECTION_MEASURED_REGRESSION)
+
 
 #: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
 #: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test.
@@ -2606,7 +2808,34 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Moving the speaker away from nearby walls and surfaces, then "
         "measuring again, is what changes this.",
     ),
-    # The three rows above all promise "the previous sound has been put back",
+    # #2291's measured regression. Same promise as the three above — and it is
+    # true on the same terms: this row renders only when the restore actually
+    # ran, and the failed-restore row below is what renders when it did not.
+    # The remedy differs from its neighbours because the finding does: nothing
+    # misbehaved, so there is no chain to re-check and no level to drop. The
+    # honest next step is a different measurement, which usually means moving
+    # the microphone or the speaker.
+    REASON_CORRECTION_MEASURED_REGRESSION: ReasonSpec(
+        REASON_CORRECTION_MEASURED_REGRESSION, TEMPLATE_HARD_STOP, 0, "",
+        "JTS measured your speaker before and after the tuning, and it "
+        "measured worse afterwards — so the previous sound has been put back. "
+        "Nothing is broken; this room and this speaker position did not suit "
+        "the tuning. Moving the speaker a little, or measuring from your usual "
+        "listening spot, is what changes this.",
+    ),
+    # #2291's fail-closed boost, and the one row here that reports a
+    # NON-finding. Says what JTS could not establish before what it did about
+    # it, because the household's speaker changed twice and "why" is otherwise
+    # unanswerable from the screen.
+    REASON_CORRECTION_UNPROVEN_BOOST: ReasonSpec(
+        REASON_CORRECTION_UNPROVEN_BOOST, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not measure whether this tuning improved your speaker, and "
+        "it turns some parts up rather than only down — so the previous sound "
+        "has been put back rather than leaving an unproven change driving your "
+        "speaker harder. Measuring again, from your usual listening spot, is "
+        "what settles it.",
+    ),
+    # The five rows above all promise "the previous sound has been put back",
     # which is only true when the rollback actually ran. When it did not, THIS
     # is the row that renders instead — same finding, opposite state of the
     # speaker, and it says so first.
@@ -2636,12 +2865,49 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
 
+def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
+    """``correction_rollback_failed``'s sentence, branched on the anchor.
+
+    One code, two situations, and until #2291 one sentence — which pointed the
+    wrong half at a control that cannot help it.
+
+    * **A restore was attempted and did not complete** (``True``/``None``):
+      there IS a stored previous sound, the automatic attempt failed, and Undo
+      is a real remedy the household can press. Unchanged copy.
+    * **There was never an anchor** (``False``): the adoption table routed here
+      *because* no previous sound exists, and Undo refuses on that same
+      predicate. Telling this household to tap it sends them to a dead end on
+      the most ordinary case there is — a speaker's first-ever correction. So
+      this arm names no Undo, states what is true about their speaker, and
+      offers the two remedies that DO exist.
+
+    ``None`` takes the Undo arm deliberately: an unestablished fact must not
+    invent the more alarming claim ("nothing to go back to") about a speaker
+    that may well have a perfectly good anchor.
+    """
+    if rollback_anchor_available is False:
+        return (
+            "The new tuning is still applied, and this speaker has no stored "
+            "previous sound to go back to — this was its first measured "
+            "crossover. You can measure again to try for a better result, or "
+            "clear the tuning from the Sound page to return to the standard "
+            "setup."
+        )
+    return (
+        "JTS checked the tuning against what your speaker actually did, and "
+        "they did not match — but it could not put the previous sound back, "
+        "so the newer tuning is STILL APPLIED. Tap Undo to restore the "
+        "previous sound."
+    )
+
+
 def reason_message(
     code: str,
     spec: ReasonSpec,
     *,
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
+    rollback_anchor_available: bool | None = None,
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -2678,6 +2944,8 @@ def reason_message(
         return locate_failed_message(pilot_heard)
     if code == REASON_VERIFY_INCONCLUSIVE:
         return verify_inconclusive_message(reflection_measured)
+    if code == REASON_CORRECTION_ROLLBACK_FAILED:
+        return correction_rollback_failed_message(rollback_anchor_available)
     # ``or spec.banner`` for the silent-auto-retry codes, whose household text
     # IS the banner and whose ``message`` is empty by construction.
     return spec.message or spec.banner
@@ -3998,6 +4266,39 @@ class V2FlowSeams:
     # VERIFY. Optional so a conductor without a durable host still grades its
     # in-memory attempt and every pre-wiring construction site remains valid.
     record_model_error: RecordModelError | None = None
+    # #2291: which DSP graph the entry baseline was measured through, read at
+    # accept time (like ``applied_offset_db``, not passed at construction —
+    # the answer is a property of the moment the capture happened). Bound on
+    # BOTH stages: "what is live right now" is not a stage asymmetry, and the
+    # record's whole job is to let a LATER round bind the currently-active
+    # profile as its own entry graph.
+    #
+    # Optional, and a raising call is caught by the one caller: a fingerprint
+    # is provenance on a record, never a gate. A capture that measured the
+    # speaker honestly must not be rejected because the host could not name the
+    # graph it measured — the record then carries "" and says so.
+    entry_graph_fingerprint: Callable[[], str] | None = None
+    # #2291: is there a valid anchor to restore TO? The ANCHOR half of the
+    # adoption table's ``rollback_available``; the SEAM half is ``rollback``
+    # above being bound at all, and :meth:`_rollback_available` ANDs them.
+    # Optional, and its absence reads as "cannot confirm an anchor" rather
+    # than as "there is one" — see that method for why the pessimistic
+    # direction is the safe one here.
+    rollback_available: Callable[[], bool] | None = None
+    # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
+    # grading time, because the grading conductor cannot answer it from its own
+    # state — stage 2 never holds a candidate (see
+    # :meth:`_applied_candidate_boosts` for the bug this closes). Optional, and
+    # its absence answers "boosted": an intervention this process cannot
+    # inspect comes off rather than staying on evidence nobody has.
+    applied_boosts: Callable[[], bool] | None = None
+    # #2291: publish the round receipt and return its artifact fingerprint.
+    # The conductor builds the record (one assembler, in the pure layer) and
+    # this seam owns WHERE it lands — the evidence bundle, write-once and
+    # tamper-checked. Optional, and every failure is the host's to raise: the
+    # caller treats a raise or a ``None`` as "no receipt was written", logs it,
+    # and keeps the verdict. A receipt is the round's record, never its gate.
+    publish_round_receipt: Callable[[Mapping[str, Any]], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -5531,6 +5832,7 @@ def assemble_cloud_group_result(
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
     crossover_region_hz: tuple[float, float] | None = None,
+    spec_report_sink: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -5722,6 +6024,18 @@ def assemble_cloud_group_result(
         spec_report = evaluate_flat_spec(
             combined.freqs_hz, combined.power_mean_spec_db, spec_mask,
         )
+        # #2291/#2160: hand the LIVE report to a caller that needs the object
+        # rather than the serialized copy below. ``evaluate_spec`` reads
+        # ``overall_passed`` and each band's ``evaluable``/``passed``, which
+        # ``to_dict`` flattens away, and the round's spec verdict must be the
+        # SAME report this function already built — re-evaluating it from
+        # ``combined`` in the conductor would be a second owner of the merged
+        # honesty mask, which is exactly what this function exists to prevent.
+        # A sink rather than a second return value because every other caller
+        # (and every test) reads the dict, and widening the return type would
+        # change all of them to serve one consumer.
+        if spec_report_sink is not None:
+            spec_report_sink(spec_report)
         geometry_dict = {
             "locked": bool(combined.geometry.locked),
             "reason": str(combined.geometry.reason),
@@ -6067,6 +6381,7 @@ class CrossoverV2Conductor:
         measure_predicted_sum: Any = None,
         measure_predicted_spec_report: Mapping[str, Any] | None = None,
         measure_commanded_delta: Any = None,
+        measure_entry_baseline: "EntryBaseline | None" = None,
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
@@ -6294,6 +6609,13 @@ class CrossoverV2Conductor:
         # the group closes, mirroring that dict's own "never confuse
         # not-yet-run with a clean verdict" rule.
         self._group_cloud_result: dict[str, dict[str, Any]] = {}
+        # #2291: the LIVE ``FlatSpecReport`` behind ``_group_cloud_result``'s
+        # serialized ``spec`` key, per phase. Kept beside it, and populated in
+        # the same statement, because the round's spec verdict
+        # (``verification.evaluate_spec``) reads ``overall_passed`` and each
+        # band's ``evaluable``/``passed`` — structure ``to_dict`` flattens.
+        # Not persisted: it is a live object, and the dict is the durable copy.
+        self._group_spec_report: dict[str, Any] = {}
         # #1872: which phases' evidence artifact has already been PUBLISHED —
         # the one part of a group close that is a genuine per-phase
         # singleton (the evidence store is write-once; see
@@ -6384,6 +6706,37 @@ class CrossoverV2Conductor:
         # for the same reason and by the same route — the delta probe runs at
         # VERIFY, which a re-arm session reaches with a fresh conductor.
         self._measure_commanded_delta: Any = measure_commanded_delta
+        # #2291's "before" measurement. WRITTEN by stage 1, whose
+        # ``PHASE_ENTRY_BASELINE`` capture reduces it (``_consume_entry_baseline``);
+        # PASSED IN on stage 2, which never captures one and rehydrates it from
+        # durable state so the post-apply verdict has something to compare
+        # against. Same field, same two routes, same reason as
+        # ``_measure_commanded_delta`` directly above.
+        self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
+        # #2291's round grading, and its fire-once guard. The round is graded
+        # at the point stage 2's post-apply evidence is COMPLETE, which is two
+        # different moments on the two tiers (see :meth:`_grade_round_once`),
+        # so the guard is what keeps one session to one grading rather than one
+        # per trigger that happens to fire.
+        self._round_evaluated = False
+        self._round_evaluation: Any = None
+        self._round_restore_result: dict[str, Any] | None = None
+        # Where this round's receipt landed: round id + the bundle artifact's
+        # fingerprint. Persisted, so the NEXT round can find the previous one
+        # without scanning bundles. ``None`` until a receipt is written, and it
+        # stays ``None`` when writing failed — an identity for a receipt that
+        # does not exist would be worse than no identity.
+        self._round_receipt_identity: dict[str, Any] | None = None
+        # Which arm of ``correction_rollback_failed`` this session's refusal is
+        # (#2291): ``True`` a restore attempted against a real anchor and
+        # failed, ``False`` there was never an anchor, ``None`` not established
+        # — the copy owner treats the last as the Undo arm rather than inventing
+        # the more alarming claim about a speaker that may have an anchor.
+        self._last_failure_rollback_anchor: bool | None = None
+        # The post-apply VERIFY analysis, retained for the Full tier: its round
+        # is graded when the post-apply CLOUD closes, which is a later call
+        # with no access to the capture the benefit verdict differences.
+        self._verify_analysis: ProgramAnalysis | None = None
         # This session's delta-probe verdict, refined once more if a post-apply
         # position group closes (which adds the spatial arm). ``None`` until
         # VERIFY is consumed.
@@ -6901,6 +7254,46 @@ class CrossoverV2Conductor:
         """
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
+    def _entry_baseline_priors(self) -> MeasurementPriors:
+        """Priors for #2291's pre-apply capture — the SAME two withholdings
+        :meth:`_cloud_priors` makes, for a different reason.
+
+        Field by field, against :meth:`_verify_priors` (the other consumer of
+        the identical program):
+
+        * ``crossover_fc_hz`` — **kept**. It is the session's declared
+          crossover, not a claim about this capture, and the analyzer uses it
+          to place its bands.
+        * ``predicted_sum`` — **dropped**. VERIFY carries it so
+          ``_analyze_verify`` can compute ``verify_tracking`` ("did apply do
+          what the model predicted"). Nothing has been applied when this
+          capture is taken, so there is no prediction it could be tracking:
+          the prediction describes the graph the household is ABOUT to choose.
+          Passing it would make the analyzer grade the *entry* graph against
+          the *candidate's* model and report the whole intended correction as
+          a realization error. Withholding it leaves
+          ``analysis.verify_tracking`` ``None``, which is what
+          :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
+          already reads as UNAVAILABLE rather than as a pass.
+        * ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` —
+          **dropped**. They exist only to clamp the tracking comparison's
+          graded band, and there is no tracking comparison here.
+        * ``configured_crossover_response_by_role`` /
+          ``configured_polarity_sign_by_role`` — **dropped** (R18, #1868).
+          They let ``_analyze_verify`` make the crossover-region ABSOLUTE claim
+          against the *configured* design. That design is not on the speaker
+          yet, so the claim would grade the entry graph for not being the
+          candidate. The benefit comparison needs no such claim: it reads this
+          capture's own summed response and differences it against the
+          post-apply one.
+
+        What is left is a plain summed-response analysis, which is exactly the
+        input :func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`
+        reduces. Do not thread the withheld priors back in: this capture cannot
+        support any claim they enable.
+        """
+        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+
     # --- read surfaces -------------------------------------------------------
 
     @property
@@ -7144,6 +7537,40 @@ class CrossoverV2Conductor:
         return self._measure_commanded_delta
 
     @property
+    def round_receipt_identity(self) -> dict[str, Any] | None:
+        """Where this session's round receipt landed, or ``None`` (#2291).
+
+        ``{round_id, artifact_fingerprint, receipt_fingerprint}``. Persisted by
+        the host into the durable state so the NEXT round can resolve the
+        previous one by identity instead of scanning bundles. ``None`` means no
+        receipt was written — an unwired seam, or a write that failed — and is
+        never a claim that one exists.
+        """
+        record = self._round_receipt_identity
+        return dict(record) if isinstance(record, Mapping) else None
+
+    @property
+    def round_evaluation(self) -> Any:
+        """This session's graded round, or ``None`` before it is graded."""
+        return self._round_evaluation
+
+    @property
+    def measure_entry_baseline(self) -> "EntryBaseline | None":
+        """#2291's pre-apply side of this round, or ``None``.
+
+        ``None`` is the honest "this round has no comparable before" —
+        :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_BASELINE_UNAVAILABLE`,
+        which is INDETERMINATE and never a pass. Reached three ways: a stage-1
+        session whose entry-baseline capture has not landed (or was rejected),
+        a stage 2 the host rehydrated nothing into, and a state file written by
+        a build before the key shipped.
+
+        The record is frozen and its fields are immutable, so this returns it
+        directly rather than copying like ``measure_predicted_spec_report``.
+        """
+        return self._measure_entry_baseline
+
+    @property
     def last_intervention_proposal(self) -> "InterventionProposal | PlanRefusal | None":
         """The #2291 contract for the committed candidate, or why there is none.
 
@@ -7245,6 +7672,21 @@ class CrossoverV2Conductor:
         ``persist_conductor_state`` makes it.
         """
         return self._last_failure_pilot_heard if self._last_failure_code else None
+
+    @property
+    def last_failure_rollback_anchor(self) -> bool | None:
+        """Which ``correction_rollback_failed`` arm this failure is (#2291).
+
+        ``True`` a restore ran against a real anchor and did not complete;
+        ``False`` there was never an anchor to restore to; ``None`` the
+        question does not apply to this code, or predates the record.
+
+        Paired with :attr:`last_failure_code` on exactly
+        :attr:`last_failure_pilot_heard`'s terms — written together, gated on
+        the code being present, and persisted so the envelope can re-render
+        the right sentence in a later process.
+        """
+        return self._last_failure_rollback_anchor if self._last_failure_code else None
 
     def _pilot_heard_for(
         self, code: str | None, *, slot: str | None = None,
@@ -7660,6 +8102,7 @@ class CrossoverV2Conductor:
             else self._verify_priors() if phase == PHASE_VERIFY
             else self._lateral_priors() if phase == PHASE_LATERAL
             else self._cloud_priors() if phase in GROUP_PHASES
+            else self._entry_baseline_priors() if phase == PHASE_ENTRY_BASELINE
             else self._check_priors() if phase == PHASE_CHECK
             else MeasurementPriors()
         )
@@ -7693,6 +8136,12 @@ class CrossoverV2Conductor:
             verdict = self._consume_cloud_position(
                 phase, index, attempt, analysis, result
             )
+        elif phase == PHASE_ENTRY_BASELINE:
+            # Explicit, ahead of the catch-all below, because that ``else``
+            # routes anything unrecognised into ``_consume_verify`` — which
+            # would grade #2291's pre-apply capture as a post-apply tracking
+            # result, bank it as a tuning attempt, and do it silently.
+            verdict = self._consume_entry_baseline(index, attempt, analysis, result)
         else:
             verdict = self._consume_verify(analysis, attempt=attempt)
         # THIS capture's pilot evidence, attached to whatever verdict came back
@@ -9257,11 +9706,22 @@ class CrossoverV2Conductor:
             # gate that cannot fail the capture is not a gate.
             refusal = self._delta_probe_refusal(self._run_delta_probe())
             if refusal is not None:
+                # No round grading on a refusal. The probe already rolled back
+                # and named itself with the more specific code, and a group can
+                # be retaken — so grading here would burn the fire-once guard
+                # on evidence that may yet be replaced, exactly as it would on
+                # a rejected VERIFY (see ``_consume_verify``). The receipt is
+                # write-once, so "grade the first ending" is not a shape this
+                # can safely take twice.
                 return PhaseVerdict(
                     False, refusal,
                     payload={"delta_probe": self._delta_probe.to_dict()}
                     if self._delta_probe is not None else {},
                 )
+            # #2291: the Full tier's post-apply evidence is complete here — the
+            # spatial arm has landed, so the spec verdict has a report and the
+            # benefit verdict has everything it will get.
+            return self._grade_round_once(PhaseVerdict(True, payload=payload))
         return PhaseVerdict(True, payload=payload)
 
     def cloud_measure_group_awaiting_confirm(self) -> bool:
@@ -10660,6 +11120,13 @@ class CrossoverV2Conductor:
             crossover_region_hz=committed_crossover_region_hz(
                 getattr(self._preset, "crossover_regions", ()) or ()
             ),
+            # #2291: retain the live report for this phase, beside the live
+            # ``combined`` this method already stashes. The round's SPEC
+            # verdict needs the object; the dict below keeps the serialized
+            # copy every other surface reads.
+            spec_report_sink=lambda report: self._group_spec_report.__setitem__(
+                phase, report
+            ),
         )
         self._group_cloud_result[phase] = result
         # PR-5: the spec verdict a session's journal carries. It replaces the
@@ -10770,12 +11237,716 @@ class CrossoverV2Conductor:
             glitch=analysis.glitch_detected,
         )
 
+    def _consume_entry_baseline(
+        self,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> PhaseVerdict:
+        """#2291's "before" capture: screen it, reduce it, retain it.
+
+        **The accept rule reuses shipped gates; it invents none.** Which of
+        :meth:`_verify_verdict`'s this mirrors, and which it drops:
+
+        * ``_stimulus_locate_ok`` — **reused**. A capture whose stimulus was
+          never located is not evidence about the speaker, whatever is being
+          asked of it.
+        * ``pilot_snr_ok is False`` — **reused**, and ahead of everything but
+          the locate check, for issue #1810's reason: a pilot pair that never
+          cleared the room floor is a room/level problem, and reporting it as
+          anything else sends the household to fix the wrong thing.
+        * capture integrity — **reused**, through
+          :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_capture_validity`,
+          which is the shipped comparability rule and the same function the
+          post-apply side is graded by. One difference from
+          ``_verify_verdict``, deliberate: an **absent** integrity record is
+          UNUSABLE here where VERIFY treats it as no-evidence-and-continue.
+          That evaluator owns the "``None`` means no evidence, never clean"
+          convention, and this capture exists only to be compared — a
+          before-side nobody graded cannot carry a before→after claim, so it
+          fails closed rather than seeding one.
+        * ``linearity_ok is False`` — **reused**. AGC in the recording chain
+          bends the curve this capture exists to measure.
+        * gate-comparability, §5.2 (VERIFY's gate shorter than MEASURE's ⇒
+          inconclusive) — **dropped**. It protects an OVERLAY of the measured
+          summed response against MEASURE's per-driver model, and this capture
+          makes no such overlay. Its partner is stage 2's VERIFY, which is
+          still graded against MEASURE's window by that rule; adding a second,
+          differently-motivated refusal here would cost retakes without
+          protecting a claim.
+        * the G3 pilot-transfer step — **dropped**. G3 asks whether the
+          recording chain moved BETWEEN two replays of the identical program
+          within one conductor's lifetime, and it exists to protect the
+          tracking comparison it immediately precedes. There is no tracking
+          comparison here, and stage 1 runs exactly one summed capture, so the
+          gate could only ever record a reference that stage 2's own fresh
+          conductor is forbidden to inherit (#1927).
+        * the tracking-max tolerance comparison — **dropped**, structurally:
+          :meth:`_entry_baseline_priors` withholds ``predicted_sum``, so
+          ``analysis.verify_tracking`` is ``None`` and there is nothing to
+          grade.
+
+        One more refusal that is this phase's own: the reduction
+        (:func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`)
+        must produce a side. It returns ``None`` for a missing summed response
+        or a degenerate curve — the same "located, but carries no curve"
+        condition :meth:`_cloud_position_verdict` already answers with
+        ``locate_failed``, and this reuses that code rather than minting one.
+
+        Every refusal is an ordinary rejected :class:`PhaseVerdict` with a
+        shipped ``REASON_*``, so the slot's normal retry budget and household
+        copy apply with no new machinery.
+        """
+        verdict, measured = self._entry_baseline_verdict(analysis)
+        if verdict.accepted and measured is not None:
+            self._retain_entry_baseline(index, attempt, measured, analysis, result)
+        self._safe_log_diag(
+            lambda a, v: self._log_entry_baseline_diag(index, a, v), analysis, verdict
+        )
+        return verdict
+
+    def _entry_baseline_verdict(
+        self, analysis: ProgramAnalysis,
+    ) -> tuple[PhaseVerdict, "MeasuredResponse | None"]:
+        """The screens above, and the reduced side when they all pass."""
+        from jasper.active_speaker.crossover_v2.round_evidence import (
+            measured_response_from_analysis,
+        )
+        from jasper.active_speaker.crossover_v2.verification import (
+            CaptureValidity,
+            evaluate_capture_validity,
+        )
+
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED), None
+        if analysis.pilot_snr_ok is False:
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE), None
+        integrity = analysis.capture_integrity
+        validity = evaluate_capture_validity(integrity)
+        if validity.status is CaptureValidity.UNUSABLE:
+            payload = (
+                {"capture_integrity": integrity.to_dict()}
+                if integrity is not None else {"capture_integrity": None}
+            )
+            # The same two-code split ``_verify_verdict`` makes from the same
+            # evidence: a sweep nobody could hear is a level/mic problem, and a
+            # spliced or clipped timeline is the transient capture-glitch class
+            # (#1838 §5.2). An ABSENT record takes the glitch code's silent
+            # auto-retry, which is the right household action for "we could not
+            # tell" — nothing for them to fix, worth one more try.
+            if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
+                return PhaseVerdict(False, REASON_LOCATE_FAILED, payload=payload), None
+            return (
+                PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE, payload=payload),
+                None,
+            )
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL), None
+        measured = measured_response_from_analysis(
+            analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+        )
+        if measured is None:
+            return PhaseVerdict(False, REASON_LOCATE_FAILED), None
+        return PhaseVerdict(True, payload={"program_id": measured.program_id}), measured
+
+    def _retain_entry_baseline(
+        self,
+        index: int,
+        attempt: int,
+        measured: "MeasuredResponse",
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> None:
+        """Bank the accepted baseline, and hand its bytes to the evidence seam.
+
+        ``retain_position`` is reused rather than duplicated even though this
+        is not a :data:`GROUP_PHASES` member, so an entry baseline lands in
+        ``refs["position_artifacts"]`` beside every other retained take and one
+        replay path covers both. Being outside the group bookkeeping is exactly
+        why the call is explicit here: nothing else would make it.
+
+        Fail-soft on the same terms as :meth:`_retain_cloud_position` — same
+        caught family, same WARN. Evidence retention is forensics, never a
+        gate: a full disk must not turn an acoustically-good baseline into a
+        retake, and the reduced record (which is what the round actually
+        grades) is banked whether or not any bytes were stored.
+        """
+        take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
+        fingerprint = self._entry_graph_fingerprint()
+        metadata = {
+            "position_id": take_id,
+            "phase": PHASE_ENTRY_BASELINE,
+            "index": index,
+            "attempt": attempt,
+            "take_id": take_id,
+            "session_id": self.session_id,
+            # The three facts that make this capture comparable to the
+            # post-apply one, on the artifact itself: WHAT was played, WHERE it
+            # was played from, and WHICH graph it went through.
+            "program_id": measured.program_id,
+            "reference_mark": measured.reference_mark,
+            "graph_fingerprint": fingerprint,
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "validity_floor_hz": getattr(
+                analysis.summed_response, "validity_floor_hz", None
+            ),
+            "gate_window_ms": _gate_window_ms(analysis.summed_response),
+            "summed_ripple_db": analysis.summed_ripple_db,
+            "glitch_detected": bool(analysis.glitch_detected),
+            "wav_sha256": _capture_wav_sha256(result),
+        }
+        artifact_ref = ""
+        if self._seams.retain_position is not None:
+            try:
+                self._seams.retain_position(take_id, result, metadata)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                log_event(
+                    logger, "correction.crossover_v2_position_retain_failed",
+                    level=logging.WARNING,
+                    session_id=self.session_id, phase=PHASE_ENTRY_BASELINE,
+                    position_id=take_id, exc_info=True,
+                )
+            else:
+                artifact_ref = take_id
+        from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+        self._measure_entry_baseline = EntryBaseline.from_measurement(
+            measured,
+            graph_fingerprint=fingerprint,
+            captured_at=str(metadata["captured_at"]),
+            artifact_ref=artifact_ref,
+        )
+
+    def _entry_graph_fingerprint(self) -> str:
+        """Which graph this capture was measured through, or the unknown word.
+
+        Never raises and never gates — see
+        :data:`ENTRY_GRAPH_FINGERPRINT_UNKNOWN` for the three honest ways the
+        host cannot answer, and why the answer is a word rather than an empty
+        string.
+        """
+        seam = self._seams.entry_graph_fingerprint
+        if seam is None:
+            return ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+        try:
+            value = str(seam() or "")
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            log_event(
+                logger, "correction.crossover_v2_entry_graph_fingerprint_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+        value = value.strip()
+        return value or ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+
+    def _rollback_available(self) -> bool:
+        """Can this host actually put the previous sound back? (#2291)
+
+        **BOTH-AND**, and each half answers a different question:
+
+        * the ``rollback`` seam is bound — a *process* fact, the flow's own
+          capability idiom (``STAGE_VERIFY_CAPABILITIES`` provides
+          ``CAPABILITY_ROLLBACK``). A single-stage or future caller may reach
+          this decision with no seam at all.
+        * a valid anchor exists — a *state* fact, owned by the host's
+          ``rollback_available`` seam, which reads the very predicate
+          ``handle_v2_restore`` refuses on.
+
+        Either half alone gives a wrong answer to the question
+        :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
+        is actually asking. Seam-only says yes on a speaker whose durable state
+        carries no ``pre_apply_profile``: the round would issue a ``restore``
+        instruction Undo then refuses, and the household would be told the old
+        sound was coming back when nothing could bring it. Anchor-only ignores
+        that some callers cannot restore at all.
+
+        Fails closed on both halves — an unbound anchor seam, or one that
+        raises, means "not available", which routes the adoption table to
+        ``recovery_required`` (loud, operator-visible) rather than to a restore
+        that cannot happen.
+        """
+        if self._seams.rollback is None:
+            return False
+        seam = self._seams.rollback_available
+        if seam is None:
+            return False
+        try:
+            return bool(seam())
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_rollback_available_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return False
+
+    # --- #2291: the round, graded and acted on -------------------------------
+
+    def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
+        """Grade this round and act on the adoption table. Once per session.
+
+        **One owner, two triggers**, because "stage 2's post-apply evidence is
+        complete" happens at two different moments:
+
+        * Express — the end of :meth:`_consume_verify`, when this session plans
+          no post-apply cloud. VERIFY is all the evidence there will be.
+        * Full — the end of :meth:`_close_cloud_group` for
+          ``PHASE_CLOUD_VERIFY``, when the spatial arm has landed too.
+
+        **Both triggers require an ACCEPTED capture.** VERIFY and a position
+        group each carry a retry budget, so a rejected one does not end the
+        session; grading it would burn this guard on evidence the household
+        then replaced, and the receipt — which is write-once — would describe a
+        capture the round did not end on. A session that ends on a terminal
+        rejection therefore writes no round receipt, which is the honest
+        record: its post-apply evidence never completed.
+
+        Fail-soft, and the fail direction matters: a grading failure logs and
+        returns the caller's own verdict untouched. The round's job is to add
+        an honest answer, and a bug in the grader must not cost the household
+        the verdict the measurement gate already reached — least of all by
+        turning an accepted capture into a refusal.
+        """
+        if self._round_evaluated:
+            return verdict
+        self._round_evaluated = True
+        try:
+            evaluation = self._evaluate_round()
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError, IndexError, ZeroDivisionError):
+            log_event(
+                logger, "correction.crossover_v2_round_grade_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return verdict
+        self._round_evaluation = evaluation
+        self._log_round(evaluation)
+        outcome = self._act_on_adoption(evaluation, verdict)
+        # LAST, so the receipt records what the round actually DID — including
+        # a restore's result, which ``_act_on_adoption`` is what produces.
+        self._write_round_receipt(self._round_evaluation)
+        return outcome
+
+    def _evaluate_round(self) -> Any:
+        """Build :func:`evaluate_round`'s inputs and call it. Composes nothing.
+
+        Every verdict, the table, and the ordering between them belong to
+        :mod:`jasper.active_speaker.crossover_v2.round_evidence`; this assembles
+        arguments. The spec report is the post-apply CLOUD's — ``None`` on a
+        tier that walks no cloud, which the evaluator reads as "no report"
+        rather than as a pass (#2160's honest wire: a spec failure that used to
+        be disclosure-only is now a verdict on the receipt).
+        """
+        from jasper.active_speaker.crossover_v2.round_evidence import evaluate_round
+
+        analysis = self._verify_analysis
+        return evaluate_round(
+            post_analysis=analysis,
+            entry_baseline=self._measure_entry_baseline,
+            spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
+            tracking=getattr(analysis, "verify_tracking", None),
+            realization_tolerance_db=VERIFY_TOLERANCE_DB,
+            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            boosted=self._applied_candidate_boosts(),
+            rollback_available=self._rollback_available(),
+        )
+
+    def _applied_candidate_boosts(self) -> bool:
+        """Does the applied intervention put energy IN? (#2291 ``boosted``)
+
+        **Asked of the HOST, not of this conductor's own state, and that is
+        the whole point.** This originally read ``self._candidate`` — which is
+        assigned in exactly one place, stage 1's commit. The stage that GRADES
+        a round is a different process with a fresh conductor and no ctor
+        parameter for a candidate, so the read was ``None`` on every shipped
+        round, ``boosted`` was always ``False``, and #2318's fail-closed cell
+        was unreachable: a boosted intervention with unprovable benefit ended
+        ``accepted=True`` with the graph live. The test suite was green over it
+        because its harness injected a candidate the production path never
+        supplies.
+
+        The seam answers from the applied-profile SSOT — the one owner of
+        "what did we apply" — through the shipped
+        :func:`~jasper.active_speaker.camilla_yaml.linearization_has_boost`,
+        so there is still no second definition of "boost" on this speaker.
+
+        Fails CLOSED at both levels: an unbound seam and a raising one both
+        answer "boosted", so an intervention nobody can inspect is restored
+        rather than left driving a driver on evidence nobody has.
+        """
+        seam = self._seams.applied_boosts
+        if seam is None:
+            return True
+        try:
+            return bool(seam())
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_round_boost_unreadable",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return True
+
+    def _log_round(self, evaluation: Any) -> None:
+        """The round's whole answer, as one journal line.
+
+        ``to_dict`` carries the four verdicts WITH their evidence, not just the
+        collapsed statuses: a support read needs to know why a benefit was
+        indeterminate, and the statuses alone cannot say.
+        """
+        record = evaluation.to_dict()
+        log_event(
+            logger, "correction.crossover_v2_round_graded",
+            session_id=self.session_id,
+            adoption=evaluation.adoption.outcome.value,
+            reason=evaluation.adoption.reason,
+            capture=record["verdicts"]["capture"]["status"],
+            realization=record["verdicts"]["realization"]["status"],
+            benefit=record["verdicts"]["benefit"]["status"],
+            spec=record["verdicts"]["spec"]["status"],
+            post_residual_db=evaluation.post_residual_db,
+            post_residual_bins=evaluation.post_residual_bins,
+            evidence=record["verdicts"],
+        )
+
+    def _act_on_adoption(self, evaluation: Any, verdict: PhaseVerdict) -> PhaseVerdict:
+        """Turn the adoption outcome into what the household gets.
+
+        Only ever reached for an ACCEPTED capture — both triggers grade on one
+        (see :meth:`_grade_round_once`), because a rejected capture can be
+        retried and grading one would burn the fire-once guard on evidence the
+        household then replaced. So every bullet below describes a round whose
+        post-apply measurement stands, and #2291's acting half applies exactly
+        where it was meant to: the round that would otherwise have been
+        reported as a SUCCESS.
+
+        The table already decided; this carries it out and never re-decides.
+        In particular there is no branch here that can keep a graph the table
+        said to restore — a realization pass does not override a measured
+        regression, and the only way that guarantee holds is by not writing
+        the branch that would break it.
+
+        * ``KEEP`` — the caller's verdict stands.
+        * ``RESTORE`` — fire the rollback seam (once-guarded on the host side,
+          so the delta probe's own rollback and this one cannot both run), then
+          refuse under the cause's own code. A successful restore keeps the
+          "the previous sound has been put back" promise; a failed one is
+          re-graded through the SAME table with ``restore_failed=True``, which
+          is what turns it into ``RECOVERY_REQUIRED`` — the receipt then says
+          the speaker is in neither graph, because it is.
+        * ``RECOVERY_REQUIRED`` — refuse LOUDLY under
+          :data:`REASON_CORRECTION_ROLLBACK_FAILED`, whose copy already tells
+          the household the correction is still applied and Undo is on screen.
+          No new screen: this is the shape ``_delta_probe_refusal`` established.
+        * ``USER_DECISION`` — the capture verdict stands, and nothing here
+          claims success. The round's own answer rides the journal and the
+          receipt; this path deliberately does not manufacture a refusal out of
+          "we could not tell", which would report a failure that did not happen.
+        """
+        from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
+
+        outcome = evaluation.adoption.outcome
+        if outcome is AdoptionOutcome.KEEP or outcome is AdoptionOutcome.USER_DECISION:
+            return verdict
+        if outcome is AdoptionOutcome.RESTORE:
+            restored = self._run_round_restore(evaluation.adoption.reason)
+            if restored:
+                return self._round_refusal(
+                    round_restore_reason(evaluation.adoption.reason)
+                )
+            self._round_evaluation = self._regrade_after_failed_restore(evaluation)
+            # An anchor existed — the restore was attempted against it and did
+            # not complete — so Undo is still a real remedy.
+            return self._round_refusal(
+                REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=True,
+            )
+        # RECOVERY_REQUIRED — the table already knew no restore was possible
+        # (no anchor), so nothing is attempted here; the record says why, and
+        # the copy must not point at an Undo that refuses on the same fact.
+        self._round_restore_result = {
+            "attempted": False,
+            "restored": False,
+            "reason": evaluation.adoption.reason,
+        }
+        log_event(
+            logger, "correction.crossover_v2_round_recovery_required",
+            level=logging.ERROR, session_id=self.session_id,
+            reason=evaluation.adoption.reason, rollback_anchor_available=False,
+        )
+        return self._round_refusal(
+            REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=False,
+        )
+
+    def _regrade_after_failed_restore(self, evaluation: Any) -> Any:
+        """Re-run the table with ``restore_failed=True``, or keep what we had.
+
+        **The speaker is still on the APPLIED graph**, which is what the
+        household copy says ("the newer tuning is STILL APPLIED"). Both
+        reachable failure shapes leave it there: a ``CrossoverV2Refused`` never
+        touches DSP, and ``restore_applied_baseline_profile`` is an atomic
+        transaction that leaves the live config alone when it does not
+        complete. An earlier version of this docstring said "neither the entry
+        graph nor the intended one" — the abstract worst case, not this one —
+        which contradicted the sentence the household actually reads. The
+        sibling wording in ``verification.decide_adoption`` and
+        ``contracts.RoundReceipt`` is the same overstatement, left for their
+        owners rather than edited from here.
+
+        The table's ``restore_failed`` row still describes it: what makes that
+        row right is that the intended graph is live and unverified with its
+        automatic remedy spent, not the stronger claim. Re-grading rather than
+        editing the decision in place keeps
+        :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
+        the only thing that ever produces an
+        :class:`~jasper.active_speaker.crossover_v2.contracts.AdoptionDecision`.
+        """
+        from jasper.active_speaker.crossover_v2.round_evidence import RoundEvaluation
+        from jasper.active_speaker.crossover_v2.verification import decide_adoption
+
+        try:
+            adoption = decide_adoption(
+                realization=evaluation.result.realization,
+                benefit=evaluation.result.benefit,
+                spec=evaluation.result.spec,
+                boosted=self._applied_candidate_boosts(),
+                rollback_available=self._rollback_available(),
+                restore_failed=True,
+            )
+        except (TypeError, ValueError, KeyError):
+            log_event(
+                logger, "correction.crossover_v2_round_regrade_failed",
+                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+            )
+            return evaluation
+        regraded = RoundEvaluation(
+            capture=evaluation.capture,
+            realization=evaluation.realization,
+            benefit=evaluation.benefit,
+            spec=evaluation.spec,
+            result=evaluation.result,
+            adoption=adoption,
+            post_residual_db=evaluation.post_residual_db,
+            post_residual_bins=evaluation.post_residual_bins,
+        )
+        self._log_round(regraded)
+        return regraded
+
+    def _run_round_restore(self, cause: str) -> bool:
+        """Fire the rollback seam for an adoption-driven restore.
+
+        Shares the host's once-guarded closure with the delta probe, so a Full
+        session in which both ask for a restore attempts exactly one — and the
+        second asker is handed the FIRST attempt's outcome rather than
+        ``handle_v2_restore``'s "nothing is applied to undo" refusal, which
+        would otherwise be reported as a failed rollback and told to the
+        household as "the correction is still applied" when it is not.
+        """
+        restored = False
+        error = ""
+        if self._seams.rollback is not None:
+            try:
+                restored = bool(self._seams.rollback(cause))
+            except (OSError, RuntimeError, TypeError, ValueError, AttributeError,
+                    KeyError) as exc:
+                # Same widened family and same reasoning as
+                # ``_delta_probe_refusal``: this call sits outside the cloud
+                # pipeline's wrap, and losing the verdict is strictly worse
+                # than reporting it with the restore marked failed.
+                error = str(exc)
+        self._round_restore_result = {
+            "attempted": True,
+            "restored": restored,
+            "reason": cause,
+            "error": error,
+            "seam_bound": self._seams.rollback is not None,
+        }
+        log_event(
+            logger, "correction.crossover_v2_round_restore",
+            level=logging.INFO if restored else logging.ERROR,
+            session_id=self.session_id, reason=cause, restored=restored,
+            seam_bound=self._seams.rollback is not None, error=error,
+        )
+        return restored
+
+    def _write_round_receipt(self, evaluation: Any) -> None:
+        """Assemble #2291's receipt and hand it to the publishing seam.
+
+        ``round_id`` is this stage-2 relay session id: one graded post-apply
+        session is one round. A recovery re-verify runs under a NEW relay
+        session and therefore writes its OWN receipt rather than amending this
+        one — which is the honest shape, because it is a different measurement
+        of a different speaker state, and a receipt that could be amended
+        would not be a receipt.
+
+        **Fail-soft, deliberately and in both directions.** A receipt that
+        could not be built or written is a WARN and a journal line; it never
+        reverses a verdict, never refuses a capture, and never crashes the
+        capture path. The verdict is what protects the household's speaker;
+        the receipt is what lets someone reconstruct why afterwards, and
+        losing the second must not cost the first.
+        """
+        from jasper.active_speaker.crossover_v2.round_evidence import (
+            build_round_receipt,
+        )
+
+        seam = self._seams.publish_round_receipt
+        if seam is None:
+            return
+        baseline = self._measure_entry_baseline
+        try:
+            receipt = build_round_receipt(
+                round_id=self.session_id,
+                evaluation=evaluation,
+                entry_baseline=baseline,
+                # The graph the "before" was measured THROUGH — the baseline's
+                # own stamp, not "what is live now", which post-apply is the
+                # applied graph below.
+                entry_graph_fingerprint=(
+                    baseline.graph_fingerprint if baseline is not None
+                    else ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+                ),
+                rollback_anchor={"available": self._rollback_available()},
+                # The APPLIED candidate's identity. ``_tuning_attempt_id``
+                # first, for :meth:`_grade_verify_attempt`'s reason and by the
+                # same chain: on the stage that grades a round it is the only
+                # one populated, read from the durable state's candidate
+                # fingerprint at prepare time. Reading ``self._candidate``
+                # alone was the same dead-stage-2 read that made ``boosted``
+                # unreachable — here it emptied the receipt's
+                # ``proposal_fingerprint``, which the contract refuses, so
+                # every production round lost its receipt to the fail-soft
+                # handler. One bug, two victims.
+                proposal_fingerprint=(
+                    self._tuning_attempt_id
+                    or str(getattr(self._candidate, "fingerprint", "") or "")
+                ),
+                applied_graph_fingerprint=self._entry_graph_fingerprint(),
+                post_measurement=self._post_measurement_identity(),
+                restore_result=self._round_restore_result,
+                evidence_identities={
+                    "session_id": self.session_id,
+                    "tier": self._tier,
+                    "entry_baseline_artifact": (
+                        baseline.artifact_ref if baseline is not None else ""
+                    ),
+                    "commanded_delta_present": (
+                        self._measure_commanded_delta is not None
+                    ),
+                },
+                created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+            fingerprint = seam(receipt.to_dict())
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
+                AttributeError):
+            # ERROR, not WARNING, and earned by demonstrated history: this is
+            # the exact event that would have fired on every shipped round for
+            # a whole phase while nobody looked. The dead ``self._candidate``
+            # read emptied ``proposal_fingerprint``, the receipt contract
+            # refused it, and this handler swallowed the loss — a fail-soft
+            # path whose only trace is a WARNING is one nobody reads. Its
+            # sibling, the no-anchor recovery path, is already ERROR.
+            log_event(
+                logger, "correction.crossover_v2_round_receipt_failed",
+                level=logging.ERROR, session_id=self.session_id, exc_info=True,
+            )
+            return
+        self._round_receipt_identity = {
+            "round_id": self.session_id,
+            "artifact_fingerprint": str(fingerprint or ""),
+            "receipt_fingerprint": receipt.fingerprint,
+        }
+        log_event(
+            logger, "correction.crossover_v2_round_receipt",
+            session_id=self.session_id, round_id=self.session_id,
+            artifact_fingerprint=str(fingerprint or ""),
+            receipt_fingerprint=receipt.fingerprint,
+            adoption=evaluation.adoption.outcome.value,
+        )
+
+    def _post_measurement_identity(self) -> dict[str, Any] | None:
+        """What the post-apply side WAS, as identity rather than payload.
+
+        The same rule ``build_round_receipt`` applies to the entry baseline:
+        the curve has owners that outlive the receipt, so the receipt names it
+        instead of copying it.
+        """
+        analysis = self._verify_analysis
+        if analysis is None:
+            return None
+        return {
+            "program_id": str(getattr(analysis, "program_id", "") or ""),
+            "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
+            "phase": PHASE_VERIFY,
+        }
+
+    def _round_refusal(
+        self, code: str, *, rollback_anchor_available: bool | None = None,
+    ) -> PhaseVerdict:
+        """Stamp a round-driven refusal the way the delta probe already does.
+
+        ``rollback_anchor_available`` travels with the code because
+        :data:`REASON_CORRECTION_ROLLBACK_FAILED` covers two situations whose
+        household sentences differ — a restore that failed (Undo can still
+        help) and a restore that was never possible (Undo refuses on the very
+        predicate that routed here). The fact is recorded, never re-derived at
+        render time: the anchor can change between the round and the screen,
+        and the screen must describe the round.
+        """
+        self._last_failure_code = code
+        # A round verdict, not a capture — no pilot evidence belongs to it, and
+        # the prior capture's must not trail in (#2085).
+        self._last_failure_pilot_heard = None
+        self._last_failure_rollback_anchor = rollback_anchor_available
+        return PhaseVerdict(False, code)
+
+    def _log_entry_baseline_diag(
+        self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,
+    ) -> None:
+        response = analysis.summed_response
+        baseline = self._measure_entry_baseline
+        log_event(
+            logger, "correction.crossover_v2_entry_baseline_diag",
+            session_id=self.session_id, index=index,
+            accepted=verdict.accepted, code=verdict.code or "",
+            program_id=(baseline.program_id if baseline is not None else ""),
+            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            graph_fingerprint=(
+                baseline.graph_fingerprint if baseline is not None else ""
+            ),
+            artifact_ref=(baseline.artifact_ref if baseline is not None else ""),
+            gate_window_ms=_gate_window_ms(response),
+            validity_floor_hz=getattr(response, "validity_floor_hz", None),
+            summed_ripple_db=analysis.summed_ripple_db,
+            linearity_ok=analysis.linearity_ok,
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            glitch=analysis.glitch_detected,
+        )
+
     def _consume_verify(
         self, analysis: ProgramAnalysis, *, attempt: int,
     ) -> PhaseVerdict:
         verdict = self._verify_verdict(analysis)
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
+        # #2291: the round's post-apply side. Retained BEFORE grading, because
+        # the Full tier grades the round later (when the post-apply cloud
+        # closes) from a call that cannot see this capture.
+        self._verify_analysis = analysis
         self._grade_verify_attempt(analysis, verdict, capture_attempt=attempt)
+        # Grade the round HERE when this ACCEPTED capture is the last
+        # post-apply evidence there will be — i.e. the session plans no
+        # post-apply cloud. On a Full session the cloud close grades it.
+        #
+        # **Only on an accepted verdict**, and that is load-bearing rather than
+        # tidy. VERIFY has a retry budget, so a rejected capture does NOT end
+        # the session: grading one would burn the fire-once guard on evidence
+        # the household then replaced, and the session would finish carrying a
+        # receipt describing a capture it did not end on — demanding operator
+        # recovery for a round that went on to succeed. A session that ends on
+        # a terminal rejection writes no round receipt, which is the honest
+        # record: its post-apply evidence never completed.
+        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._phases:
+            return self._grade_round_once(verdict)
         return verdict
 
     def _grade_verify_attempt(
@@ -10807,7 +11978,20 @@ class CrossoverV2Conductor:
 
         record = attempt_record_from_verify(analysis, attempt_id=attempt_id)
         writer = self._seams.record_model_error
-        if verdict.accepted and writer is not None and record.grade_db is not None:
+        # The model-error store banks PREDICTION error, and its number is the
+        # tracking deviation — read straight off the analysis rather than off
+        # ``record.grade_db``. The two happen to be equal today, and that
+        # coincidence is exactly the hazard: ``model_error_store`` owns
+        # prediction/realization error while the attempts ledger owns the
+        # acoustic grade, so a future change to what the LEDGER grades must not
+        # silently change what the STORE banks (#2291). One quantity, one
+        # source, named at the read.
+        tracking_deviation_db = _attempt_optional_float(
+            (analysis.verify_tracking or {}).get(
+                ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
+            )
+        )
+        if verdict.accepted and writer is not None and tracking_deviation_db is not None:
             try:
                 # ``max_db_notch_excluded`` is measured deviation from the
                 # fitted prediction, whose predicted error is exactly zero.
@@ -10817,9 +12001,9 @@ class CrossoverV2Conductor:
                 identity_accepted = writer(
                     speaker_id=self._speaker_id,
                     attempt_id=record.attempt_id,
-                    metric=record.metric,
+                    metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
                     predicted_db=0.0,
-                    realized_db=record.grade_db,
+                    realized_db=tracking_deviation_db,
                     context={
                         "session_id": self.session_id,
                         "provenance": record.provenance,
@@ -12174,10 +13358,12 @@ def build_v2_capture_plan(
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
+    include_entry_baseline: bool = False,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan (§5.7 + flat-linearization PR-3b).
 
-    CHECK and MEASURE are required; the pre-apply cloud is optional. The layout
+    CHECK and MEASURE are required; the pre-apply cloud, the lateral walk, and
+    #2291's entry baseline are optional. The layout
     ``build_v2_cloud_index_phase_map`` documents, built from that same function
     so prompt and phase cannot disagree.
 
@@ -12242,6 +13428,7 @@ def build_v2_capture_plan(
         plan_shape=shape,
         include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
+        include_entry_baseline=include_entry_baseline,
     )
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
@@ -12358,6 +13545,37 @@ def build_v2_capture_plan(
                     progress=capture_progress_label(capture_index, target),
                     title=prompt.headline,
                     body=prompt.detail,
+                    auto_advance=AUTO_ADVANCE_TAP,
+                ),
+            )
+        )
+    # #2291's "before" measurement, LAST. Its duration is the summed sweep's
+    # (``verify_ms``) because it replays the VERIFY program verbatim — the
+    # identity ``_program_for_phase`` guarantees and the benefit comparison
+    # depends on. A tap, like every other entry: the household has just walked
+    # the lateral poses and has to come back to the mark first, so a countdown
+    # would fire into a hand still in flight.
+    for capture_index in [
+        i for i, p in sorted(index_phase.items()) if p == PHASE_ENTRY_BASELINE
+    ]:
+        entries.append(
+            CapturePlanEntry(
+                index=capture_index - 1,
+                kind_label="entry_baseline",
+                duration_ms=verify_ms,
+                screen=_cloud_entry_screen(
+                    progress=capture_progress_label(capture_index, target),
+                    title="Back to the mark — one last measurement before tuning.",
+                    # Says WHAT it buys, in the household's terms: this is the
+                    # recording the speaker is compared against afterwards, so
+                    # "it got better" becomes something measured rather than
+                    # asserted. No internal vocabulary (no "baseline", no
+                    # "summed sweep") — the same register as the MEASURE entry
+                    # above.
+                    body=(
+                        "This records how the speaker sounds right now, so JTS "
+                        "can tell you whether the tuning actually improved it."
+                    ),
                     auto_advance=AUTO_ADVANCE_TAP,
                 ),
             )
@@ -12759,6 +13977,7 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
             include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
             include_lateral=STAGE1_INCLUDES_LATERAL,
+            include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
         )
         stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
         out[tier] = {
@@ -12792,6 +14011,7 @@ def build_v2_session_spec(
     cloud_verify_positions: int | None = None,
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
+    include_entry_baseline: bool = False,
     **spec_kwargs: Any,
 ) -> Any:
     """One relay v3 stage-1 spec, optionally including the pre-apply cloud (§5.7).
@@ -12822,12 +14042,22 @@ def build_v2_session_spec(
         roles_bands, fc_hz, plan_shape=shape,
         include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
+        include_entry_baseline=include_entry_baseline,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     # R16: EITHER group makes this a walk. The consent copy below was gated on
     # the cloud alone; leaving it there would promise a stationary microphone
     # to a household about to be prompted through five moves — the exact
     # dishonesty the guided wording exists to prevent.
+    #
+    # #2291's entry baseline is deliberately NOT a third term. A walk is a
+    # session that prompts the household to MOVE the microphone, and the entry
+    # baseline is one capture at the mark they are already standing at — it
+    # asks them to come back, not to go anywhere new. ``walk_shape_for`` agrees
+    # by construction: with neither group on it computes a reach of 0 cm and
+    # returns "", so an entry-baseline-only session that claimed ``walked``
+    # would emit guided consent copy with no shape line under it — a promise of
+    # a walk with nothing to describe.
     walked = include_cloud_measure or include_lateral
     return build_crossover_sweep_spec(
         driver_label="crossover",
@@ -13124,6 +14354,9 @@ __all__ = [
     "lateral_evidence_grid_hz",
     "lateral_pose_curve",
     "STAGE1_INCLUDES_LATERAL",
+    "PHASE_ENTRY_BASELINE",
+    "REFERENCE_MARK_DESIGN_AXIS",
+    "STAGE1_INCLUDES_ENTRY_BASELINE",
     "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",

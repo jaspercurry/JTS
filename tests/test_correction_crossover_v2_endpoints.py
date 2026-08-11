@@ -305,6 +305,15 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
                 None if retained is None
                 else lambda pid, result, meta: retained.append((pid, dict(meta)))
             ),
+            # #2291/#2318: bound, and FALSE. The seam's UNBOUND answer is
+            # deliberately "boosted" — an intervention nobody can inspect comes
+            # off — so leaving it out would route every round whose benefit is
+            # indeterminate (which is every fixture here: none carries an entry
+            # baseline) through the fail-closed restore, and each of these
+            # tests would end up asserting that rule instead of its own
+            # subject. The rule itself is pinned against the REAL host seams in
+            # tests/test_crossover_v2_round_wiring.py.
+            applied_boosts=lambda: False,
         ),
         index_phase_map=(
             build_v2_cloud_index_phase_map() if index_phase_map is None
@@ -3086,6 +3095,8 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     just-closed relay spends winding down, exactly as T2 predicted.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        MAX_CLOUD_MEASURE_POSITIONS,
+        MIN_CLOUD_MEASURE_POSITIONS,
         TIER_EXPRESS,
         TIER_FULL,
         build_v2_cloud_index_phase_map,
@@ -3102,7 +3113,15 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
         )
         assert stage2[1] == PHASE_VERIFY, tier
         assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, tier
-    for n, m in ((6, 5), (12, 5), (6, 12), (12, 12), (9, 6)):
+    # The corners of the configurable (N, M) space plus the shipped default.
+    # N is DERIVED from its own two bounds rather than written out: the upper
+    # one moved (12 -> 11) when #2291's entry baseline took a relay blob index,
+    # and a literal here would have made this test fail for the wrong reason
+    # instead of following the constant it is exercising the extremes of.
+    _n_lo, _n_hi = MIN_CLOUD_MEASURE_POSITIONS, MAX_CLOUD_MEASURE_POSITIONS
+    for n, m in (
+        (_n_lo, 5), (_n_hi, 5), (_n_lo, 12), (_n_hi, 12), (9, 6),
+    ):
         shape = resolve_plan_shape(
             cloud_measure_positions=n, cloud_verify_positions=m,
         )
@@ -7402,11 +7421,20 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
 
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
-    """#2292 scope 2: accepting an alternative Fc fsyncs THREE writes at the
+    """#2292 scope 2: accepting an alternative Fc fsyncs FOUR writes at the
     accept/apply seam -- the Sound declaration (apply_measured_crossover_frequency),
     the crossover preview regenerated from it (ensure_crossover_preview_ready),
-    and the applied baseline profile (persist_applied_baseline_profile) -- one
-    file fsync + one parent-directory fsync each."""
+    the applied baseline profile (persist_applied_baseline_profile), and
+    observe_apply_success's own v2-state write -- one file fsync + one
+    parent-directory fsync each.
+
+    The fourth pair is #2291's: that write CREATES the rollback anchor
+    (``pre_apply_profile``) and runs after the new graph is already live, so a
+    power cut that lost it would leave a corrected speaker with nothing to
+    restore to. Counted here rather than merely asserted elsewhere because the
+    count is the only thing that can catch the anchor write quietly losing its
+    ``durable=True``.
+    """
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
@@ -7418,7 +7446,7 @@ def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path
     )
 
     assert payload["status"] == "applied", payload
-    assert len(fsync_calls) == 6
+    assert len(fsync_calls) == 8
 
 
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
@@ -8754,6 +8782,43 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     assert v2host.load_v2_state()["sound_declaration_undo"] is None
 
 
+def test_entry_graph_fingerprint_names_the_applied_profile(monkeypatch):
+    """#2291: the entry baseline records WHICH graph it was measured through.
+
+    The conductor's three fallbacks (no seam, seam raised, no applied profile)
+    each have coverage; the seam's REAL path — the one production binds on both
+    stages — did not, so nothing pinned that it reads the applied SSOT's own
+    recomputed ``candidate_fingerprint`` rather than inventing an identity.
+    That field is the one `load_applied_baseline_profile_state` re-derives from
+    the immutable source, which is precisely why this reads the stored value
+    instead of hashing anything itself: one hash function, one definition of
+    "which graph".
+
+    The empty answer is pinned beside it because it is not an error. A speaker
+    with no applied profile is on its first-ever round, where the entry graph
+    genuinely has no identity to name; the conductor turns "" into its own
+    ``unknown`` word rather than this function inventing one.
+    """
+    calls: list[int] = []
+
+    def _applied() -> dict[str, Any]:
+        calls.append(1)
+        return {"candidate_fingerprint": "fp-live-graph", "status": "applied"}
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        _applied,
+    )
+    assert v2host._active_graph_fingerprint() == "fp-live-graph"
+    assert calls == [1], "the applied SSOT is the only thing consulted"
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        lambda: None,
+    )
+    assert v2host._active_graph_fingerprint() == ""
+
+
 def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
     """#2292 scope 2 SF2: apply_measured_crossover_frequency has TWO
     production callers -- handle_v2_apply's accept (pinned by
@@ -8777,10 +8842,15 @@ def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
 
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert restore_payload["sound_declaration"] == "declaration_restored"
-    # 4 = persist_applied_baseline_profile's graph-restore write (always
+    # 6 = persist_applied_baseline_profile's graph-restore write (always
     # durable, file + dir fsync) + apply_measured_crossover_frequency's
-    # declaration-restore write (file + dir fsync) -- both halves of Undo.
-    assert len(fsync_calls) == 4
+    # declaration-restore write (file + dir fsync) -- both halves of Undo --
+    # + observe_restore's own v2-state write, durable since #2291 (file + dir).
+    # That third pair is the anchor bookkeeping: the write CLEARS
+    # pre_apply_profile and flips ``applied`` after the previous graph is
+    # already back on the speaker, so losing it to a power cut would leave the
+    # state claiming a correction the speaker is no longer playing.
+    assert len(fsync_calls) == 6
 
 
 def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(

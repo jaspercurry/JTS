@@ -32,7 +32,18 @@ for a conductor handed anything at all.
     verify_priors.gate_window_ms            survives  -> measure_gate_window_ms
     verify_priors.pilot_transfer_reference  survives  -> verify_pilot_transfer_prior
     verify_priors.commanded_delta           survives  -> measure_commanded_delta
+    verify_priors.entry_baseline            survives  -> measure_entry_baseline
     the rollback seam                       bound on the stage that VERIFIES
+
+``entry_baseline`` is #2291 Phase 3c's sixth key: the summed capture stage 1
+takes at the mark immediately before apply, which stage 2's benefit verdict
+differences its own capture against. Like ``predicted_sum`` and
+``commanded_delta`` it needs NO carry-forward — it is seeded into the same
+conductor field its own capture writes, so a stage-2 persist re-writes the
+record that conductor was constructed with. (A carry-forward branch was
+written first and deleted: mutation-verified as unreachable. See
+``persist_conductor_state``'s own comment for why keeping it would have
+weakened the pin that matters.)
 
 Which stage binds which seam is no longer decided at two hand-assembled call
 sites: ``bind_v2_stage_seams`` builds both, from the ``V2StageCapabilities``
@@ -47,6 +58,8 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+import importlib
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -59,8 +72,10 @@ from jasper.active_speaker import excitation_safety_plan as excitation_safety_pl
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
+    PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
     STAGE1_INCLUDES_CLOUD_MEASURE,
+    STAGE1_INCLUDES_ENTRY_BASELINE,
     STAGE1_INCLUDES_LATERAL,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,
@@ -215,6 +230,27 @@ def _production_host_seams(monkeypatch, tmp_path):
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
     preset = load_active_speaker_preset()
+    # Remember the REAL functions before anything is patched — the sweep at the
+    # end of this block needs identity, not name, to tell a stale binding from
+    # a module that simply has an attribute of the same name.
+    _originals = {
+        "load_output_topology": output_topology_mod.load_output_topology,
+        "resolve_capture_preset": commission_wiring.resolve_capture_preset,
+        "load_design_draft": design_draft.load_design_draft,
+    }
+    _home = {
+        "load_output_topology": output_topology_mod,
+        "resolve_capture_preset": commission_wiring,
+        "load_design_draft": design_draft,
+    }
+    # Modules that bind these names at MODULE scope and are imported lazily, so
+    # they would otherwise first appear DURING the patched window. Imported here
+    # so the sweep below can find them; see that sweep for why it matters.
+    for _late_binder in (
+        "jasper.active_speaker.web_commissioning",
+        "jasper.web.sound_setup",
+    ):
+        importlib.import_module(_late_binder)
     monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: _topology())
     monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
     monkeypatch.setattr(
@@ -236,6 +272,29 @@ def _production_host_seams(monkeypatch, tmp_path):
             ],
         }},
     )
+    # Patch each name at EVERY binding, not only its home module (#2312).
+    #
+    # ``web_commissioning`` and ``sound_setup`` bind these at module scope via
+    # ``from … import``. When one of them is imported for the FIRST time inside
+    # this fixture's patched window — which is exactly what a co-run with this
+    # harness does — its module-level name captures the FAKE, and monkeypatch
+    # never restores it, because monkeypatch only owns the attribute it set on
+    # the home module. The fake then answers for the rest of the PROCESS.
+    #
+    # That is the whole #2312 signature: 38 endpoints failures downstream, all
+    # ``crossover_preview_topology_mismatch``, all of them the anchor/Undo
+    # rollback guards, and green in isolation.
+    #
+    # Swept by identity rather than by a hand-kept list of importers, so a new
+    # module-level ``from … import`` cannot reintroduce it silently; monkeypatch
+    # unwinds every binding together.
+    for _symbol, _original in _originals.items():
+        _fake = getattr(_home[_symbol], _symbol)
+        for _module in list(sys.modules.values()):
+            if not getattr(_module, "__name__", "").startswith("jasper"):
+                continue
+            if getattr(_module, _symbol, None) is _original:
+                monkeypatch.setattr(_module, _symbol, _fake)
     monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
     monkeypatch.setattr(
         driver_safety_mod,
@@ -349,6 +408,36 @@ _COMMANDED_DELTA_DB = [
     0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.0, 2.2, 2.4, 2.5, 2.5, 2.5, 2.5,
 ]
 
+# #2291 Phase 3c's entry baseline, as ``EntryBaseline.to_dict`` writes it.
+# Distinct, arbitrary values for the same reason as everything else here: a
+# rehydration assertion can only pass by actually carrying THESE numbers.
+_ENTRY_BASELINE_PROGRAM_ID = "prog-entry-baseline-stage-1"
+_ENTRY_BASELINE_GRAPH = "fp-entry-graph"
+_ENTRY_BASELINE_CAPTURED_AT = "2026-08-10T12:34:56Z"
+_ENTRY_BASELINE_FREQS_HZ = [200.0, 400.0, 800.0, 1600.0, 3200.0]
+_ENTRY_BASELINE_DB = [-2.5, -1.25, 0.0, 1.25, 2.5]
+# One screened bin, at the bottom — the gate-validity clamp's own shape, and
+# not all-False, so a mask that failed to cross would be visible.
+_ENTRY_BASELINE_EXCLUDED = [True, False, False, False, False]
+
+
+def _entry_baseline_record() -> dict[str, Any]:
+    from jasper.active_speaker.crossover_v2.round_evidence import (
+        ENTRY_BASELINE_KIND,
+    )
+
+    return {
+        "kind": ENTRY_BASELINE_KIND,
+        "program_id": _ENTRY_BASELINE_PROGRAM_ID,
+        "reference_mark": crossover_v2_flow.REFERENCE_MARK_DESIGN_AXIS,
+        "freqs_hz": list(_ENTRY_BASELINE_FREQS_HZ),
+        "magnitude_db": list(_ENTRY_BASELINE_DB),
+        "excluded": list(_ENTRY_BASELINE_EXCLUDED),
+        "graph_fingerprint": _ENTRY_BASELINE_GRAPH,
+        "captured_at": _ENTRY_BASELINE_CAPTURED_AT,
+        "artifact_ref": "entry_baseline_09_a01",
+    }
+
 
 def _seed_applied_stage_1_state() -> dict[str, Any]:
     state = {
@@ -368,6 +457,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
                 "freqs_hz": list(_COMMANDED_FREQS_HZ),
                 "delta_db": list(_COMMANDED_DELTA_DB),
             },
+            "entry_baseline": _entry_baseline_record(),
             "gate_window_ms": _GATE_WINDOW_MS,
             "pilot_transfer_reference": {
                 "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
@@ -383,8 +473,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_five_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has FIVE keys.
+def test_persisted_verify_priors_carries_exactly_the_six_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has SIX keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -393,8 +483,14 @@ def test_persisted_verify_priors_carries_exactly_the_five_bridge_keys(monkeypatc
     fifth key this pin's earlier four-key form anticipated by name — the delta
     probe's commanded axis, produced by the stage-1 fit and consumed by the
     stage-2 probe, which is a different process against a conductor that never
-    ran a fit. The top-level payload is unchanged by that widening: the new key
-    is nested inside ``verify_priors``, so
+    ran a fit.
+
+    **Deliberate widening (#2291 Phase 3c): ``entry_baseline``.** The sixth: the
+    measured "before" the round's benefit verdict differences against, captured
+    at the mark immediately before apply.
+
+    The top-level payload is unchanged by both widenings — each new key is
+    nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
     """
@@ -406,6 +502,7 @@ def test_persisted_verify_priors_carries_exactly_the_five_bridge_keys(monkeypatc
         "gate_window_ms",
         "pilot_transfer_reference",
         "commanded_delta",
+        "entry_baseline",
     }
 
 
@@ -663,18 +760,28 @@ def test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
-# 4. stage 1 captures no summed pre-apply curve
+# 4. stage 1 captures no pre-apply CLOUD, and exactly one summed capture
 # --------------------------------------------------------------------------- #
 
 
-def test_stage_1_plans_no_summed_pre_apply_capture(monkeypatch):
-    """``STAGE1_INCLUDES_CLOUD_MEASURE`` is False, so stage 1 never sums.
+def test_stage_1_plans_no_pre_apply_cloud_and_one_entry_baseline(monkeypatch):
+    """What stage 1 measures before the apply: no cloud, one summed capture.
 
-    ``PHASE_CLOUD_MEASURE`` is the only pre-apply phase that produces a
-    spatially combined curve, and stage 1 does not plan one. That is what makes
-    the persisted ``predicted_sum`` a MODEL rather than a measurement, and it
-    is why the commanded delta above is the only commanded axis stage 2 could
-    ever have had.
+    Two facts, pinned together because they are easy to confuse and they mean
+    opposite things about ``predicted_sum``:
+
+    * **No pre-apply cloud.** ``STAGE1_INCLUDES_CLOUD_MEASURE`` is False, and
+      ``PHASE_CLOUD_MEASURE`` is the only pre-apply phase producing a spatially
+      COMBINED curve. That absence is what keeps the persisted
+      ``predicted_sum`` a MODEL rather than a measurement.
+    * **One entry baseline.** #2291 Phase 3c added exactly one summed
+      at-the-mark capture, LAST, immediately before apply — the round's
+      measured "before". So stage 1 does now sum, once; what it still does not
+      do is sum ACROSS POSITIONS.
+
+    (This test's earlier form said "stage 1 never sums" and called the commanded
+    delta "the only commanded axis stage 2 could ever have had". Both were true
+    of the shape before Phase 3c and are false now.)
 
     Pinned twice on purpose: on the public phase-map builder at the production
     flags, and on what the real ``prepare_v2_session`` actually put in the
@@ -688,13 +795,16 @@ def test_stage_1_plans_no_summed_pre_apply_capture(monkeypatch):
         plan_shape=resolve_plan_shape(None),
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     assert PHASE_CLOUD_MEASURE not in planned.values()
+    assert list(planned.values()).count(PHASE_ENTRY_BASELINE) == 1
 
     _conductor, state = _stage_1(monkeypatch)
 
     assert PHASE_MEASURE in state["session_phases"]
     assert PHASE_CLOUD_MEASURE not in state["session_phases"]
+    assert state["session_phases"].count(PHASE_ENTRY_BASELINE) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -723,6 +833,12 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "kind",
     "measure",
     "pre_apply_profile",
+    # Deliberate widening (#2291 Phase 3c). WHERE this round's receipt landed —
+    # round id plus the bundle artifact's fingerprint — so the next round can
+    # resolve the previous one by identity rather than scanning bundles. It
+    # crosses for ``pre_apply_profile``'s reason: it describes the graph
+    # currently on the speaker, which outlives the session that wrote it.
+    "round_receipt",
     "schema_version",
     "session_id",
     "session_phases",
@@ -788,7 +904,13 @@ def test_the_two_stages_declare_the_capabilities_that_differ():
     assert verify.stage == "verify"
     assert verify.provides == {v2host.CAPABILITY_ROLLBACK}
     assert verify.requires == {
-        v2host.CAPABILITY_COMMANDED_DELTA, v2host.CAPABILITY_PREDICTED_SUM,
+        v2host.CAPABILITY_COMMANDED_DELTA,
+        v2host.CAPABILITY_PREDICTED_SUM,
+        # #2291 Phase 3c. Genuinely required, not merely nice to have: without
+        # the entry baseline the round can say the graph did what it commanded
+        # and cannot say the speaker got better — the question the issue exists
+        # for — so its absence has to reach the capability journal.
+        v2host.CAPABILITY_ENTRY_BASELINE,
     }
 
 
@@ -834,7 +956,10 @@ def test_stage_2_logs_its_capabilities_and_names_a_missing_prior(monkeypatch, ca
     # rollback``, and a mutation that bound rollback on both stages slipped
     # through an unanchored form of this assertion.
     assert "provides=rollback requires=" in declared[0]
-    assert "requires=commanded_delta,predicted_sum missing=" in declared[0]
+    assert (
+        "requires=commanded_delta,entry_baseline,predicted_sum missing="
+        in declared[0]
+    )
     assert declared[0].endswith("missing=commanded_delta")
 
     unavailable = [
@@ -866,7 +991,10 @@ def test_a_stage_with_every_prior_present_logs_no_unavailable_event(
     ]
     assert len(declared) == 1
     assert "provides=rollback requires=" in declared[0]
-    assert "requires=commanded_delta,predicted_sum missing=" in declared[0]
+    assert (
+        "requires=commanded_delta,entry_baseline,predicted_sum missing="
+        in declared[0]
+    )
     assert 'missing=""' in declared[0]
     assert not [
         line for line in lines

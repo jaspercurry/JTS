@@ -373,7 +373,38 @@ def load_v2_state() -> dict[str, Any] | None:
     return dict(raw)
 
 
-def save_v2_state(state: Mapping[str, Any]) -> None:
+def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
+    """Write the durable v2 state. ``durable`` decides whether it is fsync'd.
+
+    Atomic is not durable. :func:`~jasper.atomic_io.atomic_write_text` writes a
+    tempfile and renames, so a concurrent reader never sees a partial file —
+    but without ``durable=True`` nothing has told the kernel to put those bytes
+    on the platter, and a power cut can lose the whole write while leaving the
+    speaker's DSP graph changed.
+
+    **The rule for choosing (#2291): durable where power loss would lose the
+    rollback anchor or falsify a receipt; cheap everywhere else.** Three writes
+    qualify — one per half of that rule:
+
+    * the ANCHOR pair, which own ``pre_apply_profile``, the only pointer Undo
+      restores from. :func:`observe_apply_success` CREATES it in the same
+      moment the new graph goes live, so a lost write leaves a corrected
+      speaker with no way back; :func:`observe_restore` clears it and flips
+      ``applied``, so a lost write leaves the state claiming a correction that
+      is no longer on the speaker.
+    * the RECEIPT identity, written by :func:`persist_conductor_state` — but
+      **only on a persist that carries a new one**. A receipt lives in the
+      write-once evidence bundle, so losing the pointer to it leaves an
+      immutable record nothing can find: the "falsifies a receipt" half.
+
+    Everything else stays cheap on purpose, including
+    :func:`persist_conductor_state`'s ordinary path — it runs after every
+    consumed capture, and an fsync per capture buys nothing that the next
+    capture's write does not already redo. :func:`reset_v2_journey_state`
+    PRESERVES the anchor, so losing its write leaves the richer previous
+    state — the anchor survives either way, which is why it is not on the
+    durable list.
+    """
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "kind": STATE_KIND,
@@ -386,6 +417,7 @@ def save_v2_state(state: Mapping[str, Any]) -> None:
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
+            durable=durable,
         )
 
 
@@ -600,7 +632,10 @@ def observe_apply_success(
     state["expected_post_apply_offset_db"] = (
         round(offset_db, 3) if math.isfinite(offset_db) else 0.0
     )
-    save_v2_state(state)
+    # fsync'd (#2291). This write CREATES the rollback anchor, and it happens
+    # after the new graph is already live on the speaker: a power cut that
+    # loses it leaves a corrected speaker with nothing to restore to.
+    save_v2_state(state, durable=True)
     log_event(
         logger,
         "correction.crossover_v2_applied",
@@ -680,7 +715,11 @@ def observe_restore() -> None:
     # reach ``/sound``. The recovery is the household sentence, which names the
     # exact frequency to set, plus the ERROR journal line.
     state["sound_declaration_undo"] = None
-    save_v2_state(state)
+    # fsync'd (#2291), the mirror of ``observe_apply_success``: this write
+    # CLEARS the rollback anchor and flips ``applied`` after the previous graph
+    # is already back on the speaker, so a power cut that loses it leaves the
+    # state claiming a correction the speaker is no longer playing.
+    save_v2_state(state, durable=True)
 
 
 def _applied_gate() -> bool:
@@ -2146,14 +2185,30 @@ def _decimate_delta(commanded_delta: Any) -> dict[str, Any] | None:
     ``_decimate_to_analysis_grid`` and is restated here.
 
     **Averaged in dB, not in linear power** — the one place this deliberately
-    parts company with :func:`_decimate_sum`. That function's power mean is the
-    right estimator for a MAGNITUDE curve; this is a DIFFERENCE of two dB
-    curves, for which the power mean is biased. Measured over 200 synthetic
-    commanded deltas of realistic shape (shelf plus ripple, 1024-4096 bins),
-    the two estimators disagreed by up to 0.27 dB — against a commanded floor
-    (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_MIN_COMMANDED_DB`)
-    of 0.5 dB. So the domain choice moves which bins the probe grades at all,
-    not merely a third decimal.
+    parts company with :func:`_decimate_sum`.
+
+    The REASON first: over a block, the arithmetic mean is the unbiased
+    estimator of a DIFFERENCE of dB curves, where the power mean is biased
+    upward by Jensen's inequality. That bias grows with the WITHIN-BLOCK spread
+    of the values and vanishes across a block the curve is flat over — so it is
+    largest exactly where the commanded delta is steepest, and zero where the
+    two estimators would have agreed anyway. ``_decimate_sum``'s power mean is
+    the right estimator for its own input, a MAGNITUDE curve; it is the wrong
+    one here.
+
+    The measured bound second. Re-derived through the production owner
+    (:func:`~jasper.active_speaker.linearization_fit.complex_correction_response`)
+    over 200 cascades of realistic shape — a highshelf plus 4–11 peaking
+    biquads at Q 0.7–6 plus a trim, on 1,024–8,192-bin grids: worst single
+    block disagreement **1.60 dB**, and **5 of 100,762** persisted bins change
+    side of the 0.5 dB
+    :data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_MIN_COMMANDED_DB`
+    floor. So the domain choice does reach band membership and not merely a
+    third decimal — rarely, and the bias is largest where the commanded value
+    is largest, which is furthest from the floor.
+
+    (The 0.27 dB this docstring used to quote was not reproducible against the
+    production response owner and has been replaced by the figures above.)
 
     What it does NOT move is the graded error. The conductor reconstructs
     ``realized = (measured - predicted) + commanded``, so ``realized -
@@ -2201,6 +2256,63 @@ def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, Mapping) else None
 
 
+def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
+    """The conductor's entry baseline as durable state carries it (#2291).
+
+    ``getattr`` plus a duck-typed ``to_dict`` for :func:`_predicted_spec_prior`'s
+    reason: this persistence helper is called with conductor doubles that carry
+    only the surfaces a given test exercises, and a missing property must read
+    as "no baseline", not raise mid-persist and lose the whole snapshot.
+    """
+    baseline = getattr(conductor, "measure_entry_baseline", None)
+    to_dict = getattr(baseline, "to_dict", None)
+    if not callable(to_dict):
+        return None
+    record = to_dict()
+    return dict(record) if isinstance(record, Mapping) else None
+
+
+def _round_receipt_identity(conductor: Any) -> dict[str, Any] | None:
+    """The conductor's round-receipt identity, or ``None`` (#2291).
+
+    ``getattr`` for :func:`_predicted_spec_prior`'s reason: this persistence
+    helper runs against conductor doubles carrying only the surfaces a given
+    test exercises, and a missing property must read as "no receipt", never
+    raise mid-persist and lose the whole snapshot.
+    """
+    record = getattr(conductor, "round_receipt_identity", None)
+    return dict(record) if isinstance(record, Mapping) else None
+
+
+def entry_baseline_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """The stage-1 entry baseline, as the conductor's ctor takes it (#2291).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.entry_baseline`` and the exact mirror of
+    :func:`commanded_delta_prior_from_state` below: durable state in, the
+    ``measure_entry_baseline`` argument out. Named and module-level for the
+    same reason — the seeding PATH is then drivable in a test without a relay.
+
+    Returns an
+    :class:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline`
+    or ``None``. ``None`` is
+    :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_BASELINE_UNAVAILABLE`,
+    which is INDETERMINATE and **not** a pass, and it covers the honest cases
+    that mean one thing to the round — there is no comparable before: a state
+    file written before this key shipped, a stage 1 whose baseline capture
+    never landed, and a truncated or hand-edited record. Which of those it was
+    is not recoverable from the file and the round does not branch on it.
+
+    Shape validation belongs to ``EntryBaseline.from_dict``, which owns the
+    "length-agreeing curve and mask, or nothing" rule.
+    """
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    priors = (state or {}).get("verify_priors")
+    record = priors.get("entry_baseline") if isinstance(priors, Mapping) else None
+    return EntryBaseline.from_dict(record)
+
+
 def pilot_transfer_prior_from_state(
     state: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -2242,6 +2354,17 @@ def commanded_delta_prior_from_state(
     probe — there is no commanded axis to grade against: a state file written
     before this key shipped, a trims-only candidate (which commands no shape at
     all), and a record that is not the pair this build writes.
+
+    **A length disagreement is one of those, checked here (#2316 N3).** The two
+    arrays are read separately, so a truncated or hand-edited record yields two
+    valid arrays that are not a curve. Returning them would leave the two
+    surfaces disagreeing in the journal: ``prepare_v2_verify``'s capability line
+    would report the commanded delta PRESENT, and the probe's own warning would
+    report it unavailable a moment later. Both degrade safely, but one of the
+    two lines is false, and an operator reading the capability line has no way
+    to know which. Refusing the pair here — rather than documenting the
+    disagreement — makes the capability line true by construction, for the cost
+    of one comparison.
     """
     import numpy as np
 
@@ -2251,6 +2374,13 @@ def commanded_delta_prior_from_state(
         return None
     freqs, delta = record.get("freqs_hz"), record.get("delta_db")
     if not freqs or not delta:
+        return None
+    if len(freqs) != len(delta):
+        log_event(
+            logger, "correction.crossover_v2_commanded_delta_malformed",
+            level=logging.WARNING,
+            n_freqs=len(freqs), n_delta=len(delta),
+        )
         return None
     return (
         np.asarray(freqs, dtype=float),
@@ -2581,6 +2711,15 @@ def persist_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
+    # #2291: which arm of ``correction_rollback_failed`` this is. Gated on the
+    # SAME code-agreement check for the same reason — a terminal arm passing a
+    # different ``failure_code`` must not inherit this round's anchor fact and
+    # render a sentence about a restore that code never attempted.
+    failure_rollback_anchor = (
+        getattr(conductor, "last_failure_rollback_anchor", None)
+        if failure_code == getattr(conductor, "last_failure_code", None)
+        else None
+    )
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
@@ -2816,6 +2955,15 @@ def persist_conductor_state(
                     {"pilot_heard": bool(failure_pilot_heard)}
                     if failure_pilot_heard is not None else {}
                 ),
+                # #2291, on exactly the key above's terms: absent is "the
+                # question does not apply to this code, or predates the
+                # record", and the copy owner reads absent as the Undo arm.
+                # Writing a bare False for the unknown case would tell a
+                # household with a perfectly good anchor that they have none.
+                **(
+                    {"rollback_anchor_available": bool(failure_rollback_anchor)}
+                    if failure_rollback_anchor is not None else {}
+                ),
             }
             if failure_code else None
         ),
@@ -2859,6 +3007,26 @@ def persist_conductor_state(
             "commanded_delta": _decimate_delta(
                 getattr(conductor, "measure_commanded_delta", None)
             ),
+            # #2291's measured "before": the summed capture stage 1 takes at
+            # the mark immediately before apply, which stage 2's benefit
+            # verdict differences its own capture against. Produced in one
+            # process and graded in another, so — exactly like
+            # ``predicted_sum`` and ``commanded_delta`` above — this durable
+            # state is the only channel it has.
+            #
+            # Already bounded: the record's curve is reduced to
+            # ``round_evidence.BENEFIT_CURVE_MAX_BINS`` (the same 512
+            # ``_decimate_sum`` applies) at capture time, on BOTH sides of the
+            # comparison, so no decimation belongs here — re-gridding one side
+            # after the fact is how a grid mismatch gets manufactured.
+            #
+            # Read through ``getattr`` for ``_predicted_spec_prior``'s reason,
+            # and ``to_dict`` behind a type check for the same one: a duck-typed
+            # conductor without the property, or with something that is not an
+            # ``EntryBaseline``, means "no baseline" — which is what the key's
+            # own absence already means downstream — never a raise that loses
+            # the whole snapshot.
+            "entry_baseline": _entry_baseline_prior(conductor),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference, DATED — history, not a
             # comparator (#1927). ``prepare_v2_verify`` hands it to the next
@@ -2918,6 +3086,25 @@ def persist_conductor_state(
         )
         if isinstance(prior_reference, Mapping):
             state["verify_priors"]["pilot_transfer_reference"] = dict(prior_reference)
+    # #2291's entry baseline needs NO carry-forward, and that is worth stating
+    # because its immediate neighbour above needs one. The difference is where
+    # the fact lives. ``pilot_transfer_reference`` is seeded into the conductor
+    # as history it may only DISCLOSE (#1927) and is not what
+    # ``verify_pilot_transfer_reference`` reports, so a re-arm's own persist
+    # really would blank it. The entry baseline is seeded into the SAME field
+    # its own capture writes (``measure_entry_baseline``) — exactly like
+    # ``predicted_sum`` and ``commanded_delta``, neither of which carries
+    # forward either — so a stage-2 persist re-writes the record its conductor
+    # was constructed with.
+    #
+    # Mutation-verified rather than argued (2026-08-11): a carry-forward branch
+    # was written here first, and deleting it changed no test outcome, because
+    # no path reaches it. Keeping it would have been a branch nothing can
+    # distinguish, and it would have weakened the real pin — that a MEASURING
+    # session replaces the previous round's "before" instead of letting this
+    # round's "after" be differenced against a stale one, which is exactly the
+    # false comparison #2291 exists to stop.
+    #
     # The applied flag is host-durable (set by the apply endpoint) — never
     # regressed by a conductor snapshot that predates it.
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
@@ -3129,13 +3316,31 @@ def persist_conductor_state(
         if prior.get("session_id") == snap.session_id
         else None
     )
+    # #2291: WHERE this round's receipt landed — round id plus the bundle
+    # artifact's fingerprint, so the next round resolves the previous one by
+    # identity instead of scanning bundles. Carried forward like the anchor
+    # keys above rather than session-scoped: the receipt describes the graph
+    # currently on the speaker, and that outlives the session that wrote it.
+    # A conductor that graded no round contributes ``None``, which must not
+    # erase the identity a previous one recorded.
+    receipt_identity = _round_receipt_identity(conductor)
+    state["round_receipt"] = (
+        receipt_identity
+        if receipt_identity is not None
+        else prior.get("round_receipt")
+    )
     prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
     prior_outcome = (
         str(prior_grade.get("outcome") or "")
         if isinstance(prior_grade, Mapping)
         and prior.get("session_id") == snap.session_id else ""
     )
-    save_v2_state(state)
+    # Durable (#2291): this write records an immutable receipt's identity. A
+    # power cut that lost it would leave a receipt in the bundle that nothing
+    # points at, which is the "falsifies a receipt" half of save_v2_state's
+    # durability rule. Only when there IS a new identity — the ordinary
+    # per-capture persist stays cheap.
+    save_v2_state(state, durable=receipt_identity is not None)
     from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
 
     grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
@@ -3702,6 +3907,41 @@ def bind_evidence_publishers(
         )
 
     return publish_check, publish_candidate, refs
+
+
+def bind_round_receipt(
+    store: Any, relay_session_id: str, refs: dict[str, Any]
+) -> Callable[[Mapping[str, Any]], str]:
+    """The conductor's ``publish_round_receipt`` seam (#2291).
+
+    Writes ONE immutable receipt per round as a bundle artifact at
+    ``crossover_v2/<relay_session_id>/round_receipt.json``, through
+    :meth:`publish_json_artifact` + reopen-and-compare — the R21 accept-receipt
+    pattern verbatim (``commissioning_verification._receipt``). That store is
+    write-once, canonical-JSON, fsync'd (file **and** parent directory) and
+    tamper-checked on the way out, which is what a receipt needs and what a
+    ``/var/lib/jasper/*.json`` file is not. It also puts the receipt beside
+    ``check.json``, ``candidate.json`` and the retained positions — the
+    artifacts its own ``evidence_identities`` name, which is what makes them
+    resolvable at all.
+
+    Raises rather than swallowing: the store is deliberately strict, and the
+    fail-soft boundary is the conductor's ``_write_round_receipt``, exactly as
+    it is for :func:`bind_position_retention`. Keeping the boundary there
+    preserves the strictness for every other caller of this store.
+    """
+
+    def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/round_receipt.json", dict(receipt)
+        )
+        reopened = store.reopen_json_artifact(artifact)
+        if reopened != dict(receipt):
+            raise RuntimeError("published round receipt changed on exact readback")
+        refs["round_receipt_artifact"] = artifact.fingerprint
+        return str(artifact.fingerprint)
+
+    return publish_round_receipt
 
 
 def bind_position_retention(
@@ -5942,6 +6182,7 @@ CAPABILITY_FINDINGS = "findings"
 CAPABILITY_ROLLBACK = "rollback"
 CAPABILITY_COMMANDED_DELTA = "commanded_delta"
 CAPABILITY_PREDICTED_SUM = "predicted_sum"
+CAPABILITY_ENTRY_BASELINE = "entry_baseline"
 
 
 @dataclass(frozen=True)
@@ -5990,12 +6231,131 @@ STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
 #: non-matched verdicts: a conductor without the seam still refuses, but under
 #: ``REASON_CORRECTION_ROLLBACK_FAILED``, whose copy tells the household the
 #: correction is STILL APPLIED. Requires the two stage-1 curves the probe and
-#: the tracking check grade against.
+#: the tracking check grade against, plus #2291's entry baseline — the measured
+#: "before" this stage's benefit verdict differences its own capture against.
+#: Without it the round can still say the graph did what it commanded; it
+#: cannot say the speaker got better, which is the question the issue exists
+#: for, so its absence must reach the journal rather than pass unremarked.
 STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
     stage="verify",
     provides=frozenset({CAPABILITY_ROLLBACK}),
-    requires=frozenset({CAPABILITY_COMMANDED_DELTA, CAPABILITY_PREDICTED_SUM}),
+    requires=frozenset({
+        CAPABILITY_COMMANDED_DELTA,
+        CAPABILITY_PREDICTED_SUM,
+        CAPABILITY_ENTRY_BASELINE,
+    }),
 )
+
+
+def _active_graph_fingerprint() -> str:
+    """Identity of the Layer-A profile currently on the speaker, or ``""``.
+
+    The conductor's ``entry_graph_fingerprint`` seam (#2291): which DSP graph
+    the entry baseline was measured through, so a receipt can say what the
+    "before" was a before OF.
+
+    **Reuses the existing owner rather than hashing anything here.**
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
+    returns the frozen applied SSOT with its ``candidate_fingerprint``
+    *recomputed* from the immutable source + snapshot by
+    :func:`~jasper.active_speaker.baseline_profile.baseline_candidate_fingerprint`
+    — that repair is why this reads the stored field instead of re-deriving it:
+    the loader has already refused to trust a stale or absent stamp. One hash
+    function, one definition of "which graph".
+
+    ``""`` for a speaker with no applied profile — its first-ever round, where
+    the entry graph genuinely has no identity to name. The conductor turns that
+    into its own ``unknown`` word; this function does not invent one, because
+    "the loader found nothing" and "the conductor has no seam" are the same
+    answer to the round and should not become two vocabularies.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+
+    applied = load_applied_baseline_profile_state()
+    if not isinstance(applied, Mapping):
+        return ""
+    return str(applied.get("candidate_fingerprint") or "")
+
+
+def _rollback_anchor_available() -> bool:
+    """Is there a valid anchor for :func:`handle_v2_restore` to restore FROM?
+
+    #2291's ``rollback_available``, anchor half. The seam half — is the
+    conductor's ``rollback`` bound at all — is the conductor's own to check,
+    and it ANDs the two: the parameter's name asks "can the host actually
+    restore", and either half alone answers that wrongly. A stage-2 conductor
+    on a speaker whose durable state carries no ``pre_apply_profile`` has the
+    seam bound and can restore nothing, so a round trusting seam presence
+    alone would issue a ``restore`` instruction that Undo then refuses.
+
+    Reads :func:`rollback_anchor_refusal` — the same predicate
+    :func:`handle_v2_restore` refuses on — rather than re-deriving the three
+    preconditions, so the answer and the action cannot drift.
+
+    **Fails closed.** Any unexpected error reading the durable state or the
+    output topology means "not available": a round that cannot confirm an
+    anchor must not be told it has one, because the cost of the wrong answer
+    is a restore instruction nothing can carry out, which then surfaces as
+    ``recovery_required`` anyway — one round later and less honestly.
+    """
+    try:
+        return rollback_anchor_refusal(load_v2_state()) is None
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            logger,
+            "correction.crossover_v2_rollback_available_failed",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return False
+
+
+def _applied_graph_boosts() -> bool:
+    """Does the graph currently on the speaker put energy IN? (#2291)
+
+    #2318's fail-closed cell asks this of the APPLIED intervention, and the
+    grading conductor cannot answer it from its own state: stage 2 builds a
+    fresh conductor whose ``_candidate`` is never set (only stage 1's commit
+    assigns one), so the predicate read ``None`` on every shipped round and
+    the cell was unreachable — a boosted round with unprovable benefit ended
+    accepted, which is exactly the state that rule exists to prevent.
+
+    **One owner for "what did we apply": the applied profile SSOT.** Not the
+    durable ``state["candidate"]``, which is a display summary carrying
+    ``linearization_outcome`` and per-octave figures but not the filters; and
+    not a re-derivation, because
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`
+    already owns which copy of a profile's linearization is authoritative.
+    That mapping is ALREADY reduced, so it goes straight to the shipped
+    predicate with no ``linearization_filters_by_role`` in between — that
+    reducer returns ``{}`` for an already-reduced mapping, which would read as
+    "this graph boosts nothing" and quietly restore the bug.
+
+    **Fails closed.** An unreadable profile answers "boosted", so an
+    intervention nobody can inspect comes off rather than staying on evidence
+    nobody has — the same direction the conductor takes when this seam is
+    absent entirely.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+        profile_linearization,
+    )
+    from jasper.active_speaker.camilla_yaml import linearization_has_boost
+
+    try:
+        return linearization_has_boost(
+            profile_linearization(load_applied_baseline_profile_state())
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        log_event(
+            logger,
+            "correction.crossover_v2_applied_boost_unreadable",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+        return True
 
 
 def bind_v2_stage_seams(
@@ -6070,6 +6430,13 @@ def bind_v2_stage_seams(
             evidence_store, relay_session_id, refs
         ),
         publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
+        # #2291's round receipt. Bound on both stages rather than gated on a
+        # capability: only the stage that GRADES a round ever calls it, and a
+        # binding that exists everywhere cannot be the reason a receipt went
+        # unwritten on the stage that needed it.
+        publish_round_receipt=bind_round_receipt(
+            evidence_store, relay_session_id, refs
+        ),
         publish_findings=(
             bind_findings_publisher(evidence_store, relay_session_id, refs)
             if CAPABILITY_FINDINGS in capabilities.provides else None
@@ -6080,6 +6447,16 @@ def bind_v2_stage_seams(
         ),
         applied_offset_db=_applied_offset_gate,
         record_model_error=_record_live_model_error,
+        rollback_available=_rollback_anchor_available,
+        # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
+        # ``entry_graph_fingerprint``'s reason — what is live right now is not
+        # a stage asymmetry — and it is the only way the grading stage can
+        # answer at all, since its conductor never holds the candidate.
+        applied_boosts=_applied_graph_boosts,
+        # Unconditional on both stages: "which graph is live right now" is not
+        # a stage asymmetry, and #2291's receipt is what lets a LATER round
+        # bind the currently-active profile as its own entry graph.
+        entry_graph_fingerprint=_active_graph_fingerprint,
     )
 
 
@@ -6111,6 +6488,7 @@ def prepare_v2_session(
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
+        STAGE1_INCLUDES_ENTRY_BASELINE,
         STAGE1_INCLUDES_LATERAL,
         CrossoverV2Conductor,
         CrossoverV2FlowError,
@@ -6157,6 +6535,11 @@ def prepare_v2_session(
     # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
     # spec and the conductor's index map below are built from ONE decision.
     include_lateral = STAGE1_INCLUDES_LATERAL
+    # #2291's entry baseline. Same reason, same place: the emitted plan and the
+    # conductor's index→phase map are two surfaces that must agree about which
+    # captures this session runs, and reading the flag twice is how they get to
+    # disagree.
+    include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
@@ -6199,6 +6582,7 @@ def prepare_v2_session(
             plan_shape=plan_shape,
             include_cloud_measure=include_cloud_measure,
             include_lateral=include_lateral,
+            include_entry_baseline=include_entry_baseline,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -6267,6 +6651,7 @@ def prepare_v2_session(
                 plan_shape=plan_shape,
                 include_cloud_measure=include_cloud_measure,
                 include_lateral=include_lateral,
+                include_entry_baseline=include_entry_baseline,
             ),
             # The boost-permission evidence gate (work order D2's consequence).
             # This session's own phases carry no VERIFY — the post-apply sweep
@@ -6445,6 +6830,14 @@ def prepare_v2_verify(
     # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
     # permission granted either.
     commanded_delta = commanded_delta_prior_from_state(state)
+    # #2291's measured "before", rehydrated. Stage 2 never captures one — its
+    # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
+    # baseline has to precede the apply this stage is verifying — so this is
+    # the only way the benefit verdict gets a side to compare against. ``None``
+    # stays ``entry_baseline_unavailable``: INDETERMINATE, never a pass, and
+    # declared to the capability journal below so the verdict's reason is not
+    # the first place anyone learns it was missing.
+    entry_baseline = entry_baseline_prior_from_state(state)
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -6533,6 +6926,7 @@ def prepare_v2_verify(
                     for slug, present in (
                         (CAPABILITY_COMMANDED_DELTA, commanded_delta is not None),
                         (CAPABILITY_PREDICTED_SUM, predicted_sum is not None),
+                        (CAPABILITY_ENTRY_BASELINE, entry_baseline is not None),
                     )
                     if present
                 ),
@@ -6548,6 +6942,7 @@ def prepare_v2_verify(
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_commanded_delta=commanded_delta,
+            measure_entry_baseline=entry_baseline,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
@@ -7012,9 +7407,45 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     ``_delta_probe_refusal`` catches that wider family on the other side of
     the seam (it has to — a conductor with a different binding gets the same
     protection). Two honest halves rather than one dishonest "never raises".
+
+    **Exactly once per binding, and the reason is the copy (#2291).** Three
+    conductor sites can reach this closure in one Full session — the delta
+    probe's refusal at VERIFY, the same refusal when the post-apply cloud
+    closes, and the round's adoption path. ``handle_v2_restore`` is NOT
+    idempotent: a successful restore sets ``applied = False``, so the SECOND
+    call refuses with "nothing is applied to undo", this closure returns
+    ``False``, and ``_delta_probe_refusal`` re-labels the verdict
+    :data:`REASON_CORRECTION_ROLLBACK_FAILED` — whose household copy says the
+    correction is **still applied**. It is not. That false sentence about
+    their own speaker is the defect, not the extra call, so the guard fixes
+    the sentence rather than merely the reachability: the restore is attempted
+    once, and every later caller is handed the FIRST call's outcome verbatim,
+    so a successful restore keeps reporting success and the verdict keeps its
+    own "the previous sound has been put back" copy.
+
+    Remembering the outcome rather than suppressing the repeat is also what
+    lets the shipped delta-probe rollback and the new adoption-driven restore
+    coexist without either one having to know about the other.
     """
+    lock = threading.Lock()
+    outcome: dict[str, bool] = {}
 
     def _rollback(reason: str) -> bool:
+        with lock:
+            if "restored" in outcome:
+                remembered = outcome["restored"]
+                log_event(
+                    logger,
+                    "correction.crossover_v2_delta_probe_restore_repeat",
+                    level=logging.INFO,
+                    reason=reason, restored=remembered,
+                )
+                return remembered
+            restored = _restore_once(reason)
+            outcome["restored"] = restored
+            return restored
+
+    def _restore_once(reason: str) -> bool:
         try:
             payload = handle_v2_restore(run_async, camilla_factory)
         except CrossoverV2Refused as exc:
@@ -7185,6 +7616,88 @@ def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     return DECLARATION_RESTORED, ""
 
 
+#: Why a rollback anchor cannot be restored from, as three named codes. On the
+#: journal and the round receipt, so "we could not put the old sound back" says
+#: WHICH of the three it was without re-deriving it from a sentence.
+ANCHOR_NOT_APPLIED = "not_applied"
+ANCHOR_NO_PRE_APPLY_PROFILE = "no_pre_apply_profile"
+ANCHOR_TOPOLOGY_CHANGED = "topology_changed"
+
+
+@dataclass(frozen=True)
+class RollbackAnchorRefusal:
+    """One reason Undo cannot run, with the sentence the household reads."""
+
+    code: str
+    message: str
+
+
+def rollback_anchor_refusal(
+    state: Mapping[str, Any] | None,
+) -> RollbackAnchorRefusal | None:
+    """Why this durable state has no restorable anchor, or ``None`` if it has.
+
+    **One owner for a rule with two readers.** :func:`handle_v2_restore` raises
+    on this, and #2291's ``rollback_available`` seam asks it before the round's
+    adoption decision commits to a ``restore`` instruction. Before this
+    function the two would have been separate transcriptions of the same three
+    preconditions, and a round could have promised a restore that Undo then
+    refused — the exact drift #2291 exists to close.
+
+    The three are, in the order Undo needs them:
+
+    * nothing is applied, so there is no apply to reverse;
+    * nothing was stashed — a genuine first-ever apply on this speaker;
+    * the stash was composed for an output topology that has since changed, so
+      reloading it would realize the WRONG graph (item 2, #1605). A stash that
+      predates the fingerprint carries none, cannot be compared, and is
+      allowed through to the restore path, which validates the config bytes
+      itself.
+
+    Pure and side-effect-free by design: it is called on the read path to
+    answer a capability question, so it must not log, mutate, or apply
+    anything. :func:`handle_v2_restore` owns the journal line for the topology
+    case, because that is the one that fires when a household actually presses
+    the button.
+    """
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.output_topology import load_output_topology
+
+    if not state or not state.get("applied"):
+        return RollbackAnchorRefusal(
+            ANCHOR_NOT_APPLIED,
+            "nothing is applied to undo; measure and apply a crossover first",
+        )
+    pre_apply_profile = state.get("pre_apply_profile")
+    if not isinstance(pre_apply_profile, Mapping):
+        # Now that persist_conductor_state carries pre_apply_profile forward
+        # across every conductor snapshot (W6.12 P0), this branch is reached
+        # ONLY on a genuine first-ever apply — there was never an earlier
+        # profile to stash. Say so plainly rather than reading like a bug
+        # report or a generic "no undo available" error.
+        return RollbackAnchorRefusal(
+            ANCHOR_NO_PRE_APPLY_PROFILE,
+            "this is the first measured crossover on this speaker — there's "
+            "no earlier one to restore; use Speaker setup to remove it instead",
+        )
+    stashed_source = pre_apply_profile.get("source")
+    stashed_topology_fp = (
+        str(stashed_source.get("topology_fingerprint") or "")
+        if isinstance(stashed_source, Mapping)
+        else ""
+    )
+    if stashed_topology_fp:
+        current_topology_fp = topology_config_fingerprint(load_output_topology())
+        if current_topology_fp != stashed_topology_fp:
+            return RollbackAnchorRefusal(
+                ANCHOR_TOPOLOGY_CHANGED,
+                "the speaker's output configuration changed since this "
+                "crossover was applied, so the previous sound can't be safely "
+                "restored — re-measure the crossover instead",
+            )
+    return None
+
+
 def handle_v2_restore(
     run_async: Any,
     camilla_factory: Any,
@@ -7223,53 +7736,28 @@ def handle_v2_restore(
     """
     from jasper.active_speaker.baseline_profile import (
         restore_applied_baseline_profile,
-        topology_config_fingerprint,
     )
-    from jasper.output_topology import load_output_topology
 
     state = load_v2_state()
-    if not state or not state.get("applied"):
-        raise CrossoverV2Refused(
-            "nothing is applied to undo; measure and apply a crossover first"
-        )
-    pre_apply_profile = state.get("pre_apply_profile")
-    if not isinstance(pre_apply_profile, Mapping):
-        # Now that persist_conductor_state carries pre_apply_profile forward
-        # across every conductor snapshot (W6.12 P0), this branch is reached
-        # ONLY on a genuine first-ever apply — there was never an earlier
-        # profile to stash. Say so plainly rather than reading like a bug
-        # report or a generic "no undo available" error.
-        raise CrossoverV2Refused(
-            "this is the first measured crossover on this speaker — there's "
-            "no earlier one to restore; use Speaker setup to remove it instead"
-        )
-    # Item 2 (#1605): the stashed Undo target was composed for the output
-    # topology live at apply time. If the topology's config-determining
-    # fingerprint changed since (a driver swap, a different output device or
-    # channel map), reloading that config would realize the WRONG graph —
-    # refuse with a clear "re-measure" nudge rather than silently restoring a
-    # stale config. A stash predating the fingerprint (no topology_fingerprint
-    # in its ``source``) can't be compared, so it falls through to the existing
-    # restore path, which still validates the config bytes itself.
-    stashed_source = pre_apply_profile.get("source")
-    stashed_topology_fp = (
-        str(stashed_source.get("topology_fingerprint") or "")
-        if isinstance(stashed_source, Mapping)
-        else ""
-    )
-    if stashed_topology_fp:
-        current_topology_fp = topology_config_fingerprint(load_output_topology())
-        if current_topology_fp != stashed_topology_fp:
+    # The three preconditions live in ``rollback_anchor_refusal`` (#2291), so
+    # this endpoint and the round's ``rollback_available`` seam cannot come to
+    # different conclusions about the same state. Item 2 (#1605)'s topology
+    # check is one of them, and its journal line stays HERE: it fires when a
+    # household actually pressed Undo, not on every capability probe.
+    refusal = rollback_anchor_refusal(state)
+    if refusal is not None:
+        if refusal.code == ANCHOR_TOPOLOGY_CHANGED:
             log_event(
                 logger,
                 "correction.crossover_v2_restore_topology_mismatch",
                 level=logging.WARNING,
             )
-            raise CrossoverV2Refused(
-                "the speaker's output configuration changed since this "
-                "crossover was applied, so the previous sound can't be safely "
-                "restored — re-measure the crossover instead"
-            )
+        raise CrossoverV2Refused(refusal.message)
+    # No refusal means the anchor cleared all three checks, so the state is
+    # present and ``pre_apply_profile`` is a Mapping — indexed rather than
+    # re-tested, because a second test here would be a fourth transcription of
+    # the rule this function was extracted to own.
+    pre_apply_profile = (state or {})["pre_apply_profile"]
     cam = camilla_factory()
     payload = run_async(
         restore_applied_baseline_profile(
@@ -7287,7 +7775,11 @@ def handle_v2_restore(
         # the record — the graph is back, so this is the moment the
         # declaration owes the same reversal.
         outcome, message = _restore_sound_declaration(
-            state.get("sound_declaration_undo")
+            # ``(state or {})`` for the same reason as ``pre_apply_profile``
+            # above: ``rollback_anchor_refusal`` is what proves ``state`` is
+            # present now, and it does that by returning ``None`` rather than
+            # by narrowing the local the way the inline guard it replaced did.
+            (state or {}).get("sound_declaration_undo")
         )
         payload["sound_declaration"] = outcome
         if message:

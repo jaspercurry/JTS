@@ -37,9 +37,10 @@ Phase 1 of #2291 introduced these types and wired
 :class:`InterventionProposal` alongside the planner; Phase 2b moved the
 prescription policy itself out of the conductor into
 :mod:`.intervention`, which builds a :class:`CandidateAcousticContext` for
-every candidate.  The types whose docstrings name a later phase are defined and
-validated here but have no producer or consumer yet; that is the point of
-contracts-first.
+every candidate.  These types were defined and validated ahead of their
+producers — that is the point of contracts-first — and the phases that owed
+them have landed: 3b for the verification/adoption vocabulary, 3c for the
+round receipt.  Nothing here is inert.
 """
 
 from __future__ import annotations
@@ -783,9 +784,9 @@ class VerificationResult:
     :attr:`BenefitStatus.INDETERMINATE` and
     :attr:`SpecStatus.UNEVALUABLE` rather than a default of success.
 
-    **Nothing consumes this yet.** #2291 Phase 3b computes the four
-    statuses independently and feeds them to :class:`AdoptionDecision`; Phase 1
-    only fixes the vocabulary and the invariants.
+    Consumed since #2291 Phase 3b, which computes the four statuses
+    independently and feeds them to :class:`AdoptionDecision`; Phase 1 fixed
+    the vocabulary and the invariants this rests on.
     """
 
     capture_validity: CaptureValidity
@@ -876,8 +877,7 @@ class AdoptionDecision:
     one.  Its reason is mandatory, mirroring the R21 receipt's
     ``recovery_reason``.
 
-    **Nothing consumes this yet** — #2291 Phase 3b applies the
-    issue's adoption table.
+    Consumed since #2291 Phase 3b, which applies the issue's adoption table.
     """
 
     outcome: AdoptionOutcome
@@ -918,7 +918,10 @@ class RoundReceipt:
     and a :attr:`AdoptionOutcome.RECOVERY_REQUIRED` adoption must carry one —
     a recovery that cannot say what the restore did is not a receipt.
 
-    **Nothing produces or consumes this yet** — #2291 Phase 3 persists it.
+    Produced since #2291 Phase 3c, by
+    :func:`~jasper.active_speaker.crossover_v2.round_evidence.build_round_receipt`,
+    and persisted as a write-once evidence-bundle artifact at
+    ``crossover_v2/<relay_session_id>/round_receipt.json``.
     """
 
     round_id: str

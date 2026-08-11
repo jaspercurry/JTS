@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
     PHASE_MEASURE,
     STAGE1_INCLUDES_CLOUD_MEASURE,
+    STAGE1_INCLUDES_ENTRY_BASELINE,
     STAGE1_INCLUDES_LATERAL,
     CrossoverV2Conductor,
     build_v2_cloud_index_phase_map,
@@ -107,6 +108,15 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     assert "include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE" in source
     assert STAGE1_INCLUDES_CLOUD_MEASURE is False
 
+    # #2291's entry baseline is the third stage-1 flag and takes the identical
+    # guard, because a dropped thread is silent in exactly the same way: the
+    # session would build the no-baseline shape while the flag says otherwise,
+    # and the first surface to notice would be a household's benefit verdict
+    # reading ``entry_baseline_unavailable`` a stage later.
+    assert "include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE" in source
+    assert STAGE1_INCLUDES_ENTRY_BASELINE is True
+    assert source.count("include_entry_baseline=include_entry_baseline") == 2
+
 
 def test_both_builders_default_the_walk_off_which_is_why_a_dropped_thread_is_silent():
     """The premise the guard above rests on, stated rather than assumed.
@@ -114,12 +124,16 @@ def test_both_builders_default_the_walk_off_which_is_why_a_dropped_thread_is_sil
     If either builder defaulted ``include_lateral=True``, a dropped
     ``include_lateral=include_lateral`` would be harmless and the guard above
     would be theatre. They both default it ``False``, so the omission
-    downgrades the shipped session to the no-walk shape with no error.
+    downgrades the shipped session to the no-walk shape with no error. #2291's
+    ``include_entry_baseline`` follows the same convention for the same reason.
     """
 
     for builder in (build_v2_cloud_index_phase_map, build_v2_session_spec):
-        default = inspect.signature(builder).parameters["include_lateral"].default
-        assert default is False, f"{builder.__name__} no longer defaults the walk off"
+        for flag in ("include_lateral", "include_entry_baseline"):
+            default = inspect.signature(builder).parameters[flag].default
+            assert default is False, (
+                f"{builder.__name__} no longer defaults {flag} off"
+            )
 
 
 # --- gap 2: the retry ledger does not survive a conductor rebuild ------------

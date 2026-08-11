@@ -612,10 +612,12 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — 8 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
-(R17's Fc selector flipped it, #2173) and `STAGE1_INCLUDES_CLOUD_MEASURE` stays
-`False` (R15, #2106), so a shipped session runs the anchor pair and then the
-lateral walk, and emits no `cloud_measure` phase or prompt. Production passes
+**Stage 1 — 9 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
+(R17's Fc selector flipped it, #2173), `STAGE1_INCLUDES_ENTRY_BASELINE` is
+`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` stays `False`
+(R15, #2106), so a shipped session runs the anchor pair, then the lateral walk,
+then one summed capture back at the mark, and emits no `cloud_measure` phase or
+prompt. Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
@@ -636,6 +638,7 @@ hard floor**.
 | 1 | `check` | tap | microphone check |
 | 2 | `measure` | tap | design-axis anchor, per-driver |
 | 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) |
+| 9 | `entry_baseline` | tap | summed sweep at the mark, the round's measured "before" (#2291) |
 
 The walk is the mark, ±12 cm and ±40 cm left/right, and a return to the mark.
 Four things about it are load-bearing and easy to undo by accident:
@@ -1308,6 +1311,12 @@ graded (state=graded, verify=pass)` one row under a cloud line reading
 `spec=fail worst=-4.63dB excluded_intervals=4 geometry_locked=False` — the
 defect these keys close.
 
+Since #2291 Phase 3c that spatial report is also the SPEC verdict's input on
+the round receipt (see "The round, graded" below), so the failure is recorded
+as one of four graded answers rather than as disclosure alone. It still does
+not gate: spec reads "any" in every row of the adoption table, because a first
+pass may honestly be improved and out of spec.
+
 **`/state.crossover_v2.prediction`** (two-stage commission work order D4,
 issue #1806) carries the PREDICTED post-apply response and the spec verdict it
 was graded with: `curve` (decimated through the same
@@ -1339,16 +1348,24 @@ grade the curve). The `review` screen below renders it.
 **The stage bridge.** Stage 1 and stage 2 are two relay sessions with two
 conductors and nothing shared in memory, so `verify_priors` — written by
 `persist_conductor_state`, read by `prepare_v2_verify` — is the *only* channel
-between them. It carries five keys: `predicted_sum`, `predicted_spec`,
-`gate_window_ms`, `pilot_transfer_reference`, and (since #2291 Phase 3a)
-`commanded_delta`, the delta probe's commanded axis. Before Phase 3a that fifth
+between them. It carries six keys: `predicted_sum`, `predicted_spec`,
+`gate_window_ms`, `pilot_transfer_reference`, (since #2291 Phase 3a)
+`commanded_delta`, the delta probe's commanded axis, and (since #2291 Phase 3c)
+`entry_baseline`, the summed at-the-mark capture stage 1 takes immediately
+before apply so stage 2 has a measured "before" to grade its "after" against.
+Before Phase 3a that fifth
 curve was produced in stage 1 and consumed in stage 2 with no key to travel in,
 so every shipped stage 2 reported the probe `unavailable` — grading a correction
 with the shortfall-vs-model-error discriminator switched off. It is reduced to
 the same 512-point ceiling on the same block grid as `predicted_sum`, but
 averaged **in dB rather than in linear power**: it is a difference of two dB
-predictions, where the power mean is biased by up to 0.27 dB against a 0.5 dB
-commanded floor — enough to move which bins the probe grades.
+predictions, and over a block the arithmetic mean is that difference's
+unbiased estimator where the power mean is biased upward by Jensen — by an
+amount that grows with the within-block spread and vanishes across a flat
+block. Measured through the production response owner (200 cascades,
+1,024–8,192-bin grids): worst block disagreement **1.60 dB**, and **5 of
+100,762** persisted bins change side of the 0.5 dB commanded floor. Rare, but
+it does reach band membership rather than a third decimal.
 
 Which seams each stage binds is declared once, in `STAGE_MEASURE_CAPABILITIES` /
 `STAGE_VERIFY_CAPABILITIES`, and built by `bind_v2_stage_seams`; the two
@@ -1362,6 +1379,83 @@ prior did not cross. `requires` is observability, never a gate: a state file
 written before Phase 3a still opens stage 2 and still verifies, it just cannot
 run the probe, and the journal says so instead of leaving an `unavailable`
 verdict unexplained.
+
+### The round, graded
+
+Since #2291 Phase 3c a correction round answers the question it exists for —
+*did the speaker get better* — and acts on the answer. Before it, a round could
+report that the applied graph tracked its model and stop there; the 2026-08-10
+jts3 round did exactly that while the post-apply cloud failed all three spec
+bands.
+
+**The measured "before".** Stage 1's last capture is `PHASE_ENTRY_BASELINE`:
+one summed sweep at the design-axis mark, taken immediately before apply. Its
+comparability is structural, not asserted — membership in `SUMMED_SWEEP_PHASES`
+routes it to the same `_verify_program` object the post-apply VERIFY replays,
+so both stamp one `program_id`, and `REFERENCE_MARK_DESIGN_AXIS` (one owner) is
+the second identity. It crosses the bridge as `verify_priors.entry_baseline`,
+the sixth key, and — like `predicted_sum` and `commanded_delta` — it needs **no
+carry-forward**, because it is seeded into the same field its own capture
+writes, so a stage-2 persist re-writes the record its conductor was constructed
+with. (A carry-forward branch was written here first and deleted:
+mutation-verified as unreachable, and keeping it would have weakened the pin
+that actually matters — a MEASURING session replaces the previous round's
+"before", so this round's "after" is never differenced against a stale one.)
+
+**Four independent verdicts**, composed once by
+`crossover_v2/round_evidence.evaluate_round` and never by a host:
+
+| verdict | asks |
+|---|---|
+| capture | was this capture usable at all? |
+| realization | did the graph do what its own filters commanded? |
+| benefit | is the speaker measurably better than the entry baseline? |
+| spec | is the result inside the target envelope? |
+
+An unusable capture short-circuits rather than being graded and then
+overwritten, so the journal cannot show a benefit no usable capture supports.
+
+**Adoption** is `verification.decide_adoption`'s table plus three modifiers
+(`boosted`, `rollback_available`, `restore_failed`). Two guarantees are worth
+stating because they are why the table is keyed on two statuses rather than
+short-circuiting on a tracking pass: **a realization pass never overrides a
+measured regression**, and **indeterminate never claims success**. A boosted
+intervention whose benefit is indeterminate fails closed and comes back off.
+
+The conductor grades once per session — at the end of `_consume_verify` on a
+tier that walks no post-apply cloud, and at the close of the post-apply cloud
+group on one that does. **A round never overwrites an existing refusal**: a
+capture that already failed keeps its own, more specific code, and the round
+contributes its verdicts and its receipt without acting. The acting half is
+for the round that would otherwise have been reported as a success.
+
+**Exactly-once restore.** Three sites can reach the rollback seam in one Full
+session. `handle_v2_restore` is not idempotent — a successful restore sets
+`applied = False`, so a second call refuses and the household would be told the
+correction is still applied when it is not. `bind_delta_probe_rollback`
+therefore attempts the restore once and hands every later caller the FIRST
+outcome verbatim (`event=correction.crossover_v2_delta_probe_restore_repeat`).
+
+**The receipt** is one immutable record per round at
+`crossover_v2/<relay_session_id>/round_receipt.json` in the evidence bundle,
+written through `publish_json_artifact` + reopen-and-compare (the R21 pattern):
+write-once, canonical-JSON, fsync'd file and parent, tamper-checked, beside the
+evidence its own identities name. `round_id` is the stage-2 relay session id —
+one graded post-apply session is one round, and a recovery re-verify writes its
+own rather than amending this one. Its identity lands in `state.round_receipt`
+so the next round resolves it without scanning bundles. Writing is fail-soft: a
+receipt that could not be written is a WARN, never a lost verdict.
+
+**Journal:** `event=correction.crossover_v2_round_graded` carries all four
+verdicts WITH their evidence (the *why*, which the statuses alone cannot say),
+`…_round_restore` the restore, `…_round_receipt` where it landed.
+
+**The rollback anchor is durable.** `save_v2_state` takes `durable=`, and the
+two writes that own `pre_apply_profile` — `observe_apply_success`, which
+creates it while the new graph is already live, and `observe_restore`, which
+clears it while the old graph is already back — pass `durable=True`, as does
+the receipt-identity write. Everything else stays cheap; `persist_conductor_state`
+runs after every consumed capture and an fsync per capture buys nothing.
 
 **The `closing` screen** (PR-T3) is the measuring session's own TAIL, and it
 exists because the review screen used to render there. Accepting the final
@@ -1839,7 +1933,7 @@ actually reaches the delta probe — the two halves used to sit on different
 stages, with the measuring conductor holding the binding it could never use and
 the verifying conductor reaching the probe with no binding at all — so an
 automatic rollback now genuinely runs. Which stage binds it is declared once, in
-`STAGE_VERIFY_CAPABILITIES`; see "The stage bridge" below.
+`STAGE_VERIFY_CAPABILITIES`; see "The stage bridge" above.
 
 **Where each piece lives.**
 
@@ -3783,7 +3877,17 @@ the floor-first solve those numbers are actually used for gives `1.31053`, not
 `1.3108`. The `|P(1600)|` and margin figures were unaffected. Still no
 hardware.
 
-Last verified: 2026-08-10 — #2291 Phase 3a re-verified only the stage-bridge
+Last verified: 2026-08-11 — #2291 Phase 3c re-verified only the sections it
+changed: "The round, graded" (new), the stage-bridge key list (now six keys,
+with `entry_baseline` and why it needs no carry-forward), the stage-1
+capture table (now 9
+captures), the `_decimate_delta` dB-domain paragraph (figures re-derived
+through `linearization_fit.complex_correction_response`), and the #2160
+spatial-grade paragraph — each against `crossover_v2_flow` /
+`correction_crossover_v2` / `crossover_v2/round_evidence` /
+`crossover_v2/verification` and their tests. No live-Pi run; no other section
+was re-read, and the historical appendix below was not. Earlier scopes, kept
+for provenance: 2026-08-10 — #2291 Phase 3a re-verified only the stage-bridge
 prose (the new "The stage bridge" block and the automatic-rollback sentence in
 the Undo/declaration contract) against `persist_conductor_state` /
 `prepare_v2_verify` / `bind_v2_stage_seams` and
