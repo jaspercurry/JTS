@@ -1004,10 +1004,16 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     assert attempts == []
     # The loss is recorded rather than silent, and nothing claims a receipt.
     assert conductor.round_receipt_identity is None
-    assert any(
-        "event=correction.crossover_v2_round_receipt_failed" in record.getMessage()
-        for record in caplog.records
-    )
+    failures = [
+        record for record in caplog.records
+        if "event=correction.crossover_v2_round_receipt_failed" in record.getMessage()
+    ]
+    assert failures, "a lost receipt must be recorded, not silent"
+    # …at ERROR. The LEVEL is the pin, not incidental: this is the event that
+    # would have fired on every shipped round for a whole phase while the
+    # receipt silently went unwritten, and a fail-soft path whose only trace is
+    # a WARNING is one nobody reads.
+    assert [record.levelname for record in failures] == ["ERROR"]
 
 
 def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(

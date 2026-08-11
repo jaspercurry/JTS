@@ -11839,9 +11839,16 @@ class CrossoverV2Conductor:
             fingerprint = seam(receipt.to_dict())
         except (OSError, RuntimeError, TypeError, ValueError, KeyError,
                 AttributeError):
+            # ERROR, not WARNING, and earned by demonstrated history: this is
+            # the exact event that would have fired on every shipped round for
+            # a whole phase while nobody looked. The dead ``self._candidate``
+            # read emptied ``proposal_fingerprint``, the receipt contract
+            # refused it, and this handler swallowed the loss — a fail-soft
+            # path whose only trace is a WARNING is one nobody reads. Its
+            # sibling, the no-anchor recovery path, is already ERROR.
             log_event(
                 logger, "correction.crossover_v2_round_receipt_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
+                level=logging.ERROR, session_id=self.session_id, exc_info=True,
             )
             return
         self._round_receipt_identity = {

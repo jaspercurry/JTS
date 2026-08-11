@@ -58,6 +58,8 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+import importlib
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -228,6 +230,27 @@ def _production_host_seams(monkeypatch, tmp_path):
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
     preset = load_active_speaker_preset()
+    # Remember the REAL functions before anything is patched — the sweep at the
+    # end of this block needs identity, not name, to tell a stale binding from
+    # a module that simply has an attribute of the same name.
+    _originals = {
+        "load_output_topology": output_topology_mod.load_output_topology,
+        "resolve_capture_preset": commission_wiring.resolve_capture_preset,
+        "load_design_draft": design_draft.load_design_draft,
+    }
+    _home = {
+        "load_output_topology": output_topology_mod,
+        "resolve_capture_preset": commission_wiring,
+        "load_design_draft": design_draft,
+    }
+    # Modules that bind these names at MODULE scope and are imported lazily, so
+    # they would otherwise first appear DURING the patched window. Imported here
+    # so the sweep below can find them; see that sweep for why it matters.
+    for _late_binder in (
+        "jasper.active_speaker.web_commissioning",
+        "jasper.web.sound_setup",
+    ):
+        importlib.import_module(_late_binder)
     monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: _topology())
     monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
     monkeypatch.setattr(
@@ -249,6 +272,29 @@ def _production_host_seams(monkeypatch, tmp_path):
             ],
         }},
     )
+    # Patch each name at EVERY binding, not only its home module (#2312).
+    #
+    # ``web_commissioning`` and ``sound_setup`` bind these at module scope via
+    # ``from … import``. When one of them is imported for the FIRST time inside
+    # this fixture's patched window — which is exactly what a co-run with this
+    # harness does — its module-level name captures the FAKE, and monkeypatch
+    # never restores it, because monkeypatch only owns the attribute it set on
+    # the home module. The fake then answers for the rest of the PROCESS.
+    #
+    # That is the whole #2312 signature: 38 endpoints failures downstream, all
+    # ``crossover_preview_topology_mismatch``, all of them the anchor/Undo
+    # rollback guards, and green in isolation.
+    #
+    # Swept by identity rather than by a hand-kept list of importers, so a new
+    # module-level ``from … import`` cannot reintroduce it silently; monkeypatch
+    # unwinds every binding together.
+    for _symbol, _original in _originals.items():
+        _fake = getattr(_home[_symbol], _symbol)
+        for _module in list(sys.modules.values()):
+            if not getattr(_module, "__name__", "").startswith("jasper"):
+                continue
+            if getattr(_module, _symbol, None) is _original:
+                monkeypatch.setattr(_module, _symbol, _fake)
     monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
     monkeypatch.setattr(
         driver_safety_mod,
