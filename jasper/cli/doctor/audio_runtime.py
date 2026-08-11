@@ -292,6 +292,74 @@ def _outputd_xrun_rate_warning(
     return worst[1] if worst else None
 
 
+# The assistant-loudness gain floor, and the only fixed bound the shared Rust
+# engine applies. Its owner is MIN_TTS_GAIN_DB in
+# rust/jasper-tts-protocol/src/loudness.rs; sanitize_tts_gain_db() floors there
+# and maps a malformed value there too. tests/test_audio_safety_pins.py reads
+# the Rust literal and fails if this copy drifts.
+#
+# There is deliberately NO fixed positive ceiling: the fixed -6 dB ceiling was
+# removed in "Remove fixed TTS gain ceiling" (2026-07-01) because it pinned
+# quiet, peaky voices below music. A pre-DSP (fan-in) decision legitimately goes
+# positive — it pre-compensates for CamillaDSP's downstream attenuation. The
+# ceiling that IS enforced is dynamic and per-decision: the peak-aware cap
+# (max_peak_dbfs - source_peak_dbfs), which STATUS publishes next to the gain it
+# limited. See docs/audio-paths.md "Hearing safety is peak-aware".
+_ASSISTANT_GAIN_FLOOR_DB = -60.0
+# Under today's publish paths the comparison below is EXACT: both round
+# monotonically to 0.1 dB, min/max commute with any monotone map, and the floor
+# is fixed under that rounding — so the value recomputed from the published
+# inputs equals the published final_gain_db, with no residue. Fuzzing both paths
+# (fan-in's pack-x10-then-format and outputd's format, under both tie rules)
+# put the worst disagreement at 0.000000 dB over 400k samples each. This
+# tolerance is therefore a deliberate cushion against a future publish path that
+# rounds differently, NOT a bound derived from the current arithmetic; a real
+# clamp regression is dB-scale and clears it by an order of magnitude.
+_ASSISTANT_GAIN_ROUNDING_DB = 0.15
+
+
+def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
+    """Return a one-clause WARN reason when ``final_gain_db`` breaks the shared
+    loudness contract, else None.
+
+    The contract is one line of Rust (``AssistantLoudness::decide_gain``):
+
+        final = max(MIN_TTS_GAIN_DB, min(requested_gain, peak_cap_gain))
+
+    Both daemons publish all three numbers from the SAME decision under one
+    seqlock, so the doctor asserts the relation rather than a magic range —
+    that keeps the peak cap, not a literal, as the single owner of "how loud may
+    the assistant get". A daemon too old to publish the two inputs is held to
+    the floor alone.
+    """
+
+    def _f(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    final = _f(loudness.get("final_gain_db"))
+    if final is None:
+        return None
+    if final < _ASSISTANT_GAIN_FLOOR_DB - _ASSISTANT_GAIN_ROUNDING_DB:
+        return (
+            f"final_gain_db={final} is below the {_ASSISTANT_GAIN_FLOOR_DB} dB "
+            "gain floor"
+        )
+    requested = _f(loudness.get("requested_gain_db"))
+    peak_cap = _f(loudness.get("peak_cap_gain_db"))
+    if requested is None or peak_cap is None:
+        return None
+    expected = max(_ASSISTANT_GAIN_FLOOR_DB, min(requested, peak_cap))
+    if abs(final - expected) > _ASSISTANT_GAIN_ROUNDING_DB:
+        return (
+            f"final_gain_db={final} but the decision it came from asked for "
+            f"requested_gain_db={requested} under peak_cap_gain_db={peak_cap}, "
+            f"so the contract value is {expected}"
+        )
+    return None
+
+
 @doctor_check(order=50, group="audio")
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
@@ -680,13 +748,13 @@ def check_fanin_service() -> CheckResult:
             "tts.assistant_loudness.decision_seen=true without "
             "numeric final_gain_db.",
         )
-    if isinstance(final_gain, (int, float)) and not -60.0 <= float(final_gain) <= 0.0:
+    gain_fault = _assistant_gain_fault(loudness)
+    if gain_fault is not None:
         return CheckResult(
             "jasper-fanin service",
             "warn",
             f"active with pre-DSP TTS enabled but "
-            f"tts.assistant_loudness.final_gain_db={final_gain!r}; "
-            "expected clamped [-60, 0] dB.",
+            f"tts.assistant_loudness.{gain_fault}.",
         )
     tts_detail = (
         f"tts_enabled=true, "
@@ -2288,15 +2356,12 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
             "active but assistant_loudness.decision_seen=true without "
             "numeric final_gain_db.",
         )
-    if (
-        isinstance(final_gain, (int, float))
-        and not -60.0 <= float(final_gain) <= 0.0
-    ):
+    gain_fault = _assistant_gain_fault(loudness)
+    if gain_fault is not None:
         return CheckResult(
             "jasper-outputd",
             "warn",
-            f"active but assistant_loudness.final_gain_db={final_gain!r}; "
-            "expected clamped [-60, 0] dB.",
+            f"active but assistant_loudness.{gain_fault}.",
         )
     return (
         f"assistant_loudness_decision={decision_seen}, "

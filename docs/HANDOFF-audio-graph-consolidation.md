@@ -424,7 +424,7 @@ detail.
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | Open. Found in the 2026-08-11 jts.local pass; the workaround is to deploy over the Wi-Fi address |
 | [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open — the reason the wizard measurement flows stay off armed jts3, and the one armed-box restriction the 2026-08-11 proofs did **not** lift |
-| [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | Open. Surfaced 2026-08-11 by the deploy proof's own probe tone becoming the loudness anchor, so the trigger was synthetic; whether ordinary music re-anchors it is **inference, not measurement** — that is what makes it a real clamp bug or not. The warning cleared later that day, but on a fan-in restart that resets the loudness state, which does not answer the question |
+| [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | Open. **The doctor's assertion was the stale half.** The engine has had no fixed positive ceiling since `6304556a4` "Remove fixed TTS gain ceiling" (2026-07-01), which updated `audio-paths.md` and `HANDOFF-volume.md` and missed the doctor; positive gain there is intentional, because a pre-DSP decision pre-compensates for CamillaDSP's downstream attenuation. The `+3.0` was not a clamp at all but the computed peak cap (`max_peak_dbfs=-3.0` minus the uncalibrated fallback source peak `-6.0`) holding a `+5.0` request down, so whether ordinary music re-anchors the target positively never had to be answered. PR [#2355](https://github.com/jaspercurry/JTS/pull/2355) is **pending, not merged** — it makes the doctor assert the per-decision contract `max(floor, min(requested_gain_db, peak_cap_gain_db))`. |
 | [#2348](https://github.com/jaspercurry/JTS/issues/2348) | Gain-structure normalization at prescribe time — push the static trim set to the computed headroom ceiling | Open — [#2291](https://github.com/jaspercurry/JTS/issues/2291)'s prescribe stage, raised by the gain structures the arm's re-emit exposed on jts3 |
 
 **P8 splits.** P8a is this ladder — solo-stereo width plus active
@@ -1053,10 +1053,11 @@ posture) as filed and open, alongside re-verified-current
 re-touch the egress/source-half facts, the fleet probe, or Appendix
 A/B.
 
-A fifth pass (2026-08-11, the E7 ruling — this PR) rewrote the
+A fifth pass (2026-08-11, the E7 ruling —
+[#2335](https://github.com/jaspercurry/JTS/pull/2335)) rewrote the
 lifecycle and wire-resolution paragraphs against the code it changed,
 and nothing else: the wire-resolution section's "coherently narrow"
-claim (the resolver took no per-box input at all until this PR; it now
+claim (the resolver took no per-box input at all until #2335; it now
 reads `JASPER_FANIN_RING_WIRE_FORMAT`, the same key `jasper-fanin`
 parses); the lifecycle's step-1 paragraph (the re-emit now moves BOTH
 device halves, what it declares, and which gate refuses a shear); the
@@ -1067,8 +1068,9 @@ it comes from the changed source plus the jts3 arm-2 evidence
 (`captures/r7b-jts3-arm2-20260811T132227Z`). Every other section
 stands as last verified above.
 
-A sixth pass (2026-08-11, this PR) reconciled the **status, sequencing, and
-position** layers with the campaign's own record
+A sixth pass (2026-08-11,
+[#2346](https://github.com/jaspercurry/JTS/pull/2346)) reconciled the
+**status, sequencing, and position** layers with the campaign's own record
 (`captures/PLAN-ring-v2-rulings-2026-08-10.md`) and the merged PRs that record
 cites — R7a [#2324](https://github.com/jaspercurry/JTS/pull/2324), R7b
 [#2326](https://github.com/jaspercurry/JTS/pull/2326), the arm-waypoint fix
@@ -1092,7 +1094,7 @@ EQ-save proofs returned green: the armed-box restriction on deploys and `/eq/` /
 `/sound/` saves is recorded as lifted, jts3's row carries its post-deploy build,
 and #2345 joins the register — each read from
 `captures/endpoint-deploy-jts3-20260811T185255Z` rather than from a summary of
-it. A fix round after this PR's adversarial gate (0 blockers / 6 should-fixes)
+it. A fix round after #2346's adversarial gate (0 blockers / 6 should-fixes)
 then corrected four claims the campaign had outrun, each re-verified at its
 source rather than from the finding: the splice watch signal is `empty_reads`,
 not `epoch_resets` (`rust/jasper-ring/src/lib.rs` — `epoch_resets` counts writer

@@ -222,3 +222,36 @@ def test_sub_crossover_corner_constants_match_python_and_rust() -> None:
             "jasper.multiroom.config crossover constants in lockstep so the "
             "validated corner and the DAC's clamp agree."
         )
+
+
+# Assistant-gain floor: the one fixed bound the shared Rust loudness engine
+# applies (sanitize_tts_gain_db floors there, and maps a malformed value there).
+# jasper-doctor restates it to judge fan-in's and outputd's published
+# final_gain_db, so grep-pin the Rust literal to the doctor's copy — a doctor
+# that believes in a floor the engine no longer enforces is exactly how #2345
+# happened, with the doctor asserting a [-60, 0] clamp for two months after the
+# fixed ceiling was deliberately removed (2026-07-01).
+_RUST_SHARED_LOUDNESS = "rust/jasper-tts-protocol/src/loudness.rs"
+
+_MIN_TTS_GAIN_PAT = re.compile(
+    r"pub const MIN_TTS_GAIN_DB:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)\s*;"
+)
+
+
+def test_assistant_gain_floor_matches_rust_and_doctor() -> None:
+    from jasper.cli.doctor import audio_runtime
+
+    text = (REPO / _RUST_SHARED_LOUDNESS).read_text()
+    match = _MIN_TTS_GAIN_PAT.search(text)
+    assert match, (
+        f"{_RUST_SHARED_LOUDNESS}: const MIN_TTS_GAIN_DB not found (renamed?). "
+        "The doctor's assistant-gain floor is pinned to this literal."
+    )
+    rust_floor = float(match.group(1))
+    assert rust_floor == audio_runtime._ASSISTANT_GAIN_FLOOR_DB, (
+        f"assistant-gain floor drift: Rust MIN_TTS_GAIN_DB={rust_floor} != "
+        f"doctor _ASSISTANT_GAIN_FLOOR_DB="
+        f"{audio_runtime._ASSISTANT_GAIN_FLOOR_DB} — keep them in lockstep so "
+        "jasper-doctor judges published final_gain_db against the bound the "
+        "engine actually enforces."
+    )

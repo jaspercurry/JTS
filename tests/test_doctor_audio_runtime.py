@@ -773,6 +773,95 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
     assert "assistant_final_gain_db=-11.5" in r.detail
 
 
+# The assistant-gain contract, boundary by boundary (#2345). The engine computes
+# final = max(MIN_TTS_GAIN_DB, min(requested, peak_cap)); the doctor asserts that
+# relation, NOT a fixed range, because there is deliberately no fixed positive
+# ceiling — a pre-DSP decision goes positive to pre-compensate for CamillaDSP's
+# downstream attenuation.
+@pytest.mark.parametrize(
+    ("loudness", "faulty"),
+    [
+        # Ordinary attenuating decision, exactly on contract.
+        ({"requested_gain_db": -11.5, "peak_cap_gain_db": 5.0, "final_gain_db": -11.5}, False),
+        # #2345 as observed on jts3: a dense probe tone became the loudness
+        # anchor, fan-in asked for +5.0 and the peak cap allowed +3.0. Positive
+        # and peak-capped is the contract working, not a clamp leak.
+        ({"requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.0}, False),
+        # Today's publish rounding is monotone, so the comparison is exact and
+        # this 0.1 disagreement cannot arise in the field. The tolerance is a
+        # cushion against future publish-path drift, not a derived bound; this
+        # case is what pins it.
+        ({"requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.1}, False),
+        # Louder than the peak cap allowed — the hearing-safety failure the check
+        # exists for.
+        ({"requested_gain_db": 5.0, "peak_cap_gain_db": 3.0, "final_gain_db": 3.4}, True),
+        # Quieter than the contract: the decided gain was not the one applied.
+        ({"requested_gain_db": -11.5, "peak_cap_gain_db": 5.0, "final_gain_db": -20.0}, True),
+        # The floor wins over an even quieter target, so final legitimately sits
+        # ABOVE min(requested, peak_cap).
+        ({"requested_gain_db": -80.0, "peak_cap_gain_db": 5.0, "final_gain_db": -60.0}, False),
+        # Nothing may sit below the floor.
+        ({"requested_gain_db": -80.0, "peak_cap_gain_db": 5.0, "final_gain_db": -75.0}, True),
+        # A daemon too old to publish the two inputs is held to the floor alone.
+        ({"final_gain_db": 3.0}, False),
+        ({"final_gain_db": -75.0}, True),
+        ({"requested_gain_db": None, "peak_cap_gain_db": None, "final_gain_db": 3.0}, False),
+        # No decision yet: nothing to judge (the malformed-value path owns this).
+        ({"final_gain_db": None}, False),
+    ],
+)
+def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty):
+    fault = doctor.audio_runtime._assistant_gain_fault(loudness)
+    assert (fault is not None) is faulty, fault
+
+
+def test_check_fanin_service_ok_with_peak_capped_positive_gain(monkeypatch):
+    """#2345: a peak-capped positive gain is the contract, not a warning."""
+    _patch_fanin_systemctl(monkeypatch)
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["tts"] = {
+        "enabled": True,
+        "pending_frames": 0,
+        "assistant_loudness": {
+            "decision_seen": True,
+            "calibrated": False,
+            "source_peak_dbfs": -6.0,
+            "requested_gain_db": 5.0,
+            "peak_cap_gain_db": 3.0,
+            "final_gain_db": 3.0,
+        },
+    }
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_fanin_service()
+
+    assert r.status == "ok"
+    assert "assistant_final_gain_db=3.0" in r.detail
+
+
+def test_check_fanin_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["tts"] = {
+        "enabled": True,
+        "pending_frames": 0,
+        "assistant_loudness": {
+            "decision_seen": True,
+            "calibrated": True,
+            "requested_gain_db": 5.0,
+            "peak_cap_gain_db": 3.0,
+            "final_gain_db": 5.0,
+        },
+    }
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_fanin_service()
+
+    assert r.status == "warn"
+    assert "final_gain_db=5.0" in r.detail
+    assert "peak_cap_gain_db=3.0" in r.detail
+
+
 def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     payload = json.loads(_fanin_status_payload().decode())
@@ -1669,6 +1758,28 @@ def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
 
     assert r.status == "ok"
     assert "assistant_loudness=fan-in-owned" in r.detail
+
+
+def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
+    """Outputd's post-DSP lane runs the same engine, so the same contract."""
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["assistant_loudness"].update(
+        {
+            "decision_seen": True,
+            "calibrated": True,
+            "requested_gain_db": -4.0,
+            "peak_cap_gain_db": -6.0,
+            "final_gain_db": -4.0,
+        }
+    )
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "final_gain_db=-4.0" in r.detail
+    assert "peak_cap_gain_db=-6.0" in r.detail
 
 
 def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch):
