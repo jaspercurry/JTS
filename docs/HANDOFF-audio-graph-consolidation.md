@@ -110,20 +110,36 @@ narrowing before attenuation lifts the effective quantization floor
 relative to quiet tails; and an S16 source gains nothing from promotion
 but stops losing the precision that resample and gain create.
 
-### Ring v1 is S16 on the wire, and that is a consumer problem
+### The ring is S16 on the wire today, and that is a consumer problem
 
-The wire is pinned S16 — `Geometry::validate_self`
-(`rust/jasper-ring/src/layout.rs`) hard-rejects any other sample format,
-and although the C ioplug takes `format`/`channels` from its conf.d block,
+The **layout** is no longer the constraint. Since R1
+([#2297](https://github.com/jaspercurry/JTS/pull/2297), merged),
+`Geometry::validate_self` (`rust/jasper-ring/src/layout.rs`) accepts
+`SAMPLE_FORMAT_S16LE` **or** `SAMPLE_FORMAT_S32LE`, at 2..=`MAX_RING_CHANNELS`
+(8) channels — `S32LE` is no longer "Reserved". Read the R-ladder in
+[Ring v2 design outcome (U1)](#ring-v2-design-outcome-u1) for what each rung
+does and does not arm; wide is a value-space widening of existing header
+fields, so ring `VERSION` stays 1.
+
+The **wire** is still S16 everywhere, and by a different mechanism: the
+resolver forces it. `content_lane_format_for_coupling(COUPLING_SHM_RING)`
+answers `RING_WIRE_FORMAT` (`S16_LE`) for both ring ends and for outputd's
+`JASPER_OUTPUTD_CONTENT_FORMAT`, so a ring-armed box stays coherently
+narrow even on a box whose program-lane default is `S32_LE` (see "Where
+this corrects #2285"). The C ioplug takes `format`/`channels` from its
+conf.d block, but
 [`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
 declares neither, so both PCMs open at the `S16_LE`/2ch defaults
-(`JTS_RING_RATE = 48000` stays pinned). But **the layout is already wider than its
-consumers**: the header self-describes rate, channels, and sample format,
-and reserves `SAMPLE_FORMAT_S32LE = 2` ("Reserved for future wide/active
-lanes"). Ring v2 is therefore a Rust-reader + C-ioplug + emitter problem,
-not a layout redesign. Certified geometry is 2 slots × 128 frames per
-ring, CamillaDSP chunk/target 128, `enable_rate_adjust: false`; Ring A
-contributes ≈5.3 ms at 48 kHz.
+(`JTS_RING_RATE = 48000` stays pinned). Nothing on the fleet declares a
+non-default wire yet: changing the resolver is **R5a**'s, and the first box
+to actually run wide is **R6**'s.
+
+So ring v2 was never a layout redesign: it is a transport + reader/writer +
+emitter + resolver problem, and only the transport layer (R1's crate, R2's
+ioplug) is merged so far — the daemons are R3/R4 and the resolver is R5a.
+Certified
+geometry is 2 slots × 128 frames per ring, CamillaDSP chunk/target 128,
+`enable_rate_adjust: false`; Ring A contributes ≈5.3 ms at 48 kHz.
 
 ### What the legacy `direct` hop costs, measured
 
@@ -613,6 +629,12 @@ section — transcribed from the panel's rulings record, not re-derived
 jts.local-before-jts3 resequencing, and fixed the two one-word nits
 named in #2293's gate disposition. It did not re-touch anything else:
 the egress/source-half facts, the fleet probe, and Appendix A/B stand
-as last verified above.
+as last verified above. A third same-day pass (R4's fix round,
+[#2310](https://github.com/jaspercurry/JTS/pull/2310)) re-verified the
+ring-wire section against `rust/jasper-ring/src/layout.rs` and
+`jasper/fanin_coupling.py` and rewrote it: R1 falsified its
+"`validate_self` hard-rejects any other format / `S32LE` is Reserved"
+claim, and the wire's narrowness now comes from the resolver, not the
+layout. Nothing else in this pass.
 
 Last verified: 2026-08-10

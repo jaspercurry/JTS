@@ -46,10 +46,15 @@ pub type ProgramSample = i32;
 /// width (that is [`ProgramSample`], which is not a `SampleFormat` at all — the
 /// spine has no ALSA-visible format because it never touches ALSA):
 ///
-/// * `config::Config::content_format` — the CONTENT LANE, Camilla's post-DSP
-///   snd-aloop hop, declared by `JASPER_OUTPUTD_CONTENT_FORMAT` (default
-///   `S16Le`). Ingest requests exactly that and widens an S16 lane into the
-///   `ProgramSample` spine as it reads.
+/// * `config::Config::content_format` — the CONTENT HOP out of CamillaDSP,
+///   declared by `JASPER_OUTPUTD_CONTENT_FORMAT` (default `S16Le`). It names
+///   the hop, not one transport: on the `loopback` coupling that hop is an
+///   snd-aloop lane, and ingest requests exactly this format and widens an S16
+///   lane into the `ProgramSample` spine as it reads; on the `shm_ring`
+///   coupling it is the SHM ring's wire, and `shm_ring_source` builds the ring
+///   geometry from it and widens the same way on an S16 ring. `S24_3Le` parses
+///   on this axis (one vocabulary, see below) but neither transport can ingest
+///   it, and both refuse it park-class rather than fall back.
 /// * `config::Config::declared_dac_format` — the FINAL HARDWARE EDGE, declared
 ///   by the DAC registry (`DacProfile.final_edge_format`) and emitted by
 ///   `jasper-audio-hardware-reconcile` as `JASPER_OUTPUTD_DAC_FORMAT`. The ALSA

@@ -481,14 +481,14 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-outputd/src/shm_ring_source.rs",
-        "out.len(), self.samples_per_slot",
+        "the ring wire is LE",
     ): (
-        "read_period's own doc comment states the exact contract "
-        "(\"out.len() must be period_frames * channels\"); this checks the "
-        "CALLER's buffer-sizing contract, distinct from the function's "
-        "actual runtime-fault handling right below (ring empty/corrupt), "
-        "which the same doc comment says already degrades to silence + "
-        "counters rather than panicking."
+        "Compile-time const-context assert (`const _: () = assert!(...)`), "
+        "same shape as jasper-host-clock's gain bound below: it evaluates "
+        "at compile time on a cfg! literal and emits no runtime branch. It "
+        "pins the one assumption read_period's wide arm makes -- that the "
+        "host's native i32 byte order already is the S32LE wire's -- so a "
+        "big-endian port fails to build instead of byte-swapping audio."
     ),
     (
         "jasper-tts-protocol/src/loudness.rs",
@@ -549,9 +549,10 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ): (
         "try_consume_slot_bytes's own doc comment states the exact contract "
         "(\"out.len() must equal Geometry::slot_bytes\"); its only real "
-        "caller (outputd's shm_ring_source.rs, via the try_consume_slot "
-        "wrapper) sizes the buffer from the same geometry the mapping was "
-        "attached with. Replaces the pre-byte-API entry keyed on "
+        "caller is outputd's shm_ring_source.rs -- through the "
+        "try_consume_slot wrapper on an S16 ring, directly on an S32 one -- "
+        "and both arms size the buffer from the same geometry the mapping "
+        "was attached with. Replaces the pre-byte-API entry keyed on "
         "\"out.len(), g.samples_per_slot()\": the same check, moved onto the "
         "byte path and given a message, since a slot is measured in bytes "
         "once the ring carries formats other than S16."

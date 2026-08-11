@@ -27,13 +27,13 @@ use jasper_outputd::alsa_backend::{
     open_playback_pcm, AlsaBackend, ContentRead, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
 };
-use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
+use jasper_outputd::config::{BackendMode, Config, SinkMode};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
 use jasper_outputd::state::{ChipRefWrite, OutputdState, StateServer};
 use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
-use jasper_outputd::types::{narrow_period, widen_period, ProgramSample, SampleFormat};
+use jasper_outputd::types::{narrow_period, ProgramSample, SampleFormat};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -77,10 +77,22 @@ const CHIP_REF_WORKER_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
 const EXIT_CONFIG: i32 = 78;
 
 /// Marker attached (via `anyhow::Context`) to a runtime error that is actually
-/// a CONFIG-class fault surfacing after `Config::from_env` — currently only the
-/// PROTOTYPE SHM-ring header/geometry mismatch, which can only be detected once
-/// we attach to the writer's ring at DAC-loop setup. `main` downcasts for it and
-/// exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
+/// a CONFIG-class fault surfacing after `Config::from_env`. `main` downcasts for
+/// it and exits [`EXIT_CONFIG`] so the unit parks instead of reboot-looping.
+///
+/// ONE site attaches it — the SHM content ring's construction — and only to the
+/// config-class half of what that can return: a ring geometry/format/channel
+/// declaration this reader refuses (the `S24_3LE` wire the ring layout has no
+/// format for, refused before the filesystem is touched) or one the writer's
+/// existing ring disagrees with field-by-field, which is only visible once
+/// outputd attaches at DAC-loop setup. Both are `InvalidInput`/`InvalidData`,
+/// and restarting cannot repair either.
+///
+/// Everything ELSE attach can fail with — a missing ring directory, EACCES,
+/// ENOSPC, ENOMEM, a bare OS error — stays an ordinary error and takes
+/// `Restart=on-failure`, because those CAN clear without an operator editing
+/// env. `alsa_backend::FinalSinkStartupConfigError` is the same treatment for
+/// the DAC edge, and `main` maps both to [`EXIT_CONFIG`].
 #[derive(Debug)]
 struct ConfigClassError;
 
@@ -142,6 +154,45 @@ fn main() -> Result<()> {
         }
     }
     result
+}
+
+/// Decide whether a failed SHM-ring attach parks the unit or lets it restart,
+/// and log the outcome under an event that says which one happened.
+///
+/// The split is the error KIND, because that is what separates "an operator has
+/// to change something" from "the environment can recover on its own":
+///
+/// * `InvalidInput` / `InvalidData` — the declaration is unusable (`S24_3LE`) or
+///   disagrees with the writer's ring on a geometry field. Marked
+///   [`ConfigClassError`] -> exit 78 -> `RestartPreventExitStatus=78` parks the
+///   unit, because a restart re-reads the SAME env against the SAME ring.
+/// * anything else — `WouldBlock`, `PermissionDenied`, `NotFound`,
+///   `StorageFull`, `OutOfMemory`, a bare OS error — is left unmarked, so
+///   `Restart=on-failure` (plus outputd's bounded `ExecStopPost` retry) gets to
+///   try again. A ring directory that is not mounted yet, a tmpfs that is
+///   momentarily full, a peer that has not created the ring: each clears
+///   without an edit, and parking on them would need an operator to un-park a
+///   box that fixed itself.
+///
+/// Two events rather than one, because the journal line is the readable surface
+/// during a park and the two outcomes are not the same fault:
+/// `outputd.shm_ring.config_error` means parked-for-config, and
+/// `outputd.shm_ring.attach_error` carries `kind=` so a restart loop names what
+/// it is retrying against.
+fn classify_shm_ring_attach_error(path: &str, e: io::Error) -> anyhow::Error {
+    if matches!(
+        e.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ) {
+        eprintln!("event=outputd.shm_ring.config_error path={path} detail={e}");
+        anyhow::Error::new(e).context(ConfigClassError)
+    } else {
+        eprintln!(
+            "event=outputd.shm_ring.attach_error path={path} kind={:?} detail={e}",
+            e.kind()
+        );
+        anyhow::Error::new(e).context("attaching to the SHM content ring")
+    }
 }
 
 fn runtime_error_exit_code(error: &anyhow::Error) -> Option<i32> {
@@ -362,59 +413,49 @@ fn run_alsa(
     let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
-    // S16 scratch for the SHM ring — the one content source that is
-    // S16-NATIVE rather than an ALSA lane (S16 wire by D5). It's an
-    // alternative to `direct`, so ONE buffer serves whichever is armed and
-    // the `direct` default — every live box — allocates nothing.
-    //
-    // Zero bytes on `direct` matters here specifically: outputd runs `mlockall`,
-    // so an unconditional allocation would be resident forever on hardware that
-    // never uses it.
-    let mut s16_lane_scratch: Vec<i16> = match config.content_bridge_mode {
-        ContentBridgeMode::Direct => Vec::new(),
-        ContentBridgeMode::ShmRing => vec![0i16; content_period_samples],
-    };
     // Ring B: the SHM ping-pong ring content source. Shipped default on
     // eligible stereo topologies (P4 LANDED —
     // docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
     // policy. Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
-    // None leaves the loop byte-identical. A geometry/version/size mismatch
-    // against an existing ring is a hard error here — mapped to the config-class
-    // exit 78 so the unit parks (RestartPreventExitStatus=78) instead of
-    // reboot-looping on a mismatched writer.
+    // None leaves the loop byte-identical. A declaration this reader refuses, or
+    // a geometry/version/size disagreement with the writer's existing ring, is a
+    // hard error here — mapped to the config-class exit 78 so the unit parks
+    // (RestartPreventExitStatus=78) instead of reboot-looping on a mismatched
+    // writer. Any OTHER attach failure keeps Restart=on-failure (see
+    // `ConfigClassError`).
+    //
+    // The ring's wire is a per-box DECLARATION, taken from the same
+    // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
+    // ends from — so outputd declares one tuple and the crate's field-by-field
+    // attach is the whole negotiation. The reader owns any staging its wire
+    // needs (see `ShmRingSource`), so a `direct` box — every box the flag does
+    // not arm — allocates nothing for it, which matters under `mlockall`.
     let mut shm_ring = match config.shm_ring.as_ref() {
         Some(ring) => {
             eprintln!(
-                "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} sample_rate={}",
+                "event=outputd.shm_ring.enabled path={} slots={} slot_frames={} channels={} format={} sample_rate={}",
                 ring.path,
                 ring.n_slots,
                 config.period_frames,
                 config.content_channels,
+                config.content_format.as_str(),
                 config.sample_rate,
             );
             let src = ShmRingSource::new(
                 &ring.path,
                 config.period_frames,
                 config.content_channels,
+                config.content_format,
                 ring.n_slots,
             )
-            .map_err(|e| {
-                // A header/geometry/size mismatch is a configuration fault, not a
-                // transient runtime error: tag it so main() exits 78 (EX_CONFIG)
-                // and the unit parks (RestartPreventExitStatus=78) instead of
-                // reboot-looping against a mismatched writer.
-                eprintln!(
-                    "event=outputd.shm_ring.config_error path={} detail={e}",
-                    ring.path
-                );
-                anyhow::Error::new(e).context(ConfigClassError)
-            })?;
+            .map_err(|e| classify_shm_ring_attach_error(&ring.path, e))?;
             Some(src)
         }
         None => None,
     };
     if let Some(src) = shm_ring.as_ref() {
         state.mark_shm_ring(src.metrics());
+        state.mark_shm_ring_wire(src.wire_format(), src.channels());
     }
     // Multi-room round-trip lane (Increment 3, HANDOFF-multiroom.md §2):
     // when configured, the DAC is fed from the member-content FIFO with
@@ -548,18 +589,22 @@ fn run_alsa(
         }
         if !served_from_fifo {
             if let Some(src) = shm_ring.as_mut() {
-                // PROTOTYPE: try-read one slot from the SHM ping-pong ring;
-                // empty -> silence (read_period zero-fills). Never blocks, never
-                // errors at runtime (a ring fault degrades to silence + counters
-                // — StartLimitAction=reboot discipline).
+                // Try-read one slot from the SHM ping-pong ring;
+                // empty -> silence (read_period zero-fills). Never blocks, and a
+                // ring fault is never a runtime error (it degrades to silence +
+                // counters — StartLimitAction=reboot discipline).
                 //
-                // The ring wire stays S16 (D5 — `jasper_ring::Geometry::
-                // validate_self` hard-rejects anything else), so this is another
-                // S16 INGRESS: read the slot at the wire's width, then widen onto
-                // the spine. Exact, like every other S16 door.
-                src.read_period(&mut s16_lane_scratch);
+                // The reader delivers onto the spine at its own wire's width —
+                // an S16 ring widens through the same shared door every other
+                // S16 ingress uses, an S32 ring is already the spine's width and
+                // copies straight in. The `?` is the staging-length contract the
+                // widening always carried, unmoved — and, as before, the ring's
+                // counters for THIS period are published before it can
+                // propagate, so a fatal staging fault still leaves `/state`'s
+                // last sample honest.
+                let read = src.read_period(&mut content_buf);
                 state.mark_shm_ring(src.metrics());
-                widen_period(&s16_lane_scratch, &mut content_buf)?;
+                read?;
             } else {
                 let _frames_read = sink.read_content_period(&mut content_buf)?;
             }
@@ -1683,6 +1728,10 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the test `Config` literal names it now that the run loop's ring
+    // staging moved into `ShmRingSource`; importing it at module scope would
+    // be an unused import in a non-test build.
+    use jasper_outputd::config::ContentBridgeMode;
     use std::os::fd::FromRawFd;
     use std::sync::atomic::AtomicUsize;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1697,6 +1746,113 @@ mod tests {
             runtime_error_exit_code(&anyhow::anyhow!("transient runtime fault")),
             None
         );
+    }
+
+    /// A ring WIRE mismatch parks the unit; it does not restart-loop it.
+    ///
+    /// Ring v2 gave the ring geometry two per-box axes (format, channels), so a
+    /// writer and this reader can now disagree on a field that no slot/period
+    /// check would notice. This walks a REAL such disagreement — an S16 ring
+    /// file against an S32 declaration — through the SAME
+    /// `classify_shm_ring_attach_error` the run loop applies to it, and pins the
+    /// exit code at 78, which is what `RestartPreventExitStatus=78` in the unit
+    /// turns into a park. Only the classifier is exercised here, not `run_alsa`
+    /// (which needs ALSA) — the same bound the sink-startup test above has.
+    #[test]
+    fn a_ring_wire_mismatch_classifies_as_a_config_fault_not_a_restart() {
+        use jasper_ring::{Geometry, TestRingWriter, SAMPLE_FORMAT_S16LE};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "jasper-outputd-ring-wire-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("content.ring").to_string_lossy().into_owned();
+
+        // A narrow ring on disk...
+        let _writer = TestRingWriter::create_or_attach(
+            &path,
+            Geometry {
+                rate: 48_000,
+                channels: 2,
+                sample_format: SAMPLE_FORMAT_S16LE,
+                period_frames: 128,
+                n_slots: 2,
+            },
+        )
+        .unwrap();
+        // ...and a wide declaration meeting it.
+        let io_error = match ShmRingSource::new(&path, 128, 2, SampleFormat::S32Le, 2) {
+            Ok(_) => panic!("an S32 declaration must not attach to an S16 ring"),
+            Err(e) => e,
+        };
+        assert_eq!(io_error.kind(), io::ErrorKind::InvalidData);
+        let error = classify_shm_ring_attach_error(&path, io_error);
+
+        assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// An attach failure the ENVIRONMENT can clear is NOT a park.
+    ///
+    /// The other half of the classifier, and the reason it is a kind check
+    /// rather than "anything `ShmRingSource::new` returns". Parking on these
+    /// would strand a box that fixed itself: `WouldBlock` is a ring the peer has
+    /// not finished creating, `PermissionDenied` is a `/dev/shm` mode that a
+    /// tmpfiles/udev pass repairs — a restart re-attaches, an operator un-park
+    /// is needed only for a bad declaration. `StorageFull`/`OutOfMemory`/a raw
+    /// OS errno ride the same arm; two kinds are enough to pin the boundary, and
+    /// a raw errno is included because it is the shape that arrives with NO
+    /// mapped kind at all.
+    ///
+    /// It also pins that they take the other EVENT: a non-config fault logging
+    /// `config_error` would read, in the journal, as a park that never happened.
+    #[test]
+    fn a_recoverable_attach_failure_restarts_rather_than_parking() {
+        for kind in [
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::StorageFull,
+        ] {
+            let error = classify_shm_ring_attach_error(
+                "/dev/shm/jts-ring/content.ring",
+                io::Error::new(kind, "synthetic attach failure"),
+            );
+            assert_eq!(
+                runtime_error_exit_code(&error),
+                None,
+                "{kind:?} must not park the unit"
+            );
+        }
+
+        // A bare errno with NO mapped `ErrorKind` (EIO): the shape a raw syscall
+        // failure arrives in, and the one an `Uncategorized`-defaults-to-park
+        // classifier would get wrong.
+        let raw = classify_shm_ring_attach_error(
+            "/dev/shm/jts-ring/content.ring",
+            io::Error::from_raw_os_error(5),
+        );
+        assert_eq!(runtime_error_exit_code(&raw), None);
+
+        // ...and the config-class kinds still do, so the assertion above is a
+        // boundary rather than "the classifier marks nothing".
+        for kind in [io::ErrorKind::InvalidInput, io::ErrorKind::InvalidData] {
+            let error = classify_shm_ring_attach_error(
+                "/dev/shm/jts-ring/content.ring",
+                io::Error::new(kind, "synthetic declaration fault"),
+            );
+            assert_eq!(
+                runtime_error_exit_code(&error),
+                Some(EXIT_CONFIG),
+                "{kind:?} must park the unit"
+            );
+        }
     }
 
     #[test]

@@ -96,8 +96,11 @@ at `S24_3LE`. What collapses the divergence is a packed-24 child write path in
 the paired sink; until then the invariant the registry enforces is the narrower
 one — no composite declares a width its transport refuses.
 
-**Ingress** widens whatever arrives narrow: the SHM ring (pinned `S16_LE` by
-`jasper_ring::Geometry::validate_self` until ring v2), the snapclient round-trip
+**Ingress** widens whatever arrives narrow: the SHM ring (`S16_LE` on every box
+today because `jasper.fanin_coupling.content_lane_format_for_coupling` forces
+that wire on the `shm_ring` coupling — since ring v2's R1 the *layout* accepts
+`S32LE` too, so the pin is the resolver's, not
+`jasper_ring::Geometry::validate_self`'s), the snapclient round-trip
 FIFO (a *source* — snapclient writes it, outputd reads it), and the bonded-member
 TTS socket, whose `jasper-tts-protocol` wire stays S16 and is widened at the gain
 application in `assistant_source::read_period_into` rather than at enqueue, so a
@@ -1794,6 +1797,18 @@ datum: how much assistant audio was actually heard.
 Newest first. Each entry names what that pass re-checked; a claim not
 re-touched since carries forward from its most recent entry below.
 
+- **2026-08-10 (one-clause truth-up, ring v2 R4's fix round —
+  [#2310](https://github.com/jaspercurry/JTS/pull/2310)).** The Ingress
+  paragraph attributed the SHM ring's `S16_LE` wire to
+  `jasper_ring::Geometry::validate_self`. R1
+  ([#2297](https://github.com/jaspercurry/JTS/pull/2297)) widened that
+  accept-set to S16LE **or** S32LE at 2..=8 channels, so the pin is now
+  `jasper.fanin_coupling.content_lane_format_for_coupling`'s, not the
+  layout's — re-verified against both sources. The wire itself is
+  unchanged (`S16_LE` on every box), which is why the quantization
+  paragraph above needed nothing. **Nothing else in this pass**; the
+  footer date below is the last FULL-document pass and is deliberately
+  not bumped.
 - **2026-08-08 (full-document pass, this PR).** Re-read the entire doc
   against current code, including the `chip_ref_writer.recent_writes`
   paragraph landed by the entry directly below. Corrected two internal
