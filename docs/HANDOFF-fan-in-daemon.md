@@ -345,6 +345,18 @@ alternative (scaled average) is technically more correct but changes
 perceived loudness during simultaneous renderers, which mux is supposed
 to prevent anyway.
 
+The accumulator is `i64` and carries the numeric scale the box's resolved
+output wire names (`ProgramWidth` in `rust/jasper-fanin/src/mixer.rs`).
+`Narrow` — the shipped default, and every box until a per-box flip — is the
+S16 numeric scale described above, unchanged. `Wide` (an `S32_LE` ring wire)
+is the i32 spine scale: each `i16` lane is promoted by `widen_i16_to_i32` at
+its own sum entry, the USB DIRECT lane contributes its gadget samples
+untouched, and S16 consumers narrow once with `narrow_i32_to_i16_round`.
+`i64` rather than `i32` so the mix keeps real headroom above full scale at
+both scales — the program duck can pull an over-full-scale sum back into
+range, so saturating at the mix would distort where clipping at the write
+does not.
+
 The choice is reversible — if a future case demands scaled summing
 (multi-listener environment where simultaneous sources are intentional),
 add a configuration flag.

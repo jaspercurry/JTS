@@ -75,7 +75,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use jasper_resampler::{clamp_i16, AudioRing, RateController, SincTable, RADIUS_FRAMES};
+use jasper_resampler::{
+    clamp_i16, clamp_i32, spine_acc_to_i16, AudioRing, RateController, SincTable, RADIUS_FRAMES,
+};
 
 pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals};
 
@@ -138,6 +140,21 @@ pub struct LaneResamplerObservability {
     /// `resampler.compliance`). `Some` only when the feature is armed on this
     /// lane; `None` (no block) otherwise — byte-identical to today.
     pub compliance: Option<crate::host_compliance::HostComplianceObservability>,
+}
+
+/// What [`LaneResampler::plan_period`] decided this render period should do —
+/// the width-independent verdict the narrow and wide emit tails both act on.
+///
+/// A two-variant enum rather than an `Option<f64>` because "no ratio" and
+/// "silence" are the same fact here and naming it keeps the two tails from
+/// inventing their own reading of a `None`.
+enum RenderPlan {
+    /// Unlocked, underfilled, or one period short of the buffered edge: fill the
+    /// caller's period with digital zero and count it as silence.
+    Silence,
+    /// Locked with runway: emit one period, advancing the cursor by `ratio`
+    /// input frames per output frame.
+    Emit { ratio: f64 },
 }
 
 /// A per-input windowed-sinc resampler that turns a free-running (host-clocked)
@@ -384,7 +401,35 @@ impl LaneResampler {
     /// Push `samples` (interleaved `i16`, this lane's just-read frames) into the
     /// input ring. A producer that outruns the ring drops oldest-first and
     /// counts the overrun — the resampler keeps running on the freshest audio.
+    ///
+    /// The ring stores spine-scale `i32`, so this widens on the way in
+    /// ([`AudioRing::push_interleaved_narrow`]). That is bit-transparent for the
+    /// narrow render path — see [`Self::render_period`].
     pub fn push_input(&mut self, samples: &[i16]) {
+        let frames = samples.len() / self.channels;
+        if frames == 0 {
+            return;
+        }
+        self.input_frames
+            .fetch_add(frames as u64, Ordering::Relaxed);
+        let dropped = self
+            .ring
+            .push_interleaved_narrow(&samples[..frames * self.channels]);
+        if dropped > 0 {
+            self.overrun_frames.fetch_add(dropped, Ordering::Relaxed);
+        }
+    }
+
+    /// Push `samples` (interleaved **spine-scale `i32`**) into the input ring —
+    /// the wide sibling of [`Self::push_input`], for a lane whose capture is
+    /// already S32 and must not be narrowed at ingest (the USB DIRECT lane on a
+    /// wide wire, U2 / #2223).
+    ///
+    /// Identical bookkeeping; the only difference is that nothing is discarded
+    /// on the way in. Pair it with [`Self::render_period_wide`] — a lane mixes
+    /// widths at its own peril, and the mixer picks ONE pairing per lane from
+    /// the resolved wire.
+    pub fn push_input_wide(&mut self, samples: &[i32]) {
         let frames = samples.len() / self.channels;
         if frames == 0 {
             return;
@@ -404,13 +449,120 @@ impl LaneResampler {
     /// that are real audio (vs silence) for the caller's mixing decision —
     /// `period_frames` when locked and rendering, `0` when silent.
     ///
-    /// The state machine: wait for a
-    /// startup prefill before locking; once locked, drive the ratio from the
-    /// fill error and advance the fractional cursor; on underfill, unlock and
-    /// emit silence rather than reading past the buffered input.
+    /// The state machine lives in [`Self::plan_period`]; this is its narrow
+    /// emit tail. Each interpolated sample is narrowed ONCE, by
+    /// [`spine_acc_to_i16`] — the ring is spine-scale, so dividing the exact
+    /// power-of-two widening back out before the round reproduces the samples
+    /// this path produced when the ring itself stored `i16`.
     pub fn render_period(&mut self, out: &mut [i16]) -> usize {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
+        let ratio = match self.plan_period() {
+            RenderPlan::Silence => {
+                self.render_silence(out);
+                return 0;
+            }
+            RenderPlan::Emit { ratio } => ratio,
+        };
+        for frame in 0..self.period_frames {
+            let ramp_gain = self.frame_ramp_gain();
+            for channel in 0..self.channels {
+                let sample = spine_acc_to_i16(self.sinc_table.interpolate(
+                    &self.ring,
+                    self.next_input_frame,
+                    channel,
+                ));
+                out[frame * self.channels + channel] = if ramp_gain < 1.0 {
+                    clamp_i16(sample as f64 * ramp_gain)
+                } else {
+                    sample
+                };
+            }
+            self.advance_cursor(ratio);
+        }
+        self.finish_period()
+    }
 
+    /// Render exactly one period into `out` (interleaved **spine-scale `i32`**)
+    /// — the wide sibling of [`Self::render_period`], for the USB DIRECT lane on
+    /// a wide wire (U2 / #2223).
+    ///
+    /// Same state machine, same cursor, same startup ramp; the only difference
+    /// is that the interpolator's accumulator is rounded at the i32 rails
+    /// ([`clamp_i32`]) instead of being divided down to i16 first. There is no
+    /// `>> 16` anywhere on this route, so a hi-res host's low bits reach the
+    /// mixer's sum intact.
+    pub fn render_period_wide(&mut self, out: &mut [i32]) -> usize {
+        debug_assert_eq!(out.len(), self.period_frames * self.channels);
+        let ratio = match self.plan_period() {
+            RenderPlan::Silence => {
+                self.render_silence_wide(out);
+                return 0;
+            }
+            RenderPlan::Emit { ratio } => ratio,
+        };
+        for frame in 0..self.period_frames {
+            let ramp_gain = self.frame_ramp_gain();
+            for channel in 0..self.channels {
+                let sample = clamp_i32(self.sinc_table.interpolate(
+                    &self.ring,
+                    self.next_input_frame,
+                    channel,
+                ));
+                out[frame * self.channels + channel] = if ramp_gain < 1.0 {
+                    clamp_i32(sample as f64 * ramp_gain)
+                } else {
+                    sample
+                };
+            }
+            self.advance_cursor(ratio);
+        }
+        self.finish_period()
+    }
+
+    /// The startup de-click ramp gain for the frame about to be emitted. Read
+    /// BEFORE [`Self::advance_cursor`] decrements the counter, exactly as the
+    /// single-width render loop did.
+    fn frame_ramp_gain(&self) -> f64 {
+        if self.startup_ramp_frames_remaining > 0 {
+            let frames_done = self.period_frames - self.startup_ramp_frames_remaining;
+            (frames_done + 1) as f64 / self.period_frames as f64
+        } else {
+            1.0
+        }
+    }
+
+    /// Advance the fractional read cursor one output frame and count down the
+    /// startup ramp.
+    fn advance_cursor(&mut self, ratio: f64) {
+        self.next_input_frame += ratio;
+        self.startup_ramp_frames_remaining = self.startup_ramp_frames_remaining.saturating_sub(1);
+    }
+
+    /// Post-emit bookkeeping shared by both widths: free the ring history behind
+    /// the cursor (keeping the kernel's left taps) and count the period.
+    fn finish_period(&mut self) -> usize {
+        let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
+        self.ring.drop_before(keep_from);
+        self.output_frames
+            .fetch_add(self.period_frames as u64, Ordering::Relaxed);
+        self.real_periods_since_lock = self.real_periods_since_lock.saturating_add(1);
+        self.period_frames
+    }
+
+    /// The width-independent half of a render period: lock acquisition, fill
+    /// publication, the underfill / read-past-the-edge fail-closed gates, and
+    /// the DLL ratio.
+    ///
+    /// Factored out so the narrow and wide emit tails share ONE state machine
+    /// rather than two copies that could drift on a lock or unlock rule. It
+    /// mutates exactly the state the single-width version did at the same
+    /// points; only the per-sample rounding differs between the two callers.
+    ///
+    /// The state machine: wait for a startup prefill before locking; once
+    /// locked, drive the ratio from the fill error and advance the fractional
+    /// cursor; on underfill, unlock and emit silence rather than reading past
+    /// the buffered input.
+    fn plan_period(&mut self) -> RenderPlan {
         if !self.locked {
             // While priming, the buffered-input depth IS the fill the operator
             // watches climb toward the startup prefill — publish it so STATUS
@@ -423,8 +575,7 @@ impl LaneResampler {
             self.try_lock();
         }
         if !self.locked {
-            self.render_silence(out);
-            return 0;
+            return RenderPlan::Silence;
         }
 
         // A reader-overrun (the ring dropped frames the cursor hadn't reached)
@@ -442,8 +593,7 @@ impl LaneResampler {
         let minimum_safe_fill = self.minimum_safe_fill_frames() as f64;
         if fill < minimum_safe_fill {
             self.unlock_for_underfill();
-            self.render_silence(out);
-            return 0;
+            return RenderPlan::Silence;
         }
 
         let error_frames = fill - self.hold_fill_frames() as f64;
@@ -456,39 +606,10 @@ impl LaneResampler {
         let required_end = self.next_input_frame + ratio * self.period_frames as f64;
         if required_end + RADIUS_FRAMES as f64 > self.ring.write_frame() as f64 {
             self.unlock_for_underfill();
-            self.render_silence(out);
-            return 0;
+            return RenderPlan::Silence;
         }
 
-        for frame in 0..self.period_frames {
-            let ramp_gain = if self.startup_ramp_frames_remaining > 0 {
-                let frames_done = self.period_frames - self.startup_ramp_frames_remaining;
-                (frames_done + 1) as f64 / self.period_frames as f64
-            } else {
-                1.0
-            };
-            for channel in 0..self.channels {
-                let sample =
-                    self.sinc_table
-                        .interpolate(&self.ring, self.next_input_frame, channel);
-                out[frame * self.channels + channel] = if ramp_gain < 1.0 {
-                    clamp_i16(sample as f64 * ramp_gain)
-                } else {
-                    sample
-                };
-            }
-            self.next_input_frame += ratio;
-            self.startup_ramp_frames_remaining =
-                self.startup_ramp_frames_remaining.saturating_sub(1);
-        }
-
-        // Free history behind the cursor, keeping the kernel's left taps.
-        let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
-        self.ring.drop_before(keep_from);
-        self.output_frames
-            .fetch_add(self.period_frames as u64, Ordering::Relaxed);
-        self.real_periods_since_lock = self.real_periods_since_lock.saturating_add(1);
-        self.period_frames
+        RenderPlan::Emit { ratio }
     }
 
     /// Drop the lane's standing latency down to its held target by discarding
@@ -838,6 +959,19 @@ impl LaneResampler {
 
     fn render_silence(&mut self, out: &mut [i16]) {
         out.fill(0);
+        self.count_silence_period();
+    }
+
+    /// The wide sibling of [`Self::render_silence`]. Digital zero is the same
+    /// value at either width, so this differs only in the slice type — and it
+    /// shares the counter bump so a silent period is accounted identically no
+    /// matter which width the lane renders.
+    fn render_silence_wide(&mut self, out: &mut [i32]) {
+        out.fill(0);
+        self.count_silence_period();
+    }
+
+    fn count_silence_period(&mut self) {
         self.silence_frames
             .fetch_add(self.period_frames as u64, Ordering::Relaxed);
     }
@@ -3492,5 +3626,228 @@ mod tests {
             CEIL,
             "reset() with no live proof re-primes at the ceiling"
         );
+    }
+
+    // ---- U2 / #2223: the widened DIRECT-lane route ------------------------
+    //
+    // The narrow route is unchanged and its whole suite above still covers it.
+    // These cover the route that skips the capture narrowing, and the contrast
+    // between the two — which is the only honest way to state "the low bits
+    // survive": the same hi-res input must come out DIFFERENT on the two routes,
+    // and the wide one must be the faithful one.
+
+    /// A known 24-bit sample in S24-in-S32 placement — the value the exit-gate
+    /// fixture follows from the capture boundary to the summed write. The low
+    /// byte (`0x56`) is exactly what the narrow route's `>> 16` discards.
+    const HIRES_PATTERN: i32 = 0x1234_5600;
+    /// The positive 24-bit rail, same placement.
+    const HIRES_POSITIVE_RAIL: i32 = 0x7fff_ff00;
+    /// The negative 24-bit rail (`0x800000` as a signed 24-bit value is
+    /// −8388608), same placement — exactly `i32::MIN`.
+    const HIRES_NEGATIVE_RAIL: i32 = i32::MIN;
+
+    /// A constant interleaved stereo block at spine scale.
+    fn wide_dc(value: i32, frames: usize) -> Vec<i32> {
+        vec![value; frames * 2]
+    }
+
+    /// Drive a lane to lock on a CONSTANT spine-scale input and return a
+    /// steady-state rendered period.
+    ///
+    /// A constant is the right probe for a bit-survival claim: the kernel's
+    /// coefficients are normalised to sum to 1, so a DC input interpolates back
+    /// to itself and any bit loss is the conversion's, not the interpolator's.
+    ///
+    /// The producer keeps feeding a period per render, because the lock seats
+    /// the cursor at the held target rather than at everything buffered — a
+    /// prime-once lane has exactly `hold_fill_frames() / period` renders of
+    /// runway and then underfills into silence. The first rendered period is
+    /// skipped because the startup de-click ramp scales it.
+    fn wide_steady_period(value: i32) -> Vec<i32> {
+        let mut r = build();
+        let mut out = vec![0i32; PERIOD as usize * 2];
+        r.push_input_wide(&wide_dc(value, deep_prefill() + PERIOD as usize));
+        for _ in 0..3 {
+            r.push_input_wide(&wide_dc(value, PERIOD as usize));
+            assert_eq!(r.render_period_wide(&mut out), PERIOD as usize);
+        }
+        out
+    }
+
+    /// The narrow twin of [`wide_steady_period`]: the SAME gadget samples taken
+    /// through the capture narrowing first, exactly as a narrow-wire box does.
+    fn narrow_steady_period(value: i32) -> Vec<i16> {
+        let narrow_dc = |frames: usize| {
+            let wide = wide_dc(value, frames);
+            let mut narrowed = vec![0i16; wide.len()];
+            assert!(jasper_resampler::convert_s32_to_s16(&wide, &mut narrowed));
+            narrowed
+        };
+        let mut r = build();
+        let mut out = vec![0i16; PERIOD as usize * 2];
+        r.push_input(&narrow_dc(deep_prefill() + PERIOD as usize));
+        for _ in 0..3 {
+            r.push_input(&narrow_dc(PERIOD as usize));
+            assert_eq!(r.render_period(&mut out), PERIOD as usize);
+        }
+        out
+    }
+
+    /// THE EXIT-GATE FIXTURE, lane half: a known 24-bit pattern injected at the
+    /// capture boundary reaches the lane's rendered period with its low bits
+    /// intact, and the narrow route provably destroys them.
+    ///
+    /// Stated as a contrast rather than as an absolute, because "the bits
+    /// survived" is only meaningful against what used to happen to them: the
+    /// wide render must equal the injected sample, and the narrow render
+    /// re-widened must NOT — it is short by exactly the low byte.
+    #[test]
+    fn a_hi_res_sample_keeps_its_low_bits_through_the_wide_render() {
+        for pattern in [HIRES_PATTERN, HIRES_POSITIVE_RAIL, HIRES_NEGATIVE_RAIL] {
+            let wide = wide_steady_period(pattern);
+            for (i, &s) in wide.iter().enumerate() {
+                assert_eq!(
+                    s, pattern,
+                    "wide render sample {i} must carry {pattern:#010x} exactly",
+                );
+            }
+
+            let narrow = narrow_steady_period(pattern);
+            let narrow_rewidened = jasper_resampler::widen_i16_to_i32(narrow[0]);
+            assert_eq!(
+                narrow[0],
+                jasper_resampler::s32_high_word_to_s16(pattern),
+                "the narrow route must still keep exactly the high word",
+            );
+            // What the narrow route dropped is exactly the sample's low word —
+            // computed from the pattern, so the claim is arithmetic rather than
+            // a hand-copied constant.
+            let lost = pattern.wrapping_sub(narrow_rewidened);
+            let low_word = (pattern as u32 & 0xffff) as i32;
+            assert_eq!(
+                lost, low_word,
+                "the narrow route must drop exactly the low word of {pattern:#010x}",
+            );
+            if low_word != 0 {
+                assert_ne!(
+                    wide[0], narrow_rewidened,
+                    "the wide route must carry information the narrow one loses"
+                );
+            } else {
+                // `i32::MIN` is the one vector with no low word at all, so both
+                // routes agree there. Named rather than skipped: a rail is where
+                // a SIGN error would show, and agreeing is the correct answer.
+                assert_eq!(pattern, i32::MIN);
+                assert_eq!(wide[0], narrow_rewidened);
+            }
+        }
+    }
+
+    /// The wide route's silence, lock, and unlock behaviour is the SAME state
+    /// machine as the narrow route's — the two emit tails share `plan_period`,
+    /// and this is the assertion that keeps them from drifting apart on a lock
+    /// rule.
+    #[test]
+    fn the_wide_route_primes_locks_and_unlocks_exactly_like_the_narrow_one() {
+        let mut wide = build();
+        let mut narrow = build();
+        let mut wide_out = vec![0i32; PERIOD as usize * 2];
+        let mut narrow_out = vec![0i16; PERIOD as usize * 2];
+
+        // Unprimed: both silent, both report 0 real frames, both count silence.
+        assert_eq!(wide.render_period_wide(&mut wide_out), 0);
+        assert_eq!(narrow.render_period(&mut narrow_out), 0);
+        assert!(wide_out.iter().all(|&s| s == 0));
+        assert!(narrow_out.iter().all(|&s| s == 0));
+        assert_eq!(
+            wide.silence_frames.load(Ordering::Relaxed),
+            narrow.silence_frames.load(Ordering::Relaxed),
+        );
+        assert_eq!(wide.is_locked(), narrow.is_locked());
+
+        // Same signal, one route narrowed at ingest: both lock on the same push.
+        let frames = deep_prefill() + PERIOD as usize;
+        let block = tone(frames);
+        let mut widened = vec![0i32; block.len()];
+        assert!(jasper_resampler::widen_i16_to_i32_slice(
+            &block,
+            &mut widened
+        ));
+        wide.push_input_wide(&widened);
+        narrow.push_input(&block);
+        assert_eq!(wide.render_period_wide(&mut wide_out), PERIOD as usize);
+        assert_eq!(narrow.render_period(&mut narrow_out), PERIOD as usize);
+        assert!(wide.is_locked() && narrow.is_locked());
+        assert_eq!(
+            wide.lock_count.load(Ordering::Relaxed),
+            narrow.lock_count.load(Ordering::Relaxed),
+        );
+
+        // Starved: both unlock into silence on the same period.
+        for _ in 0..8 {
+            wide.render_period_wide(&mut wide_out);
+            narrow.render_period(&mut narrow_out);
+        }
+        assert_eq!(wide.is_locked(), narrow.is_locked());
+        assert_eq!(
+            wide.unlock_count.load(Ordering::Relaxed),
+            narrow.unlock_count.load(Ordering::Relaxed),
+        );
+        // ABSOLUTE anchors, so the equalities above cannot pass vacuously by
+        // both routes simply never having done anything: starvation must really
+        // have unlocked them, and it must have left them unlocked.
+        assert!(
+            wide.unlock_count.load(Ordering::Relaxed) > 0,
+            "starvation must actually have unlocked the lanes"
+        );
+        assert!(!wide.is_locked(), "a starved lane must end unlocked");
+    }
+
+    /// An S16 signal carried on the WIDE route (widened at ingest rather than at
+    /// the wire) renders to exactly what the narrow route renders, left-justified
+    /// — the promotion is a scale change, never a content change. This is the
+    /// property that makes flipping a box's wire inaudible for a source that
+    /// never had more than 16 bits.
+    #[test]
+    fn a_widened_s16_signal_renders_identically_on_both_routes() {
+        let mut wide = build();
+        let mut narrow = build();
+        let mut wide_out = vec![0i32; PERIOD as usize * 2];
+        let mut narrow_out = vec![0i16; PERIOD as usize * 2];
+        // One phase-continuous signal, fed to both routes a period at a time so
+        // neither starves (see `wide_steady_period` for why priming once is not
+        // enough).
+        let mut phase = 0usize;
+        let mut feed = |wide: &mut LaneResampler, narrow: &mut LaneResampler, frames: usize| {
+            let block = tone_at(phase, frames);
+            phase += frames;
+            let mut widened = vec![0i32; block.len()];
+            assert!(jasper_resampler::widen_i16_to_i32_slice(
+                &block,
+                &mut widened
+            ));
+            wide.push_input_wide(&widened);
+            narrow.push_input(&block);
+        };
+        feed(&mut wide, &mut narrow, deep_prefill() + PERIOD as usize);
+        for _ in 0..3 {
+            feed(&mut wide, &mut narrow, PERIOD as usize);
+            assert_eq!(wide.render_period_wide(&mut wide_out), PERIOD as usize);
+            assert_eq!(narrow.render_period(&mut narrow_out), PERIOD as usize);
+        }
+        for (i, (&w, &n)) in wide_out.iter().zip(narrow_out.iter()).enumerate() {
+            // The wide render rounds the accumulator at the i32 rails; the
+            // narrow one divides by 2^16 and rounds at the i16 rails. So they
+            // can differ by at most the HALF-step that second round discards —
+            // 2^15 at spine scale, plus one for the tie direction. A 2^16 bound
+            // would tolerate a whole i16 LSB, i.e. an actual off-by-one in the
+            // promotion, which is exactly what this is here to exclude.
+            let delta = (w as i64) - (jasper_resampler::widen_i16_to_i32(n) as i64);
+            assert!(
+                delta.abs() <= (1 << 15) + 1,
+                "sample {i}: wide {w} vs widened-narrow {} differs by {delta}",
+                jasper_resampler::widen_i16_to_i32(n),
+            );
+        }
     }
 }

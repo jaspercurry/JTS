@@ -99,10 +99,10 @@ CamillaDSP captures does not describe surviving precision.
 | AirPlay | shairport-sync configured 44.1 kHz `S32`; its private aloop lane is a `plug:` wrapper pinned 48 kHz `S16_LE` |
 | Spotify Connect | librespot requests `S24_3` with its own TPDF dither; the lane is pinned 48 kHz `S16_LE` |
 | Bluetooth | bluealsa-aplay's negotiated PCM is adapted by the `plug:` lane to 48 kHz `S16_LE` |
-| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`, then `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) discards the low word before resample and mix — child [#2223](https://github.com/jaspercurry/JTS/issues/2223) |
+| USB Audio Input | fan-in DIRECT opens `hw:UAC2Gadget` at `S32`. On a narrow wire — the shipped default, so every box — `s32_high_word_to_s16` (bare arithmetic `>>16`, no rounding, no dither) still discards the low word before resample and mix. A **dormant** wide route exists since U2 PR-1 ([#2223](https://github.com/jaspercurry/JTS/issues/2223)): when the box's wire resolves `S32_LE`, `push_capture_chunk` hands the resampler the gadget's `i32` untouched and it reaches the summed write intact. Arming it is the per-box flip, not this row |
 | Provider TTS | 24 kHz mono S16 in; resampled through float, cast back to S16 before IPC; fan-in applies assistant gain at i16 (`apply_gain_i16`) |
 | Generated earcons | rendered in float, then baked to 24 kHz mono S16 at daemon startup (`_to_pcm16` in `jasper/voice/earcons.py`) |
-| fan-in core | accumulates into i32 scratch **at the S16 numeric scale**; `saturate_to_i16` at the summed write (`rust/jasper-fanin/src/mixer.rs`) |
+| fan-in core | accumulates into an i64 scratch at the scale the box's wire names (`ProgramWidth`). Narrow — the shipped default — is the **S16 numeric scale** exactly as before, with `saturate_to_i16` at the summed write. Wide is the i32 spine scale, promoting each `i16` lane at its own sum entry (`rust/jasper-fanin/src/mixer.rs`) |
 | fan-in → CamillaDSP | `jasper_capture` is a 48 kHz stereo `S16_LE` dsnoop; CamillaDSP's capture side already requests `S32` (`DEFAULT_CAPTURE_FORMAT`), so ALSA widens an already-narrow signal and restores nothing |
 
 Three consequences: a later `S32` container is not proof of a wide path;
