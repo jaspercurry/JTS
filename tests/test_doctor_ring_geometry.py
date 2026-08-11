@@ -30,10 +30,22 @@ def _write_conf(tmp_path, *, capture_n_slots=2):
     return conf
 
 
-def _write_ring(path, *, n_slots=2, period_frames=128, magic=0x4A52_494E):
+def _write_ring(
+    path,
+    *,
+    n_slots=2,
+    period_frames=128,
+    magic=0x4A52_494E,
+    rate=48000,
+    channels=2,
+    sample_format=1,  # SAMPLE_FORMAT_S16LE
+):
     hdr = bytearray(128)
     struct.pack_into("<I", hdr, 0, magic)
     struct.pack_into("<I", hdr, 4, 1)  # version
+    struct.pack_into("<I", hdr, 8, rate)
+    struct.pack_into("<I", hdr, 12, channels)
+    struct.pack_into("<I", hdr, 16, sample_format)
     struct.pack_into("<I", hdr, 20, period_frames)
     struct.pack_into("<I", hdr, 24, n_slots)
     path.write_bytes(bytes(hdr) + b"\x00" * 256)
@@ -90,6 +102,24 @@ def test_ok_when_all_three_axes_agree(monkeypatch, tmp_path):
     res = audio.check_ring_geometry_coherence()
     assert res.status == "ok", res.detail
     assert "n_slots=2" in res.detail
+
+
+def test_ok_detail_reports_the_on_disk_wire(monkeypatch, tmp_path):
+    """The header's format/channels/rate are REPORTED, not compared.
+
+    The comparison axes stay slots + period (what this check's callers act on),
+    but a reader that can now see the whole header should say what it saw —
+    otherwise "the Python layer can see the wire" is true only inside tests.
+    Written as a wire the fleet does NOT run, so the detail cannot be passing
+    by echoing a constant.
+    """
+    _arm(monkeypatch)
+    _fanin, program = _stage(monkeypatch, tmp_path)
+    _write_ring(program, rate=44100, channels=6, sample_format=2)
+    res = audio.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "S32_LE/6ch" in res.detail
+    assert "44100 Hz" in res.detail
 
 
 def test_fail_when_env_disagrees_with_conf(monkeypatch, tmp_path):

@@ -1783,10 +1783,16 @@ def check_ring_geometry_coherence() -> CheckResult:
             "jasper-fanin-coupling-reconcile shm_ring (it deletes a geometry-"
             "mismatched ring file before re-arming).",
         )
+    # The wire axes (format, channels, rate) are REPORTED, not compared: this
+    # check's three comparison axes are the slot-count/period ones its callers
+    # act on, and reporting is what makes the on-disk wire visible without
+    # claiming a verdict about it. They come off the same header read.
     return CheckResult(
         label, "ok",
         f"Ring A geometry coherent across env + conf.d + on-disk header "
-        f"(n_slots={header.n_slots}, period_frames={header.period_frames})",
+        f"(n_slots={header.n_slots}, period_frames={header.period_frames}); "
+        f"on-disk wire {header.sample_format_name}/{header.channels}ch @ "
+        f"{header.rate} Hz",
     )
 
 
