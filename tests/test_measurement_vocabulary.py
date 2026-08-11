@@ -65,6 +65,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # Cluster 1 — wizard verdict lines (the §5.10 reason registry and the
     # screen envelopes that render its verdicts).
     "jasper/active_speaker/crossover_v2_flow.py",
+    "jasper/active_speaker/crossover_v2/intervention.py",
     "jasper/active_speaker/crossover_envelope_v2.py",
     "jasper/active_speaker/crossover_envelope.py",
     "jasper/active_speaker/baseline_profile.py",

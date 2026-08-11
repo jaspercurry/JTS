@@ -133,10 +133,9 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # runs one way: flow → crossover_v2, never back). They are re-exported here
 # under their historical private names so every existing importer keeps
 # resolving to the single definition rather than growing a second copy.
-from jasper.active_speaker.crossover_v2.intervention import (  # noqa: F401
+from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    SIGMA_TOLERABLE_DB as _SIGMA_TOLERABLE_DB,
     compose_sigma_db as _compose_sigma_db,
     driver_response_by_role as _driver_response_by_role,
     measure_validity_floor_hz as _measure_validity_floor_hz,

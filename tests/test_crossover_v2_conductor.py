@@ -122,7 +122,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-    _SIGMA_TOLERABLE_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
@@ -7565,16 +7564,20 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
 
 
 def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
-    """SF1 (adversarial review, 2026-07-24): lockstep requirement. This
-    module's own comment on ``_SIGMA_TOLERABLE_DB`` explains why it is a
-    local mirror rather than an import — production code deliberately does
-    not cross that "no cross-module private imports" boundary
-    (linearization_envelope's module docstring). Tests are allowed to reach
-    across it anyway, specifically to pin the two tables in lockstep, so a
-    future edit to one can never silently drift from the other."""
-    from jasper.active_speaker import linearization_envelope
+    """SF1 (adversarial review, 2026-07-24): lockstep requirement. The
+    planner's own comment on ``SIGMA_TOLERABLE_DB`` explains why it is a local
+    mirror rather than an import — production code deliberately does not cross
+    that "no cross-module private imports" boundary (linearization_envelope's
+    module docstring). Tests are allowed to reach across it anyway,
+    specifically to pin the two tables in lockstep, so a future edit to one can
+    never silently drift from the other.
 
-    assert _SIGMA_TOLERABLE_DB == linearization_envelope._SIGMA_TOLERABLE_DB
+    Read from ``crossover_v2.intervention``, which has owned the table since
+    #2291 Phase 2 moved the σ-composition policy there with its only reader."""
+    from jasper.active_speaker import linearization_envelope
+    from jasper.active_speaker.crossover_v2.intervention import SIGMA_TOLERABLE_DB
+
+    assert SIGMA_TOLERABLE_DB == linearization_envelope._SIGMA_TOLERABLE_DB
 
 
 # --- conductor integration reorder ------------------------------------------

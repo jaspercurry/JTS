@@ -68,7 +68,6 @@ from tests.test_crossover_v2_incident_replay import (
     CANDIDATE_FIT,
     COMMITTED_DB,
     CONFIGURED_FC_HZ,
-    ROLES,
     SELECTED_FC_HZ,
     _analysis,
     _conductor,
