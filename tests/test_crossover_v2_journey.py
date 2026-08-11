@@ -569,26 +569,27 @@ def _forbidden_imports(module: Path) -> list[str]:
     return found
 
 
-def test_the_import_guard_sees_a_planted_violation():
+def test_the_import_guard_sees_a_planted_violation(tmp_path):
     """The guard's own positive control. Without it, an ``ast`` walk that
     matched nothing — a changed node type, a typo'd root — would report every
-    module clean and read exactly like compliance."""
+    module clean and read exactly like compliance.
 
-    planted = Path(__file__).parent / "_journey_guard_probe.py"
+    Planted in ``tmp_path`` rather than beside this file: the probes were
+    collectable ``tests/*.py`` modules for the length of the write, and a run
+    interrupted between the write and the ``unlink`` left them in the source
+    tree (#2291 Phase 5 ledger). The guard reads a path, so it neither knows
+    nor cares which directory.
+    """
+
+    planted = tmp_path / "_journey_guard_probe.py"
     planted.write_text(
         "def f():\n    from jasper.web import correction_crossover_v2\n"
     )
-    try:
-        assert _forbidden_imports(planted) == ["jasper.web"]
-    finally:
-        planted.unlink()
+    assert _forbidden_imports(planted) == ["jasper.web"]
 
-    planted_relative = Path(__file__).parent / "_journey_guard_probe2.py"
+    planted_relative = tmp_path / "_journey_guard_probe2.py"
     planted_relative.write_text("from ..crossover_v2_flow import PHASE_CHECK\n")
-    try:
-        assert _forbidden_imports(planted_relative) == ["crossover_v2_flow"]
-    finally:
-        planted_relative.unlink()
+    assert _forbidden_imports(planted_relative) == ["crossover_v2_flow"]
 
 
 def test_no_domain_module_imports_the_host_or_the_legacy_flow():

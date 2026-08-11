@@ -38,11 +38,13 @@ What is pinned, in the order a round meets it:
 9. **durability, both directions** — the anchor writes fsync, an ordinary
    conductor persist does not.
 
-.. warning::
-   This module drives the REAL preparers through
-   ``tests/test_crossover_v2_stage_bridge.py``'s harness, so it inherits that
-   module's known residue (issue #2312): it must not share a pytest process
-   with ``tests/test_correction_crossover_v2_endpoints.py``.
+This module drives the REAL preparers through
+``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
+leak fakes into any module that first imported them inside its patched window
+(issue #2312), so this file carried a warning not to share a pytest process
+with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
+harness now unwinds every binding by identity, see its own comment — and the
+suites co-run green in either order.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ import pytest
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
@@ -762,7 +765,7 @@ def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog
     ids=["seam+anchor", "seam-only", "anchor-only", "neither"],
 )
 def test_rollback_available_needs_both_the_seam_and_the_anchor(
-    monkeypatch, seam_bound, anchor, expected,
+    seam_bound, anchor, expected,
 ):
     """All four combinations, because each single-half rule is wrong differently.
 
@@ -772,33 +775,114 @@ def test_rollback_available_needs_both_the_seam_and_the_anchor(
     nothing could bring it. Anchor-only ignores that a caller may have no
     rollback binding at all. Pinning only the true corner, or only one false
     one, would leave an ``or`` in place of the ``and`` looking correct.
+
+    Asked of the rule's OWNER (#2291 Phase 5 moved it to the coordinator), and
+    of a port set rather than a conductor. That the production conductor hands
+    the coordinator these two seams is a different claim, pinned end-to-end by
+    :func:`test_a_round_reaches_every_one_of_its_five_seams` and by the restore
+    outcomes above it.
     """
-    _seed_round_state(anchor=anchor)
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
-    if not seam_bound:
-        conductor._seams = dataclasses.replace(_flow_seams(conductor), rollback=None)
+    ports = coordinator.RoundPorts(
+        rollback=(lambda _cause: True) if seam_bound else None,
+        rollback_available=lambda: anchor,
+    )
 
-    assert conductor._rollback_available() is expected
+    assert coordinator.rollback_available(ports, session_id="cap_x") is expected
 
 
-def test_an_anchor_seam_that_raises_fails_closed(monkeypatch):
+def test_an_anchor_seam_that_raises_fails_closed():
     """"We could not confirm an anchor" is not "there is one".
 
     The cost of the wrong answer is a restore instruction nothing can carry
     out, which surfaces as ``recovery_required`` anyway — one round later and
     less honestly.
     """
-    _seed_round_state()
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
 
     def _explode() -> bool:
         raise RuntimeError("the durable state is unreadable")
 
-    conductor._seams = dataclasses.replace(
-        _flow_seams(conductor), rollback_available=_explode,
+    ports = coordinator.RoundPorts(
+        rollback=lambda _cause: True, rollback_available=_explode,
     )
 
-    assert conductor._rollback_available() is False
+    assert coordinator.rollback_available(ports, session_id="cap_x") is False
+
+
+@pytest.mark.parametrize(
+    ("seam", "expected", "why"),
+    [
+        (None, True, "no seam bound at all"),
+        (lambda: (_ for _ in ()).throw(RuntimeError("unreadable")), True,
+         "the seam raised"),
+        (lambda: False, False, "the seam answered cut-only"),
+        (lambda: True, True, "the seam answered boosted"),
+    ],
+    ids=["unbound", "raises", "cut-only", "boosted"],
+)
+def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
+    """``boosted`` fails CLOSED, on both of the two ways it can go unanswered.
+
+    ``boosted`` is what routes an unprovable round to a restore rather than to
+    "ask the household" (#2318's fail-closed cell), so the wrong default leaves
+    a driver being driven on evidence nobody has. The two unanswerable shapes —
+    no seam, and a seam that raised — are the ones no end-to-end round reaches,
+    because the production host always binds it and the applied-profile SSOT
+    always answers; a mutation flipping either default survived the whole
+    round suite before this pin existed.
+    """
+    ports = coordinator.RoundPorts(applied_boosts=seam)
+
+    assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
+
+
+def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
+    """The conductor→coordinator port mapping, pinned as reach rather than identity.
+
+    #2291 Phase 5 moved the round's sequencing behind
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`, which is
+    handed a narrowed :class:`RoundPorts` instead of the conductor's seams. That
+    narrowing is a place two names can be crossed, and most crossings would
+    still pass the outcome tests above: a swapped pair usually raises inside a
+    guard and fails closed, which several rows here expect anyway.
+
+    So this asserts the weaker fact that no single-outcome test implies — that
+    ONE round reaches all five — on a restoring round, the only shape in which
+    every seam is live. Comparing the port objects instead would pin the
+    assignment and not the call, and the call is what a round is.
+    """
+    seen: list[str] = []
+    _seed_round_state()
+    conductor, _attempts = _restoring_stage_2(monkeypatch)
+    # A baseline FLATTER than the post-apply capture — the graph made the
+    # speaker measurably worse — so the table says restore and the rollback
+    # seam is live. Every other adoption row leaves at least one seam untouched.
+    _install_entry_baseline(conductor, scale=0.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+    bound = _flow_seams(conductor)
+
+    def _recorded(name: str, seam: Any) -> Any:
+        def _call(*args: Any, **kwargs: Any) -> Any:
+            seen.append(name)
+            return seam(*args, **kwargs)
+        return _call
+
+    conductor._seams = dataclasses.replace(
+        bound,
+        **{
+            name: _recorded(name, getattr(bound, name))
+            for name in (
+                "rollback", "rollback_available", "applied_boosts",
+                "entry_graph_fingerprint", "publish_round_receipt",
+            )
+        },
+    )
+
+    _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert set(seen) == {
+        "rollback", "rollback_available", "applied_boosts",
+        "entry_graph_fingerprint", "publish_round_receipt",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -948,10 +1032,10 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
 ):
     """The restore result has to be on it, or a recovery cannot be read back.
 
-    ``_write_round_receipt`` runs LAST for exactly this reason: the receipt is
-    the record of an event, and the event includes whether the previous sound
-    actually came back. A receipt written before the restore would describe an
-    intention.
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` writes the
+    receipt LAST for exactly this reason: the receipt is the record of an event,
+    and the event includes whether the previous sound actually came back. A
+    receipt written before the restore would describe an intention.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -1021,12 +1105,18 @@ def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
 ):
     """The stated safety property of round grading, pinned.
 
-    ``_grade_round_once`` promises that a bug in the grader logs and returns
-    the caller's own verdict untouched — the round exists to ADD an honest
-    answer, and it must never cost the household a verdict the measurement
-    gate already reached. That promise had no coverage, which is exactly where
-    a later refactor turns a fail-soft into a fail-closed and nobody notices
-    until a good capture starts being refused.
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` promises
+    that a bug in the grader logs and returns the caller's own verdict
+    untouched — the round exists to ADD an honest answer, and it must never
+    cost the household a verdict the measurement gate already reached. That
+    promise had no coverage, which is exactly where a later refactor turns a
+    fail-soft into a fail-closed and nobody notices until a good capture starts
+    being refused.
+
+    Patched on the COORDINATOR's binding, not on ``round_evidence``'s: #2291
+    Phase 5 made that a module-scope ``from`` import, so rebinding the source
+    module's attribute would leave the guarded call resolving to the real
+    grader and pass this test over a fail-soft that had been deleted.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
@@ -1036,9 +1126,7 @@ def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
     def _explode(**kwargs: Any) -> Any:
         raise RuntimeError("grader is broken")
 
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.round_evidence.evaluate_round", _explode,
-    )
+    monkeypatch.setattr(coordinator, "evaluate_round", _explode)
 
     with caplog.at_level("WARNING"):
         verdict = _consume_verify(conductor, _post_apply_analysis(conductor))

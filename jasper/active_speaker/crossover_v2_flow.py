@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # :mod:`jasper.active_speaker.flat_spec` through
     # :mod:`jasper.active_speaker.crossover_v2.verification`, and this module
     # already imports ``flat_spec`` lazily everywhere else for that reason.
+    from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
         MeasuredResponse,
@@ -136,6 +137,9 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     radiating_band_hz,
     sections_by_role,
+)
+from jasper.active_speaker.crossover_v2.contracts import (
+    ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateAcousticContext,
@@ -342,23 +346,11 @@ SUMMED_SWEEP_PHASES = frozenset(
 #: move between them) is for.
 REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 
-#: What the entry baseline records when the host cannot name the graph the
-#: capture was measured through.
-#:
-#: The three ways that happens are all honest and none is a defect: no
-#: ``entry_graph_fingerprint`` seam is bound (every conductor unit test), the
-#: seam raised, or the speaker has no applied Layer-A profile yet (its
-#: first-ever round). A capture that measured the speaker correctly must not be
-#: rejected because its provenance could not be named — provenance is on the
-#: record, never a gate.
-#:
-#: A NAMED sentinel rather than ``""`` because
-#: :class:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline`
-#: requires a non-empty trimmed identity on both the write and the read side:
-#: an empty string would make ``from_dict`` refuse the whole record, so the
-#: round would silently lose its baseline to a missing *fingerprint*. This word
-#: survives the round trip and says exactly what is true.
-ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.contracts`, which
+#: owns it alongside the two receipt fields it fills (#2291 Phase 5).  Every
+#: ``flow.ENTRY_GRAPH_FINGERPRINT_UNKNOWN`` read keeps resolving to that one
+#: object; see the contract for why the sentinel is a word rather than ``""``.
+ENTRY_GRAPH_FINGERPRINT_UNKNOWN = _ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 
 # --------------------------------------------------------------------------- #
 # position-group choreography (flat-linearization PR-3b)
@@ -4207,21 +4199,23 @@ class V2FlowSeams:
     entry_graph_fingerprint: Callable[[], str] | None = None
     # #2291: is there a valid anchor to restore TO? The ANCHOR half of the
     # adoption table's ``rollback_available``; the SEAM half is ``rollback``
-    # above being bound at all, and :meth:`_rollback_available` ANDs them.
-    # Optional, and its absence reads as "cannot confirm an anchor" rather
-    # than as "there is one" — see that method for why the pessimistic
+    # above being bound at all, and
+    # :func:`~jasper.active_speaker.crossover_v2.coordinator.rollback_available`
+    # ANDs them. Optional, and its absence reads as "cannot confirm an anchor"
+    # rather than as "there is one" — see that function for why the pessimistic
     # direction is the safe one here.
     rollback_available: Callable[[], bool] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
     # grading time, because the grading conductor cannot answer it from its own
     # state — stage 2 never holds a candidate (see
-    # :meth:`_applied_candidate_boosts` for the bug this closes). Optional, and
-    # its absence answers "boosted": an intervention this process cannot
-    # inspect comes off rather than staying on evidence nobody has.
+    # :func:`~jasper.active_speaker.crossover_v2.coordinator.applied_boosts`
+    # for the bug this closes). Optional, and its absence answers "boosted": an
+    # intervention this process cannot inspect comes off rather than staying on
+    # evidence nobody has.
     applied_boosts: Callable[[], bool] | None = None
     # #2291: publish the round receipt and return its artifact fingerprint.
-    # The conductor builds the record (one assembler, in the pure layer) and
-    # this seam owns WHERE it lands — the evidence bundle, write-once and
+    # The round coordinator builds the record (one assembler, in the pure
+    # layer) and this seam owns WHERE it lands — the evidence bundle, write-once and
     # tamper-checked. Optional, and every failure is the host's to raise: the
     # caller treats a raise or a ``None`` as "no receipt was written", logs it,
     # and keeps the verdict. A receipt is the round's record, never its gate.
@@ -6616,7 +6610,6 @@ class CrossoverV2Conductor:
         # per trigger that happens to fire.
         self._round_evaluated = False
         self._round_evaluation: Any = None
-        self._round_restore_result: dict[str, Any] | None = None
         # Where this round's receipt landed: round id + the bundle artifact's
         # fingerprint. Persisted, so the NEXT round can find the previous one
         # without scanning bundles. ``None`` until a receipt is written, and it
@@ -11311,67 +11304,37 @@ class CrossoverV2Conductor:
     def _entry_graph_fingerprint(self) -> str:
         """Which graph this capture was measured through, or the unknown word.
 
-        Never raises and never gates — see
+        One line over the coordinator's reader so the ENTRY BASELINE's own
+        retention keeps its call site; the round's receipt asks the same
+        function directly. Never raises and never gates — see
         :data:`ENTRY_GRAPH_FINGERPRINT_UNKNOWN` for the three honest ways the
         host cannot answer, and why the answer is a word rather than an empty
         string.
         """
-        seam = self._seams.entry_graph_fingerprint
-        if seam is None:
-            return ENTRY_GRAPH_FINGERPRINT_UNKNOWN
-        try:
-            value = str(seam() or "")
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-            log_event(
-                logger, "correction.crossover_v2_entry_graph_fingerprint_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return ENTRY_GRAPH_FINGERPRINT_UNKNOWN
-        value = value.strip()
-        return value or ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+        from jasper.active_speaker.crossover_v2 import coordinator
 
-    def _rollback_available(self) -> bool:
-        """Can this host actually put the previous sound back? (#2291)
-
-        **BOTH-AND**, and each half answers a different question:
-
-        * the ``rollback`` seam is bound — a *process* fact, the flow's own
-          capability idiom (``STAGE_VERIFY_CAPABILITIES`` provides
-          ``CAPABILITY_ROLLBACK``). A single-stage or future caller may reach
-          this decision with no seam at all.
-        * a valid anchor exists — a *state* fact, owned by the host's
-          ``rollback_available`` seam, which reads the very predicate
-          ``handle_v2_restore`` refuses on.
-
-        Either half alone gives a wrong answer to the question
-        :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
-        is actually asking. Seam-only says yes on a speaker whose durable state
-        carries no ``pre_apply_profile``: the round would issue a ``restore``
-        instruction Undo then refuses, and the household would be told the old
-        sound was coming back when nothing could bring it. Anchor-only ignores
-        that some callers cannot restore at all.
-
-        Fails closed on both halves — an unbound anchor seam, or one that
-        raises, means "not available", which routes the adoption table to
-        ``recovery_required`` (loud, operator-visible) rather than to a restore
-        that cannot happen.
-        """
-        if self._seams.rollback is None:
-            return False
-        seam = self._seams.rollback_available
-        if seam is None:
-            return False
-        try:
-            return bool(seam())
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
-                AttributeError):
-            log_event(
-                logger, "correction.crossover_v2_rollback_available_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return False
+        return coordinator.entry_graph_fingerprint(
+            self._round_ports(), session_id=self.session_id,
+        )
 
     # --- #2291: the round, graded and acted on -------------------------------
+
+    def _round_ports(self) -> "RoundPorts":
+        """Narrow this conductor's seams down to the five a round may call.
+
+        The coordinator is handed capabilities rather than the conductor, so
+        what it can reach is its argument type: it cannot play a program or
+        publish a candidate, because :class:`RoundPorts` has no name for those.
+        """
+        from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
+
+        return RoundPorts(
+            rollback=self._seams.rollback,
+            rollback_available=self._seams.rollback_available,
+            applied_boosts=self._seams.applied_boosts,
+            entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
+            publish_round_receipt=self._seams.publish_round_receipt,
+        )
 
     def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
         """Grade this round and act on the adoption table. Once per session.
@@ -11392,383 +11355,61 @@ class CrossoverV2Conductor:
         rejection therefore writes no round receipt, which is the honest
         record: its post-apply evidence never completed.
 
-        Fail-soft, and the fail direction matters: a grading failure logs and
-        returns the caller's own verdict untouched. The round's job is to add
-        an honest answer, and a bug in the grader must not cost the household
-        the verdict the measurement gate already reached — least of all by
-        turning an accepted capture into a refusal.
+        The fire-once guard is here rather than in the coordinator because it
+        is a fact about THIS SESSION rather than about the round: only the
+        conductor knows a second trigger is the same session's.
+
+        Everything after it belongs to
+        :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`,
+        which grades, acts, and banks; this stamps the results onto the
+        conductor's own state and maps the coordinator's refusal KIND to the
+        :data:`REASON_REGISTRY` code whose copy the household reads. The
+        vocabulary stays here because the registry does.
         """
+        from jasper.active_speaker.crossover_v2 import coordinator
+
         if self._round_evaluated:
             return verdict
         self._round_evaluated = True
-        try:
-            evaluation = self._evaluate_round()
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
-                AttributeError, IndexError, ZeroDivisionError):
-            log_event(
-                logger, "correction.crossover_v2_round_grade_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return verdict
-        self._round_evaluation = evaluation
-        self._log_round(evaluation)
-        outcome = self._act_on_adoption(evaluation, verdict)
-        # LAST, so the receipt records what the round actually DID — including
-        # a restore's result, which ``_act_on_adoption`` is what produces.
-        self._write_round_receipt(self._round_evaluation)
-        return outcome
-
-    def _evaluate_round(self) -> Any:
-        """Build :func:`evaluate_round`'s inputs and call it. Composes nothing.
-
-        Every verdict, the table, and the ordering between them belong to
-        :mod:`jasper.active_speaker.crossover_v2.round_evidence`; this assembles
-        arguments. The spec report is the post-apply CLOUD's — ``None`` on a
-        tier that walks no cloud, which the evaluator reads as "no report"
-        rather than as a pass (#2160's honest wire: a spec failure that used to
-        be disclosure-only is now a verdict on the receipt).
-        """
-        from jasper.active_speaker.crossover_v2.round_evidence import evaluate_round
-
-        analysis = self._verify_analysis
-        return evaluate_round(
-            post_analysis=analysis,
-            entry_baseline=self._measure_entry_baseline,
-            spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
-            tracking=getattr(analysis, "verify_tracking", None),
-            realization_tolerance_db=VERIFY_TOLERANCE_DB,
-            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-            boosted=self._applied_candidate_boosts(),
-            rollback_available=self._rollback_available(),
-        )
-
-    def _applied_candidate_boosts(self) -> bool:
-        """Does the applied intervention put energy IN? (#2291 ``boosted``)
-
-        **Asked of the HOST, not of this conductor's own state, and that is
-        the whole point.** This originally read ``self._candidate`` — which is
-        assigned in exactly one place, stage 1's commit. The stage that GRADES
-        a round is a different process with a fresh conductor and no ctor
-        parameter for a candidate, so the read was ``None`` on every shipped
-        round, ``boosted`` was always ``False``, and #2318's fail-closed cell
-        was unreachable: a boosted intervention with unprovable benefit ended
-        ``accepted=True`` with the graph live. The test suite was green over it
-        because its harness injected a candidate the production path never
-        supplies.
-
-        The seam answers from the applied-profile SSOT — the one owner of
-        "what did we apply" — through the shipped
-        :func:`~jasper.active_speaker.camilla_yaml.linearization_has_boost`,
-        so there is still no second definition of "boost" on this speaker.
-
-        Fails CLOSED at both levels: an unbound seam and a raising one both
-        answer "boosted", so an intervention nobody can inspect is restored
-        rather than left driving a driver on evidence nobody has.
-        """
-        seam = self._seams.applied_boosts
-        if seam is None:
-            return True
-        try:
-            return bool(seam())
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
-                AttributeError):
-            log_event(
-                logger, "correction.crossover_v2_round_boost_unreadable",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return True
-
-    def _log_round(self, evaluation: Any) -> None:
-        """The round's whole answer, as one journal line.
-
-        ``to_dict`` carries the four verdicts WITH their evidence, not just the
-        collapsed statuses: a support read needs to know why a benefit was
-        indeterminate, and the statuses alone cannot say.
-        """
-        record = evaluation.to_dict()
-        log_event(
-            logger, "correction.crossover_v2_round_graded",
-            session_id=self.session_id,
-            adoption=evaluation.adoption.outcome.value,
-            reason=evaluation.adoption.reason,
-            capture=record["verdicts"]["capture"]["status"],
-            realization=record["verdicts"]["realization"]["status"],
-            benefit=record["verdicts"]["benefit"]["status"],
-            spec=record["verdicts"]["spec"]["status"],
-            post_residual_db=evaluation.post_residual_db,
-            post_residual_bins=evaluation.post_residual_bins,
-            evidence=record["verdicts"],
-        )
-
-    def _act_on_adoption(self, evaluation: Any, verdict: PhaseVerdict) -> PhaseVerdict:
-        """Turn the adoption outcome into what the household gets.
-
-        Only ever reached for an ACCEPTED capture — both triggers grade on one
-        (see :meth:`_grade_round_once`), because a rejected capture can be
-        retried and grading one would burn the fire-once guard on evidence the
-        household then replaced. So every bullet below describes a round whose
-        post-apply measurement stands, and #2291's acting half applies exactly
-        where it was meant to: the round that would otherwise have been
-        reported as a SUCCESS.
-
-        The table already decided; this carries it out and never re-decides.
-        In particular there is no branch here that can keep a graph the table
-        said to restore — a realization pass does not override a measured
-        regression, and the only way that guarantee holds is by not writing
-        the branch that would break it.
-
-        * ``KEEP`` — the caller's verdict stands.
-        * ``RESTORE`` — fire the rollback seam (once-guarded on the host side,
-          so the delta probe's own rollback and this one cannot both run), then
-          refuse under the cause's own code. A successful restore keeps the
-          "the previous sound has been put back" promise; a failed one is
-          re-graded through the SAME table with ``restore_failed=True``, which
-          is what turns it into ``RECOVERY_REQUIRED`` — the receipt then says
-          the speaker is in neither graph, because it is.
-        * ``RECOVERY_REQUIRED`` — refuse LOUDLY under
-          :data:`REASON_CORRECTION_ROLLBACK_FAILED`, whose copy already tells
-          the household the correction is still applied and Undo is on screen.
-          No new screen: this is the shape ``_delta_probe_refusal`` established.
-        * ``USER_DECISION`` — the capture verdict stands, and nothing here
-          claims success. The round's own answer rides the journal and the
-          receipt; this path deliberately does not manufacture a refusal out of
-          "we could not tell", which would report a failure that did not happen.
-        """
-        from jasper.active_speaker.crossover_v2.contracts import AdoptionOutcome
-
-        outcome = evaluation.adoption.outcome
-        if outcome is AdoptionOutcome.KEEP or outcome is AdoptionOutcome.USER_DECISION:
-            return verdict
-        if outcome is AdoptionOutcome.RESTORE:
-            restored = self._run_round_restore(evaluation.adoption.reason)
-            if restored:
-                return self._round_refusal(
-                    round_restore_reason(evaluation.adoption.reason)
-                )
-            self._round_evaluation = self._regrade_after_failed_restore(evaluation)
-            # An anchor existed — the restore was attempted against it and did
-            # not complete — so Undo is still a real remedy.
-            return self._round_refusal(
-                REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=True,
-            )
-        # RECOVERY_REQUIRED — the table already knew no restore was possible
-        # (no anchor), so nothing is attempted here; the record says why, and
-        # the copy must not point at an Undo that refuses on the same fact.
-        self._round_restore_result = {
-            "attempted": False,
-            "restored": False,
-            "reason": evaluation.adoption.reason,
-        }
-        log_event(
-            logger, "correction.crossover_v2_round_recovery_required",
-            level=logging.ERROR, session_id=self.session_id,
-            reason=evaluation.adoption.reason, rollback_anchor_available=False,
-        )
-        return self._round_refusal(
-            REASON_CORRECTION_ROLLBACK_FAILED, rollback_anchor_available=False,
-        )
-
-    def _regrade_after_failed_restore(self, evaluation: Any) -> Any:
-        """Re-run the table with ``restore_failed=True``, or keep what we had.
-
-        **The speaker is still on the APPLIED graph**, which is what the
-        household copy says ("the newer tuning is STILL APPLIED"). Both
-        reachable failure shapes leave it there: a ``CrossoverV2Refused`` never
-        touches DSP, and ``restore_applied_baseline_profile`` is an atomic
-        transaction that leaves the live config alone when it does not
-        complete. An earlier version of this docstring said "neither the entry
-        graph nor the intended one" — the abstract worst case, not this one —
-        which contradicted the sentence the household actually reads. The
-        sibling wording in ``verification.decide_adoption`` and
-        ``contracts.RoundReceipt`` is the same overstatement, left for their
-        owners rather than edited from here.
-
-        The table's ``restore_failed`` row still describes it: what makes that
-        row right is that the intended graph is live and unverified with its
-        automatic remedy spent, not the stronger claim. Re-grading rather than
-        editing the decision in place keeps
-        :func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`
-        the only thing that ever produces an
-        :class:`~jasper.active_speaker.crossover_v2.contracts.AdoptionDecision`.
-        """
-        from jasper.active_speaker.crossover_v2.round_evidence import RoundEvaluation
-        from jasper.active_speaker.crossover_v2.verification import decide_adoption
-
-        try:
-            adoption = decide_adoption(
-                realization=evaluation.result.realization,
-                benefit=evaluation.result.benefit,
-                spec=evaluation.result.spec,
-                boosted=self._applied_candidate_boosts(),
-                rollback_available=self._rollback_available(),
-                restore_failed=True,
-            )
-        except (TypeError, ValueError, KeyError):
-            log_event(
-                logger, "correction.crossover_v2_round_regrade_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return evaluation
-        regraded = RoundEvaluation(
-            capture=evaluation.capture,
-            realization=evaluation.realization,
-            benefit=evaluation.benefit,
-            spec=evaluation.spec,
-            result=evaluation.result,
-            adoption=adoption,
-            post_residual_db=evaluation.post_residual_db,
-            post_residual_bins=evaluation.post_residual_bins,
-        )
-        self._log_round(regraded)
-        return regraded
-
-    def _run_round_restore(self, cause: str) -> bool:
-        """Fire the rollback seam for an adoption-driven restore.
-
-        Shares the host's once-guarded closure with the delta probe, so a Full
-        session in which both ask for a restore attempts exactly one — and the
-        second asker is handed the FIRST attempt's outcome rather than
-        ``handle_v2_restore``'s "nothing is applied to undo" refusal, which
-        would otherwise be reported as a failed rollback and told to the
-        household as "the correction is still applied" when it is not.
-        """
-        restored = False
-        error = ""
-        if self._seams.rollback is not None:
-            try:
-                restored = bool(self._seams.rollback(cause))
-            except (OSError, RuntimeError, TypeError, ValueError, AttributeError,
-                    KeyError) as exc:
-                # Same widened family and same reasoning as
-                # ``_delta_probe_refusal``: this call sits outside the cloud
-                # pipeline's wrap, and losing the verdict is strictly worse
-                # than reporting it with the restore marked failed.
-                error = str(exc)
-        self._round_restore_result = {
-            "attempted": True,
-            "restored": restored,
-            "reason": cause,
-            "error": error,
-            "seam_bound": self._seams.rollback is not None,
-        }
-        log_event(
-            logger, "correction.crossover_v2_round_restore",
-            level=logging.INFO if restored else logging.ERROR,
-            session_id=self.session_id, reason=cause, restored=restored,
-            seam_bound=self._seams.rollback is not None, error=error,
-        )
-        return restored
-
-    def _write_round_receipt(self, evaluation: Any) -> None:
-        """Assemble #2291's receipt and hand it to the publishing seam.
-
-        ``round_id`` is this stage-2 relay session id: one graded post-apply
-        session is one round. A recovery re-verify runs under a NEW relay
-        session and therefore writes its OWN receipt rather than amending this
-        one — which is the honest shape, because it is a different measurement
-        of a different speaker state, and a receipt that could be amended
-        would not be a receipt.
-
-        **Fail-soft, deliberately and in both directions.** A receipt that
-        could not be built or written is a WARN and a journal line; it never
-        reverses a verdict, never refuses a capture, and never crashes the
-        capture path. The verdict is what protects the household's speaker;
-        the receipt is what lets someone reconstruct why afterwards, and
-        losing the second must not cost the first.
-        """
-        from jasper.active_speaker.crossover_v2.round_evidence import (
-            build_round_receipt,
-        )
-
-        seam = self._seams.publish_round_receipt
-        if seam is None:
-            return
-        baseline = self._measure_entry_baseline
-        try:
-            receipt = build_round_receipt(
-                round_id=self.session_id,
-                evaluation=evaluation,
-                entry_baseline=baseline,
-                # The graph the "before" was measured THROUGH — the baseline's
-                # own stamp, not "what is live now", which post-apply is the
-                # applied graph below.
-                entry_graph_fingerprint=(
-                    baseline.graph_fingerprint if baseline is not None
-                    else ENTRY_GRAPH_FINGERPRINT_UNKNOWN
-                ),
-                rollback_anchor={"available": self._rollback_available()},
+        decision = coordinator.run_round(
+            coordinator.RoundEvidence(
+                session_id=self.session_id,
+                tier=self._tier,
+                post_analysis=self._verify_analysis,
+                entry_baseline=self._measure_entry_baseline,
+                # The post-apply CLOUD's report — ``None`` on a tier that walks
+                # no cloud, which the evaluator reads as "no report" rather than
+                # as a pass (#2160's honest wire).
+                spec_report=self._group_spec_report.get(PHASE_CLOUD_VERIFY),
                 # The APPLIED candidate's identity. ``_tuning_attempt_id``
                 # first, for :meth:`_grade_verify_attempt`'s reason and by the
                 # same chain: on the stage that grades a round it is the only
                 # one populated, read from the durable state's candidate
-                # fingerprint at prepare time. Reading ``self._candidate``
-                # alone was the same dead-stage-2 read that made ``boosted``
-                # unreachable — here it emptied the receipt's
-                # ``proposal_fingerprint``, which the contract refuses, so
-                # every production round lost its receipt to the fail-soft
-                # handler. One bug, two victims.
+                # fingerprint at prepare time. Reading ``self._candidate`` alone
+                # was the dead stage-2 read that emptied the receipt's
+                # ``proposal_fingerprint``, which the contract refuses, so every
+                # production round lost its receipt to the fail-soft handler.
                 proposal_fingerprint=(
                     self._tuning_attempt_id
                     or str(getattr(self._candidate, "fingerprint", "") or "")
                 ),
-                applied_graph_fingerprint=self._entry_graph_fingerprint(),
-                post_measurement=self._post_measurement_identity(),
-                restore_result=self._round_restore_result,
-                evidence_identities={
-                    "session_id": self.session_id,
-                    "tier": self._tier,
-                    "entry_baseline_artifact": (
-                        baseline.artifact_ref if baseline is not None else ""
-                    ),
-                    "commanded_delta_present": (
-                        self._measure_commanded_delta is not None
-                    ),
-                },
-                created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            )
-            fingerprint = seam(receipt.to_dict())
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError,
-                AttributeError):
-            # ERROR, not WARNING, and earned by demonstrated history: this is
-            # the exact event that would have fired on every shipped round for
-            # a whole phase while nobody looked. The dead ``self._candidate``
-            # read emptied ``proposal_fingerprint``, the receipt contract
-            # refused it, and this handler swallowed the loss — a fail-soft
-            # path whose only trace is a WARNING is one nobody reads. Its
-            # sibling, the no-anchor recovery path, is already ERROR.
-            log_event(
-                logger, "correction.crossover_v2_round_receipt_failed",
-                level=logging.ERROR, session_id=self.session_id, exc_info=True,
-            )
-            return
-        self._round_receipt_identity = {
-            "round_id": self.session_id,
-            "artifact_fingerprint": str(fingerprint or ""),
-            "receipt_fingerprint": receipt.fingerprint,
-        }
-        log_event(
-            logger, "correction.crossover_v2_round_receipt",
-            session_id=self.session_id, round_id=self.session_id,
-            artifact_fingerprint=str(fingerprint or ""),
-            receipt_fingerprint=receipt.fingerprint,
-            adoption=evaluation.adoption.outcome.value,
+                commanded_delta_present=self._measure_commanded_delta is not None,
+                realization_tolerance_db=VERIFY_TOLERANCE_DB,
+                reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            ),
+            self._round_ports(),
         )
-
-    def _post_measurement_identity(self) -> dict[str, Any] | None:
-        """What the post-apply side WAS, as identity rather than payload.
-
-        The same rule ``build_round_receipt`` applies to the entry baseline:
-        the curve has owners that outlive the receipt, so the receipt names it
-        instead of copying it.
-        """
-        analysis = self._verify_analysis
-        if analysis is None:
-            return None
-        return {
-            "program_id": str(getattr(analysis, "program_id", "") or ""),
-            "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
-            "phase": PHASE_VERIFY,
-        }
+        self._round_evaluation = decision.evaluation
+        self._round_receipt_identity = decision.receipt_identity
+        refusal = decision.refusal
+        if refusal is None:
+            return verdict
+        if refusal.kind == coordinator.REFUSAL_RESTORED:
+            return self._round_refusal(round_restore_reason(refusal.cause))
+        return self._round_refusal(
+            REASON_CORRECTION_ROLLBACK_FAILED,
+            rollback_anchor_available=refusal.rollback_anchor_available,
+        )
 
     def _round_refusal(
         self, code: str, *, rollback_anchor_available: bool | None = None,
@@ -11789,7 +11430,6 @@ class CrossoverV2Conductor:
         self._last_failure_pilot_heard = None
         self._last_failure_rollback_anchor = rollback_anchor_available
         return PhaseVerdict(False, code)
-
     def _log_entry_baseline_diag(
         self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,
     ) -> None:

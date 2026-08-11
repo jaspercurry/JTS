@@ -908,6 +908,26 @@ class AdoptionDecision:
         }
 
 
+#: What a round records when the host cannot name the graph a capture was
+#: measured through — the honest filler for :attr:`RoundReceipt`'s two graph
+#: fingerprints and for
+#: :attr:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline.graph_fingerprint`.
+#:
+#: The three ways that happens are all honest and none is a defect: no
+#: ``entry_graph_fingerprint`` seam is bound (every conductor unit test), the
+#: seam raised, or the speaker has no applied Layer-A profile yet (its
+#: first-ever round).  A capture that measured the speaker correctly must not be
+#: rejected because its provenance could not be named — provenance is on the
+#: record, never a gate.
+#:
+#: A NAMED sentinel rather than ``""`` because both that contract and this one
+#: require a non-empty trimmed identity on the write and the read side: an empty
+#: string would make ``from_dict`` refuse the whole record, so the round would
+#: silently lose its baseline to a missing *fingerprint*.  This word survives the
+#: round trip and says exactly what is true.
+ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, init=False)
 class RoundReceipt:
     """The immutable record one correction round leaves behind.

@@ -3952,9 +3952,11 @@ def bind_round_receipt(
     resolvable at all.
 
     Raises rather than swallowing: the store is deliberately strict, and the
-    fail-soft boundary is the conductor's ``_write_round_receipt``, exactly as
-    it is for :func:`bind_position_retention`. Keeping the boundary there
-    preserves the strictness for every other caller of this store.
+    fail-soft boundary is the round coordinator's own receipt writer
+    (:func:`jasper.active_speaker.crossover_v2.coordinator.run_round` catches
+    it), exactly as it is for :func:`bind_position_retention`. Keeping the
+    boundary there preserves the strictness for every other caller of this
+    store.
     """
 
     def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
