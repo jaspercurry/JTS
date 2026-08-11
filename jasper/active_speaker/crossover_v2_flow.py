@@ -9191,8 +9191,8 @@ class CrossoverV2Conductor:
         if retake is not None:
             # Narrowed by ``have_take_to_replace`` above: a retake is returned
             # only when there is a take at this index to drop.
+            assert position is not None
             replacing = position
-            assert replacing is not None
             self._geometry_retries_used[phase] = retake.retries_after
             # Drop the take being replaced FROM THE CLOUD. This is what the
             # protocol's retake lever means — the same index is measured again
