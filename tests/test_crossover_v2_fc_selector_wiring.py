@@ -876,3 +876,144 @@ def test_an_alternative_winner_publishes_its_exact_candidate_and_preset():
     assert fakes.published_candidates == [c.candidate]
     assert np.array_equal(c.measure_predicted_sum[1], winner.predicted_sum[1])
     assert c.measure_predicted_spec_report == winner.predicted_spec_report
+
+
+# --------------------------------------------------------------------------- #
+# the committed sweep golden — #2291 Phase 5a-iii's equivalence spine for 5a-v
+#
+# The fc sweep's per-candidate half stays on the conductor until 5a-v, because
+# ``_evaluate_fc_candidate`` consumes ``_SpeculativeClose`` (and through it
+# ``_LinearizationState`` / ``_CloudFitEvidence``), all of which belong to the
+# candidate/planning organ. When that slice moves the sweep, THIS is what it
+# compares against: the decisions the sweep makes before any fit runs — which
+# corners, in what order, under which declared bounds, and what each corner does
+# to the sections and to the priors' three corner-dependent fields.
+#
+# Captured from the pre-extraction conductor (origin/main at 53eb2d980) and
+# written as literals. Re-derive them by re-running that comparison; editing a
+# number here to make a test pass deletes the evidence it exists to be.
+#
+# THE CAMPAIGN PATTERN, recorded here because this is where the next slice will
+# read it: **a strangler phase's goldens must anchor on the DECLARED source of
+# truth, never on the method under test — self-referential pins are blind to
+# uniform drift.** Earned: the first cut of the re-cornering test below compared
+# ``_fc_candidate_sections(fc)`` against ``_fc_candidate_sections(FC_HZ)``, and a
+# uniform ``order += 2`` applied to every section passed it (measured: 6 passed
+# with that anchor, 6 failed with the declared one). A port that changed the
+# whole family the same way — which is what a port does — would have shipped.
+# --------------------------------------------------------------------------- #
+
+#: ``declaration shape -> (bands, ordered candidates, declared limits)``.
+#: Both jts3 shapes from the R17 STOP: the LIVE tweeter declaration whose search
+#: band starts AT the configured corner (so the intersection admits nothing), and
+#: the WIDENED one that opens five alternatives — including 1648.7 Hz, the corner
+#: the 2026-08-10 incident actually selected.
+SWEEP_GOLDEN = {
+    "live_no_alternative": (
+        LIVE_BANDS,
+        [1600.0],
+        {
+            "beaming_ceiling_hz": 1915.443701,
+            "declared_floor_hz": 300.0,
+            "lower_driver_ceiling_hz": 6000.0,
+            "search_hi_hz": 2500.0,
+            "search_lo_hz": 2000.0,
+        },
+    ),
+    "widened": (
+        WIDENED_BANDS,
+        [1600.0, 1648.7, 1698.9, 1750.6, 1803.9, 1858.8],
+        {
+            "beaming_ceiling_hz": 1915.443701,
+            "declared_floor_hz": 300.0,
+            "lower_driver_ceiling_hz": 6000.0,
+            "search_hi_hz": 2500.0,
+            "search_lo_hz": 1600.0,
+        },
+    ),
+}
+
+#: ``fc -> the woofer's candidate-required upper bound``. The tweeter's is
+#: ``(fc/2, inf)`` at every corner, so one column carries the whole table: the
+#: union of the radiating span with the UNCLAMPED overlap band, which is what
+#: makes a superset the safe side for a required mask.
+REQUIRED_BAND_WOOFER_HI_HZ = {
+    1600.0: 3200.0, 1648.7: 3297.4, 1698.9: 3397.8,
+    1750.6: 3501.2, 1803.9: 3607.8, 1858.8: 3717.6,
+}
+
+
+@pytest.mark.parametrize("shape", sorted(SWEEP_GOLDEN))
+def test_the_proposed_corners_and_their_bounds_are_the_ones_that_shipped(shape):
+    """WHICH corners this speaker's declarations admit, and in what ORDER.
+
+    Order is not cosmetic: the budget forecast spends the wall clock in this
+    sequence and stops where it stops, so a reordering silently changes which
+    candidates a slow session gets to evaluate at all.
+    """
+    bands, candidates, limits = SWEEP_GOLDEN[shape]
+    c = _selector_conductor(FakeSeams(), bands=bands)
+
+    got = c._fc_candidate_set()
+
+    assert [round(float(fc), 4) for fc in got.candidates] == candidates
+    assert {k: round(float(v), 6) for k, v in got.limits.items()} == limits
+    assert list(got.rejected) == []
+    # The configured corner is always proposable, even where every bound would
+    # exclude it — otherwise this speaker has no golden candidate to prove
+    # equivalence against (§9.8).
+    assert candidates[0] == pytest.approx(FC_HZ)
+
+
+def test_the_evaluation_budget_is_the_declared_one():
+    """A wall budget, stated. The forecast that spends it is the sweep's, but
+    the number is a product decision and belongs in the golden."""
+    assert _selector_conductor(FakeSeams())._fc_evaluation_budget_s() == 70.0
+
+
+@pytest.mark.parametrize("fc_hz", sorted(REQUIRED_BAND_WOOFER_HI_HZ))
+def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
+    """R17 adjudicates WHERE to cross, never what shape to cross with.
+
+    So every section keeps the preset's order, direction and role assignment and
+    takes the candidate's corner — and the priors' three corner-dependent fields
+    move with it while polarity and protection do not (they describe how the
+    drivers are wired and what the graph emitted, neither of which a corner
+    changes).
+    """
+    c = _selector_conductor(FakeSeams(), bands=WIDENED_BANDS)
+    # The DECLARED sections, not ``_fc_candidate_sections(FC_HZ)``. Anchoring on
+    # the method under test makes this blind to any UNIFORM change to the
+    # re-cornering — a ``+2`` applied to every section's order compares equal to
+    # itself and passes. That is precisely the 5a-v port failure mode this golden
+    # exists to catch, so the anchor is the preset.
+    configured = flow.sections_by_role(_preset().crossover_regions)
+
+    sections = c._fc_candidate_sections(fc_hz)
+
+    assert set(sections) == set(configured)
+    for role, at_corner in sections.items():
+        assert [s.fc_hz for s in at_corner] == [fc_hz] * len(at_corner)
+        # Shape preserved, corner moved: same count, same slope order, same
+        # direction — everything a ``CrossoverSection`` carries except ``fc_hz``.
+        assert [(s.order, s.highpass) for s in at_corner] == [
+            (s.order, s.highpass) for s in configured[role]
+        ]
+
+    priors = c._fc_candidate_priors(fc_hz, sections)
+    assert priors.crossover_fc_hz == fc_hz
+    lo, hi = priors.candidate_required_band_hz_by_role["woofer"]
+    assert lo == 0.0
+    assert hi == pytest.approx(REQUIRED_BAND_WOOFER_HI_HZ[fc_hz])
+    t_lo, t_hi = priors.candidate_required_band_hz_by_role["tweeter"]
+    assert t_lo == pytest.approx(fc_hz / 2.0)
+    assert t_hi == float("inf")
+    # Carried UNCHANGED, and load-bearing: ``_compose_configured_path_ir``
+    # raises on a PARTIAL prior set, so dropping either would refuse the
+    # composition outright instead of producing a candidate.
+    base = c._measure_priors()
+    assert (
+        priors.configured_polarity_sign_by_role
+        == base.configured_polarity_sign_by_role
+    )
+    assert priors.measurement_protection_response_by_role is not None

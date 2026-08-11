@@ -78,7 +78,6 @@ renders the template. A woofer-repeat level disagreement REUSES
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import logging
 import math
@@ -138,6 +137,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
@@ -6866,73 +6866,53 @@ class CrossoverV2Conductor:
         )
 
     # --- priors per phase ----------------------------------------------------
+    #
+    # Thin argument lists over :mod:`jasper.active_speaker.crossover_v2.priors`,
+    # which owns every one of the WITHHOLDING decisions their docstrings used to
+    # carry. What is left here is this conductor's own reading of its session
+    # state — which is exactly the part that could not move.
 
     def _check_priors(self) -> MeasurementPriors:
-        """CHECK's priors — Fc only, for the MEASURE level solve (#1825).
-
-        CHECK used to run on bare defaults. Its gain solve now scopes each
-        band's SNR requirement by whether that band lies inside the crossover
-        overlap window (an alignment-class decision needs materially more SNR
-        than a magnitude one — see ``program_analysis._band_required_snr_db``),
-        and that window is derived from Fc. Withholding it is not neutral: the
-        solve then applies the ALIGNMENT requirement everywhere, i.e. solves
-        louder, so this prior can only make MEASURE quieter, never louder.
-        Nothing else in ``_analyze_check`` reads priors.
-        """
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+        return _priors.check_priors(fc_hz=self._fc_hz)
 
     def _configured_crossover_transfers(
         self,
     ) -> tuple[dict[str, Any] | None, dict[str, int]]:
-        """``(response_by_role, polarity_sign_by_role)`` for the committed
-        crossover — ONE derivation, two phases. MEASURE consumes it as §4.2's
-        ``C_c``; VERIFY as the candidate's design target for the summed
-        response (R18, #1868). They must be the same filters, or "the
-        measurement matches the design" is about a design nothing emitted.
-        """
-        return (
-            _role_transfers(sections_by_role(self._preset.crossover_regions)),
-            {role: -1 if inverted else 1
-             for role, inverted in role_polarity(self._preset).items()},
-        )
+        return _priors.configured_crossover_transfers(self._preset)
 
     def _measure_priors(self) -> MeasurementPriors:
-        protection = self._measurement_protection_sections_by_role
-        overlap = overlap_band_hz(self._fc_hz)
-        configured_response, configured_polarity = (
-            self._configured_crossover_transfers()
-        )
-        return MeasurementPriors(
-            crossover_fc_hz=self._fc_hz,
-            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
-            # CHECK's measured room floor, carried forward so MEASURE can grade
-            # its own per-driver SNR (issue #1830). Without it
-            # ``program_analysis._driver_response`` skips the verdict entirely
-            # and ``DriverResponse.snr`` is None on every v2 session — a shipped
-            # instrument reading nothing while the evidence to compute it sat
-            # in the same session's check.json. ``None`` only when CHECK never
-            # accepted (no MEASURE can run then) or produced no ambient report,
-            # in which case the verdict stays honestly absent rather than
-            # guessed.
+        return _priors.measure_priors(
+            fc_hz=self._fc_hz,
+            source_preset=self._preset,
+            protection_sections_by_role=self._measurement_protection_sections_by_role,
             ambient_report=self._check_ambient_report,
-            measurement_protection_response_by_role=_role_transfers(protection),
-            configured_crossover_response_by_role=(
-                configured_response if protection is not None else None
-            ),
-            configured_polarity_sign_by_role=(
-                configured_polarity if protection is not None else None
-            ),
-            # §4.2's candidate-required bins: radiating span (what the fit
-            # masks to) union the trim/alignment overlap band, which together
-            # bound everything a candidate consumes. Overlap deliberately
-            # UNCLAMPED — the superset is the safe side for this mask.
-            candidate_required_band_hz_by_role=None if protection is None else {
-                role: (min(radiating_band_hz(sec)[0], overlap[0]),
-                       max(radiating_band_hz(sec)[1], overlap[1]))
-                for role, sec in sections_by_role(
-                    self._preset.crossover_regions).items()
-            },
+            # Derived here rather than there: its producer shares
+            # ``_declared_alignment_delay_range_ms`` with the plausibility gate,
+            # which is not a priors concern.
+            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
         )
+
+    def _lateral_priors(self) -> MeasurementPriors:
+        return _priors.lateral_priors(
+            fc_hz=self._fc_hz, ambient_report=self._check_ambient_report,
+        )
+
+    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
+        return _priors.measure_sweep_bounds(self._measure_program)
+
+    def _verify_priors(self) -> MeasurementPriors:
+        return _priors.verify_priors(
+            fc_hz=self._fc_hz,
+            source_preset=self._preset,
+            predicted_sum=self._measure_predicted_sum,
+            sweep_bounds=self._measure_sweep_bounds(),
+        )
+
+    def _cloud_priors(self) -> MeasurementPriors:
+        return _priors.cloud_priors(fc_hz=self._fc_hz)
+
+    def _entry_baseline_priors(self) -> MeasurementPriors:
+        return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
 
     def _fc_candidate_set(self) -> FcCandidateSet:
         """This session's proposable Fc set, from DECLARATIONS only (R17).
@@ -6968,139 +6948,6 @@ class CrossoverV2Conductor:
             ),
             count=0 if search.band_hz is None else MAX_PROPOSED_FC_CANDIDATES,
         )
-
-    def _lateral_priors(self) -> MeasurementPriors:
-        """Priors for one lateral pose — MEASURE-shaped, deliberately NEUTRAL.
-
-        Everything the anchor gets EXCEPT the configured-path composition maps.
-        That omission is the point of the round: §4.2's composition is
-        ``S_c = sign_c * M * C_c / P`` for ONE candidate, and baking the
-        configured ``C`` in here would make the retained evidence answer for
-        2 kHz alone. So a pose is analyzed as ``M`` and the composition stays
-        where §4.2 puts it — offline, per candidate, in the consumer.
-
-        ``_compose_configured_path_ir`` returns its input untouched iff ALL
-        THREE maps are ``None`` and raises if only some are, so leaving them out
-        is an exact, checked no-op, and the analysis stamps
-        ``configured_path_composed=False`` accordingly. The fitter's own
-        uncomposed-capture rail keeps that from reaching a prescription: a pose
-        is never fitted.
-
-        No ``predicted_sum`` and no alignment bounds, for the cloud's reason
-        plus §4.4's: the anchor solution is HELD FIXED at the sides, so nothing
-        here may be read as a per-pose trim/delay/polarity solve.
-        """
-        return MeasurementPriors(
-            crossover_fc_hz=self._fc_hz,
-            ambient_report=self._check_ambient_report,
-        )
-
-    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
-        """MEASURE's ACTUAL ``(tweeter sweep lo, woofer sweep hi)``, or ``None``s.
-
-        Read off the composed MEASURE program rather than derived from Fc, so
-        every consumer of :func:`overlap_band_hz`'s clamp — VERIFY's tracking
-        comparison and R17's per-candidate scoring band — bounds itself by the
-        frequencies both branches were actually excited at (§5.6). One reader
-        because a second would be a second answer to "what did this session
-        sweep".
-        """
-        if self._measure_program is None:
-            return None, None
-        try:
-            return (
-                self._measure_program.segment("sweep_t").f1_hz,
-                self._measure_program.segment("sweep_w").f2_hz,
-            )
-        except KeyError:
-            return None, None
-
-    def _verify_priors(self) -> MeasurementPriors:
-        tweeter_sweep_lo_hz, woofer_sweep_hi_hz = self._measure_sweep_bounds()
-        # The candidate's own crossover, for the ABSOLUTE claim (R18, #1868).
-        # Unguarded by ``measurement_protection``, unlike MEASURE — which needs
-        # it only as the ``C_c`` half of a de-embedding that cannot run without
-        # ``P``. Here it IS the design target. Safe because that de-embedding
-        # (``_compose_configured_path_ir``, which RAISES on a partial prior
-        # set) is reachable only from ``_analyze_measure``; keep it that way.
-        configured_response, configured_polarity = (
-            self._configured_crossover_transfers()
-        )
-        return MeasurementPriors(
-            crossover_fc_hz=self._fc_hz,
-            predicted_sum=self._measure_predicted_sum,
-            measure_tweeter_sweep_lo_hz=tweeter_sweep_lo_hz,
-            measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
-            configured_crossover_response_by_role=configured_response,
-            configured_polarity_sign_by_role=configured_polarity,
-        )
-
-    def _cloud_priors(self) -> MeasurementPriors:
-        """Priors for a position-group capture — deliberately WITHOUT
-        ``predicted_sum``.
-
-        VERIFY's priors carry the MEASURE-derived prediction so
-        ``_analyze_verify`` can compute the tracking comparator ("did apply do
-        what the model predicted"). A cloud position must not: the mic is
-        OFF the design axis by construction, so measured-vs-predicted
-        divergence there is the spatial variation the cloud exists to sample,
-        not a tracking error. Withholding the prior leaves
-        ``analysis.verify_tracking`` ``None``, so no tracking claim can be
-        made from a capture that cannot support one. The flatness/spec claim
-        needs no prior at all — since PR-5 it is made ONCE per group, on the
-        combined cloud (:func:`assemble_cloud_group_result`), never per
-        position.
-
-        Withholding the candidate's crossover transfers (R18, #1868) is the
-        same decision for the same reason, and is deliberate: a
-        crossover-region ABSOLUTE claim off the design axis would grade the
-        crossover's own lobing — which moves with angle BY DESIGN — as a
-        realization defect (#1868's forensics measured one design-axis defect
-        at a different depth at every cloud position). So the kernel records
-        that claim not-evaluated at every cloud position and the design-axis
-        capture stays its only judge. Do not "fix" this by threading them here.
-        """
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
-
-    def _entry_baseline_priors(self) -> MeasurementPriors:
-        """Priors for #2291's pre-apply capture — the SAME two withholdings
-        :meth:`_cloud_priors` makes, for a different reason.
-
-        Field by field, against :meth:`_verify_priors` (the other consumer of
-        the identical program):
-
-        * ``crossover_fc_hz`` — **kept**. It is the session's declared
-          crossover, not a claim about this capture, and the analyzer uses it
-          to place its bands.
-        * ``predicted_sum`` — **dropped**. VERIFY carries it so
-          ``_analyze_verify`` can compute ``verify_tracking`` ("did apply do
-          what the model predicted"). Nothing has been applied when this
-          capture is taken, so there is no prediction it could be tracking:
-          the prediction describes the graph the household is ABOUT to choose.
-          Passing it would make the analyzer grade the *entry* graph against
-          the *candidate's* model and report the whole intended correction as
-          a realization error. Withholding it leaves
-          ``analysis.verify_tracking`` ``None``, which is what
-          :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
-          already reads as UNAVAILABLE rather than as a pass.
-        * ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` —
-          **dropped**. They exist only to clamp the tracking comparison's
-          graded band, and there is no tracking comparison here.
-        * ``configured_crossover_response_by_role`` /
-          ``configured_polarity_sign_by_role`` — **dropped** (R18, #1868).
-          They let ``_analyze_verify`` make the crossover-region ABSOLUTE claim
-          against the *configured* design. That design is not on the speaker
-          yet, so the claim would grade the entry graph for not being the
-          candidate. The benefit comparison needs no such claim: it reads this
-          capture's own summed response and differences it against the
-          post-apply one.
-
-        What is left is a plain summed-response analysis, which is exactly the
-        input :func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`
-        reduces. Do not thread the withheld priors back in: this capture cannot
-        support any claim they enable.
-        """
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
     # --- journey delegation --------------------------------------------------
 
@@ -8775,6 +8622,14 @@ class CrossoverV2Conductor:
             # Same union as ``_measure_priors``, at THIS candidate's corner:
             # the radiating span the fit masks to, widened by the unclamped
             # overlap band. A superset is the safe side for a required mask.
+            #
+            # **A TWIN, and now a cross-module one** (#2336 gate, N2): the same
+            # formula lives in ``crossover_v2.priors.measure_priors``. It was one
+            # module's two call sites before 5a-iii and is two modules' now, so
+            # the pair can drift without either side looking wrong. Resolving it
+            # belongs to 5a-v, which moves this method: give the union ONE owner
+            # in ``priors`` and have both callers ask for it, rather than
+            # copying the expression a third time.
             candidate_required_band_hz_by_role={
                 role: (min(radiating_band_hz(sec)[0], overlap[0]),
                        max(radiating_band_hz(sec)[1], overlap[1]))
@@ -13570,16 +13425,9 @@ def build_v2_session_spec(
 # --------------------------------------------------------------------------- #
 
 
-def _role_transfers(sections_by_role: Mapping[str, Any] | None) -> dict | None:
-    """Per-role ``freqs -> complex response``, evaluated HOST-side: the kernel
-    may not import this package (``tests/test_correction_boundary_ssot.py``),
-    so it gets a callable, never the ``CrossoverSection`` behind it."""
-    if sections_by_role is None:
-        return None
-    return {
-        role: functools.partial(crossover_response_complex, sections=tuple(sections))
-        for role, sections in sections_by_role.items()
-    }
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.priors`, which owns
+#: it beside the priors that are its heaviest readers (#2291 Phase 5a-iii).
+_role_transfers = _priors.role_transfers
 
 
 async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
