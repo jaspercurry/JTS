@@ -31,7 +31,13 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import round_evidence
-from jasper.active_speaker.crossover_v2.contracts import BenefitStatus
+from jasper.active_speaker.crossover_v2.contracts import (
+    AdoptionOutcome,
+    BenefitStatus,
+    CrossoverV2ContractError,
+    RealizationStatus,
+    SpecStatus,
+)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     BENEFIT_CURVE_MAX_BINS,
     MEASURED_BENEFIT_MARGIN_DB,
@@ -575,6 +581,344 @@ def test_the_two_constants_agree_today_and_the_docstring_says_why():
     assert doc  # the module explains the split; the constant explains the fork
     source = round_evidence.MEASURED_BENEFIT_MARGIN_DB
     assert isinstance(source, float)
+
+
+# --------------------------------------------------------------------------- #
+# 6. the round, composed — evaluate_round and the receipt
+# --------------------------------------------------------------------------- #
+
+
+def _integrity(*, failed=(), not_evaluated=()):
+    """A CaptureIntegrity-shaped double: the two properties the rule reads."""
+    return SimpleNamespace(failed=tuple(failed), not_evaluated=tuple(not_evaluated))
+
+
+def _post(*, tracking_db=1.0, integrity=..., program_id="prog-a"):
+    """A post-apply VERIFY analysis double."""
+    hz = _grid()
+    db = np.sin(np.log10(np.maximum(hz, 1.0)) * 5.0)
+    return SimpleNamespace(
+        program_id=program_id,
+        summed_response=SimpleNamespace(
+            freqs_hz=hz, magnitude_db=db, validity_floor_hz=None
+        ),
+        capture_integrity=_integrity() if integrity is ... else integrity,
+        verify_tracking={"max_db_notch_excluded": tracking_db},
+    )
+
+
+def _flatter(analysis, *, factor: float):
+    """The same capture with its deviation scaled — flatter below 1.0.
+
+    Scaling the deviation is what moves the pooled residual; a constant offset
+    would not, because the evaluator normalizes each curve to its own
+    reference band. So the improved/regressed fixtures below differ in the
+    quantity actually being graded, not in level.
+    """
+    hz = np.asarray(analysis.summed_response.freqs_hz, dtype=float)
+    db = np.asarray(analysis.summed_response.magnitude_db, dtype=float) * factor
+    return SimpleNamespace(
+        program_id=analysis.program_id,
+        summed_response=SimpleNamespace(
+            freqs_hz=hz, magnitude_db=db, validity_floor_hz=None
+        ),
+        capture_integrity=analysis.capture_integrity,
+        verify_tracking=analysis.verify_tracking,
+    )
+
+
+def _baseline_from(analysis, *, graph_fingerprint="entry-graph") -> EntryBaseline:
+    reduced = measured_response_from_analysis(analysis, reference_mark=_MARK)
+    assert reduced is not None
+    return EntryBaseline.from_measurement(
+        reduced,
+        graph_fingerprint=graph_fingerprint,
+        captured_at="2026-08-11T00:00:00Z",
+        artifact_ref="entry_baseline_a01",
+    )
+
+
+def _round(post, baseline, **overrides):
+    kwargs = {
+        "post_analysis": post,
+        "entry_baseline": baseline,
+        "spec_report": None,
+        "tracking": getattr(post, "verify_tracking", None),
+        "realization_tolerance_db": 1.5,
+        "reference_mark": _MARK,
+        "boosted": False,
+        "rollback_available": True,
+    }
+    kwargs.update(overrides)
+    return round_evidence.evaluate_round(**kwargs)
+
+
+def test_an_unusable_capture_short_circuits_and_the_other_three_say_why():
+    """Not computed and discarded — not computed at all.
+
+    ``verification_result`` already collapses the statuses, so a version that
+    graded all four and then overwrote three would produce the same CONTRACT.
+    What it would not produce is honest LOGGING: the discarded verdicts would
+    still be carrying numbers, and the journal would show a benefit that no
+    usable capture supports. The reason strings are the discriminator.
+    """
+    from jasper.active_speaker.crossover_v2.verification import (
+        CAPTURE_INTEGRITY_FAILED,
+    )
+
+    post = _post(integrity=_integrity(failed=("glitch",)))
+    evaluation = _round(post, _baseline_from(_post()))
+
+    assert evaluation.capture.reason == CAPTURE_INTEGRITY_FAILED
+    assert evaluation.realization.reason == CAPTURE_INTEGRITY_FAILED
+    assert evaluation.benefit.reason == CAPTURE_INTEGRITY_FAILED
+    assert evaluation.spec.reason == CAPTURE_INTEGRITY_FAILED
+    assert evaluation.post_residual_db is None
+    assert evaluation.adoption.outcome is not AdoptionOutcome.KEEP
+
+
+def test_a_model_tracking_pass_does_not_override_a_measured_regression():
+    """The 2026-08-10 shape, end to end through the composition.
+
+    Tracking well inside its 1.5 dB tolerance, and a speaker that measurably
+    got worse. The shipped build called that passed; the table calls it a
+    restore, and this asserts the composition really routes both statuses in
+    rather than short-circuiting on the tracking answer.
+    """
+
+    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
+    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
+
+    evaluation = _round(worse_post, flat_baseline)
+
+    assert evaluation.realization.status is RealizationStatus.MATCHED
+    assert evaluation.benefit.status is BenefitStatus.REGRESSED
+    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
+
+
+def _failing_spec_report(analysis):
+    from jasper.active_speaker.flat_spec import evaluate_flat_spec
+
+    hz = np.asarray(analysis.summed_response.freqs_hz, dtype=float)
+    report = evaluate_flat_spec(
+        hz,
+        np.asarray(analysis.summed_response.magnitude_db, dtype=float) * 8.0,
+        np.zeros(hz.size, dtype=bool),
+    )
+    assert report.overall_passed is False
+    return report
+
+
+def test_realized_and_improved_keeps_even_with_a_failing_spec():
+    """"Improved and still out of spec" is a valid keep — #2160's boundary.
+
+    The post-cloud spec verdict is wired in as an ANSWER, not a gate. If it
+    were a gate, a first pass that honestly moved the speaker forward would be
+    thrown away for not being perfect.
+    """
+
+    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
+    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
+
+    evaluation = _round(
+        better_post, rough_baseline, spec_report=_failing_spec_report(better_post)
+    )
+
+    assert evaluation.benefit.status is BenefitStatus.IMPROVED
+    assert evaluation.spec.status is SpecStatus.FAILED
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
+
+
+def test_the_acoustic_grade_survives_a_round_with_no_comparable_baseline():
+    """The attempts ledger and the benefit verdict are different questions.
+
+    The loop differences consecutive ATTEMPTS — its kernel reads only the last
+    two entries on purpose — so a round with no "before" still has an honest
+    absolute grade to bank. Pinning them apart is what stops a missing
+    baseline from silently blanking the ledger.
+    """
+    evaluation = _round(_post(), None)
+
+    assert evaluation.benefit.status is BenefitStatus.INDETERMINATE
+    assert evaluation.benefit.reason == BENEFIT_BASELINE_UNAVAILABLE
+    assert evaluation.post_residual_db is not None
+    assert evaluation.post_residual_bins is not None
+    assert evaluation.post_residual_db > 0.0
+
+
+def test_the_acoustic_grade_is_the_number_the_benefit_verdict_used():
+    """One computation, two readers — never two that can disagree."""
+    baseline = _baseline_from(_flatter(_post(), factor=3.0))
+
+    evaluation = _round(_post(), baseline)
+
+    assert evaluation.benefit.evidence["post_residual_db"] == pytest.approx(
+        evaluation.post_residual_db
+    )
+    assert evaluation.benefit.evidence["n_bins"] == evaluation.post_residual_bins
+
+
+def test_a_restore_the_host_cannot_perform_escalates_it_never_keeps():
+    """No anchor plus a restore verdict is ``recovery_required``, loudly."""
+
+    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
+    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
+
+    evaluation = _round(worse_post, flat_baseline, rollback_available=False)
+
+    assert evaluation.benefit.status is BenefitStatus.REGRESSED
+    assert evaluation.adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED
+    assert evaluation.adoption.reason.startswith(
+        "restore_required_without_rollback_anchor"
+    )
+
+
+def test_a_failed_restore_outranks_every_other_answer():
+
+    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
+    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
+
+    evaluation = _round(better_post, rough_baseline, restore_failed=True)
+
+    # The evidence says keep; the speaker is in neither graph, so it does not.
+    assert evaluation.benefit.status is BenefitStatus.IMPROVED
+    assert evaluation.adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED
+
+
+def test_an_unproven_boost_fails_closed_and_an_unproven_cut_asks():
+    """The modifier's scope, both sides, so neither can be dropped unnoticed."""
+
+    post = _post()
+
+    boosted = _round(post, None, boosted=True)
+    cut_only = _round(post, None, boosted=False)
+
+    assert boosted.benefit.status is BenefitStatus.INDETERMINATE
+    assert boosted.adoption.outcome is AdoptionOutcome.RESTORE
+    assert cut_only.adoption.outcome is AdoptionOutcome.USER_DECISION
+
+
+def test_the_spec_answer_never_changes_the_adoption():
+    """Spec is "any" in every row of the issue's table; pinned by permutation.
+
+    #2160's wire adds an answer to the receipt. If it ever adds a gate, that
+    is a table change with evidence attached — and this test is what makes
+    that a deliberate act rather than a quiet one.
+    """
+    from jasper.active_speaker.flat_spec import evaluate_flat_spec
+
+    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
+    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
+    hz = np.asarray(better_post.summed_response.freqs_hz, dtype=float)
+    reports = [
+        None,
+        _failing_spec_report(better_post),
+        evaluate_flat_spec(hz, np.zeros(hz.size), np.zeros(hz.size, dtype=bool)),
+    ]
+
+    outcomes = {
+        _round(better_post, rough_baseline, spec_report=report).adoption.outcome
+        for report in reports
+    }
+    statuses = {
+        _round(better_post, rough_baseline, spec_report=report).spec.status
+        for report in reports
+    }
+
+    assert len(outcomes) == 1, "spec must not move the adoption"
+    assert len(statuses) == 3, "…while still producing three different answers"
+
+
+def _receipt_kwargs(evaluation, baseline, **overrides):
+    kwargs = dict(
+        round_id="cap_round_1",
+        evaluation=evaluation,
+        entry_baseline=baseline,
+        entry_graph_fingerprint="entry-graph",
+        rollback_anchor={"candidate_fingerprint": "anchor-fp"},
+        proposal_fingerprint="proposal-fp",
+        applied_graph_fingerprint="applied-fp",
+        post_measurement={"program_id": "prog-a"},
+        restore_result=None,
+        evidence_identities={"commanded_delta": "delta-fp"},
+        created_at="2026-08-11T00:05:00Z",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_the_receipt_carries_the_baselines_identity_not_its_curve():
+    """A receipt is a record, not a second copy of the measurement.
+
+    The curve already has two owners that outlive this record (the retained
+    capture and the durable ``verify_priors``). Copying it here would make the
+    receipt large and tie its fingerprint to a decimation choice.
+    """
+    baseline = _baseline_from(_post())
+    evaluation = _round(_post(), baseline)
+
+    receipt = round_evidence.build_round_receipt(
+        **_receipt_kwargs(evaluation, baseline)
+    )
+
+    assert receipt.entry_baseline["program_id"] == baseline.program_id
+    assert receipt.entry_baseline["artifact_ref"] == "entry_baseline_a01"
+    assert receipt.entry_baseline["n_bins"] == len(baseline.curve.hz)
+    assert "freqs_hz" not in receipt.entry_baseline
+    assert "magnitude_db" not in receipt.entry_baseline
+    assert receipt.verification is evaluation.result
+    assert receipt.adoption is evaluation.adoption
+    assert receipt.fingerprint
+
+
+def test_the_receipt_fingerprint_moves_when_a_committed_value_moves():
+    """Otherwise it is a checksum of nothing in particular."""
+    baseline = _baseline_from(_post())
+    evaluation = _round(_post(), baseline)
+    base = _receipt_kwargs(evaluation, baseline)
+
+    reference = round_evidence.build_round_receipt(**base).fingerprint
+    assert round_evidence.build_round_receipt(**base).fingerprint == reference
+
+    for field, changed in (
+        ("round_id", "cap_round_2"),
+        ("entry_graph_fingerprint", "other-graph"),
+        ("proposal_fingerprint", "other-proposal"),
+        ("applied_graph_fingerprint", "other-applied"),
+        ("rollback_anchor", {"candidate_fingerprint": "other-anchor"}),
+        ("post_measurement", {"program_id": "prog-b"}),
+        ("evidence_identities", {"commanded_delta": "other-delta"}),
+        ("created_at", "2026-08-11T00:06:00Z"),
+    ):
+        moved = _receipt_kwargs(evaluation, baseline, **{field: changed})
+        assert (
+            round_evidence.build_round_receipt(**moved).fingerprint != reference
+        ), f"{field} is committed and must reach the fingerprint"
+
+
+def test_a_recovery_required_round_must_record_what_the_restore_did():
+    """The contract's own invariant, reached through the assembler.
+
+    A recovery that cannot say what the restore did is not a receipt — and
+    the assembler must not be a way around that.
+    """
+
+    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
+    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
+    evaluation = _round(worse_post, flat_baseline, restore_failed=True)
+
+    with pytest.raises(CrossoverV2ContractError):
+        round_evidence.build_round_receipt(
+            **_receipt_kwargs(evaluation, flat_baseline, restore_result=None)
+        )
+
+    assert round_evidence.build_round_receipt(
+        **_receipt_kwargs(
+            evaluation,
+            flat_baseline,
+            restore_result={"restored": False, "error": "socket"},
+        )
+    ).fingerprint
 
 
 def test_the_margin_is_positive_and_the_evaluator_accepts_it():

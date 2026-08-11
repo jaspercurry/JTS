@@ -73,8 +73,20 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import numpy as np
 
-from .contracts import CrossoverV2ContractError, ResponseCurve, _text
-from .verification import MeasurementComparand
+from ..flat_spec import FlatSpecReport, evaluate_flat_spec, spec_convergence_residual
+from .contracts import (
+    AdoptionDecision,
+    BenefitStatus,
+    CaptureValidity,
+    CrossoverV2ContractError,
+    RealizationStatus,
+    ResponseCurve,
+    RoundReceipt,
+    SpecStatus,
+    VerificationResult,
+    _text,
+)
+from .verification import MeasurementComparand, Verdict
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Same rule as :mod:`.verification`: ``program_analysis`` is a 5,500-line
@@ -88,7 +100,10 @@ __all__ = [
     "MEASURED_BENEFIT_MARGIN_DB",
     "EntryBaseline",
     "MeasuredResponse",
+    "RoundEvaluation",
     "benefit_comparands",
+    "build_round_receipt",
+    "evaluate_round",
     "measured_response_from_analysis",
 ]
 
@@ -437,3 +452,267 @@ def _comparand(
         curve=measured.curve,
         exclusion_mask=mask,
     )
+
+
+# --------------------------------------------------------------------------
+# one round, graded
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoundEvaluation:
+    """Four verdicts, the contract they compose into, and what to do.
+
+    The four :class:`~.verification.Verdict` objects are kept alongside the
+    collapsed :class:`~.contracts.VerificationResult` on purpose: the contract
+    carries the four *statuses*, and the verdicts carry the numbers each one
+    was read from. The host logs the verdicts (so a support read can see WHY,
+    not only WHAT) and puts the contract on the receipt.
+    """
+
+    capture: Verdict[CaptureValidity]
+    realization: Verdict[RealizationStatus]
+    benefit: Verdict[BenefitStatus]
+    spec: Verdict[SpecStatus]
+    result: VerificationResult
+    adoption: AdoptionDecision
+    #: The post-apply pooled spec residual, lower-is-better, or ``None``.
+    #: Separated out because it has a second consumer: it is the acoustic
+    #: grade :func:`~jasper.active_speaker.attempts_loop.decide_next` differences
+    #: across attempts. One computation, two readers — the benefit verdict and
+    #: the attempts ledger — rather than two that can disagree.
+    post_residual_db: float | None = None
+    post_residual_bins: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verdicts": {
+                "capture": self.capture.to_dict(),
+                "realization": self.realization.to_dict(),
+                "benefit": self.benefit.to_dict(),
+                "spec": self.spec.to_dict(),
+            },
+            "result": self.result.to_dict(),
+            "adoption": self.adoption.to_dict(),
+            "post_residual_db": self.post_residual_db,
+            "post_residual_bins": self.post_residual_bins,
+        }
+
+
+def evaluate_round(
+    *,
+    post_analysis: "ProgramAnalysis | None",
+    entry_baseline: EntryBaseline | None,
+    spec_report: "FlatSpecReport | None",
+    tracking: Mapping[str, Any] | None,
+    realization_tolerance_db: float,
+    reference_mark: str,
+    boosted: bool,
+    rollback_available: bool,
+    restore_failed: bool = False,
+    margin_db: float = MEASURED_BENEFIT_MARGIN_DB,
+) -> RoundEvaluation:
+    """Grade one round: the four questions, then the adoption table.
+
+    The composition #2291 Phase 3b left for its caller, taken here once so
+    every surface that grades a round grades it the same way. It decides
+    nothing the evaluators do not — the table is
+    :func:`~.verification.decide_adoption`'s, the four answers are the four
+    functions', and this adds only the ordering between them.
+
+    **An unusable capture short-circuits, rather than being graded and then
+    overwritten.** :func:`~.verification.verification_result` already collapses
+    the other three statuses when the capture is unusable — but computing them
+    first and discarding them would leave the *logged* evidence claiming a
+    benefit that no usable capture supports. So the other three are not
+    computed at all: they return their no-evidence verdicts carrying the
+    capture's own reason, and what is logged is what was actually decided.
+
+    ``spec_report`` is the post-apply spatial cloud's report when the tier
+    produced one, and ``None`` otherwise (#2160's honest wire: the failure
+    that used to be disclosure-only is now the SPEC verdict's input). It
+    cannot change the adoption — spec is "any" in every row of the issue's
+    table, because a first pass may honestly be improved and out of spec — so
+    routing it in adds an answer to the receipt without adding a gate.
+
+    Args:
+      post_analysis: the post-apply VERIFY capture's analysis.
+      entry_baseline: the pre-apply capture, rehydrated across the stage
+        bridge. ``None`` means the round has no comparable "before" and the
+        benefit is :attr:`~.contracts.BenefitStatus.INDETERMINATE` — which is
+        what every round before this one silently was.
+      tracking: ``ProgramAnalysis.verify_tracking``, the realization
+        comparator's home.
+      realization_tolerance_db: the flow's shipped ``VERIFY_TOLERANCE_DB``.
+        Passed rather than imported so this module holds no threshold the
+        flow already owns.
+      reference_mark: the position identity both captures were taken at.
+      boosted / rollback_available / restore_failed: the adoption modifiers;
+        see :func:`~.verification.decide_adoption` for each one's scope.
+      margin_db: defaults to this module's own
+        :data:`MEASURED_BENEFIT_MARGIN_DB` — the owner supplying its own
+        constant, so there is no call site free to pass a different bar.
+    """
+
+    from .verification import (
+        decide_adoption,
+        evaluate_benefit,
+        evaluate_capture_validity,
+        evaluate_realization,
+        evaluate_spec,
+        verification_result,
+    )
+
+    capture = evaluate_capture_validity(
+        getattr(post_analysis, "capture_integrity", None)
+    )
+    if capture.status is CaptureValidity.UNUSABLE:
+        realization: Any = Verdict(
+            RealizationStatus.UNAVAILABLE, capture.reason, capture.evidence
+        )
+        benefit: Any = Verdict(
+            BenefitStatus.INDETERMINATE, capture.reason, capture.evidence
+        )
+        spec: Any = Verdict(SpecStatus.UNEVALUABLE, capture.reason, capture.evidence)
+        post_residual: tuple[float, int] | None = None
+    else:
+        realization = evaluate_realization(
+            tracking=tracking, tolerance_db=realization_tolerance_db
+        )
+        post = measured_response_from_analysis(
+            post_analysis, reference_mark=reference_mark
+        )
+        before, after = benefit_comparands(
+            baseline=(
+                None if entry_baseline is None else entry_baseline.as_measurement()
+            ),
+            post=post,
+        )
+        benefit = evaluate_benefit(
+            entry_baseline=before, post=after, margin_db=margin_db
+        )
+        spec = evaluate_spec(spec_report)
+        post_residual = (
+            None
+            if after is None
+            else _post_residual(after, benefit_reason=benefit.reason)
+        )
+
+    result = verification_result(
+        capture=capture, realization=realization, benefit=benefit, spec=spec
+    )
+    adoption = decide_adoption(
+        realization=result.realization,
+        benefit=result.benefit,
+        spec=result.spec,
+        boosted=boosted,
+        rollback_available=rollback_available,
+        restore_failed=restore_failed,
+    )
+    return RoundEvaluation(
+        capture=capture,
+        realization=realization,
+        benefit=benefit,
+        spec=spec,
+        result=result,
+        adoption=adoption,
+        post_residual_db=None if post_residual is None else post_residual[0],
+        post_residual_bins=None if post_residual is None else post_residual[1],
+    )
+
+
+def _post_residual(
+    post: MeasurementComparand, *, benefit_reason: str
+) -> tuple[float, int] | None:
+    """The post side's own pooled residual, for the attempts ledger.
+
+    Deliberately independent of whether a *comparison* was possible: the
+    attempts loop differences consecutive ATTEMPTS, not this round's before
+    and after (its kernel reads only the last two entries, because a fixed
+    early baseline accumulates drift comparable to the measurement floor
+    within ~15 attempts). So a round with no comparable entry baseline still
+    has an honest acoustic grade to bank — the benefit verdict is
+    indeterminate, and the ledger is not.
+
+    Computed through the same shipped evaluator the benefit verdict uses, so
+    the two numbers cannot disagree about what "the post-apply residual" is.
+    """
+
+    del benefit_reason  # the reason belongs to the verdict, not to the grade
+    try:
+        report = evaluate_flat_spec(
+            np.asarray(post.curve.hz, dtype=np.float64),
+            np.asarray(post.curve.db, dtype=np.float64),
+            np.asarray(post.exclusion_mask, dtype=bool),
+        )
+    except ValueError:
+        return None
+    residual = spec_convergence_residual(report)
+    if not residual.evaluable or residual.rms_db is None:
+        return None
+    return float(residual.rms_db), int(residual.n_bins)
+
+
+def build_round_receipt(
+    *,
+    round_id: str,
+    evaluation: RoundEvaluation,
+    entry_baseline: EntryBaseline | None,
+    entry_graph_fingerprint: str,
+    rollback_anchor: Mapping[str, Any] | None,
+    proposal_fingerprint: str,
+    applied_graph_fingerprint: str,
+    post_measurement: Mapping[str, Any] | None,
+    restore_result: Mapping[str, Any] | None,
+    evidence_identities: Mapping[str, Any] | None,
+    created_at: str,
+) -> RoundReceipt:
+    """Assemble #2291's immutable round receipt from the round's own facts.
+
+    A named assembler rather than a host-side literal, for the reason the
+    contract exists at all: a receipt built by hand at a call site is a
+    receipt whose field set can quietly diverge from the issue's list.
+
+    **Identities, not payloads.** ``entry_baseline`` on the receipt is the
+    baseline's *identity* — program, mark, graph fingerprint, when, and the
+    retained artifact it can be re-read from — not its 512-point curve. The
+    curve already lives in two places that outlive this record (the retained
+    capture and the durable ``verify_priors``), and copying it here would make
+    the receipt large, make its fingerprint move with a decimation change, and
+    give the curve a third owner. Same rule for ``post_measurement``.
+
+    The commanded delta has no field of its own on
+    :class:`~.contracts.RoundReceipt`; its identity rides in
+    ``evidence_identities``, which is where the issue's "evidence/version
+    identities" belong.
+    """
+
+    return RoundReceipt(
+        round_id=round_id,
+        entry_graph_fingerprint=entry_graph_fingerprint,
+        rollback_anchor=rollback_anchor,
+        entry_baseline=(
+            None if entry_baseline is None else _baseline_identity(entry_baseline)
+        ),
+        proposal_fingerprint=proposal_fingerprint,
+        applied_graph_fingerprint=applied_graph_fingerprint,
+        post_measurement=post_measurement,
+        verification=evaluation.result,
+        adoption=evaluation.adoption,
+        restore_result=restore_result,
+        evidence_identities=evidence_identities,
+        created_at=created_at,
+    )
+
+
+def _baseline_identity(baseline: EntryBaseline) -> dict[str, Any]:
+    return {
+        "kind": ENTRY_BASELINE_KIND,
+        "program_id": baseline.program_id,
+        "reference_mark": baseline.reference_mark,
+        "graph_fingerprint": baseline.graph_fingerprint,
+        "captured_at": baseline.captured_at,
+        "artifact_ref": baseline.artifact_ref,
+        "n_bins": len(baseline.curve.hz),
+        "n_excluded": sum(1 for flag in baseline.excluded if flag),
+    }
