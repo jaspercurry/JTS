@@ -27,9 +27,12 @@
 //!
 //! ## Mix math
 //!
-//! Inputs are S16_LE interleaved stereo. We accumulate into an i32
-//! scratch buffer (using `saturating_add`) so simultaneous full-scale
-//! inputs don't wrap, then clamp back to i16 for the output. Matches
+//! Renderer lane inputs are S16_LE interleaved stereo; the USB DIRECT lane
+//! additionally carries S32 on a box whose output wire resolves wide (see
+//! [`ProgramWidth`]). We accumulate into an **i64** scratch buffer (using
+//! `saturating_add`) so simultaneous full-scale inputs don't wrap — with real
+//! headroom above full scale at either numeric scale — then clamp back to i16
+//! for the output. Matches
 //! ALSA dmix's clip behavior — audio sounds identical to today during
 //! the Tier 2A transition (saturating clipping is louder than scaled
 //! averaging when sources are simultaneous, but mux normally enforces
@@ -754,6 +757,81 @@ pub(crate) fn ring_open_error(
         );
         anyhow::Error::new(error)
     }
+}
+
+/// The three facts `program_width_disagreement` cross-checks — named so the
+/// call site cannot transpose two booleans silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProgramWidthAudit {
+    /// The width the mixer resolved from config and will run every stage at.
+    pub declared: ProgramWidth,
+    /// Whether the OUTPUT the mixer is about to publish through is a wide ring
+    /// (its own attached header, not config).
+    pub output_is_wide: bool,
+    /// Whether ANY constructed lane actually allocated a spine-scale period
+    /// buffer — the lane-side half of the width, observed rather than assumed.
+    pub any_lane_is_wide: bool,
+}
+
+/// Cross-check the program width against BOTH things that must agree with it,
+/// returning the CONFIG-CLASS error to fail construction with, or `None`.
+///
+/// # The two axes
+///
+/// The declared width is one derivation ([`ProgramWidth::from_config`]), but it
+/// is consumed in two places that could each drift from it independently:
+///
+/// * the OUTPUT — the ring publishes from its own attached header, and
+///   `fill_wide_ring_payload` keys off that header rather than off
+///   `program_width`;
+/// * the LANES — `open_direct_input` decides at construction whether to
+///   allocate a spine-scale period buffer, and the mixer reads exactly that
+///   allocation (`read_buf_wide.is_empty()`) to pick a lane's sum entry.
+///
+/// Neither can legitimately differ from the declared width, and the lane axis in
+/// particular is guarded by a pure helper with its own test
+/// ([`lane_wants_spine_buffer`]). But "cannot" is worth a check rather than an
+/// assumption, because what it guards is a lane contributing at the wrong
+/// numeric scale — one source 96 dB louder than the rest of the mix. The
+/// `debug_assert` in `mix_into_wide` states the same contract but is compiled
+/// OUT of the release build the Pi runs, so it is a developer aid, not this.
+///
+/// # Why the error carries the config-class marker
+///
+/// A width disagreement is permanent: nothing about restarting changes which
+/// wire the box resolved or which buffers its lanes allocated. Without the
+/// [`crate::ConfigClassError`] marker this error would reach `main` as an
+/// ordinary failure, the unit would take the `Restart=on-failure` ladder, and
+/// five starts in five minutes would hit `StartLimitAction=reboot` — the exact
+/// shape that crash-looped `jasper-outputd` into three Pi reboots on
+/// 2026-06-11. With the marker, `park_on_config_class` exits 78 and the unit
+/// parks visibly instead.
+///
+/// Extracted rather than left inline for the reason
+/// [`ring_open_error`]'s own doc gives: `Mixer::new` cannot be constructed
+/// without ALSA, so a decision left in its body is unreachable from a
+/// hardware-free test — which is how the over-wide marker shipped.
+pub(crate) fn program_width_disagreement(audit: ProgramWidthAudit) -> Option<anyhow::Error> {
+    let declared_wide = matches!(audit.declared, ProgramWidth::Wide);
+    if declared_wide == audit.output_is_wide && declared_wide == audit.any_lane_is_wide {
+        return None;
+    }
+    warn!(
+        "event=fanin.width_disagreement declared_wide={} output_wide={} lane_wide={} \
+         — refusing to mix lanes at mismatched numeric scales",
+        declared_wide, audit.output_is_wide, audit.any_lane_is_wide,
+    );
+    Some(
+        anyhow::anyhow!(
+            "fan-in program width disagreement: declared wide={} but the attached ring \
+             header says wide={} and the constructed lanes say wide={} — refusing to mix \
+             lanes at mismatched numeric scales",
+            declared_wide,
+            audit.output_is_wide,
+            audit.any_lane_is_wide,
+        )
+        .context(crate::ConfigClassError),
+    )
 }
 
 pub struct Mixer {
@@ -1705,25 +1783,16 @@ impl Mixer {
             }
             _ => Vec::new(),
         };
-        // FAIL CLOSED on a width disagreement. The lanes above were built (ring
-        // width, render width, wide read buffer) from the CONFIG's resolved
-        // wire; the ring below publishes from its own ATTACHED header. Those two
-        // cannot legitimately differ — `create_or_attach` validates the header
-        // field-by-field against the geometry built from this same config — but
-        // "cannot" is worth an assertion rather than an assumption, because the
-        // failure it guards is a lane contributing at the wrong numeric scale,
-        // i.e. one source 96 dB louder than the rest of the mix. Refusing to
-        // construct is the only safe answer; there is no partial mode to
-        // degrade to.
+        // FAIL CLOSED on a width disagreement, across BOTH axes (see
+        // `program_width_disagreement`).
         let output_is_wide = matches!(&output, Output::Ring(ring) if ring.wire_is_wide());
-        if output_is_wide != config.program_wire_is_wide() {
-            anyhow::bail!(
-                "fan-in program width disagreement: config resolved wire_is_wide={} \
-                 but the attached ring header says wire_is_wide={} — refusing to mix \
-                 lanes at mismatched numeric scales",
-                config.program_wire_is_wide(),
-                output_is_wide,
-            );
+        let any_lane_is_wide = inputs.iter().any(|i| !i.read_buf_wide.is_empty());
+        if let Some(error) = program_width_disagreement(ProgramWidthAudit {
+            declared: program_width,
+            output_is_wide,
+            any_lane_is_wide,
+        }) {
+            return Err(error);
         }
         Ok(Self {
             inputs,
@@ -2167,9 +2236,13 @@ impl Mixer {
             }
             Output::Ring(ring) => {
                 // S32LE wire only: build the wide slot payload from the SAME
-                // post-duck post-TTS sum_buf, left-justified. `output_buf`
-                // above is untouched, so the mirror's bytes are the same on
-                // both wires. The ring's own attached header is the ONE
+                // post-duck post-TTS sum_buf. NO scale change happens here —
+                // the `<< 16` that used to left-justify at this point now
+                // happens per lane, in `mix_into`'s Wide arm, which is the site
+                // a scale bug would be introduced at. All that is left here is
+                // the i64→i32 saturation and the explicit little-endian order.
+                // `output_buf` above is untouched, so the mirror's bytes are the
+                // same on both wires. The ring's own attached header is the ONE
                 // predicate here — the same `wire_is_wide()` that decides which
                 // payload `write_ring_period` publishes — so the fill and the
                 // publish cannot disagree about the wire.
@@ -2925,7 +2998,15 @@ fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
 ///
 /// Width-agnostic on purpose: a linear gain commutes with the promotion, so the
 /// `f32` multiply and the i32-range clamp are the SAME operation at either
-/// scale, and the narrow path's bytes are untouched. The `f32` mantissa is 24
+/// scale, and the narrow path's bytes are untouched.
+///
+/// The clamp rails are `i32`, not `i64`, on what is now an `i64` accumulator.
+/// That is deliberate and currently unreachable: a duck only ever attenuates
+/// (`gain <= 1.0`), so it cannot lift a sum toward the `i64` rails, and the sum
+/// is saturated into the `i32` spine range at every consumer anyway. Widening
+/// the gain stages — rails included — belongs to the TTS/earcon/gain tail of
+/// U2, which owns gain width; changing the arithmetic here would move the
+/// narrow path's bytes for no present benefit. The `f32` mantissa is 24
 /// bits, so at spine scale the product carries ~24 of the sum's 32 bits — a
 /// −138 dBFS floor on a ducked wide program, not a level error. Making the
 /// gain stages themselves wide is the next rung's work (the TTS/earcon/gain
@@ -3450,6 +3531,24 @@ fn open_input(
     })
 }
 
+/// Whether the USB DIRECT lane allocates a spine-scale period buffer — the ONE
+/// decision that makes a lane wide.
+///
+/// The DIRECT lane is the only lane that can be spine-scale, and only on a wide
+/// wire: the gadget capture is already `S32_LE` at `readi`, so on a wide box its
+/// period never passes through i16 at all. On a narrow box the buffer stays
+/// empty and the lane reads, resamples, and mixes exactly as before.
+///
+/// A one-line pure function on purpose. Non-empty `read_buf_wide` is not merely
+/// a buffer — it is the lane's OWN width switch, read by the drain (which side
+/// of the capture fork), by the render (which `render_period`), and by the sum
+/// (which entry). Inverting it points every one of those at the wrong scale at
+/// once, so the decision earns a test that a pure helper makes possible and an
+/// inline `if` on a `&Config` does not.
+fn lane_wants_spine_buffer(program_wire_is_wide: bool) -> bool {
+    program_wire_is_wide
+}
+
 /// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
 /// bridge's proven envelope (C1); on failure the lane starts `Absent` and will
 /// render silence with a bounded reopen retry (C3) — a gadget-absent box never
@@ -3508,11 +3607,7 @@ fn open_direct_input(
         }
     };
     let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
-    // The ONLY lane that can be spine-scale, and only on a wide wire: the gadget
-    // capture is already S32_LE at `readi`, so on a wide box its period never
-    // passes through i16 at all. On a narrow box this stays empty and the lane
-    // reads, resamples, and mixes exactly as before.
-    let read_buf_wide = if config.program_wire_is_wide() {
+    let read_buf_wide = if lane_wants_spine_buffer(config.program_wire_is_wide()) {
         vec![0i32; period_samples]
     } else {
         Vec::new()
@@ -6470,7 +6565,7 @@ mod tests {
             let raw = &gadget[*phase * CH..];
             let mut narrowed = vec![0i16; raw.len()];
             assert!(jasper_resampler::convert_s32_to_s16(raw, &mut narrowed));
-            direct_capture::push_capture_chunk(Some(lane), false, raw, &narrowed);
+            direct_capture::push_capture_chunk(Some(lane), false, raw, Some(&narrowed));
             *phase += frames;
         };
         feed(
@@ -6532,8 +6627,8 @@ mod tests {
 
         let mut narrow_lane = build();
         let mut wide_lane = build();
-        direct_capture::push_capture_chunk(Some(&mut narrow_lane), false, &raw, &narrowed);
-        direct_capture::push_capture_chunk(Some(&mut wide_lane), true, &raw, &narrowed);
+        direct_capture::push_capture_chunk(Some(&mut narrow_lane), false, &raw, Some(&narrowed));
+        direct_capture::push_capture_chunk(Some(&mut wide_lane), true, &raw, None);
 
         let mut narrow_out = vec![0i16; PERIOD as usize * CH];
         let mut wide_out = vec![0i32; PERIOD as usize * CH];
@@ -6556,7 +6651,7 @@ mod tests {
         );
         // A `None` resampler is a silent no-op, not a panic — the lane can be
         // Absent with no resampler built.
-        direct_capture::push_capture_chunk(None, false, &raw, &narrowed);
+        direct_capture::push_capture_chunk(None, false, &raw, Some(&narrowed));
     }
 
     /// Printer for [`the_narrow_direct_route_is_byte_identical_to_its_committed_golden`]'s
@@ -6580,5 +6675,72 @@ mod tests {
     fn the_program_width_maps_the_one_resolved_wire_boolean() {
         assert_eq!(ProgramWidth::from_wire_is_wide(true), ProgramWidth::Wide);
         assert_eq!(ProgramWidth::from_wire_is_wide(false), ProgramWidth::Narrow);
+    }
+
+    // ---- SF-B / SF-C: the width cross-check and the lane's width switch ----
+
+    /// SF-C: the ONE decision that makes a lane spine-scale. Inverting it points
+    /// the capture fork, the render, and the sum entry at the wrong scale
+    /// simultaneously, and the `debug_assert` in `mix_into_wide` cannot catch it
+    /// on the Pi — the release profile compiles debug assertions out. So the
+    /// decision is pinned here, where a mutation has to fail.
+    #[test]
+    fn only_a_wide_wire_gives_a_lane_a_spine_scale_buffer() {
+        assert!(lane_wants_spine_buffer(true));
+        assert!(!lane_wants_spine_buffer(false));
+    }
+
+    /// SF-B/SF-C: agreement across BOTH axes passes, at either width.
+    #[test]
+    fn a_coherent_program_width_constructs() {
+        assert!(program_width_disagreement(ProgramWidthAudit {
+            declared: ProgramWidth::Narrow,
+            output_is_wide: false,
+            any_lane_is_wide: false,
+        })
+        .is_none());
+        assert!(program_width_disagreement(ProgramWidthAudit {
+            declared: ProgramWidth::Wide,
+            output_is_wide: true,
+            any_lane_is_wide: true,
+        })
+        .is_none());
+    }
+
+    /// SF-B: EVERY disagreement, on EITHER axis, in EITHER direction, fails
+    /// construction — and does so as CONFIG-CLASS.
+    ///
+    /// The marker is the load-bearing half. Without it the error reaches `main`
+    /// as an ordinary failure, the unit takes `Restart=on-failure`, and five
+    /// starts in five minutes reach `StartLimitAction=reboot` — a permanent,
+    /// unrepairable-by-restarting condition rebooting the Pi in a loop, which is
+    /// exactly what happened to `jasper-outputd` on 2026-06-11. Asserting only
+    /// "it returns Some" would pass with the marker deleted.
+    #[test]
+    fn every_program_width_disagreement_parks_as_config_class() {
+        let cases = [
+            // (declared, output_is_wide, any_lane_is_wide)
+            (ProgramWidth::Narrow, true, false),
+            (ProgramWidth::Narrow, false, true),
+            (ProgramWidth::Narrow, true, true),
+            (ProgramWidth::Wide, false, true),
+            (ProgramWidth::Wide, true, false),
+            (ProgramWidth::Wide, false, false),
+        ];
+        for (declared, output_is_wide, any_lane_is_wide) in cases {
+            let error = program_width_disagreement(ProgramWidthAudit {
+                declared,
+                output_is_wide,
+                any_lane_is_wide,
+            })
+            .unwrap_or_else(|| {
+                panic!("{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must fail")
+            });
+            assert!(
+                error.downcast_ref::<crate::ConfigClassError>().is_some(),
+                "{declared:?}/out={output_is_wide}/lane={any_lane_is_wide} must carry the \
+                 config-class marker, or a permanent fault reboot-loops the Pi",
+            );
+        }
     }
 }

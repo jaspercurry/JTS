@@ -52,9 +52,14 @@
 //! S16 producer pushes via [`AudioRing::push_interleaved_narrow`] and narrows
 //! back with [`spine_acc_to_i16`], a wide one pushes [`AudioRing::push_interleaved`]
 //! and rounds with [`clamp_i32`]. The narrow round trip is bit-transparent —
-//! [`SPINE_SCALE_F64`] explains why, and `golden_vector_is_stable` proves it
-//! end to end. [`BlockResampler`] and [`resample_i16`] keep their `i16`-in,
-//! `i16`-out signatures on top of that.
+//! [`SPINE_SCALE_F64`] explains why, `spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly`
+//! pins the arithmetic, and the END-TO-END proof is jasper-fanin's
+//! `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`, whose
+//! expectations were captured from the pre-change code and are asserted exactly
+//! over a whole period of the shipping route. (`golden_vector_is_stable` here is
+//! a 4-frame drift tripwire for this crate's own math, not that proof.)
+//! [`BlockResampler`] and [`resample_i16`] keep their `i16`-in, `i16`-out
+//! signatures on top of that.
 //!
 //! # The capture-follower ratio convention
 //!
@@ -991,8 +996,10 @@ impl BlockResampler {
                 // The ring is spine-scale, so the accumulator is too: narrow
                 // back with the ONE historical rounding. Input widened by an
                 // exact power of two and divided back out is bit-identical to
-                // the pre-spine i16 ring — `golden_vector_is_stable` is the
-                // empirical proof of that argument.
+                // the pre-spine i16 ring — see [`SPINE_SCALE_F64`] for why, and
+                // jasper-fanin's
+                // `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`
+                // for the exact whole-period proof on the shipping route.
                 out.push(spine_acc_to_i16(
                     self.table.interpolate(&self.ring, pos, channel),
                 ));
@@ -1637,8 +1644,12 @@ mod tests {
     /// Asserted directly on the arithmetic (`spine_acc_to_i16(acc * 2^16) ==
     /// clamp_i16(acc)`) across the interesting magnitudes, INCLUDING the
     /// half-step values where a rounding-mode difference would show, and both
-    /// saturation rails. `golden_vector_is_stable` is the end-to-end half of
-    /// the same claim.
+    /// saturation rails. The end-to-end half of the same claim is jasper-fanin's
+    /// `the_narrow_direct_route_is_byte_identical_to_its_committed_golden` —
+    /// exact, whole-period, and on the shipping route. `golden_vector_is_stable`
+    /// is a 4-frame drift tripwire and was never that proof: before it was
+    /// tightened to exact equality, a floor-rounding mutant of
+    /// [`spine_acc_to_i16`] passed it.
     #[test]
     fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
         let accs = [
@@ -2230,9 +2241,19 @@ mod tests {
         for (i, &(idx, l, r)) in GOLDEN_1_0001_SPOT.iter().enumerate() {
             let got_l = out[idx * 2];
             let got_r = out[idx * 2 + 1];
-            assert!(
-                (got_l as i32 - l as i32).abs() <= 1 && (got_r as i32 - r as i32).abs() <= 1,
-                "golden spot {i} (frame {idx}) drift: got ({got_l},{got_r}) want ({l},{r})"
+            // EXACT. The ±1 tolerance this used to carry existed to let a
+            // second implementation (the since-deleted C++/usbsink mirror)
+            // agree "at the LSB"; with one implementation left, a one-LSB
+            // allowance only hides drift. It hid a real one: a floor-rounding
+            // mutant of `spine_acc_to_i16` passed this test, which is why the
+            // bit-transparency claim now cites
+            // `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`
+            // — an exact, whole-period pin on the shipping route — and this
+            // stays what it is, a 4-frame in-crate tripwire for math drift.
+            assert_eq!(
+                (got_l, got_r),
+                (l, r),
+                "golden spot {i} (frame {idx}) drift"
             );
         }
     }

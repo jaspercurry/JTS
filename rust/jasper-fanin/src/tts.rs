@@ -2850,4 +2850,76 @@ mod tests {
         let _ = mixer.prepare_period();
         assert!(!mixer.content_meter_paused);
     }
+
+    /// SF-A: THE TTS WIDE-SCALE BRIDGE. Every other test in this file mixes at
+    /// `Narrow`, so before this the `Wide` arm of `mix_period`'s sum entry had
+    /// no coverage at all — replacing `widen_i16_to_i32(gained)` with `gained`
+    /// left the whole suite green while a wide box would have spoken 96 dB under
+    /// its own program.
+    ///
+    /// The assertion is the bridge's actual contract, stated as an identity
+    /// rather than as a magic number: the SAME queued audio, mixed at both
+    /// widths from identical mixer state, must come out related by exactly
+    /// `widen_i16_to_i32` — the shared primitive — sample for sample. That kills
+    /// a dropped promotion, a wrong shift, and a gain applied on only one arm,
+    /// without re-deriving what the assistant's gain should be (which the
+    /// loudness tests above already own).
+    #[test]
+    fn tts_enters_a_wide_sum_at_the_promoted_scale_and_a_narrow_one_unchanged() {
+        // One mixer per width, built and driven identically, so the only
+        // difference between the two runs is the ProgramWidth argument.
+        let run = |width: crate::mixer::ProgramWidth| -> Vec<i64> {
+            let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+            let mut mixer = TtsMixer::new(TtsInput {
+                rx,
+                flush_rx,
+                metrics: metrics.clone(),
+                max_pending_frames: 48_000,
+                program_duck_db: -25.0,
+                cue_duck_db: -6.0,
+                assistant_loudness: AssistantLoudnessConfig::default(),
+                assistant_reference: None,
+                assistant_reference_tx: None,
+            });
+            tx.send(QueuedTtsCommand {
+                epoch: 0,
+                command: TtsCommand::Audio(vec![10_000, -10_000, 4_321, -4_321]),
+            })
+            .unwrap();
+            let mut sum = vec![0i64; 4];
+            assert!(mixer.prepare_period());
+            mixer.mix_period(&mut sum, width);
+            drop(flush_tx);
+            sum
+        };
+
+        let narrow = run(crate::mixer::ProgramWidth::Narrow);
+        let wide = run(crate::mixer::ProgramWidth::Wide);
+
+        // The bridge must actually have carried audio — an all-zero pair would
+        // satisfy the identity below vacuously.
+        assert!(
+            narrow.iter().any(|&s| s != 0),
+            "the narrow run must produce audible samples for this test to mean anything"
+        );
+
+        for (i, (&n, &w)) in narrow.iter().zip(wide.iter()).enumerate() {
+            let promoted = jasper_resampler::widen_i16_to_i32(
+                i16::try_from(n).expect("a narrow-scale TTS contribution fits in i16"),
+            ) as i64;
+            assert_eq!(
+                w, promoted,
+                "sample {i}: a wide sum must receive the narrow contribution promoted \
+                 by widen_i16_to_i32, not the raw i16 value",
+            );
+            // Stated as the failure it guards: dropping the promotion leaves the
+            // assistant 96 dB (2^16) under the program it speaks over.
+            if n != 0 {
+                assert_ne!(
+                    w, n,
+                    "sample {i}: the Wide arm must not pass the i16 through"
+                );
+            }
+        }
+    }
 }

@@ -331,16 +331,13 @@ pub(super) fn read_direct_and_render(
         // Keep the narrow buffer digitally silent on a wide lane so nothing
         // downstream can read a stale i16 period from it.
         input.read_buf.fill(0);
-        let mut wide_buf = std::mem::take(&mut input.read_buf_wide);
-        let frames = match input.resampler.as_mut() {
-            Some(r) => r.render_period_wide(&mut wide_buf),
+        match input.resampler.as_mut() {
+            Some(r) => r.render_period_wide(&mut input.read_buf_wide),
             None => {
-                wide_buf.fill(0);
+                input.read_buf_wide.fill(0);
                 0
             }
-        };
-        input.read_buf_wide = wide_buf;
-        frames
+        }
     };
     input.direct = Some(direct);
     real_frames
@@ -531,11 +528,13 @@ fn drain_direct_capture(
                     }
                     tap.capture_frames_cursor = tap.capture_frames_cursor.saturating_add(n as u64);
                     input.frames_read.fetch_add(n as u64, Ordering::Relaxed);
+                    // `Some` exactly when the view above was computed.
+                    let narrow_view = (armed || !wide).then(|| &narrow_scratch[..got] as &[i16]);
                     push_capture_chunk(
                         input.resampler.as_mut(),
                         wide,
                         &scratch[..got],
-                        &narrow_scratch[..got],
+                        narrow_view,
                     );
                     remaining = remaining.saturating_sub(n);
                     read_budget_remaining = read_budget_remaining.saturating_sub(n);
@@ -583,22 +582,33 @@ fn drain_direct_capture(
 ///
 /// Extracted from the drain loop so that contract is reachable from a
 /// hardware-free test: the loop around it needs an open ALSA capture, this does
-/// not. `narrow` must be the `convert_s32_to_s16` of `raw` and the same length;
-/// on the wide route it is ignored (and, when the tap is disarmed, never even
-/// computed).
+/// not.
+///
+/// `narrow` is `Some` exactly when a narrowed view of this chunk was actually
+/// computed — always on the narrow route, and on the wide route only while the
+/// tap is armed. It is an `Option` rather than a slice the wide arm quietly
+/// ignores because those are two different facts: "a narrow view exists and I
+/// am not using it" and "no narrow view was computed" would otherwise read the
+/// same at this signature, and only one of them is true on a disarmed wide lane.
+/// When `Some`, it MUST be the `convert_s32_to_s16` of `raw`, same length.
 pub(super) fn push_capture_chunk(
     resampler: Option<&mut LaneResampler>,
     wide: bool,
     raw: &[i32],
-    narrow: &[i16],
+    narrow: Option<&[i16]>,
 ) {
-    debug_assert_eq!(raw.len(), narrow.len());
+    debug_assert!(narrow.map_or(true, |n| n.len() == raw.len()));
     let Some(r) = resampler else {
         return;
     };
     if wide {
         r.push_input_wide(raw);
     } else {
+        // The narrow route always computes the view before calling.
+        let Some(narrow) = narrow else {
+            debug_assert!(false, "the narrow route must supply its narrowed view");
+            return;
+        };
         r.push_input(narrow);
     }
 }

@@ -353,25 +353,44 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ): (
         "Numeric-scale invariant on mix_into_wide (U2 / #2223): a lane whose "
         "period is i32 spine-scale may only be added to a spine-scale sum. "
-        "The width is resolved ONCE per run from the box's wire and is what "
-        "decides both which buffer the lane renders into and which sum entry "
-        "the mixer calls, so a mismatch is a wiring bug in the daemon's own "
-        "code, not a runtime condition external input can produce. It is "
-        "stated as an assert because the failure it names is silent and "
-        "severe -- one source contributing 96 dB louder than the rest of the "
-        "mix. Mixer::new additionally FAILS CLOSED on the same disagreement, "
-        "so a release build refuses to start rather than relying on this."
+        "A mismatch is a wiring bug in the daemon's own code, not a runtime "
+        "condition external input can produce, and it is stated as an assert "
+        "because the failure it names is silent and severe -- one source "
+        "contributing 96 dB louder than the rest of the mix. What actually "
+        "prevents it is not this assert (the release profile compiles debug "
+        "assertions out): the width is resolved ONCE, from one pure predicate "
+        "(Config::program_wire_is_wide -> ProgramWidth::from_config), and the "
+        "same value decides the lane's buffer (lane_wants_spine_buffer, unit-"
+        "tested) and the sum entry. Mixer::new then cross-checks that single "
+        "derivation against BOTH consumers -- the ring's attached header and "
+        "the lanes' actual allocations -- in program_width_disagreement, and "
+        "refuses to construct on any disagreement. This assert is the "
+        "developer-run echo of that check, not the mechanism."
     ),
     (
         "jasper-fanin/src/mixer/direct_capture.rs",
-        "raw.len(), narrow.len()",
+        "narrow.map_or(true, |n| n.len() == raw.len())",
     ): (
         "Buffer-sizing invariant on push_capture_chunk (U2 / #2223), the same "
         "shape as the mixer's mix_into/saturate_to_i16 entries above: its one "
         "production caller passes the two views of a single just-read chunk "
         "(scratch[..got] and narrow_scratch[..got]) built from the same got, "
-        "so the lengths cannot diverge at runtime; the debug_assert states "
-        "the relationship for a developer run."
+        "so the lengths cannot diverge at runtime. `narrow` is None exactly "
+        "when no narrowed view was computed (a wide lane with the tap "
+        "disarmed), which the map_or default admits; the debug_assert states the "
+        "relationship for a developer run."
+    ),
+    (
+        "jasper-fanin/src/mixer/direct_capture.rs",
+        "the narrow route must supply its narrowed view",
+    ): (
+        "Routing invariant on push_capture_chunk's narrow arm (U2 / #2223): "
+        "the caller computes the narrowed view whenever `armed || !wide`, so "
+        "on the narrow route it is always Some. Deliberately a debug_assert "
+        "next to an early RETURN rather than an unwrap: in a release build "
+        "this degrades to dropping one already-read chunk (the resampler "
+        "underfills and renders silence, and the lane recovers on the next "
+        "period) instead of aborting the audio daemon over a wiring bug."
     ),
     (
         "jasper-fanin/src/mixer.rs",

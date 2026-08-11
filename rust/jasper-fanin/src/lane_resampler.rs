@@ -3793,6 +3793,14 @@ mod tests {
             wide.unlock_count.load(Ordering::Relaxed),
             narrow.unlock_count.load(Ordering::Relaxed),
         );
+        // ABSOLUTE anchors, so the equalities above cannot pass vacuously by
+        // both routes simply never having done anything: starvation must really
+        // have unlocked them, and it must have left them unlocked.
+        assert!(
+            wide.unlock_count.load(Ordering::Relaxed) > 0,
+            "starvation must actually have unlocked the lanes"
+        );
+        assert!(!wide.is_locked(), "a starved lane must end unlocked");
     }
 
     /// An S16 signal carried on the WIDE route (widened at ingest rather than at
@@ -3828,12 +3836,15 @@ mod tests {
             assert_eq!(narrow.render_period(&mut narrow_out), PERIOD as usize);
         }
         for (i, (&w, &n)) in wide_out.iter().zip(narrow_out.iter()).enumerate() {
-            // The wide render rounds at the i32 rails and the narrow one at the
-            // i16 rails, so they agree to within the half-LSB the second round
-            // costs — one i16 step, i.e. 2^16 at spine scale.
+            // The wide render rounds the accumulator at the i32 rails; the
+            // narrow one divides by 2^16 and rounds at the i16 rails. So they
+            // can differ by at most the HALF-step that second round discards —
+            // 2^15 at spine scale, plus one for the tie direction. A 2^16 bound
+            // would tolerate a whole i16 LSB, i.e. an actual off-by-one in the
+            // promotion, which is exactly what this is here to exclude.
             let delta = (w as i64) - (jasper_resampler::widen_i16_to_i32(n) as i64);
             assert!(
-                delta.abs() <= 1 << 16,
+                delta.abs() <= (1 << 15) + 1,
                 "sample {i}: wide {w} vs widened-narrow {} differs by {delta}",
                 jasper_resampler::widen_i16_to_i32(n),
             );
