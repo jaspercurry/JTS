@@ -18,6 +18,7 @@ plan, and a refusal nobody catches still fails a household's capture.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 import pytest
@@ -181,6 +182,52 @@ def test_every_planner_record_reaches_this_sessions_journal(caplog):
     for logged, record in zip(by_event, plan.journal):
         assert logged.levelno == record.level, record.event
         assert f"session_id={c.session_id}" in logged.getMessage()
+
+
+@pytest.mark.parametrize(
+    "matched, expected_level", [(True, logging.INFO), (False, logging.WARNING)]
+)
+def test_the_realized_level_record_is_a_warning_only_when_it_did_not_match(
+    caplog, matched, expected_level,
+):
+    """The severity is the operator's precursor to the accountability refusal.
+
+    An unmatched inter-driver level is what the gate refuses on one step later,
+    so the line announcing it has to stand out in a journal before anyone knows
+    to look for the refusal. That is a *conditional*, and the sibling
+    forwarding test cannot see it: that one compares the forwarded level
+    against the record's own, so flattening the planner's conditional to
+    always-INFO moves both sides together and stays green (verified by
+    mutation). This asserts the ABSOLUTE severity, on both arms.
+
+    The unmatched arm is supplied rather than provoked. Producing a genuinely
+    mislevelled pair from the fixture would need branches shaped until the
+    estimator disagrees, and the estimator is not this test's subject — the
+    severity rule is.
+    """
+    caplog.set_level("INFO", logger=_DIAG_LOGGER)
+    c, analysis = _walked_to_measure()
+
+    real = iv.realized_level_match
+
+    def graded(*args, **kwargs):
+        return replace(real(*args, **kwargs), matched=matched)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(iv, "realized_level_match", graded)
+        plan = c._plan_linearization(analysis, analysis.candidate, None)
+
+    event = "correction.crossover_v2_realized_level_match"
+    record = next(r for r in plan.journal if r.event == event)
+    assert record.fields["matched"] is matched
+    assert record.level == expected_level, "the planner's own severity"
+
+    logged = [
+        r for r in caplog.records
+        if r.getMessage().startswith(f"event={event} ")
+    ]
+    assert len(logged) == 1, logged
+    assert logged[0].levelno == expected_level, "the forwarded severity"
 
 
 def test_a_journal_consumer_that_raises_is_disclosed_not_swallowed(caplog):
