@@ -492,11 +492,27 @@ def _recompose_active_baseline_with_eq(
     imports are lazy: this only runs for a speaker that already IS an active
     baseline, so the active-speaker + sound-profile deps stay out of the base
     wizard path.
+
+    THE ENDPOINT IS TRANSPORT STATE, NOT APPLIED EVIDENCE, so it comes from the
+    box and not from the snapshot. The applied snapshot is deliberately
+    immutable, which means it keeps naming whichever lane was resolved at Apply
+    time — on a ring-armed roleful box, the snd-aloop lane forever. Letting that
+    reach the emitter is how BOTH seams that pass through here de-armed a live
+    box: ``reconcile_current_dsp`` on every deploy and on the arm ladder's own
+    coupling rung (issue #2339, observed on jts3 2026-08-11 —
+    ``captures/r7b-jts3-arm3-20260811T162742Z`` files 14-16: fan-in and outputd
+    on the ring, CamillaDSP re-pointed back to the aloop pair, silence with every
+    daemon healthy and ``writer_alive=False``), and a ``/sound/`` or ``/eq/``
+    save (issue #2337). :func:`~jasper.active_speaker.playback_route.
+    resolve_live_active_endpoint` is the one derivation of where the box
+    actually is; ``None`` from it falls through to the snapshot default inside
+    the recomposer, which is byte-identical to the pre-fix behaviour.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
         recompose_applied_baseline_yaml,
     )
+    from jasper.active_speaker.playback_route import resolve_live_active_endpoint
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
@@ -518,6 +534,7 @@ def _recompose_active_baseline_with_eq(
     )
     bass_proof_profile = bass_evaluation.profile
     preference_filters = build_sound_filters(profile)
+    live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied_profile,
@@ -525,6 +542,7 @@ def _recompose_active_baseline_with_eq(
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         out_path=None,
+        playback_device=live_endpoint,
         bass_extension_profile=bass_emission_profile,
     )
     if yaml is None:
@@ -582,6 +600,7 @@ def recompose_active_baseline_for_bass_extension(
     from jasper.active_speaker.baseline_profile import (
         recompose_applied_baseline_yaml,
     )
+    from jasper.active_speaker.playback_route import resolve_live_active_endpoint
     from jasper.sound.profile import PROFILE_PATH, SoundProfile, build_sound_filters
     from jasper.sound.settings import (
         SETTINGS_PATH,
@@ -630,6 +649,13 @@ def recompose_active_baseline_for_bass_extension(
         ) from exc
     room_peqs = extract_room_peqs_from_config_text(current_text)
     current_program = _active_program_overlay_projection(current_text)
+    # Same rule as the preference-EQ recompose above: the endpoint is transport
+    # state and comes from the box, not from the immutable snapshot. This seam
+    # emits a graph that gets LOADED, and its own reproduction check compares
+    # only the PROGRAM layer (everything before the driver split), so an
+    # endpoint inherited from the snapshot would pass that check and still hand
+    # an armed box a graph on the wrong transport.
+    live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied_profile,
@@ -637,6 +663,7 @@ def recompose_active_baseline_for_bass_extension(
         preference_filters=build_sound_filters(preference),
         output_trim_db=output_trim_db(preference, settings),
         out_path=None,
+        playback_device=live_endpoint,
         bass_extension_profile=desired_profile,
     )
     if yaml is not None:

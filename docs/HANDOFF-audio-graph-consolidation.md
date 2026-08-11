@@ -454,6 +454,47 @@ after that is derivation. (Ratified as Option B in the R7b panel round 2;
 it amends E1's earlier coupling-first rollback ordering for the same
 reason the arm needs it.)
 
+**Deploys and household saves PRESERVE the arm; they do not choose an
+endpoint.** A separate set of seams rebuilds the roleful graph from the
+immutable applied snapshot without being asked to move anything: `jasper-sound
+reconcile-current-dsp` (which `install.sh` runs on every deploy, and which step
+3 of the ladder runs too), a `/sound/` or `/eq/` save, and a bass-extension
+apply. The snapshot is immutable by design, so it keeps naming whichever lane
+was resolved at Apply time — the snd-aloop lane, forever, on an armed box. Each
+of those seams now reads
+`jasper.active_speaker.playback_route.resolve_live_active_endpoint`, one
+derivation that asks the **statefile-pointed graph** first and the marker only
+when that graph cannot be read: the marker is derived FROM the graph, so in
+every window where the two disagree — mid-arm after rung 1, mid-rollback after
+its rung 1, or a marker left set over a graph that moved back — the graph is the
+half the reconcilers are converging toward. An unarmed box is byte-identical to
+before, and the deploy-time reason the reconcile exists at all (refresh the
+artifact so CamillaDSP cannot reopen a stale statefile against freshly-created
+ring files) is unchanged — it refreshes THROUGH the live endpoint.
+
+Before that (issues #2339 / #2337), the ladder's own step 3 de-armed the box it
+had just armed: on jts3, 2026-08-11, the coupling rung's reconcile re-emitted
+the snapshot's ALSA lane over the ring graph rung 1 had published and re-pointed
+the statefile at it, leaving fan-in and outputd on the ring and CamillaDSP on the
+tap — silence with every daemon healthy, `writer_alive=False`, Ring A
+`drop_no_reader` climbing, and recovery needing a fourth action the ladder does
+not document (`captures/r7b-jts3-arm3-20260811T162742Z`, files 14-16). A plain
+`jasper-camilla` restart never had this effect; the statefile holds (file 27).
+The ladder stays three rungs.
+
+The Layer-A drift check
+(`jasper.active_speaker.setup_status._applied_layer_a_binding`, the gate in front
+of room correction) is the fourth member of the same family and takes the
+opposite rule for the opposite reason: it emits nothing, so it NEUTRALIZES the
+transport axis by rebuilding its expectation against the endpoint of the graph
+it was handed. Its fingerprint binds `output_devices`, so an armed box could
+never match a snapshot-built expectation and the gate read "Apply that crossover
+again before Room correction" for a transport move nobody asked about. Feeding
+it the box-level derivation instead would put a third opinion — the statefile —
+into a two-way comparison and turn ordinary device-resolution drift into a
+crossover-drift claim. Whether the graph names the RIGHT transport stays with
+`check_fanin_coupling` and `ring_edge_width_ready`.
+
 **Why every intermediate state is safe.** After step 1 the graph on disk
 names the ring while the coupling is still loopback. Nothing in steps 1 or
 2 reloads CamillaDSP — `baseline-reemit` writes the artifact and repoints
