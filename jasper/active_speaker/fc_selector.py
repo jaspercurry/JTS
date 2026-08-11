@@ -106,6 +106,22 @@ class FcCandidateEvaluation:
     predicted_spec_report: Mapping[str, Any] | None = None
     commanded_delta: tuple[np.ndarray, np.ndarray] | None = None
     level_frame_finding: Mapping[str, Any] | None = None
+    realized_branch_level: Mapping[str, Any] | None = None
+    """THIS candidate's own realized inter-driver level verdict, serialized.
+
+    Carried since #2291 Phase 2b, and the reason it can be is the cutover
+    itself: the planner returns its verdict as a value, so the sweep no longer
+    saves and restores a conductor scratch field around each candidate. Before
+    that, the only realized-level verdict reachable at selection time belonged
+    to the ANCHOR — reading it would have described a different candidate — so
+    a selected alternative corner reached its proposal with the field empty
+    (#2307 gate note N6).
+
+    A ``Mapping`` rather than the ``RealizedLevelMatch`` value on purpose: this
+    type is the sweep's memory contract and its retention guard whitelists
+    field types, so evidence crosses the walk in the same already-serialized
+    shape ``level_frame_finding`` uses.
+    """
 
     @property
     def scoreable(self) -> bool:

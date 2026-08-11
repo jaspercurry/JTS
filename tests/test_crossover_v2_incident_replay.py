@@ -4,11 +4,18 @@
 
 """Hardware-free replay of the 2026-08-10 jts3 crossover incident (#2291).
 
-**These tests pin behaviour that is WRONG.** They are characterization tests:
-they describe what the prescription path does TODAY, defects included, so that
-issue #2291 Phase 2 — which changes it — has to state which pinned number it is
-moving and why. A green run here is not a claim that the speaker is correct; it
-is a claim that the incident still reproduces. Phase 2 flips these assertions.
+**These tests pinned behaviour that was WRONG until #2291 Phase 2b, and now
+pin the fix through the production path.** Phase 0 wrote them as
+characterization tests — describing what the prescription path did, defects
+included, so the phase that changed it had to state which pinned number it was
+moving and why. Phase 2b is that change: the assertions below are the same
+seams, flipped, and a green run is now the acceptance evidence that the
+incident **cannot** reproduce.
+
+They drive real production code — ``_build_candidate`` at the exact keyword
+pair ``_evaluate_fc_candidate`` hands it — so this is the *wired* path, not the
+planner in isolation (which
+``tests/test_crossover_v2_intervention_dual_run.py`` covers).
 
 The incident, in one paragraph. A stage-1 Fc comparison ran on a session
 configured at 2000 Hz, evaluated six corners, and recommended 1648.7 Hz. The
@@ -17,16 +24,24 @@ candidate it published for that corner carried a −13.013 dB tweeter trim, a
 Post-apply the speaker measured a failing absolute claim (5.456 dB over a
 2.0 dB tolerance) and 7.727 dB of cloud flatness error over 250-2000 Hz against
 a 1.5 dB tolerance. Two defects in the prescription path are visible in that
-record and are what these tests pin:
+record; each has a test below, and each test says what it pinned before and
+what it pins now:
 
-1. ``_fit_linearization`` reads ``self._fc_hz`` — the SESSION's configured
-   corner — at every Fc-driven site, while the candidate it is fitting arrives
-   with ``candidate_sections`` at its OWN corner. Every non-configured
-   candidate is therefore levelled and ripple-scanned at the wrong crossover.
-2. ``trim_rejected`` names the outcome when the ripple scan drifts past
-   ``LINEARIZATION_TRIM_SANITY_MARGIN_DB`` from the anchor — but the scan's
-   trim is still COMMITTED whenever it levels better than the anchor. The
-   string says rejected; the number that shipped is the rejected one.
+1. The fitter read ``self._fc_hz`` — the SESSION's configured corner — at every
+   Fc-driven site, while the candidate it was fitting arrived with
+   ``candidate_sections`` at its OWN corner. Every non-configured candidate was
+   therefore levelled and ripple-scanned at the wrong crossover. Since Phase 2b
+   the planner reads one corner, from a
+   :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
+   the conductor builds from those same sections, and there is no session
+   corner in its scope to read instead.
+2. ``trim_rejected`` named the outcome when the ripple scan drifted past
+   ``LINEARIZATION_TRIM_SANITY_MARGIN_DB`` from the anchor — and the scan's
+   trim was still COMMITTED whenever it levelled better. The string said
+   rejected; the number that shipped was the rejected one. Since Phase 2b a
+   beyond-margin scan IS rejected: the level-preserving anchor ships, the
+   outcome string stopped lying because the behaviour changed to match it, and
+   the strategy names which pair won.
 
 The evidence is banked raw and SHA-verified under
 ``captures/jts3-incident-20260810-issue2291/`` (93 MB, gitignored). The small
@@ -54,9 +69,17 @@ incident's own recorded results instead.
 One consequence is worth stating rather than leaving to be inferred: the
 ``difference_db`` values the commit decision turns on are computed by real code
 over those synthetic zero-phase branches, so they are not the incident's own
-level errors. What the incident's record does prove is their ORDERING — it
-committed the scan's pair, so the scan levelled better — and the test asserts
-that ordering as its own premise rather than assuming it holds.
+level errors. What the incident's record proves is their ORDERING **at the
+session's corner** — it committed the scan's pair there, so the scan levelled
+better at 2000 Hz.
+
+At the CANDIDATE's corner the ordering reverses: the anchor levels better, and
+the replay asserts that rather than assuming either way. So the two defects
+were not independent — fixing the corner alone would already have shipped the
+anchor on this session — which is why the rejection policy is what the test
+credits, and why the drift verdict rather than the grading is what the
+assertions turn on. #2313's dual run reached the same conclusion against live
+legacy; this is it restated on the wired path.
 """
 from __future__ import annotations
 
@@ -68,17 +91,21 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_db,
     radiating_band_hz,
+    sections_by_role,
+)
+from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2.contracts import TrimStrategy
+from jasper.active_speaker.crossover_v2.intervention import (
+    rounded_band_hz as _rounded_band_hz,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     CrossoverV2Conductor,
     V2FlowSeams,
-    _rounded_band_hz,
 )
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -194,10 +221,13 @@ def _branch_db(role: str) -> np.ndarray:
     Flat behind its own committed crossover shape, with the tweeter placed
     exactly ``|committed tweeter trim|`` above the woofer. That offset is read
     off the incident rather than tuned: the incident's record shows the ripple
-    scan's trim WON the realized-level comparison against the anchor (the
-    committed pair is the scan's, not the anchor's), and a tweeter that hot is
-    what makes the scan's −13.013 dB the level-correct answer. The premise is
-    asserted, not assumed — see ``test_..._commits_the_ripple_scan_trim``.
+    scan's trim WON the realized-level comparison **at the session's corner**
+    (the committed pair is the scan's, not the anchor's), and a tweeter that
+    hot is what made the scan's −13.013 dB look like the level-correct answer
+    there. At the candidate's own corner the same branches order the two pairs
+    the other way; the replay asserts whichever ordering it gets rather than
+    assuming one — see
+    ``test_a_rejected_trim_is_not_the_trim_that_ships``.
 
     Synthetic because the incident's own per-driver responses are too large to
     commit; see this module's docstring.
@@ -333,6 +363,10 @@ class _Replay:
         }
         self.graded: list[dict[str, float]] = []
         self.candidate: Any = None
+        # What the build returned beside the candidate — the planner's own
+        # output, which since #2291 Phase 2b is a value rather than a scatter
+        # of conductor fields.
+        self.linearization: Any = None
         # What the fit was HANDED (the candidate's re-cornered sections) beside
         # what it would have read had it ignored them (the session's own), so
         # an R17 regression is a difference this replay can see.
@@ -356,12 +390,21 @@ class _Replay:
         return hits[0]
 
 
-def _run_replay(monkeypatch: pytest.MonkeyPatch) -> _Replay:
+def _run_replay(
+    monkeypatch: pytest.MonkeyPatch, *, candidate_fc_hz: float = SELECTED_FC_HZ,
+) -> _Replay:
+    """Drive one candidate build at ``candidate_fc_hz`` on a 2000 Hz session.
+
+    The spies live on
+    :mod:`jasper.active_speaker.crossover_v2.intervention` since #2291
+    Phase 2b — that module is where the Fc-driven seams are now called from,
+    and patching the flow's namespace instead would silently spy on nothing.
+    """
     replay = _Replay()
     conductor = _conductor()
 
-    real_overlap = flow.overlap_band_hz
-    real_match = flow.realized_branch_level_match
+    real_overlap = iv.overlap_band_hz
+    real_match = iv.realized_branch_level_match
 
     def spy_overlap(fc_hz, **kwargs):
         replay.fc_seen["overlap_band_hz"].append(float(fc_hz))
@@ -398,17 +441,19 @@ def _run_replay(monkeypatch: pytest.MonkeyPatch) -> _Replay:
         replay.fit_radiating_bands[resp.role] = tuple(kwargs["radiating_band_hz"])
         return _incident_fit(resp.role)
 
-    monkeypatch.setattr(flow, "overlap_band_hz", spy_overlap)
-    monkeypatch.setattr(flow, "realized_branch_level_match", spy_match)
-    monkeypatch.setattr(flow, "solve_ripple_optimal_trim", fake_ripple)
-    monkeypatch.setattr(flow, "fit_driver_linearization", fake_fit)
+    monkeypatch.setattr(iv, "overlap_band_hz", spy_overlap)
+    monkeypatch.setattr(iv, "realized_branch_level_match", spy_match)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", fake_ripple)
+    monkeypatch.setattr(iv, "fit_driver_linearization", fake_fit)
 
-    replay.candidate_sections = conductor._fc_candidate_sections(SELECTED_FC_HZ)
-    replay.configured_sections = {
-        role: conductor._branch_crossover_sections(role) for role in ROLES
-    }
+    replay.candidate_sections = conductor._fc_candidate_sections(candidate_fc_hz)
+    # What the fit would have been bounded to had it read the SESSION's own
+    # preset — the same derivation ``_plan_linearization`` uses on the
+    # configured path, so an R17 regression is a difference this replay sees.
+    configured = sections_by_role(conductor._preset.crossover_regions)
+    replay.configured_sections = {role: configured.get(role, ()) for role in ROLES}
     candidate_preset = replace(conductor._preset, crossover_regions=tuple(
-        replace(region, fc_hz=SELECTED_FC_HZ)
+        replace(region, fc_hz=candidate_fc_hz)
         for region in conductor._preset.crossover_regions
     ))
     # ``_build_candidate``, with the exact keyword pair ``_evaluate_fc_candidate``
@@ -418,7 +463,7 @@ def _run_replay(monkeypatch: pytest.MonkeyPatch) -> _Replay:
     # passed on the incident and is orthogonal to both defects, but it cannot
     # pass on synthetic branches without shaping them until it does, and a
     # fixture tuned to satisfy a gate is not evidence about anything.
-    replay.candidate = conductor._build_candidate(
+    replay.candidate, replay.linearization = conductor._build_candidate(
         _analysis(CANDIDATE_FIT["program_id"]), None,
         candidate_sections=replay.candidate_sections,
         source_preset=candidate_preset,
@@ -463,40 +508,35 @@ def test_the_fixture_is_the_incident_as_banked():
 
 
 # --------------------------------------------------------------------------- #
-# defect 1 — the fit reads the session's corner, not the candidate's
+# defect 1 — FIXED: every Fc-driven seam reads the candidate's own corner
 # --------------------------------------------------------------------------- #
 
 
-def test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own(
+def test_every_fc_driven_seam_reads_the_candidates_corner_not_the_sessions(
     monkeypatch, caplog,
 ):
-    """CURRENT behaviour, and it is the bug. #2291 Phase 2 changes it.
+    """The #2291 acceptance criterion, through the PRODUCTION path.
 
-    The Fc-driven seams inside ``_fit_linearization`` — the overlap band, the
-    ripple scan, and the realized-level match on BOTH candidate trim pairs —
-    are handed ``self._fc_hz``, the corner the SESSION was configured at, while
-    the same call arrives with ``candidate_sections`` at the corner actually
-    being evaluated. On the incident that is 2000 Hz of levelling and scanning
-    applied to a 1648.7 Hz candidate. The journal line that would have told an
-    operator which corner the fit ran at reports the session's corner too.
+    A configured 2000 Hz session evaluating a selected 1648.7 Hz candidate
+    cannot read 2000 Hz anywhere inside candidate planning. The Fc-driven
+    seams — the overlap band, the ripple scan, and the realized-level match on
+    BOTH candidate trim pairs — are handed the corner of the sections the
+    candidate is realized with, and the journal line that tells an operator
+    which corner the fit ran at names the same one.
 
-    ``_fit_linearization`` reads ``self._fc_hz`` at six sites; this pins four
-    of them (the overlap band at ``:12366``, the ripple scan at ``:12495``, the
-    level match at ``:12811``, and the ``fit_band`` journal field at
-    ``:12111``). **The other two are NOT pinned here and cannot be:** the
-    straddle test at ``:12493`` that decides whether the ripple scan runs, and
-    the ``fc_hz`` field at ``:12506`` of the ``ripple_trim_skipped`` event in
-    that straddle's own else-branch. On this session's overlap band
-    (1600-4000 Hz) both corners straddle identically, so the branch this replay
-    takes is the same either way and the else-branch never runs — no assertion
-    about THIS incident can tell them apart, which mutation confirms. Treat
-    those two as covered by inspection, never by this test.
+    **What this pinned before Phase 2b:** the exact opposite. The fitter read
+    ``self._fc_hz`` at every one of these sites while the same call arrived
+    with ``candidate_sections`` at the candidate's corner — 2000 Hz of
+    levelling and scanning applied to a 1648.7 Hz candidate. The seams are
+    unchanged; only the value they see is.
+
+    **Why it is now structural rather than merely correct:** the planner takes
+    one ``CandidateAcousticContext``, which owns the corner *and* the sections
+    together and refuses at construction if they disagree. There is no session
+    corner in its scope to read by mistake.
 
     Separately, this pins that the candidate's sections are USED and not merely
     accepted (R17) — see the radiating-band assertions at the end.
-
-    After Phase 2 these seams should see the candidate's own corner; these
-    assertions are expected to invert.
     """
     caplog.set_level("INFO", logger="jasper.active_speaker.crossover_v2_flow")
     replay = _run_replay(monkeypatch)
@@ -507,13 +547,13 @@ def test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own(
 
     for seam, seen in replay.fc_seen.items():
         assert seen, f"{seam} was never reached — the replay did not exercise the fit"
-        assert set(seen) == {CONFIGURED_FC_HZ}, (
-            f"#2291: {seam} saw {sorted(set(seen))}; today it reads the session "
-            f"corner {CONFIGURED_FC_HZ}, not the candidate's {SELECTED_FC_HZ}"
+        assert set(seen) == {SELECTED_FC_HZ}, (
+            f"#2291: {seam} saw {sorted(set(seen))}; it must read the candidate's "
+            f"corner {SELECTED_FC_HZ}, never the session's {CONFIGURED_FC_HZ}"
         )
-        assert SELECTED_FC_HZ not in seen
+        assert CONFIGURED_FC_HZ not in seen
     # Both trim pairs are graded, so the level match runs twice — a single call
-    # would mean the guard stopped comparing them (PR-L4's own behaviour).
+    # would mean the planner stopped comparing them (PR-L4's own behaviour).
     assert len(replay.fc_seen["realized_branch_level_match"]) == 2
 
     # R17: the candidate's sections are USED, not just accepted. Without this,
@@ -534,17 +574,24 @@ def test_the_fit_reads_the_session_corner_while_the_candidate_carries_its_own(
         )
 
     fit_band = _one_event_line(caplog, "correction.crossover_v2_linearization_fit_band")
-    # One line carrying both halves of the contradiction: the corner it names
-    # is the session's, the shapes beside it are the candidate's.
-    assert f"fc_hz={CONFIGURED_FC_HZ}" in fit_band, f"#2291: {fit_band}"
-    assert str(SELECTED_FC_HZ) not in fit_band
+    # One line, internally consistent: the corner it names and the shapes
+    # beside it are the same candidate's. It used to carry both halves of the
+    # contradiction — the session's corner against the candidate's shapes.
+    assert f"fc_hz={SELECTED_FC_HZ}" in fit_band, f"#2291: {fit_band}"
+    assert str(CONFIGURED_FC_HZ) not in fit_band
     for role in ROLES:
-        rendered = str(_rounded_band_hz(radiating_band_hz(
+        # ``list(...)`` because the planner's payload crosses ``JournalRecord``,
+        # which detaches through JSON containers — so a band that legacy
+        # rendered as a Python tuple renders as a JSON array. Same numbers,
+        # same order, one container; ``JASPER_LOG_JSON=1`` output is unchanged
+        # either way. ``_rounded_band_hz`` is still the one owner of the
+        # numbers, which is what this line is about.
+        rendered = str(list(_rounded_band_hz(radiating_band_hz(
             replay.candidate_sections[role],
-        )))
-        stale = str(_rounded_band_hz(radiating_band_hz(
+        ))))
+        stale = str(list(_rounded_band_hz(radiating_band_hz(
             replay.configured_sections[role],
-        )))
+        ))))
         assert rendered in fit_band, f"#2291 R17: {role} {rendered} not in {fit_band}"
         assert stale not in fit_band
 
@@ -560,17 +607,29 @@ def _one_event_line(caplog, name: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# defect 2 — "trim_rejected" still commits the rejected trim
+# defect 2 — FIXED: a rejected trim is not the trim that ships
 # --------------------------------------------------------------------------- #
 
 
-def test_trim_rejected_still_commits_the_ripple_scan_trim(monkeypatch, caplog):
-    """CURRENT behaviour, and it is the bug. #2291 Phase 2 changes it.
+def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
+    """The other #2291 acceptance criterion, through the PRODUCTION path.
 
     The scan drifts 6.300 dB from the anchor, past the 6.0 dB sanity margin, so
-    the outcome stamped on the candidate is ``trim_rejected`` — and the scan's
-    trim is committed anyway, because it levels better than the anchor. The
-    household-visible artifact says one thing and the emitted gain is the other.
+    the outcome stamped on the candidate is ``trim_rejected`` — and the pair
+    that ships is now the level-preserving ANCHOR, −6.713 dB, under the
+    strategy ``ANCHORED_COMMITTED_AFTER_SANITY_DRIFT``. The household-visible
+    artifact and the emitted gain say the same thing.
+
+    **What this pinned before Phase 2b:** the same outcome string against the
+    scan's own −13.013 dB, because the grading committed whichever pair levelled
+    better *regardless of whether the scan had been rejected*. The extra
+    6.300 dB of tweeter cut is the largest single term in the dark upper half
+    the household then measured.
+
+    The outcome string did not change and did not need to: ``"trim_rejected"``
+    was already the right word for what the guard found, and it stopped lying
+    because the behaviour changed to match it rather than because it was
+    renamed.
 
     Everything asserted here is production's own arithmetic on banked inputs:
     the anchor from the incident's give-back and level-frame offsets, the drift
@@ -580,11 +639,12 @@ def test_trim_rejected_still_commits_the_ripple_scan_trim(monkeypatch, caplog):
     replay = _run_replay(monkeypatch)
 
     assert replay.candidate.linearization_outcome == "trim_rejected", (
-        "#2291: the incident's outcome string"
+        "#2291: the incident's outcome string, now true"
     )
-    assert dict(replay.candidate.role_attenuations_db) == pytest.approx(COMMITTED_DB), (
-        "#2291: the incident's committed pair"
+    assert dict(replay.candidate.role_attenuations_db) == pytest.approx(ANCHORED_DB), (
+        "#2291: the honest anchored fallback, not the incident's committed pair"
     )
+    assert dict(replay.candidate.role_attenuations_db) != pytest.approx(COMMITTED_DB)
 
     # Production's own anchor, read off the trim pair it graded — the exact
     # number, not the 3-decimal one the journal rounds to.
@@ -598,21 +658,144 @@ def test_trim_rejected_still_commits_the_ripple_scan_trim(monkeypatch, caplog):
     )
     assert drift_db > LINEARIZATION_TRIM_SANITY_MARGIN_DB
 
-    # The defect: the guard fired — so the outcome reads "trim_rejected" and the
-    # WARNING is in the journal — and the rejected pair is nonetheless the pair
-    # the graph runs.
+    # The fix: the guard fired — so the outcome reads "trim_rejected" and the
+    # WARNING is in the journal — and the pair the graph runs is the anchor.
     assert (
         "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
     ), "#2291: the guard's own WARNING"
     assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
-        scan["trim_t_db"], abs=1e-12
-    ), "#2291: today a rejected trim is still the trim that ships"
+        anchor["trim_t_db"], abs=1e-12
+    ), "#2291: a rejected trim must not be the trim that ships"
     assert replay.candidate.role_attenuations_db["tweeter"] != pytest.approx(
-        anchor["trim_t_db"]
+        scan["trim_t_db"]
+    )
+    # The strategy names which pair won, so an artifact reader never has to
+    # infer it from an outcome string that only encodes the drift verdict.
+    assert (
+        replay.linearization.realized_level_match is not None
+    ), "the build must have produced a realized-level verdict"
+
+    # **The two defects were not independent, and this is where that shows.**
+    # The pre-cutover version of this test asserted the opposite comparison as
+    # its premise — the incident's record proves the SESSION-corner grading
+    # committed the scan's pair, so at 2000 Hz the scan levelled better. At the
+    # CANDIDATE's own corner it does not: the anchor wins the comparison
+    # outright, which is #2313's dual-run finding restated on the wired path
+    # (``test_at_the_candidates_corner_the_level_grading_already_prefers_the_
+    # anchor``). Fixing the corner alone would therefore already have shipped
+    # the anchor here.
+    #
+    # That is not an argument for dropping the fallback policy, and the number
+    # above says why: the drift is 6.300 dB, so the anchor is committed under
+    # ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the rejection, not the grading —
+    # and the policy is what covers the session-corner-wild regime where the
+    # grading points the other way. Asserted rather than left implicit, because
+    # a synthetic branch pair that reproduced the OLD ordering would mean this
+    # replay had drifted from the corner it claims to be planning at.
+    assert abs(anchor["difference_db"]) < abs(scan["difference_db"]), (
+        "at the candidate's corner the anchor should level better; the "
+        "opposite ordering is the session-corner world"
     )
 
-    # The replay's own premise, asserted rather than assumed: the incident's
-    # record proves the scan won the level comparison (the pair it committed is
-    # the scan's), so a synthetic branch pair that failed to reproduce that
-    # condition would be pinning a different decision under this test's name.
-    assert abs(scan["difference_db"]) < abs(anchor["difference_db"])
+
+def test_the_rejection_journal_names_the_committed_pair_and_its_strategy(
+    monkeypatch, caplog,
+):
+    """The rejection's own WARNING says which pair won, and it is the anchor.
+
+    Split from the assertion above because it grades a different surface: the
+    operator-facing journal line rather than the emitted candidate. Before
+    Phase 2b this line carried ``committed=resolved`` beside the word
+    "rejected" — the contradiction in one string — and had no ``strategy``
+    field at all.
+    """
+    caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
+    replay = _run_replay(monkeypatch)
+
+    line = _one_event_line(
+        caplog, "correction.crossover_v2_linearization_trim_rejected"
+    )
+    assert "committed=anchored" in line, line
+    assert "committed=resolved" not in line
+    assert (
+        f"strategy={TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT.value}" in line
+    ), line
+    fallback = round(float(ANCHORED_DB["tweeter"]), 3)
+    rejected = round(float(COMMITTED_DB["tweeter"]), 3)
+    assert f"fallback_trim_db=\"{{'woofer': 0.0, 'tweeter': {fallback}}}\"" in line, line
+    # The scan's pair is still disclosed — rejected, not hidden — so live guard
+    # telemetry can still distinguish a legitimate optimum from garbage.
+    assert f"resolved_trim_db=\"{{'woofer': 0.0, 'tweeter': {rejected}}}\"" in line, line
+    assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
+        ANCHORED_DB["tweeter"], abs=1e-12
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the two sites the pre-cutover replay could NOT pin
+# --------------------------------------------------------------------------- #
+
+
+def test_the_straddle_and_its_skip_journal_read_the_candidates_corner(
+    monkeypatch, caplog,
+):
+    """The two Fc reads the characterization pass had to leave uncovered.
+
+    Before Phase 2b the fitter read ``self._fc_hz`` at six sites. The
+    characterization test pinned four; the straddle test that decides whether
+    the ripple scan runs, and the ``fc_hz`` field of the
+    ``ripple_trim_skipped`` event in that straddle's own else-branch, could not
+    be pinned by the incident at all: on this session's overlap band both
+    corners straddle identically, so the branch taken is the same either way
+    and the else-branch never runs. Mutation confirmed it — the docstring of
+    the pre-cutover test said to treat them as covered by inspection only.
+
+    They are pinnable now, and this is the pin. The overlap band is derived
+    FROM the same corner the straddle tests, so a candidate sitting exactly at
+    the tweeter's 1600 Hz sweep floor — which clamps the band's lower edge —
+    gets a band that STARTS at its own corner and therefore does not straddle
+    it, while the session's 2000 Hz still sits inside 1600-4000 Hz. A planner
+    reading the session corner would run the scan; reading the candidate's, it
+    skips and says so.
+
+    1600 Hz rather than something lower: below the tweeter's sweep floor the
+    realized-level estimator refuses outright (it has no excited tweeter band
+    reaching the corner), so the plan degrades to trims-only before the
+    straddle's consequences can be observed. The sweep floor is the one corner
+    where the scan is skipped and the rest of the plan still runs — and it is
+    this session's own declared floor, so it is a corner the selector could
+    genuinely have proposed.
+    """
+    caplog.set_level("INFO", logger="jasper.active_speaker.crossover_v2_flow")
+    tweeter_sweep_lo_hz = float(SESSION_CONTEXT["sweep_band_hz"]["tweeter"][0])
+    one_sided_fc_hz = tweeter_sweep_lo_hz
+    assert one_sided_fc_hz < CONFIGURED_FC_HZ, (
+        "the premise: the session's corner sits inside the swept overlap and "
+        "the candidate's sits on its lower edge"
+    )
+    assert one_sided_fc_hz == float(
+        SESSION_CONTEXT["fc_selection"]["limits"]["declared_floor_hz"]
+    ), "and it is a corner this session could actually have proposed"
+
+    replay = _run_replay(monkeypatch, candidate_fc_hz=one_sided_fc_hz)
+
+    # A3 — the straddle itself. Reading the session's 2000 Hz would have run
+    # the scan, because 1600 < 2000 < 4000.
+    assert replay.fc_seen["solve_ripple_optimal_trim"] == [], (
+        "the ripple scan ran on a band that does not straddle the candidate's "
+        "corner — the straddle test read some other corner"
+    )
+    # A6 — the skip event's own ``fc_hz`` field.
+    skipped = _one_event_line(
+        caplog, "correction.crossover_v2_linearization_ripple_trim_skipped"
+    )
+    assert f"fc_hz={one_sided_fc_hz}" in skipped, skipped
+    assert str(CONFIGURED_FC_HZ) not in skipped
+    assert "reason=ripple_band_one_sided" in skipped
+
+    # With no scan there is no drift, so the anchor is committed on its own
+    # terms rather than through the sanity fallback.
+    assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
+        ANCHORED_DB["tweeter"], abs=1e-12
+    )
+    assert replay.candidate.linearization_outcome == "fitted"

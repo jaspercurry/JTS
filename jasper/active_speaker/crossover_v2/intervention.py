@@ -4,9 +4,9 @@
 
 """The deterministic prescription planner, as pure functions (#2291 Phase 2).
 
-**What this module is.** :func:`plan_linearization` is
-``CrossoverV2Conductor._fit_linearization`` reimplemented as side-effect-free
-assembly around the repository's existing pure DSP primitives
+**What this module is.** :func:`plan_linearization` is the prescription
+planner, as side-effect-free assembly around the repository's existing pure
+DSP primitives
 (:func:`~jasper.active_speaker.linearization_fit.fit_driver_linearization`,
 :func:`~jasper.audio_measurement.program_analysis.solve_ripple_optimal_trim`,
 :func:`~jasper.audio_measurement.program_analysis.realized_branch_level_match`,
@@ -630,13 +630,13 @@ class LinearizationRequest:
         Representable is not the same as correct. **On a 2-way conductor a role
         with no crossover region is a defect upstream**, which is why
         :func:`plan_linearization` names it in the journal rather than passing
-        over it silently — the same disposition, and the same event, that
-        ``CrossoverV2Conductor._branch_crossover_sections`` gives the condition
-        today. That method is LEGACY's seventh reader of the session corner —
-        the planner has none, which is this module's central invariant — and it
-        loses its only production caller at the #2291 Phase 2b cutover;
-        emitting the disclosure here keeps it at the detection site, and the
-        host inherits it with the rest of the journal.
+        over it silently — the same disposition, and the same event, the
+        retired ``CrossoverV2Conductor._branch_crossover_sections`` gave the
+        condition. That method was legacy's seventh reader of the session
+        corner — the planner has none, which is this module's central
+        invariant — and #2291 Phase 2b deleted it with the rest of the
+        fitter; emitting the disclosure here keeps it at the detection site,
+        and the host inherits it with the rest of the journal.
 
         The *context* separately guarantees that every section which does exist
         names this candidate's corner.
@@ -975,10 +975,10 @@ def plan_linearization(
     sections = {
         role: request.sections_for(role) for role in (woofer_role, tweeter_role)
     }
-    # The named defect, disclosed at the site that detects it. Legacy raises
-    # this same event from ``_branch_crossover_sections`` — the SEVENTH read of
-    # the session corner, and the one an audit of ``_fit_linearization`` alone
-    # cannot see — which loses its only production caller at the 2b cutover.
+    # The named defect, disclosed at the site that detects it. The retired
+    # ``_branch_crossover_sections`` raised this same event — it was the
+    # SEVENTH read of the session corner, and the one an audit of the fitter
+    # alone could not see.
     # See :meth:`LinearizationRequest.sections_for` for why the condition is
     # representable and still a defect.
     for role in (woofer_role, tweeter_role):
@@ -1389,9 +1389,10 @@ def plan_linearization(
     # --- grade both pairs, then commit one ---------------------------------
     #
     # **At the CANDIDATE's corner** — defect site 6 of seven, on BOTH pairs.
-    # Two of legacy's seven reads live one method away — ``_realized_level_match``
-    # (this one) and ``_branch_crossover_sections`` (site 7, disclosed above) —
-    # which is why an audit of ``_fit_linearization`` alone counts five.
+    # Two of legacy's seven reads lived one method away — its
+    # ``_realized_level_match`` (this one) and ``_branch_crossover_sections``
+    # (site 7, disclosed above) — which is why an audit of the fitter alone
+    # counted five.
     anchored_match = realized_level_match(
         freqs,
         w_lin,

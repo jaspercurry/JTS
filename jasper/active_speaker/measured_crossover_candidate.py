@@ -96,8 +96,9 @@ _MAX_ATTENUATION_DB = -60.0
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
 # Gauge fix (2026-07-24): the exact set crossover_v2_flow.CrossoverV2Conductor
-# stamps onto ``self._last_linearization_outcome`` (see that attribute's own
-# __init__ comment) — "" means "linearization was never evaluated this
+# stamps onto this field, from the ``_LinearizationState`` its candidate build
+# returned (#2291 Phase 2b; it was a ``_last_*`` conductor field before that) —
+# "" means "linearization was never evaluated this
 # attempt" (a pre-#1668 candidate, or a MEASURE verdict rejected before
 # ``_build_candidate`` ran). Validated here so a typo in the single writer
 # fails loudly at construction instead of silently persisting garbage.
@@ -247,7 +248,7 @@ class MeasuredCrossoverCandidate:
     ``linearization`` above: one of "fitted" / "trim_rejected" /
     "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed", or "" when
     linearization was never evaluated this attempt. This is the single
-    writer's own verdict (``CrossoverV2Conductor._last_linearization_outcome``,
+    writer's own verdict (``crossover_v2_flow._LinearizationState.outcome``,
     stamped verbatim at candidate-build time) — this module never re-derives
     it. Era-tolerant exactly like ``linearization``: omitted from the
     fingerprint when empty, and accepted absent on ``from_mapping`` (every

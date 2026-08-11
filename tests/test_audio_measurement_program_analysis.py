@@ -379,8 +379,16 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
     for analysis in (neutral, legacy):
         conductor = _conductor(FakeSeams())
         conductor._measure_program = program
-        fitted.append((*conductor._fit_linearization(analysis, analysis.candidate),
-                       conductor._last_linearized_predicted_sum))
+        # The planner since #2291 Phase 2b, which returns what the fitter used
+        # to leave on the conductor. The three values compared are the same
+        # three: the committed trims, the emitted filters, and the linearized
+        # VERIFY prediction.
+        plan = conductor._plan_linearization(analysis, analysis.candidate, None)
+        fitted.append((
+            dict(plan.role_attenuations_db),
+            dict(plan.linearization),
+            plan.linearized_predicted_sum,
+        ))
     assert_same(fitted[0], fitted[1])
 
 

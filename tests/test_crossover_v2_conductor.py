@@ -38,6 +38,10 @@ import pytest
 import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2.intervention import (
+    compose_sigma_db as _compose_sigma_db,
+)
 from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
@@ -127,7 +131,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     V2FlowSeams,
     V2PlanShape,
     _analysis_json,
-    _compose_sigma_db,
     _program_duration_ms,
     _worst_pilot_snr_db,
     abandon_measurement_volume,
@@ -558,6 +561,43 @@ def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
 
 def _capture() -> CaptureResult:
     return CaptureResult(wav=b"fake-wav")
+
+
+def _configured_sections(conductor, role: str) -> tuple:
+    """The sections this session's own preset gives ``role``.
+
+    The conductor derived this itself until #2291 Phase 2b (as
+    ``_branch_crossover_sections``); the planner now builds its candidate
+    context from the same shared ``sections_by_role``, so a test comparing
+    against "what the session's preset says" asks that function directly.
+    """
+    from jasper.active_speaker.branch_chain import sections_by_role
+
+    return sections_by_role(
+        getattr(conductor._preset, "crossover_regions", ()) or ()
+    ).get(role, ())
+
+
+def _plan_spy(mp) -> list:
+    """Capture every ``LinearizationPlan`` a walk produces, in order.
+
+    Since #2291 Phase 2b the planner returns its level frame, its realized-level
+    verdict and its linearized prediction as values on one plan, rather than
+    stashing them on the conductor as ``_last_*`` fields. A test that used to
+    read those fields after the walk observes the plan on its way past instead —
+    which is also stricter, since a plan belongs unambiguously to the candidate
+    whose build produced it.
+    """
+    plans: list = []
+    original = flow.CrossoverV2Conductor._plan_linearization
+
+    def spy(self, *args, **kwargs):
+        plan = original(self, *args, **kwargs)
+        plans.append(plan)
+        return plan
+
+    mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+    return plans
 
 
 def _run_phase(conductor, index, attempt) -> dict:
@@ -7981,10 +8021,9 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     module-level imported name to pin that the call happened exactly once, with
     the anchored woofer trim held fixed and the analysis's own polarity sign
     passed through."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     calls = []
-    real_solve = flow_mod.solve_ripple_optimal_trim
+    real_solve = iv.solve_ripple_optimal_trim
 
     def _spy(*args, **kwargs):
         # Positional call shape: solve_ripple_optimal_trim(freqs, w_tf,
@@ -7995,7 +8034,7 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
         calls.append({"freqs": freqs, "w_tf": w_tf, "t_tf": t_tf, "fc_hz": fc_hz, **kwargs})
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -8124,12 +8163,11 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     woofer is deep in its skirt and the summed ripple cannot express the
     handoff level. The scan must not run at all; the anchored give-back
     stands, and the skip is disclosed."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     calls = []
     monkeypatch.setattr(
-        flow_mod, "solve_ripple_optimal_trim",
+        iv, "solve_ripple_optimal_trim",
         lambda *a, **kw: calls.append(kw) or (kw["seed_trim_db"] - 4.0, 0.0, kw["seed_trim_db"]),
     )
     fakes = FakeSeams()
@@ -8424,7 +8462,7 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_realized_level_match", _still_mislevelled
+            iv, "realized_level_match", _still_mislevelled
         )
         _run_phase(c, 1, 1)
         with pytest.raises(CaptureBeginRefused) as excinfo:
@@ -8454,7 +8492,6 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     committed, and the anchor wins HERE because it levels better — which is what
     the guard was always assuming and never checking.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
     captured: dict = {}
@@ -8464,7 +8501,7 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
         # Force the resolved tweeter trim 20 dB below the anchored seed.
         return kwargs["seed_trim_db"] - 20.0, 0.0, kwargs["seed_trim_db"]
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -8489,16 +8526,29 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
 
-def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
-    """PR-L4 item 9's teeth: when the guard fires, the pair that LEVELS better
-    is committed — even when that is the scan the guard just called wild.
+def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeypatch):
+    """#2291's second acceptance criterion, at the conductor.
 
-    The 2026-07-27 evidence for why drift alone is the wrong verdict: the scan
-    had walked 5.500 dB (missing the 6.0 dB guard by half a dB) and its walk was
-    TOWARD a correct level, while the anchor it would have fallen back to was
-    5.5 dB darker. Had the drift been a hair larger, the guard would have made
-    the speaker worse. Here the forced scan is both wild AND better-levelled, so
-    the guard fires and commits it anyway.
+    Beyond the sanity margin the scan is REJECTED and the level-preserving
+    anchor is committed — even when the scan levels better, which is exactly
+    the case this fixture constructs (scan 0.2 dB, anchor 2.5 dB).
+
+    **This assertion is inverted from what it pinned before #2291 Phase 2b**,
+    and the inversion is the product. PR-L4 item 9 had the guard commit
+    whichever pair levelled better *whether or not it had just been rejected*,
+    on the 2026-07-27 evidence that drift alone points the wrong way: a scan
+    that had walked 5.500 dB was walking TOWARD a correct level. #2291 is the
+    later ruling — a guard whose rejection is telemetry is not a guard, and on
+    2026-08-10 that policy shipped a −13.013 dB tweeter trim under the word
+    "rejected". What replaces the old behaviour is not a blind fallback: the
+    anchor is level-preserving by construction, and the committed pair still
+    faces the realized-level assertion, so a badly-levelled anchor produces a
+    refusal rather than a hot speaker.
+
+    The graded level errors are still COMPUTED and still disclosed — the guard
+    did not stop measuring, it stopped letting the measurement overrule the
+    rejection — which is what the two ``*_level_error_db`` assertions below
+    read.
 
     **Why the level verdicts are supplied rather than provoked (PR-L5).** This
     test used to drive the anchor mislevelled with a 12 dB-dark raw trim. That
@@ -8507,11 +8557,10 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     out of every branch's level RELATIVE to the others — a dark raw trim can no
     longer mislevel the anchored pair, and one 12 dB off is refused as a frame
     disagreement long before this branch. That is the ladder working. What
-    remains worth pinning is the guard's DECISION — that it commits on levels
-    and not on drift — so the two level verdicts are supplied directly and the
-    physical scenario that used to produce them is left retired.
+    remains worth pinning is the guard's DECISION, so the two level verdicts
+    are supplied directly and the physical scenario that used to produce them
+    is left retired.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
@@ -8525,7 +8574,7 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
         seed["tweeter"] = k["seed_trim_db"]
         return k["seed_trim_db"] - 7.0, 0.0, k["seed_trim_db"]
 
-    def _match(_self, _freqs, _w, _t, trims_db, _woofer_role, tweeter_role, **_kw):
+    def _match(_freqs, _w, _t, _fc_hz, trims_db, _woofer_role, tweeter_role, **_kw):
         # The SCANNED pair levels well; the anchor's does not. Both inside the
         # assertion tolerance, so the session lives and the committed pair is
         # what this test can read.
@@ -8537,52 +8586,55 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
             woofer_band_hz=(1000.0, 2000.0), tweeter_band_hz=(2000.0, 4000.0),
         )
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _scan)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _scan)
     monkeypatch.setattr(
-        flow_mod.CrossoverV2Conductor, "_realized_level_match", _match,
+        iv, "realized_level_match", _match,
     )
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    # Item 2 refuses this session downstream (see the note below). The guard
-    # runs — and logs its decision — inside ``_fit_linearization``, well before
-    # ``_publish_measure_candidate`` grades the prediction, so every assertion
-    # this test makes is already in the journal when the refusal arrives.
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        _run_phase(c, 2, 2)
-    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    # The session now COMPLETES, and that is a consequence of the fix rather
+    # than a relaxation. Item 2 refused this fixture before #2291 Phase 2b
+    # because the committed pair WAS the 7 dB-drifted scan, which measures
+    # worse than its own baseline (see the swept table below: −1.524 dB at
+    # drift 7). Rejecting the scan commits the anchor, which is the drift-0 row
+    # — +0.657 dB, comfortably over the floor. The gate did not stop
+    # discriminating; it stopped being handed a mistrim to catch.
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
 
-    # The guard FIRED (drift 7 dB > the 6 dB margin) and still committed the
-    # SCAN, because the scan levels better than the anchor it would have fallen
-    # back to. Pre-PR-L4 this fell back to the darker pair unconditionally.
+    # The guard FIRED (drift 7 dB > the 6 dB margin) and committed the ANCHOR,
+    # although the scan levels better. Both level errors are still measured and
+    # still disclosed, which is what makes the rejection auditable rather than
+    # merely stated.
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "committed=resolved" in caplog.text
+    assert "committed=anchored" in caplog.text
+    assert "committed=resolved" not in caplog.text
+    assert "strategy=anchored_committed_after_sanity_drift" in caplog.text
     assert "anchored_level_error_db=2.5" in caplog.text
     assert "resolved_level_error_db=0.2" in caplog.text
-    # **Why item 2 refuses again (R10a, #1817), and why that is the gate
-    # getting its teeth back rather than this test's subject moving.** This
-    # fixture refused here before #1809, stopped refusing after it, and refuses
-    # again now — but the third state is not a return to the first. Measured on
-    # the faithful fixture by sweeping the forced drift and reading
-    # ``event=correction.crossover_v2_prediction_gate`` (baseline 0.957 dB rms
-    # in every row; the floor is 0.5 dB):
+    # **The swept drift table this fixture's verdicts come from** (R10a, #1817),
+    # kept because it is what makes the acceptance above readable. Measured by
+    # sweeping the forced drift and reading
+    # ``event=correction.crossover_v2_prediction_gate`` with the pre-2b policy,
+    # so every row is the COMMITTED SCAN being graded (baseline 0.957 dB rms in
+    # every row; the floor is 0.5 dB):
     #
     #   drift dB     0      1      2      3       4       5       6      7      8
     #   improve  +0.657 +0.657 +0.657 +0.657  -0.324  -0.688  -1.087 -1.524 -1.998
     #   verdict   accept accept accept accept  refuse  refuse  refuse refuse refuse
     #
-    # So the gate now DISCRIMINATES on this fixture: a correct trim ships, and a
-    # mistrim of 4 dB or more is caught as the regression it is. Under the flat
-    # target it refused at every drift including 0.0 (-0.293 dB), because the
-    # fit's own crossover-fighting cuts made even an untouched trim fail to beat
-    # its baseline — the gate could not tell a wild trim from a good one.
+    # The gate DISCRIMINATES on this fixture: a correct trim ships, a mistrim of
+    # 4 dB or more is caught as the regression it is. Under the flat target it
+    # refused at every drift including 0.0 (-0.293 dB), because the fit's own
+    # crossover-fighting cuts made even an untouched trim fail to beat its
+    # baseline — the gate could not tell a wild trim from a good one.
     #
-    # There is no drift that both fires the guard and clears the floor: the
-    # guard needs > 6.0 dB and the floor is lost above 3 dB. That is physics,
-    # not a fixture limit — a pair mistrimmed past the guard's own margin does
-    # not measure better. The guard's DECISION — commit on levels, not on drift
-    # — is what this test pins, and it is unchanged.
+    # The last two columns are what #2291 removed from the shipping path: past
+    # the 6.0 dB margin the pair no longer reaches this gate at all, because it
+    # is no longer the committed pair. The gate stays as the backstop for the
+    # 0-6 dB band, where a scan is still trusted to polish.
 
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
@@ -8664,14 +8716,13 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     curves the conductor is handed — keeps this test's subject bit-for-bit and
     stops it riding a floor it has nothing to say about.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     def _spy(*args, **kwargs):
         # Commit the anchor itself (no scan drift) so the committed pair is the
         # normalized anchor verbatim.
         return kwargs["seed_trim_db"], 0.0, kwargs["seed_trim_db"]
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     fakes = FakeSeams()
@@ -8725,12 +8776,11 @@ def test_wild_trim_boundary_exact_passes_just_above_falls_back(caplog, monkeypat
     resulting 6 dB-mislevelled pair is then refused downstream: the guard's
     bound and the accountability gate are different questions, deliberately.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     def _run_at(drift_db: float):
         caplog.clear()
         monkeypatch.setattr(
-            flow_mod, "solve_ripple_optimal_trim",
+            iv, "solve_ripple_optimal_trim",
             lambda *a, **k: (k["seed_trim_db"] - drift_db, 0.0, k["seed_trim_db"]),
         )
         fakes = FakeSeams()
@@ -9170,7 +9220,7 @@ def test_an_accountability_refusal_names_itself_to_the_host():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            flow.CrossoverV2Conductor, "_realized_level_match", _still_mislevelled
+            iv, "realized_level_match", _still_mislevelled
         )
         _run_phase(c, 1, 1)
         assert c.last_failure_code is None
@@ -9213,10 +9263,10 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand, cloud=None):
+    def _boom(analysis, cand, cloud=None, **_kw):
         raise ValueError("simulated fit engine bug")
 
-    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    monkeypatch.setattr(c, "_plan_linearization", _boom)
     verdict = _run_phase(c, 2, 2)
 
     assert verdict["accepted"] is True
@@ -9241,10 +9291,10 @@ def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, mon
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand, cloud=None):
+    def _boom(analysis, cand, cloud=None, **_kw):
         raise RuntimeError("linearization fit emitted a boost")
 
-    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    monkeypatch.setattr(c, "_plan_linearization", _boom)
     verdict = _run_phase(c, 2, 2)
 
     assert verdict["accepted"] is True
@@ -9317,10 +9367,9 @@ def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
     fell back to the seed pair -- distinct from "fitted" even though
     linearization is populated in both). Seed-anchored (#1668), so force the
     drift by monkeypatching the ripple-optimal solve."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     monkeypatch.setattr(
-        flow_mod, "solve_ripple_optimal_trim",
+        iv, "solve_ripple_optimal_trim",
         lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
     )
     fakes = FakeSeams()
@@ -9379,10 +9428,9 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
     ``_fit_linearization`` used internally, at the resolved trim -- and must
     differ measurably from the fixture's own raw (all-zero) prediction,
     proving the override actually took effect."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     captured: dict = {}
-    real_solve = flow_mod.solve_ripple_optimal_trim
+    real_solve = iv.solve_ripple_optimal_trim
 
     def _spy(*args, **kwargs):
         # Positional call shape: solve_ripple_optimal_trim(freqs, w_tf,
@@ -9391,7 +9439,7 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
         captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -9440,7 +9488,6 @@ def test_measure_predicted_sum_carries_the_committed_delay(monkeypatch):
     keeping the raw and linearized models one model apart (the correction
     filters) is what the improvement gate and ``_commanded_delta`` depend on.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     # A 20 us residual: comfortably inside the +/-(period/6) snap radius
     # (83.3 us at a 2 kHz Fc) and several times the ~5.5 us snap deltas the
@@ -9454,14 +9501,14 @@ def test_measure_predicted_sum_carries_the_committed_delay(monkeypatch):
     ) == pytest.approx(expected_residual_us)
 
     captured: dict = {}
-    real_solve = flow_mod.solve_ripple_optimal_trim
+    real_solve = iv.solve_ripple_optimal_trim
 
     def _spy(*args, **kwargs):
         freqs, w_tf, t_tf, fc_hz = args
         captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     def _anchored(program):
         analysis = _eligible_measure_analysis(program)
@@ -9521,7 +9568,6 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
     (wild resolved) trim. Force the rejection by monkeypatching the ripple-
     optimal solve to return a far-from-seed value while still capturing the
     linearized branches it received."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     captured: dict = {}
 
@@ -9531,7 +9577,7 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
         # Force the resolved tweeter trim far from its band-average seed.
         return kwargs["seed_trim_db"] - 20.0, 0.0, kwargs["seed_trim_db"]
 
-    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+    monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -9586,10 +9632,10 @@ def test_measure_predicted_sum_unchanged_when_fit_engine_raises(monkeypatch):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand, cloud=None):
+    def _boom(analysis, cand, cloud=None, **_kw):
         raise ValueError("simulated fit engine bug")
 
-    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    monkeypatch.setattr(c, "_plan_linearization", _boom)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert c.candidate.linearization == {}
@@ -9896,7 +9942,7 @@ def test_delta_probe_runs_only_after_tracking_has_passed():
 
 
 def _boost_vocabulary_spy(seen: list[bool]):
-    real_fit = flow.fit_driver_linearization
+    real_fit = iv.fit_driver_linearization
 
     def _spy(resp, envelope, **kwargs):
         seen.append(kwargs["vocabulary"].allow_boost)
@@ -9921,7 +9967,7 @@ def test_boost_is_granted_only_to_a_journey_that_will_verify():
     seen: list[bool] = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
+        mp.setattr(iv, "fit_driver_linearization", _boost_vocabulary_spy(seen))
         c = _cloud_conductor(fakes)
         _walk_measure_cloud_to_close(c)
     assert seen and all(seen)
@@ -9931,7 +9977,7 @@ def test_boost_is_granted_only_to_a_journey_that_will_verify():
     # A session told its journey will not verify is refused the vocabulary…
     seen.clear()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
+        mp.setattr(iv, "fit_driver_linearization", _boost_vocabulary_spy(seen))
         c2 = _cloud_conductor(fakes, post_apply_verifies=False)
         _walk_measure_cloud_to_close(c2)
     assert seen and not any(seen)
@@ -9940,7 +9986,7 @@ def test_boost_is_granted_only_to_a_journey_that_will_verify():
     # the undeclared default stays the conservative phase-derived reading.
     seen.clear()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
+        mp.setattr(iv, "fit_driver_linearization", _boost_vocabulary_spy(seen))
         c3 = _conductor(fakes, index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE})
         _run_phase(c3, 1, 1)
         _run_phase(c3, 2, 2)
@@ -9974,7 +10020,7 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
     seen: list[bool] = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
+        mp.setattr(iv, "fit_driver_linearization", _boost_vocabulary_spy(seen))
         c = _cloud_conductor(fakes)
         # THE precondition this test now turns on: the session PLANNED a cloud.
         # Without it the fixture would be indistinguishable from R15's
@@ -10001,7 +10047,7 @@ def _vocabularies_seen(seen: list):
     makes a claim about what the permission came WITH (an empty exclusion set,
     because there is no spatial evidence to compose), so that needs the object.
     """
-    real_fit = flow.fit_driver_linearization
+    real_fit = iv.fit_driver_linearization
 
     def _spy(resp, envelope, **kwargs):
         seen.append(kwargs["vocabulary"])
@@ -10048,7 +10094,7 @@ def test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud():
     seen: list = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _vocabularies_seen(seen))
+        mp.setattr(iv, "fit_driver_linearization", _vocabularies_seen(seen))
         c = _conductor(fakes)
         # The scope precondition, asserted rather than inherited: this session's
         # own capture plan contains no pre-apply cloud phase. That — not
@@ -10085,7 +10131,7 @@ def test_a_cut_only_journey_on_the_same_fixture_places_no_boost():
     seen: list = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _vocabularies_seen(seen))
+        mp.setattr(iv, "fit_driver_linearization", _vocabularies_seen(seen))
         c = _conductor(fakes, post_apply_verifies=False)
         _run_phase(c, 1, 1)
         _run_phase(c, 2, 2)
@@ -10193,8 +10239,8 @@ def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
     fakes.measure = lambda program: _eligible_measure_analysis(program)
 
     cap_db = 2.0
-    real_compose = flow.compose_envelope
-    real_fit = flow.fit_driver_linearization
+    real_compose = iv.compose_envelope
+    real_fit = iv.fit_driver_linearization
 
     def _capped(*args, **kwargs):
         env = real_compose(*args, **kwargs)
@@ -10219,8 +10265,8 @@ def test_the_envelope_still_bounds_a_boost_on_the_driver_only_path():
     assert free_boosts and max(free_boosts) > cap_db
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "compose_envelope", _capped)
-        mp.setattr(flow, "fit_driver_linearization", _record)
+        mp.setattr(iv, "compose_envelope", _capped)
+        mp.setattr(iv, "fit_driver_linearization", _record)
         capped = _conductor(fakes)
         _run_phase(capped, 1, 1)
         _run_phase(capped, 2, 2)
@@ -10272,7 +10318,7 @@ def test_the_headroom_charge_is_paid_for_a_driver_only_boost():
         assert fit["headroom_cost_db"] == pytest.approx(
             branch_headroom_db(
                 fit["filters"],
-                sections=c._branch_crossover_sections(role),
+                sections=_configured_sections(c, role),
                 trim_db=c.candidate.role_attenuations_db[role],
             )
         )
@@ -10423,7 +10469,7 @@ def test_the_realized_level_assertion_still_fires_when_the_frame_agreed(caplog):
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _match)
+        mp.setattr(iv, "realized_level_match", _match)
         _run_phase(c, 1, 1)
         with pytest.raises(CaptureBeginRefused) as excinfo:
             _run_phase(c, 2, 2)
@@ -10622,24 +10668,30 @@ def test_the_conductor_and_the_emitter_derive_one_set_of_crossover_sections():
 
     emitter = _branch_context(c.candidate.source_preset, {})
     for role in c.candidate.linearization:
-        assert c._branch_crossover_sections(role) == emitter[role][0], role
+        assert _configured_sections(c, role) == emitter[role][0], role
 
 
-def test_a_role_with_no_crossover_region_is_credited_nothing_and_named(caplog):
+def test_a_role_with_no_crossover_region_is_credited_nothing():
     """…and the no-region case resolves the same way on both sides, because
     both sides ask the same function: no section, so the branch is treated as
     running full range — which is exactly what the emitter would build for it.
-    It is still a defect on a 2-way conductor, so it is named in the journal
-    rather than silently absorbed."""
+
+    **The "and named" half of this test moved with the fit** (#2291 Phase 2b).
+    The ``correction.crossover_v2_linearization_no_crossover`` WARNING is
+    emitted by the planner, at the corner of the candidate being planned rather
+    than the session's, and is pinned there by
+    ``test_crossover_v2_intervention_dual_run.py::
+    test_a_role_with_no_crossover_section_is_named_in_the_journal`` (plus its
+    positive control). What is left here is the half this module still owns:
+    the derivation credits nothing and invents nothing.
+    """
     from jasper.active_speaker.branch_chain import sections_by_role
 
-    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     c = _conductor(fakes)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(c, "_preset", types.SimpleNamespace(crossover_regions=()))
-        assert c._branch_crossover_sections("woofer") == ()
-    assert "event=correction.crossover_v2_linearization_no_crossover" in caplog.text
+        assert _configured_sections(c, "woofer") == ()
     # The shared derivation is where that answer comes from — not a branch in
     # the conductor that the emitter would have to mirror.
     assert sections_by_role(()) == {}
@@ -10788,7 +10840,6 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     their two matched drivers sit 6.16 dB apart, and the shipped arm mints none.
     Reverting #1929 fails this test on both.
     """
-    import jasper.active_speaker.crossover_v2_flow as flow
 
     woofer_db, tweeter_db, trim_db = _healthy_crossed_over_pair()
 
@@ -10805,11 +10856,11 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # ``_fit_linearization`` grades them (resolved, then anchored) — two per
     # arm. This is what makes the scan's rescue readable instead of inferred.
     graded: list[dict] = []
-    real_match = flow.CrossoverV2Conductor._realized_level_match
+    real_match = iv.realized_level_match
 
-    def _spy(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs):
+    def _spy(freqs, w_tf, t_tf, fc_hz, trims_db, *args, **kwargs):
         graded.append(dict(trims_db))
-        return real_match(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs)
+        return real_match(freqs, w_tf, t_tf, fc_hz, trims_db, *args, **kwargs)
 
     # --- pre-#1929: the whole declared span, and a healthy speaker refused ---
     #
@@ -10824,19 +10875,20 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # than a half-updated one. If a later argument must survive into this arm,
     # that is a deliberate edit here, not something to inherit silently.
     with pytest.MonkeyPatch.context() as mp:
-        whole_band = flow.driver_core_level_db
-        whole_band_span = flow.core_level_band_hz
+        whole_band = iv.driver_core_level_db
+        whole_band_span = iv.core_level_band_hz
         mp.setattr(
-            flow, "driver_core_level_db",
+            iv, "driver_core_level_db",
             lambda resp, env, **_band: whole_band(resp, env),
         )
         # ...and the disclosure with it, so the pre-fix arm is a faithful
         # pre-#1929 session rather than one whose journal and whose number
         # disagree about which band was used.
         mp.setattr(
-            flow, "core_level_band_hz", lambda env, **_band: whole_band_span(env),
+            iv, "core_level_band_hz", lambda env, **_band: whole_band_span(env),
         )
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
+        mp.setattr(iv, "realized_level_match", _spy)
+        before_plans = _plan_spy(mp)
         before = session()
         before_verdict = _run_phase(before, 2, 2)
     # Completes since the boost ruling (#2106) — and NOT because the frame
@@ -10844,9 +10896,10 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # rather than stopping on it; what changed at #2106 is downstream of that,
     # in the prediction gate, which now has a fit that can fill the dips.
     assert before_verdict["accepted"] is True
-    assert before._last_level_frame_disagreement_db == pytest.approx(6.16, abs=0.1)
+    before_plan = before_plans[-1]
+    assert before_plan.level_frame_disagreement_db == pytest.approx(6.16, abs=0.1)
     assert (
-        before._last_level_frame_disagreement_db
+        before_plan.level_frame_disagreement_db
         > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     # The frame's refusal is the ERROR line — its absence is the assertion that
@@ -10862,7 +10915,8 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # --- and with the radiating band: the identical session, judged fairly ---
     caplog.clear()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
+        mp.setattr(iv, "realized_level_match", _spy)
+        after_plans = _plan_spy(mp)
         after = session()
         # Completes too, and NOT for anything the level frame said — see this
         # test's docstring for the measured account and
@@ -10871,8 +10925,9 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
         # FINDING below rather than the outcome.
         after_verdict = _run_phase(after, 2, 2)
     assert after_verdict["accepted"] is True
-    assert after._last_level_frame_disagreement_db == pytest.approx(0.99, abs=0.1)
-    assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+    after_plan = after_plans[-1]
+    assert after_plan.level_frame_disagreement_db == pytest.approx(0.99, abs=0.1)
+    assert after_plan.level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     # THE DIFFERENCE THAT STILL REACHES A HOUSEHOLD, and the reason this test is
     # not vacuous now that both arms end the same way. Over the declared span
     # the owner of two matched drivers is told they sit 6.16 dB apart; over the
@@ -10890,13 +10945,13 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # flat target they read 2.847 and −0.321 dB. (It is not a fully independent
     # third opinion — it is ``solve_branch_trims``' own estimator re-read on the
     # trimmed pair, "One estimator, not a second opinion" per its own docstring.)
-    before_difference_db = before._last_realized_level_match.difference_db
-    after_difference_db = after._last_realized_level_match.difference_db
+    before_difference_db = before_plan.realized_level_match.difference_db
+    after_difference_db = after_plan.realized_level_match.difference_db
     assert before_difference_db == pytest.approx(0.693, abs=0.05)
     assert after_difference_db == pytest.approx(0.725, abs=0.05)
     assert abs(before_difference_db - after_difference_db) < 0.1
-    assert before._last_realized_level_match.matched is True
-    assert after._last_realized_level_match.matched is True
+    assert before_plan.realized_level_match.matched is True
+    assert after_plan.realized_level_match.matched is True
 
     # …and the MECHANISM that makes them agree, so the line above reads as a
     # measured rescue rather than a coincidence. Four graded pairs, two per arm,
@@ -11006,12 +11061,15 @@ def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
         },
     )
     c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    accepted = _run_phase(c, 2, 2)["accepted"]
+    with pytest.MonkeyPatch.context() as mp:
+        plans = _plan_spy(mp)
+        _run_phase(c, 1, 1)
+        accepted = _run_phase(c, 2, 2)["accepted"]
 
     # #1929's own number, unmoved by R10a's shaped target.
-    assert c._last_level_frame_disagreement_db == pytest.approx(0.910, abs=0.02)
-    assert c._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+    plan = plans[-1]
+    assert plan.level_frame_disagreement_db == pytest.approx(0.910, abs=0.02)
+    assert plan.level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
 
     # R10a: a pair that is perfect by construction is left ALONE and accepted.
     # Both halves matter — zero filters is the #1817 claim, and `accepted` is
@@ -11064,7 +11122,8 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _unmatched)
+        mp.setattr(iv, "realized_level_match", _unmatched)
+        plans = _plan_spy(mp)
         _run_phase(c, 1, 1)
         with pytest.raises(CaptureBeginRefused):
             _run_phase(c, 2, 2)
@@ -11073,13 +11132,14 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
     assert "core_level_db=" in caplog.text
     for key in ("'level_db'", "'band_hz'", "'radiating_band_hz'"):
         assert key in caplog.text, key
-    assert set(c._last_level_frame_cores) == {"woofer", "tweeter"}
+    cores = plans[-1].level_frame_cores
+    assert set(cores) == {"woofer", "tweeter"}
     # The band reported is the one the median was taken over. On this ordinary
     # two-way both roles clear the width floor, so it sits inside the bound
     # rather than falling back to the whole mask — and the two keys differ,
     # which is what makes reporting both worth the space.
     for role in ("woofer", "tweeter"):
-        disclosed = c._last_level_frame_cores[role]
+        disclosed = cores[role]
         assert disclosed["band_hz"] != disclosed["radiating_band_hz"]
         assert disclosed["band_hz"][0] >= disclosed["radiating_band_hz"][0]
 
@@ -11253,19 +11313,21 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # written down here. The wrapper is transparent — it defers to the real
     # estimator and only observes.
     graded: list[dict] = []
-    real_match = flow.CrossoverV2Conductor._realized_level_match
+    real_match = iv.realized_level_match
 
-    def _spy(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs):
+    def _spy(freqs, w_tf, t_tf, fc_hz, trims_db, *args, **kwargs):
         graded.append(dict(trims_db))
-        return real_match(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs)
+        return real_match(freqs, w_tf, t_tf, fc_hz, trims_db, *args, **kwargs)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
+        mp.setattr(iv, "realized_level_match", _spy)
+        plans = _plan_spy(mp)
         _run_phase(c, 1, 1)
 
         # 1 — the session completes. Under the pre-ruling gate this raised
         # CaptureBeginRefused(driver_levels_disagree).
         verdict = _run_phase(c, 2, 2)
+    plan = plans[-1]
     assert verdict["accepted"] is True
     assert c.candidate is not None
     assert c.last_failure_code is None
@@ -11273,14 +11335,14 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # The two instruments, and the fact that they disagree about a speaker
     # whose OUTPUT is fine. This is the whole premise of the ruling, so it is
     # asserted as magnitudes rather than as booleans.
-    assert c._last_level_frame_disagreement_db == pytest.approx(3.894, abs=0.02)
+    assert plan.level_frame_disagreement_db == pytest.approx(3.894, abs=0.02)
     assert (
-        c._last_level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+        plan.level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
-    assert c._last_realized_level_match.difference_db == pytest.approx(
+    assert plan.realized_level_match.difference_db == pytest.approx(
         -0.402, abs=0.02
     )
-    assert c._last_realized_level_match.matched is True
+    assert plan.realized_level_match.matched is True
 
     # 2 — one finding banked, carrying all three instruments and both bands.
     assert len(banked) == 1
@@ -11342,8 +11404,8 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # disagreement.
     lin = c.candidate.linearization
     giveback = {role: lin[role]["correction_giveback_db"] for role in lin}
-    cores = {r: v["level_db"] for r, v in c._last_level_frame_cores.items()}
-    trims = dict(c._last_level_frame_trims)
+    cores = {r: v["level_db"] for r, v in plan.level_frame_cores.items()}
+    trims = dict(plan.level_frame_trims)
     placed = anchored["woofer"] - anchored["tweeter"]
     core_frame = (
         (giveback["woofer"] - cores["woofer"])
@@ -11353,14 +11415,14 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         (giveback["woofer"] + trims["woofer"])
         - (giveback["tweeter"] + trims["tweeter"])
     )
-    # 1e-3 is the disclosure's own rounding: ``_last_level_frame_cores`` reports
+    # 1e-3 is the disclosure's own rounding: ``level_frame_cores`` reports
     # each core level to 3 dp, so ``core_frame`` carries up to a half-step of
     # rounding on each of its two terms.
     assert placed == pytest.approx(core_frame, abs=1e-3)
     assert placed == pytest.approx(-0.502, abs=0.02)
     assert trim_frame == pytest.approx(3.391, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
-        c._last_level_frame_disagreement_db, abs=1e-3
+        plan.level_frame_disagreement_db, abs=1e-3
     )
 
     # 4 — the decision is in the journal under its own event, and the refusal
@@ -11408,7 +11470,7 @@ def test_a_disagreeing_frame_the_realized_check_also_fails_still_refuses(caplog)
         )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _unmatched)
+        mp.setattr(iv, "realized_level_match", _unmatched)
         _run_phase(c, 1, 1)
         with pytest.raises(CaptureBeginRefused) as excinfo:
             _run_phase(c, 2, 2)
@@ -11577,10 +11639,12 @@ def test_an_agreeing_frame_banks_nothing():
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     banked = fakes.banked_findings
-    _run_phase(c, 1, 1)
-    assert _run_phase(c, 2, 2)["accepted"] is True
+    with pytest.MonkeyPatch.context() as mp:
+        plans = _plan_spy(mp)
+        _run_phase(c, 1, 1)
+        assert _run_phase(c, 2, 2)["accepted"] is True
     assert (
-        c._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+        plans[-1].level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     assert banked == []
 
@@ -11626,7 +11690,7 @@ def test_no_boost_lands_in_a_drivers_own_crossover_stopband():
         c = build()
         boosts_seen = False
         for role, fit in c.candidate.linearization.items():
-            sections = c._branch_crossover_sections(role)
+            sections = _configured_sections(c, role)
             lo_hz, hi_hz = radiating_band_hz(sections)
             for f in fit["filters"]:
                 if f["gain"] > 0.0:
@@ -11654,7 +11718,7 @@ def test_the_stamped_headroom_cost_is_the_committed_chains_own_peak():
         assert fit["headroom_cost_db"] == pytest.approx(
             branch_headroom_db(
                 fit["filters"],
-                sections=c._branch_crossover_sections(role),
+                sections=_configured_sections(c, role),
                 trim_db=c.candidate.role_attenuations_db[role],
             )
         )
@@ -12244,14 +12308,14 @@ def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     seen: list[tuple[tuple[float, float], ...]] = []
-    real_fit = flow.fit_driver_linearization
+    real_fit = iv.fit_driver_linearization
 
     def _spy(resp, envelope, **kwargs):
         seen.append(kwargs["vocabulary"].boost_excluded_bands_hz)
         return real_fit(resp, envelope, **kwargs)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "fit_driver_linearization", _spy)
+        mp.setattr(iv, "fit_driver_linearization", _spy)
         mp.setattr(
             flow.CrossoverV2Conductor, "_boost_excluded_bands_hz",
             lambda self, combined, result: ((1500.0, 1900.0),),

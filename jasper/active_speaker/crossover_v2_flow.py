@@ -101,7 +101,6 @@ from jasper.active_speaker.attempts_loop import (
     LoopDecision,
     decide_next,
 )
-from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -113,16 +112,14 @@ from jasper.active_speaker.delta_probe import (
     spatial_cost_from_group_spreads,
 )
 from jasper.active_speaker.branch_chain import (
-    HEADROOM_MARGIN_DB,
     CrossoverSection,
-    branch_chain_peak_db,
     chain_response,
     crossover_response_complex,
-    headroom_charge_db,
     radiating_band_hz,
     sections_by_role,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
+    CandidateAcousticContext,
     InterventionProposal,
     PlanRefusal,
 )
@@ -133,13 +130,21 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # runs one way: flow → crossover_v2, never back). They are re-exported here
 # under their historical private names so every existing importer keeps
 # resolving to the single definition rather than growing a second copy.
+#
+# The Phase 2b cutover deleted the legacy fitter, and with it this module's own
+# last reads of ``compose_sigma_db`` and ``rounded_band_hz``. Rather than keep
+# two imports alive purely as a door for outside callers, those callers now
+# import from the module that OWNS them; only what this module still reads is
+# imported here.
 from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    compose_sigma_db as _compose_sigma_db,
+    JournalRecord,
+    LinearizationPlan,
     driver_response_by_role as _driver_response_by_role,
     measure_validity_floor_hz as _measure_validity_floor_hz,
-    rounded_band_hz as _rounded_band_hz,
+    plan_linearization,
+    request_from_analysis,
 )
 from jasper.active_speaker.crossover_v2.planner_facade import (
     plan_intervention_proposal,
@@ -153,15 +158,8 @@ from jasper.active_speaker.fc_selector import (
     select_fc,
 )
 from jasper.active_speaker.camilla_yaml import role_polarity
-from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.linearization_fit import (
-    FitVocabulary,
-    complex_correction_response,
-    core_level_band_hz,
-    driver_core_level_db,
-    fit_driver_linearization,
     linearization_filters_by_role,
-    solve_shared_level_frame,
     worst_headroom_cost_db,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -188,9 +186,6 @@ from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RealizedLevelMatch,
     overlap_band_hz,
-    predicted_branch_sum,
-    realized_branch_level_match,
-    solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
@@ -1377,23 +1372,6 @@ _FC_GRID_EPS_HZ = 0.05
 #: publication, polling, and loaded-Pi variance. Post-P0.1 live-Pi all-six
 #: timing is unverified; this is the bounded deployment ceiling.
 FC_SWEEP_COMPUTE_BUDGET_S = 70.0
-
-# The conductor fields ``_fit_linearization`` writes as side effects. Saved and
-# restored around the candidate sweep: the walk's own candidate build re-runs
-# the fit and overwrites them, but ONLY when it is eligible and does not raise
-# — and the SF2 degrade path notably does not clear
-# ``_last_linearized_predicted_sum``. Without the restore a sweep leftover
-# could become the anchor's published VERIFY prior.
-_FC_SWEEP_CONDUCTOR_FIELDS = (
-    "_last_level_frame",
-    "_last_level_frame_cores",
-    "_last_level_frame_disagreement_db",
-    "_last_level_frame_trims",
-    "_last_linearization_outcome",
-    "_last_linearized_predicted_sum",
-    "_last_realized_level_match",
-)
-
 
 def _fc_refusal(fc_hz: float, reason: str) -> FcCandidateEvaluation:
     """A candidate that produced no score, carrying WHY — never a silent drop."""
@@ -3885,7 +3863,8 @@ LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 # the threshold is a product-policy floor instead of a noise margin.
 #
 # 0.5 dB is that floor because it is this model's own measured tracking error:
-# `_fit_linearization` records the complex-correction model tracking the real
+# `crossover_v2.intervention.plan_linearization` records the complex-correction
+# model tracking the real
 # VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
 # mistracked by ~2.0 dB). An improvement smaller than the gap between what we
 # model and what the hardware realizes is not an improvement we can honestly
@@ -5933,6 +5912,76 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class _LinearizationState:
+    """What ONE candidate build's linearization produced, as a value (#2291).
+
+    **This class is the scratch channel's replacement.** Until Phase 2b the
+    same seven facts lived on the conductor as ``self._last_*`` fields written
+    as a side effect of the fit. That made them a *return channel with no
+    caller*: the Fc sweep had to snapshot and restore all seven around every
+    candidate (``_FC_SWEEP_CONDUCTOR_FIELDS``) precisely because a value
+    belonging to candidate N would otherwise be read as candidate N+1's — or as
+    the anchor's. One save/restore bug away from publishing a prescription
+    computed for a different crossover, which is the family the 2026-08-10
+    incident belongs to.
+
+    Held per build and passed by hand, the question cannot arise: a state
+    describes exactly the candidate whose build returned it, and a build a
+    retake moots is dropped whole — the same reason
+    :class:`_SpeculativeClose` exists, applied one layer down.
+
+    ``outcome`` is the union of the planner's own verdict
+    (``"fitted"``/``"trim_rejected"``) and the two the conductor decides
+    without planning at all: an eligibility refusal
+    (``"ineligible_mic_tier"``/``"ineligible_repeats"``) and the SF2 degrade
+    (``"fit_failed"``). Empty means no build ran. It is stamped verbatim onto
+    the candidate, which is then the single reader every other surface quotes.
+
+    Every other field is ``None``/empty on all three non-planning outcomes,
+    including ``linearized_predicted_sum`` — so a candidate that degraded to
+    trims-only publishes the RAW two-branch prediction as its VERIFY prior,
+    which is what the trims-only lane means. Legacy left that one field
+    un-cleared on the SF2 path (its own comment named the gap); a fit that
+    raised part-way has no linearized model, so carrying one forward was the
+    fail-open direction.
+    """
+
+    outcome: str = ""
+    level_frame: Any = None
+    level_frame_disagreement_db: float = 0.0
+    level_frame_cores: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    level_frame_trims: Mapping[str, float] = field(default_factory=dict)
+    linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    realized_level_match: RealizedLevelMatch | None = None
+
+    @classmethod
+    def from_plan(cls, plan: LinearizationPlan) -> "_LinearizationState":
+        """Everything a planned candidate leaves behind, read off the plan.
+
+        A straight projection — no policy, no re-derivation. The plan is the
+        single owner of each of these values; this is the conductor naming the
+        subset it consumes downstream.
+        """
+        return cls(
+            outcome=plan.outcome,
+            level_frame=plan.level_frame,
+            level_frame_disagreement_db=plan.level_frame_disagreement_db,
+            level_frame_cores=plan.level_frame_cores,
+            level_frame_trims=plan.level_frame_trims,
+            linearized_predicted_sum=plan.linearized_predicted_sum,
+            realized_level_match=plan.realized_level_match,
+        )
+
+    @property
+    def realized_branch_level(self) -> dict[str, Any] | None:
+        """The realized-level verdict serialized, or ``None`` when none ran."""
+        return (
+            None if self.realized_level_match is None
+            else self.realized_level_match.to_dict()
+        )
+
+
+@dataclass(frozen=True)
 class _SpeculativeClose:
     """A group close that already RAN, waiting for the household to want it.
 
@@ -5967,6 +6016,14 @@ class _SpeculativeClose:
     analysis: Any
     cloud: "_CloudFitEvidence | None"
     level_frame_finding: Mapping[str, Any] | None = None
+    linearization: _LinearizationState = field(default_factory=_LinearizationState)
+    """What THIS build's linearization produced — see :class:`_LinearizationState`.
+
+    Rides the close for the same reason ``level_frame_finding`` does, and now
+    for the whole of the fit's output rather than one record of it: a
+    speculative build a retake moots is dropped whole, and anything left on
+    ``self`` would survive that drop and be read against the next candidate.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -6331,22 +6388,6 @@ class CrossoverV2Conductor:
         # position group closes (which adds the spatial arm). ``None`` until
         # VERIFY is consumed.
         self._delta_probe: DeltaProbeMap | None = None
-        # PR-L5: the session's shared level frame and the largest per-role
-        # disagreement it had to reconcile. ``None``/0.0 means no fit ran for
-        # this attempt — which, exactly like ``_last_realized_level_match``, is
-        # NOT a pass; the gate that reads them only refuses on evidence.
-        self._last_level_frame: Any = None
-        self._last_level_frame_disagreement_db: float = 0.0
-        # …and the per-role core levels that frame was solved from, with the
-        # radiating band each was read over (#1929) — the refusal's evidence.
-        self._last_level_frame_cores: dict[str, dict[str, Any]] = {}
-        # …and the frame's OTHER estimator: the trim solve's own level-match
-        # result (`trim_band_average_db`), per role. Held for the #1866 finding
-        # only — the disagreement is BETWEEN the two, so banking one of them
-        # and calling it evidence would leave a reader re-deriving the half
-        # that actually differed. Deliberately NOT added to the refusal's
-        # journal line, which is #1934's shape and unchanged by this PR.
-        self._last_level_frame_trims: dict[str, float] = {}
         # VERIFY's own measured-vs-predicted curve pair and gated validity
         # floor, held so the post-apply group's close can re-run the probe with
         # the spatial arm without re-analyzing a capture.
@@ -6585,43 +6626,6 @@ class CrossoverV2Conductor:
         # group), so the surviving value always belongs to the capture the
         # candidate was built from.
         self._measure_ripple_reservation: dict[str, Any] | None = None
-        # SF3 (2026-07-24 adversarial review): which linearization path this
-        # attempt's candidate build took — set by ``_linearization_eligible``
-        # (the ineligible branches) and ``_fit_linearization`` (fitted vs the
-        # wild-trim sanity fallback) or ``_build_candidate`` (a raised fit
-        # bug). Mirrors ``_last_measure_guard`` exactly: reset at the top of
-        # every ``_measure_verdict`` call so a stale value from a PRIOR
-        # attempt — or from a verdict that never reached ``_build_candidate``
-        # — can never leak into this attempt's diagnostic. One of "",
-        # "ineligible_mic_tier", "ineligible_repeats", "fitted",
-        # "trim_rejected", or "fit_failed"; empty means "not evaluated this
-        # attempt." Read by ``_log_measure_diag``'s ``linearization=`` field;
-        # never consulted by ``_measure_verdict`` itself, so a bug here
-        # cannot change a verdict.
-        self._last_linearization_outcome: str = ""
-        # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
-        # PR-D): stamped by ``_fit_linearization`` on the SAME "fitted"/
-        # "trim_rejected" sub-outcomes as ``_last_linearization_outcome``
-        # above — both emit the correction filters into the live graph (only
-        # the trim differs between them), so both need the persisted VERIFY
-        # prediction rebuilt from the LINEARIZED branches, never the raw
-        # ones. ``None`` on every other path (ineligible, fit_failed, or a
-        # verdict that never reached ``_build_candidate`` this attempt),
-        # which ``_measure_verdict`` reads as "use ``analysis.predicted_sum``
-        # (the raw branches) instead" — byte-identical to before this fix.
-        # Reset at the top of every ``_measure_verdict`` call, mirroring
-        # ``_last_linearization_outcome``'s own reset discipline: a stale
-        # value from a PRIOR attempt must never leak into THIS attempt's
-        # persisted VERIFY prior.
-        self._last_linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
-        # PR-L4 item 1: the fit's realized inter-driver level verdict, written
-        # by ``_fit_linearization`` and asserted by
-        # ``_publish_measure_candidate``. ``None`` means no fit ran for this
-        # attempt (ineligible / fit_failed), which is NOT a pass — the assertion
-        # simply has no linearized branches to grade, exactly as it had none
-        # before Layer-1a existed. Same reset discipline as the field above: a
-        # prior attempt's verdict must never authorize THIS attempt's candidate.
-        self._last_realized_level_match: RealizedLevelMatch | None = None
 
     # --- program composition -------------------------------------------------
 
@@ -8131,13 +8135,10 @@ class CrossoverV2Conductor:
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
         self._measure_ripple_reservation = None
-        self._last_linearization_outcome = ""
-        self._last_linearized_predicted_sum = None
-        self._last_realized_level_match = None
-        self._last_level_frame = None
-        self._last_level_frame_disagreement_db = 0.0
-        self._last_level_frame_cores = {}
-        self._last_level_frame_trims = {}
+        # The seven linearization fields this used to reset with them are gone
+        # (#2291 Phase 2b): a build returns its own :class:`_LinearizationState`
+        # and nothing outlives the build, so there is no prior attempt's value
+        # left to leak into this one.
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         # --- "too quiet" runs BEFORE "glitched" (D3, issue #1838) ---
@@ -8616,21 +8617,20 @@ class CrossoverV2Conductor:
         )
         cand = analysis.candidate
         # The SAME hard gate ``_build_candidate`` applies, and applied for the
-        # same reason: ``_fit_linearization`` states in its own docstring that
+        # same reason: ``plan_linearization`` states in its own docstring that
         # it assumes eligibility and does not re-check, so calling it on a
         # phone-tier or under-repeated session raises inside the fit engine
         # rather than declining. An ineligible session simply has no linearized
         # model to compare candidates with — an honest refusal, never a
         # fallback to the raw prediction, which would put candidates fitted
         # differently side by side and call the difference a crossover.
-        if cand is None or not self._linearization_eligible(analysis):
+        if cand is None or self._linearization_ineligible_reason(analysis) is not None:
             return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
         preset = replace(self._preset, crossover_regions=tuple(
             replace(region,
                     id=f"{region.lower_driver}_{region.upper_driver}_{round(fc_hz):.0f}hz",
                     fc_hz=float(fc_hz))
             for region in self._preset.crossover_regions))
-        self._last_linearized_predicted_sum = None
         built = self._build_measure_candidate(
             analysis, None, candidate_sections=sections, source_preset=preset,
         )
@@ -8640,7 +8640,11 @@ class CrossoverV2Conductor:
         trims, linearization = candidate.role_attenuations_db, candidate.linearization
         grid = lateral_evidence_grid_hz()
         tweeter_lo, woofer_hi = self._measure_sweep_bounds()
-        anchor_sum = self._last_linearized_predicted_sum
+        # THIS candidate's own linearized prediction, off the state its own
+        # build returned. Until #2291 Phase 2b it was read back off a conductor
+        # field that had to be nulled beforehand and restored afterwards; a
+        # value cannot be another candidate's.
+        anchor_sum = built.linearization.linearized_predicted_sum
         if anchor_sum is None:
             # Eligible but the fit still produced no linearized prediction.
             return _fc_refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
@@ -8673,6 +8677,12 @@ class CrossoverV2Conductor:
             commanded_delta=_commanded_delta(analysis.predicted_sum,
                                              built.predicted_sum),
             level_frame_finding=built.level_frame_finding,
+            # THIS candidate's realized inter-driver level, which the sweep can
+            # carry since the cutover (#2307 gate note N6): the verdict is a
+            # value on the build's own state rather than a conductor field the
+            # sweep restores, so a selected alternative corner's proposal now
+            # records its OWN evidence instead of an absence.
+            realized_branch_level=built.linearization.realized_branch_level,
         )
 
     def _fc_evaluation_budget_s(self) -> float:
@@ -8696,12 +8706,13 @@ class CrossoverV2Conductor:
             # No protection map means no §4.2 composition at all, so a
             # candidate's crossover cannot be substituted for the emitted one.
             return
-        # The fit writes SEVEN conductor fields that the walk's own candidate
-        # build reads. Saved and restored around the sweep because the restore
-        # is what makes the published candidate byte-identical to a no-selector
-        # run: the anchor's build re-runs the fit and overwrites all seven only
-        # when it is eligible AND does not raise, and neither is guaranteed.
-        saved = {name: getattr(self, name) for name in _FC_SWEEP_CONDUCTOR_FIELDS}
+        # No save/restore (#2291 Phase 2b). The fit used to write seven
+        # conductor fields the walk's own candidate build then read, so the
+        # sweep had to snapshot them and put them back — the restore was what
+        # made the published candidate byte-identical to a no-selector run.
+        # Each build now returns its own :class:`_LinearizationState`, so a
+        # swept candidate's values never reach the anchor's and there is
+        # nothing left to restore.
         started = time.monotonic()
         slowest_s = 0.0
         evaluations: list[FcCandidateEvaluation] = []
@@ -8784,8 +8795,6 @@ class CrossoverV2Conductor:
                 reason=type(exc).__name__,
             )
         finally:
-            for name, value in saved.items():
-                setattr(self, name, value)
             self._fc_evaluations = tuple(evaluations)
 
     def _adjudicate_fc(self) -> None:
@@ -9624,34 +9633,36 @@ class CrossoverV2Conductor:
         :meth:`run_speculative_group_close` for why that costs a failing
         session one extra fit and buys an unchanged failure path.
 
-        What it still writes are the fit's own diagnostic by-products
-        (``_last_linearization_outcome``, ``_last_linearized_predicted_sum``,
-        the level-frame fields) — self-healing state that the next fit
-        overwrites wholesale, and the reason the eager path holds
-        ``_close_lock`` rather than running truly free of the conductor.
+        **It writes no conductor state at all** since #2291 Phase 2b. The fit's
+        by-products — the outcome string, the linearized VERIFY prior, the
+        level-frame evidence and the realized-level verdict — used to land on
+        ``self`` as seven ``_last_*`` fields; they now ride the returned
+        :class:`_SpeculativeClose` with everything else this build produced.
+        The eager path still holds ``_close_lock``, for the ordering of the
+        commit that follows rather than for state this method leaves behind.
         """
         if candidate_sections is None and source_preset is None:
-            candidate = self._build_candidate(analysis, cloud)
+            candidate, linearization = self._build_candidate(analysis, cloud)
         else:
-            candidate = self._build_candidate(
+            candidate, linearization = self._build_candidate(
                 analysis, cloud, candidate_sections=candidate_sections,
                 source_preset=source_preset,
             )
         # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
         # PR-D): when this attempt fitted Layer-1a linearization (fitted OR
         # trim_rejected — both emit the correction filters, see
-        # ``_fit_linearization``'s tail), the persisted prediction VERIFY
+        # ``plan_linearization``'s tail), the persisted prediction VERIFY
         # compares against must be the LINEARIZED model, the exact thing the
         # emitted graph now carries — never the raw-branch one. The
-        # ineligible/fit_failed path is untouched: ``_last_linearized_
-        # predicted_sum`` stays ``None`` there, so this stays byte-identical
-        # to ``analysis.predicted_sum``, exactly as before this fix. It is
+        # ineligible/fit_failed path is untouched: the state's
+        # ``linearized_predicted_sum`` is ``None`` there, so this stays
+        # byte-identical to ``analysis.predicted_sum``, as before. It is
         # computed here rather than at MEASURE because the fit is here; nothing
         # reads it in between (``_cloud_priors`` deliberately carries no
         # ``predicted_sum``, and VERIFY is the next capture after this close).
         predicted_sum = (
-            self._last_linearized_predicted_sum
-            if self._last_linearized_predicted_sum is not None
+            linearization.linearized_predicted_sum
+            if linearization.linearized_predicted_sum is not None
             else analysis.predicted_sum
         )
         # PR-L4: the last gate before a candidate can be proposed at all.
@@ -9659,7 +9670,7 @@ class CrossoverV2Conductor:
         # stashed, none is published, and the review screen has nothing to
         # offer rather than an unaccountable proposal.
         level_frame_finding = self._assert_accountable(
-            predicted_sum, analysis.predicted_sum
+            predicted_sum, analysis.predicted_sum, linearization=linearization,
         )
         return _SpeculativeClose(
             candidate=candidate,
@@ -9667,6 +9678,7 @@ class CrossoverV2Conductor:
             analysis=analysis,
             cloud=cloud,
             level_frame_finding=level_frame_finding,
+            linearization=linearization,
         )
 
     def commit_intervention_proposal(
@@ -9676,7 +9688,7 @@ class CrossoverV2Conductor:
         predicted_sum: Any,
         commanded_delta: Any,
         level_frame_finding: Mapping[str, Any] | None,
-        realized_level_match: Any = None,
+        realized_branch_level: Mapping[str, Any] | None = None,
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
@@ -9702,6 +9714,15 @@ class CrossoverV2Conductor:
         be a behavior change, which Phase 1 is not; they stay at their call
         sites until Phase 2 makes the planner return them as data.
 
+        ``realized_branch_level`` arrives ALREADY SERIALIZED (#2291 Phase 2b).
+        Both sites now hold their candidate's own verdict, but by different
+        routes — the walk off its build's :class:`_LinearizationState`, the
+        selection off the retained
+        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`,
+        which may only carry plain data across the walk — so the mapping is
+        what they have in common. This seam does no conversion; the owner of
+        each verdict serializes it.
+
         Ordering is preserved rather than merely similar: every conductor
         attribute write still completes before ``publish_candidate``, the first
         observable side effect, so a re-entrant reader sees exactly what it saw
@@ -9720,11 +9741,7 @@ class CrossoverV2Conductor:
             predicted_spec_after=self._measure_predicted_spec_report,
             commanded_delta=commanded_delta,
             accountability=level_frame_finding,
-            realized_branch_level=(
-                realized_level_match.to_dict()
-                if realized_level_match is not None
-                else None
-            ),
+            realized_branch_level=realized_branch_level,
             evidence_identities={
                 "session_id": self.session_id,
                 "program_id": str(getattr(candidate, "program_id", "") or ""),
@@ -9739,17 +9756,20 @@ class CrossoverV2Conductor:
         candidate = MeasuredCrossoverCandidate.from_mapping(evaluation.candidate)
         self._measure_predicted_spec_report = dict(
             evaluation.predicted_spec_report or {}) or None
-        # ``realized_level_match`` is deliberately NOT passed here. The sweep
-        # restores ``_FC_SWEEP_CONDUCTOR_FIELDS`` when it ends, so
-        # ``_last_realized_level_match`` holds the ANCHOR's match, not this
-        # selected candidate's, and ``FcCandidateEvaluation`` does not carry
-        # one. Reading it would re-create exactly the cross-context leak #2291
-        # exists to close; the proposal records the absence instead.
+        # THIS candidate's own realized-level verdict, retained on its own
+        # evaluation (#2291 Phase 2b, closing #2307 gate note N6). Until the
+        # cutover the only verdict reachable here belonged to the ANCHOR — the
+        # sweep restored the conductor's scratch fields when it ended — so
+        # passing anything would have been the cross-context leak #2291 exists
+        # to close, and the proposal recorded the absence instead. The sweep
+        # now carries each candidate's own, so the selected corner's proposal
+        # describes the corner that was selected.
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=evaluation.predicted_sum,
             commanded_delta=evaluation.commanded_delta,
             level_frame_finding=evaluation.level_frame_finding,
+            realized_branch_level=evaluation.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -9778,15 +9798,15 @@ class CrossoverV2Conductor:
         predicted_sum = built.predicted_sum
         analysis = built.analysis
         cloud = built.cloud
-        # Unlike the selected-Fc path, ``_last_realized_level_match`` here DOES
-        # belong to this candidate: the fit that produced it ran moments ago on
-        # this same build, with no sweep save/restore in between.
+        # This build's own realized-level verdict, off the state it returned —
+        # the same route the selected-Fc path takes, differing only in where
+        # the state was held between planning and commit.
         self.commit_intervention_proposal(
             candidate,
             predicted_sum=predicted_sum,
             commanded_delta=_commanded_delta(analysis.predicted_sum, predicted_sum),
             level_frame_finding=built.level_frame_finding,
-            realized_level_match=self._last_realized_level_match,
+            realized_branch_level=built.linearization.realized_branch_level,
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -9797,8 +9817,11 @@ class CrossoverV2Conductor:
             # timing move; it could not stay there, because that line is
             # emitted eight captures before the fit now runs and would report
             # "" forever (the retired-field treatment PR-5 gave the per-capture
-            # ``flatness_*`` fields, for the same reason).
-            linearization=self._last_linearization_outcome,
+            # ``flatness_*`` fields, for the same reason). Read off the
+            # candidate rather than a conductor field since #2291 Phase 2b:
+            # the build stamped it there, so the disclosure and the artifact
+            # quote one value instead of two that agreed by timing.
+            linearization=candidate.linearization_outcome,
             # Did the cloud's honesty verdict actually reach the envelope?
             cloud_evidence=cloud is not None,
             excluded_bands=len(cloud.excluded_bands_hz) if cloud else 0,
@@ -9925,9 +9948,18 @@ class CrossoverV2Conductor:
 
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
+        *, linearization: _LinearizationState | None = None,
     ) -> Mapping[str, Any] | None:
         """The three accountability assertions, run before the PROPOSAL exists:
         PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+
+        ``linearization`` is the candidate's own planner output — the
+        decision-as-data half of #2291. The gate reads its level-frame and
+        realized-level verdicts and owns only the *decision*: which refusal
+        fires, what the household is told, and what is banked. ``None`` means
+        no build produced one, which is the same evidence state as an
+        ineligible session and takes the same path: no frame to disagree, no
+        realized verdict to fail, and item 2's abstain below.
 
         "Pre-apply" until PR-T3, when the apply moved out of the session
         entirely; the gate did not move with it, and did not need to. Refusing
@@ -10035,9 +10067,9 @@ class CrossoverV2Conductor:
         #
         # **Ordering: nothing moved, and nothing needed to.** The realized
         # verdict this branch consults is item 1's own
-        # ``_last_realized_level_match``, which reads later in this method but
-        # is WRITTEN earlier in the session — ``_fit_linearization`` stashes
-        # the frame and then the realized match, and both are complete before
+        # ``linearization.realized_level_match``, which reads later in this
+        # method but was computed earlier in the build — the planner returns
+        # the frame and the realized match on one plan, complete before
         # ``_build_measure_candidate`` calls this. There is no reordering here
         # and no second computation: item 1 keeps its own gate, its own event,
         # and its own refusal below, and every OTHER gate's semantics are
@@ -10048,14 +10080,15 @@ class CrossoverV2Conductor:
         # verdict there is no outcome check to gate on, so the ruling's
         # precondition is unmet. In practice it is unreachable from here — the
         # frame is only non-zero when a fit completed, and a fit that raised
-        # part-way clears both fields together — but a future path that
+        # part-way yields a state carrying neither — but a future path that
         # separates them must refuse, not proceed.
+        state = linearization if linearization is not None else _LinearizationState()
         if (
-            self._last_level_frame_disagreement_db
+            state.level_frame_disagreement_db
             > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
         ):
-            frame = self._last_level_frame
-            realized = self._last_realized_level_match
+            frame = state.level_frame
+            realized = state.realized_level_match
             banked = realized is not None and realized.matched
             log_event(
                 logger,
@@ -10067,7 +10100,7 @@ class CrossoverV2Conductor:
                 session_id=self.session_id,
                 reason="" if banked else REASON_DRIVER_LEVELS_DISAGREE,
                 disagreement_db=round(
-                    float(self._last_level_frame_disagreement_db), 3
+                    float(state.level_frame_disagreement_db), 3
                 ),
                 tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
                 system_level_db=(
@@ -10079,7 +10112,7 @@ class CrossoverV2Conductor:
                     {k: round(float(v), 3) for k, v in frame.offset_db.items()}
                     if frame is not None else {}
                 ),
-                core_level_db=self._last_level_frame_cores,
+                core_level_db=dict(state.level_frame_cores),
                 # The two fields the finding path adds, and only it: the OTHER
                 # estimator's per-role level-match term, and the realized
                 # verdict that decided which way this went. Both are ``None``/
@@ -10087,7 +10120,7 @@ class CrossoverV2Conductor:
                 # shipped.
                 trim_band_average_db=(
                     {k: round(float(v), 3)
-                     for k, v in self._last_level_frame_trims.items()}
+                     for k, v in state.level_frame_trims.items()}
                     if banked else {}
                 ),
                 realized_difference_db=(
@@ -10097,12 +10130,12 @@ class CrossoverV2Conductor:
             )
             if not banked:
                 raise self._refuse(REASON_DRIVER_LEVELS_DISAGREE)
-            finding = self._level_frame_finding_record()
+            finding = self._level_frame_finding_record(state)
         else:
             finding = None
 
         # --- item 1: the inter-driver realized level ---------------------
-        match = self._last_realized_level_match
+        match = state.realized_level_match
         if match is not None and not match.matched:
             log_event(
                 logger, "correction.crossover_v2_level_match_refused",
@@ -10168,7 +10201,7 @@ class CrossoverV2Conductor:
         # exactly where it was, reached on exactly the same condition.
         after = spec_report_for_predicted_sum(predicted_sum)
         self._stash_predicted_spec_report(after, predicted_sum)
-        if raw_predicted_sum is None or self._last_linearized_predicted_sum is None:
+        if raw_predicted_sum is None or state.linearized_predicted_sum is None:
             # No fit ran this attempt (ineligible mic tier, or the fit failed
             # into SF2's trims-only fallback), so `predicted_sum` IS
             # `raw_predicted_sum` — the same object. Grading a thing against
@@ -10214,11 +10247,16 @@ class CrossoverV2Conductor:
         )
         raise self._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
 
-    def _level_frame_finding_record(self) -> Mapping[str, Any] | None:
+    def _level_frame_finding_record(
+        self, state: _LinearizationState,
+    ) -> Mapping[str, Any] | None:
         """This session's banked frame disagreement, as flat evidence (#1866).
 
-        Built ONLY on the finding+proceed path, from state the fit already
-        stashed — no measurement, no re-derivation, no second verdict. The
+        Built ONLY on the finding+proceed path, from the plan this candidate's
+        own build returned — no measurement, no re-derivation, no second
+        verdict. Taking the state as an argument rather than reading it off
+        ``self`` is what makes "this session's" true of one candidate rather
+        than of whichever build ran last (#2291 Phase 2b). The
         attribution package turns it into an M7 finding
         (:func:`~jasper.attribution.promotion.promote_level_frame_disagreement`);
         this method owns *what the evidence is*, that one owns *what it means*.
@@ -10249,9 +10287,9 @@ class CrossoverV2Conductor:
         two layers away.
         """
 
-        frame = self._last_level_frame
-        cores = self._last_level_frame_cores
-        realized = self._last_realized_level_match
+        frame = state.level_frame
+        cores = state.level_frame_cores
+        realized = state.realized_level_match
         # The band this finding is ABOUT: the span the two level reads were
         # actually taken over, unioned across roles. Deliberately the CORE
         # bands and not the radiating ones — a high-pass branch radiates to
@@ -10281,7 +10319,7 @@ class CrossoverV2Conductor:
             "f_lo_hz": min(lo_edges),
             "f_hi_hz": max(hi_edges),
             "disagreement_db": round(
-                float(self._last_level_frame_disagreement_db), 3
+                float(state.level_frame_disagreement_db), 3
             ),
             "tolerance_db": float(LEVEL_FRAME_AGREEMENT_TOLERANCE_DB),
             "reference_role": frame.reference_role if frame is not None else "",
@@ -10305,9 +10343,9 @@ class CrossoverV2Conductor:
             record[f"core_band_hi_hz_{role}"] = band[1]
             record[f"radiating_band_lo_hz_{role}"] = radiating[0]
             record[f"radiating_band_hi_hz_{role}"] = radiating[1]
-            if role in self._last_level_frame_trims:
+            if role in state.level_frame_trims:
                 record[f"trim_band_average_db_{role}"] = round(
-                    float(self._last_level_frame_trims[role]), 3
+                    float(state.level_frame_trims[role]), 3
                 )
             if frame is not None and role in frame.offset_db:
                 record[f"frame_offset_db_{role}"] = round(
@@ -10450,7 +10488,9 @@ class CrossoverV2Conductor:
         listener hears (#1967).
 
         **The hole this fills.** Boost permission is granted on ``cloud is not
-        None`` (see :meth:`_fit_linearization`'s gate), whose stated meaning is
+        None`` (see the boost gate in
+        :func:`~jasper.active_speaker.crossover_v2.intervention.plan_linearization`),
+        whose stated meaning is
         that "null-exclusion stays a measured, registry-gated fact". The
         registry's analysis band is floored at
         :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the
@@ -11690,7 +11730,16 @@ class CrossoverV2Conductor:
         *,
         candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
         source_preset: Any = None,
-    ) -> Any:
+    ) -> tuple[Any, _LinearizationState]:
+        """Build one candidate, and return what its linearization produced.
+
+        The state is RETURNED rather than stashed (#2291 Phase 2b). It used to
+        reach the accountability gate, the VERIFY prior and the proposal as
+        seven ``self._last_*`` fields, which is why the Fc sweep had to
+        snapshot and restore them around every candidate — see
+        :class:`_LinearizationState`. Callers thread one value instead, so a
+        state can only ever describe the candidate returned beside it.
+        """
         from jasper.active_speaker.measured_crossover_candidate import (
             MeasuredCrossoverAlignment,
             MeasuredCrossoverCandidate,
@@ -11727,14 +11776,16 @@ class CrossoverV2Conductor:
         # Layer-1a driver linearization (#1668 PR-C). HARD GATE: reference-tier
         # mic AND both drivers paired N>=3 — anything else is byte-identical
         # to the pre-PR-C trims-only path (analysis.candidate.trim_db, empty
-        # linearization dict). See _linearization_eligible/_fit_linearization.
+        # linearization dict). See _linearization_ineligible_reason /
+        # _plan_linearization.
         role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
         linearization: Mapping[str, Any] = {}
-        if self._linearization_eligible(analysis):
+        ineligible = self._linearization_ineligible_reason(analysis)
+        state = _LinearizationState(outcome=ineligible or "")
+        if ineligible is None:
             try:
-                fit_kwargs = {} if candidate_sections is None else {"candidate_sections": candidate_sections}
-                role_attenuations_db, linearization = self._fit_linearization(
-                    analysis, cand, cloud, **fit_kwargs,
+                plan = self._plan_linearization(
+                    analysis, cand, cloud, candidate_sections=candidate_sections,
                 )
             except (
                 ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
@@ -11756,7 +11807,16 @@ class CrossoverV2Conductor:
                 # (N1, this same review) raises exactly that on its own
                 # cut-only invariant violation — without it here, N1's safety
                 # net would escape SF2's and crash this accept instead of
-                # degrading to it.
+                # degrading to it. Since #2291 Phase 2b it also catches the
+                # planner's own typed refusals — ``NoCrossoverSectionsError``
+                # for a candidate preset naming no crossover at all, and
+                # ``CandidateFcDisagreementError`` for a section set naming two
+                # corners — both ``CrossoverV2ContractError``, itself a
+                # ``ValueError``. A prescription cannot be planned for a
+                # crossover the candidate does not describe, and degrading to
+                # the trims-only lane is the fail-closed answer: the household
+                # still gets its measured trims, and nothing is fitted toward a
+                # corner nobody committed to.
                 log_event(
                     logger, "correction.crossover_v2_linearization_fit_failed",
                     level=logging.WARNING, session_id=self.session_id,
@@ -11765,16 +11825,17 @@ class CrossoverV2Conductor:
                 role_attenuations_db = dict(cand.trim_db)
                 linearization = {}
                 # PR-L4 item 1: a fit that raised part-way may already have
-                # written its level verdict. Clear it with the rest of the fit's
-                # output — a verdict about branches this candidate no longer
-                # carries is worse than no verdict, because the assertion at
-                # publish time would grade the wrong thing.
-                self._last_realized_level_match = None
-                self._last_level_frame = None
-                self._last_level_frame_disagreement_db = 0.0
-                self._last_level_frame_cores = {}
-                self._last_level_frame_trims = {}
-                self._last_linearization_outcome = "fit_failed"
+                # produced a partial verdict, and none of it survives — a
+                # verdict about branches this candidate no longer carries is
+                # worse than no verdict, because the accountability gate would
+                # grade the wrong thing. A fresh state IS that clearing, and it
+                # covers the linearized VERIFY prior too, which the field-based
+                # degrade left behind.
+                state = _LinearizationState(outcome="fit_failed")
+            else:
+                role_attenuations_db = dict(plan.role_attenuations_db)
+                linearization = dict(plan.linearization)
+                state = _LinearizationState.from_plan(plan)
 
         return MeasuredCrossoverCandidate(
             program_id=analysis.program_id,
@@ -11797,9 +11858,12 @@ class CrossoverV2Conductor:
             # stamped verbatim onto the candidate at the exact moment it
             # reaches its final value for this attempt — see
             # MeasuredCrossoverCandidate.linearization_outcome's own
-            # docstring for why this module never re-derives it.
-            linearization_outcome=self._last_linearization_outcome,
-        )
+            # docstring for why this module never re-derives it. Since #2291
+            # Phase 2b the verdict is this build's own returned state rather
+            # than a conductor field, so the candidate and the state beside it
+            # cannot describe different builds.
+            linearization_outcome=state.outcome,
+        ), state
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
         """The fit's cloud inputs, as the candidate's exclusion reason of record.
@@ -11896,110 +11960,105 @@ class CrossoverV2Conductor:
             ),
         }
 
-    def _linearization_eligible(self, analysis: ProgramAnalysis) -> bool:
-        """HARD GATE for the Layer-1a fit path: reference-tier mic AND both
-        drivers paired N>=3 in-capture occurrences. Anything else falls back
-        to the plain trims-only candidate, byte-identical to before this PR.
+    def _linearization_ineligible_reason(self, analysis: ProgramAnalysis) -> str | None:
+        """HARD GATE for the Layer-1a fit path, as a named reason or ``None``.
 
-        Side effect: stamps ``self._last_linearization_outcome`` with WHY on
-        every ineligible return (SF3) — mirrors ``_last_measure_guard``'s own
-        set-during-the-walk convention; read by ``_log_measure_diag``.
+        Eligible means a reference-tier mic AND both drivers paired
+        N >= :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES` in-capture
+        occurrences. Anything else falls back to the plain trims-only
+        candidate, byte-identical to the pre-PR-C path.
+
+        **Returns the reason rather than stamping it** (#2291 Phase 2b). It
+        used to answer ``bool`` and write ``self._last_linearization_outcome``
+        on the way out, which made the caller's own outcome depend on a field
+        it never named — the same implicit-return shape the planner extraction
+        removed one layer up. The caller now holds the answer as a value and
+        puts it on the candidate itself.
         """
         if analysis.mic_tier != "reference":
-            self._last_linearization_outcome = "ineligible_mic_tier"
-            return False
+            return "ineligible_mic_tier"
         woofer_resp = _driver_response_by_role(analysis, self._woofer.role)
         tweeter_resp = _driver_response_by_role(analysis, self._tweeter.role)
         if woofer_resp is None or tweeter_resp is None:
-            self._last_linearization_outcome = "ineligible_repeats"
-            return False
+            return "ineligible_repeats"
         woofer_n = 1 + len(woofer_resp.repeat_responses)
         tweeter_n = 1 + len(tweeter_resp.repeat_responses)
         if (
             woofer_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
             and tweeter_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
         ):
-            return True
-        self._last_linearization_outcome = "ineligible_repeats"
-        return False
+            return None
+        return "ineligible_repeats"
 
-    def _branch_crossover_sections(self, role: str) -> tuple[CrossoverSection, ...]:
-        """The Linkwitz-Riley sections ``role``'s emitted branch runs through.
+    def _journal_linearization(self, record: JournalRecord) -> None:
+        """Emit one planner record through this session's journal.
 
-        Derived by :func:`~jasper.active_speaker.branch_chain.sections_by_role`
-        from the SAME ``preset.crossover_regions`` the emitter walks, so the
-        band this conductor bounds the fit's lift to, the cost it stamps on the
-        candidate, and the attenuation ``camilla_yaml`` charges against are one
-        description rather than three that agree by inspection.
+        The planner owns *what happened* and returns it as data; this owns
+        *how it is said* — the logger and the session identity, neither of
+        which a pure function has. Forwarding here rather than iterating
+        ``plan.journal`` afterwards is what makes a fit that raises part-way
+        still disclose the lines it had reached, including the ``fit_band``
+        line naming the corner it ran at.
 
-        A role with no region gets no sections — deliberately NOT a
-        conservative-looking guess at this session's own Fc. The emitter builds
-        its crossover filters from these same regions, so such a role runs
-        full range in the emitted graph: it radiates everywhere and attenuates
-        nothing, and inventing a section here would make this conductor's
-        stamped disclosure smaller than the emitter's charge. It is still a
-        defect upstream on a 2-way conductor, so it is named in the journal.
+        ``record.fields`` is spread as keyword arguments rather than handed to
+        ``log_event``'s ``fields=`` parameter so the rendered order matches
+        what this module emitted before the extraction: ``session_id`` first,
+        then the payload in the planner's own order. A payload key colliding
+        with ``session_id`` or one of ``log_event``'s own keywords would raise
+        ``TypeError`` — a stdlib type, so the planner's port guard contains it
+        and names the loss on ``journal_dropped`` rather than costing a
+        household its candidate.
         """
-        sections = sections_by_role(
-            getattr(self._preset, "crossover_regions", ()) or ()
-        ).get(role, ())
-        if not sections:
-            log_event(
-                logger, "correction.crossover_v2_linearization_no_crossover",
-                level=logging.WARNING, session_id=self.session_id, role=role,
-                fc_hz=round(float(self._fc_hz), 3),
-            )
-        return sections
+        log_event(
+            logger, record.event, level=record.level,
+            session_id=self.session_id, **record.fields,
+        )
 
-    def _fit_linearization(
+    def _plan_linearization(
         self,
         analysis: ProgramAnalysis,
         cand: Any,
-        cloud: _CloudFitEvidence | None = None,
+        cloud: "_CloudFitEvidence | None",
         *,
         candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    ) -> tuple[dict[str, float], dict[str, Any]]:
-        """Fit both drivers, apply the correction in the linear domain, and
-        re-solve the trim from the LINEARIZED branch pair — the ordering
-        the design doc calls out as structurally defusing #1667's band-
-        average trim bias. Returns ``(role_attenuations_db, linearization)``;
-        falls back to the ANCHORED trim pair (with a WARNING) when the
-        ripple-optimal tweeter re-solve drifts implausibly far from that anchor.
-        The anchor is each branch's own raw trim plus the level its emitted
-        cascade removed from its reference band
-        (``LinearizationFit.correction_giveback_db``) — level-preserving by
-        construction, replacing the overlap-band solve seed that under-returned
-        the give-back on the 2026-07-24 JTS3 runs.
+    ) -> LinearizationPlan:
+        """Assemble ONE candidate's planner request and run the pure planner.
 
-        Its branch inputs must already carry the crossover shoulders; on the
-        protected-neutral path that is the §4.2 composition's job, and
-        :meth:`_build_candidate` refuses an uncomposed capture before reaching
-        here (it cannot be checked here — see that guard's comment).
+        This method is the whole of what the conductor still owns about
+        linearization: which measurement objects become which named planner
+        input. The prescription itself — the σ policy, the fit, the anchored
+        give-back, the ripple re-solve, the trim decision and the headroom
+        charge — lives in
+        :func:`~jasper.active_speaker.crossover_v2.intervention.plan_linearization`
+        and is reached identically from both candidate paths (#2291 Phase 2b).
 
-        Only called after :meth:`_linearization_eligible` — this method
-        assumes both driver responses exist and are adequately repeated;
-        it does not re-check. May raise on a fit-engine bug; the caller
-        (``_build_candidate``) is responsible for catching that (SF2).
+        **One corner, and it is the candidate's.** The context is built from
+        the sections this candidate is realized with —
+        ``candidate_sections`` for a swept corner, the session preset's own
+        regions for the configured one — and
+        :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
+        derives the corner FROM them. ``self._fc_hz`` is not read, and there is
+        no second corner in scope for the planner to read either: that is the
+        2026-08-10 defect made unrepresentable rather than merely fixed.
 
-        Side effect: stamps ``self._last_linearization_outcome`` with
-        ``"fitted"`` or ``"trim_rejected"`` (SF3) — mirrors
-        ``_linearization_eligible``'s own convention; read by
-        ``_log_measure_diag``. Also stamps ``self._last_linearized_
-        predicted_sum`` with the LINEARIZED-branch VERIFY prediction
-        (hardware-validation-caught coherence fix, #1668 PR-D) — the same
-        ``W_lin``/``T_lin`` this method's own trim re-solve used, at
-        whichever trim this call actually committed to (the sanity-guarded
-        ``role_attenuations_db`` return value, not necessarily the re-solved
-        ``resolved`` — the correction filters are emitted either way, only
-        the trim differs on a rejection) and at the session's COMMITTED delay
-        (rung P3 / R10b). Read by ``_measure_verdict`` to
-        override ``self._measure_predicted_sum``.
+        A split or empty section set raises
+        (``CandidateFcDisagreementError`` / ``NoCrossoverSectionsError``, both
+        ``ValueError`` subclasses), which :meth:`_build_candidate`'s SF2 arm
+        degrades to the trims-only lane. Fail-closed on purpose: a candidate
+        whose own preset names no crossover has no crossover to plan for, and
+        guessing one from the session would be the defect wearing a new hat.
+
+        Only called after :meth:`_linearization_ineligible_reason` returns
+        ``None`` — the planner assumes eligibility and does not re-check.
         """
-        woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
-        woofer_resp = _driver_response_by_role(analysis, woofer_role)
-        tweeter_resp = _driver_response_by_role(analysis, tweeter_role)
-        assert woofer_resp is not None and tweeter_resp is not None  # eligibility checked this
-
+        sections = (
+            {role: tuple(regions) for role, regions in candidate_sections.items()}
+            if candidate_sections is not None
+            else sections_by_role(
+                getattr(self._preset, "crossover_regions", ()) or ()
+            )
+        )
+        context = CandidateAcousticContext.from_sections(sections)
         measure_program = self._program_for_phase(PHASE_MEASURE)
         seg_w = measure_program.segment("sweep_w")
         seg_t = measure_program.segment("sweep_t")
@@ -12010,790 +12069,37 @@ class CrossoverV2Conductor:
         # explicitly for mypy and as a defensive invariant check.
         assert seg_w.f1_hz is not None and seg_w.f2_hz is not None
         assert seg_t.f1_hz is not None and seg_t.f2_hz is not None
-        excited_band_hz: dict[str, tuple[float, float]] = {
-            woofer_role: (seg_w.f1_hz, seg_w.f2_hz),
-            tweeter_role: (seg_t.f1_hz, seg_t.f2_hz),
-        }
-        responses = {woofer_role: woofer_resp, tweeter_role: tweeter_resp}
-        siblings = {woofer_role: tweeter_resp, tweeter_role: woofer_resp}
-        mic_tier = str(analysis.mic_tier)
-
-        # --- the session's ONE shared level frame (PR-L5) ------------------
-        #
-        # Compose every envelope FIRST, read each driver's own core-passband
-        # level off it, and reconcile the set into a single frame before any
-        # driver is fitted. Before this, each driver was fitted to a flat
-        # target at its own median and the two numbers had no stated
-        # relationship at all — 13.9 dB apart on the 2026-07-27 JTS3 profile,
-        # reconciled only by a trim that was itself carrying ~11 dB of frame
-        # error. PR-L4 asserted afterwards that the realized branch levels
-        # agree; this makes them agree by construction, which is the
-        # difference between catching that bug and not having it.
-
-        # --- each branch's own crossover, and the band it radiates in ------
-        #
-        # (#1809.) The fit's LIFT stage is bounded to it: a driver measured
-        # THROUGH its crossover carries that crossover's rolloff in its curve,
-        # and a fit flattening it against a flat target reads the rolloff as a
-        # driver deficit. With PR-L5's boost vocabulary that read became
-        # emittable —
-        # the 2026-07-28 JTS3 woofer carried +11.6155 dB (Q 8) at 2747 Hz and
-        # +5.9619 dB at 2196 Hz, both inside its own 2 kHz LR4 stopband, where
-        # the lowpass then removed 13.3 and 7.8 dB of them. This is the same
-        # own-side-of-Fc principle PR-L3 established for trim averaging
-        # (`program_analysis.branch_level_bands_hz`), applied to the fit
-        # region and expressed in the crossover's own attenuation so it also
-        # bounds the knee, where a branch is 6 dB down BY DESIGN and a fit
-        # reaching it boosts that back (the same profile's tweeter, +5.6163 dB
-        # at 2020 Hz).
-        #
-        # It bounds LIFT and nothing else in the SHAPE layer. Cuts still run to
-        # the fit band's own edge — leakage past the handoff still reaches the
-        # summed response and removing it spends no headroom — and the fit
-        # still reads its target level, its plateau and its give-back over the
-        # envelope's own region.
-        #
-        # The band ALSO bounds one LEVEL question, and only one (#1929): the
-        # core-level median this frame is built from, below. #1809 left that
-        # open — "narrowing their band too would move the frame and the trim
-        # anchor as a side effect of a shape fix", measured then on the
-        # conductor fixture at 1.66 dB of woofer core median — and the
-        # 2026-07-30 JTS3 session (#1870) is what closed it: a woofer declared
-        # to 4000 Hz against this session's 2000 Hz LR4 put ~28% of its core
-        # bins an octave inside its own stopband, read 3.395 dB away from the
-        # trim solve's estimate of the same physical level, and refused a
-        # healthy speaker at the gate below. The move is no longer a side
-        # effect of a shape fix; it IS the fix, and it stops at the median —
-        # the give-back is a power-domain average that quiet stopband bins
-        # barely reach, and the fit target is #1817's crossover-shaped-target
-        # question, not a band. See `driver_core_level_db`'s own docstring.
-        # ``candidate_sections`` is R17's per-candidate branch target: each Fc
-        # candidate must be fitted against ITS OWN crossover, or every one of
-        # them is corrected toward the configured corner's shape and the
-        # comparison measures the fit's mismatch instead of the crossover's.
-        # ``None`` — every pre-R17 caller — reads the configured sections, so
-        # the anchor's fit is unchanged.
-        sections = {
-            role: (
-                tuple(candidate_sections[role])
-                if candidate_sections is not None and role in candidate_sections
-                else self._branch_crossover_sections(role)
-            )
-            for role in (woofer_role, tweeter_role)
-        }
-        radiating_bands = {
-            role: radiating_band_hz(sections[role])
-            for role in (woofer_role, tweeter_role)
-        }
-        log_event(
-            logger, "correction.crossover_v2_linearization_fit_band",
-            session_id=self.session_id,
-            fc_hz=round(float(self._fc_hz), 3),
-            radiating_band_hz={
-                role: _rounded_band_hz(band)
-                for role, band in radiating_bands.items()
+        request = request_from_analysis(
+            analysis, cand,
+            context=context,
+            woofer_role=self._woofer.role,
+            tweeter_role=self._tweeter.role,
+            excited_band_hz={
+                self._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
+                self._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
             },
-            crossover_order={
-                role: tuple(s.order for s in sections[role])
-                for role in (woofer_role, tweeter_role)
-            },
+            driver_class_by_role=self._driver_class_by_role,
+            # Boost permission's ONE necessary condition, and the clause that
+            # tells "no cloud by design" (R15's driver-only path) apart from
+            # "a cloud was planned and lost". Both are the host's to answer —
+            # the planner cannot see a session's phase list.
+            post_apply_verifies=self._post_apply_verifies,
+            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._phases,
+            cloud=cloud,
         )
-
-        envelopes: dict[str, Any] = {}
-        for role in (woofer_role, tweeter_role):
-            resp = responses[role]
-            sigma_db = _compose_sigma_db(
-                resp, siblings[role],
-                tier=mic_tier, valid_band_hz=excited_band_hz[role],
-            )
-            # The cloud seam (plan PR-6a's two optional terms, wired here by
-            # the 2026-07-27 timing move — this is the ONLY production caller
-            # that supplies them). All three arguments are ``None`` when no
-            # cloud verdict was available, and ``compose_envelope`` documents
-            # that case as byte-identical to an envelope composed before the
-            # terms existed. They can only ever NARROW allowed depth: they
-            # enter the same ``np.min`` as every other term, so no cloud can
-            # buy the fit permission it did not already have.
-            envelopes[role] = compose_envelope(
-                role, resp,
-                excited_band_hz=excited_band_hz[role],
-                mic_tier=mic_tier,
-                driver_class=self._driver_class_by_role.get(role, "unknown"),
-                sigma_db=sigma_db,
-                excluded_bands_hz=cloud.excluded_bands_hz if cloud else None,
-                band_spread=cloud.band_spread if cloud else None,
-                n_positions=cloud.n_positions if cloud else None,
-            )
-        core_levels_db = {
-            role: level
-            for role in (woofer_role, tweeter_role)
-            if (level := driver_core_level_db(
-                responses[role], envelopes[role],
-                radiating_band_hz=radiating_bands[role],
-            )) is not None
-        }
-        # The frame reconciles two LEVEL-MATCH estimates, so its trim term is
-        # the trim solve's own level-match result (`trim_band_average_db`) —
-        # not `trim_db`, which is that result AFTER the ripple-optimal polish
-        # moved it for summed flatness. Reading the applied trim made the gate
-        # sensitive to a refinement it is not measuring: the polish is
-        # bounded by LINEARIZATION_TRIM_SANITY_MARGIN_DB (6.0), which is
-        # DOUBLE this gate's tolerance, so an ordinary 3-6 dB polish hard-
-        # stopped an otherwise healthy session (adversarial review S5). The
-        # polish is not lost — it rides in the anchored trim below, which
-        # still starts from `raw_trim` — it is simply not evidence about where
-        # the drivers sit. Falls back to `trim_db` only for a legacy candidate
-        # constructed before the field existed.
-        frame_trims_db = dict(cand.trim_band_average_db or cand.trim_db)
-        level_frame = (
-            solve_shared_level_frame(core_levels_db, frame_trims_db)
-            if core_levels_db else None
-        )
-        # The frame's own honesty gate, and the reason it is not just applied.
-        #
-        # ``offset_db[role]`` is how far that role's own proposal
-        # (``core_level + trim``) sits below the loudest — which is exactly the
-        # DISAGREEMENT between two measured estimates of the same physical
-        # relationship: the trim solve's power-band average on each side of Fc,
-        # and the fit's median over each driver's own RADIATING band (#1929;
-        # before that, over its whole declared capture span, which counted the
-        # driver's own crossover stopband as driver level). A small offset is an
-        # honest reconciliation and gets applied. A LARGE one is not: it means
-        # the two instruments are measuring different things again, and blindly
-        # preferring either — which is what applying a 10 dB offset on one
-        # estimator's say-so would be — is the same "nothing ever compared
-        # these" failure the 2026-07-27 profile shipped, pointed a new
-        # direction. So it is stashed here and refused at the confirm seam,
-        # beside PR-L4's own two assertions.
-        #
-        # How close "close" actually is, measured rather than asserted: on the
-        # archived run-5 capture the two land 0.510 dB apart (1.076 before
-        # #1929), and on a pair that is identical by construction they still
-        # land 0.910 dB apart. The residual is real and #1929 did not close it —
-        # see LEVEL_FRAME_AGREEMENT_TOLERANCE_DB's own comment for what is left
-        # and where the next refusal comes from.
-        self._last_level_frame = level_frame
-        self._last_level_frame_disagreement_db = (
-            max((abs(v) for v in level_frame.offset_db.values()), default=0.0)
-            if level_frame is not None else 0.0
-        )
-        # The frame's own INPUTS, held for the refusal's journal line (#1929).
-        # A refusal that names only the disagreement asks whoever reads it to
-        # re-derive which driver read what, and over which band — and since
-        # #1929 the band is the answer to the most common cause.
-        #
-        # BOTH bands are reported, and that is the point. `radiating_band_hz`
-        # is the bound this gate asked for; `band_hz` is the span the median
-        # was actually taken over (`core_level_band_hz`, the same helper that
-        # decides it). They differ exactly when the bound was refused for
-        # leaving too little band — and that is the case where a reader
-        # diagnosing a refusal would otherwise be shown a band the number in
-        # front of them was never computed over.
-        self._last_level_frame_cores = {
-            role: {
-                "level_db": round(float(level), 3),
-                "band_hz": _rounded_band_hz(
-                    core_level_band_hz(
-                        envelopes[role], radiating_band_hz=radiating_bands[role],
-                    )
-                ),
-                "radiating_band_hz": _rounded_band_hz(radiating_bands[role]),
-            }
-            for role, level in core_levels_db.items()
-        }
-        # The OTHER estimator, held for the #1866 finding (see the field's own
-        # comment). Restricted to the roles the frame was actually solved over,
-        # so the banked pair is the pair that disagreed rather than every role
-        # the trim solve happened to return.
-        self._last_level_frame_trims = {
-            role: float(frame_trims_db[role])
-            for role in core_levels_db
-            if role in frame_trims_db
-        }
-
-        # Boost permission is EVIDENCE-gated, and this is the gate. ONE
-        # necessary condition, plus a clause that distinguishes two different
-        # ways a cloud can be missing.
-        #
-        # 1. NECESSARY: the JOURNEY will MEASURE what the speaker did with the
-        #    boost (`self._post_apply_verifies`). Today every plan shape
-        #    declares a post-apply check, so this reads as always-on — but it
-        #    is the correct condition rather than a constant, so a future tier
-        #    that drops the post-apply sweep drops boost with it instead of
-        #    shipping an unverified one. Since the two-stage split that check
-        #    is a SEPARATE session, which is why this reads a declared fact
-        #    rather than this session's own phase list — see the field's own
-        #    comment in ``__init__``.
-        #
-        # 2. The cloud clause, and the OWNER RULING (#2106, 2026-08-05) that
-        #    rewrote it. R15 removed the pre-apply cloud from stage 1
-        #    (`STAGE1_INCLUDES_CLOUD_MEASURE`), so on the shipped driver-only
-        #    path there is no cloud to wait for and the old `cloud is not
-        #    None` demand would have demoted every R15 correction to cut-only
-        #    for want of evidence the plan never collects. The ruling permits
-        #    boost there, on the named and accepted risk that a boost can land
-        #    on a position-specific artifact an at-mark verification cannot
-        #    detect, adjudicated by post-apply VERIFY, household listening,
-        #    and retained Undo. See the "Boost ruling" block in
-        #    `docs/crossover-linearization-80-20-plan.md` §4.2.
-        #
-        #    What did NOT change is the case the retired condition was written
-        #    for. `_cloud_fit_evidence` has two reachable None paths (the
-        #    positions could not be combined; the honesty pipeline was
-        #    unavailable) — a session that PLANNED a cloud and LOST it. On
-        #    both, `compose_envelope` receives `excluded_bands_hz=None`, so
-        #    `allowed_depth_db` is NOT zeroed in the registry's interference
-        #    nulls, and granting boost would let the fit EQ a null the
-        #    session's own instrument was supposed to have found. Absent by
-        #    DESIGN and absent by FAILURE share the `cloud is None` signature
-        #    and are different evidence states; `PHASE_CLOUD_MEASURE not in
-        #    self._phases` is what tells them apart, read off the same
-        #    `index_phase_map` the session walks (so the permission cannot
-        #    disagree with the plan). A session that planned a cloud and lost
-        #    it stays cut-only; the absence is disclosed by
-        #    `event=correction.crossover_v2_fit_without_cloud`.
-        #
-        # What bounds a boost once permitted, on EITHER path: the envelope's
-        # own depth limits, the realized-cascade stopband-gain guard, the
-        # headroom charge, post-apply VERIFY, and Undo. The gate grants a
-        # vocabulary, never a filter.
-        #
-        # The exclusion bands were never sufficient anyway, and #1967 is why:
-        # below `ECHO_BAND_HF_REGIME_FLOOR_HZ` the registry contributes no
-        # exclusions at all, so even a cloud session's `allowed_depth_db` is
-        # never zeroed there. The 2026-07-30 session's largest prescribed
-        # boost sat 366 Hz under that floor; see `_boost_excluded_bands_hz`
-        # for the figure and its provenance.
-        #
-        # `boost_excluded_bands_hz` is the substantive half where a cloud
-        # exists. It is composed by `_boost_excluded_bands_hz` from the SAME
-        # closed cloud, carries only the bins that cloud's own positions
-        # disagree about, and binds the lift stage alone — cuts keep the full
-        # fit band. Read that method before changing this: it withholds on
-        # contradicting evidence and never grants on absent evidence. It is
-        # `()` on the driver-only path because there is no spatial evidence to
-        # compose, which is the accepted risk the ruling names — not a
-        # silently-empty exclusion set.
-        vocabulary = FitVocabulary(
-            allow_boost=self._post_apply_verifies and (
-                cloud is not None or PHASE_CLOUD_MEASURE not in self._phases
-            ),
-            boost_excluded_bands_hz=(
-                cloud.boost_excluded_bands_hz if cloud is not None else ()
-            ),
-        )
-
-        fits: dict[str, Any] = {}
-        corrections: dict[str, np.ndarray] = {}
-        for role in (woofer_role, tweeter_role):
-            resp = responses[role]
-            fit = fit_driver_linearization(
-                resp, envelopes[role],
-                vocabulary=vocabulary, level_frame=level_frame,
-                radiating_band_hz=radiating_bands[role],
-                # The branch's own committed crossover as the fit's target
-                # SHAPE (#1817, R10a) — built from the SAME ``sections`` the
-                # radiating band above and the emitter's own filters come
-                # from, so the shape the fit aims at and the filter the graph
-                # runs cannot disagree. ``None`` for a role with no committed
-                # region, which is the pre-R10a flat target exactly.
-                target=branch_target(
-                    sections[role], envelopes[role].freqs_hz,
-                ),
-            )
-            fits[role] = fit
-            # #1967's per-filter verdicts, disclosed HERE rather than in the
-            # fit: `linearization_fit` is pure computation and owns no logger,
-            # so the conductor is the layer that turns its records into a
-            # journal line. Emitted only when the bound actually decided
-            # something, so a session with no cloud exclusions adds no noise.
-            if fit.lift_boost_excluded_drops or fit.lift_boost_excluded_residual:
-                log_event(
-                    logger, "correction.crossover_v2_boost_excluded_verdicts",
-                    level=(
-                        logging.WARNING if fit.lift_boost_excluded_drops
-                        else logging.INFO
-                    ),
-                    session_id=self.session_id, role=role,
-                    # Dropped: the boost was AIMED at a contradicted band.
-                    dropped=[d.to_dict() for d in fit.lift_boost_excluded_drops],
-                    # Kept: skirt tail from filters working elsewhere. Accepted
-                    # and measured by the post-apply sweep, not refused here.
-                    residual=[r.to_dict() for r in fit.lift_boost_excluded_residual],
-                    lift_suppressed_reason=fit.lift_suppressed_reason,
-                )
-            # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
-            # scale (#1667). The emitted biquads rotate phase near their
-            # corners and the two-branch summation below is phase-dominated, so
-            # a magnitude-only model mispredicts it — measured on JTS3, the
-            # zero-phase model mistracked the VERIFY summation by ~2.0 dB
-            # (WORSE than the ~1.7 dB of no correction at all) where this
-            # complex model tracks to ~0.5 dB. This is the single seam: the
-            # complex-corrected branches below feed all three consumers (the
-            # trim re-solve, the ripple-optimal scan, and the persisted VERIFY
-            # prediction). See complex_correction_response's docstring.
-            corrections[role] = complex_correction_response(fit.filters, resp.freqs_hz)
-
-        freqs = woofer_resp.freqs_hz
-        W_lin = woofer_resp.complex_tf * corrections[woofer_role]
-        T_lin = tweeter_resp.complex_tf * corrections[tweeter_role]
-
-        # Same gating-consistent overlap band the raw trim solve used
-        # (program_analysis._build_candidate's own branch_floor_hz clamp —
-        # _measure_validity_floor_hz mirrors it), so the comparison below is
-        # apples to apples: same band, linearized vs raw branch content.
-        lo, hi = overlap_band_hz(
-            self._fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
-        )
-        branch_floor_hz = _measure_validity_floor_hz(analysis)
-        lo_clamped = (
-            max(lo, branch_floor_hz)
-            if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
-            else lo
-        )
-
-        # Each branch's OWN excited-and-gated validity span, the shape
-        # `branch_level_bands_hz` takes (PR-L3). Mirrors
-        # `program_analysis._build_candidate`'s own `_span` helper exactly —
-        # the declared sweep band, floored by the shared reflection floor —
-        # so the realized-level check below reads the same frame the raw trim
-        # solve read, one layer up on the linearized branches.
-        def _span(role: str) -> tuple[float, float]:
-            span_lo, span_hi = excited_band_hz[role]
-            if branch_floor_hz is not None and math.isfinite(branch_floor_hz):
-                span_lo = max(span_lo, branch_floor_hz)
-            return float(span_lo), float(span_hi)
-
-        woofer_span = _span(woofer_role)
-        tweeter_span = _span(tweeter_role)
-
-        # ANCHORED give-back (#1668, replaces the overlap-band solve seed after
-        # the 2026-07-24 JTS3 runs). Each branch's linearized trim is its own
-        # COMMITTED raw trim plus ``LinearizationFit.correction_giveback_db`` —
-        # the fit engine's SSOT, the MEASURED before-vs-after level delta of
-        # that branch's own reference (core) band. Because the quantity added
-        # back IS the measured level change of the band being restored, this
-        # restores each branch's audible band to the pre-correction system level
-        # the raw candidate already accepted — with no flat-core assumption, no
-        # solver prediction, no min() reasoning, and no cross-branch coupling.
-        #
-        # Why not the old `solve_branch_trims(W_lin, T_lin)` band-average seed:
-        # it averaged over the CROSSOVER OVERLAP band (1.43-2.83 kHz on JTS3),
-        # which is the wrong reference for a top-octave correction on two
-        # counts — the tweeter's LR4 high-pass skirt lives there, and a
-        # power-domain mean weights the loudest (least-cut) bins hardest, so the
-        # average is dragged toward the region the shelf barely touches; and the
-        # Lowshelf's wide RBJ transition is not at full depth there either.
-        # Measured live 2026-07-24: it returned only 5.81 dB of a 9.27 dB spend
-        # (raw −22.21 → seed −16.396), leaving the whole tweeter band ~3 dB low.
-        # The ripple scan tried to correct it (−8.796, i.e. +13.4) and the
-        # seed-anchored guard rejected that at 7.6 > 6.0 on BOTH runs, so the
-        # under-returning seed shipped twice. The core-band anchor makes
-        # give-back ≈ spend by construction, so the scan no longer has to fight
-        # the seed and the guard no longer blocks the correction.
-        #
-        # PR-L3 (2026-07-27) fixed the overlap-band frame that paragraph
-        # describes — `solve_branch_trims` now reads each branch on its own
-        # side of Fc — but the anchor stays: the argument for it was never
-        # only the band, it is that measured give-back beats any solver
-        # prediction for restoring a corrected branch's own level. What DID
-        # change is `raw_trim` underneath it, which carried 10.9-13.1 dB of
-        # frame error into every anchored trim on the JTS3 captures.
-        #
-        # PR-L5 adds ONE term: ``level_frame_offset_db``, how far this branch
-        # must move to reach the session's shared level frame. The anchor
-        # already returns a branch to its OWN pre-correction system level; the
-        # offset then places that level where the frame says it belongs. The
-        # two together mean ``target + trim`` is the same number for every
-        # branch by construction, which is the structural close of the defect
-        # PR-L4 item 1 could only assert about. It is 0.0 for the frame's own
-        # reference role and for any session with no frame, so a fit that
-        # predates the frame anchors byte-identically.
-        raw_trim = dict(cand.trim_db)
-        # The anchor's base trim is the SAME term the frame was solved on, so
-        # the two cannot disagree about which trim they are anchoring to. With
-        # a frame this is `trim_band_average_db`; without one it is the applied
-        # trim, byte-identical to the pre-PR-L5 anchor.
-        #
-        # Using the applied `trim_db` here while the frame used the band average
-        # would let the raw candidate's ripple polish survive into the anchor —
-        # which it never did before, because the trim term cancels out of
-        # `raw_trim + giveback + offset` (the offset subtracts the same trim the
-        # base adds, leaving `giveback + system − core`). That cancellation is
-        # what makes the polish a GATE sensitivity rather than a correction
-        # difference. Precisely: the RELATIVE level between branches is exact
-        # either way, and the emitted pair is identical whenever
-        # ``normalize_shift_db`` clamps (the ordinary case). When it does not —
-        # which needs a net-BOOSTED core band, a shape only PR-L5's vocabulary
-        # can produce — the pair shifts in COMMON MODE by the change in
-        # ``system_level_db``; every emitted trim is still ≤ 0, and a common
-        # shift is a volume-knob difference, not a tonal one. The LINEARIZED
-        # ripple polish below still sets the final trim; this is only its
-        # anchor.
-        anchor_base_db = frame_trims_db if level_frame is not None else raw_trim
-        anchored_unnormalized = {
-            role: float(
-                anchor_base_db.get(role, 0.0)
-                + fits[role].correction_giveback_db
-                + fits[role].level_frame_offset_db
-            )
-            for role in (woofer_role, tweeter_role)
-        }
-        # Normalize to non-positive: a branch whose own cuts give back more than
-        # its raw attenuation would otherwise land POSITIVE (a boost), which the
-        # emitter refuses and the hardware must never see. Subtracting the same
-        # shift from every role preserves the relative leveling exactly and is
-        # honest extra ledger (a little more max-SPL spent, disclosed below).
-        normalize_shift_db = max(0.0, max(anchored_unnormalized.values()))
-        anchored = {
-            role: value - normalize_shift_db
-            for role, value in anchored_unnormalized.items()
-        }
-
-        # Ripple fine-tune around the anchor: the anchor sets the LEVEL, the
-        # scan only polishes summed flatness near it. Same band/sign as before.
-        #
-        # ...and only where that band straddles Fc (PR-L3). This is the SAME
-        # one-sided-band hazard `program_analysis._build_candidate` guards on
-        # the raw candidate, reached through the SAME `overlap_band_hz` clamp
-        # a few lines above, and this call site is the one whose result
-        # becomes `role_attenuations_db` — the gain the emitted graph runs.
-        # On a tweeter swept from Fc the band is `[Fc, 2*Fc]`, where the
-        # woofer sits 20+ dB down its skirt: the summed ripple is the
-        # tweeter's own and barely responds to the tweeter's gain, so the
-        # scan is not measuring the handoff. It mattered less while the seed
-        # was biased and the scan's pull partly cancelled it; PR-L3 unbiased
-        # the seed, which is exactly what makes an unguarded pull dangerous
-        # here — bounded only by LINEARIZATION_TRIM_SANITY_MARGIN_DB, it can
-        # walk the applied trim up to 6 dB off a correct anchor without
-        # tripping anything. A selector that cannot see the woofer does not
-        # set the woofer's handoff level.
-        assert analysis.alignment is not None  # MEASURE analyses always carry one
-        ripple_lin: float | None = None
-        if lo_clamped < self._fc_hz < hi:
-            trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
-                freqs, W_lin, T_lin, self._fc_hz,
-                lo_hz=lo_clamped, hi_hz=hi,
-                seed_trim_db=anchored[tweeter_role],
-                trim_w_db=anchored[woofer_role],
-                sign=analysis.alignment.polarity_sign,
-            )
-        else:
+        plan = plan_linearization(request, journal=self._journal_linearization)
+        if plan.journal_dropped:
+            # The port refused lines. Plain scalars only, so whatever broke one
+            # record's payload cannot also swallow the notice about it. This is
+            # ``journal_dropped``'s only reader — without it the planner would
+            # be returning a loss nobody is told about.
             log_event(
-                logger, "correction.crossover_v2_linearization_ripple_trim_skipped",
-                session_id=self.session_id,
-                reason="ripple_band_one_sided",
-                fc_hz=round(float(self._fc_hz), 3),
-                ripple_band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
-                anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
-            )
-            trim_t_lin = anchored[tweeter_role]
-        resolved = {
-            woofer_role: anchored[woofer_role], tweeter_role: float(trim_t_lin),
-        }
-
-        log_event(
-            logger, "correction.crossover_v2_linearization_giveback",
-            session_id=self.session_id,
-            giveback_db={
-                role: round(float(fits[role].correction_giveback_db), 3)
-                for role in (woofer_role, tweeter_role)
-            },
-            raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
-            anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
-            normalize_shift_db=round(float(normalize_shift_db), 3),
-            # The FIT frame's own per-role level, beside the TRIM frame this
-            # line already carries (PR-L3 forensics). `raw_trim_db` should
-            # track the negated difference of these two; a large disagreement
-            # means the level match and the fit are measuring different
-            # things, which is exactly what shipped the 10 dB-dark tweeter.
-            target_level_db={
-                role: round(float(fits[role].target_level_db), 3)
-                for role in (woofer_role, tweeter_role)
-            },
-            # PR-L5: the shared frame the two targets were reconciled into,
-            # and the per-role move it asked for. A large offset is the
-            # 10 dB-dark shape being CORRECTED, not a new problem — it is the
-            # number that used to be silently absorbed by nothing.
-            level_frame_system_db=(
-                round(float(level_frame.system_level_db), 3)
-                if level_frame is not None else None
-            ),
-            level_frame_reference_role=(
-                level_frame.reference_role if level_frame is not None else None
-            ),
-            level_frame_offset_db={
-                role: round(float(fits[role].level_frame_offset_db), 3)
-                for role in (woofer_role, tweeter_role)
-            },
-            # (`headroom_cost_db` moved to its own
-            # `correction.crossover_v2_linearization_headroom` event since
-            # #1808: the charge is the branch CHAIN's realized peak, so it is
-            # not known until the trim is committed, which happens below.)
-        )
-
-        # The guard measures the SCAN's drift from the anchor — the anchor
-        # itself is trusted by construction (it is measured give-back, not a
-        # prediction), so only a scan that walks far from it is suspect.
-        wild = (
-            abs(trim_t_lin - anchored[tweeter_role])
-            > LINEARIZATION_TRIM_SANITY_MARGIN_DB
-        )
-        # PR-L4 item 9: drift from the anchor says the scan MOVED, not that it
-        # moved the wrong way — and on the 2026-07-27 session the difference
-        # mattered. The scan had walked 5.500 dB, missing this guard by 0.50 dB,
-        # and its walk was TOWARD a correct level; the fallback the guard would
-        # have taken was 5.5 dB darker still. A guard whose rejection branch can
-        # point away from the truth is not a safety net, so it no longer
-        # decides: BOTH candidate pairs are graded by the one direct measurement
-        # of what a trim is FOR (their realized inter-driver level, item 1) and
-        # the better-levelled pair is committed.
-        #
-        # **Unconditionally, not only on a rejection** (PR-L4 review B2). The
-        # first cut graded only inside the `wild` branch, which made the whole
-        # thing non-monotonic in the drift it was supposed to police: below the
-        # 6.0 dB guard `resolved` committed UNGRADED and item 1's 3.0 dB
-        # tolerance then hard-stopped the session, while a LARGER drift tripped
-        # the guard, fell back to the anchor, and applied. Measured by the
-        # reviewer: 2.0 / 4.0 / 5.9 dB drifts refused at committed level errors
-        # of -3.6 / -5.6 / -7.5 dB, and a 6.5 dB drift applied at -1.6 dB. The
-        # guard's ceiling and item 1's tolerance were fighting, and the band
-        # between them was a terminal failure instead of a fallback.
-        #
-        # **Named behaviour change**: the ripple polish now survives only when
-        # it does not worsen the level match (ties go to the anchor, which is
-        # level-preserving by construction). That is a real narrowing of
-        # #1667's scan, and it is the intended ordering — inter-driver level is
-        # the load-bearing property, summed ripple is the polish, and PR-L3
-        # already skips the scan entirely on the one-sided geometry where it
-        # was doing the damage. Whichever pair wins still faces item 1's
-        # refusal at `_publish_measure_candidate`; drift is retained as the
-        # trigger for the WARNING and as telemetry, never as the verdict.
-        match_resolved = self._realized_level_match(
-            freqs, W_lin, T_lin, resolved, woofer_role, tweeter_role,
-            woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
-        )
-        match_anchored = self._realized_level_match(
-            freqs, W_lin, T_lin, anchored, woofer_role, tweeter_role,
-            woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
-        )
-        anchor_levels_better = abs(match_anchored.difference_db) <= abs(
-            match_resolved.difference_db
-        )
-        role_attenuations_db = anchored if anchor_levels_better else resolved
-        realized_match = match_anchored if anchor_levels_better else match_resolved
-        # Never the RAW trim, whichever pair wins — the correction filters are
-        # emitted either way, and raw trim + emitted filters is the known
-        # deterministic VERIFY-mismatch class (#1668 PR-D).
-        self._last_linearization_outcome = "trim_rejected" if wild else "fitted"  # SF3
-        if wild:
-            log_event(
-                logger, "correction.crossover_v2_linearization_trim_rejected",
+                logger, "correction.crossover_v2_linearization_journal_dropped",
                 level=logging.WARNING, session_id=self.session_id,
-                raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
-                resolved_trim_db={k: round(v, 3) for k, v in resolved.items()},
-                # #1668 anchored give-back: the anchor the guard is measured
-                # against.
-                anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
-                # The pair actually committed. Since PR-L4 this is the anchor
-                # only when the anchor LEVELS BETTER — the two numbers below say
-                # which won and by how much.
-                fallback_trim_db={
-                    k: round(v, 3) for k, v in role_attenuations_db.items()
-                },
-                anchored_level_error_db=round(
-                    float(match_anchored.difference_db), 3
-                ),
-                resolved_level_error_db=round(
-                    float(match_resolved.difference_db), 3
-                ),
-                committed="anchored" if anchor_levels_better else "resolved",
-                margin_db=LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-                # P4 telemetry (2026-07-24 review): the ripple at each trim lets
-                # live evidence distinguish "legitimate flatter optimum rejected"
-                # from "garbage correctly caught" before anyone widens the guard.
-                # ``None`` is unreachable here — a skipped scan leaves the trim
-                # AT the anchor, so ``wild`` is false by construction — but the
-                # field stays honest rather than reporting a fabricated 0.0.
-                resolved_ripple_db=(
-                    round(float(ripple_lin), 3) if ripple_lin is not None else None
-                ),
-                raw_predicted_ripple_db=round(float(cand.predicted_ripple_db), 3),
+                dropped=len(plan.journal_dropped),
+                detail="; ".join(plan.journal_dropped),
             )
-
-        # PR-L4 item 1: the inter-driver realized-level ledger, on every fitted
-        # candidate whatever the guard decided. Recorded here (where the
-        # linearized branches live) and ASSERTED in
-        # ``_publish_measure_candidate`` — deliberately outside SF2's
-        # degrade-to-trims-only catch, because an accountability refusal must
-        # stop the session rather than quietly become the unlinearized path.
-        self._last_realized_level_match = realized_match
-        log_event(
-            logger, "correction.crossover_v2_realized_level_match",
-            level=(
-                logging.WARNING if not realized_match.matched else logging.INFO
-            ),
-            session_id=self.session_id,
-            matched=realized_match.matched,
-            level_w_db=round(float(realized_match.level_w_db), 3),
-            level_t_db=round(float(realized_match.level_t_db), 3),
-            difference_db=round(float(realized_match.difference_db), 3),
-            tolerance_db=realized_match.tolerance_db,
-            woofer_band_hz=tuple(
-                round(v, 1) for v in realized_match.woofer_band_hz
-            ),
-            tweeter_band_hz=tuple(
-                round(v, 1) for v in realized_match.tweeter_band_hz
-            ),
-            trim_db={k: round(v, 3) for k, v in role_attenuations_db.items()},
-        )
-
-        # VERIFY-prediction coherence fix (hardware-validation-caught live
-        # finding, #1668 PR-D): the emitted graph carries these SAME W_lin/
-        # T_lin correction filters regardless of which branch above ran —
-        # the wild-trim guard only ever changes the TRIM, never whether the
-        # filters are emitted (``linearization`` below is populated in both
-        # cases) — so the persisted VERIFY prediction must be rebuilt from
-        # them too, at whichever trim ``role_attenuations_db`` actually ended
-        # up holding. Mirrors ``program_analysis._build_candidate``'s own
-        # final predicted-sum call exactly — full-grid branches at the
-        # committed trim AND the committed delay. Without this, VERIFY compared
-        # the correctly-linearized measured summation against a prediction
-        # still built from the raw branches — a deterministic mismatch equal to
-        # the filters' own in-band response (measured live on JTS3:
-        # 1.688-1.699 dB across three attempts, against the 1.5 dB
-        # tolerance).
-        #
-        # The delay term is rung P3 / R10b ("make the summed model carry the
-        # committed delay and trim"). ``W_lin``/``T_lin`` are the branches'
-        # ``DriverResponse.complex_tf`` times a correction, and
-        # ``_driver_response`` windows on each branch's OWN argmax exactly as
-        # ``_aligned_branch_tf`` does, so this pair sits in the SAME
-        # argmax-referenced frame as the raw pair and takes the SAME residual —
-        # never the applied delay itself, which would double-count the measured
-        # peak gap (see ``summed_model_residual_delay_us``).
-        #
-        # Both numbers come off ``analysis.alignment``, the SAME pair site 1
-        # used and the same pair :func:`alignment_to_candidate_fields` reads to
-        # build the emitted ``MeasuredCrossoverAlignment`` — so "the committed
-        # delay" here is literally the delay that reaches the graph.
-        # (``_analyze_measure`` replaces ``alignment.delay_us`` with the
-        # candidate's selection before this runs, so it also equals
-        # ``cand.delay_us``; the candidate's own ``anchor_delay_us`` is NOT
-        # used, because it is ``None`` on the no-declared-bounds path where the
-        # alignment's is not, and the two models must not disagree.) Site 1
-        # deriving its residual from the same two values is what leaves the raw
-        # and linearized predictions differing by the correction filters and
-        # nothing else — which is what keeps ``_commanded_delta`` and the
-        # BEFORE/AFTER predicted-spec improvement gate comparing like with like.
-        predicted_lin = predicted_branch_sum(
-            W_lin, T_lin,
-            role_attenuations_db[woofer_role], role_attenuations_db[tweeter_role],
-            analysis.alignment.polarity_sign,
-            freqs_hz=freqs,
-            residual_delay_us=summed_model_residual_delay_us(
-                analysis.alignment.anchor_delay_us
-                if analysis.alignment.status == ALIGNMENT_OK
-                else None,
-                analysis.alignment.delay_us,
-            ),
-        )
-        self._last_linearized_predicted_sum = (
-            freqs, 20.0 * np.log10(np.maximum(np.abs(predicted_lin), 1e-12)),
-        )
-
-        # The headroom charge, stamped now that the trim is committed (#1808).
-        #
-        # A correction's cost is a property of the CHAIN it is emitted into —
-        # the crossover that follows it and the trim that follows that — so
-        # the topology-agnostic fit core cannot compute it and deliberately
-        # does not try (`LinearizationFit.headroom_cost_db`). This is the same
-        # `branch_headroom_db` the emitter charges `active_baseline_headroom`
-        # with, over the same three terms, so the number the household is told
-        # and the number the speaker gives up are one number rather than two
-        # that agree by inspection.
-        #
-        # `role_attenuations_db` and not `anchored`/`resolved`: whichever pair
-        # the level-match adjudication above committed is the trim the graph
-        # will run, and the charge follows the emitted graph.
-        #
-        # `normalize_shift_db` is NET-NEUTRAL under this rule, which is why it
-        # is left exactly as it was. Subtracting a common S from every branch's
-        # trim lowers every branch's chain peak by S, so it lowers this charge
-        # by S too, and the pre-split attenuation the emitter applies falls by
-        # the same S the branches gained: identical output, no lost loudness.
-        # (Under the retired sum-of-positives rule the charge could not see the
-        # trim at all, so the 2.478 dB shift on the 2026-07-28 JTS3 profile was
-        # pure loss.) The one case where it is not neutral is a branch whose
-        # whole chain already sits below unity — the charge floors at 0 and
-        # cannot fall further — which is honest ledger, still disclosed by the
-        # `normalize_shift_db` field of the giveback event above.
-        charge_db: dict[str, float] = {}
-        peak_db: dict[str, float] = {}
-        linearization: dict[str, Any] = {}
-        for role, fit in fits.items():
-            emitted = [f.to_dict() for f in fit.filters]
-            trim_db = float(role_attenuations_db.get(role, 0.0))
-            peak_db[role] = branch_chain_peak_db(
-                emitted, sections=sections[role], trim_db=trim_db,
-            )
-            charge_db[role] = headroom_charge_db(peak_db[role])
-            linearization[role] = replace(
-                fit, headroom_cost_db=charge_db[role],
-            ).to_dict()
-        log_event(
-            logger, "correction.crossover_v2_linearization_headroom",
-            session_id=self.session_id,
-            # What the branch actually puts above unity at its loudest bin...
-            chain_peak_db={r: round(v, 3) for r, v in peak_db.items()},
-            # ...what that costs the speaker's maximum level (peak + margin,
-            # 0.0 for a chain that never exceeds unity)...
-            headroom_cost_db={r: round(v, 3) for r, v in charge_db.items()},
-            # ...and what the retired sum-of-positives rule would have charged,
-            # kept so the reclaimed loudness is visible in the journal rather
-            # than only in a design doc.
-            sum_of_positives_db={
-                role: round(
-                    math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3,
-                )
-                for role, fit in fits.items()
-            },
-            trim_db={
-                role: round(float(role_attenuations_db.get(role, 0.0)), 3)
-                for role in fits
-            },
-            margin_db=HEADROOM_MARGIN_DB,
-        )
-        return role_attenuations_db, linearization
-
-    def _realized_level_match(
-        self,
-        freqs: np.ndarray,
-        w_tf: np.ndarray,
-        t_tf: np.ndarray,
-        trims_db: Mapping[str, float],
-        woofer_role: str,
-        tweeter_role: str,
-        *,
-        woofer_span_hz: tuple[float, float],
-        tweeter_span_hz: tuple[float, float],
-    ) -> RealizedLevelMatch:
-        """One candidate trim pair's realized inter-driver level (PR-L4 item 1).
-
-        A thin role-ordering adapter over
-        :func:`~jasper.audio_measurement.program_analysis.realized_branch_level_match`
-        — this conductor speaks roles, that estimator speaks woofer/tweeter
-        branches, and nothing else belongs in between. Kept a method rather than
-        a closure so the guard above can grade BOTH candidate pairs with one
-        obviously-identical call.
-        """
-        return realized_branch_level_match(
-            freqs, w_tf, t_tf, self._fc_hz,
-            trim_w_db=float(trims_db[woofer_role]),
-            trim_t_db=float(trims_db[tweeter_role]),
-            woofer_span_hz=woofer_span_hz,
-            tweeter_span_hz=tweeter_span_hz,
-        )
+        return plan
 
 
 # --------------------------------------------------------------------------- #

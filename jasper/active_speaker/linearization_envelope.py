@@ -11,7 +11,7 @@ product policy, no CamillaDSP/emission imports — this module answers "how
 many dB of correction depth is this frequency bin allowed," nothing more.
 This module shipped with no production callers; **it has one now** — #1668
 PR-C wired it into the fit/apply flow, and
-``jasper.active_speaker.crossover_v2_flow``'s ``_fit_linearization`` calls
+``jasper.active_speaker.crossover_v2.intervention``'s ``plan_linearization`` calls
 :func:`compose_envelope` per driver role and hands the result to
 :func:`~jasper.active_speaker.linearization_fit.fit_driver_linearization`,
 whose filters are persisted and applied on hardware. Purity is still the

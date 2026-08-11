@@ -5,7 +5,7 @@ verdict cut, and diff the two fits.
 **The question it answers, and the one it cannot.** Replaying a banked session
 with exactly one input severed — ``excluded_bands_hz=None``, the production
 ``cloud is None`` branch in
-:meth:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor._fit_linearization`
+:func:`jasper.active_speaker.crossover_v2.intervention.plan_linearization`
 — shows whether the cloud's null evidence actually *bound* the fit, and what
 the fit does without it. It cannot show that the wired answer was *right*:
 the corpus carries no ground truth. That boundary is the validation ladder's
@@ -417,7 +417,9 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
     wired = arm == "wired"
     from jasper.active_speaker.branch_chain import sections_by_role
     from jasper.active_speaker.branch_target import branch_target, radiating_band_hz
-    from jasper.active_speaker.crossover_v2_flow import _compose_sigma_db
+    from jasper.active_speaker.crossover_v2.intervention import (
+        compose_sigma_db as _compose_sigma_db,
+    )
     from jasper.active_speaker.linearization_envelope import compose_envelope
     from jasper.active_speaker.linearization_fit import (
         FitVocabulary,
