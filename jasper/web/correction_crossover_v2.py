@@ -7706,7 +7706,11 @@ def handle_v2_restore(
         # the record — the graph is back, so this is the moment the
         # declaration owes the same reversal.
         outcome, message = _restore_sound_declaration(
-            state.get("sound_declaration_undo")
+            # ``(state or {})`` for the same reason as ``pre_apply_profile``
+            # above: ``rollback_anchor_refusal`` is what proves ``state`` is
+            # present now, and it does that by returning ``None`` rather than
+            # by narrowing the local the way the inline guard it replaced did.
+            (state or {}).get("sound_declaration_undo")
         )
         payload["sound_declaration"] = outcome
         if message:
