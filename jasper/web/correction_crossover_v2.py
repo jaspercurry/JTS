@@ -2130,6 +2130,63 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
     }
 
 
+def _decimate_delta(commanded_delta: Any) -> dict[str, Any] | None:
+    """Persist-time reduction of the COMMANDED delta (#2291 Phase 3).
+
+    The delta probe's commanded axis —
+    :func:`~jasper.active_speaker.crossover_v2_flow._commanded_delta`'s
+    ``(freqs_hz, delta_db)``, the shape the emitted filters and trims ask the
+    speaker for. Bounded at the same :data:`MAX_PERSISTED_SUM_POINTS` ceiling,
+    over the same fixed-width blocks, so it lands on the SAME grid
+    :func:`_decimate_sum` produces for the same input frequencies — the two
+    curves cross the stage bridge together and a reader comparing them should
+    not have to ask whether their frequencies line up. That agreement is pinned
+    (``test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum``)
+    rather than asserted, because the block rule lives in
+    ``_decimate_to_analysis_grid`` and is restated here.
+
+    **Averaged in dB, not in linear power** — the one place this deliberately
+    parts company with :func:`_decimate_sum`. That function's power mean is the
+    right estimator for a MAGNITUDE curve; this is a DIFFERENCE of two dB
+    curves, for which the power mean is biased. Measured over 200 synthetic
+    commanded deltas of realistic shape (shelf plus ripple, 1024-4096 bins),
+    the two estimators disagreed by up to 0.27 dB — against a commanded floor
+    (:data:`~jasper.active_speaker.delta_probe.DELTA_PROBE_MIN_COMMANDED_DB`)
+    of 0.5 dB. So the domain choice moves which bins the probe grades at all,
+    not merely a third decimal.
+
+    What it does NOT move is the graded error. The conductor reconstructs
+    ``realized = (measured - predicted) + commanded``, so ``realized -
+    commanded`` cancels this curve exactly; the decimation reaches band
+    membership near the commanded floor and the reported ``gain_factor``.
+    """
+    if commanded_delta is None:
+        return None
+    import numpy as np
+
+    freqs, delta = commanded_delta
+    grid = np.asarray(freqs, dtype=float)
+    values = np.asarray(delta, dtype=float)
+    n = int(grid.size)
+    # A length disagreement is not reachable from ``_commanded_delta`` (it
+    # builds both arrays on one grid), but this function persists whatever a
+    # conductor holds and a raise here would lose the WHOLE snapshot, not just
+    # this key. Absent means "nothing commanded", which is already the honest
+    # reading downstream.
+    if n == 0 or int(values.size) != n:
+        return None
+    if n > MAX_PERSISTED_SUM_POINTS:
+        block = -(-n // MAX_PERSISTED_SUM_POINTS)  # ceil division
+        blocks = n // block
+        kept = blocks * block
+        grid = grid[:kept].reshape(blocks, block).mean(axis=1)
+        values = values[:kept].reshape(blocks, block).mean(axis=1)
+    return {
+        "freqs_hz": [float(f) for f in grid],
+        "delta_db": [float(d) for d in values],
+    }
+
+
 def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     """The conductor's stored prediction verdict, in the shape the durable
     state carries it (two-stage commission D4).
@@ -2166,6 +2223,39 @@ def pilot_transfer_prior_from_state(
     priors = (state or {}).get("verify_priors")
     prior = priors.get("pilot_transfer_reference") if isinstance(priors, Mapping) else None
     return prior if isinstance(prior, Mapping) else None
+
+
+def commanded_delta_prior_from_state(
+    state: Mapping[str, Any] | None,
+) -> tuple[Any, Any] | None:
+    """The stage-1 commanded delta, as the conductor's ctor takes it (#2291).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.commanded_delta`` and the exact mirror of
+    :func:`pilot_transfer_prior_from_state` above: durable state in, the
+    ``measure_commanded_delta`` argument out. Named and module-level for the
+    same reason — the seeding PATH is then drivable in a test without a relay.
+
+    ``None`` is the probe's
+    :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE`, which is
+    **not** a pass, and it covers three honest cases that mean one thing to the
+    probe — there is no commanded axis to grade against: a state file written
+    before this key shipped, a trims-only candidate (which commands no shape at
+    all), and a record that is not the pair this build writes.
+    """
+    import numpy as np
+
+    priors = (state or {}).get("verify_priors")
+    record = priors.get("commanded_delta") if isinstance(priors, Mapping) else None
+    if not isinstance(record, Mapping):
+        return None
+    freqs, delta = record.get("freqs_hz"), record.get("delta_db")
+    if not freqs or not delta:
+        return None
+    return (
+        np.asarray(freqs, dtype=float),
+        np.asarray(delta, dtype=float),
+    )
 
 
 def _finite(value: Any) -> float | None:
@@ -2754,6 +2844,21 @@ def persist_conductor_state(
             # dropped on the first "Try again" — the ``cloud`` B1 bug shape,
             # one field over.
             "predicted_spec": _predicted_spec_prior(conductor),
+            # The delta probe's COMMANDED axis (#2291 Phase 3). Produced by the
+            # stage-1 fit and consumed by the stage-2 probe — which runs in a
+            # different process, against a conductor that never ran a fit — so
+            # exactly like ``predicted_sum`` above, this durable state is the
+            # only channel it has. Until it crossed, every shipped stage 2
+            # graded its correction with the shortfall-vs-model-error
+            # discriminator switched off, reporting ``unavailable``.
+            #
+            # Read through ``getattr`` for ``_predicted_spec_prior``'s reason:
+            # this function persists duck-typed conductors too, and a stand-in
+            # without the property means "nothing commanded" — which is what
+            # the key's own absence already means downstream.
+            "commanded_delta": _decimate_delta(
+                getattr(conductor, "measure_commanded_delta", None)
+            ),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference, DATED — history, not a
             # comparator (#1927). ``prepare_v2_verify`` hands it to the next
@@ -5826,6 +5931,158 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
     return V2VolumeHooks(open=_open, close=_close, abandon=_abandon)
 
 
+# --------------------------------------------------------------------------- #
+# stage capabilities — one declaration per commission stage
+# --------------------------------------------------------------------------- #
+
+#: The seams a stage may or may not bind, and the priors a stage may need
+#: handed to it. Slugs rather than an enum: they are journal vocabulary before
+#: they are anything else, and one line each is the whole of their behaviour.
+CAPABILITY_FINDINGS = "findings"
+CAPABILITY_ROLLBACK = "rollback"
+CAPABILITY_COMMANDED_DELTA = "commanded_delta"
+CAPABILITY_PREDICTED_SUM = "predicted_sum"
+
+
+@dataclass(frozen=True)
+class V2StageCapabilities:
+    """What ONE commission stage binds, and what it needs handed to it.
+
+    The v2 commission runs as two relay sessions against two conductors
+    (:func:`prepare_v2_session` measures and stops; the household applies;
+    :func:`prepare_v2_verify` verifies). The seams they bind are identical
+    except in two places, and until #2291 Phase 3 both shapes were
+    hand-assembled at their own call site — which is how the rollback seam came
+    to be bound on the stage that never reaches a VERIFY verdict and left off
+    the stage that does.
+
+    ``provides`` lists ONLY the seams that DIFFER between stages — the ones
+    :func:`bind_v2_stage_seams` branches on. Capture, analysis, evidence
+    publication, and the apply gates are unconditional on both stages, so
+    naming them here would restate a constant in a second place rather than
+    record a decision.
+
+    ``requires`` is what a stage needs the PREVIOUS one to have left on disk.
+    It is OBSERVABILITY, not a gate: a stage opens either way, and a missing
+    input is journalled so "the probe reported unavailable" carries a reason
+    instead of reading like a pass. A stage that refused to open on a prior it
+    could still run without would strand a household whose only remaining move
+    is the one being refused.
+    """
+
+    stage: str
+    provides: frozenset[str]
+    requires: frozenset[str] = frozenset()
+
+
+#: Stage 1 — measure, then stop. Binds the findings publisher because a level-
+#: frame finding is banked only by the MEASURE candidate's own gate (#1866);
+#: stage 2 builds no MEASURE candidate, so binding it there would ship a seam
+#: nothing can reach. Requires nothing: it is the first stage, and it hydrates
+#: its own prior snapshot through ``CrossoverV2Conductor.hydrate``.
+STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
+    stage="measure",
+    provides=frozenset({CAPABILITY_FINDINGS}),
+)
+
+#: Stage 2 — the post-apply verdict. Binds rollback because this is the only
+#: stage that reaches the delta probe, and PR-L5's rollback is automatic on the
+#: non-matched verdicts: a conductor without the seam still refuses, but under
+#: ``REASON_CORRECTION_ROLLBACK_FAILED``, whose copy tells the household the
+#: correction is STILL APPLIED. Requires the two stage-1 curves the probe and
+#: the tracking check grade against.
+STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
+    stage="verify",
+    provides=frozenset({CAPABILITY_ROLLBACK}),
+    requires=frozenset({CAPABILITY_COMMANDED_DELTA, CAPABILITY_PREDICTED_SUM}),
+)
+
+
+def bind_v2_stage_seams(
+    capabilities: V2StageCapabilities,
+    *,
+    play: Any,
+    evidence_store: Any,
+    relay_session_id: str,
+    # ``dict``, not ``Mapping``: the four evidence binders below take the
+    # MUTABLE refs dict ``bind_evidence_publishers`` returns and write artifact
+    # fingerprints into it. Widening this to ``Mapping`` would type-check here
+    # and lie about that.
+    refs: dict[str, Any],
+    publish_check: Any,
+    publish_candidate: Any,
+    run_async: Any,
+    camilla_factory: Any,
+    available: Sequence[str] = (),
+) -> Any:
+    """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
+
+    The single source of truth for the two stage shapes. Both preparers call
+    it; neither assembles a ``V2FlowSeams`` of its own, so "which stage binds
+    rollback" is answered in exactly one place — the capability constants above
+    — instead of being re-derived at two call sites that were free to disagree.
+
+    The unconditional seams are unconditional on purpose. ``apply_failed`` is
+    never consulted by stage 2 (its conductor is constructed ``applied=True``,
+    so ``authorize_begin``'s apply-observed short-circuit runs first), and
+    ``publish_cloud``/``retain_position`` do nothing for a single-entry recovery
+    re-verify — but Full's stage 2 IS a post-apply position group whose combined
+    curve the after-chart, the post-apply spec verdict, and the delta probe all
+    read, and ``V2FlowSeams`` requires the two apply gates outright. Binding a
+    seam a plan never exercises costs nothing; omitting one a plan does
+    exercise is a silently missing publication.
+
+    ``available`` is what this stage actually got handed, so ``requires``
+    minus it is what is missing. The caller states facts; the verdict is
+    derived here, which is why the declaration and the shortfall cannot
+    disagree. Logging lives here rather than at the call sites for the same
+    reason the seams do: a third caller that bound seams without declaring them
+    would put the journal's account of stage shape back out of one owner's
+    hands.
+    """
+    from jasper.active_speaker.crossover_v2_flow import V2FlowSeams
+
+    missing = tuple(sorted(capabilities.requires - set(available)))
+    log_event(
+        logger, "correction.crossover_v2_stage_capabilities",
+        stage=capabilities.stage, session_id=relay_session_id,
+        provides=",".join(sorted(capabilities.provides)),
+        requires=",".join(sorted(capabilities.requires)),
+        missing=",".join(missing),
+    )
+    if missing:
+        # WARNING, and its own event: a required prior that did not cross the
+        # bridge does not stop this stage, so nothing else would ever say the
+        # verdict it is about to produce was reached with an input absent.
+        log_event(
+            logger, "correction.crossover_v2_stage_capability_unavailable",
+            level=logging.WARNING, stage=capabilities.stage,
+            session_id=relay_session_id, missing=",".join(missing),
+        )
+    return V2FlowSeams(
+        play=play,
+        analyze=bind_production_analyze(meta=refs),
+        publish_check=publish_check,
+        publish_candidate=publish_candidate,
+        apply_complete=_applied_gate,
+        apply_failed=_apply_failure_gate,
+        retain_position=bind_position_retention(
+            evidence_store, relay_session_id, refs
+        ),
+        publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
+        publish_findings=(
+            bind_findings_publisher(evidence_store, relay_session_id, refs)
+            if CAPABILITY_FINDINGS in capabilities.provides else None
+        ),
+        rollback=(
+            bind_delta_probe_rollback(run_async, camilla_factory)
+            if CAPABILITY_ROLLBACK in capabilities.provides else None
+        ),
+        applied_offset_db=_applied_offset_gate,
+        record_model_error=_record_live_model_error,
+    )
+
+
 def prepare_v2_session(
     raw: Mapping[str, Any],
     *,
@@ -5858,7 +6115,6 @@ def prepare_v2_session(
         CrossoverV2Conductor,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
-        V2FlowSeams,
         attempt_history_from_state,
         build_v2_cloud_index_phase_map,
         build_v2_session_spec,
@@ -5991,30 +6247,16 @@ def prepare_v2_session(
             fc_hz=context.fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
             session_volume_db=context.session_volume_db,
-            seams=V2FlowSeams(
+            seams=bind_v2_stage_seams(
+                STAGE_MEASURE_CAPABILITIES,
                 play=play,
-                analyze=bind_production_analyze(meta=refs),
+                evidence_store=evidence_store,
+                relay_session_id=relay_session_id,
+                refs=refs,
                 publish_check=publish_check,
                 publish_candidate=publish_candidate,
-                apply_complete=_applied_gate,
-                apply_failed=_apply_failure_gate,
-                retain_position=bind_position_retention(
-                    evidence_store, relay_session_id, refs
-                ),
-                publish_cloud=bind_cloud_publisher(
-                    evidence_store, relay_session_id, refs
-                ),
-                # #1866: banked only by the MEASURE candidate's own gate, so it
-                # is wired on the measuring preparer alone. The stage-2 /
-                # re-verify preparer below never builds a MEASURE candidate —
-                # its index map is verify-only — so binding it there would ship
-                # a seam nothing can reach.
-                publish_findings=bind_findings_publisher(
-                    evidence_store, relay_session_id, refs
-                ),
-                rollback=bind_delta_probe_rollback(run_async, camilla_factory),
-                applied_offset_db=_applied_offset_gate,
-                record_model_error=_record_live_model_error,
+                run_async=run_async,
+                camilla_factory=camilla_factory,
             ),
             tier=plan_shape.tier,
             # The conductor's index→phase map is built from the SAME resolved
@@ -6151,7 +6393,6 @@ def prepare_v2_verify(
         PHASE_CHECK,
         PHASE_MEASURE,
         CrossoverV2Conductor,
-        V2FlowSeams,
         attempt_history_from_state,
         build_v2_verify_index_phase_map,
         build_v2_verify_session_spec,
@@ -6197,6 +6438,13 @@ def prepare_v2_verify(
         priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
     )
     predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
+    # The delta probe's commanded axis, rehydrated (#2291 Phase 3). This is the
+    # stage the probe RUNS in, and stage 1 is the only stage that can produce
+    # the curve, so without this every shipped stage 2 graded its correction
+    # with the shortfall-vs-model-error discriminator switched off. ``None``
+    # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
+    # permission granted either.
+    commanded_delta = commanded_delta_prior_from_state(state)
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -6266,40 +6514,28 @@ def prepare_v2_verify(
             fc_hz=context.fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
             session_volume_db=context.session_volume_db,
-            seams=V2FlowSeams(
+            seams=bind_v2_stage_seams(
+                STAGE_VERIFY_CAPABILITIES,
                 play=play,
-                analyze=bind_production_analyze(meta=refs),
+                evidence_store=evidence_store,
+                relay_session_id=relay_session_id,
+                refs=refs,
                 publish_check=_publish_check,
                 publish_candidate=publish_candidate,
-                apply_complete=_applied_gate,
-                # Never actually consulted: this conductor is constructed with
-                # ``applied=True`` already, so authorize_begin's apply-observed
-                # short-circuit never reaches the apply_failed check. Supplied
-                # anyway — V2FlowSeams is a frozen dataclass with no defaults.
-                apply_failed=_apply_failure_gate,
-                # A verify-only re-arm measures the ALREADY-applied graph
-                # against the original session's prediction, so it carries the
-                # same apply-boundary offset and needs the same correction
-                # (#1811). The value survives in durable state across the
-                # re-arm, which is exactly what this seam reads.
-                applied_offset_db=_applied_offset_gate,
-                # The two cloud seams, re-threaded for stage 2 (work order D2).
-                # They were deliberately absent while this preparer only ever
-                # built ``{1: PHASE_VERIFY}`` — no cloud group of any kind, so
-                # ``_close_cloud_group``/``_run_cloud_pipeline`` never ran.
-                # Full's stage 2 IS a post-apply group, and without these its
-                # positions would never be retained and its combined curve
-                # never published: the after-chart, the post-apply spec
-                # verdict, and the delta probe all read that publication. A
-                # single-entry plan exercises neither, so the recovery
-                # re-verify is unchanged by their presence.
-                retain_position=bind_position_retention(
-                    evidence_store, relay_session_id, refs
+                run_async=run_async,
+                camilla_factory=camilla_factory,
+                # What the bridge actually handed this stage. Stated as facts
+                # about the rehydration above, never re-derived here, so the
+                # journal's "missing" line cannot drift from what the conductor
+                # was really constructed with.
+                available=tuple(
+                    slug
+                    for slug, present in (
+                        (CAPABILITY_COMMANDED_DELTA, commanded_delta is not None),
+                        (CAPABILITY_PREDICTED_SUM, predicted_sum is not None),
+                    )
+                    if present
                 ),
-                publish_cloud=bind_cloud_publisher(
-                    evidence_store, relay_session_id, refs
-                ),
-                record_model_error=_record_live_model_error,
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
@@ -6311,6 +6547,7 @@ def prepare_v2_verify(
             index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
+            measure_commanded_delta=commanded_delta,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
@@ -6791,14 +7028,15 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
         # reduces to a bool for its conductor caller — so on an AUTOMATIC
         # rollback a refused declaration is journal-only
         # (``event=correction.crossover_v2_restore_sound_declaration``), not
-        # household-visible. Left that way deliberately, because no rollback
-        # that RUNS is bound today: the measuring conductor binds this seam
-        # (the ``rollback=`` above ``applied_offset_db`` in the measuring
-        # preparer) but never reaches the delta probe, and the VERIFYING
-        # conductor reaches the probe but binds no rollback at all — the two
-        # halves meet in #2291 Phase 3. Widening the seam's return shape to
-        # carry a household sentence means deciding which screen renders it,
-        # which belongs with the caller that will actually run it.
+        # household-visible.
+        #
+        # #2291 Phase 3a bound this seam on the stage that actually reaches the
+        # delta probe (``STAGE_VERIFY_CAPABILITIES``), so an automatic rollback
+        # now genuinely runs — the two halves that used to sit on different
+        # stages have met. The declaration outcome is still journal-only:
+        # widening the seam's return shape to carry a household sentence means
+        # deciding which screen renders it, and the refusal the probe returns
+        # already routes through the verify_fail screen's own copy.
         log_event(
             logger, "correction.crossover_v2_delta_probe_restore",
             level=logging.WARNING if not restored else logging.INFO,
