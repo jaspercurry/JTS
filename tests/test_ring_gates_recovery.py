@@ -1027,6 +1027,93 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
 
 
+def _three_way_topology():
+    """A roleful mono 3-WAY: the one shape where the ring widths disagree.
+
+    Ring B resolves 2 (a roleful box has no stereo ring, so the wire falls back
+    to the shipped stereo declaration) while the ACTIVE ring resolves 3. Every
+    other fixture in this campaign is a 2-way, where both are 2 — so every pin
+    written on one of those passes just as well against code that reads the
+    wrong ring's width. This is the fixture that can tell them apart.
+    """
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return mono_output_topology(mode="active_3_way")
+
+
+def _stage_graph(monkeypatch, tmp_path, text):
+    """Point the statefile at a graph the gate will read on its own."""
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(text, encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return config
+
+
+def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
+    monkeypatch, tmp_path
+):
+    """THE ONE COINCIDENCE THIS CAMPAIGN KEEPS RESTING ON: active width == 2.
+
+    ``_wire_channels_for_ring`` must answer ``ring_active_channels`` for the
+    ACTIVE ring, never ``ring_b_channels``. On every 2-way fixture in this suite
+    those are both 2, so a mutation swapping them survives the entire file — it
+    did survive 306 tests when the resilience lens ran it. A 3-way box is where
+    they separate: Ring B resolves 2 (a roleful box has no stereo ring), the
+    active ring resolves 3.
+
+    Both directions, because either alone is satisfiable by the wrong constant:
+    the CORRECT graph (3 outputs) must be accepted, and a graph declaring Ring
+    B's 2 must be REFUSED.
+    """
+    import jasper.ring_assets as ra
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT,
+        resolve_ring_wire,
+    )
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    monkeypatch.setattr(cr, "load_topology_for_wire", _three_way_topology)
+
+    wire = resolve_ring_wire(_three_way_topology())
+    assert wire.ring_active_channels == 3 and wire.ring_b_channels == 2, (
+        "this fixture stopped discriminating the two ring widths; the test below "
+        "would pass against code reading either one"
+    )
+
+    # The box's OWN active width is accepted.
+    _stage_graph(
+        monkeypatch,
+        tmp_path,
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT,
+            channels=3,
+        ),
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is True, detail
+
+    # Ring B's width is NOT the active ring's, and stating it is refused —
+    # naming the active end and both numbers.
+    _stage_graph(
+        monkeypatch,
+        tmp_path,
+        _ring_graph_text(
+            device=RING_ACTIVE_PLAYBACK_DEVICE,
+            sample_format=RING_WIRE_FORMAT,
+            channels=2,
+        ),
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is False, detail
+    assert "declares 2 channels, expected 3" in detail
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+
+
 def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
     """The dormancy control for the graph end.
 

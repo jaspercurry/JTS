@@ -153,7 +153,7 @@ DEFAULT_ACTIVE_QUEUELIMIT = 4
 DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
 # What the ACTIVE RING sink needs instead lives in ``jasper.fanin_coupling``
 # (``RING_CAMILLA_QUEUELIMIT`` / ``RING_CAMILLA_ENABLE_RATE_ADJUST``) with the
-# rest of the certified ring geometry, and :func:`active_sink_params` reads it
+# rest of the certified ring geometry, and :func:`active_emit_devices` reads it
 # from there. It was declared a second time here — same two numbers, same
 # reason, two places to move them — until the roleful re-emit needed the
 # chunk/target half of that same geometry and made the duplication a live
@@ -326,15 +326,24 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
 
 
 @dataclass(frozen=True)
-class ActiveSinkParams:
-    """The CamillaDSP ``devices:`` knobs a given active sink requires.
+class ActiveEmitDevices:
+    """The whole CamillaDSP ``devices:`` block an active emit against a sink needs.
 
-    ``playback_format``, ``chunksize`` and ``target_level`` are the emitter's
-    corresponding parameters; ``chunksize``/``target_level`` are ``None`` for a
-    sink with no opinion, which is the emitter's own "resolve the env/floor
-    value at emit time" contract.
+    BOTH HALVES, in one object, because the ring coupling is end-to-end: a graph
+    that names the ring on one side and the snd-aloop tap on the other is a graph
+    that goes silent, and a struct carrying only the sink is a struct a caller can
+    forward half of. Every field maps 1:1 onto an
+    ``emit_active_speaker_baseline_config`` parameter of the same name, and
+    ``tests/test_ring_active_endpoint.py`` walks
+    ``dataclasses.fields(ActiveEmitDevices)`` at every forwarding site so a field
+    added here cannot be silently dropped by one of them.
+
+    ``chunksize``/``target_level`` are ``None`` for a sink with no opinion, which
+    is the emitter's own "resolve the env/floor value at emit time" contract.
     """
 
+    capture_device: str
+    capture_format: str
     playback_format: str
     chunksize: int | None
     target_level: int | None
@@ -342,10 +351,11 @@ class ActiveSinkParams:
     enable_rate_adjust: bool
 
 
-def active_sink_params(
+def active_emit_devices(
     playback_device: str, *, topology: Any = None
-) -> ActiveSinkParams:
-    """The device knobs a given active sink needs, in ONE derivation.
+) -> ActiveEmitDevices:
+    """The device block an active emit against ``playback_device`` needs, in ONE
+    derivation.
 
     ONE home for "what does an emit against THIS device have to declare", so a
     caller that re-points an active graph at the ring cannot forget any of it —
@@ -366,13 +376,26 @@ def active_sink_params(
 
     WHAT THE RING BRANCH ANSWERS, and who owns each value:
 
-    - ``playback_format`` — :func:`~jasper.fanin_coupling.resolve_ring_wire`,
-      the one per-box resolution EVERY declaring end reads. Never the box's
-      program-lane default: on a box whose live post-DSP path is wide, that
-      default is ``S32_LE`` while the resolver may answer narrow, and a graph
-      carrying the box default is a sheared attach waiting at the arm (observed
-      on jts3 2026-08-11, ``captures/r7b-jts3-arm2-20260811T132227Z``). This
-      adopts whatever the resolver answers, in both directions.
+    - ``capture_device`` — :data:`~jasper.fanin_coupling.RING_CAPTURE_DEVICE`
+      (Ring A). THE COUPLING IS END-TO-END AND SO IS THIS: under ``shm_ring``
+      fan-in writes Ring A and stops feeding the snd-aloop tap, so a graph whose
+      sink is the ring while its source is still ``plug:jasper_capture`` captures
+      a device nobody writes — digital silence with every daemon healthy. That
+      trap is QUIET: the plan compares capture CHANNELS (2 == 2 passes) and the
+      arm's width gate only holds ring-NAMED lanes to the wire, so a tap capture
+      is not-inspected rather than refused. Moving both halves together is what
+      makes it unreachable, and once the capture names a ring PCM the width gate
+      holds it to the wire for free. ``--endpoint aloop`` restores the tap by the
+      same derivation, in reverse.
+    - ``capture_format`` / ``playback_format`` —
+      :func:`~jasper.fanin_coupling.resolve_ring_wire`, the one per-box
+      resolution EVERY declaring end reads. ONE format for both, because the
+      three rings share one wire. Never the box's program-lane default: on a box
+      whose live post-DSP path is wide that default is ``S32_LE`` while the
+      resolver may answer narrow, and a graph carrying the box default is a
+      sheared attach waiting at the arm (observed on jts3 2026-08-11,
+      ``captures/r7b-jts3-arm2-20260811T132227Z``). This adopts whatever the
+      resolver answers, in both directions.
     - ``chunksize`` / ``target_level`` / ``queuelimit`` /
       ``enable_rate_adjust`` — the certified ring geometry's
       ``RING_CAMILLA_*`` constants in :mod:`jasper.fanin_coupling`, the same
@@ -386,33 +409,41 @@ def active_sink_params(
     is a legitimate call, and burying the choice inside the emitter would remove
     that seam. This is the default a production caller composes with.
 
-    The CHANNEL axis is deliberately not here. An active graph's width is
-    structural — it is the pipeline's output count, derived from the same saved
-    topology the resolver reads — so there is nothing for a sink helper to
-    "adopt"; what matters is that the two agree, and
+    The CHANNEL axis is deliberately not here, on either half. Ring A always
+    carries the 2-channel stereo program fan-in mixes and the emitters already
+    declare exactly that; the ACTIVE ring's width is structural — the pipeline's
+    output count, derived from the same saved topology the resolver reads — so
+    there is nothing for a device helper to "adopt". What matters is that the
+    two agree per ring, and
     ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves that at the
-    arm, over the emitted graph, against the wire's own
-    ``ring_active_channels``.
+    arm, over the emitted graph, holding each lane to its OWN ring's width
+    (``_wire_channels_for_ring``) rather than to one number.
     """
     from jasper.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_ENABLE_RATE_ADJUST,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
+        RING_CAPTURE_DEVICE,
         RING_PCM_DEVICES,
         resolve_ring_wire,
     )
 
     if playback_device not in RING_PCM_DEVICES:
-        return ActiveSinkParams(
+        return ActiveEmitDevices(
+            capture_device=DEFAULT_CAPTURE_DEVICE,
+            capture_format=DEFAULT_CAPTURE_FORMAT,
             playback_format=DEFAULT_PLAYBACK_FORMAT,
             chunksize=None,
             target_level=None,
             queuelimit=DEFAULT_ACTIVE_QUEUELIMIT,
             enable_rate_adjust=DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
         )
-    return ActiveSinkParams(
-        playback_format=resolve_ring_wire(topology).sample_format,
+    wire_format = resolve_ring_wire(topology).sample_format
+    return ActiveEmitDevices(
+        capture_device=RING_CAPTURE_DEVICE,
+        capture_format=wire_format,
+        playback_format=wire_format,
         chunksize=RING_CAMILLA_CHUNKSIZE,
         target_level=RING_CAMILLA_TARGET_LEVEL,
         queuelimit=RING_CAMILLA_QUEUELIMIT,

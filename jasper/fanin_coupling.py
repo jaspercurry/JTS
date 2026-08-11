@@ -442,7 +442,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
 # Every ALSA PCM name the ring ioplug owns, in ring order (A, B, ACTIVE). The
 # set a caller tests membership against when it has a device name in hand and
 # needs to know "is this end of the graph a ring end?" — the emitter side
-# (``jasper.active_speaker.camilla_yaml.active_sink_params``) and the arm gate
+# (``jasper.active_speaker.camilla_yaml.active_emit_devices``) and the arm gate
 # (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) both read it, so
 # neither carries its own list of the three names.
 RING_PCM_DEVICES = (

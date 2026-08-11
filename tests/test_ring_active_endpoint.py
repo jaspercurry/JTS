@@ -22,6 +22,11 @@ import pytest
 
 from jasper import ring_assets
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
+from jasper.camilla_config_contract import (
+    DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_CAPTURE_DEVICE,
+    parse_camilla_devices_config,
+)
 from jasper.active_speaker.playback import FORBIDDEN_TEST_PCM_TOKENS
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -40,6 +45,7 @@ from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_TARGET_LEVEL,
+    RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
     ring_active_endpoint_armed,
     resolve_ring_wire,
@@ -1526,34 +1532,150 @@ def _emit_active_baseline(preset, device, *, topology=None):
     """Emit a roleful baseline graph named at ``device``, as production would.
 
     Composes exactly what ``recompose_applied_baseline_yaml`` composes — the
-    whole ``active_sink_params`` result, not a hand-picked subset of it. That is
+    whole ``active_emit_devices`` result, not a hand-picked subset of it. That is
     load-bearing rather than tidy: while this helper forwarded only the queue
     pair, every ladder walk below emitted the ring with the box's program-lane
     FORMAT and its loopback chunk/target, and passed — which is how defect A
     reached jts3 (2026-08-11, captures/r7b-jts3-arm2-20260811T132227Z) through
-    four green ladder tests. Anything the production seam starts deriving from
-    the sink arrives here automatically now.
+    four green ladder tests.
+
+    Every field is still named EXPLICITLY here, so nothing arrives automatically:
+    a field added to ``ActiveEmitDevices`` and not added to this call is the same
+    subset-forwarding defect one level up.
+    ``test_every_emit_devices_field_reaches_the_emitter`` is the guard that walks
+    ``dataclasses.fields`` at BOTH forwarding sites and fails on exactly that.
     """
     from jasper.active_speaker.camilla_yaml import (
-        active_sink_params,
+        active_emit_devices,
         emit_active_speaker_baseline_config,
     )
 
-    sink = active_sink_params(device, topology=topology)
+    devices = active_emit_devices(device, topology=topology)
     return emit_active_speaker_baseline_config(
         preset,
         playback_device=device,
-        playback_format=sink.playback_format,
-        chunksize=sink.chunksize,
-        target_level=sink.target_level,
-        queuelimit=sink.queuelimit,
-        enable_rate_adjust=sink.enable_rate_adjust,
+        capture_device=devices.capture_device,
+        capture_format=devices.capture_format,
+        playback_format=devices.playback_format,
+        chunksize=devices.chunksize,
+        target_level=devices.target_level,
+        queuelimit=devices.queuelimit,
+        enable_rate_adjust=devices.enable_rate_adjust,
         corrections={
             "woofer": {"gain_db": 0.0, "delay_ms": 0.0},
             "tweeter": {"gain_db": 0.0, "delay_ms": 0.0},
         },
         baseline_id="arm-walk",
     )
+
+
+def _applied_ring_baseline(tmp_path):
+    """A real APPLIED profile on the jts3-shaped box, for the production seam.
+
+    Built from ``tests/active_speaker_fixtures`` — the suite's SHARED builders,
+    not a sibling test module — so the topology this guard drives is the same
+    bench box every other active-speaker test means.
+    """
+    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from tests.active_speaker_fixtures import (
+        mono_output_topology,
+        standard_design_draft,
+        standard_measurements,
+        valid_camilla_config,
+    )
+
+    topology = mono_output_topology()
+    draft = standard_design_draft(topology)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=build_crossover_preview(draft),
+        measurements=standard_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "active-speaker-profile.json",
+        config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
+        validate=valid_camilla_config,
+    )
+    applied["status"] = "applied"
+    return topology, applied
+
+
+def _recorded_emit_kwargs(monkeypatch, call_site):
+    """Run ``call_site``, returning the kwargs it handed the baseline emitter."""
+    from jasper.active_speaker import camilla_yaml as cy
+
+    seen: dict = {}
+    real = cy.emit_active_speaker_baseline_config
+
+    def recorder(preset, **kwargs):
+        seen.update(kwargs)
+        return real(preset, **kwargs)
+
+    monkeypatch.setattr(cy, "emit_active_speaker_baseline_config", recorder)
+    # baseline_profile imported the emitter by name at module import, so the
+    # production seam has its own binding to rebind.
+    import jasper.active_speaker.baseline_profile as bp
+
+    monkeypatch.setattr(bp, "emit_active_speaker_baseline_config", recorder)
+    call_site()
+    return seen
+
+
+def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
+    """WALK ``dataclasses.fields(ActiveEmitDevices)`` at BOTH forwarding sites.
+
+    This PR's whole defect class is a caller taking a SUBSET of a derived device
+    contract — the ring re-emit forwarded the queue pair and let the format,
+    latency geometry and capture lane default. Both sites that forward the
+    contract now name every field explicitly, which is the readable shape but
+    also the re-armable one: adding a field to ``ActiveEmitDevices`` and
+    forgetting one call site fails silently in exactly the original way.
+
+    So the guard is a WALK, not a list: it drives each site with a recording
+    emitter and asserts that for EVERY field, the value that reached the emitter
+    is the value the derivation produced. Same shape as
+    ``test_every_active_lane_write_site_writes_the_pair`` — enumerate the sites,
+    do not assert "the helper exists".
+    """
+    import dataclasses
+
+    from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+    from jasper.active_speaker.camilla_yaml import (
+        ActiveEmitDevices,
+        active_emit_devices,
+    )
+
+    fields = [f.name for f in dataclasses.fields(ActiveEmitDevices)]
+    assert fields, "ActiveEmitDevices lost its fields; this guard is now vacuous"
+
+    topology, applied = _applied_ring_baseline(tmp_path)
+    expected = active_emit_devices(RING_ACTIVE_PLAYBACK_DEVICE, topology=topology)
+
+    sites = {
+        "recompose_applied_baseline_yaml": lambda: recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied,
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        ),
+        "tests._emit_active_baseline": lambda: _emit_active_baseline(
+            _mono_two_way_preset(),
+            RING_ACTIVE_PLAYBACK_DEVICE,
+            topology=topology,
+        ),
+    }
+    for label, call_site in sites.items():
+        seen = _recorded_emit_kwargs(monkeypatch, call_site)
+        missing = [name for name in fields if name not in seen]
+        assert not missing, (
+            f"{label} does not forward {missing} from ActiveEmitDevices — the "
+            "subset-forwarding defect, re-armed"
+        )
+        for name in fields:
+            assert seen[name] == getattr(expected, name), (
+                f"{label} forwarded {name}={seen[name]!r}, but the derivation "
+                f"says {getattr(expected, name)!r}"
+            )
 
 
 def _derived_marker(graph_yaml, topology, *, cap=8):
@@ -1650,6 +1772,14 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     assert f"    format: {wire.sample_format}" in ring_graph
     assert f"  chunksize: {RING_CAMILLA_CHUNKSIZE}" in ring_graph
     assert f"  target_level: {RING_CAMILLA_TARGET_LEVEL}" in ring_graph
+    # ...INCLUDING the capture half. The coupling is end-to-end: under shm_ring
+    # fan-in writes Ring A and stops feeding the snd-aloop tap, so a graph that
+    # moved only its sink captures a device nobody writes — silence with every
+    # daemon healthy. Both lanes move on the same rung or neither does.
+    ring_devices = parse_camilla_devices_config(ring_graph)
+    assert ring_devices["capture_device"] == RING_CAPTURE_DEVICE
+    assert ring_devices["capture_format"] == wire.sample_format
+    assert ring_devices["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
 
     # --- Step 2: the hardware reconciler derives the marker FROM that graph.
     assert _derived_marker(ring_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
@@ -1699,6 +1829,13 @@ def test_the_release_sequence_completes_from_an_armed_roleful_box(monkeypatch):
     # Byte-identical to the pre-arm graph: the rollback RESTORES the artifact,
     # it does not synthesize a third shape.
     assert aloop_graph == _emit_active_baseline(preset, OUTPUTD_ACTIVE_PLAYBACK_DEVICE)
+    # BOTH halves came back. A rollback that restored only the sink would leave
+    # CamillaDSP sourcing Ring A while fan-in feeds the snd-aloop tap again —
+    # the mirror of the arm-side trap, and just as silent.
+    aloop_devices = parse_camilla_devices_config(aloop_graph)
+    assert aloop_devices["capture_device"] == DEFAULT_CAPTURE_DEVICE
+    assert aloop_devices["capture_format"] == DEFAULT_CAPTURE_FORMAT
+    assert aloop_devices["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 
     # --- Step 2: the reconciler re-derives the marker CLEARED. ------------
     assert _derived_marker(aloop_graph, topology) == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
@@ -1713,6 +1850,93 @@ def test_the_release_sequence_completes_from_an_armed_roleful_box(monkeypatch):
         action.action == "unset" and action.key == OUTPUTD_RING_PATH_ENV_VAR
         for action in actions
     )
+
+
+def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
+    from jasper.audio_runtime_plan import transport_coherence_errors
+
+    env = {
+        "JASPER_OUTPUTD_ACTIVE_LANE": "1",
+        "JASPER_OUTPUTD_CONTENT_PCM": "outputd_active_content_capture",
+        **(outputd_env or {}),
+    }
+    return transport_coherence_errors(
+        coupling=coupling,
+        outputd_env=env,
+        camilla_devices={
+            "capture_device": capture,
+            "capture_channels": 2,
+            "playback_device": playback,
+            "playback_channels": 2,
+        },
+    )
+
+
+def test_the_capture_half_is_coherence_checked_in_both_directions():
+    """DEFENSE IN DEPTH for the quiet trap: a graph whose two device halves
+    disagree about the transport is named, not silently accepted.
+
+    The trap is quiet precisely because the axes that DO get compared cannot see
+    it: the plan compares capture CHANNELS and Ring A is stereo exactly like the
+    snd-aloop tap, and the arm's width gate only holds ring-NAMED lanes to the
+    wire, so a tap capture is not-inspected rather than refused. Only the DEVICE
+    comparison catches it, and it has to run in both directions because the arm
+    and the rollback each move the halves.
+    """
+    armed_env = {
+        "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
+        "JASPER_OUTPUTD_SHM_RING_PATH": DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+    }
+
+    # ARM direction — armed plan, graph still on the tap. (This half already
+    # existed before the capture fix; it is pinned here because the fix's whole
+    # claim is that the trap is covered end to end.)
+    armed = _coherence_errors(
+        coupling="shm_ring",
+        capture=DEFAULT_CAPTURE_DEVICE,
+        playback=RING_ACTIVE_PLAYBACK_DEVICE,
+        outputd_env=armed_env,
+    )
+    assert any(
+        "shm_ring but Camilla capture" in err and RING_CAPTURE_DEVICE in err
+        for err in armed
+    ), armed
+
+    # ROLLBACK direction — non-ring plan, graph still on Ring A while the sink
+    # has already gone back. No ladder rung creates this; a half-applied
+    # rollback or a hand-edit does.
+    half_rolled_back = _coherence_errors(
+        coupling="loopback",
+        capture=RING_CAPTURE_DEVICE,
+        playback=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert any("HALF-moved graph" in err for err in half_rolled_back), (
+        half_rolled_back
+    )
+
+    # CONTROL 1 — the mid-arm WAYPOINT is not an error. Both halves have moved
+    # while the coupling is still loopback; that is the state step 1 exists to
+    # create, and calling it an error deadlocks the ladder from the capture side
+    # exactly as the playback side deadlocked it before #2329.
+    assert _coherence_errors(
+        coupling="loopback",
+        capture=RING_CAPTURE_DEVICE,
+        playback=RING_ACTIVE_PLAYBACK_DEVICE,
+    ) == ()
+
+    # CONTROL 2 — a fully rolled-back box is clean, and a fully armed one is too.
+    assert _coherence_errors(
+        coupling="loopback",
+        capture=DEFAULT_CAPTURE_DEVICE,
+        playback=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    ) == ()
+    assert _coherence_errors(
+        coupling="shm_ring",
+        capture=RING_CAPTURE_DEVICE,
+        playback=RING_ACTIVE_PLAYBACK_DEVICE,
+        outputd_env=armed_env,
+    ) == ()
 
 
 def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():

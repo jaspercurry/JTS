@@ -110,7 +110,7 @@ narrowing before attenuation lifts the effective quantization floor
 relative to quiet tails; and an S16 source gains nothing from promotion
 but stops losing the precision that resample and gain create.
 
-### The ring is S16 on the wire today, and that is a consumer problem
+### The ring wire is S16 unless a box declares otherwise
 
 The **layout** is no longer the constraint. Since R1
 ([#2297](https://github.com/jaspercurry/JTS/pull/2297), merged),
@@ -405,23 +405,41 @@ ROLLBACK  jasper-active-speaker baseline-reemit --endpoint aloop
        -> jasper-fanin-coupling-reconcile loopback            (ring keys unset)
 ```
 
-**Step 1 declares the RESOLVED wire, and a shear is caught at the gate.** The
-re-emit's ring-endpoint graph takes its `format` from
-`resolve_ring_wire` and its CamillaDSP `chunksize`/`target_level` from the
-certified ring geometry (`RING_CAMILLA_*`, chunk/target 128 with
+**Step 1 moves BOTH device halves, and declares the RESOLVED wire.** The
+coupling is end-to-end, so the re-emit's ring-endpoint graph captures
+`jts_ring_capture` **and** plays the active ring: under `shm_ring` fan-in writes
+Ring A and stops feeding the snd-aloop tap, so a graph that moved only its sink
+would source a device nobody writes — silence with every daemon healthy, and
+*quiet*, because the plan compares capture channels (Ring A and the tap are both
+stereo) and the width gate only holds ring-**named** lanes to the wire.
+`--endpoint aloop` restores the tap by the same derivation. The graph takes its
+`format` from `resolve_ring_wire` and its CamillaDSP `chunksize`/`target_level`
+from the certified ring geometry (`RING_CAMILLA_*`, chunk/target 128 with
 `enable_rate_adjust: false`) — **never** the box's program-lane default or its
 DAC `LatencyFloor`, which describe the LOOPBACK lane. jts3's floor target alone
-(1536) is six times the whole 2-slot ring's 256-frame capacity. Both come from
-one derivation keyed on the sink device
-(`jasper.active_speaker.camilla_yaml.active_sink_params`), so a caller that
-re-points a graph at the ring cannot pick up one half and miss the other.
+(1536) is six times the whole 2-slot ring's 256-frame capacity. All of it comes
+from one derivation keyed on the sink device
+(`jasper.active_speaker.camilla_yaml.active_emit_devices`), so a caller that
+re-points a graph at the ring cannot pick up one part and miss another.
 A graph that declares the wrong wire anyway is refused at **step 3** by
 `ring_edge_width_ready`, which inspects the loaded graph as a declaring end and
 names the lane that sheared — it is not left to fail at the ioplug attach.
-Both defects were live at `c4c9bfe1c` and halted the 2026-08-11 arm
+Two of these were live at `c4c9bfe1c` and halted the 2026-08-11 arm
 (`captures/r7b-jts3-arm2-20260811T132227Z`): the re-emit inherited `S32_LE` from
 the program lane, and the width gate reported "all declaring ends" while
-structurally unable to see the graph.
+structurally unable to see the graph. The capture half would have halted the
+next attempt one rung further, in silence.
+
+**Expected on an armed box: `jasper-doctor` reports `audio runtime plan: warn`,
+permanently.** A box whose DAC declares a `LatencyFloor` carries two standing
+plan warnings once the coupling is `shm_ring` — `JASPER_CAMILLA_CHUNKSIZE` /
+`_TARGET_LEVEL` "effective value is 128 under shm_ring; … is the
+loopback/hardware-floor value, not the ring runtime value". That is the plan
+correctly reporting that the ring overrides the floor, not drift, and it does
+not clear: the floor and the ring geometry both stay declared. On jts3 the pair
+reads 256/1536 (floor) against 128/128 (ring). Read it as the arm's signature,
+not a fault; the ring-specific health signals are `fan-in coupling`,
+`camilla playback format`, and `ring conf floor`.
 
 **Why the graph moves first.** The endpoint marker
 (`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`) is derived by the hardware
@@ -442,8 +460,9 @@ names the ring while the coupling is still loopback. Nothing in steps 1 or
 the statefile, and `jasper-audio-hardware-reconcile` bounces outputd but
 never `jasper-camilla` — so the *running* Camilla is still on the previous
 graph and the box usually keeps playing through both rungs. At the next
-Camilla load the new graph takes effect: Camilla writes a ring nobody reads
-and outputd reads an unwritten ALSA lane — silence, not wrong audio. After
+Camilla load the new graph takes effect: Camilla captures a ring nobody
+writes and writes a ring nobody reads, while outputd reads an unwritten ALSA
+lane — silence, not wrong audio, on both halves. After
 step 2 the marker is set but the bridge is still `direct`, and outputd's
 ring-path allowlist is scoped to the `shm_ring` bridge, so the marker grants
 nothing. Only step 3 moves audio. A crash between any two steps leaves
@@ -884,15 +903,18 @@ posture) as filed and open, alongside re-verified-current
 re-touch the egress/source-half facts, the fleet probe, or Appendix
 A/B.
 
-A fifth pass (2026-08-11, the E7 ruling — this PR) rewrote two
-paragraphs against the code it changed, and nothing else: the
-wire-resolution section's "coherently narrow" claim (the resolver took
-no per-box input at all until this PR; it now reads
-`JASPER_FANIN_RING_WIRE_FORMAT`, the same key `jasper-fanin` parses),
-and the lifecycle's step-1 paragraph (what the ring re-emit declares,
-and which gate refuses a shear). Both are re-derived from the changed
-source plus the jts3 arm-2 evidence
-(`captures/r7b-jts3-arm2-20260811T132227Z`), not transcribed. Every
-other section stands as last verified above.
+A fifth pass (2026-08-11, the E7 ruling — this PR) rewrote the
+lifecycle and wire-resolution paragraphs against the code it changed,
+and nothing else: the wire-resolution section's "coherently narrow"
+claim (the resolver took no per-box input at all until this PR; it now
+reads `JASPER_FANIN_RING_WIRE_FORMAT`, the same key `jasper-fanin`
+parses); the lifecycle's step-1 paragraph (the re-emit now moves BOTH
+device halves, what it declares, and which gate refuses a shear); the
+intermediate-safety paragraph's capture clause; and a new expected-warn
+clause, whose claim was re-derived by building the plan for a
+`hifiberry_dac8x` box under `shm_ring` rather than transcribed. All of
+it comes from the changed source plus the jts3 arm-2 evidence
+(`captures/r7b-jts3-arm2-20260811T132227Z`). Every other section
+stands as last verified above.
 
 Last verified: 2026-08-11

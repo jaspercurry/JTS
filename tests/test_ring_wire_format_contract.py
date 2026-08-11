@@ -57,8 +57,17 @@ def _config_rs() -> str:
 
 
 def _from_env_value_body(source: str) -> str:
+    """The parsed function's own text, delimited by things IT owns.
+
+    The end anchor is "the next method in this impl block", not a sibling's
+    NAME: anchoring on ``pub fn sample_format_id(`` made an unrelated rename
+    break this file spuriously, which is a false alarm on a contract that should
+    only fire when the parse itself moves.
+    """
     start = source.index("pub fn from_env_value(")
-    end = source.index("pub fn sample_format_id(", start)
+    end = source.find("\n    pub fn ", start + 1)
+    if end == -1:  # last method in the impl block
+        end = source.index("\n}", start)
     return source[start:end]
 
 
@@ -101,7 +110,15 @@ def test_both_languages_default_an_absent_or_cleared_key_to_narrow() -> None:
     # Empty is how this repo's env-file writers CLEAR a key, and both sides trim
     # before matching, so a whitespace-only value is the same fact.
     assert resolve_ring_wire_format("   ") == RING_WIRE_FORMAT
-    assert "raw.map(str::trim)" in body, (
+    assert resolve_ring_wire_format(" S32_LE ") == RING_WIRE_FORMAT_WIDE
+    # The Rust half of the trim can only be READ from here, never executed, so
+    # this accepts either spelling of it and tolerates rustfmt's whitespace —
+    # it fires when the trim is REMOVED, not when it is reformatted or rewritten
+    # as an equivalent closure.
+    assert re.search(
+        r"\.\s*map\s*\(\s*(str::trim|\|\s*\w+\s*\|\s*\w+\s*\.\s*trim\s*\(\s*\))\s*\)",
+        body,
+    ), (
         "the Rust arm stopped trimming; Python still does, so a padded value "
         "would classify differently in the two languages"
     )

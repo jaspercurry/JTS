@@ -1584,6 +1584,12 @@ def transport_coherence_report(
     against the channels CamillaDSP's loaded config declares — see the comment
     on those checks for why the evidence is per-end.
 
+    The CAPTURE lane is compared in BOTH directions — a ring plan whose graph
+    captures the snd-aloop tap, and a non-ring plan whose graph still captures
+    Ring A. Either way CamillaDSP sources a device nobody is writing, which is
+    digital silence with every env and every daemon reading clean; and neither
+    is visible on the channels axis, because Ring A and the tap are both stereo.
+
     Both ring SHAPES take the same branch: :data:`TRANSPORT_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
     expect, and the endpoint comparison reads that from the resolved topology
@@ -1713,6 +1719,42 @@ def transport_coherence_report(
             "Ring B is armed without the matching Ring A plan"
         )
 
+    # THE CAPTURE MIRROR of the ring-device playback checks below, and it is
+    # scoped by the SAME waypoint rule they are. A non-ring plan whose loaded
+    # graph still CAPTURES Ring A sources a ring nobody writes — fan-in feeds the
+    # snd-aloop tap under loopback, not Ring A — so CamillaDSP reads silence
+    # while every env reads clean, and the channels axis cannot see it because
+    # Ring A and the tap are both stereo.
+    #
+    # WHY IT KEYS ON THE PLAYBACK HALF. The ring coupling is end-to-end, so the
+    # re-emit moves BOTH device halves together: at the mid-arm waypoint a
+    # loopback-plan graph legitimately names Ring A *and* the active ring, and
+    # calling that an error would deadlock the ladder from the capture side
+    # exactly as the playback side deadlocked it before #2329. That state is
+    # already reported — as a NOTE — by the active-ring branch below. What no
+    # ladder rung ever creates, and what this catches, is the HALF-moved graph:
+    # Ring A capture with the playback already back on a non-ring lane, i.e. a
+    # rollback that moved one half (a hand-edit, or an interrupted re-emit).
+    #
+    # The ARMED direction of the same shear is already covered inside the ring
+    # branch above ("transport plan is shm_ring but Camilla capture=…"), which is
+    # why this side is the one that needed adding rather than a second copy.
+    if normalized not in _RING_TRANSPORT_SHAPES and capture_device:
+        from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PCM_DEVICES
+
+        if capture_device == RING_CAPTURE_DEVICE and (
+            playback_device not in RING_PCM_DEVICES
+        ):
+            errors.append(
+                f"transport plan is {normalized} but Camilla "
+                f"capture={capture_device!r} with playback="
+                f"{playback_device!r}: a HALF-moved graph. Under a non-ring plan "
+                "fan-in writes the snd-aloop tap and nothing writes Ring A, so "
+                "CamillaDSP would capture silence. Re-emit both halves together "
+                "(`jasper-active-speaker baseline-reemit --endpoint aloop` on a "
+                "roleful box)"
+            )
+
     if normalized == TRANSPORT_LOOPBACK and playback_device:
         paired_capture = outputd_capture_device_for_playback(playback_device)
         if paired_capture is not None:
@@ -1765,7 +1807,9 @@ def transport_coherence_report(
             notes.append(
                 f"Camilla playback={playback_device!r} under a "
                 f"{TRANSPORT_LOOPBACK} plan is the ACTIVE-ring arm waypoint: the "
-                "graph on disk names the active ring while outputd still reads "
+                "graph on disk names the active ring (and Ring A on its capture "
+                "side — the coupling is end-to-end, so the re-emit moves both "
+                "halves) while outputd still reads "
                 "its ALSA lane. The running CamillaDSP may still be on the "
                 "previously-loaded graph, so this box goes silent at the next "
                 "CamillaDSP load and stays silent until the ladder finishes. "

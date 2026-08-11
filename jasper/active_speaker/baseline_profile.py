@@ -49,7 +49,7 @@ from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
     _role_polarity,
-    active_sink_params,
+    active_emit_devices,
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
@@ -2443,9 +2443,10 @@ def recompose_applied_baseline_yaml(
     SAME applied evidence at a different transport for the SAME lane — the
     active ALSA lane and the ACTIVE RING carry identical post-crossover
     per-driver program at identical width to the same reader. What differs
-    besides the name is the sink's own contract: its wire format and its
-    CamillaDSP latency/queue geometry, which ``active_sink_params`` derives
-    FROM the device so this function has one place that knows, not four.
+    besides the name is the whole ``devices:`` block the sink implies — its
+    CAPTURE lane (the ring coupling is end-to-end), its wire format, and its
+    CamillaDSP latency/queue geometry — which ``active_emit_devices`` derives
+    FROM the device so this function has one place that knows, not several.
     Moving the device is what makes the ring arm possible at all: the
     reconciler derives its endpoint marker FROM the loaded graph, so the graph
     has to name the ring first. Passing anything that is not a legal active
@@ -2529,18 +2530,38 @@ def recompose_applied_baseline_yaml(
             "the applied active-speaker snapshot is missing corrections or playback device",
         )]
     emit_playback_device = playback_device or snapshot_playback_device
-    # The sink's WIRE and its handshake both follow the sink, in ONE derivation.
-    # Composed here rather than left to each caller because a graph naming the
-    # ring with the ALSA lane's format, latency geometry or queue depth is a
-    # graph that names the right device and behaves like the wrong one — and the
-    # format half of that is not hypothetical: a ring re-emit that inherited the
-    # box's program-lane default put S32_LE on jts3's ring while the resolver
-    # answered S16_LE, a sheared attach waiting at the arm's last rung
-    # (2026-08-11, captures/r7b-jts3-arm2-20260811T132227Z). Non-ring devices
+    # BOTH DEVICE HALVES follow the sink, in ONE derivation. Composed here rather
+    # than left to each caller because a graph naming the ring with the ALSA
+    # lane's format, latency geometry or queue depth is a graph that names the
+    # right device and behaves like the wrong one — and neither half of that is
+    # hypothetical. The FORMAT: a ring re-emit that inherited the box's
+    # program-lane default put S32_LE on jts3's ring while the resolver answered
+    # S16_LE, a sheared attach waiting at the arm's last rung (2026-08-11,
+    # captures/r7b-jts3-arm2-20260811T132227Z). The CAPTURE: moving only the
+    # playback device leaves the graph sourcing the snd-aloop tap that fan-in
+    # stops feeding the moment the coupling arms — silence with every daemon
+    # healthy, and quiet, because the plan compares capture CHANNELS (2 == 2) and
+    # the width gate only holds ring-NAMED lanes to the wire. Non-ring devices
     # answer the emitter's own defaults, so this is byte-identical on every box
-    # that is not armed. The topology goes in because the ring's resolution is
-    # per-box.
-    sink = active_sink_params(emit_playback_device, topology=topology)
+    # that is not armed, and `--endpoint aloop` restores the tap by the same
+    # derivation. The topology goes in because the ring's resolution is per-box.
+    #
+    # The ring branch resolves the box's DECLARED wire, which FAILS LOUD on a
+    # token neither language recognizes (a typo in
+    # JASPER_FANIN_RING_WIRE_FORMAT). That is the right verdict — jasper-fanin
+    # parks on the same value — but it must reach the operator as this
+    # function's ordinary refusal, not as a traceback out of
+    # `jasper-active-speaker baseline-reemit`. Every caller gets the parser's own
+    # sentence, and nothing has been written yet.
+    try:
+        devices = active_emit_devices(emit_playback_device, topology=topology)
+    except ValueError as exc:
+        return None, [_issue(
+            "blocker",
+            "ring_wire_declaration_invalid",
+            f"this box declares a ring wire neither jasper-fanin nor JTS can "
+            f"resolve, so there is no wire to emit against: {exc}",
+        )]
     # Layer-1a driver linearization (#1668 PR-D): read era-tolerantly (absent
     # on any pre-PR-D snapshot -> {}, "no linearization was fit" — the same
     # convention MeasuredCrossoverCandidate.from_mapping uses for its own
@@ -2564,11 +2585,13 @@ def recompose_applied_baseline_yaml(
     yaml = emit_active_speaker_baseline_config(
         preset,
         playback_device=emit_playback_device,
-        playback_format=sink.playback_format,
-        chunksize=sink.chunksize,
-        target_level=sink.target_level,
-        queuelimit=sink.queuelimit,
-        enable_rate_adjust=sink.enable_rate_adjust,
+        capture_device=devices.capture_device,
+        capture_format=devices.capture_format,
+        playback_format=devices.playback_format,
+        chunksize=devices.chunksize,
+        target_level=devices.target_level,
+        queuelimit=devices.queuelimit,
+        enable_rate_adjust=devices.enable_rate_adjust,
         corrections={str(role): dict(value) for role, value in corrections.items()},
         room_peqs=room_peqs,
         preference_filters=preference_filters,

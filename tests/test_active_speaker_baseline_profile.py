@@ -2761,6 +2761,60 @@ def test_ring_reemit_declares_whatever_the_resolver_answers(
     )
 
 
+def test_ring_reemit_refuses_a_typod_wire_instead_of_raising(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` is a REFUSAL, not a traceback.
+
+    Failing loud on a token neither language recognizes is right — jasper-fanin
+    parks on the same value rather than guessing a wire. But an operator running
+    ``jasper-active-speaker baseline-reemit --endpoint ring`` must get this
+    function's ordinary blocker, with the parser's own sentence in it, not a
+    Python stack trace. Nothing has been written at this point either way; the
+    emit precedes every write.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT_ENV_VAR,
+    )
+
+    topology, applied = _applied_mono_baseline(tmp_path)
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    ring_yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert ring_yaml is None
+    assert [issue["code"] for issue in issues] == ["ring_wire_declaration_invalid"]
+    detail = issues[0]["message"]
+    assert RING_WIRE_FORMAT_ENV_VAR in detail
+    assert "s32le" in detail, "the operator needs to see the value they typed"
+
+    # CONTROL: the same box emitting at the ALSA lane is unaffected — the wire is
+    # only resolved for a ring sink, so a typo cannot block an unarmed box's
+    # ordinary re-emit.
+    from jasper.active_speaker.runtime_contract import (
+        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert alsa_issues == []
+    assert alsa_yaml is not None
+
+
 def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     tmp_path: Path,
 ) -> None:
