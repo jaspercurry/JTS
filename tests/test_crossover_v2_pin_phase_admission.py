@@ -8,24 +8,34 @@
 must not change, and its acceptance criteria say existing "phase-admission …
 behavior remains pinned unless a separately located defect requires a
 deliberate change." This file pins the one admission rule that is written at
-five sites and asserted at two.
+six sites and was asserted at two.
 
 **The rule.** A capture whose analyzer reports ``linearity_ok is False`` is
 refused as ``agc_behavioral_fail`` — the phone's own recording chain moved its
-gain mid-sweep, so the curve does not describe the speaker. Four phases carry
-it as the identical two-line branch::
+gain mid-sweep, so the curve does not describe the speaker. FIVE phases carry
+it as the same two-line branch::
 
-    if analysis.linearity_ok is False:
-        return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+    if <screens>.linearity_ok is False:
+        return <refusal>          # agc_behavioral_fail, however it is spelled
 
-CHECK carries a fifth, DIFFERENT version — it first asks whether the room's
+Since #2291 Phase 5a-iv those five live in **two modules** and take **two
+spellings**: MEASURE and VERIFY still read it off the analysis in
+``crossover_v2_flow``; CLOUD_MEASURE, LATERAL and ENTRY_BASELINE read it off a
+stated ``CaptureScreens`` in ``crossover_v2.spatial``, and return a refusal
+KIND the flow maps to the code. Same rule, same household sentence — see
+:data:`LINEARITY_SITE_SPELLINGS`, which is what keeps the tripwire below
+watching all of them.
+
+CHECK carries a sixth, DIFFERENT version — it first asks whether the room's
 ambient floor explains the non-linearity and blames ``noisy_room_linearity``
 instead when it does — so CHECK is deliberately out of this file's class.
 
-**Why it needs a pin.** Of the four plain sites, only the LATERAL one is
-asserted today (``test_a_pose_runs_measures_own_capture_integrity_screens`` in
+**Why it needs a pin.** Of the plain sites, only the LATERAL one was
+asserted when this file was written
+(``test_a_pose_runs_measures_own_capture_integrity_screens`` in
 ``tests/test_crossover_v2_lateral_evidence.py``). MEASURE, CLOUD_MEASURE, and
-VERIFY have no test that fires this branch and reads its code back. The
+VERIFY had no test that fires this branch and reads its code back — every row
+below is what closed that. The
 nearest existing tests set ``linearity=False`` only *alongside*
 ``pilot_snr_ok=False``, to prove the pilot branch wins the ordering race
 (``test_measure_low_pilot_snr_wins_over_the_linearity_branch``) — they assert
@@ -34,10 +44,17 @@ exists. Tests in ``tests/test_crossover_envelope_v2.py`` that mention
 ``agc_behavioral_fail`` inject a pre-decided ``failure={"code": ...}`` and
 exercise the copy layer, not the predicate.
 
-That is the half-guarded shape: two of five sites pinned reads, from a
+That is the half-guarded shape: two of six sites pinned reads, from a
 distance, like the rule is covered. A migration that reimplemented these
-verdicts could drop or mis-code the branch at three of them and take a green
+verdicts could drop or mis-code the branch at the others and take a green
 suite with it.
+
+**And the shape recurred here, in the tripwire itself.** Phase 5a-iv moved
+three of the five plain sites into another module; the tripwire counted one
+file, so it saw 3 against a declared 6 and failed — correctly, but only because
+its declared total is a literal. Had it counted a *set* rather than a total it
+would have gone quietly blind. That is why the counter is now a per-module
+table with its own shape control below.
 
 The harness is the conductor suite's own, imported rather than rebuilt — the
 same convention ``tests/test_crossover_v2_lateral_evidence.py`` states: two
@@ -195,6 +212,47 @@ def test_a_non_linear_capture_is_refused_as_agc_behavioral_fail(phase: str):
     assert verdict["code"] == REASON_AGC_BEHAVIORAL_FAIL
 
 
+#: Where a linearity admission site can live, and the spellings it takes there.
+#:
+#: **Two modules since #2291 Phase 5a-iv**, and that is the whole reason this is
+#: a table rather than one ``count`` call. The cloud, lateral and entry-baseline
+#: ladders moved to ``crossover_v2.spatial``; counting only the flow after that
+#: returned 3 against a declared 6 — the tripwire had gone BLIND to three of the
+#: five plain sites while still reading, from its own green, like it was
+#: watching them. A rule that can live in two files needs a guard that looks in
+#: both, and the next vertical will move more of them.
+#:
+#: **Two spellings**, for the same reason: the moved ladders take their screens
+#: as a stated :class:`~jasper.active_speaker.crossover_v2.spatial.CaptureScreens`
+#: rather than reaching into the analysis, so the branch reads
+#: ``screens.linearity_ok`` there. Both are the same rule and both are counted;
+#: a site written in a third spelling is exactly the drift this file exists to
+#: catch, and it will show up as an undercount here.
+LINEARITY_SITE_SPELLINGS = (
+    "if analysis.linearity_ok is False:",
+    "if screens.linearity_ok is False:",
+)
+
+
+def _linearity_admission_sites() -> dict[str, int]:
+    """Every module that can carry the rule → how many sites it carries.
+
+    Counted against module SOURCE rather than a list of function names because
+    the branch is what varies — a site can be renamed, split, or moved between
+    methods and still be the same unasserted rule. Returned per module so a
+    failure names which file drifted rather than only that the total did.
+    """
+    from jasper.active_speaker.crossover_v2 import spatial
+
+    return {
+        module.__name__.rsplit(".", 1)[-1]: sum(
+            inspect.getsource(module).count(spelling)
+            for spelling in LINEARITY_SITE_SPELLINGS
+        )
+        for module in (flow, spatial)
+    }
+
+
 def test_every_linearity_admission_site_is_covered_by_a_row_above():
     """The adjacency tripwire: a SIXTH site must be classified, not ignored.
 
@@ -204,22 +262,33 @@ def test_every_linearity_admission_site_is_covered_by_a_row_above():
     recurring: a new verdict function that copies the branch fails here until
     its author either adds a row to ``PLAIN_LINEARITY_PHASES`` (with a driver)
     or records it as another deliberate variant like CHECK's.
-
-    Counted against the module source rather than a list of function names
-    because the branch is what varies — a site could be renamed, split, or
-    moved between methods and still be the same unasserted rule.
     """
 
-    source = inspect.getsource(flow)
-    sites = source.count("if analysis.linearity_ok is False:")
+    by_module = _linearity_admission_sites()
+    sites = sum(by_module.values())
 
     assert sites == LINEARITY_SITE_COUNT, (
-        f"crossover_v2_flow.py has {sites} linearity admission sites but "
+        f"{sites} linearity admission sites ({by_module}) but "
         f"{LINEARITY_SITE_COUNT} are classified: "
         f"{len(PLAIN_LINEARITY_PHASES)} plain ({', '.join(PLAIN_LINEARITY_PHASES)}) "
         "plus CHECK's room-vs-microphone variant. Classify the new one and give "
         "it a row in PLAIN_LINEARITY_PHASES, or document why it is a variant."
     )
+
+
+def test_the_tripwire_looks_in_every_module_that_carries_the_rule():
+    """The control the count above needs, and the one it did not have.
+
+    A total is not evidence that every module was searched: 6 could be six sites
+    in one file and none in the other, which is what the guard would report the
+    day someone moves the last ladder out and forgets this list. So assert the
+    SHAPE — both modules present, and neither empty — because "we looked there"
+    is the property that actually failed in Phase 5a-iv, not "the sum is right".
+    """
+    by_module = _linearity_admission_sites()
+
+    assert set(by_module) == {"crossover_v2_flow", "spatial"}
+    assert all(count > 0 for count in by_module.values()), by_module
 
 
 def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():
