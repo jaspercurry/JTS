@@ -32,6 +32,7 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import replace
@@ -7400,6 +7401,26 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
     assert state["applied"] is True
 
 
+def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
+    """#2292 scope 2: accepting an alternative Fc fsyncs THREE writes at the
+    accept/apply seam -- the Sound declaration (apply_measured_crossover_frequency),
+    the crossover preview regenerated from it (ensure_crossover_preview_ready),
+    and the applied baseline profile (persist_applied_baseline_profile) -- one
+    file fsync + one parent-directory fsync each."""
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path)
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    payload = _apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, lambda: _FakeApplyCam(),
+    )
+
+    assert payload["status"] == "applied", payload
+    assert len(fsync_calls) == 6
+
+
 def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
     monkeypatch, tmp_path,
 ):
@@ -8731,6 +8752,35 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     assert "outcome=declaration_restored" in caplog.text
     # The record is spent — it describes an apply that no longer exists.
     assert v2host.load_v2_state()["sound_declaration_undo"] is None
+
+
+def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
+    """#2292 scope 2 SF2: apply_measured_crossover_frequency has TWO
+    production callers -- handle_v2_apply's accept (pinned by
+    test_alternative_apply_saves_sound_and_preview_durably) and
+    _restore_sound_declaration, the Undo leg exercised here. Both get the
+    same durable write; there is no separate, cheaper path into the writer.
+    fsync counting starts AFTER the apply so this isolates the Undo leg's
+    own write from the accept's."""
+    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
+    apply_payload = _apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, _FakeApplyCam,
+    )
+    assert apply_payload["status"] == "applied", apply_payload.get("issues")
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert restore_payload["sound_declaration"] == "declaration_restored"
+    # 4 = persist_applied_baseline_profile's graph-restore write (always
+    # durable, file + dir fsync) + apply_measured_crossover_frequency's
+    # declaration-restore write (file + dir fsync) -- both halves of Undo.
+    assert len(fsync_calls) == 4
 
 
 def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(

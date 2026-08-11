@@ -10,6 +10,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -2616,6 +2617,46 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
             selected_hz=6000,
         )
     assert load_design_draft()["revision"] == 2
+
+
+def test_apply_measured_crossover_frequency_saves_durably(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#2292 scope 2: apply_measured_crossover_frequency (the crossover-accept
+    seam) fsyncs its design-draft write; an ordinary wizard design-draft save
+    does not."""
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24,
+        "confidence": "medium",
+    }]
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {},
+        "confirm_safety_profile": True,
+    })
+    assert fsync_calls == []  # ordinary wizard save: no fsync
+
+    sound_setup.apply_measured_crossover_frequency(
+        expected_revision=1,
+        between_roles=("woofer", "tweeter"),
+        configured_hz=5500,
+        selected_hz=5750,
+    )
+    assert len(fsync_calls) == 2  # crossover-accept seam: file fsync + dir fsync
 
 
 def _dual_apple_hardware() -> dict:

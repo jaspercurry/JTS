@@ -1422,6 +1422,117 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert recomposed == (tmp_path / "active_speaker_baseline.yml").read_text()
 
 
+async def test_apply_baseline_profile_persists_applied_state_durably(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#2292 scope 2: persist_applied_baseline_profile's write is durable
+    (fsync file + parent directory). The earlier pre-apply "ready_to_apply"
+    review write to the SAME state path (build_baseline_profile_candidate's
+    own write=True) is NOT durable -- only the apply seam itself opts in."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "applied"
+    # Exactly one durable write (file fsync + parent-dir fsync) across the
+    # whole apply -- persist_applied_baseline_profile's, not the earlier
+    # pre-apply candidate review write to the same path.
+    assert len(fsync_calls) == 2
+
+
+async def test_apply_baseline_profile_reloads_when_target_config_differs(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Sequential applies of genuinely different candidates each command
+    their own real CamillaDSP reload -- pre-PR-#2292 behavior: this
+    transaction never skips a load based on the candidate's path (#2292
+    scope 2 tried a same-path double-load guard; an adversarial review
+    demonstrated the candidate filename is a SOURCE fingerprint that does
+    not cover every input to the compiled graph -- e.g. bass_extension_profile
+    -- so two different graphs can share one filename, and get_config_file_path
+    also does not see set_active_config_raw loads (camilla.py), together
+    making path equality an unsafe proxy for graph equality. The guard was
+    dropped rather than repaired; #2291 Phase 3/4 owns any future guard built
+    on a live graph-identity oracle instead of a path)."""
+    topology = _dual_apple_topology()
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    calls: list[str] = []
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        calls.append(path)
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    draft_a = _draft(topology, tweeter_gain_db=-18.5)
+    preview_a = build_crossover_preview(draft_a)
+    first = await apply_baseline_profile(
+        topology,
+        design_draft=draft_a,
+        crossover_preview=preview_a,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    assert first["status"] == "applied"
+
+    draft_b = _draft(topology, tweeter_gain_db=-6.0)
+    preview_b = build_crossover_preview(draft_b)
+    second = await apply_baseline_profile(
+        topology,
+        design_draft=draft_b,
+        crossover_preview=preview_b,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert second["status"] == "applied"
+    assert second["profile"]["config"]["path"] != first["profile"]["config"]["path"]
+    assert calls == [
+        first["profile"]["config"]["path"], second["profile"]["config"]["path"],
+    ]
+
+
 async def test_apply_baseline_profile_preserves_only_current_sealed_bass_block(
     monkeypatch,
     tmp_path: Path,
@@ -5513,6 +5624,37 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
     # The JSON SSOT keeps the truthful applied (sibling) path, never canonical.
     assert active["config"]["path"] == prior_payload["profile"]["config"]["path"]
     assert active["config"]["path"] != str(config_path)
+
+
+async def test_restore_applied_baseline_profile_reloads_when_target_differs_from_active(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Restoring a profile whose config differs from what is CURRENTLY active
+    (run-8's, per ``_apply_prior_then_run8``) commands a real reload -- the
+    restore/Undo seam never skips a load based on the target's path (see
+    ``test_apply_baseline_profile_reloads_when_target_config_differs`` for
+    why path equality is not a safe graph-equality proxy)."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    calls: list[str] = []
+
+    async def counting_load_config(path: str) -> bool:
+        calls.append(path)
+        return await load_config(path)
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=counting_load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "restored", payload.get("issues")
+    assert calls == [retained["config"]["path"]]
 
 
 async def test_restore_applied_baseline_profile_blocked_when_config_missing(

@@ -2278,8 +2278,16 @@ def _active_speaker_driver_research_request_payload(
     return payload
 
 
-def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Persist a design draft from current topology plus bounded research JSON."""
+def _active_speaker_design_draft_save_payload(
+    raw: dict[str, Any], *, durable: bool = False
+) -> dict[str, Any]:
+    """Persist a design draft from current topology plus bounded research JSON.
+
+    ``durable`` is a caller-only knob (never read from ``raw``, so an HTTP
+    body can't set it): the crossover-accept seam
+    (:func:`apply_measured_crossover_frequency`) opts in, ordinary wizard
+    edits keep the cheaper default.
+    """
 
     from jasper.active_speaker.design_draft import save_design_draft
 
@@ -2322,6 +2330,7 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
         operator_inputs=raw.get("operator_inputs"),
         confirm_safety_profile=raw.get("confirm_safety_profile") is True,
         expected_revision=expected_revision,
+        durable=durable,
     )
     log_event(
         logger,
@@ -2350,6 +2359,16 @@ def apply_measured_crossover_frequency(
     *, expected_revision: int, between_roles: tuple[str, str],
     configured_hz: float, selected_hz: float,
 ) -> dict[str, Any]:
+    """Write a measured Fc onto the Sound declaration. Durable: every write
+    through this function is fsynced before it is visible.
+
+    Two production callers, both accept/apply-seam actions on the Sound
+    declaration: ``handle_v2_apply``'s alternative-Fc accept (the forward
+    write), and ``_restore_sound_declaration``'s Undo leg (the SAME write run
+    backwards, with ``configured_hz``/``selected_hz`` swapped, to put the
+    declaration back to what it said before the accept). Both correctly get
+    the durable write -- there is no separate, cheaper path into this
+    function."""
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft(topology=load_output_topology())
@@ -2376,7 +2395,7 @@ def apply_measured_crossover_frequency(
         "driver_research": draft.get("driver_research"),
         "manual_settings": {**manual, "crossover_candidates": updated_candidates},
         "operator_inputs": draft.get("operator_inputs"),
-    })
+    }, durable=True)
 
 
 def _active_speaker_crossover_preview_payload() -> dict[str, Any]:

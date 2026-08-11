@@ -2694,7 +2694,15 @@ def persist_applied_baseline_profile(
     state_path: str | Path | None = None,
     applied_at: str | None = None,
 ) -> dict[str, Any]:
-    """Persist one already-read-back compiler candidate as the Layer-A SSOT."""
+    """Persist one already-read-back compiler candidate as the Layer-A SSOT.
+
+    Always durable (fsync-before-rename, see
+    :func:`jasper.atomic_io.atomic_write_text`): this write IS the apply
+    seam — the moment a successfully loaded CamillaDSP graph becomes the
+    record JTS trusts as "what's actually running" — so unlike the
+    draft/preview writers upstream, there is no non-accept caller for this
+    function to keep cheap for.
+    """
 
     if (
         candidate.get("kind") != BASELINE_PROFILE_KIND
@@ -2733,6 +2741,7 @@ def persist_applied_baseline_profile(
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+        durable=True,
     )
     return applied
 
@@ -2756,7 +2765,7 @@ def promote_applied_baseline_candidate(
 
     ``build_baseline_profile_candidate`` never writes ``baseline_config_path()``
     directly (issue #1666) -- every ``write=True`` candidate lands on its own
-    content-addressed sibling, so a candidate that fails validation or
+    source-fingerprinted sibling, so a candidate that fails validation or
     activation can never appear at the canonical name. This is the ONLY
     place that publishes to that name, and every caller runs it AFTER its own
     ``apply_dsp_config`` + ``persist_applied_baseline_profile`` have already
