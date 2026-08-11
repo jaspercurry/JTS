@@ -38,8 +38,11 @@ from jasper.fanin_coupling import (
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAMILLA_CHUNKSIZE,
+    RING_CAMILLA_TARGET_LEVEL,
     RING_PLAYBACK_DEVICE,
     ring_active_endpoint_armed,
+    resolve_ring_wire,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1519,19 +1522,32 @@ def test_resolve_output_layout_keeps_the_alsa_lane_until_the_marker_is_set(
 # --------------------------------------------------------------------------
 
 
-def _emit_active_baseline(preset, device):
-    """Emit a roleful baseline graph named at ``device``, as production would."""
+def _emit_active_baseline(preset, device, *, topology=None):
+    """Emit a roleful baseline graph named at ``device``, as production would.
+
+    Composes exactly what ``recompose_applied_baseline_yaml`` composes — the
+    whole ``active_sink_params`` result, not a hand-picked subset of it. That is
+    load-bearing rather than tidy: while this helper forwarded only the queue
+    pair, every ladder walk below emitted the ring with the box's program-lane
+    FORMAT and its loopback chunk/target, and passed — which is how defect A
+    reached jts3 (2026-08-11, captures/r7b-jts3-arm2-20260811T132227Z) through
+    four green ladder tests. Anything the production seam starts deriving from
+    the sink arrives here automatically now.
+    """
     from jasper.active_speaker.camilla_yaml import (
-        active_sink_queue_params,
+        active_sink_params,
         emit_active_speaker_baseline_config,
     )
 
-    queuelimit, rate_adjust = active_sink_queue_params(device)
+    sink = active_sink_params(device, topology=topology)
     return emit_active_speaker_baseline_config(
         preset,
         playback_device=device,
-        queuelimit=queuelimit,
-        enable_rate_adjust=rate_adjust,
+        playback_format=sink.playback_format,
+        chunksize=sink.chunksize,
+        target_level=sink.target_level,
+        queuelimit=sink.queuelimit,
+        enable_rate_adjust=sink.enable_rate_adjust,
         corrections={
             "woofer": {"gain_db": 0.0, "delay_ms": 0.0},
             "tweeter": {"gain_db": 0.0, "delay_ms": 0.0},
@@ -1620,12 +1636,20 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     armed_device, source = _baseline_reemit_endpoint(topology, "ring")
     assert armed_device == RING_ACTIVE_PLAYBACK_DEVICE
     assert source == "explicit_endpoint_ring"
-    ring_graph = _emit_active_baseline(preset, armed_device)
+    ring_graph = _emit_active_baseline(preset, armed_device, topology=topology)
     assert f'device: "{RING_ACTIVE_PLAYBACK_DEVICE}"' in ring_graph
     # The ring's own queue handshake rode along, because the emit went through
     # the shared resolver rather than each caller remembering.
     assert "  queuelimit: 1" in ring_graph
     assert "  enable_rate_adjust: false" in ring_graph
+    # ...and so did the rest of the sink's contract. Step 1 is the rung that
+    # DECLARES the wire, so what it writes has to be the resolver's answer and
+    # the certified ring geometry — not the box's program-lane default and its
+    # loopback LatencyFloor, which is what shipped and sheared on jts3.
+    wire = resolve_ring_wire(topology)
+    assert f"    format: {wire.sample_format}" in ring_graph
+    assert f"  chunksize: {RING_CAMILLA_CHUNKSIZE}" in ring_graph
+    assert f"  target_level: {RING_CAMILLA_TARGET_LEVEL}" in ring_graph
 
     # --- Step 2: the hardware reconciler derives the marker FROM that graph.
     assert _derived_marker(ring_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
@@ -1788,7 +1812,7 @@ def _run_validate_outputd_env(
 
 
 def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
-    tmp_path, capsys
+    tmp_path, capsys, monkeypatch
 ):
     """The missing layer: the ladder walked THROUGH `validate-outputd-env`.
 
@@ -1807,9 +1831,23 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
       ARM-2  graph names the active ring, marker = "1"    (after step 2)
 
     Both must validate CLEAN, or the ladder cannot advance.
+
+    THE SECOND MISSING LAYER (2026-08-11, attempt 2). Clearing the validator is
+    not the whole of step 3: ``ring_edge_width_ready`` is the preflight that runs
+    inside the coupling reconciler, and on jts3 it returned READY over a graph
+    declaring ``S32_LE`` against a resolver answering ``S16_LE``
+    (``captures/r7b-jts3-arm2-20260811T132227Z``, file 13). This walk now asserts
+    both halves of that rung — that step 1 emits the RESOLVED wire, and that the
+    gate inspects the emitted graph rather than reporting agreement it never
+    checked.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import (
+        COUPLING_SHM_RING,
+        LoadedCamillaGraph,
+        _outputd_actions,
+        ring_edge_width_ready,
+    )
 
     topology = _active_topology("mono", "active_2_way")
     preset = _mono_two_way_preset()
@@ -1817,7 +1855,11 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     # --- Step 1: the operator names the endpoint; the graph moves first. ---
     armed_device, _source = _baseline_reemit_endpoint(topology, "ring")
     assert armed_device == RING_ACTIVE_PLAYBACK_DEVICE
-    ring_graph = _emit_active_baseline(preset, armed_device)
+    ring_graph = _emit_active_baseline(preset, armed_device, topology=topology)
+    # What step 1 DECLARES is the resolver's answer, not the box's program-lane
+    # default — the shear that halted attempt 2 one rung later.
+    wire = resolve_ring_wire(topology)
+    assert f"    format: {wire.sample_format}" in ring_graph
 
     # --- ARM-1: marker absent. The state step 1 leaves behind. -------------
     rc, out = _run_validate_outputd_env(
@@ -1850,6 +1892,32 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     assert "goes silent at the next CamillaDSP load" in out, out
     assert "jasper-fanin-coupling-reconcile shm_ring" in out, out
     assert "baseline-reemit --endpoint aloop" in out, out
+
+    # --- Step 3, preflight: the width gate reads the graph step 1 wrote. ---
+    # The gate resolves the wire from the box's SAVED topology, so this walk
+    # hands it the same roleful topology the emit used — otherwise the box under
+    # test has no active-ring width and the gate would be answering about a
+    # different speaker.
+    import jasper.ring_assets as ring_assets_module
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
+    monkeypatch.setattr(ring_assets_module, "RING_CONF_D", str(RING_CONF))
+
+    ok, detail = ring_edge_width_ready(
+        fanin_text="",
+        outputd_text="",
+        graph=LoadedCamillaGraph(
+            path="step1-artifact.yml",
+            devices=parse_camilla_devices_config(ring_graph),
+        ),
+    )
+    assert ok is True, detail
+    # It COUNTED the graph, and says so. A message that claimed agreement
+    # without inspecting this end is the defect, not the wording.
+    assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
+    assert "was NOT one of them" not in detail
 
     # --- Step 3: with step 2's marker on disk, the path converges. ---------
     actions = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker="1"))

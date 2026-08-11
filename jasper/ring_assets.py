@@ -266,7 +266,8 @@ def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
     :data:`RING_CONF_DEFAULT_CHANNELS` (see :func:`render_ring_conf_wire`), and
     an omitted key is what a pre-ring-v2 ioplug expects. So the capability a wire
     needs is exactly the set of keys it forces onto the conf.d — which is EMPTY
-    for the shipped wire, on every box today. That emptiness is the whole
+    for the shipped wire, i.e. for every box that has not DECLARED a different
+    one through ``JASPER_FANIN_RING_WIRE_FORMAT``. That emptiness is the whole
     dormancy story: a narrow box's capability gate short-circuits before it ever
     looks at a record, so a box with no record behaves exactly as it did before.
     """

@@ -49,7 +49,7 @@ from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
     _role_polarity,
-    active_sink_queue_params,
+    active_sink_params,
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
@@ -2442,8 +2442,11 @@ def recompose_applied_baseline_yaml(
     snapshot recorded, byte-for-byte as before. An explicit value re-points the
     SAME applied evidence at a different transport for the SAME lane — the
     active ALSA lane and the ACTIVE RING carry identical post-crossover
-    per-driver program at identical width to the same reader, so only the
-    device name differs. That is what makes the ring arm possible at all: the
+    per-driver program at identical width to the same reader. What differs
+    besides the name is the sink's own contract: its wire format and its
+    CamillaDSP latency/queue geometry, which ``active_sink_params`` derives
+    FROM the device so this function has one place that knows, not four.
+    Moving the device is what makes the ring arm possible at all: the
     reconciler derives its endpoint marker FROM the loaded graph, so the graph
     has to name the ring first. Passing anything that is not a legal active
     endpoint is refused by the emitter's own forbidden-token and width guards,
@@ -2526,12 +2529,18 @@ def recompose_applied_baseline_yaml(
             "the applied active-speaker snapshot is missing corrections or playback device",
         )]
     emit_playback_device = playback_device or snapshot_playback_device
-    # The sink's queue handshake follows the sink. Composed here rather than
-    # left to each caller because a graph naming the ring with the ALSA lane's
-    # queue depth is a graph that names the right device and behaves like the
-    # wrong one. Non-ring devices resolve to the emitter's own defaults, so this
-    # is byte-identical on every box that is not armed.
-    emit_queuelimit, emit_rate_adjust = active_sink_queue_params(emit_playback_device)
+    # The sink's WIRE and its handshake both follow the sink, in ONE derivation.
+    # Composed here rather than left to each caller because a graph naming the
+    # ring with the ALSA lane's format, latency geometry or queue depth is a
+    # graph that names the right device and behaves like the wrong one — and the
+    # format half of that is not hypothetical: a ring re-emit that inherited the
+    # box's program-lane default put S32_LE on jts3's ring while the resolver
+    # answered S16_LE, a sheared attach waiting at the arm's last rung
+    # (2026-08-11, captures/r7b-jts3-arm2-20260811T132227Z). Non-ring devices
+    # answer the emitter's own defaults, so this is byte-identical on every box
+    # that is not armed. The topology goes in because the ring's resolution is
+    # per-box.
+    sink = active_sink_params(emit_playback_device, topology=topology)
     # Layer-1a driver linearization (#1668 PR-D): read era-tolerantly (absent
     # on any pre-PR-D snapshot -> {}, "no linearization was fit" — the same
     # convention MeasuredCrossoverCandidate.from_mapping uses for its own
@@ -2555,8 +2564,11 @@ def recompose_applied_baseline_yaml(
     yaml = emit_active_speaker_baseline_config(
         preset,
         playback_device=emit_playback_device,
-        queuelimit=emit_queuelimit,
-        enable_rate_adjust=emit_rate_adjust,
+        playback_format=sink.playback_format,
+        chunksize=sink.chunksize,
+        target_level=sink.target_level,
+        queuelimit=sink.queuelimit,
+        enable_rate_adjust=sink.enable_rate_adjust,
         corrections={str(role): dict(value) for role, value in corrections.items()},
         room_peqs=room_peqs,
         preference_filters=preference_filters,

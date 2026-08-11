@@ -2653,6 +2653,188 @@ def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
     assert graph.allowed is True, graph.issues
 
 
+def _applied_mono_baseline(tmp_path: Path):
+    """A real APPLIED profile on the jts3-shaped box (mono 2-way on a DAC8x)."""
+    topology = _topology()
+    draft = _draft(topology)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=build_crossover_preview(draft),
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "active-speaker-profile.json",
+        config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    return topology, applied
+
+
+# The resolutions the ring re-emit is pinned against. ``S24_3LE`` is a SENTINEL
+# — no resolver answers it today — and it is here because the two real tokens
+# cannot prove pass-through on their own: ``RING_WIRE_FORMAT`` is what a
+# hardcoded narrow constant would emit, and ``RING_WIRE_FORMAT_WIDE`` is
+# byte-identical to ``DEFAULT_PLAYBACK_FORMAT``, the very default the defect
+# inherited. A pin against either alone passes against the code that shipped the
+# jts3 shear. The guard below fails if a future default swallows the sentinel too.
+_RING_WIRE_PASSTHROUGH_TOKENS = ("S16_LE", "S32_LE", "S24_3LE")
+
+
+@pytest.mark.parametrize("resolved_format", _RING_WIRE_PASSTHROUGH_TOKENS)
+def test_ring_reemit_declares_whatever_the_resolver_answers(
+    tmp_path: Path, monkeypatch, resolved_format: str
+) -> None:
+    """Defect A: the ring re-emit READS ``resolve_ring_wire``, it does not
+    inherit the box's program-lane format.
+
+    On jts3 the re-emit wrote ``format: S32_LE`` — the box's program-lane
+    default — against a resolver answering ``S16_LE``
+    (``captures/r7b-jts3-arm2-20260811T132227Z``, file 12): a sheared attach
+    waiting at the arm's last rung. What has to be pinned is PASS-THROUGH, not
+    any one value, so the resolver is driven across every token in
+    ``_RING_WIRE_PASSTHROUGH_TOKENS`` and the graph must follow it to each.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.camilla_config_contract import (
+        DEFAULT_PLAYBACK_FORMAT,
+        parse_camilla_devices_config,
+    )
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_WIRE_FORMAT,
+        RingWire,
+    )
+
+    # NON-VACUITY: at least one token must differ from BOTH the shipped ring
+    # wire and the program-lane default, or this whole parametrization passes
+    # against an emitter that reads a constant.
+    assert any(
+        token not in (RING_WIRE_FORMAT, DEFAULT_PLAYBACK_FORMAT)
+        for token in _RING_WIRE_PASSTHROUGH_TOKENS
+    ), "no token distinguishes resolver-adoption from a constant; add one"
+
+    topology, applied = _applied_mono_baseline(tmp_path)
+    resolved = RingWire(
+        sample_format=resolved_format,
+        ring_a_channels=2,
+        ring_b_channels=2,
+        period_frames=128,
+        ring_active_channels=2,
+    )
+    # The emitter reaches the resolver through jasper.fanin_coupling, so patch
+    # it there rather than on a name some other module re-exported.
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.resolve_ring_wire", lambda topology=None: resolved
+    )
+
+    ring_yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert issues == []
+    assert ring_yaml is not None
+    devices = parse_camilla_devices_config(ring_yaml)
+    assert devices["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
+    assert devices["playback_format"] == resolved_format
+
+    # CONTROL: the same evidence emitted at the ALSA active lane is untouched by
+    # the resolver — a helper that answered the ring's wire for every sink would
+    # pass the assertion above and mis-declare every unarmed box.
+    from jasper.active_speaker.runtime_contract import (
+        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert alsa_issues == []
+    assert alsa_yaml is not None
+    assert (
+        parse_camilla_devices_config(alsa_yaml)["playback_format"]
+        == DEFAULT_PLAYBACK_FORMAT
+    )
+
+
+def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
+    tmp_path: Path,
+) -> None:
+    """Question C: a ring-endpoint graph carries the RING's CamillaDSP geometry,
+    not the box's loopback ``LatencyFloor``.
+
+    jts3's DAC8x floor is ``LatencyFloor(256, 1536, 128, 256)``. Its
+    ``camilla_target_level`` alone (1536) is six times the whole 2-slot ring's
+    256-frame capacity, so a ring graph emitted at the floor is a second shear
+    waiting at the same rung the format shear halted. Both numbers come from the
+    ONE home that already encodes the certified ring pairing for the stereo ring
+    (``jasper.fanin_coupling``'s ``RING_CAMILLA_*``), never a second copy.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.audio_hardware.dac import latency_floor_for
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_TARGET_LEVEL,
+    )
+
+    topology, applied = _applied_mono_baseline(tmp_path)
+    floor = latency_floor_for(topology.hardware.device_id)
+    assert floor is not None, (
+        "this test's whole point is a box whose DAC declares a loopback floor; "
+        f"{topology.hardware.device_id} declares none, so it proves nothing"
+    )
+    assert floor.camilla_chunksize != RING_CAMILLA_CHUNKSIZE
+    assert floor.camilla_target_level != RING_CAMILLA_TARGET_LEVEL
+
+    ring_yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert issues == []
+    assert ring_yaml is not None
+    devices = parse_camilla_devices_config(ring_yaml)
+    assert devices["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert devices["target_level"] == RING_CAMILLA_TARGET_LEVEL
+    assert "  enable_rate_adjust: false" in ring_yaml
+    # The ring pair is deliberately OUTSIDE LatencyFloor's own 4x rule (128/128
+    # would not construct as a floor): that rule sizes a rate-ADJUSTED
+    # resampler's steady-state fill, and the ring graph runs rate_adjust off.
+    with pytest.raises(ValueError, match="camilla_target_level"):
+        type(floor)(
+            camilla_chunksize=RING_CAMILLA_CHUNKSIZE,
+            camilla_target_level=RING_CAMILLA_TARGET_LEVEL,
+            outputd_period_frames=floor.outputd_period_frames,
+            outputd_dac_buffer_frames=floor.outputd_dac_buffer_frames,
+        )
+
+    # CONTROL: the ALSA active lane still takes the box's floor, resolved by the
+    # emitter at emit time. A helper that forced ring geometry everywhere would
+    # pass every assertion above and silently retune every unarmed box.
+    from jasper.active_speaker.runtime_contract import (
+        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )
+    assert alsa_issues == []
+    assert alsa_yaml is not None
+    alsa_devices = parse_camilla_devices_config(alsa_yaml)
+    assert alsa_devices["chunksize"] != RING_CAMILLA_CHUNKSIZE
+    assert alsa_devices["target_level"] != RING_CAMILLA_TARGET_LEVEL
+
+
 def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> None:
     """Room apply/reset preserve the exact immutable Layer-A suffix.
 

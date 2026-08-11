@@ -39,6 +39,7 @@ via :func:`resolve_coupling`, and the ``--auto`` reconciler converges it loudly
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -117,10 +118,22 @@ RING_WIRE_FORMAT = "S16_LE"
 RING_WIRE_FORMAT_WIDE = "S32_LE"
 RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 
-# fan-in's own declaration of Ring A's wire format (read by the Rust daemon's
-# ``jasper_fanin::config``). Named here so the reconciler's four-ends coherence
-# gate and the daemon spell one key; an unset value declares
-# :data:`RING_WIRE_FORMAT`, matching the daemon's default.
+# THE BOX'S DECLARED RING WIRE — one key, read identically by both languages.
+# Rust reads it in ``jasper_fanin::config``'s ``RingWireFormat::from_env_value``;
+# Python reads it in :func:`resolve_ring_wire_format`, and
+# :func:`resolve_ring_wire` resolves the box's answer through that. It is the
+# ONLY input to the wire's format axis: nothing else in either language decides
+# it, so the control plane and the daemon cannot disagree about what this box's
+# ring carries.
+#
+# Every other end of the ring is DERIVED from that answer rather than declaring
+# its own: the conf.d ``format`` field (rendered by
+# ``jasper-audio-hardware-reconcile`` from ``resolve_ring_wire``), outputd's
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` (same writer, via
+# ``content_lane_format_for_coupling``), and CamillaDSP's emitted capture/
+# playback ``format:``. They are compared anyway
+# (``ring_edge_width_ready``) because they land in files written at DIFFERENT
+# times — a half-applied render is exactly what that comparison catches.
 RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
 
 # Ring A's channel count. Everything upstream of CamillaDSP is a stereo program
@@ -277,6 +290,83 @@ class RingWire:
     ring_active_channels: int | None = None
 
 
+def resolve_ring_wire_format(raw: str | None) -> str:
+    """Normalize a raw :data:`RING_WIRE_FORMAT_ENV_VAR` value to a wire token.
+
+    THE PYTHON HALF OF A TWO-LANGUAGE PARSE. ``jasper-fanin`` normalizes the same
+    key in ``RingWireFormat::from_env_value``
+    (``rust/jasper-fanin/src/config.rs``) and this must classify every input the
+    same way, because the two resolve the SAME box's wire from the SAME file:
+
+    - unset, or empty after trimming → :data:`RING_WIRE_FORMAT` (narrow). Empty
+      is how this repo's env-file writers CLEAR a key, so a cleared key and an
+      absent key mean one thing;
+    - exactly ``S16_LE`` / ``S32_LE`` after trimming → that token. The match is
+      case-SENSITIVE because the C ioplug's own ``strcmp`` is: accepting a
+      spelling the ioplug rejects would resolve a wire no reader can open;
+    - anything else → :class:`ValueError`. FAIL LOUD, never fall back: silently
+      resolving a typo to narrow would emit and render a wire the operator did
+      not ask for, while fan-in — which treats the same value as a config-class
+      fault and parks at exit 78 — would refuse to start. One typo, two verdicts
+      is worse than one refusal.
+
+    ``tests/test_ring_wire_format_contract.py`` pins this against the Rust
+    source so the two normalizers cannot drift apart silently.
+    """
+    if raw is None:
+        return RING_WIRE_FORMAT
+    value = raw.strip()
+    if not value:
+        return RING_WIRE_FORMAT
+    if value in RING_WIRE_FORMATS:
+        return value
+    raise ValueError(
+        f"{RING_WIRE_FORMAT_ENV_VAR}={raw!r} unsupported "
+        f"({'|'.join(RING_WIRE_FORMATS)}) — the token must match the ioplug "
+        "conf.d `format` field exactly; jasper-fanin treats the same value as a "
+        "config-class fault and parks rather than guessing a wire"
+    )
+
+
+def read_declared_ring_wire_format(
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """The box's declared ring wire format, resolved the way fan-in resolves it.
+
+    FILE-FRESH on the live path (``env`` is ``None``), over the same chain
+    systemd gives ``jasper-fanin`` — ``/etc/jasper/jasper.env`` then
+    ``/var/lib/jasper/fanin.env``, later wins. Not ``os.environ``: the callers
+    that need this answer are socket-activated wizards and long-lived daemons
+    that never loaded ``fanin.env`` at all, which is the ``os.environ``-stale
+    class AGENTS.md canonizes (the voice-provider fix). An explicit ``env``
+    mapping is authoritative with no file fallback, for a caller that means the
+    env it hands in.
+
+    A file that cannot be read contributes nothing — an absent ``fanin.env`` is
+    the ordinary unarmed state — but a file that IS readable and declares a
+    value this repo does not recognize raises, exactly as fan-in would.
+    """
+    if env is not None:
+        return resolve_ring_wire_format(env.get(RING_WIRE_FORMAT_ENV_VAR))
+
+    # Lazy imports: jasper.fanin.coupling_reconcile imports THIS module, so a
+    # top-level import would be circular (mirrors coupling_capture_kwargs_from_env).
+    from pathlib import Path
+
+    from jasper.env_file import read_value
+    from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, JASPER_ENV_PATH
+
+    for path in (FANIN_ENV_PATH, JASPER_ENV_PATH):
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        raw = read_value(text, RING_WIRE_FORMAT_ENV_VAR)
+        if raw is not None:
+            return resolve_ring_wire_format(raw)
+    return RING_WIRE_FORMAT
+
+
 def resolve_ring_wire(topology: Any = None) -> RingWire:
     """Resolve the per-box SHM ring wire.
 
@@ -290,11 +380,18 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
 
     Each axis and who decides it:
 
-    - ``sample_format`` — :data:`RING_WIRE_FORMAT` on every box. The layout's
-      accept-set is wider (S16LE and S32LE, both ends of the ring already parse
-      both), so the wire is held narrow HERE, by policy, rather than by anything
-      structural. The ioplug conf.d default is the same token, which is why an
-      unrendered conf.d and this resolver agree without the file saying so.
+    - ``sample_format`` — the box's own declaration, through
+      :func:`read_declared_ring_wire_format`: the one
+      :data:`RING_WIRE_FORMAT_ENV_VAR` value ``jasper-fanin`` resolves from the
+      same chain, defaulting to :data:`RING_WIRE_FORMAT` (narrow) when the box
+      declares nothing. The layout's accept-set is wider (S16LE and S32LE, both
+      ends of the ring already parse both), so which one a box carries is a
+      DECLARATION, not a policy constant — until 2026-08-11 this axis was
+      pinned narrow here with no input at all, which meant an operator could
+      declare a wide wire to fan-in and every Python end would still emit and
+      render narrow (jts3's blocked wide arm). The ioplug conf.d default is the
+      narrow token, which is why an unrendered conf.d and an undeclared box
+      agree without the file saying so.
     - ``ring_a_channels`` — :data:`RING_A_CHANNELS` on every box. Not a
       per-topology axis: the program upstream of CamillaDSP is stereo and
       fan-in's mixer is not configurable.
@@ -334,12 +431,25 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
             ring_b_channels = resolved
         ring_active_channels = active_ring_channels_for_topology(topology)
     return RingWire(
-        sample_format=RING_WIRE_FORMAT,
+        sample_format=read_declared_ring_wire_format(),
         ring_a_channels=RING_A_CHANNELS,
         ring_b_channels=ring_b_channels,
         period_frames=RING_SLOT_FRAMES,
         ring_active_channels=ring_active_channels,
     )
+
+
+# Every ALSA PCM name the ring ioplug owns, in ring order (A, B, ACTIVE). The
+# set a caller tests membership against when it has a device name in hand and
+# needs to know "is this end of the graph a ring end?" — the emitter side
+# (``jasper.active_speaker.camilla_yaml.active_sink_params``) and the arm gate
+# (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) both read it, so
+# neither carries its own list of the three names.
+RING_PCM_DEVICES = (
+    RING_CAPTURE_DEVICE,
+    RING_PLAYBACK_DEVICE,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+)
 
 
 def resolve_coupling(raw: str | None) -> str:
@@ -539,8 +649,9 @@ def ring_pair_intent_is_coherent(
     agrees while the loaded CamillaDSP graph does not. It was called
     ``ring_pair_is_coherent`` until R5b, which reads as a verdict on the ring; the
     verdict on the WIRE is
-    :func:`jasper.fanin.coupling_reconcile.ring_edge_width_ready` (all four
-    declaring ends) and the OBSERVED tuple both daemons publish, surfaced at
+    :func:`jasper.fanin.coupling_reconcile.ring_edge_width_ready` (every
+    declaring end, the loaded CamillaDSP graph included) and the OBSERVED tuple
+    both daemons publish, surfaced at
     ``/state.audio_graph.coupling.observed``.
     """
     coupling = resolve_coupling(coupling_raw)

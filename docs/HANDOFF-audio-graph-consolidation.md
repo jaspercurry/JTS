@@ -121,22 +121,36 @@ The **layout** is no longer the constraint. Since R1
 does and does not arm; wide is a value-space widening of existing header
 fields, so ring `VERSION` stays 1.
 
-The **wire** is still S16 everywhere, and by a different mechanism: the
-resolver forces it. `jasper.fanin_coupling.resolve_ring_wire` is the one
-per-box resolution every declaring end reads, and it answers
-`RING_WIRE_FORMAT` (`S16_LE`) at 2 channels on every box today, for every
-ring end and for outputd's `JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed
-box stays coherently narrow even on a box whose program-lane default is
-`S32_LE` (see "Where this corrects #2285"). Because the accept-set is
-wider than the wire, the attach can no longer be relied on to refuse a
-drift *inside* it: the ends are compared rather than assumed. The C
-ioplug takes `format`/`channels` from its conf.d block, but
+The **wire** is still S16 on every box that has not said otherwise, and by a
+different mechanism than the layout: the resolver answers it.
+`jasper.fanin_coupling.resolve_ring_wire` is the one per-box resolution every
+declaring end reads, for every ring end and for outputd's
+`JASPER_OUTPUTD_CONTENT_FORMAT` — so a ring-armed box stays coherently narrow
+even on a box whose program-lane default is `S32_LE` (see "Where this corrects
+#2285"). Because the accept-set is wider than the wire, the attach can no longer
+be relied on to refuse a drift *inside* it: the ends are compared rather than
+assumed. The C ioplug takes `format`/`channels` from its conf.d block, but
 [`deploy/alsa/conf.d/60-jts-ring.conf`](../deploy/alsa/conf.d/60-jts-ring.conf)
 declares neither on any of its three PCM blocks, so all of them open at the
-`S16_LE`/2ch defaults
-(`JTS_RING_RATE = 48000` stays pinned). Nothing on the fleet declares a
-non-default wire yet: changing the resolver was **R5a**'s, and the first
-box to actually run wide is still **R6**'s.
+`S16_LE`/2ch defaults (`JTS_RING_RATE = 48000` stays pinned) until
+`jasper-audio-hardware-reconcile` renders the box's resolved wire into them.
+
+**"Coherently narrow" is the resolver's DEFAULT, not a fleet-wide law** (E7,
+2026-08-11 — the ruling record is `captures/PLAN-ring-v2-rulings-2026-08-10.md`;
+do not re-derive it here). The format axis has exactly one input,
+`JASPER_FANIN_RING_WIRE_FORMAT`, which `jasper-fanin` and
+`resolve_ring_wire_format` classify identically
+([`tests/test_ring_wire_format_contract.py`](../tests/test_ring_wire_format_contract.py)
+pins that against the Rust source); unset means narrow, which is why the fleet
+is. A box whose live post-DSP path is already **wide** declares the wide wire
+and re-runs the hardware reconciler BEFORE it arms, so the ring joins the
+one-quantization invariant instead of adding a second reduction inside it.
+Until 2026-08-11 the Python resolver took no input at all and pinned the wire
+narrow by policy, so such a box could not arm coherently in either direction —
+found when jts3's arm halted on the format shear
+(`captures/r7b-jts3-arm2-20260811T132227Z`). Arming wide also needs the
+installer's ioplug provenance record, because a non-default wire renders a
+conf.d `format` key an older `.so` cannot parse (`ring_wire_caps_ready`).
 
 So ring v2 was never a layout redesign: it is a transport + reader/writer +
 emitter + resolver problem. The transport layer (R1's crate, R2's ioplug),
@@ -390,6 +404,24 @@ ROLLBACK  jasper-active-speaker baseline-reemit --endpoint aloop
        -> systemctl start jasper-audio-hardware-reconcile     (marker -> cleared)
        -> jasper-fanin-coupling-reconcile loopback            (ring keys unset)
 ```
+
+**Step 1 declares the RESOLVED wire, and a shear is caught at the gate.** The
+re-emit's ring-endpoint graph takes its `format` from
+`resolve_ring_wire` and its CamillaDSP `chunksize`/`target_level` from the
+certified ring geometry (`RING_CAMILLA_*`, chunk/target 128 with
+`enable_rate_adjust: false`) — **never** the box's program-lane default or its
+DAC `LatencyFloor`, which describe the LOOPBACK lane. jts3's floor target alone
+(1536) is six times the whole 2-slot ring's 256-frame capacity. Both come from
+one derivation keyed on the sink device
+(`jasper.active_speaker.camilla_yaml.active_sink_params`), so a caller that
+re-points a graph at the ring cannot pick up one half and miss the other.
+A graph that declares the wrong wire anyway is refused at **step 3** by
+`ring_edge_width_ready`, which inspects the loaded graph as a declaring end and
+names the lane that sheared — it is not left to fail at the ioplug attach.
+Both defects were live at `c4c9bfe1c` and halted the 2026-08-11 arm
+(`captures/r7b-jts3-arm2-20260811T132227Z`): the re-emit inherited `S32_LE` from
+the program lane, and the width gate reported "all declaring ends" while
+structurally unable to see the graph.
 
 **Why the graph moves first.** The endpoint marker
 (`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`) is derived by the hardware
@@ -851,5 +883,16 @@ posture) as filed and open, alongside re-verified-current
 [#2306](https://github.com/jaspercurry/JTS/issues/2306). It did not
 re-touch the egress/source-half facts, the fleet probe, or Appendix
 A/B.
+
+A fifth pass (2026-08-11, the E7 ruling — this PR) rewrote two
+paragraphs against the code it changed, and nothing else: the
+wire-resolution section's "coherently narrow" claim (the resolver took
+no per-box input at all until this PR; it now reads
+`JASPER_FANIN_RING_WIRE_FORMAT`, the same key `jasper-fanin` parses),
+and the lifecycle's step-1 paragraph (what the ring re-emit declares,
+and which gate refuses a shear). Both are re-derived from the changed
+source plus the jts3 arm-2 evidence
+(`captures/r7b-jts3-arm2-20260811T132227Z`), not transcribed. Every
+other section stands as last verified above.
 
 Last verified: 2026-08-11

@@ -51,6 +51,17 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    # ...and of its /var/lib state. ``resolve_ring_wire`` reads the box's declared
+    # ring wire off the SAME jasper.env -> fanin.env chain jasper-fanin resolves,
+    # so a real /var/lib/jasper/fanin.env on the host running the suite (a Pi, or
+    # a dev laptop that ever ran the installer) would reach these tests. The
+    # module-level constant is what that read consults; every test here that
+    # exercises a real fanin.env passes its own path explicitly.
+    fanin_env = tmp_path / "isolated-fanin.env"
+    fanin_env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
     # Keep every main() invocation's entry flock inside the test tmp dir — never
     # the real /run path — so parallel test workers can't contend on one file.
     monkeypatch.setattr(

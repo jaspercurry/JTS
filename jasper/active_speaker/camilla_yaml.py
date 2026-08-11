@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
@@ -150,10 +151,13 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 # has no reason to take the knobs, and its two literals stay literals.
 DEFAULT_ACTIVE_QUEUELIMIT = 4
 DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
-# What the ACTIVE RING sink needs instead, and the reason the knobs became
-# parameters at all (see the note above for why these two values).
-RING_ACTIVE_QUEUELIMIT = 1
-RING_ACTIVE_ENABLE_RATE_ADJUST = False
+# What the ACTIVE RING sink needs instead lives in ``jasper.fanin_coupling``
+# (``RING_CAMILLA_QUEUELIMIT`` / ``RING_CAMILLA_ENABLE_RATE_ADJUST``) with the
+# rest of the certified ring geometry, and :func:`active_sink_params` reads it
+# from there. It was declared a second time here — same two numbers, same
+# reason, two places to move them — until the roleful re-emit needed the
+# chunk/target half of that same geometry and made the duplication a live
+# drift risk rather than a latent one.
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
 # It emits ONLY the program domain (Layer B room correction + Layer C preference
@@ -293,7 +297,7 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
 
     The EMITTER-SIDE twin of ``_outputd_endpoint_width``'s bound. When an active
     graph's sink is the ACTIVE RING, the channel count it declares becomes one of
-    the ring's four declaring ends, and the ioplug's attach compares that field
+    the ring's declaring ends, and the ioplug's attach compares that field
     against the on-disk header. An emit whose width the transport cannot
     represent is therefore not a config that fails later — it is a config that
     CRASHES the ring at attach (``RING_ATTACH_FATAL``) rather than being refused.
@@ -321,27 +325,99 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
         )
 
 
-def active_sink_queue_params(playback_device: str) -> tuple[int, bool]:
-    """The ``(queuelimit, enable_rate_adjust)`` pair a given active sink needs.
+@dataclass(frozen=True)
+class ActiveSinkParams:
+    """The CamillaDSP ``devices:`` knobs a given active sink requires.
 
-    ONE home for "the ACTIVE RING needs 1/false", so a caller that re-points an
-    active graph at the ring cannot forget the knobs that make the ring behave —
+    ``playback_format``, ``chunksize`` and ``target_level`` are the emitter's
+    corresponding parameters; ``chunksize``/``target_level`` are ``None`` for a
+    sink with no opinion, which is the emitter's own "resolve the env/floor
+    value at emit time" contract.
+    """
+
+    playback_format: str
+    chunksize: int | None
+    target_level: int | None
+    queuelimit: int
+    enable_rate_adjust: bool
+
+
+def active_sink_params(
+    playback_device: str, *, topology: Any = None
+) -> ActiveSinkParams:
+    """The device knobs a given active sink needs, in ONE derivation.
+
+    ONE home for "what does an emit against THIS device have to declare", so a
+    caller that re-points an active graph at the ring cannot forget any of it —
     which is exactly the shape of forgetting that produces a graph naming the
-    right device with the wrong handshake. Every other device (the ALSA active
-    lane, and every lab/CI override) gets today's literals back, so a caller
-    that routes through this helper is byte-identical on every box that is not
-    armed.
+    right device and behaving like the wrong one. Every other device (the ALSA
+    active lane, and every lab/CI override) gets today's values back, so a
+    caller that routes through this helper is byte-identical on every box that
+    is not armed.
+
+    RING MEMBERSHIP IS OVER ALL THREE RING PCMs
+    (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against
+    the active ring. Two of the three are refused earlier by other guards — the
+    stereo ring is a forbidden active playback token, and the capture ring is
+    not a sink at all — so today only the active ring reaches the ring branch.
+    Keying on the SET anyway is what makes this the site that answers for a ring
+    PCM rather than the site that happens to know one name: a caller emitting
+    any ring device reads the same resolution here instead of adding a second.
+
+    WHAT THE RING BRANCH ANSWERS, and who owns each value:
+
+    - ``playback_format`` — :func:`~jasper.fanin_coupling.resolve_ring_wire`,
+      the one per-box resolution EVERY declaring end reads. Never the box's
+      program-lane default: on a box whose live post-DSP path is wide, that
+      default is ``S32_LE`` while the resolver may answer narrow, and a graph
+      carrying the box default is a sheared attach waiting at the arm (observed
+      on jts3 2026-08-11, ``captures/r7b-jts3-arm2-20260811T132227Z``). This
+      adopts whatever the resolver answers, in both directions.
+    - ``chunksize`` / ``target_level`` / ``queuelimit`` /
+      ``enable_rate_adjust`` — the certified ring geometry's
+      ``RING_CAMILLA_*`` constants in :mod:`jasper.fanin_coupling`, the same
+      home ``capture_kwargs_for_coupling`` composes for the STEREO ring. The
+      box's :class:`~jasper.audio_hardware.dac.LatencyFloor` describes its
+      LOOPBACK lane and does not apply here: jts3's floor target alone (1536)
+      is six times the whole 2-slot ring's 256-frame capacity.
 
     A helper rather than emitter-internal derivation: the emitters keep taking
     the values as PARAMETERS (Q6), because a lab emit deliberately setting them
     is a legitimate call, and burying the choice inside the emitter would remove
     that seam. This is the default a production caller composes with.
-    """
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
-    if playback_device == RING_ACTIVE_PLAYBACK_DEVICE:
-        return RING_ACTIVE_QUEUELIMIT, RING_ACTIVE_ENABLE_RATE_ADJUST
-    return DEFAULT_ACTIVE_QUEUELIMIT, DEFAULT_ACTIVE_ENABLE_RATE_ADJUST
+    The CHANNEL axis is deliberately not here. An active graph's width is
+    structural — it is the pipeline's output count, derived from the same saved
+    topology the resolver reads — so there is nothing for a sink helper to
+    "adopt"; what matters is that the two agree, and
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves that at the
+    arm, over the emitted graph, against the wire's own
+    ``ring_active_channels``.
+    """
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_ENABLE_RATE_ADJUST,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
+        RING_PCM_DEVICES,
+        resolve_ring_wire,
+    )
+
+    if playback_device not in RING_PCM_DEVICES:
+        return ActiveSinkParams(
+            playback_format=DEFAULT_PLAYBACK_FORMAT,
+            chunksize=None,
+            target_level=None,
+            queuelimit=DEFAULT_ACTIVE_QUEUELIMIT,
+            enable_rate_adjust=DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+        )
+    return ActiveSinkParams(
+        playback_format=resolve_ring_wire(topology).sample_format,
+        chunksize=RING_CAMILLA_CHUNKSIZE,
+        target_level=RING_CAMILLA_TARGET_LEVEL,
+        queuelimit=RING_CAMILLA_QUEUELIMIT,
+        enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
+    )
 
 
 def _finite_float(value: float, field_name: str) -> float:
@@ -1975,7 +2051,7 @@ def emit_active_speaker_startup_config(
     # not escalate past it.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its four declaring ends — refuse a shear
+    # The ring's width is one of its declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
     # ALSA-lane emit (see _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
@@ -2544,7 +2620,7 @@ def emit_active_speaker_commissioning_config(
     # not escalate past it.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its four declaring ends — refuse a shear
+    # The ring's width is one of its declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
     # ALSA-lane emit (see _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
@@ -3059,7 +3135,7 @@ def emit_active_speaker_program_config(
     # not escalate past it.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its four declaring ends — refuse a shear
+    # The ring's width is one of its declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
     # ALSA-lane emit (see _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
@@ -3302,7 +3378,7 @@ def emit_active_speaker_baseline_config(
     # not escalate past it.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its four declaring ends — refuse a shear
+    # The ring's width is one of its declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
     # ALSA-lane emit (see _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
@@ -3533,7 +3609,7 @@ def emit_active_speaker_driver_domain_config(
     # not escalate past it.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its four declaring ends — refuse a shear
+    # The ring's width is one of its declaring ends — refuse a shear
     # here rather than let the ioplug attach crash on it. No-op for every
     # ALSA-lane emit (see _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
