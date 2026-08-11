@@ -218,9 +218,10 @@ def test_observed_ring_wire_reads_both_producers_real_status_shapes(monkeypatch,
     """THE POSITIVE PATH, against the shapes the Rust daemons actually emit.
 
     Ring A and Ring B are reported independently and may legitimately differ on
-    channels (a stereo program in, per-driver channels out), so the two are not
-    interchangeable and a test that only proved "some dict comes back" would not
-    catch the two being crossed.
+    channels (Ring A is always the stereo program fan-in mixes; Ring B follows
+    the box's output topology), so the two are not interchangeable and a test
+    that only proved "some dict comes back" would not catch the two being
+    crossed.
     """
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")

@@ -611,7 +611,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
    - Install the inert jts_ring device definitions
      (/etc/alsa/conf.d/60-jts-ring.conf, pcm.jts_ring_capture +
-     pcm.jts_ring_playback) and the /dev/shm/jts-ring directory lifecycle
+     pcm.jts_ring_playback + pcm.jts_ring_active_playback) and the
+     /dev/shm/jts-ring directory lifecycle
      (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Nothing opens
      them in P1.
    - Write output hardware state before Camilla statefile seed.

@@ -947,6 +947,11 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
         # active-lane marker is cleared here too. Seeding it keeps the
         # steady state truly unchanged (no spurious outputd restart).
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        # Its PAIR. The two are written together by one helper from one
+        # decision, so the steady state states both or the next reconcile
+        # reports a change. (A box deployed before this key existed writes it
+        # once, on its first reconcile, and is idempotent from then on.)
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''\n"
         # The Apple dongle's codified latency floor (#27) is part of the
         # steady state now — seed it so a second reconcile is a true no-op.
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
@@ -1331,7 +1336,17 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     # full-range stereo L/R sink, so the reconciler marks it explicitly; outputd
     # reads this to fail its stereo-only post-crossover features closed.
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
-    assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
+    # ITS PAIR, end-to-end through the real script. The lane marker and the
+    # ring-endpoint marker are one fact with two consumers — outputd bails at
+    # startup on an incoherent pair — so the same helper states both from the
+    # same decision. Here the accepted endpoint is the ALSA active lane, so the
+    # ring marker must be explicitly EMPTY: positive equality against the ring
+    # device, never "not the ALSA lane".
+    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''" in outputd_env
+    assert (
+        "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
+        "active_endpoint=outputd_active_content_playback" in result.stderr
+    )
 
 
 def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
@@ -1379,7 +1394,17 @@ def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
     assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_active_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
-    assert "mode=single_alsa_active active_channels=2 active_lane_cap=8" in result.stderr
+    # ITS PAIR, end-to-end through the real script. The lane marker and the
+    # ring-endpoint marker are one fact with two consumers — outputd bails at
+    # startup on an incoherent pair — so the same helper states both from the
+    # same decision. Here the accepted endpoint is the ALSA active lane, so the
+    # ring marker must be explicitly EMPTY: positive equality against the ring
+    # device, never "not the ALSA lane".
+    assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''" in outputd_env
+    assert (
+        "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
+        "active_endpoint=outputd_active_content_playback" in result.stderr
+    )
 
 
 def test_reconcile_program_bake_without_crossover_endpoint_stays_stereo(
@@ -1623,6 +1648,11 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        # ACTIVE_LANE's pair — written by the same helper from the same decision,
+        # so a converged outputd.env states both. Seed it so the floor pass stays
+        # a no-op and nothing commits (a box deployed before this key existed
+        # writes it once, on its first reconcile, and converges from then on).
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
         "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
@@ -1772,6 +1802,11 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE\n"
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        # ACTIVE_LANE's pair — written by the same helper from the same decision,
+        # so a converged outputd.env states both. Seed it so the floor pass stays
+        # a no-op and nothing commits (a box deployed before this key existed
+        # writes it once, on its first reconcile, and converges from then on).
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''\n"
         "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
         "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
@@ -2541,11 +2576,15 @@ def test_render_subcommand_renders_for_any_profile_declaring_the_slot_floor(
     from jasper import ring_assets
 
     assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    # EVERY ring PCM the conf.d defines converges onto the one slot period —
+    # Ring A, Ring B, and the ACTIVE ring. The count is derived from the block
+    # list rather than spelled, so adding a fourth ring cannot leave this
+    # assertion silently checking a subset.
     assert (
         conf.read_text(encoding="utf-8").count(
             f"    period_frames {RING_SLOT_FRAMES}"
         )
-        == 2
+        == len(ring_assets.RING_CONF_PCMS)
     )
 
 

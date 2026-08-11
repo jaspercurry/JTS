@@ -89,13 +89,11 @@ _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # poison P2's first arm (a valid-magic ring with the conf.d placeholder
 # geometry is a fail-closed open error, not a reclaimable magic-less file).
 # The probe therefore snapshots each ring path's existence and unlinks only
-# what it created — see _jts_ring_pcm_resolves. Basenames match
-# deploy/alsa/conf.d/60-jts-ring.conf's `path` values (capture -> program.ring
-# via the reader; playback -> content.ring via the writer).
-_JTS_RING_PCMS = (
-    ("jts_ring_capture", "arecord", "program.ring"),
-    ("jts_ring_playback", "aplay", "content.ring"),
-)
+# what it created — see _jts_ring_pcm_resolves, which owns the ONE
+# `_JTS_RING_PCMS` table (jasper.cli.doctor.audio_runtime). This module used to
+# carry a second copy of that table; it had zero readers, because the probe and
+# the check are both re-exported from audio_runtime at the bottom of this file,
+# so the copy could only ever be a second answer waiting to disagree.
 
 
 def _observed_output_hardware_clock_blockers(

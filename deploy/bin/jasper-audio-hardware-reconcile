@@ -30,6 +30,12 @@ fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
 DEFAULT_OUTPUTD_PLAYBACK_DEVICE="outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE="outputd_active_content_playback"
+# The ACTIVE RING's playback PCM — the other legal active endpoint. This shell
+# never CHOOSES it; the Python active-lane decision reports which endpoint the
+# live graph targets, and this literal is only how the shell recognizes that
+# answer. Mirrors jasper.fanin_coupling.RING_ACTIVE_PLAYBACK_DEVICE and the
+# conf.d block name; pinned equal by tests/test_ring_active_endpoint.py.
+RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE="jts_ring_active_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE=""
 ACTIVE_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
@@ -624,9 +630,13 @@ if not decision.ok:
     print(decision.reason)
     raise SystemExit(1)
 
-# Stdout payload on success is the ACTUAL driven width; the reconciler emits it
-# as JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W.
-print(decision.width)
+# Stdout payload on success is TWO fields from ONE decision: the ACTUAL driven
+# width (emitted as JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at
+# exactly W) and the ACCEPTED endpoint device (which decides
+# JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT). Both come from the same
+# classification — a second probe for the device could disagree with the first
+# about which graph it was describing.
+print(decision.width, decision.endpoint_device or "")
 PY
 }
 
@@ -1222,10 +1232,41 @@ start_outputd_if_recognized() {
     log_event "outputd_start_requested" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=1"
 }
 
+# THE SINGLE WRITER of the active-lane PAIR. JASPER_OUTPUTD_ACTIVE_LANE and
+# JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT are ONE FACT with two consumers, not two
+# facts: outputd bails at startup on the incoherent pair (marker set, lane
+# clear), because that combination can only mean this writer is broken.
+#
+# So every path that states one states the other, here, from one decision. The
+# four call sites below (composite / active / non-active / parked) each pass the
+# lane value and the ACCEPTED ENDPOINT DEVICE that the SAME
+# outputd_active_lane_decision reported — never a second probe, never a value
+# derived some other way. tests/test_ring_active_endpoint.py walks every
+# JASPER_OUTPUTD_ACTIVE_LANE write site in this file and fails if any writes one
+# key without the other.
+#
+# Args: $1 = lane value ("1" or ""), $2 = accepted endpoint device (may be
+# empty). Echoes nothing; returns 0 iff either key CHANGED, matching
+# set_env_file_var_if_changed's contract so the caller's `&& changed=1` idiom is
+# unchanged.
+set_outputd_active_lane_pair() {
+    local lane="$1" endpoint_device="${2:-}"
+    local ring_endpoint="" pair_changed=0
+    # Positive equality against the named device, never "not the ALSA lane": an
+    # unrecognized endpoint must resolve to NO marker (fail closed), which a
+    # negative test would invert into a spurious arm.
+    if [[ "$lane" == "1" && "$endpoint_device" == "$RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE" ]]; then
+        ring_endpoint="1"
+    fi
+    set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "$lane" && pair_changed=1
+    set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT" "$ring_endpoint" && pair_changed=1
+    [[ "$pair_changed" == "1" ]]
+}
+
 apply_audio_runtime_env() {
     local changed=0
     local active_channels="" active_mode=0 graph_status="" active_lane_cap=""
-    local content_format="" dac_format=""
+    local content_format="" dac_format="" active_graph_payload="" active_endpoint_device=""
     # The CONTENT lane's width is a function of the fan-in coupling, never of the
     # DAC — an unrecognized card still has a definitive answer, so unlike
     # JASPER_OUTPUTD_DAC_FORMAT (which needs a recognized profile to query and is
@@ -1267,9 +1308,9 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
         # The 4-ch composite sink is already fenced off the stereo-only TTS
         # mixer / content bridge by its width (content_channels=4 != 2); clear the
-        # active-lane marker so toggling here from a prior active single DAC
-        # cannot leave a stale =1.
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
+        # active-lane PAIR so toggling here from a prior active single DAC
+        # cannot leave a stale =1 on either key.
+        set_outputd_active_lane_pair "" "" && changed=1
         log_event "runtime_env" \
             "mode=dual_apple content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
@@ -1295,12 +1336,24 @@ apply_audio_runtime_env() {
             graph_status="dac_no_active_lane"
             active_lane_cap=""
         elif [[ -n "$active_lane_cap" ]]; then
-            # The gate ran; graph_status carries its own decline reason.
-            if active_channels="$(active_graph_status "$active_lane_cap")"; then
+            # The gate ran; graph_status carries its own decline reason. On
+            # success the payload is "<width> <endpoint_device>" from ONE
+            # decision — split here rather than probed twice, so the width the
+            # DAC is opened at and the endpoint the marker names always describe
+            # the same classification of the same graph.
+            if active_graph_payload="$(active_graph_status "$active_lane_cap")"; then
                 active_mode=1
+                active_channels="${active_graph_payload%% *}"
+                active_endpoint_device="${active_graph_payload#* }"
+                # A payload with no space at all means no device field; treat it
+                # as absent rather than as a device named after the width.
+                if [[ "$active_endpoint_device" == "$active_graph_payload" ]]; then
+                    active_endpoint_device=""
+                fi
             else
-                graph_status="$active_channels"
+                graph_status="$active_graph_payload"
                 active_channels=""
+                active_endpoint_device=""
             fi
         else
             # No answer at all on a RECOGNIZED DAC: the lane-cap probe itself
@@ -1333,9 +1386,10 @@ apply_audio_runtime_env() {
             # TTS mixer / content bridge here. Mark the lane explicitly so outputd
             # fails those stereo-only features closed (full-range-to-tweeter
             # safety). Active-mode voice rides fanin, upstream of the crossover.
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "1" && changed=1
+            # The endpoint device travels with it, from the same decision.
+            set_outputd_active_lane_pair "1" "$active_endpoint_device" && changed=1
             log_event "runtime_env" \
-                "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+                "mode=single_alsa_active active_channels=${active_channels} active_lane_cap=${active_lane_cap} active_endpoint=${active_endpoint_device:-unset} content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
         else
             OUTPUTD_ACTIVE_MODE=0
             OUTPUTD_ACTIVE_CHANNELS=""
@@ -1343,10 +1397,11 @@ apply_audio_runtime_env() {
             # Clear the width knob so outputd defaults to stereo; a stale active
             # width would otherwise mis-size the (stereo) content lane.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
-            # Leaving active mode: clear the active-lane marker so a stale =1
+            # Leaving active mode: clear the active-lane PAIR so a stale =1
             # cannot keep the stereo-only TTS mixer / content bridge fenced off on
-            # an ordinary passive stereo DAC.
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
+            # an ordinary passive stereo DAC, and a stale ring-endpoint marker
+            # cannot outlive the lane it was written with.
+            set_outputd_active_lane_pair "" "" && changed=1
             log_event "runtime_env" \
                 "mode=single_alsa content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed} active_graph=${graph_status:-none}"
         fi
@@ -1366,7 +1421,7 @@ apply_audio_runtime_env() {
         # a recognized to an unrecognized card cannot leave a stale format.
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_LANE" "" && changed=1
+        set_outputd_active_lane_pair "" "" && changed=1
         log_event "runtime_env" \
             "mode=parked content_format=${content_format:-unset} dac_format=${dac_format:-unset} outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
     fi

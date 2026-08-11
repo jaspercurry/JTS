@@ -10,8 +10,10 @@
 // geometry; the rate is pinned at 48 kHz. Every staging stride below is
 // (channels x sample width), so widening the conf.d moves the whole plugin.
 //
-// PLAYBACK (Ring B): CamillaDSP (or aplay, for the resolvability probe) opens
-// the ALSA PCM `jts_ring_playback` and writes interleaved frames at that wire;
+// PLAYBACK (Ring B, and the ACTIVE ring): CamillaDSP (or aplay, for the
+// resolvability probe) opens a playback PCM — `jts_ring_playback`, or
+// `jts_ring_active_playback` for a roleful box's post-crossover per-driver
+// program — and writes interleaved frames at that wire;
 // this plugin stages them into whole slots and publishes each full slot
 // into the SHM ping-pong ring (jts_ring_shm.c, the WRITER core). jasper-outputd
 // is the reader (rust/jasper-ring) and the DAC pacer. This replaces the outputd
@@ -25,12 +27,12 @@
 // fanin restart. This replaces the fan-in -> camilla dsnoop capture hop. The
 // capture direction is the exact MIRROR of the playback pointer/avail/alias
 // discipline (roles flipped); see jts_ring_capture_pointer_report in the header.
-// Ring A and Ring B are SEPARATE ring instances (program.ring vs content.ring);
-// the SPSC contract, the mod-buffer clamp, and the writer/reader-dead survival
-// discipline are shared code.
+// Every ring is a SEPARATE instance (program.ring / content.ring /
+// active-content.ring); the SPSC contract, the mod-buffer clamp, and the
+// writer/reader-dead survival discipline are shared code.
 //
 // PRODUCT-INSTALLED, coupling-gated: deploy/lib/install/ring-platform.sh ships
-// pcm.jts_ring_capture/playback (type jts_ring) via
+// pcm.jts_ring_capture / _playback / _active_playback (type jts_ring) via
 // /etc/alsa/conf.d/60-jts-ring.conf on every box, but the PCMs stay INERT
 // until the coupling reconciler arms JASPER_FANIN_CAMILLA_COUPLING=shm_ring /
 // JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring on a ring-eligible box; otherwise the

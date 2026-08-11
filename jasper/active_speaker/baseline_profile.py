@@ -49,6 +49,7 @@ from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
     _role_polarity,
+    active_sink_queue_params,
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
     linearization_headroom_db,
@@ -2424,6 +2425,7 @@ def recompose_applied_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
+    playback_device: str | None = None,
     bass_extension_profile: BassExtensionProfile | None | object = (
         _DEFAULT_PERSISTED_BASS_PROFILE
     ),
@@ -2434,6 +2436,18 @@ def recompose_applied_baseline_yaml(
     crossover previews, and measurement stores are deliberately not parameters:
     captures remain candidates until :func:`apply_baseline_profile` snapshots
     them under an explicit Apply transaction.
+
+    ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
+    is opt-in: ``None`` (every caller today) emits against the device the
+    snapshot recorded, byte-for-byte as before. An explicit value re-points the
+    SAME applied evidence at a different transport for the SAME lane — the
+    active ALSA lane and the ACTIVE RING carry identical post-crossover
+    per-driver program at identical width to the same reader, so only the
+    device name differs. That is what makes the ring arm possible at all: the
+    reconciler derives its endpoint marker FROM the loaded graph, so the graph
+    has to name the ring first. Passing anything that is not a legal active
+    endpoint is refused by the emitter's own forbidden-token and width guards,
+    not here.
     """
     if applied_profile.get("status") != "applied":
         return None, [_issue(
@@ -2487,7 +2501,14 @@ def recompose_applied_baseline_yaml(
             f"the applied active-speaker snapshot is invalid: {exc}",
         )]
     corrections = snapshot.get("corrections")
-    playback_device = snapshot.get("playback_device")
+    # The snapshot's device is the DEFAULT, never the only answer: an explicit
+    # ``playback_device`` re-points this evidence at the other transport of the
+    # same lane (see the parameter's note). The validity check below still runs
+    # against the SNAPSHOT's value, because an override cannot repair a snapshot
+    # that recorded no device — that snapshot is invalid whatever endpoint the
+    # caller asks for, and letting an override mask it would emit a graph from
+    # evidence we just failed to verify.
+    snapshot_playback_device = snapshot.get("playback_device")
     expected_roles = set(required_driver_roles(preset.way_count))
     correction_roles = set(corrections) if isinstance(corrections, Mapping) else set()
     corrections_valid = (
@@ -2496,14 +2517,21 @@ def recompose_applied_baseline_yaml(
     ) if isinstance(corrections, Mapping) else False
     if (
         not corrections_valid
-        or not isinstance(playback_device, str)
-        or not playback_device
+        or not isinstance(snapshot_playback_device, str)
+        or not snapshot_playback_device
     ):
         return None, [_issue(
             "blocker",
             "applied_baseline_snapshot_invalid",
             "the applied active-speaker snapshot is missing corrections or playback device",
         )]
+    emit_playback_device = playback_device or snapshot_playback_device
+    # The sink's queue handshake follows the sink. Composed here rather than
+    # left to each caller because a graph naming the ring with the ALSA lane's
+    # queue depth is a graph that names the right device and behaves like the
+    # wrong one. Non-ring devices resolve to the emitter's own defaults, so this
+    # is byte-identical on every box that is not armed.
+    emit_queuelimit, emit_rate_adjust = active_sink_queue_params(emit_playback_device)
     # Layer-1a driver linearization (#1668 PR-D): read era-tolerantly (absent
     # on any pre-PR-D snapshot -> {}, "no linearization was fit" — the same
     # convention MeasuredCrossoverCandidate.from_mapping uses for its own
@@ -2526,7 +2554,9 @@ def recompose_applied_baseline_yaml(
     )
     yaml = emit_active_speaker_baseline_config(
         preset,
-        playback_device=playback_device,
+        playback_device=emit_playback_device,
+        queuelimit=emit_queuelimit,
+        enable_rate_adjust=emit_rate_adjust,
         corrections={str(role): dict(value) for role, value in corrections.items()},
         room_peqs=room_peqs,
         preference_filters=preference_filters,

@@ -27,6 +27,9 @@ def _shipped_wire(**overrides) -> RingWire:
         ring_a_channels=overrides.get("ring_a_channels", base.ring_a_channels),
         ring_b_channels=overrides.get("ring_b_channels", base.ring_b_channels),
         period_frames=overrides.get("period_frames", base.period_frames),
+        ring_active_channels=overrides.get(
+            "ring_active_channels", base.ring_active_channels
+        ),
     )
 
 
@@ -462,7 +465,7 @@ def test_render_ring_conf_wire_is_a_no_op_when_it_already_matches(tmp_path):
 
 
 def test_render_ring_conf_wire_moves_only_the_period_values(tmp_path):
-    # Converging a drifted conf.d: both PCM blocks follow, and NOTHING else
+    # Converging a drifted conf.d: every PCM block follows, and NOTHING else
     # moves — comments, n_slots, path, type, and indentation survive verbatim.
     conf = _drifted_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
@@ -475,7 +478,11 @@ def test_render_ring_conf_wire_moves_only_the_period_values(tmp_path):
     assert outcome.previous_period_frames == 1024
     after = conf.read_text(encoding="utf-8")
     assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
-    assert after.count(f"    period_frames {RING_SLOT_FRAMES}") == 2
+    # EVERY ring block converges onto the one slot period — derived from the
+    # block list so a fourth ring cannot leave this checking a subset.
+    assert after.count(f"    period_frames {RING_SLOT_FRAMES}") == len(
+        ring_assets.RING_CONF_PCMS
+    )
     assert "period_frames 1024" not in after
     # Every other line is untouched.
     assert [
@@ -656,8 +663,11 @@ def test_render_writes_only_the_axes_that_leave_the_ioplug_default(tmp_path):
     """A wide, N-channel wire lands as explicit keys — and only where it differs.
 
     Ring A stays stereo, so its `channels` line is still absent (2 IS the
-    default); Ring B is 6, so it gains one. Both gain `format`. Everything else
-    in the file — comments, path, n_slots, indentation — survives verbatim.
+    default); Ring B is 6, so it gains one. The ACTIVE ring resolves no width on
+    this (non-roleful) wire, so its block keeps the default and gains no
+    `channels` line either. All THREE gain `format` — the wire's format axis is
+    one per box and every ring end declares it. Everything else in the file —
+    comments, path, n_slots, indentation — survives verbatim.
     """
     conf = _shipped_conf_copy(tmp_path)
     before = conf.read_text(encoding="utf-8")
@@ -667,28 +677,113 @@ def test_render_writes_only_the_axes_that_leave_the_ioplug_default(tmp_path):
     )
 
     assert outcome.changed is True
-    assert ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM, str(conf)) == (
-        "S32_LE"
-    )
-    assert ring_assets.ring_conf_format(ring_assets.RING_B_CONF_PCM, str(conf)) == (
-        "S32_LE"
-    )
+    for pcm in ring_assets.RING_CONF_PCMS:
+        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S32_LE"
     assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(conf)) == 2
     assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(conf)) == 6
+    assert (
+        ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(conf)) == 2
+    )
     after = conf.read_text(encoding="utf-8")
-    # Ring A gained format only; Ring B gained format AND channels.
-    assert after.count("    format S32_LE") == 2
+    # Every block gained format; only Ring B gained channels.
+    assert after.count("    format S32_LE") == len(ring_assets.RING_CONF_PCMS)
     assert after.count("    channels 6") == 1
     assert "    channels 2" not in after
-    # Nothing but the two new key kinds appeared.
+    # Nothing but the two new key kinds appeared, in file order. Within a block
+    # `format` precedes `channels`: each insert anchors immediately after
+    # `n_slots`, and the renderer writes channels first, so the later `format`
+    # insert lands above it.
     assert [
         line for line in after.splitlines() if line not in before.splitlines()
-    ] == ["    format S32_LE", "    format S32_LE", "    channels 6"]
+    ] == [
+        "    format S32_LE",  # Ring A
+        "    format S32_LE",  # Ring B
+        "    channels 6",  # Ring B
+        "    format S32_LE",  # ACTIVE
+    ]
+
+
+def test_render_writes_the_active_block_only_for_a_roleful_wire(tmp_path):
+    """The ACTIVE block moves iff the wire resolves an active width.
+
+    THE INERTNESS CLAIM, pinned. ``ring_active_channels=None`` is every
+    non-roleful box, and there the active block must be left exactly as shipped —
+    otherwise every box in the fleet gains a conf.d line on first reconcile. A
+    resolved width lands as an explicit key in the ACTIVE block and NOWHERE else:
+    the whole reason the width is a fifth field rather than a widened
+    ``ring_b_channels`` is that the latter would stamp it into the STEREO block,
+    which on a 2-way box is invisible because both numbers are 2.
+    """
+    conf = _shipped_conf_copy(tmp_path)
+    shipped = conf.read_text(encoding="utf-8")
+
+    # No active ring: byte-identical, no write at all.
+    outcome = ring_assets.render_ring_conf_wire(
+        _shipped_wire(ring_active_channels=None), conf_d=str(conf)
+    )
+    assert outcome.changed is False
+    assert conf.read_text(encoding="utf-8") == shipped
+
+    # An active width of 2 is ALSO byte-identical — 2 is the ioplug default, so
+    # there is nothing to declare. This is the jts3 shape.
+    outcome = ring_assets.render_ring_conf_wire(
+        _shipped_wire(ring_active_channels=2), conf_d=str(conf)
+    )
+    assert outcome.changed is False
+    assert conf.read_text(encoding="utf-8") == shipped
+
+    # A 6-channel active ring writes ONE line, in the ACTIVE block only.
+    outcome = ring_assets.render_ring_conf_wire(
+        _shipped_wire(ring_active_channels=6), conf_d=str(conf)
+    )
+    assert outcome.changed is True
+    assert outcome.ring_active_channels == 6
+    after = conf.read_text(encoding="utf-8")
+    assert [
+        line for line in after.splitlines() if line not in shipped.splitlines()
+    ] == ["    channels 6"]
+    assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(conf)) == 2
+    assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(conf)) == 2
+    assert (
+        ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(conf)) == 6
+    )
+
+
+def test_render_tolerates_a_missing_active_block_only_with_nothing_to_write(tmp_path):
+    """A pre-active conf.d renders when the active width is the default, raises otherwise.
+
+    The upgrade window is real: install copies the new Python a step before the
+    new conf.d, so a udev-driven reconcile can meet new code and an old two-block
+    file. With no active width to write, that must be an ordinary no-op rather
+    than a failed reconcile over a value that was never going to change. With a
+    real width, the block's absence is a shear the ioplug would attach against —
+    so it still raises, and "refusing to invent a block" is preserved either way.
+    """
+    conf = _shipped_conf_copy(tmp_path)
+    text = conf.read_text(encoding="utf-8")
+    start = text.index(f"pcm.{ring_assets.RING_ACTIVE_CONF_PCM} {{")
+    conf.write_text(text[:start].rstrip() + "\n", encoding="utf-8")
+    assert (
+        ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(conf))
+        is None
+    )
+
+    outcome = ring_assets.render_ring_conf_wire(
+        _shipped_wire(ring_active_channels=None), conf_d=str(conf)
+    )
+    assert outcome.changed is False
+
+    with pytest.raises(ValueError, match=ring_assets.RING_ACTIVE_CONF_PCM):
+        ring_assets.render_ring_conf_wire(
+            _shipped_wire(ring_active_channels=6), conf_d=str(conf)
+        )
 
 
 def test_render_round_trips_through_the_parsers(tmp_path):
-    # render -> parse -> equality, on every axis and on BOTH blocks. The parsers
-    # and the writer share their regexes precisely so this holds.
+    # render -> parse -> equality, on every axis and on the two stereo blocks —
+    # the ACTIVE block's render->parse is pinned by
+    # test_render_writes_the_active_block_only_for_a_roleful_wire above. The
+    # parsers and the writer share their regexes precisely so this holds.
     conf = _shipped_conf_copy(tmp_path)
     wire = _shipped_wire(sample_format="S32_LE", ring_b_channels=8)
     ring_assets.render_ring_conf_wire(wire, conf_d=str(conf))

@@ -1774,6 +1774,17 @@ def resolve_output_layout(
        declares one. This is the durable path and the only one carrying an
        ``OutputTransportPlan``.
     3. Otherwise the route is missing (no width, no subwoofer support).
+
+    **Case 2 has two TRANSPORTS and this is the one place that chooses between
+    them.** The active lane is reached over snd-aloop by default, and over the
+    ACTIVE RING when the reconciler's endpoint marker says so. Both carry the
+    same post-crossover per-driver program at the same width to the same reader,
+    so only the device name differs — which is precisely why the choice lives
+    here rather than being threaded through every emitter: every active graph is
+    emitted through this one resolution, so a re-emit after an arm produces the
+    ring graph with no caller edits, and ``playback_device_source`` stays
+    ``OUTPUTD_ACTIVE_LANE_SOURCE`` so nothing keyed on the SOURCE has to learn
+    about the ring.
     """
 
     env = env if env is not None else os.environ
@@ -1798,10 +1809,22 @@ def resolve_output_layout(
         and profile.supports_active_outputd_lane
         and profile.active_outputd_lane_channels
     ):
+        # Lazy import: fanin_coupling is import-cheap but this module is on the
+        # topology layer, and the marker read is a file read on the default path.
+        from jasper.fanin_coupling import (
+            RING_ACTIVE_PLAYBACK_DEVICE,
+            ring_active_endpoint_armed,
+        )
+
+        active_device = (
+            RING_ACTIVE_PLAYBACK_DEVICE
+            if ring_active_endpoint_armed()
+            else ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        )
         return OutputLayout(
             device_id=hardware.device_id,
             card_id=hardware.card_id,
-            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+            playback_device=active_device,
             playback_device_source=OUTPUTD_ACTIVE_LANE_SOURCE,
             transport_channel_count=profile.active_outputd_lane_channels,
             subwoofer_supported=True,

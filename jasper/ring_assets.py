@@ -6,8 +6,8 @@
 
 The single source of truth for the three inert ring-platform assets P1 ships:
 the compiled ioplug ``.so``, the conf.d PCM definitions
-(``pcm.jts_ring_capture`` / ``pcm.jts_ring_playback``), and the
-``/dev/shm/jts-ring`` tmpfs directory. Two consumers share this SSOT so the
+(:data:`RING_CONF_PCMS`), and the
+``/dev/shm/jts-ring`` tmpfs directory. Three consumers share this SSOT so the
 "which files must exist" contract never drifts:
 
 - ``jasper.cli.doctor.audio_runtime.check_ring_platform_assets`` — the
@@ -36,7 +36,11 @@ import os
 import re
 from dataclasses import dataclass
 
-from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
+from jasper.fanin_coupling import (
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_SLOT_FRAMES,
+    RingWire,
+)
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
 # Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
@@ -56,11 +60,21 @@ RING_SHM_DIR = "/dev/shm/jts-ring"
 # ``n_slots`` must agree on (the defect-A coherence axis).
 RING_A_PROGRAM_FILE = os.path.join(RING_SHM_DIR, "program.ring")
 RING_B_CONTENT_FILE = os.path.join(RING_SHM_DIR, "content.ring")
+# The ACTIVE ring's on-disk file — the roleful box's post-crossover per-driver
+# hop (ring v2 R7b). A THIRD file beside the two above, never a re-use of Ring
+# B's: the two rings coexist on an armed roleful box and carry different
+# programs at different widths.
+RING_ACTIVE_CONTENT_FILE = os.path.join(RING_SHM_DIR, "active-content.ring")
 # The conf.d PCM block name for Ring A (fan-in's program ring). ``n_slots`` under
 # this block is the drift axis with ``JASPER_FANIN_RING_SLOTS`` (Ring B is the
 # ``jts_ring_playback`` block, paired with ``JASPER_OUTPUTD_SHM_RING_SLOTS``).
 RING_A_CONF_PCM = "jts_ring_capture"
 RING_B_CONF_PCM = "jts_ring_playback"
+RING_ACTIVE_CONF_PCM = RING_ACTIVE_PLAYBACK_DEVICE
+# Every PCM block the ring conf.d defines, in file order. The renderer walks it
+# and so do the guards, so "which blocks exist" is one list rather than a
+# repeated literal triple.
+RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 
 # What a conf.d PCM block declares when it omits ``format`` / ``channels``.
 # Mirrors the C ioplug's ``JTS_RING_DEFAULT_FORMAT`` / ``JTS_RING_DEFAULT_CHANNELS``
@@ -73,9 +87,19 @@ RING_CONF_DEFAULT_FORMAT = "S16_LE"
 RING_CONF_DEFAULT_CHANNELS = 2
 
 
-def ring_ioplug_so_path(*, plugin_dir: str = RING_ALSA_PLUGIN_DIR) -> str:
-    """Absolute path of the installed ioplug ``.so``."""
-    return os.path.join(plugin_dir, RING_IOPLUG_SO)
+def ring_ioplug_so_path(*, plugin_dir: str | None = None) -> str:
+    """Absolute path of the installed ioplug ``.so``.
+
+    ``plugin_dir=None`` resolves :data:`RING_ALSA_PLUGIN_DIR` at CALL time, not
+    as a bound default — the rule this module already documents on
+    :func:`ring_conf_n_slots`, and the one the provenance readers were fixed to
+    follow. A def-time binding makes a caller that repoints the module constant
+    (a test, or any future per-arch resolution) silently read the original path
+    while every message still names the constant: one fact, two answers.
+    """
+    return os.path.join(
+        RING_ALSA_PLUGIN_DIR if plugin_dir is None else plugin_dir, RING_IOPLUG_SO
+    )
 
 
 @dataclass(frozen=True)
@@ -104,19 +128,22 @@ class RingAssetPresence:
 
 def ring_asset_presence(
     *,
-    plugin_dir: str = RING_ALSA_PLUGIN_DIR,
-    conf_d: str = RING_CONF_D,
-    shm_dir: str = RING_SHM_DIR,
+    plugin_dir: str | None = None,
+    conf_d: str | None = None,
+    shm_dir: str | None = None,
 ) -> RingAssetPresence:
     """Snapshot which of the three ring-platform assets are present on disk.
 
     Pure filesystem stat — no ALSA open, no subprocess, leaves no residue. Args
-    are injectable so tests can repoint the paths at a tmpdir.
+    are injectable so tests can repoint the paths at a tmpdir, and each ``None``
+    resolves its module constant at CALL time (the same rule as
+    :func:`ring_ioplug_so_path` and :func:`ring_conf_n_slots`) so repointing the
+    constant works too.
     """
     return RingAssetPresence(
-        so_present=os.path.exists(os.path.join(plugin_dir, RING_IOPLUG_SO)),
-        conf_present=os.path.exists(conf_d),
-        shm_dir_present=os.path.isdir(shm_dir),
+        so_present=os.path.exists(ring_ioplug_so_path(plugin_dir=plugin_dir)),
+        conf_present=os.path.exists(RING_CONF_D if conf_d is None else conf_d),
+        shm_dir_present=os.path.isdir(RING_SHM_DIR if shm_dir is None else shm_dir),
     )
 
 
@@ -370,8 +397,8 @@ def ring_ioplug_wire_supported(
 
 # The ring's slot geometry IS fixed at ``RING_SLOT_FRAMES`` (128). jasper-fanin
 # creates Ring A with that COMPILE-TIME constant
-# (rust/jasper-fanin/src/config.rs, no env override) and both conf.d PCM blocks
-# share one period value, so the conf.d period is pinned to it too — this file
+# (rust/jasper-fanin/src/config.rs, no env override) and every conf.d PCM block
+# shares one period value, so the conf.d period is pinned to it too — this file
 # is not free to follow a DAC. Making the slot derivable is issue #2147.
 #
 # The mismatch this parser exists to catch is the OTHER side: the
@@ -409,10 +436,10 @@ _RING_CONF_PERIOD_RE = re.compile(
 def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
     """Parse the ``period_frames`` pinned in the ring conf.d, or None.
 
-    Returns the single period value the ``jts_ring_*`` PCM blocks declare (both
-    Ring A and Ring B share one slot geometry). ``None`` when the file is absent,
+    Returns the single period value the ``jts_ring_*`` PCM blocks declare (every
+    ring shares one slot geometry). ``None`` when the file is absent,
     unreadable, has no ``period_frames`` line, or declares *inconsistent* values
-    across the two PCMs (a torn conf.d — the caller treats that as a mismatch, not
+    across the blocks (a torn conf.d — the caller treats that as a mismatch, not
     a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
     :data:`RING_CONF_D` at CALL time (not a bound default) so a test / caller that
     repoints the module constant is honored.
@@ -425,7 +452,7 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
         return None
     values = {int(m.group("frames")) for m in _RING_CONF_PERIOD_RE.finditer(text)}
     if len(values) != 1:
-        # No period line, or the two PCMs disagree — not a usable single geometry.
+        # No period line, or the blocks disagree — not a usable single geometry.
         return None
     return next(iter(values))
 
@@ -449,11 +476,12 @@ def ring_conf_period_frames(conf_d: str | None = None) -> int | None:
 #     ``jasper_ring::RingWriter::create_or_attach`` validates the existing header's
 #     geometry against the requested one.
 #
-# Per-block field parsing. The conf.d has TWO PCM blocks (Ring A and Ring B),
-# and since ring v2 they can declare DIFFERENT geometry: Ring B's ``channels``
-# follows the box's topology while Ring A's is always the stereo program. So
-# every field parser here is scoped to one named block; a whole-file scan would
-# collapse two legitimately different values into "torn".
+# Per-block field parsing. The conf.d has one PCM block per ring
+# (:data:`RING_CONF_PCMS`), and since ring v2 they can declare DIFFERENT
+# geometry: Ring A's ``channels`` is always the stereo program, Ring B's follows
+# the box's output topology, and the ACTIVE ring's is the post-crossover
+# per-driver width. So every field parser here is scoped to one named block; a
+# whole-file scan would collapse legitimately different values into "torn".
 #
 # ``_ring_conf_block_body`` finds that block by MATCHING BRACES rather than by
 # regex. A `[^}]*` body (what this used before the per-block fields landed)
@@ -571,8 +599,8 @@ def _single_block_value(
 def ring_conf_n_slots(pcm_name: str, conf_d: str | None = None) -> int | None:
     """Parse the ``n_slots`` pinned for a named PCM block in the ring conf.d.
 
-    ``pcm_name`` is ``jts_ring_capture`` (Ring A) or ``jts_ring_playback`` (Ring
-    B). Returns the single ``n_slots`` value that block declares, or ``None`` when
+    ``pcm_name`` is one of :data:`RING_CONF_PCMS`.
+    Returns the single ``n_slots`` value that block declares, or ``None`` when
     the file is absent/unreadable, the block is missing, or the block declares no
     single ``n_slots`` (a torn conf.d — the caller treats that as a mismatch, not
     a silent pick). Pure text parse, no ALSA. ``conf_d=None`` resolves
@@ -623,8 +651,12 @@ class RingConfWireRender:
     (a box whose declared floor equals the shipped 128, on the shipped S16_LE /
     2-channel wire).
 
-    ``previous_period_frames`` is ``None`` for a TORN conf.d whose two PCM blocks
+    ``previous_period_frames`` is ``None`` for a TORN conf.d whose PCM blocks
     disagreed, because there was no single previous value to report.
+
+    ``ring_active_channels`` is what the ACTIVE ring's block was rendered to —
+    the ioplug default on every box without an active ring, which is what the
+    shipped file already declares.
     """
 
     changed: bool
@@ -634,6 +666,7 @@ class RingConfWireRender:
     ring_a_channels: int
     ring_b_channels: int
     conf_d: str
+    ring_active_channels: int = RING_CONF_DEFAULT_CHANNELS
 
 
 def _render_block_field(
@@ -684,7 +717,7 @@ def render_ring_conf_wire(
     *,
     conf_d: str | None = None,
 ) -> RingConfWireRender:
-    """Rewrite the ring conf.d so both PCM blocks declare ``wire``.
+    """Rewrite the ring conf.d so every PCM block declares ``wire``.
 
     ``wire`` is a :class:`~jasper.fanin_coupling.RingWire` — the ONE per-box
     resolution of the ring's geometry. Taking the resolved object rather than
@@ -694,20 +727,24 @@ def render_ring_conf_wire(
 
     What lands where:
 
-    - ``period_frames`` — both blocks, one shared value (the ring slot IS one
+    - ``period_frames`` — every block, one shared value (the ring slot IS one
       outputd DAC period). This is the per-box render the conf.d's own header
       calls for; the CALLER decides whether a render is warranted (the rule is
       "only from a DECLARED :class:`~jasper.audio_hardware.dac.LatencyFloor`"),
       so this function never consults the DAC registry itself.
-    - ``format`` — both blocks, one shared value. The rings carry one wire
+    - ``format`` — every block, one shared value. The rings carry one wire
       format; a box with two would need every emitter, gate and doctor surface
       to carry two forever.
     - ``channels`` — PER BLOCK. ``jts_ring_capture`` (Ring A) declares
       ``ring_a_channels``: everything upstream of CamillaDSP is a stereo
       program, and fan-in's mixer is stereo. ``jts_ring_playback`` (Ring B)
       declares ``ring_b_channels``, which follows the box's output topology.
-      This is the one axis on which the two rings can legitimately differ, which
-      is why the parsers above are block-scoped.
+      ``jts_ring_active_playback`` (the ACTIVE ring) declares
+      ``ring_active_channels`` — the post-crossover per-driver width — and when
+      the wire resolves ``None`` there (every non-roleful box) that block keeps
+      the ioplug's default, i.e. is left exactly as shipped. This is the axis on
+      which the three rings legitimately differ, which is why the parsers above
+      are block-scoped.
 
     **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
     Ring A's slot size is fan-in's COMPILE-TIME constant
@@ -745,6 +782,11 @@ def render_ring_conf_wire(
     sample_format = wire.sample_format
     ring_a_channels = wire.ring_a_channels
     ring_b_channels = wire.ring_b_channels
+    # A box with no active ring (every non-roleful topology, and any roleful one
+    # whose driven width is indeterminate) declares the ioplug's own default in
+    # that block, which is what the SHIPPED file already says — so the block is
+    # left byte-identical rather than rendered to an invented width.
+    ring_active_channels = wire.ring_active_channels or RING_CONF_DEFAULT_CHANNELS
 
     if period_frames != RING_SLOT_FRAMES:
         raise ValueError(
@@ -762,8 +804,8 @@ def render_ring_conf_wire(
             f"ring conf.d ({path}) declares no period_frames line; refusing to "
             "invent one — redeploy to reinstall it"
         )
-    # A torn conf.d (the two PCMs disagreeing) has no single previous value to
-    # report, but it is still rendered: converging both lines onto the target is
+    # A torn conf.d (the blocks disagreeing) has no single previous value to
+    # report, but it is still rendered: converging every line onto the target is
     # exactly the repair. Mirrors ring_conf_period_frames returning None there.
     distinct = set(previous)
 
@@ -771,13 +813,47 @@ def render_ring_conf_wire(
         lambda m: f"{m.group('indent')}period_frames {period_frames}",
         text,
     )
-    for pcm_name, channels in (
-        (RING_A_CONF_PCM, ring_a_channels),
-        (RING_B_CONF_PCM, ring_b_channels),
-    ):
+    # What each block gets, keyed by name. The ACTIVE block is required only when
+    # there is something to write into it: a conf.d predating the active ring (an
+    # in-flight deploy, where the new Python is installed a step before the new
+    # conf.d) has no such block, and on the box that file describes there is also
+    # no active ring — so raising there would turn an ordinary upgrade ordering
+    # into a failed reconcile over a value that was never going to change. When
+    # the wire DOES resolve a real active width, the block's absence is a genuine
+    # fault and still raises: the ioplug attaches with what the block says, so
+    # silently skipping the write would ship a shear.
+    #
+    # The arm path does not rely on that leniency — ``active_ring_endpoint_proof``
+    # independently refuses to arm unless the block declares the resolved width,
+    # so a missing block fails CLOSED there whatever the renderer did.
+    per_block = {
+        RING_A_CONF_PCM: (ring_a_channels, True),
+        RING_B_CONF_PCM: (ring_b_channels, True),
+        RING_ACTIVE_CONF_PCM: (
+            ring_active_channels,
+            ring_active_channels != RING_CONF_DEFAULT_CHANNELS,
+        ),
+    }
+    # WALK :data:`RING_CONF_PCMS`, the one list of which blocks exist, rather than
+    # a second literal tuple here. The widths genuinely differ per block, so the
+    # walk is a lookup rather than a zip — and the lookup is what makes a fourth
+    # ring FAIL LOUD instead of being silently skipped: adding a name to
+    # RING_CONF_PCMS without deciding its width raises here, at render time, on
+    # every box, rather than shipping a block the renderer never touches.
+    undeclared = [name for name in RING_CONF_PCMS if name not in per_block]
+    if undeclared:
+        raise ValueError(
+            f"ring conf.d renderer has no width for {', '.join(undeclared)}: every "
+            "PCM in RING_CONF_PCMS must declare what this renderer writes into it "
+            "— refusing to render a conf.d with a block nobody owns"
+        )
+    for pcm_name in RING_CONF_PCMS:
+        channels, required = per_block[pcm_name]
         # Re-find the span each pass: rendering Ring A's body moves Ring B's.
         span = _ring_conf_block_body_span(rendered, pcm_name)
         if span is None:
+            if not required:
+                continue
             raise ValueError(
                 f"ring conf.d ({path}) has no readable pcm.{pcm_name} block "
                 "(absent or unbalanced braces); refusing to invent one — "
@@ -818,6 +894,7 @@ def render_ring_conf_wire(
             sample_format=sample_format,
             ring_a_channels=ring_a_channels,
             ring_b_channels=ring_b_channels,
+            ring_active_channels=ring_active_channels,
             conf_d=path,
         )
     # Function-local so the module keeps its stdlib-only import cost for the
@@ -836,6 +913,7 @@ def render_ring_conf_wire(
         sample_format=sample_format,
         ring_a_channels=ring_a_channels,
         ring_b_channels=ring_b_channels,
+        ring_active_channels=ring_active_channels,
         conf_d=path,
     )
 

@@ -121,7 +121,39 @@ BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     "jasper_out",
+    # The full-range STEREO ring. An active graph carries POST-crossover
+    # per-driver channels; Ring B carries a full-range stereo program that
+    # outputd hands to a stereo sink. Pointing an active emitter at it would put
+    # per-driver audio on a full-range path (and, read the other way, would let
+    # the stereo path's consumers receive a graph they cannot mean). The ACTIVE
+    # ring (``jts_ring_active_playback``) is the legal ring target and is
+    # deliberately NOT here — and the two names are chosen so this
+    # case-insensitive SUBSTRING test separates them: "jts_ring_playback" is not
+    # a substring of "jts_ring_active_playback".
+    "jts_ring_playback",
 )
+
+# CamillaDSP queue/rate-adjust defaults for the roleful ALSA-sink emitters.
+# The pair was TWELVE hardcoded literals across SIX emitters; TEN of them, across
+# FIVE emitters, are parameters now because an ACTIVE RING sink needs different
+# ones, and only different ones:
+#
+#   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
+#   latency with no benefit; and
+#   enable_rate_adjust false — a blocking slot handshake gives the rate
+#   controller nothing to adjust TO, and rate_adjust over an snd-aloop-class
+#   transport is a documented oscillation shape in this repo.
+#
+# The DEFAULTS are exactly the literals they replaced, so every non-ring emit is
+# byte-identical. The SIXTH emitter — the PARKED one — is excluded deliberately
+# rather than missed: its sink is a ``File``, so it can never target a ring and
+# has no reason to take the knobs, and its two literals stay literals.
+DEFAULT_ACTIVE_QUEUELIMIT = 4
+DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
+# What the ACTIVE RING sink needs instead, and the reason the knobs became
+# parameters at all (see the note above for why these two values).
+RING_ACTIVE_QUEUELIMIT = 1
+RING_ACTIVE_ENABLE_RATE_ADJUST = False
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
 # It emits ONLY the program domain (Layer B room correction + Layer C preference
@@ -254,6 +286,62 @@ def _forbidden_playback_token(playback_device: str) -> str | None:
         if token.lower() in lowered:
             return token
     return None
+
+
+def _assert_ring_playback_width(playback_device: str, output_count: int) -> None:
+    """Refuse a ring-targeted active emit whose width the ring cannot carry.
+
+    The EMITTER-SIDE twin of ``_outputd_endpoint_width``'s bound. When an active
+    graph's sink is the ACTIVE RING, the channel count it declares becomes one of
+    the ring's four declaring ends, and the ioplug's attach compares that field
+    against the on-disk header. An emit whose width the transport cannot
+    represent is therefore not a config that fails later — it is a config that
+    CRASHES the ring at attach (``RING_ATTACH_FATAL``) rather than being refused.
+
+    Refusing here means the shear is reported by the thing that caused it, at the
+    moment it is written, instead of by a daemon that inherited it. Non-ring
+    devices are untouched: this is a no-op for every ALSA-lane emit, which is
+    every emit on every box today.
+    """
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.active_speaker.runtime_contract import (
+        MAX_RING_CHANNELS,
+        MIN_RING_CHANNELS,
+    )
+
+    if playback_device != RING_ACTIVE_PLAYBACK_DEVICE:
+        return
+    if not (MIN_RING_CHANNELS <= output_count <= MAX_RING_CHANNELS):
+        raise ActiveSpeakerConfigError(
+            f"active-ring playback requires {MIN_RING_CHANNELS}.."
+            f"{MAX_RING_CHANNELS} channels, got {output_count}: the ring layout's "
+            "accept-set cannot represent this width, and the ioplug attach "
+            "compares the channel count field-by-field — emitting it would crash "
+            "the ring rather than refuse it"
+        )
+
+
+def active_sink_queue_params(playback_device: str) -> tuple[int, bool]:
+    """The ``(queuelimit, enable_rate_adjust)`` pair a given active sink needs.
+
+    ONE home for "the ACTIVE RING needs 1/false", so a caller that re-points an
+    active graph at the ring cannot forget the knobs that make the ring behave —
+    which is exactly the shape of forgetting that produces a graph naming the
+    right device with the wrong handshake. Every other device (the ALSA active
+    lane, and every lab/CI override) gets today's literals back, so a caller
+    that routes through this helper is byte-identical on every box that is not
+    armed.
+
+    A helper rather than emitter-internal derivation: the emitters keep taking
+    the values as PARAMETERS (Q6), because a lab emit deliberately setting them
+    is a legitimate call, and burying the choice inside the emitter would remove
+    that seam. This is the default a production caller composes with.
+    """
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    if playback_device == RING_ACTIVE_PLAYBACK_DEVICE:
+        return RING_ACTIVE_QUEUELIMIT, RING_ACTIVE_ENABLE_RATE_ADJUST
+    return DEFAULT_ACTIVE_QUEUELIMIT, DEFAULT_ACTIVE_ENABLE_RATE_ADJUST
 
 
 def _finite_float(value: float, field_name: str) -> float:
@@ -1829,6 +1917,8 @@ def emit_active_speaker_startup_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -1877,7 +1967,18 @@ def emit_active_speaker_startup_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
+    # The ring's width is one of its four declaring ends — refuse a shear
+    # here rather than let the ioplug attach crash on it. No-op for every
+    # ALSA-lane emit (see _assert_ring_playback_width).
+    _assert_ring_playback_width(playback_device, output_count)
     filter_yaml = _emit_filter_definitions(
         preset,
         startup_headroom_db=startup_headroom_db,
@@ -1891,6 +1992,8 @@ def emit_active_speaker_startup_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
+    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
 # Auto-generated active-speaker startup config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_startup_config
@@ -1903,10 +2006,10 @@ def emit_active_speaker_startup_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: true
+  enable_rate_adjust: {enable_rate_adjust_yaml}
   capture:
     type: Alsa
     channels: 2
@@ -2361,6 +2464,8 @@ def emit_active_speaker_commissioning_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
@@ -2431,7 +2536,18 @@ def emit_active_speaker_commissioning_config(
             f"audible_gain_db must be between {STARTUP_MUTE_GAIN_DB:.0f} and 0 dB"
         )
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
+    # The ring's width is one of its four declaring ends — refuse a shear
+    # here rather than let the ioplug attach crash on it. No-op for every
+    # ALSA-lane emit (see _assert_ring_playback_width).
+    _assert_ring_playback_width(playback_device, output_count)
     audible: frozenset[int] = frozenset(audible_outputs or ())
     for index in audible:
         if not isinstance(index, int) or not 0 <= index < output_count:
@@ -2464,6 +2580,8 @@ def emit_active_speaker_commissioning_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
+    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
 # Auto-generated active-speaker commissioning config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_commissioning_config
@@ -2477,10 +2595,10 @@ def emit_active_speaker_commissioning_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: true
+  enable_rate_adjust: {enable_rate_adjust_yaml}
   capture:
     type: Alsa
     channels: 2
@@ -2827,6 +2945,8 @@ def emit_active_speaker_program_config(
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -2931,7 +3051,18 @@ def emit_active_speaker_program_config(
             raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
         tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
+    # The ring's width is one of its four declaring ends — refuse a shear
+    # here rather than let the ioplug attach crash on it. No-op for every
+    # ALSA-lane emit (see _assert_ring_playback_width).
+    _assert_ring_playback_width(playback_device, output_count)
     program_channels = 1 + max(role_channels.values())
     # Every output is audible: a program never mutes a driver (the WAV silences
     # it by channel), so the per-output commission mask is all-unmuted at 0 dB.
@@ -2972,6 +3103,8 @@ def emit_active_speaker_program_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
+    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
 # Auto-generated active-speaker crossover-measurement program config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config
@@ -2985,10 +3118,10 @@ def emit_active_speaker_program_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: true
+  enable_rate_adjust: {enable_rate_adjust_yaml}
   capture:
     type: Alsa
     channels: {program_channels}
@@ -3054,6 +3187,8 @@ def emit_active_speaker_baseline_config(
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
+    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
@@ -3159,7 +3294,18 @@ def emit_active_speaker_baseline_config(
     )
     room_peqs = tuple(room_peqs)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
+    # The ring's width is one of its four declaring ends — refuse a shear
+    # here rather than let the ioplug attach crash on it. No-op for every
+    # ALSA-lane emit (see _assert_ring_playback_width).
+    _assert_ring_playback_width(playback_device, output_count)
     filter_yaml = _emit_baseline_filter_definitions(
         preset,
         baseline_headroom_db=baseline_headroom_db,
@@ -3193,6 +3339,8 @@ def emit_active_speaker_baseline_config(
     device: "{capture_device}"
     format: {capture_format}"""
 
+    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
+    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
 # Auto-generated active-speaker baseline config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config
@@ -3204,10 +3352,10 @@ def emit_active_speaker_baseline_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: true
+  enable_rate_adjust: {enable_rate_adjust_yaml}
 {capture_yaml}
   playback:
     type: Alsa
@@ -3290,6 +3438,8 @@ def emit_active_speaker_driver_domain_config(
     target_level: int | None = None,
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
+    queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
+    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
@@ -3375,7 +3525,18 @@ def emit_active_speaker_driver_domain_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
+    # queuelimit rides the same coercion as every other integer knob here.
+    # It reaches the YAML through an f-string, so an unvalidated value is the
+    # one emitter input that can put arbitrary text into a CamillaDSP field;
+    # its siblings were coerced and it was not. Hardening, not a fixed escape:
+    # the reachable injection was chased to the volume_limit ceiling and does
+    # not escalate past it.
+    queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
+    # The ring's width is one of its four declaring ends — refuse a shear
+    # here rather than let the ioplug attach crash on it. No-op for every
+    # ALSA-lane emit (see _assert_ring_playback_width).
+    _assert_ring_playback_width(playback_device, output_count)
     filter_lines = _emit_baseline_driver_definitions(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
@@ -3409,6 +3570,8 @@ def emit_active_speaker_driver_domain_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
+    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
 # Auto-generated active-speaker driver-domain config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config
@@ -3423,10 +3586,10 @@ def emit_active_speaker_driver_domain_config(
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
-  queuelimit: 4
+  queuelimit: {queuelimit}
   target_level: {target_level}
   volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: true
+  enable_rate_adjust: {enable_rate_adjust_yaml}
   capture:
     type: Alsa
     channels: 2

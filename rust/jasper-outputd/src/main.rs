@@ -2133,6 +2133,9 @@ mod tests {
             assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
                 .to_string(),
             active_lane: false,
+            // ACTIVE_LANE's pair — false is the passive default, which is what
+            // this chip-ref fixture wants (it is not an active-ring endpoint).
+            ring_active_endpoint: false,
         }
     }
 

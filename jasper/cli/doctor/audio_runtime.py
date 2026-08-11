@@ -34,10 +34,30 @@ _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
 _JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
+# Every PCM the ring conf.d defines, with the tool that probes its direction and
+# the ring file it names. The THIRD entry is the ACTIVE ring — a roleful box's
+# post-crossover per-driver hop. It is listed for the same reason the other two
+# are: the conf.d defines it on every box, so an inert box's open-probe must
+# prove it resolves, and a missing entry would leave one shipped PCM unprobed.
+#
+# The PCM NAMES and the ring FILENAMES are taken from ``jasper.ring_assets``,
+# which already owns both facts for the renderer, the reconciler and the stale-
+# file guard. Only the probe TOOL is local — it is a doctor concern (which of
+# arecord/aplay opens this direction) and belongs to nobody else. Spelling the
+# names again here would have made the doctor a second place to update when a
+# ring is added; the assertion below is what keeps the derived order honest.
 _JTS_RING_PCMS = (
-    ("jts_ring_capture", "arecord", "program.ring"),
-    ("jts_ring_playback", "aplay", "content.ring"),
+    (ring_assets.RING_A_CONF_PCM, "arecord", os.path.basename(ring_assets.RING_A_PROGRAM_FILE)),
+    (ring_assets.RING_B_CONF_PCM, "aplay", os.path.basename(ring_assets.RING_B_CONTENT_FILE)),
+    (
+        ring_assets.RING_ACTIVE_CONF_PCM,
+        "aplay",
+        os.path.basename(ring_assets.RING_ACTIVE_CONTENT_FILE),
+    ),
 )
+# One home for "which blocks exist", proven rather than assumed: the doctor's
+# table must cover exactly the conf.d's blocks, in the same order.
+assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_CONF_PCMS
 
 @doctor_check(order=49, group="audio")
 def check_fanin_binary_installed() -> CheckResult:
@@ -1016,11 +1036,20 @@ def _expected_playback_format(
         DEFAULT_PIPE_SINK_FORMAT,
         DEFAULT_PLAYBACK_FORMAT,
     )
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        resolve_ring_wire,
+    )
 
     if playback_type == "File":
         return DEFAULT_PIPE_SINK_FORMAT, "DEFAULT_PIPE_SINK_FORMAT"
-    if playback_device == RING_PLAYBACK_DEVICE:
+    # MEMBERSHIP over every ring device, not one `==`. Both rings carry the
+    # resolved ring WIRE format — that axis is one per box, shared by all three
+    # ring ends — so a device-specific answer would be wrong, while omitting the
+    # active ring would fall through to DEFAULT_PLAYBACK_FORMAT and red-line a
+    # perfectly healthy armed box whenever the wire is the narrow S16_LE.
+    if playback_device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
         # Named for the RESOLVER, not for a constant: the ring's width is a
         # per-box resolution, and a detail line citing a constant would send a
         # reader to a value that is only one of the answers it can give.
@@ -1275,6 +1304,33 @@ def check_fanin_coupling_value() -> CheckResult:
     return CheckResult(label, "ok", f"{COUPLING_ENV_VAR}={raw or '(unset → loopback)'}")
 
 
+def _requires_roleful_graph() -> bool:
+    """Does the saved topology need a per-driver (crossover) graph?
+
+    NOT a ``@doctor_check`` — a plain helper, and it must stay above the next
+    decorated function rather than between a decorator and its target.
+
+    Fail-soft to False: this only ever SOFTENS a message or adds an eligibility
+    sentence, never gates anything, so an unreadable topology should leave the
+    generic wording in place rather than assert a class it cannot prove. Every
+    caller that acts on rolefulness reads it from the fail-CLOSED loaders
+    instead.
+    """
+    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.output_topology import (
+        OutputTopologyError,
+        load_output_topology_strict,
+    )
+
+    try:
+        return bool(
+            classify_output_contract(load_output_topology_strict())
+            .requires_roleful_graph
+        )
+    except (OutputTopologyError, OSError, ValueError):
+        return False
+
+
 @doctor_check(order=51.7, group="audio")
 def check_fanin_coupling() -> CheckResult:
     """The transport intent must match the loaded CamillaDSP graph.
@@ -1283,8 +1339,9 @@ def check_fanin_coupling() -> CheckResult:
     intent=loopback but a ``RawFile`` config is loaded — CamillaDSP then reads a
     pipe no writer feeds and crash-loops on its statefile config (the jts5
     2026-06-27 failure mode). Under ``shm_ring`` (P2) both ends are ALSA ioplug
-    devices — capture ``jts_ring_capture`` (Ring A) + playback
-    ``jts_ring_playback`` (Ring B) — AND ``JASPER_OUTPUTD_CONTENT_BRIDGE`` must be
+    devices — capture ``jts_ring_capture`` (Ring A) + the post-DSP playback ring
+    (``jts_ring_playback``, or ``jts_ring_active_playback`` once the active
+    endpoint is armed) — AND ``JASPER_OUTPUTD_CONTENT_BRIDGE`` must be
     ``shm_ring``: this check catches the PARTIAL flip (one end ring, the other
     ALSA/direct) that strands a ring. The fix is to re-run the ordered
     reconciler: ``jasper-fanin-coupling-reconcile <intent>``.
@@ -1294,9 +1351,11 @@ def check_fanin_coupling() -> CheckResult:
         COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
         RING_PLAYBACK_DEVICE,
         resolve_outputd_content_bridge,
+        ring_active_endpoint_armed,
     )
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
     from jasper.env_file import read_value
@@ -1345,10 +1404,37 @@ def check_fanin_coupling() -> CheckResult:
         return CheckResult(label, "ok", f"intent={coupling}; no loaded capture to compare")
 
     if coupling == COUPLING_SHM_RING:
-        # Ring A capture + Ring B playback are BOTH ALSA ioplug devices — the
-        # loaded graph must name jts_ring_capture AND jts_ring_playback, or the
-        # coherent env pair above landed but the loaded config is stale/half-ring
-        # (the built-in-revert class: a camilla restart re-seeded loopback).
+        # Ring A capture + the post-DSP ring playback are BOTH ALSA ioplug
+        # devices — the loaded graph must name jts_ring_capture AND the ring this
+        # box's endpoint marker selects, or the coherent env pair above landed
+        # but the loaded config is stale/half-ring.
+        #
+        # WHAT PUTS A BOX HERE. A CamillaDSP restart re-seeds the graph the
+        # statefile points at, so a STALE ARTIFACT (one emitted before the
+        # endpoint moved) reappears on the next restart — that is the
+        # finding-5 revert shape, and its repair is a baseline re-emit, not a
+        # re-arm. The MARKER is not moved by a camilla restart at all: its only
+        # writer is jasper-audio-hardware-reconcile, which re-derives it from the
+        # loaded graph on boot, on udev, and on every deploy — so those are the
+        # events that can de-arm a box whose artifact drifted, and a camilla
+        # restart alone is not one of them.
+        #
+        # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's
+        # marker — not "either is fine". Accepting both would read green through
+        # the crossing this rung exists to prevent: a roleful box's graph pointed
+        # at the full-range stereo ring, or a stereo box's at the active ring.
+        armed = ring_active_endpoint_armed()
+        expected_playback = (
+            RING_ACTIVE_PLAYBACK_DEVICE if armed else RING_PLAYBACK_DEVICE
+        )
+        # A ROLEFUL box with a CLEARED marker has no honest stereo expectation:
+        # jts_ring_playback is a FORBIDDEN token for every active emitter, so
+        # such a box's graph can never name it, and printing "(expected
+        # jts_ring_playback)" would send an operator to a device the emitters
+        # refuse to write. The honest statement is that this box is mid-arm —
+        # the artifact moved to the ring but the marker has not been re-derived
+        # (or the reverse) — and the remedy is the ladder, not a re-arm.
+        roleful = _requires_roleful_graph()
         capture_device = _loaded_device_field(config_path, "capture", "device")
         playback_device = _loaded_device_field(config_path, "playback", "device")
         ring_mismatches: list[str] = []
@@ -1357,25 +1443,53 @@ def check_fanin_coupling() -> CheckResult:
                 f"capture={capture}/{capture_device or '(missing)'} "
                 f"(expected Alsa/{RING_CAPTURE_DEVICE})"
             )
-        if playback_device != RING_PLAYBACK_DEVICE:
-            ring_mismatches.append(
-                f"playback_device={playback_device or '(missing)'} "
-                f"(expected {RING_PLAYBACK_DEVICE})"
-            )
+        if playback_device != expected_playback:
+            if roleful and not armed:
+                ring_mismatches.append(
+                    f"playback_device={playback_device or '(missing)'} "
+                    f"(this box is roleful and its endpoint marker is CLEAR, so "
+                    f"no ring is expected here at all — {RING_PLAYBACK_DEVICE} "
+                    "carries a full-range stereo program an active graph may "
+                    "never target)"
+                )
+            else:
+                ring_mismatches.append(
+                    f"playback_device={playback_device or '(missing)'} "
+                    f"(expected {expected_playback})"
+                )
         if not ring_mismatches:
             return CheckResult(
                 label,
                 "ok",
                 f"{coupling} (capture={RING_CAPTURE_DEVICE}, "
-                f"playback={RING_PLAYBACK_DEVICE}, bridge={outputd_bridge})",
+                f"playback={expected_playback}, bridge={outputd_bridge})",
+            )
+        # Severity stays WARN. Under the arm ladder this is a mid-procedure
+        # TRANSIENT — the graph moves first, the marker is re-derived second, the
+        # coupling third — so a box observed between two of those steps is
+        # exactly this state and is not broken. What the detail owes the operator
+        # is the command that finishes it.
+        if roleful:
+            recovery = (
+                "the ACTIVE-ring ladder, in order: sudo /opt/jasper/.venv/bin/"
+                "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
+                "systemctl start jasper-audio-hardware-reconcile && sudo "
+                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
+                "(to roll back, the same three with --endpoint aloop and "
+                "`loopback`)"
+            )
+        else:
+            recovery = (
+                "run: sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile "
+                "shm_ring"
             )
         return CheckResult(
             label,
             "warn",
             f"intent={coupling} but loaded graph is not the ring config: "
-            f"{'; '.join(ring_mismatches)}; a camilla restart may have re-seeded "
-            "loopback (finding-5 revert) — run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile shm_ring",
+            f"{'; '.join(ring_mismatches)}; a stale baseline artifact re-seeded "
+            f"on a camilla restart is the usual cause (finding-5 revert) — "
+            f"{recovery}",
         )
 
     # Non-ring intent (loopback). The env
@@ -1390,7 +1504,8 @@ def check_fanin_coupling() -> CheckResult:
     stale_ring_devices = [
         f"{lane}={dev}"
         for lane, dev in (("capture", capture_device), ("playback", playback_device))
-        if dev in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE)
+        if dev
+        in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
     ]
     if stale_ring_devices:
         return CheckResult(
@@ -1458,7 +1573,7 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
     :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
     already encode, so this answers the shipped, never-rendered file correctly
-    too — no separate "unrendered" branch needed. Ring A and Ring B can
+    too — no separate "unrendered" branch needed. The ring PCMs can
     legitimately differ on channels, hence the per-PCM lookup.
     """
     channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
@@ -1538,14 +1653,14 @@ def check_ring_platform_assets() -> CheckResult:
     ioplug actually dlopens (audio-graph consolidation P1).
 
     Three assets ship INERT in P1: the compiled ioplug .so, the conf.d
-    PCM definitions (pcm.jts_ring_capture / pcm.jts_ring_playback), and
+    PCM definitions (jasper.ring_assets.RING_CONF_PCMS), and
     the /dev/shm/jts-ring directory. Nothing opens them yet — the default
     coupling is still loopback — but the platform must be correctly staged
     for P2 to arm it, and a broken .so (the -DPIC registration class) or a
     missing asset should surface here rather than at first arm.
 
     Statuses:
-      ok    — .so + conf.d + shm dir present, both PCMs open-probe cleanly.
+      ok    — .so + conf.d + shm dir present, every PCM open-probes cleanly.
               CAVEAT: this cannot distinguish a freshly-built .so from a STALE
               one left by a failed rebuild (the 2026-07-02 class) — a stale but
               structurally-valid .so open-probes fine and reads ok here. The
@@ -1900,13 +2015,24 @@ def check_ring_conf_floor_render() -> CheckResult:
     equal the fixed slot and the arm preflight refuses. Reporting only "nothing
     to render" left the household's actual question ("why is this box on
     loopback?") answered nowhere; the InnoMaker HiFi AMP Pro (no declared
-    floor) is the live case.
+    floor) is the live no-floor case.
 
-    Scope note: a MATCHING floor answers only this check's axis. A box can
-    still be ring-ineligible for a reason this check does not see — a roleful
-    topology has no ring width at all
-    (``ring_channels_for_topology`` -> ``topology_supports_shm_ring``) — so a
-    matching-floor ``ok`` is not a statement that the box can ring.
+    THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
+    about the other one. A ROLEFUL (active-crossover) box is never armed by the
+    unattended default pass however good its floor is: its ring is the ACTIVE
+    ring, and that is explicit-arm-only. So on a roleful box a green period line
+    means "the conf.d is ready", NOT "this box will ring" — and saying only the
+    former is how an operator concludes the arm is broken when nothing is. Every
+    branch below therefore carries the rolefulness sentence when it applies,
+    read from the saved topology (:func:`_requires_roleful_graph`).
+
+    (This supersedes R7a's scope note, which said a roleful topology "has no
+    ring width at all" and that the reason was one this check could not see.
+    Both were true when it was written and neither is now:
+    ``active_ring_channels_for_topology`` answers a roleful width, and the check
+    reads the topology. jts3 is the box where the two reasons swapped — before
+    the DAC8X declared a floor its reason was the floor; after it, the reason is
+    the topology.)
 
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
@@ -1929,6 +2055,19 @@ def check_ring_conf_floor_render() -> CheckResult:
 
     dac_id = _active_audio_dac_id()
     floor = latency_floor_for(dac_id)
+    # The eligibility half this check cannot read off the conf.d. Appended to
+    # every branch, so an operator never has to already know that the floor is
+    # only one of the two gates.
+    roleful_note = (
+        " This box is ROLEFUL (active crossover), so even a rendered conf.d "
+        "does not make it ring on its own: the ACTIVE ring is armed only by an "
+        "explicit `jasper-active-speaker baseline-reemit --endpoint ring` "
+        "followed by jasper-audio-hardware-reconcile and "
+        "`jasper-fanin-coupling-reconcile shm_ring`, never by the unattended "
+        "default pass."
+        if _requires_roleful_graph()
+        else ""
+    )
     if floor is None:
         return CheckResult(
             label,
@@ -1940,7 +2079,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             f"slot {RING_SLOT_FRAMES}, so shm_ring is unavailable on this box "
             "and loopback coupling is correct — until issue #2147 makes the ring "
             "slot floor-derived, or this DAC declares a "
-            f"{RING_SLOT_FRAMES}-frame floor.",
+            f"{RING_SLOT_FRAMES}-frame floor." + roleful_note,
         )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(
@@ -1951,7 +2090,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             f"{RING_SLOT_FRAMES}, so its conf.d is deliberately not rendered: "
             "shm_ring is unavailable on this DAC until issue #2147 makes the "
             "ring slot floor-derived. Loopback coupling continues and still "
-            "receives the floor's outputd period/buffer geometry.",
+            "receives the floor's outputd period/buffer geometry." + roleful_note,
         )
     conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
     if conf_period is None:
@@ -1978,7 +2117,8 @@ def check_ring_conf_floor_render() -> CheckResult:
     return CheckResult(
         label,
         "ok",
-        f"period_frames={conf_period} matches {dac_id}'s declared latency floor",
+        f"period_frames={conf_period} matches {dac_id}'s declared latency floor"
+        + roleful_note,
     )
 
 
@@ -2171,8 +2311,16 @@ def _outputd_buffer_health(
     content_buffer: object,
     dac_buffer: object,
     period_frames: int,
+    outputd_env: dict[str, str] | None = None,
 ) -> str | CheckResult:
-    """Validate ALSA or SHM-ring buffer geometry and return ring detail."""
+    """Validate ALSA or SHM-ring buffer geometry and return ring detail.
+
+    ``outputd_env`` is the reconciled ``outputd.env`` the caller already read.
+    It decides WHICH ring's width the observed channels are compared against —
+    Ring B's or the ACTIVE ring's — via the endpoint marker. Passing the env
+    rather than re-reading it keeps one read per check; ``None`` falls back to a
+    file-fresh read so a focused test can call this helper directly.
+    """
     ring_detail = ""
     if ring_mode:
         # Ring B (SHM ping-pong content ring): outputd reads the post-DSP program
@@ -2247,19 +2395,35 @@ def _outputd_buffer_health(
         # does not exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
             from jasper.fanin.coupling_reconcile import load_topology_for_wire
-            from jasper.fanin_coupling import resolve_ring_wire
+            from jasper.fanin_coupling import (
+                resolve_ring_wire,
+                ring_active_endpoint_armed,
+            )
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
             # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready`` both
-            # pass ``load_topology_for_wire()``). ``ring_b_channels`` is the one
-            # PER-TOPOLOGY axis in the wire, so resolving with ``None`` here
+            # pass ``load_topology_for_wire()``). The channel counts are the
+            # PER-TOPOLOGY axes in the wire, so resolving with ``None`` here
             # would answer the shipped stereo declaration and report a FAIL
-            # against a box whose Ring B legitimately carries a different width
-            # — the doctor contradicting the reconciler that armed it. Threading
-            # the topology is also why the two agree on a box that cannot read
-            # its topology at all: the helper fails soft to ``None`` and both
-            # sides then ask the same shipped-geometry question.
+            # against a box whose post-DSP ring legitimately carries a different
+            # width — the doctor contradicting the reconciler that armed it.
+            # Threading the topology is also why the two agree on a box that
+            # cannot read its topology at all: the helper fails soft to ``None``
+            # and both sides then ask the same shipped-geometry question.
             wire = resolve_ring_wire(load_topology_for_wire())
+            # WHICH ring outputd attached decides which width it is held to.
+            # An armed ACTIVE endpoint reads the post-crossover per-driver ring,
+            # whose width is ``ring_active_channels``; comparing it against Ring
+            # B's stereo width is the same D5 red-line shape as an unrecognized
+            # endpoint — a healthy armed box failing forever on a number nobody
+            # claimed. An armed endpoint whose active width does not resolve
+            # (``None``) has no honest expectation to compare, so the channels
+            # axis is skipped rather than compared against a fallback.
+            active_endpoint = ring_active_endpoint_armed(outputd_env)
+            expected_channels = (
+                wire.ring_active_channels if active_endpoint else wire.ring_b_channels
+            )
+            ring_label = "the active ring" if active_endpoint else "Ring B"
             observed_format = shm_ring_block.get("format")
             observed_channels = shm_ring_block.get("channels")
             if observed_format is not None and observed_format != wire.sample_format:
@@ -2267,23 +2431,24 @@ def _outputd_buffer_health(
                     "jasper-outputd",
                     "fail",
                     f"shm_ring.format={observed_format!r} but this box's ring wire "
-                    f"resolves to {wire.sample_format} — outputd attached to a Ring "
-                    "B geometry nobody declared. Run: sudo /opt/jasper/.venv/bin/"
-                    "jasper-fanin-coupling-reconcile shm_ring (it clears a "
-                    "wire-mismatched ring file before re-arming).",
+                    f"resolves to {wire.sample_format} — outputd attached to "
+                    f"{ring_label} geometry nobody declared. Run: sudo /opt/jasper/"
+                    ".venv/bin/jasper-fanin-coupling-reconcile shm_ring (it clears "
+                    "a wire-mismatched ring file before re-arming).",
                 )
             if (
                 observed_channels is not None
-                and observed_channels != wire.ring_b_channels
+                and expected_channels is not None
+                and observed_channels != expected_channels
             ):
                 return CheckResult(
                     "jasper-outputd",
                     "fail",
-                    f"shm_ring.channels={observed_channels!r} but this box's Ring B "
-                    f"resolves to {wire.ring_b_channels} — outputd attached to a "
-                    "Ring B geometry nobody declared. Run: sudo /opt/jasper/.venv/"
-                    "bin/jasper-fanin-coupling-reconcile shm_ring (it clears a "
-                    "wire-mismatched ring file before re-arming).",
+                    f"shm_ring.channels={observed_channels!r} but this box's "
+                    f"{ring_label} resolves to {expected_channels} — outputd "
+                    f"attached to {ring_label} geometry nobody declared. Run: sudo "
+                    "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring "
+                    "(it clears a wire-mismatched ring file before re-arming).",
                 )
         ring_detail = (
             f", shm_ring_slots={ring_slots}, shm_ring_slot_frames={ring_slot_frames}"
@@ -2560,6 +2725,7 @@ def check_outputd_service() -> CheckResult:
         content_buffer=content_buffer,
         dac_buffer=dac_buffer,
         period_frames=period_frames,
+        outputd_env=outputd_env,
     )
     if isinstance(buffer_health, CheckResult):
         return buffer_health
