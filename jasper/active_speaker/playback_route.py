@@ -18,10 +18,12 @@ it adds the speaker-group demand accounting and the route-fit issues.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from jasper.audio_hardware.dac import by_id as _dac_by_id
+from jasper.log_event import log_event
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     EXPLICIT_SOURCE,
@@ -34,6 +36,8 @@ from jasper.output_topology import (
 )
 
 from ._common import issue as _issue
+
+logger = logging.getLogger(__name__)
 
 # Re-exported for backwards compatibility — these constants moved to
 # jasper.output_topology (the resolution owner) but several active-speaker
@@ -213,6 +217,13 @@ def resolve_live_active_endpoint(
     all — is passed through rather than invented over, so a caller threading
     this into ``recompose_applied_baseline_yaml(playback_device=...)`` lands on
     that function's own snapshot default and stays byte-identical to before.
+
+    COST: one statefile read plus one config read, fresh, per call — nothing is
+    cached, deliberately, because a re-emit that acted on a stale endpoint is the
+    defect this exists to prevent. That is right for the three cold seams that
+    call it (a deploy reconcile, a wizard save, a bass-extension apply); a future
+    caller on a warm path should know it is paying two file reads each time and
+    snapshot the answer itself rather than making this one lie.
     """
 
     # Lazy: coupling_reconcile is the arm/disarm transition module and pulls in
@@ -224,8 +235,26 @@ def resolve_live_active_endpoint(
 
     graph = read_loaded_camilla_graph()
     device = graph.devices.get("playback_device")
-    if isinstance(device, str) and device.strip() in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
-        return device.strip(), LOADED_GRAPH_SOURCE
+    if isinstance(device, str) and device.strip():
+        named = device.strip()
+        if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
+            return named, LOADED_GRAPH_SOURCE
+        # The graph names a sink that is not one of the active lane's two
+        # transports — a stale stereo lane, a lab PCM, a pipe. Declining it is
+        # correct (see above), but the moment of observation should be visible:
+        # the doctor's coupling check will report the incoherence later, and a
+        # journal line here is what says the endpoint derivation SAW it and
+        # deferred to the chooser rather than never having looked. DEBUG, not
+        # WARNING: a lab box is in this branch legitimately on every call.
+        log_event(
+            logger,
+            "active_speaker.live_endpoint",
+            level=logging.DEBUG,
+            result="declined_non_endpoint_device",
+            observed=named,
+            config=graph.path or "",
+            answered_by="playback_route_chooser",
+        )
     return resolve_active_playback_device(topology)
 
 

@@ -36,6 +36,7 @@ from .crossover_contract import (
 )
 from .design_draft import load_design_draft
 from .measurement import load_measurement_state
+from .profile import ActiveSpeakerConfigError
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
 ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
@@ -95,11 +96,22 @@ def setup_blocked_only_by_in_sequence_anchor(
         and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
         and status.get("capture_entry_pending") is True
     )
+# ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``
+# and was therefore already caught. Since ``_applied_layer_a_binding`` began
+# passing the COMPARED graph's playback device into the recomposer, that device
+# crosses the emitter's own legality guard — a graph naming a forbidden lane
+# (``jts_ring_playback``, reachable via a stale statefile or the flat-ring
+# cutover class) makes the emitter refuse, and this surface is household-facing:
+# an indeterminate input must return the ``unavailable`` snapshot, never a
+# traceback. Naming the class keeps that guarantee legible at the one site where
+# narrowing this tuple would silently reopen it.
+# ``test_a_forbidden_playback_lane_is_unverifiable_never_a_traceback`` pins it.
 _READINESS_DERIVATION_ERRORS = (
     OSError,
     RuntimeError,
     TypeError,
     ValueError,
+    ActiveSpeakerConfigError,
     KeyError,
 )
 _CROSSOVER_SETUP_HREF = "/correction/crossover/"

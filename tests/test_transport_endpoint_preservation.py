@@ -66,6 +66,7 @@ from jasper.active_speaker.playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     resolve_live_active_endpoint,
 )
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -263,6 +264,57 @@ async def test_an_unreadable_graph_falls_back_to_the_marker_never_the_snapshot(
         OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
         OUTPUTD_ACTIVE_LANE_SOURCE,
     )
+
+
+async def test_a_declined_non_endpoint_device_is_visible_in_the_journal(
+    tmp_path, monkeypatch, caplog,
+):
+    """Observing a device and declining it is a decision, so it is logged.
+
+    The other fall-through shapes saw nothing; this one SAW a sink and chose not
+    to adopt it. The doctor's coupling check reports the resulting incoherence
+    later, but without this line the journal cannot distinguish "the derivation
+    looked and declined" from "the derivation never looked". DEBUG level: a lab
+    box takes this branch on every call, legitimately.
+    """
+    import logging as _logging
+
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
+
+    topology, applied = _applied_box(tmp_path, monkeypatch)
+    graph, _statefile = _point_statefile_at(
+        tmp_path,
+        monkeypatch,
+        _graph_for(topology, applied, None).replace(
+            OUTPUTD_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE
+        ),
+        name="stereo-lane.yml",
+    )
+
+    with caplog.at_level(_logging.DEBUG, logger="jasper.active_speaker.playback_route"):
+        device, source = resolve_live_active_endpoint(topology)
+
+    assert (device, source) == (
+        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        OUTPUTD_ACTIVE_LANE_SOURCE,
+    )
+    assert "event=active_speaker.live_endpoint" in caplog.text
+    assert "result=declined_non_endpoint_device" in caplog.text
+    assert f"observed={DEFAULT_PLAYBACK_DEVICE}" in caplog.text
+    assert str(graph) in caplog.text
+
+    # A box whose graph names a LEGAL endpoint is not narrated — the line marks
+    # the exceptional observation, not every resolution.
+    caplog.clear()
+    _point_statefile_at(
+        tmp_path,
+        monkeypatch,
+        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
+        name="ring.yml",
+    )
+    with caplog.at_level(_logging.DEBUG, logger="jasper.active_speaker.playback_route"):
+        resolve_live_active_endpoint(topology)
+    assert "active_speaker.live_endpoint" not in caplog.text
 
 
 # --------------------------------------------------------------------------
@@ -481,6 +533,64 @@ async def test_an_armed_box_is_not_reported_as_a_layer_a_drift(
     assert drifted_binding["status"] == "mismatch", drifted_binding
 
 
+async def test_a_forbidden_playback_lane_is_unverifiable_never_a_traceback(
+    tmp_path, monkeypatch,
+):
+    """An illegal lane in the compared graph is INDETERMINATE, not an exception.
+
+    Passing the compared graph's device into the recomposer put that string in
+    front of the emitter's own legality guard for the first time — before this
+    change the argument was never supplied, so the path did not exist. A graph
+    naming a forbidden lane (``jts_ring_playback``, reachable via a stale
+    statefile or the flat-ring cutover class) therefore makes the emitter refuse
+    with :class:`ActiveSpeakerConfigError`, and this function is what
+    ``/correction/`` asks before offering room correction to a household: it must
+    answer with the same ``unavailable`` snapshot it returns for every other
+    input it cannot verify, never a traceback.
+
+    Pinned rather than argued: the guarantee rides on
+    ``_READINESS_DERIVATION_ERRORS``, and narrowing that tuple is the one edit
+    that reopens it. Both halves are asserted here — the legal ring endpoint
+    still produces the neutralized comparison, and the forbidden one degrades.
+    """
+    from jasper.active_speaker.setup_status import _applied_layer_a_binding
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE
+
+    topology, applied = _applied_box(tmp_path, monkeypatch)
+
+    # Half 1 — the legal ring endpoint: the neutralized comparison still works.
+    ring_graph = _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE)
+    assert _applied_layer_a_binding(
+        topology,
+        applied_profile=applied,
+        active_config_path=None,
+        active_config_text=ring_graph,
+    )["status"] == "current"
+
+    # Half 2 — the FORBIDDEN stereo ring in the loaded graph. The emitter really
+    # does refuse this device, so the refusal is being routed, not hypothesised.
+    with pytest.raises(ActiveSpeakerConfigError):
+        recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied,
+            playback_device=RING_PLAYBACK_DEVICE,
+        )
+
+    forbidden_graph = ring_graph.replace(
+        RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE
+    )
+    assert RING_PLAYBACK_DEVICE in forbidden_graph
+    binding = _applied_layer_a_binding(
+        topology,
+        applied_profile=applied,
+        active_config_path=None,
+        active_config_text=forbidden_graph,
+    )
+    assert binding["status"] == "unverifiable", binding
+    assert binding["matches"] is False
+    assert binding["expected_fingerprint"] is None
+
+
 async def test_the_drift_check_reads_the_endpoint_out_of_a_round_tripped_readback(
     tmp_path, monkeypatch,
 ):
@@ -545,7 +655,8 @@ _ENDPOINT_EXEMPT_CALL_SITES = {
     # because moving a commissioning sweep onto the ring transport is a claim
     # that has to be made on hardware — chunk/target 128, a 2-slot ring, and
     # rate_adjust off, under excitation — and commissioning an already-armed box
-    # is a flow nobody has run. Recorded here, deliberately, as follow-up.
+    # is a flow nobody has run. Tracked as issue #2344; this entry is the
+    # deliberate omission, not an oversight.
     "jasper/active_speaker/web_commissioning.py",
 }
 
