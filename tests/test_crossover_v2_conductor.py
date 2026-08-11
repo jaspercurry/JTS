@@ -570,7 +570,7 @@ def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
 
     The program only exists once the conductor is constructed (``__init__``
     composes it), so this cannot ride the ``measure_entry_baseline`` constructor
-    argument without duplicating ``_compose_verify_program`` — and a duplicate
+    argument without duplicating ``SessionExcitation.verify_program`` — and a duplicate
     is exactly the lookalike the comparability check exists to catch. It writes
     the attribute production writes instead.
     """
@@ -7202,7 +7202,8 @@ def test_check_diag_survives_a_gain_plan_without_solves(caplog):
 def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     """#1825's pilot floor reserves `hi_seg.gain_db - lo_seg.gain_db` read off
     the CHECK program — because that is what MEASURE's own leading pair will
-    drop its quiet side by (`_pilot_gains` / `PILOT_LEVEL_DELTA_DB`). If the
+    drop its quiet side by (`SessionExcitation.pilot_gains` /
+    `PILOT_LEVEL_DELTA_DB`). If the
     two ever diverged the floor would be mis-sized in silence, so pin them
     equal at the composers that produce them."""
     from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB

@@ -19,7 +19,8 @@ owner of their own and were answered from six places on
 **This module is hearing-safety territory, and its invariants are stated so
 they can be checked rather than trusted:**
 
-1. ``_compose_verify_program``'s min-cap clamp is the ONLY level guard on the
+1. :meth:`SessionExcitation.verify_program`'s min-cap clamp is the ONLY level
+   guard on the
    mono summed sweep.  That sweep plays through the applied production graph
    with no play-time admission gate (see
    ``jasper.web.correction_crossover_v2.bind_production_play``), so nothing
