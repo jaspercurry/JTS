@@ -19,7 +19,7 @@ leaves the planner.
 
 **Reimplemented rather than moved, on purpose.** Moving the 814-line method
 would have carried its hidden dependencies with it: seven ``self._last_*``
-writes acting as an implicit return channel, and five reads of the session's
+writes acting as an implicit return channel, and six reads of the session's
 ``self._fc_hz`` inside a function whose caller had already chosen a *different*
 candidate corner. Both are structural, and neither survives a rewrite that has
 to name its inputs.
@@ -761,6 +761,9 @@ def plan_linearization(
     radiating_bands = {
         role: radiating_band_hz(sections[role]) for role in (woofer_role, tweeter_role)
     }
+    # **At the CANDIDATE's corner** — defect site 1 of six, and the one an
+    # operator reads first: legacy named the session's corner on this line while
+    # the shapes beside it were the candidate's.
     emit(
         "correction.crossover_v2_linearization_fit_band",
         {
@@ -986,7 +989,7 @@ def plan_linearization(
 
     # Same gating-consistent overlap band the raw trim solve used, so the
     # comparison below is apples to apples: same band, linearized vs raw branch
-    # content. **At the CANDIDATE's corner** — defect site 1 of five.
+    # content. **At the CANDIDATE's corner** — defect site 2 of six.
     lo, hi = overlap_band_hz(
         fc_hz,
         tweeter_sweep_lo_hz=excited_band_hz[tweeter_role][0],
@@ -1085,8 +1088,8 @@ def plan_linearization(
     # tweeter's gain, so the scan is not measuring the handoff. A selector that
     # cannot see the woofer does not set the woofer's handoff level.
     #
-    # **At the CANDIDATE's corner** — defect sites 2 (the straddle test), 3 (the
-    # solve) and 4 (this event's ``fc_hz`` field) of five.
+    # **At the CANDIDATE's corner** — defect sites 3 (the straddle test), 4 (the
+    # solve) and 5 (this event's ``fc_hz`` field) of six.
     ripple_lin: float | None = None
     if lo_clamped < fc_hz < hi:
         trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
@@ -1155,7 +1158,9 @@ def plan_linearization(
 
     # --- grade both pairs, then commit one ---------------------------------
     #
-    # **At the CANDIDATE's corner** — defect site 5 of five, on BOTH pairs.
+    # **At the CANDIDATE's corner** — defect site 6 of six, on BOTH pairs.
+    # Legacy's sixth read lives one method away, in ``_realized_level_match``,
+    # which is why an audit of ``_fit_linearization`` alone counts five.
     anchored_match = realized_level_match(
         freqs,
         w_lin,
