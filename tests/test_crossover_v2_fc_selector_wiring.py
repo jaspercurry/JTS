@@ -462,6 +462,57 @@ def test_the_sweep_leaves_no_candidate_state_on_the_conductor():
         assert not hasattr(c, name), name
 
 
+def test_each_evaluation_retains_its_own_realized_level_verdict():
+    """#2307 gate note N6, closed at the seam that closes it (#2291 Phase 2b).
+
+    Before the cutover the sweep restored the conductor's scratch fields when it
+    ended, so the only realized-level verdict reachable at selection time
+    belonged to the ANCHOR — and ``FcCandidateEvaluation`` carried none, which
+    left a selected alternative corner committing a proposal with the field
+    empty. Each candidate's plan is now a value the sweep can retain.
+
+    Asserted as IDENTITY against the plan each candidate's own build returned,
+    not as "non-empty": a sweep that stamped every evaluation with the same
+    verdict, or with the anchor's, would satisfy a presence check completely.
+    """
+    fakes = _eligible_seams()
+    c = _selector_conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    plans: list = []
+    original = flow.CrossoverV2Conductor._plan_linearization
+
+    def spy(self, *args, **kwargs):
+        plan = original(self, *args, **kwargs)
+        plans.append(plan)
+        return plan
+
+    with pytest.MonkeyPatch.context() as mp:
+        # Collected during the MEASURE consume alone, which is where the sweep
+        # runs — the anchor's own build happens later, at the walk's close.
+        mp.setattr(flow.CrossoverV2Conductor, "_plan_linearization", spy)
+        _run_phase(c, 2, 1)
+
+    by_fc = {round(plan.fc_hz, 3): plan for plan in plans}
+    assert len(by_fc) >= 2, "the sweep must have planned more than one corner"
+    scored = [e for e in c._fc_evaluations if e.refusal is None]
+    assert scored, "the sweep must have produced scoreable candidates"
+    for evaluation in scored:
+        plan = by_fc[round(evaluation.fc_hz, 3)]
+        assert evaluation.realized_branch_level == (
+            plan.realized_level_match.to_dict()
+        ), evaluation.fc_hz
+
+    # …and the corners really do produce DIFFERENT verdicts, which is what
+    # makes the identity above a comparison rather than one value matched N
+    # times. Read off the plans rather than the evaluations because a fixture
+    # may score only one candidate — the prediction gate refuses the rest —
+    # while every attempted candidate still planned.
+    assert len({
+        repr(plan.realized_level_match.to_dict()) for plan in by_fc.values()
+    }) > 1, "every corner reported the same realized level"
+
+
 def _retained_bytes(evaluation) -> int:
     """Bytes one retained record holds, refusing anything not small by TYPE.
 
