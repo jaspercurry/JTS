@@ -286,14 +286,25 @@ _RING_CONF_FORMAT_RE = re.compile(
 
 
 def _single_block_value(
-    pattern: re.Pattern[str], pcm_name: str, conf_d: str | None
+    pattern: re.Pattern[str],
+    pcm_name: str,
+    conf_d: str | None,
+    *,
+    absent: str | None = None,
 ) -> str | None:
     """The single value ``pattern`` matches inside one PCM block, or ``None``.
 
-    ``None`` covers every indeterminate case — file absent/unreadable, block
-    missing, field absent, or the block declaring the field more than once with
-    different values. The caller decides what an indeterminate read means; this
-    never silently picks one.
+    ``None`` means indeterminate — file absent/unreadable, block missing, or the
+    block declaring the field more than once with different values. This never
+    silently picks one of a torn pair.
+
+    ``absent`` is what an UNDECLARED key means. ``None`` (the default) keeps the
+    key mandatory: a block that omits it is indeterminate, which is right for
+    ``n_slots``/``period_frames``, where nothing supplies a value if the conf.d
+    does not. Pass a string for a key whose omission the C ioplug fills in with
+    a documented default — an omitted ``format``/``channels`` genuinely declares
+    that wire, and reporting "indeterminate" for the shipped file would fail
+    every guard on every box.
     """
     text = _read_conf_text(conf_d)
     if text is None:
@@ -302,6 +313,8 @@ def _single_block_value(
     if body is None:
         return None
     values = {m.group("value") for m in pattern.finditer(body)}
+    if not values:
+        return absent
     if len(values) != 1:
         return None
     return next(iter(values))
@@ -331,20 +344,13 @@ def ring_conf_channels(pcm_name: str, conf_d: str | None = None) -> int | None:
     conf.d/block itself cannot be read or the block declares the key more than
     once with different values.
     """
-    text = _read_conf_text(conf_d)
-    if text is None:
-        return None
-    if _ring_conf_block_body(text, pcm_name) is None:
-        return None
-    raw = _single_block_value(_RING_CONF_CHANNELS_RE, pcm_name, conf_d)
-    if raw is None:
-        # Block exists (checked above) — so this is "key absent" or "declared
-        # twice". Distinguish: absent means the ioplug default.
-        body = _ring_conf_block_body(text, pcm_name) or ""
-        if not _RING_CONF_CHANNELS_RE.search(body):
-            return RING_CONF_DEFAULT_CHANNELS
-        return None
-    return int(raw)
+    raw = _single_block_value(
+        _RING_CONF_CHANNELS_RE,
+        pcm_name,
+        conf_d,
+        absent=str(RING_CONF_DEFAULT_CHANNELS),
+    )
+    return None if raw is None else int(raw)
 
 
 def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
@@ -355,18 +361,9 @@ def ring_conf_format(pcm_name: str, conf_d: str | None = None) -> str | None:
     :data:`RING_CONF_DEFAULT_FORMAT`, so an unmodified shipped conf.d declares
     that wire even though the token appears nowhere in it.
     """
-    text = _read_conf_text(conf_d)
-    if text is None:
-        return None
-    if _ring_conf_block_body(text, pcm_name) is None:
-        return None
-    raw = _single_block_value(_RING_CONF_FORMAT_RE, pcm_name, conf_d)
-    if raw is None:
-        body = _ring_conf_block_body(text, pcm_name) or ""
-        if not _RING_CONF_FORMAT_RE.search(body):
-            return RING_CONF_DEFAULT_FORMAT
-        return None
-    return raw
+    return _single_block_value(
+        _RING_CONF_FORMAT_RE, pcm_name, conf_d, absent=RING_CONF_DEFAULT_FORMAT
+    )
 
 
 @dataclass(frozen=True)
