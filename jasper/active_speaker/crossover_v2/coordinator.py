@@ -206,7 +206,7 @@ def entry_graph_fingerprint(ports: RoundPorts, *, session_id: str) -> str:
     return value or ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 
 
-def post_measurement_identity(
+def _post_measurement_identity(
     analysis: "ProgramAnalysis | None", *, reference_mark: str, phase: str,
 ) -> dict[str, Any] | None:
     """What the post-apply side WAS, as identity rather than payload.
@@ -595,7 +595,7 @@ def _write_round_receipt(
             applied_graph_fingerprint=entry_graph_fingerprint(
                 ports, session_id=evidence.session_id,
             ),
-            post_measurement=post_measurement_identity(
+            post_measurement=_post_measurement_identity(
                 evidence.post_analysis,
                 reference_mark=evidence.reference_mark,
                 phase=PHASE_VERIFY,
