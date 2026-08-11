@@ -19,17 +19,23 @@ machinery that reads them follows without a second flow-local type appearing
 behind it.
 
 **Ports, not patches — and the reason is a defect class, not a test detail.**
-Three of the seams this module reaches are *behaviour the host owns*: the
-per-candidate build, the analyzer, and the selector kernel.  They are injected
-as callables (:func:`sweep_candidates`'s ``evaluate``/``candidate_set``/
-``budget_s``, :func:`evaluate_candidate`'s ``analyze``/``build``, and
-:func:`adjudicate`'s ``select``) rather than imported here, so the conductor's
-own attribute stays the dispatch point.  That keeps a class-level substitution
-of ``CrossoverV2Conductor._evaluate_fc_candidate`` — or of the flow module's
+The seams this module reaches that are *behaviour the host owns* — the
+per-candidate evaluation and build, the analyzer, the candidate set, the wall
+budget, and the selector kernel — are injected as callables
+(:func:`sweep_candidates`'s ``evaluate`` / ``candidate_set_of`` / ``budget_s_of``,
+:func:`evaluate_candidate`'s ``analyze`` / ``build``, and :func:`adjudicate`'s
+``select``) rather than imported here, so the conductor's own attribute stays
+the dispatch point.  That keeps a class-level substitution of
+``CrossoverV2Conductor._evaluate_fc_candidate`` — or of the flow module's
 ``select_fc`` — binding on production instead of silently addressing a name
 production no longer routes through (issue #2354).  A seam nothing substitutes
 is called directly, and the conductor's delegate calls the same function, so
 there is exactly one derivation either way.
+
+The two ``_of`` suffixes are not decoration: ``candidate_set`` and the module's
+own :func:`candidate_set` would otherwise be the same name in the same scope,
+and a parameter shadowing a sibling function is how a later edit calls the
+wrong one.
 
 **Read-after-write is a port, read-before is a value.**  ``predicted_spec_report``
 and ``sweep_bounds`` are callables even though they look like plain state,
