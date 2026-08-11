@@ -1032,10 +1032,10 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
 ):
     """The restore result has to be on it, or a recovery cannot be read back.
 
-    ``_write_round_receipt`` runs LAST for exactly this reason: the receipt is
-    the record of an event, and the event includes whether the previous sound
-    actually came back. A receipt written before the restore would describe an
-    intention.
+    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` writes the
+    receipt LAST for exactly this reason: the receipt is the record of an event,
+    and the event includes whether the previous sound actually came back. A
+    receipt written before the restore would describe an intention.
     """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)

@@ -4199,21 +4199,23 @@ class V2FlowSeams:
     entry_graph_fingerprint: Callable[[], str] | None = None
     # #2291: is there a valid anchor to restore TO? The ANCHOR half of the
     # adoption table's ``rollback_available``; the SEAM half is ``rollback``
-    # above being bound at all, and :meth:`_rollback_available` ANDs them.
-    # Optional, and its absence reads as "cannot confirm an anchor" rather
-    # than as "there is one" — see that method for why the pessimistic
+    # above being bound at all, and
+    # :func:`~jasper.active_speaker.crossover_v2.coordinator.rollback_available`
+    # ANDs them. Optional, and its absence reads as "cannot confirm an anchor"
+    # rather than as "there is one" — see that function for why the pessimistic
     # direction is the safe one here.
     rollback_available: Callable[[], bool] | None = None
     # #2291/#2318: does the APPLIED graph put energy in? Read from the host at
     # grading time, because the grading conductor cannot answer it from its own
     # state — stage 2 never holds a candidate (see
-    # :meth:`_applied_candidate_boosts` for the bug this closes). Optional, and
-    # its absence answers "boosted": an intervention this process cannot
-    # inspect comes off rather than staying on evidence nobody has.
+    # :func:`~jasper.active_speaker.crossover_v2.coordinator.applied_boosts`
+    # for the bug this closes). Optional, and its absence answers "boosted": an
+    # intervention this process cannot inspect comes off rather than staying on
+    # evidence nobody has.
     applied_boosts: Callable[[], bool] | None = None
     # #2291: publish the round receipt and return its artifact fingerprint.
-    # The conductor builds the record (one assembler, in the pure layer) and
-    # this seam owns WHERE it lands — the evidence bundle, write-once and
+    # The round coordinator builds the record (one assembler, in the pure
+    # layer) and this seam owns WHERE it lands — the evidence bundle, write-once and
     # tamper-checked. Optional, and every failure is the host's to raise: the
     # caller treats a raise or a ``None`` as "no receipt was written", logs it,
     # and keeps the verdict. A receipt is the round's record, never its gate.
