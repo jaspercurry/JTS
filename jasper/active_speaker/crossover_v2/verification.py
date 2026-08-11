@@ -97,6 +97,7 @@ from .contracts import (
     ResponseCurve,
     SpecStatus,
     VerificationResult,
+    detached_json,
 )
 
 # Underscored, and imported anyway: these are the package's validator
@@ -171,17 +172,31 @@ class Verdict(Generic[StatusT]):
     it exists so the Phase 3c host can log *why*, not just *what*, without
     re-deriving anything. Nothing here logs; a pure evaluator that emitted
     journal lines would be untestable as a function.
+
+    ``evidence`` is **deep-copied at construction** via
+    :func:`~.contracts.detached_json`, the package's own rule (#2307 note
+    N1): a frozen record holding a caller's live mapping is immutable in
+    name only, and a verdict whose evidence can change after the fact is
+    exactly the kind of thing this module exists to stop. The copy is deep
+    because a shallow one leaves the nested containers shared.
     """
 
     status: StatusT
     reason: str
     evidence: Mapping[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence", detached_json(dict(self.evidence)))
+
     def to_dict(self) -> dict[str, Any]:
+        # Detached on the way OUT as well as in: a shallow ``dict()`` here
+        # hands a consumer the verdict's own nested containers, so a caller
+        # editing the payload it is about to log would rewrite the verdict
+        # behind itself. Same rule, other direction.
         return {
             "status": self.status.value,
             "reason": self.reason,
-            "evidence": dict(self.evidence),
+            "evidence": detached_json(dict(self.evidence)),
         }
 
 

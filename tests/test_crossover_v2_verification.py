@@ -632,6 +632,53 @@ def test_a_usable_capture_carries_all_four_reasons():
         assert reason in result.reason
 
 
+def test_a_verdict_snapshots_the_evidence_it_was_handed():
+    """A caller mutating its own dict cannot change a verdict after the fact.
+
+    The package's #2307 N1 rule: a frozen record holding a live mapping is
+    immutable in name only. Nested too — a shallow copy would leave the
+    inner container shared, which is the same bug one level down.
+    """
+
+    live = {"improvement_db": 1.75, "bands": {"low": 3.0}, "legs": [1.0, 2.0]}
+    verdict = Verdict(BenefitStatus.IMPROVED, BENEFIT_IMPROVED, live)
+
+    live["improvement_db"] = -99.0
+    live["bands"]["low"] = -99.0
+    live["legs"].append(-99.0)
+    live["injected"] = True
+
+    assert verdict.evidence["improvement_db"] == 1.75
+    assert verdict.evidence["bands"] == {"low": 3.0}
+    assert verdict.evidence["legs"] == [1.0, 2.0]
+    assert "injected" not in verdict.evidence
+
+
+def test_a_verdict_evidence_payload_does_not_leak_the_verdicts_own_containers():
+    """The reverse direction: a consumer mutating ``to_dict()`` output.
+
+    Nested as well as top-level. A shallow ``dict()`` on the way out passes
+    the verdict's own inner containers to the caller, so a host editing the
+    payload it is about to log would rewrite the verdict behind itself —
+    the construction-side bug in mirror image, and it was real here until
+    ``to_dict`` detached too.
+    """
+
+    verdict = Verdict(
+        BenefitStatus.IMPROVED,
+        BENEFIT_IMPROVED,
+        {"n_bins": 40, "bands": {"low": 3.0}, "legs": [1.0]},
+    )
+    payload = verdict.to_dict()
+    payload["evidence"]["n_bins"] = -1
+    payload["evidence"]["bands"]["low"] = -99.0
+    payload["evidence"]["legs"].append(-99.0)
+
+    assert verdict.evidence["n_bins"] == 40
+    assert verdict.evidence["bands"] == {"low": 3.0}
+    assert verdict.evidence["legs"] == [1.0]
+
+
 def test_a_verdict_renders_a_loggable_payload():
     payload = Verdict(
         BenefitStatus.IMPROVED, BENEFIT_IMPROVED, {"improvement_db": 1.75}
