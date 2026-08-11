@@ -234,7 +234,12 @@ def test_ci_compiles_both_host_safe_ring_benchmarks() -> None:
 def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
     """Agents should have stable commands instead of inventing test strategy."""
 
-    for relpath in ("scripts/test-fast", "scripts/test-merge", "scripts/rust-ci-needed"):
+    for relpath in (
+        "scripts/test-fast",
+        "scripts/test-merge",
+        "scripts/check-rust.sh",
+        "scripts/rust-ci-needed",
+    ):
         path = ROOT / relpath
         assert path.is_file(), f"{relpath} must exist"
         assert path.stat().st_mode & 0o111, f"{relpath} must be executable"
@@ -306,9 +311,15 @@ def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:
 
     assert "  rust:" in workflow
     assert "run: scripts/rust-ci-needed" in workflow
+    assert "run: scripts/check-rust.sh" in workflow
     assert "steps.rust-needed.outputs.run == 'true'" in workflow
     assert "steps.rust-needed.outputs.run != 'true'" in workflow
-    for surface in ("rust/*", "deploy/install.sh", ".github/workflows/tests.yml"):
+    for surface in (
+        "rust/*",
+        "deploy/install.sh",
+        ".github/workflows/tests.yml",
+        "scripts/check-rust.sh",
+    ):
         assert surface in rust_router
 
 
@@ -345,6 +356,7 @@ def test_rust_ci_router_behavior_for_pull_request_paths(tmp_path: Path) -> None:
         "rust/jasper-outputd/src/main.rs",
         "deploy/install.sh",
         ".github/workflows/tests.yml",
+        "scripts/check-rust.sh",
     ):
         decision = _router_decision_for_changed_path(tmp_path, changed_path)
         assert decision["run"] == "true", decision

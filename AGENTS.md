@@ -3217,10 +3217,12 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    seconds instead of a CI round-trip; `pre-commit run --all-files` covers
    the low-noise Python and static-JS gates locally. For JS wizard edits,
    `scripts/check-js-syntax.sh` mirrors CI's `node --check` loop. For Rust
-   edits, run Rustfmt locally and let CI be the source of truth for
-   Clippy/test on the ALSA-backed crates unless you're on a Linux host with
-   ALSA headers. For substantial or risky work, also run `scripts/test-merge`
-   before publishing. Do *not* lean on a local full-suite run as the only gate
+   edits, run `scripts/check-rust.sh`; on macOS it cross-checks the Linux
+   targets with the CI-pinned toolchain, including test modules in the
+   ALSA-backed crates. It formats, type-checks, and lints but does not link, so
+   Rust unit tests still require a Linux host or CI. For substantial or risky
+   work, also run `scripts/test-merge` before publishing. Do *not* lean on a
+   local full-suite run as the only gate
    — on macOS the `test_wifi_guardian_script.py` / `test_aec_reconcile.py`
    subprocess tests can flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI
    on Linux remains the source of truth for the full suite.

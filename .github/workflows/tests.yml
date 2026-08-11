@@ -435,10 +435,11 @@ jobs:
     # `cargo build` on the Pi, and a logic regression in the output/loudness
     # path goes uncaught. `cargo test --release --locked` mirrors install.sh's
     # release build profile and runs each crate's hardware-free unit tests.
-    # Rustfmt and default Clippy-with-warnings-as-errors are the low-noise
-    # table stakes; do not broaden to pedantic/restriction lint groups without
-    # a separate triage. Pin the Rust toolchain to the Pi/Trixie-era rustc so
-    # Clippy's warn-by-default set is not a moving merge gate.
+    # scripts/check-rust.sh owns the crate list and the low-noise Rustfmt +
+    # default Clippy-with-warnings-as-errors gate used both here and on macOS.
+    # Do not broaden to pedantic/restriction lint groups without a separate
+    # triage. Pin the Rust toolchain to the Pi/Trixie-era rustc so Clippy's
+    # warn-by-default set is not a moving merge gate.
     #
     # History: enabling this gate first surfaced 3 stale jasper-outputd
     # tests (assistant-gain clamp + loudness) that had been red since the
@@ -467,24 +468,6 @@ jobs:
         if: steps.rust-needed.outputs.run == 'true'
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
 
-      - name: Rust formatting (rustfmt)
-        if: steps.rust-needed.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          for crate in \
-            rust/jasper-env \
-            rust/jasper-clock \
-            rust/jasper-resampler \
-            rust/jasper-ring \
-            rust/jasper-host-clock \
-            rust/jasper-tts-protocol \
-            rust/jasper-fanin \
-            rust/jasper-outputd \
-            rust/jasper-dual-dac-lab
-          do
-            (cd "$crate" && cargo +"$RUST_TOOLCHAIN" fmt --all -- --check)
-          done
-
       - name: System deps for the ALSA crate
         if: steps.rust-needed.outputs.run == 'true'
         run: |
@@ -505,61 +488,9 @@ jobs:
             rust/jasper-dual-dac-lab
             rust/jasper-tts-protocol
 
-      - name: jasper-env — clippy
+      - name: Rust formatting + Clippy
         if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-env
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-clock — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-clock
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-resampler — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        # Pure windowed-sinc resampler + rate controller (depends on
-        # jasper-clock). No ALSA, so this clippy/test runs on any host.
-        working-directory: rust/jasper-resampler
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-ring — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        # PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring reader
-        # for jasper-outputd's shm_ring content bridge. Pure Rust (mmap via
-        # libc, no ALSA), so this clippy/test runs on any host — the sibling of
-        # jasper-clock/jasper-resampler in the gate.
-        working-directory: rust/jasper-ring
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-host-clock — clippy (all features incl. the ALSA actuator)
-        if: steps.rust-needed.outputs.run == 'true'
-        # The daemon-agnostic host-slaved USB clock ladder + servo + write-gate,
-        # consumed by jasper-fanin's USB DIRECT lane. The pure ladder/servo
-        # compiles with no features; `--all-features`
-        # links the ALSA `AlsaPitchCtl` actuator so it is linted too (libasound2-dev
-        # is installed above). Same -D warnings gate as its siblings.
-        working-directory: rust/jasper-host-clock
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets --all-features -- --no-deps -D warnings
-
-      - name: jasper-tts-protocol — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-tts-protocol
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-fanin — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-fanin
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-outputd — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-outputd
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
-
-      - name: jasper-dual-dac-lab — clippy
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-dual-dac-lab
-        run: cargo +"$RUST_TOOLCHAIN" clippy --release --locked --all-targets -- --no-deps -D warnings
+        run: scripts/check-rust.sh
 
       - name: jasper-env — build + test (shared environment parsing crate)
         if: steps.rust-needed.outputs.run == 'true'
