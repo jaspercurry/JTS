@@ -124,6 +124,7 @@ __all__ = [
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "LinearizationPlan",
     "LinearizationRequest",
+    "MIN_TRIM_SANITY_MARGIN_RATIO",
     "PlannerError",
     "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
