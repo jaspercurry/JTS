@@ -19,7 +19,7 @@ leaves the planner.
 
 **Reimplemented rather than moved, on purpose.** Moving the 814-line method
 would have carried its hidden dependencies with it: seven ``self._last_*``
-writes acting as an implicit return channel, and six reads of the session's
+writes acting as an implicit return channel, and seven reads of the session's
 ``self._fc_hz`` inside a function whose caller had already chosen a *different*
 candidate corner. Both are structural, and neither survives a rewrite that has
 to name its inputs.
@@ -52,8 +52,15 @@ callable that receives each record as it is produced, so a fit that raises
 part-way still discloses the lines it had already reached. Without it those
 lines would exist only on the returned plan, and a plan that never returns
 carries nothing — the ``fit_band`` line naming the corner a raising fit ran at
-is exactly the one an operator wants. The port is host-supplied and
-write-only; it cannot influence the plan, so determinism is unaffected.
+is exactly the one an operator wants.
+
+The port is genuinely write-only, and both halves of that are enforced rather
+than asserted (#2313 panel should-fixes 2 and 3). A consumer that **raises**
+cannot abort the plan: the call is guarded, and the refused records are
+reported on :attr:`LinearizationPlan.journal_dropped` so the loss is visible
+instead of swallowed. A consumer that **mutates** what it is handed cannot
+reach the plan either: :class:`JournalRecord` detaches its fields at
+construction. Determinism therefore holds whatever the host's logger does.
 
 **Dependency direction.** This module imports the DSP primitives and
 :mod:`.contracts`. It must never import
@@ -93,6 +100,7 @@ from ..linearization_fit import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RealizedLevelMatch,
     overlap_band_hz,
     predicted_branch_sum,
@@ -101,7 +109,12 @@ from jasper.audio_measurement.program_analysis import (
     summed_model_residual_delay_us,
 )
 
-from .contracts import CandidateAcousticContext, CrossoverV2ContractError, TrimStrategy
+from .contracts import (
+    CandidateAcousticContext,
+    CrossoverV2ContractError,
+    TrimStrategy,
+    detached_json,
+)
 
 __all__ = [
     "CloudFitTerms",
@@ -144,6 +157,24 @@ class PlannerInputError(PlannerError):
     refusal_reason = "contract_invalid"
 
 
+# What a misbehaving disclosure port may raise without taking the plan down.
+# Enumerated rather than a blind ``except Exception`` (ruff BLE, and the
+# repository's frozen broad-except budget), and mirroring
+# ``planner_facade._ASSEMBLY_ERRORS`` with ``OSError`` added: the likeliest real
+# consumer is a logging handler, and a handler writing to a closed stream or a
+# full disk raises exactly that.
+_PORT_ERRORS = (
+    ArithmeticError,
+    AttributeError,
+    IndexError,
+    KeyError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+
 # --------------------------------------------------------------------------- #
 # policy constants
 # --------------------------------------------------------------------------- #
@@ -180,7 +211,33 @@ LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 # retained deliberately and is judged from live guard telemetry, not
 # re-derived. What #2291 Phase 2 changed is not the number but its
 # CONSEQUENCE — see :func:`decide_trim`.
+#
+# **It is COUPLED to REALIZED_LEVEL_MATCH_TOLERANCE_DB and the coupling is
+# load-bearing**, which is why :data:`MIN_TRIM_SANITY_MARGIN_RATIO` exists
+# below rather than the relation living only in prose. Since #2291 Phase 2 a
+# beyond-margin scan falls back to the anchor, and the claim that a badly
+# levelled anchor then produces a refusal rather than a hot speaker holds only
+# while the margin is at least twice the realized-level tolerance. 6.0 against
+# 2 × 3.0 is exactly on that edge, in two different modules, and this PR made
+# the margin a per-request field — so the relation is now checked at
+# construction (hearing-safety lens, #2313 panel should-fix 1).
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
+
+#: The margin must be at least this multiple of
+#: :data:`~jasper.audio_measurement.program_analysis.REALIZED_LEVEL_MATCH_TOLERANCE_DB`.
+#:
+#: **Why two, derived rather than chosen.** The fallback commits the anchor
+#: when the scan drifts past the margin ``M``. The accountability seam then
+#: refuses unless the committed pair's realized level error is within the
+#: tolerance ``T``. For the refusal to be able to catch every fallback that
+#: leaves the speaker hotter than the scan would have, the drift the fallback
+#: can introduce (up to ``M``) has to exceed what the gate tolerates on each
+#: side of the crossover (``T`` on the anchor's side and ``T`` on the scan's) —
+#: i.e. ``M >= 2T``. Below that there is a band of drifts where the anchor is
+#: committed, is louder than the scan by more than the gate can see, and passes:
+#: at ``M = 4.0`` against ``T = 3.0`` the panel measured a tweeter landing
+#: +4.05 dB hotter than legacy would have shipped, *through* a matched gate.
+MIN_TRIM_SANITY_MARGIN_RATIO = 2.0
 
 # Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
 # (module-private there — see that module's top docstring for the "no
@@ -284,7 +341,17 @@ def compose_sigma_db(
     live = compute_sigma_curve(own, valid_band_hz=valid_band_hz, grid_hz=grid_hz)
     if live is None:
         return None
-    floor_db = SIGMA_TOLERABLE_DB[tier]
+    try:
+        floor_db = SIGMA_TOLERABLE_DB[tier]
+    except KeyError as exc:
+        # A tier outside the closed set is a caller error, not a measurement
+        # outcome — but a bare ``KeyError`` reaching the host is indistinguishable
+        # from malformed planner output and would be classified as a generic
+        # ``contract_invalid``. Name it instead.
+        raise PlannerInputError(
+            f"unknown mic tier {tier!r}; expected one of "
+            f"{sorted(SIGMA_TOLERABLE_DB)}"
+        ) from exc
     return np.maximum(floor_db, live)
 
 
@@ -327,7 +394,7 @@ def realized_level_match(
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class JournalRecord:
     """One log line the planner would have emitted, as data.
 
@@ -335,11 +402,43 @@ class JournalRecord:
     its own ``session_id`` and writes through its own logger. Returned in
     emission order, so a host that iterates and logs produces the same journal
     a logging planner would have.
+
+    **A consumer cannot reach the plan through a record** (#2313 panel
+    should-fix 3). Two things are needed for that, and one alone is not enough:
+
+    * the payload is **detached at construction** by the same
+      :func:`~.contracts.detached_json` the proposal contracts use, so the
+      containers the planner built it from are not shared; and
+    * :attr:`fields` is a **property returning a fresh detached copy on every
+      read**, so a consumer that pops a key, clears the mapping, or edits a
+      nested value — all ordinary things for a log formatter to do — edits a
+      throwaway.
+
+    The detach alone leaves the record's own dict mutable, which is exactly the
+    hole the panel found. A ``MappingProxyType`` would close the top level but
+    change how the host's ``log_event`` renders nested values
+    (``mappingproxy({...})`` instead of the plain mapping legacy logged), so the
+    copy-on-read is the shape that is both safe and rendering-neutral. Payloads
+    are a handful of scalars and small mappings; the copy is not a cost worth
+    trading correctness for.
     """
 
     event: str
-    fields: Mapping[str, Any]
-    level: int = logging.INFO
+    level: int
+    _fields: Mapping[str, Any] = field(repr=False)
+
+    def __init__(
+        self, event: str, fields: Mapping[str, Any], level: int = logging.INFO
+    ) -> None:
+        object.__setattr__(self, "event", event)
+        object.__setattr__(self, "level", level)
+        object.__setattr__(self, "_fields", detached_json(dict(fields)))
+
+    @property
+    def fields(self) -> Mapping[str, Any]:
+        """This record's payload — a fresh copy each call; see the class doc."""
+
+        return detached_json(self._fields)
 
 
 @dataclass(frozen=True)
@@ -373,6 +472,13 @@ class CloudFitTerms:
             return None
         if isinstance(evidence, CloudFitTerms):
             return evidence
+        # Every field is read directly, with no ``getattr`` default. A default
+        # on ``boost_excluded_bands_hz`` would fail OPEN: an evidence object
+        # missing it would silently become "nothing contradicted a boost" and
+        # grant the lift stage the full band, which is the one direction this
+        # bound must never fail in. Legacy's ``_CloudFitEvidence`` always
+        # carries the field, so an object without it is a programming error and
+        # should raise like one.
         return cls(
             excluded_bands_hz=tuple(
                 (float(lo), float(hi)) for lo, hi in evidence.excluded_bands_hz
@@ -380,8 +486,7 @@ class CloudFitTerms:
             band_spread=tuple(evidence.band_spread),
             n_positions=int(evidence.n_positions),
             boost_excluded_bands_hz=tuple(
-                (float(lo), float(hi))
-                for lo, hi in getattr(evidence, "boost_excluded_bands_hz", ())
+                (float(lo), float(hi)) for lo, hi in evidence.boost_excluded_bands_hz
             ),
         )
 
@@ -460,6 +565,27 @@ class LinearizationRequest:
             )
         if int(self.polarity_sign) not in (-1, 1):
             raise PlannerInputError("polarity_sign must be -1 or +1")
+        # The hearing-safety coupling, checked rather than trusted. NaN is
+        # tested first and separately because it is the silent case: every
+        # comparison against NaN is False, so a NaN margin makes
+        # ``drift > margin`` false for every drift — the guard does not
+        # misfire, it stops existing, and every scan commits as if the sanity
+        # check were not there.
+        margin = float(self.trim_sanity_margin_db)
+        if not math.isfinite(margin):
+            raise PlannerInputError(
+                "trim_sanity_margin_db must be finite; a non-finite margin "
+                "silently disables the sanity guard rather than widening it"
+            )
+        floor = MIN_TRIM_SANITY_MARGIN_RATIO * REALIZED_LEVEL_MATCH_TOLERANCE_DB
+        if margin < floor:
+            raise PlannerInputError(
+                f"trim_sanity_margin_db {margin} dB is below "
+                f"{MIN_TRIM_SANITY_MARGIN_RATIO}x the realized-level tolerance "
+                f"({REALIZED_LEVEL_MATCH_TOLERANCE_DB} dB): the anchor fallback "
+                "could then commit a pair louder than the scan by more than the "
+                "accountability gate can detect"
+            )
         # Snapshot the caller's trim mappings. A frozen dataclass holding a
         # live dict is frozen in name only, and these two are read at four
         # points spread across the plan — a caller mutating one mid-plan would
@@ -476,10 +602,24 @@ class LinearizationRequest:
     def sections_for(self, role: str) -> tuple[CrossoverSection, ...]:
         """This candidate's sections for ``role`` — empty when it has none.
 
-        A role with no crossover region runs full range in the emitted graph
-        (:func:`~jasper.active_speaker.branch_chain.sections_by_role`), which
-        is legitimate and preserved. The *context* guarantees that every
-        section which exists names this candidate's corner.
+        Empty is *representable* and is handled without inventing a section:
+        the emitter builds its crossover filters from the same regions, so such
+        a role runs full range in the emitted graph, and guessing a section
+        here would make the planner's stamped disclosure smaller than the
+        emitter's charge.
+
+        Representable is not the same as correct. **On a 2-way conductor a role
+        with no crossover region is a defect upstream**, which is why
+        :func:`plan_linearization` names it in the journal rather than passing
+        over it silently — the same disposition, and the same event, that
+        ``CrossoverV2Conductor._branch_crossover_sections`` gives the condition
+        today. That method is the planner's seventh reader of the session
+        corner and loses its only production caller at the #2291 Phase 2b
+        cutover; emitting the disclosure here keeps it at the detection site,
+        and the host inherits it with the rest of the journal.
+
+        The *context* separately guarantees that every section which does exist
+        names this candidate's corner.
         """
         return self.context.sections_by_role.get(role, ())
 
@@ -511,6 +651,24 @@ class TrimDecision:
     committed_match: RealizedLevelMatch
     ripple_db: float | None
     """The scan's own ripple at its optimum; ``None`` when the scan was skipped."""
+
+    @property
+    def committed_side(self) -> str:
+        """``"anchored"`` or ``"resolved"`` — derived from the strategy.
+
+        The journal's own ``committed`` field reads this rather than a literal,
+        so there is one owner of "which pair won" and no second copy to drift
+        from it.
+        """
+        return (
+            "resolved"
+            if self.strategy
+            in (
+                TrimStrategy.RESOLVED_COMMITTED,
+                TrimStrategy.RESOLVED_COMMITTED_AFTER_SANITY_DRIFT,
+            )
+            else "anchored"
+        )
 
     @property
     def outcome(self) -> str:
@@ -574,6 +732,21 @@ def decide_trim(
     the host's accountability seam, which refuses the session rather than
     shipping a pair that does not level. Falling back to a badly-levelled
     anchor therefore produces a loud refusal, not a loud speaker.
+
+    **That last sentence is CONDITIONAL, and the condition is enforced rather
+    than assumed.** It holds only while
+
+        ``sanity_margin_db >= MIN_TRIM_SANITY_MARGIN_RATIO *
+        REALIZED_LEVEL_MATCH_TOLERANCE_DB``
+
+    — today 6.0 against 2 × 3.0, exactly on the edge. Below it there is a band
+    of drifts where the anchor is committed, is louder than the scan by more
+    than the accountability gate can see, and passes: at a 4.0 dB margin the
+    #2313 hearing-safety lens measured a tweeter landing +4.05 dB hotter than
+    legacy would have shipped, *through* a matched gate. Because this function
+    takes the margin as an argument, that relation is validated in
+    :meth:`LinearizationRequest.__post_init__`, where the margin enters — the
+    constant's own comment carries the derivation.
 
     **What the change gives up, named.** A beyond-margin scan that genuinely
     levelled better than the anchor is no longer committed. PR-L4's review
@@ -662,6 +835,15 @@ class LinearizationPlan:
     chain_peak_db: Mapping[str, float]
     radiating_band_hz: Mapping[str, tuple[float, float]]
     journal: tuple[JournalRecord, ...] = field(default=())
+    journal_dropped: tuple[str, ...] = field(default=())
+    """Records the host's disclosure port refused, as ``event: Error: detail``.
+
+    Empty is the ordinary case. Non-empty means the plan is sound but the
+    host's own logging lost lines — a fact that must not be swallowed just
+    because it could not be logged. It is a plan FIELD rather than a final
+    journal record on purpose: a record announcing that the port is failing
+    would be emitted through the failing port.
+    """
 
     @property
     def outcome(self) -> str:
@@ -697,7 +879,9 @@ def plan_linearization(
     module docstring: every record is handed to it as it is produced, and every
     record is also on the returned plan. A host that passes one sees the lines
     a raising fit had reached; a host that does not loses nothing on the
-    success path.
+    success path. A port that raises is contained — the record still reaches
+    the plan and the refusal is listed in
+    :attr:`LinearizationPlan.journal_dropped`.
     """
     woofer_role, tweeter_role = request.roles
     context = request.context
@@ -719,12 +903,24 @@ def plan_linearization(
         tweeter_role: request.tweeter.driver_class,
     }
     records: list[JournalRecord] = []
+    dropped: list[str] = []
 
     def emit(event: str, fields: Mapping[str, Any], level: int = logging.INFO) -> None:
         record = JournalRecord(event, fields, level)
         records.append(record)
-        if journal is not None:
+        if journal is None:
+            return
+        try:
             journal(record)
+        except _PORT_ERRORS as exc:
+            # A disclosure port that can abort the plan is worse than no port.
+            # Legacy called ``log_event`` inline and inherited logging's own
+            # never-raise posture; a host formatter that throws on one field
+            # would, without this, cost a household an entire candidate — and
+            # in a six-candidate sweep, silently narrow the comparison. The
+            # record is still on the returned plan, and the failure is
+            # disclosed rather than swallowed: see ``journal_dropped``.
+            dropped.append(f"{record.event}: {type(exc).__name__}: {exc}")
 
     # --- each branch's own crossover, and the band it radiates in ----------
     #
@@ -756,14 +952,26 @@ def plan_linearization(
     # Each Fc candidate must be fitted against ITS OWN crossover (R17), or every
     # one of them is corrected toward some other corner's shape and the
     # comparison measures the fit's mismatch instead of the crossover's.
-    sections_by_role = context.sections_by_role
     sections = {
-        role: sections_by_role.get(role, ()) for role in (woofer_role, tweeter_role)
+        role: request.sections_for(role) for role in (woofer_role, tweeter_role)
     }
+    # The named defect, disclosed at the site that detects it. Legacy raises
+    # this same event from ``_branch_crossover_sections`` — the SEVENTH read of
+    # the session corner, and the one an audit of ``_fit_linearization`` alone
+    # cannot see — which loses its only production caller at the 2b cutover.
+    # See :meth:`LinearizationRequest.sections_for` for why the condition is
+    # representable and still a defect.
+    for role in (woofer_role, tweeter_role):
+        if not sections[role]:
+            emit(
+                "correction.crossover_v2_linearization_no_crossover",
+                {"role": role, "fc_hz": round(float(fc_hz), 3)},
+                logging.WARNING,
+            )
     radiating_bands = {
         role: radiating_band_hz(sections[role]) for role in (woofer_role, tweeter_role)
     }
-    # **At the CANDIDATE's corner** — defect site 1 of six, and the one an
+    # **At the CANDIDATE's corner** — defect site 1 of seven, and the one an
     # operator reads first: legacy named the session's corner on this line while
     # the shapes beside it were the candidate's.
     emit(
@@ -991,7 +1199,7 @@ def plan_linearization(
 
     # Same gating-consistent overlap band the raw trim solve used, so the
     # comparison below is apples to apples: same band, linearized vs raw branch
-    # content. **At the CANDIDATE's corner** — defect site 2 of six.
+    # content. **At the CANDIDATE's corner** — defect site 2 of seven.
     lo, hi = overlap_band_hz(
         fc_hz,
         tweeter_sweep_lo_hz=excited_band_hz[tweeter_role][0],
@@ -1091,7 +1299,7 @@ def plan_linearization(
     # cannot see the woofer does not set the woofer's handoff level.
     #
     # **At the CANDIDATE's corner** — defect sites 3 (the straddle test), 4 (the
-    # solve) and 5 (this event's ``fc_hz`` field) of six.
+    # solve) and 5 (this event's ``fc_hz`` field) of seven.
     ripple_lin: float | None = None
     if lo_clamped < fc_hz < hi:
         trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
@@ -1160,8 +1368,9 @@ def plan_linearization(
 
     # --- grade both pairs, then commit one ---------------------------------
     #
-    # **At the CANDIDATE's corner** — defect site 6 of six, on BOTH pairs.
-    # Legacy's sixth read lives one method away, in ``_realized_level_match``,
+    # **At the CANDIDATE's corner** — defect site 6 of seven, on BOTH pairs.
+    # Two of legacy's seven reads live one method away — ``_realized_level_match``
+    # (this one) and ``_branch_crossover_sections`` (site 7, disclosed above) —
     # which is why an audit of ``_fit_linearization`` alone counts five.
     anchored_match = realized_level_match(
         freqs,
@@ -1218,7 +1427,12 @@ def plan_linearization(
             "resolved_level_error_db": round(
                 float(resolved_match.difference_db), 3
             ),
-            "committed": "anchored",
+            # Derived, not restated: a literal here would be a second place
+            # recording which pair won, free to drift from the one that
+            # decided it. Mutation exposed exactly that — flipping the
+            # committed pair left this field reading "anchored", with no
+            # test looking at it.
+            "committed": trim.committed_side,
             "strategy": trim.strategy.value,
             "drift_db": round(float(trim.anchor_drift_db), 3),
             "margin_db": trim.sanity_margin_db,
@@ -1382,6 +1596,7 @@ def plan_linearization(
         chain_peak_db=peak_db,
         radiating_band_hz=radiating_bands,
         journal=tuple(records),
+        journal_dropped=tuple(dropped),
     )
 
 

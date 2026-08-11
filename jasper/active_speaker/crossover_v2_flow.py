@@ -3807,9 +3807,12 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
 # policy, the anchored trim, the re-solve and its sanity backstop — is
 # `crossover_v2.intervention`'s job since #2291 Phase 2, and
 # `LINEARIZATION_MIN_PAIRED_OCCURRENCES` / `LINEARIZATION_TRIM_SANITY_MARGIN_DB`
-# / `_SIGMA_TOLERABLE_DB` / `_compose_sigma_db` are re-exported from there at
-# the top of this module rather than defined twice. This conductor still owns
-# eligibility (mic tier + paired repeat count) and the accountability gate. See
+# / `_compose_sigma_db` are re-exported from there at the top of this module
+# rather than defined twice. The σ tolerable-value table went with them and is
+# NOT re-exported — its last reader here was `_compose_sigma_db` itself, so a
+# re-export would have been an import nothing resolved; it is
+# `intervention.SIGMA_TOLERABLE_DB`. This conductor still owns eligibility
+# (mic tier + paired repeat count) and the accountability gate. See
 # docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
 
 # How far the two measured level estimates may disagree before the session is

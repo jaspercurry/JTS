@@ -68,6 +68,7 @@ __all__ = [
     "SpecStatus",
     "TrimStrategy",
     "VerificationResult",
+    "detached_json",
 ]
 
 SCHEMA_VERSION = 1
@@ -132,7 +133,7 @@ def _text(value: Any, *, field_name: str) -> str:
     return value
 
 
-def _detached(value: Any) -> Any:
+def detached_json(value: Any) -> Any:
     """One JSON-shaped value with no container shared with the caller.
 
     Recursive on purpose. A shallow ``dict(value)`` detaches only the top
@@ -155,11 +156,11 @@ def _detached(value: Any) -> Any:
     """
 
     if isinstance(value, Mapping):
-        return {key: _detached(item) for key, item in value.items()}
+        return {key: detached_json(item) for key, item in value.items()}
     if isinstance(value, (str, bytes, bytearray)):
         return value
     if isinstance(value, Sequence):
-        return [_detached(item) for item in value]
+        return [detached_json(item) for item in value]
     return value
 
 
@@ -168,7 +169,7 @@ def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
 
     The copy matters, and its depth matters: a frozen dataclass holding a
     caller's live dict — at any level — is immutable in name only. See
-    :func:`_detached`.
+    :func:`detached_json`.
     """
 
     if value is None:
@@ -178,7 +179,7 @@ def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     for key in value:
         if not isinstance(key, str):
             raise CrossoverV2ContractError(f"{field_name} keys must be strings")
-    return {key: _detached(item) for key, item in value.items()}
+    return {key: detached_json(item) for key, item in value.items()}
 
 
 def _trim_map(value: Any, *, field_name: str) -> dict[str, float] | None:

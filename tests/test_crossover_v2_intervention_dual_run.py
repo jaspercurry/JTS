@@ -51,17 +51,22 @@ changing anything else. ``scan_delta_db`` defaults to the incident's own
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.branch_chain import radiating_band_hz
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateAcousticContext,
     TrimStrategy,
+)
+from jasper.audio_measurement.program_analysis import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
 )
 from tests.test_crossover_v2_incident_replay import (
     ANCHORED_DB,
@@ -72,6 +77,7 @@ from tests.test_crossover_v2_incident_replay import (
     _analysis,
     _conductor,
     _incident_fit,
+    _response,
 )
 
 #: The incident's own scan drift: the ripple optimum sat this far below the
@@ -120,6 +126,13 @@ class Outcome:
     #: outside this set must be identical between two runs that differ only in
     #: the commit choice — that is what makes class (b) a *bounded* difference
     #: rather than "some numbers moved".
+    #:
+    #: A deliberate SUPERSET of what moves on this fixture: three of the four
+    #: differ in cell 3, because ``linearization`` happens not to — both
+    #: committed pairs leave the tweeter's chain peak below unity, so its
+    #: headroom charge floors at 0.0 either way, and the woofer's trim is
+    #: identical. A different trim could raise that peak above unity and move
+    #: it, so the field belongs in the bound; it is simply not exercised here.
     TRIM_DERIVED = frozenset(
         {
             "role_attenuations_db",
@@ -232,8 +245,8 @@ def _legacy(fc_hz: float, sections: dict[str, Any]) -> Outcome:
     )
 
 
-def _pure(sections: dict[str, Any]) -> tuple[Outcome, iv.LinearizationPlan]:
-    """:func:`~...intervention.plan_linearization` over the same inputs.
+def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
+    """The planner's inputs, derived from the same conductor legacy is given.
 
     The corner is never passed: it is derived from the sections themselves by
     :meth:`CandidateAcousticContext.from_sections`, which is the whole point —
@@ -243,7 +256,7 @@ def _pure(sections: dict[str, Any]) -> tuple[Outcome, iv.LinearizationPlan]:
     analysis = _analysis(CANDIDATE_FIT["program_id"])
     program = conductor._program_for_phase(flow.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
-    request = iv.request_from_analysis(
+    return iv.request_from_analysis(
         analysis,
         analysis.candidate,
         context=CandidateAcousticContext.from_sections(sections),
@@ -258,7 +271,12 @@ def _pure(sections: dict[str, Any]) -> tuple[Outcome, iv.LinearizationPlan]:
         cloud_phase_planned=flow.PHASE_CLOUD_MEASURE in conductor._phases,
         cloud=None,
     )
-    plan = iv.plan_linearization(request)
+
+
+def _pure(sections: dict[str, Any]) -> tuple[Outcome, iv.LinearizationPlan]:
+    """:func:`~...intervention.plan_linearization` over the same inputs."""
+
+    plan = iv.plan_linearization(_planner_request(sections))
     return (
         Outcome(
             role_attenuations_db=dict(plan.role_attenuations_db),
@@ -503,7 +521,17 @@ def test_every_difference_from_legacy_classifies_into_the_two_sanctioned_fixes(
         (sections_session, CONFIGURED_FC_HZ, -2.5, set()),
         (sections_candidate, SELECTED_FC_HZ, -2.5, {"a"}),
         (sections_session, CONFIGURED_FC_HZ, INCIDENT_SCAN_DELTA_DB, {"b"}),
-        (sections_candidate, SELECTED_FC_HZ, INCIDENT_SCAN_DELTA_DB, {"a", "b"}),
+        # Cell 4 — the incident — is pure class (a), NOT (a)+(b). Legacy run at
+        # the candidate's own corner reproduces this cell exactly, because there
+        # the anchored pair already levels better and legacy's own grading
+        # commits it (see
+        # ``test_at_the_candidates_corner_the_level_grading_already_prefers_the_anchor``).
+        # The trim policy reaches the same pair by a different route, so it
+        # contributes no DIFFERENCE here; class (b)'s work is done in cell 3,
+        # where the corner is held fixed. Labelling this (a)+(b) overstated the
+        # policy's role and made the cell's own assertion vacuous — ``set() <=
+        # TRIM_DERIVED`` is true of nothing (#2313 panel should-fix 5).
+        (sections_candidate, SELECTED_FC_HZ, INCIDENT_SCAN_DELTA_DB, {"a"}),
     ):
         with pytest.MonkeyPatch.context() as patch:
             _install_stubs(patch, scan_delta_db=drift)
@@ -520,12 +548,19 @@ def test_every_difference_from_legacy_classifies_into_the_two_sanctioned_fixes(
                 continue
             if "a" in classes:
                 # Class (a) is fully explained iff legacy at the candidate's
-                # corner accounts for it.
+                # corner accounts for it — and "accounts for" means the planner
+                # EQUALS that run, not merely that the run differs from
+                # baseline.
                 assert set(reference.differing_fields(baseline))
             if "b" not in classes:
-                assert pure.differing_fields(reference) == []
+                assert pure.differing_fields(reference) == [], (
+                    "a cell with no class-(b) component must equal legacy run "
+                    "at its own corner, field for field"
+                )
             else:
-                assert set(pure.differing_fields(reference)) <= Outcome.TRIM_DERIVED
+                moved = set(pure.differing_fields(reference))
+                assert moved, "a class-(b) cell must actually differ"
+                assert moved <= Outcome.TRIM_DERIVED
             assert moved_from_baseline, "a classified cell must differ from baseline"
 
 
@@ -797,6 +832,404 @@ def test_the_skipped_scan_journal_names_the_candidate_corner(monkeypatch):
     assert plan.trim.ripple_db is None
     assert plan.trim.anchor_drift_db == 0.0
     assert plan.trim.strategy is TrimStrategy.ANCHORED_COMMITTED
+
+
+def test_the_journal_content_matches_legacys_line_for_line(monkeypatch):
+    """The dual-run's last uncompared surface: what each side would LOG.
+
+    :class:`Outcome` compares computed values, not disclosure, so a faithful
+    port could still have quietly dropped a field from a journal line. Legacy
+    logs through ``flow.log_event``, so capturing that call gives its records
+    structurally — no parsing of rendered text — and the two journals can be
+    compared as data.
+
+    ``session_id`` is legacy's alone (the planner has no session; the host adds
+    it). Everything else must agree, so this runs the cell where neither
+    sanctioned class contributes — the session's own corner with an in-margin
+    scan — and demands equality field for field.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=-2.5)
+    sections = _sections_at(CONFIGURED_FC_HZ)
+    legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
+
+    assert [e for e, _ in pure_journal] == [e for e, _ in legacy_journal]
+    assert legacy_journal, "the capture must actually have seen legacy log"
+    for (event, pure_fields), (_, legacy_fields) in zip(pure_journal, legacy_journal):
+        # Legacy renders tuples where the planner renders lists (both go
+        # through the same ``log_event`` formatter, which stringifies either
+        # identically); compare through a normalizer rather than pretending the
+        # container types match.
+        assert _normalized(pure_fields) == _normalized(legacy_fields), event
+
+
+#: The journal lines whose content is a function of WHICH trim pair was
+#: committed. The exact analogue, in disclosure, of ``Outcome.TRIM_DERIVED``.
+_TRIM_DERIVED_EVENTS = [
+    "correction.crossover_v2_linearization_trim_rejected",
+    "correction.crossover_v2_realized_level_match",
+    "correction.crossover_v2_linearization_headroom",
+]
+
+
+def test_only_the_trim_derived_lines_differ_when_the_policy_fires(monkeypatch):
+    """...and where the journals DO diverge, it is class (b)'s own disclosure.
+
+    Same capture, same corner, but a beyond-margin scan. The lines that may
+    differ are exactly the three whose content is a function of the committed
+    pair — which pair was committed, the level that pair realizes, and the
+    headroom that pair costs. The two that describe the FIT rather than the
+    trim (``fit_band``, ``giveback``) must be identical, and that is the
+    load-bearing half: it says the policy change moved the trim and nothing
+    upstream of it.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
+    sections = _sections_at(CONFIGURED_FC_HZ)
+    legacy_journal, pure_journal = _both_journals(monkeypatch, sections)
+
+    assert [e for e, _ in pure_journal] == [e for e, _ in legacy_journal]
+    differing = [
+        event
+        for (event, pure_fields), (_, legacy_fields) in zip(
+            pure_journal, legacy_journal
+        )
+        if _normalized(pure_fields) != _normalized(legacy_fields)
+    ]
+    assert differing == _TRIM_DERIVED_EVENTS
+    assert {e for e, _ in pure_journal} - set(differing) == {
+        "correction.crossover_v2_linearization_fit_band",
+        "correction.crossover_v2_linearization_giveback",
+    }
+
+    rejected = _TRIM_DERIVED_EVENTS[0]
+    pure_fields = dict(next(f for e, f in pure_journal if e == rejected))
+    legacy_fields = dict(next(f for e, f in legacy_journal if e == rejected))
+    assert legacy_fields["committed"] == "resolved"
+    assert pure_fields["committed"] == "anchored"
+    assert pure_fields["fallback_trim_db"] == pure_fields["anchored_trim_db"]
+    assert legacy_fields["fallback_trim_db"] == legacy_fields["resolved_trim_db"]
+    # Added, not changed: legacy recorded neither.
+    assert set(pure_fields) - set(legacy_fields) == {"drift_db", "strategy"}
+    assert not set(legacy_fields) - set(pure_fields)
+    assert pure_fields["strategy"] == (
+        TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT.value
+    )
+
+
+def _both_journals(
+    monkeypatch: pytest.MonkeyPatch, sections: dict[str, Any]
+) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
+    """Legacy's structured log calls and the planner's records, side by side."""
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+    real_log_event = flow.log_event
+
+    def spy(logger_, event, **kwargs):
+        captured.append((event, dict(kwargs)))
+        return real_log_event(logger_, event, **kwargs)
+
+    monkeypatch.setattr(flow, "log_event", spy)
+    _legacy(CONFIGURED_FC_HZ, sections)
+    monkeypatch.setattr(flow, "log_event", real_log_event)
+    _outcome, plan = _pure(sections)
+
+    legacy_journal = [
+        (event, {k: v for k, v in fields.items() if k not in ("session_id", "level")})
+        for event, fields in captured
+    ]
+    return legacy_journal, [(r.event, dict(r.fields)) for r in plan.journal]
+
+
+def _normalized(fields: dict[str, Any]) -> dict[str, Any]:
+    """Container-shape-insensitive view of one journal payload."""
+
+    def norm(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {k: norm(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [norm(v) for v in value]
+        return value
+
+    return {key: norm(value) for key, value in fields.items()}
+
+
+# --------------------------------------------------------------------------- #
+# the margin/tolerance coupling the fallback's safety promise rests on
+# --------------------------------------------------------------------------- #
+
+
+def _request(**overrides):
+    """One minimal, valid request — the fixture the coupling tests vary."""
+
+    evidence = iv.DriverEvidence(
+        role="woofer", response=object(), excited_band_hz=(100.0, 2000.0)
+    )
+    kwargs = dict(
+        context=CandidateAcousticContext.from_sections(_sections_at(SELECTED_FC_HZ)),
+        woofer=evidence,
+        tweeter=replace(evidence, role="tweeter"),
+        raw_trim_db={},
+        trim_band_average_db={},
+        predicted_ripple_db=0.0,
+        polarity_sign=1,
+        delay_us=0.0,
+        anchor_delay_us=None,
+        mic_tier="reference",
+        branch_floor_hz=None,
+        post_apply_verifies=True,
+        cloud_phase_planned=False,
+    )
+    kwargs.update(overrides)
+    return iv.LinearizationRequest(**kwargs)
+
+
+def test_the_shipped_margin_satisfies_the_coupling_its_safety_rests_on():
+    """The two constants, in two modules, pinned against each other.
+
+    ``decide_trim``'s "a badly-levelled anchor produces a loud refusal, not a
+    loud speaker" holds only while the margin is at least twice the
+    realized-level tolerance. Today that is 6.0 against 2 × 3.0 — exactly on
+    the edge — so a one-line retune of either constant, in either module,
+    silently voids the promise. Same shape as
+    ``test_realized_level_match_tolerance_clears_the_measured_frame_noise``,
+    which pins that tolerance against ITS own floor argument.
+    """
+    assert iv.LINEARIZATION_TRIM_SANITY_MARGIN_DB >= (
+        iv.MIN_TRIM_SANITY_MARGIN_RATIO * REALIZED_LEVEL_MATCH_TOLERANCE_DB
+    )
+
+
+@pytest.mark.parametrize(
+    "margin_db, accepted",
+    [
+        (6.0, True),  # the shipped value
+        (12.0, True),  # comfortably above
+        (6.0000001, True),
+        (2 * REALIZED_LEVEL_MATCH_TOLERANCE_DB, True),  # exactly on the floor
+        (5.999999, False),  # a hair under
+        (4.0, False),  # the panel's measured +4.05 dB-hotter retune
+        (0.0, False),
+        (-1.0, False),
+    ],
+)
+def test_a_margin_below_twice_the_tolerance_is_refused(margin_db, accepted):
+    """Both directions, including the boundary, because the floor is inclusive.
+
+    At a 4.0 dB margin the hearing-safety lens measured a tweeter landing
+    +4.05 dB hotter than legacy would have shipped, THROUGH a matched
+    accountability gate — the fallback commits an anchor louder than the scan
+    by more than the gate can see. Refusing at construction is what keeps that
+    unreachable.
+    """
+    if accepted:
+        assert _request(trim_sanity_margin_db=margin_db).trim_sanity_margin_db == (
+            pytest.approx(margin_db)
+        )
+        return
+    with pytest.raises(iv.PlannerInputError, match="realized-level tolerance"):
+        _request(trim_sanity_margin_db=margin_db)
+
+
+@pytest.mark.parametrize("margin_db", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_margin_is_refused_before_it_can_disable_the_guard(margin_db):
+    """NaN is the silent one, and why ``isfinite`` is checked separately.
+
+    Every comparison against NaN is False, so ``drift > margin`` is False for
+    every drift: the guard does not misfire, it stops existing, and every scan
+    commits as though the sanity check were absent. A plain ``margin < floor``
+    test would not catch it — NaN fails that comparison too.
+    """
+    with pytest.raises(iv.PlannerInputError, match="finite"):
+        _request(trim_sanity_margin_db=margin_db)
+    # The mechanism, demonstrated rather than described: this is what the
+    # refusal prevents.
+    assert not (99.0 > float("nan"))
+
+
+def test_an_unregistered_mic_tier_is_a_named_refusal_not_a_bare_key_error():
+    """A caller error that reads as one, instead of as malformed planner output."""
+
+    own = replace(_response("woofer"))
+    with pytest.raises(iv.PlannerInputError, match="unknown mic tier"):
+        iv.compose_sigma_db(
+            own, own, tier="studio", valid_band_hz=(150.0, 4000.0)
+        )
+
+
+# --------------------------------------------------------------------------- #
+# the disclosure port is genuinely write-only
+# --------------------------------------------------------------------------- #
+
+
+def test_a_raising_journal_consumer_cannot_abort_the_plan(monkeypatch):
+    """One bad log line must not cost a household a candidate.
+
+    Legacy called ``log_event`` inline and inherited logging's never-raise
+    posture, so the extraction had to be at least as tolerant. In a
+    six-candidate sweep an aborting port would not merely lose a line — it
+    would silently narrow the comparison the household is shown.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
+    sections = _sections_at(SELECTED_FC_HZ)
+    request = _planner_request(sections)
+
+    def hostile(record):
+        raise RuntimeError(f"formatter blew up on {record.event}")
+
+    plan = iv.plan_linearization(request, journal=hostile)
+
+    # The plan is complete...
+    reference = iv.plan_linearization(request)
+    assert dict(plan.role_attenuations_db) == dict(reference.role_attenuations_db)
+    assert [r.event for r in plan.journal] == [r.event for r in reference.journal]
+    # ...and the loss is disclosed rather than swallowed.
+    assert len(plan.journal_dropped) == len(plan.journal)
+    assert all("RuntimeError: formatter blew up" in d for d in plan.journal_dropped)
+    assert plan.journal_dropped[0].startswith(
+        "correction.crossover_v2_linearization_fit_band:"
+    )
+    assert reference.journal_dropped == ()
+
+
+def test_a_mutating_journal_consumer_cannot_rewrite_the_plan(monkeypatch):
+    """The port is write-only in the other direction too.
+
+    ``JournalRecord`` used to hold whatever container the planner built it
+    from, so a consumer that popped a key — an ordinary thing for a formatter
+    to do — changed what the returned plan reported. Same defect class the
+    proposal contracts fixed with ``detached_json``; this was the missed site.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
+    sections = _sections_at(SELECTED_FC_HZ)
+    request = _planner_request(sections)
+
+    def vandal(record):
+        record.fields.clear()
+        record.fields["injected"] = "tampered"
+
+    plan = iv.plan_linearization(request, journal=vandal)
+    reference = iv.plan_linearization(request)
+
+    assert plan.journal_dropped == ()
+    assert [dict(r.fields) for r in plan.journal] == [
+        dict(r.fields) for r in reference.journal
+    ]
+    assert all("injected" not in r.fields for r in plan.journal)
+
+
+def test_a_journal_record_detaches_the_fields_it_was_handed():
+    """The snapshot itself, at the type rather than through a plan.
+
+    Both directions have to hold. The SOURCE side (a caller mutating the dict
+    it passed in) is what ``detached_json`` closes; the CONSUMER side (a reader
+    mutating what the record hands back, at any depth) is what copy-on-read
+    closes. Detaching alone leaves the record's own dict live, which is the
+    hole the panel found — so the nested edits below are the load-bearing half.
+    """
+    band = [100.0, 200.0]
+    fields = {"role": "tweeter", "band_hz": band, "nested": {"gain_db": -2.0}}
+    record = iv.JournalRecord("correction.test", fields)
+
+    # Source side.
+    fields["role"] = "woofer"
+    band.append(300.0)
+    fields["nested"]["gain_db"] = -40.0
+
+    assert record.fields["role"] == "tweeter"
+    assert list(record.fields["band_hz"]) == [100.0, 200.0]
+    assert record.fields["nested"]["gain_db"] == -2.0
+
+    # Consumer side, top level and nested.
+    handed = record.fields
+    handed.clear()
+    handed["injected"] = "tampered"
+    record.fields["nested"]["gain_db"] = -99.0
+    record.fields["band_hz"].append(9999.0)
+
+    assert record.fields["role"] == "tweeter"
+    assert "injected" not in record.fields
+    assert record.fields["nested"]["gain_db"] == -2.0
+    assert list(record.fields["band_hz"]) == [100.0, 200.0]
+
+
+# --------------------------------------------------------------------------- #
+# the seventh Fc site's disclosure, relocated to its detection point
+# --------------------------------------------------------------------------- #
+
+
+def test_a_role_with_no_crossover_section_is_named_in_the_journal(monkeypatch):
+    """Legacy's ``no_crossover`` WARNING, emitted where the condition is seen.
+
+    ``_branch_crossover_sections`` is legacy's SEVENTH reader of the session
+    corner and the disclosure's only production home; it loses its last caller
+    at the 2b cutover. The planner emits the same event, with the CANDIDATE's
+    corner — which is the point: legacy named the session's.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=0.0)
+    both = _sections_at(SELECTED_FC_HZ)
+    # The woofer runs full range; the tweeter still carries the corner, so the
+    # context is buildable and its invariant holds.
+    one_sided = {"woofer": (), "tweeter": both["tweeter"]}
+
+    _outcome, plan = _pure(one_sided)
+
+    named = [
+        r
+        for r in plan.journal
+        if r.event == "correction.crossover_v2_linearization_no_crossover"
+    ]
+    assert [r.fields["role"] for r in named] == ["woofer"]
+    assert named[0].fields["fc_hz"] == pytest.approx(SELECTED_FC_HZ, abs=1e-3)
+    assert named[0].fields["fc_hz"] != pytest.approx(CONFIGURED_FC_HZ)
+    assert named[0].level == logging.WARNING
+    # It is a disclosure, not a refusal: the plan is still produced, and the
+    # role that HAS a crossover is unaffected.
+    assert plan.role_attenuations_db
+    assert plan.radiating_band_hz["woofer"] == radiating_band_hz(())
+
+
+def test_both_roles_carrying_sections_names_nobody(monkeypatch):
+    """The positive control: the disclosure is conditional, not unconditional."""
+
+    _install_stubs(monkeypatch, scan_delta_db=0.0)
+    _outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+    assert not [
+        r
+        for r in plan.journal
+        if r.event == "correction.crossover_v2_linearization_no_crossover"
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# the emitted trims are cut-only, tested on the planner's own output
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("giveback_db", [0.0, 5.0, 20.0, 60.0])
+def test_no_committed_trim_is_ever_positive_however_large_the_giveback(
+    monkeypatch, giveback_db
+):
+    """The hearing-safety invariant, driven at the input that can break it.
+
+    A branch whose own cuts give back more than its raw attenuation lands
+    POSITIVE before ``normalize_shift_db`` subtracts the common shift — a boost
+    the emitter refuses and the hardware must never see. The earlier assertion
+    read the incident fixture's own trims, which can only ever confirm that
+    fixture; this drives the give-back up until the unnormalized anchor is
+    positive and asserts the output stays cut-only anyway.
+    """
+    _install_stubs(monkeypatch, scan_delta_db=0.0)
+
+    def generous(resp, envelope, **kwargs):
+        return replace(_incident_fit(resp.role), correction_giveback_db=giveback_db)
+
+    monkeypatch.setattr(iv, "fit_driver_linearization", generous)
+    _outcome, plan = _pure(_sections_at(SELECTED_FC_HZ))
+
+    assert plan.role_attenuations_db
+    for role, trim_db in plan.role_attenuations_db.items():
+        assert trim_db <= 0.0, f"{role} committed a boost of {trim_db:+.3f} dB"
+    for pair in (plan.trim.anchored_db, plan.trim.resolved_db):
+        assert all(v <= 0.0 for v in pair.values())
 
 
 # --------------------------------------------------------------------------- #
