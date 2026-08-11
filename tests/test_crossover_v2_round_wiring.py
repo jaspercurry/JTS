@@ -1605,3 +1605,289 @@ def test_an_unrecognised_refusal_kind_is_loud_rather_than_silent(caplog):
     assert [r.levelname for r in unmapped] == ["ERROR"]
     # Still refuses, and under the most conservative code available.
     assert verdict.code == REASON_CORRECTION_ROLLBACK_FAILED
+
+
+# --------------------------------------------------------------------------- #
+# 10. the FULL tier's trigger — the post-apply cloud close
+#
+# Everything above drives ``_consume_verify``, which is the EXPRESS trigger.
+# The Full tier grades somewhere else entirely — at the end of
+# ``_close_cloud_group`` for ``PHASE_CLOUD_VERIFY``, once the spatial arm has
+# landed — and until #2291 Phase 5a-iv that call site had no coverage at all.
+#
+# **Measured, not assumed** (2026-08-11, against a ``git archive`` of
+# ``origin/main`` at 5dcd872a4): deleting the ``_grade_round_once`` call from
+# that branch left the 15 crossover-reaching suites entirely GREEN — 874
+# collected, 863 passed, 11 skipped, exit 0. The same deletion at the Express
+# site fails 18 of them. Two suites reach this branch —
+# ``test_crossover_v2_conductor`` and ``test_correction_crossover_v2_endpoints``
+# — and both stop at the capture verdict, so a Full household's adoption
+# decision, its automatic restore, and its receipt were all riding on a call
+# nothing checked was still there.
+#
+# The bar for this section is therefore a property rather than a coverage
+# claim: **each test below fails if the Full trigger stops grading.** They
+# assert through the close, on the same three things sections 1-6 assert for
+# Express — the adoption outcome, the restore that outcome commands, and the
+# receipt it banks.
+# --------------------------------------------------------------------------- #
+
+
+def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
+    """A REAL Full-tier stage 2 — VERIFY, then the post-apply position group.
+
+    :func:`_restoring_stage_2` prepares the RECOVERY shape (one entry at the
+    mark), which is the Express-shaped session every test above wants and is
+    exactly why none of them can reach the Full trigger. Two things differ here
+    and both are the household's own declarations, read by production code: the
+    durable state carries ``tier="full"`` (written by the measuring session, so
+    the tier chooser governs both stages), and the caller asks for
+    ``stage="post_apply"`` rather than the §5.2 recovery re-verify.
+
+    Everything else is the same real preparer behind the same stubbed DSP leg,
+    and the returned counter is the same "how many times did a restore actually
+    run" the Express tests assert on.
+    """
+    attempts: list[int] = []
+
+    async def _counted(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        attempts.append(1)
+        return await _restored_ok(*args, **kwargs)
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "restore_applied_baseline_profile", _counted,
+    )
+    prepared = v2host.prepare_v2_verify(
+        {"stage": "post_apply"}, status=_status(), run_async=_bg_run_async,
+        camilla_factory=lambda: SimpleNamespace(),
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    assert flow.PHASE_CLOUD_VERIFY in conductor.session_phases, (
+        "this session must plan a post-apply cloud, or it is not the Full "
+        "shape and grades at the other trigger"
+    )
+    return conductor, attempts
+
+
+def _seed_full_round_state(*, anchor: bool = True) -> dict[str, Any]:
+    """:func:`_seed_round_state`, plus the tier the measuring session declared."""
+    state = _seed_round_state(anchor=anchor)
+    state["tier"] = "full"
+    v2host.save_v2_state(state)
+    return state
+
+
+def _cloud_verify_indexes(conductor: Any) -> tuple[int, ...]:
+    """The post-apply group's indexes, read off the conductor's OWN plan.
+
+    Derived rather than written down: the Full tier's position count is a
+    shipped range, and a test that hardcoded five would silently stop covering
+    the close the day that range moved.
+    """
+    plan = conductor._journey.plan
+    return tuple(
+        i for i in range(1, 32)
+        if plan.phase_for_index(i) == flow.PHASE_CLOUD_VERIFY
+    )
+
+
+def _walk_post_apply_cloud(conductor: Any, *, scale: float = 1.0) -> Any:
+    """Every prompted post-apply position, in order, through the real consume.
+
+    Reached at ``_consume_cloud_position`` for the reason :func:`_consume_verify`
+    is reached directly: the runner in between is a thread and a websocket. The
+    close, the delta probe, and the round grading all hang off this call, so
+    nothing between here and them is stubbed.
+    """
+    verdict = None
+    for attempt, index in enumerate(_cloud_verify_indexes(conductor), start=2):
+        verdict = conductor._consume_cloud_position(
+            flow.PHASE_CLOUD_VERIFY, index, attempt,
+            _post_apply_analysis(conductor, scale=scale),
+            SimpleNamespace(wav=b"fake-wav"),
+        )
+    assert verdict is not None, "a Full session has at least one cloud position"
+    return verdict
+
+
+def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
+    monkeypatch, real_bundle,
+):
+    """The Full trigger's headline, and the pin its call site never had.
+
+    Three assertions, in the order the evidence arrives, and the first is what
+    makes the other two mean something: **VERIFY alone does not grade a Full
+    round**. Its post-apply evidence is not complete — the spatial arm has not
+    landed — so a session that graded there would decide adoption on a subset
+    of what it is about to hold. That assertion is also what makes this test
+    unsatisfiable by the Express trigger: if grading moved back to
+    ``_consume_verify`` this fails before it ever reaches the close.
+
+    Then the close runs and all three of the round's outputs appear at once:
+    the adoption verdict, its reason, and the receipt on disk. Deleting the
+    ``_grade_round_once`` call from the ``PHASE_CLOUD_VERIFY`` branch leaves
+    every one of them absent.
+    """
+    _seed_full_round_state()
+    conductor, attempts = _full_stage_2(monkeypatch)
+    # 1.5x the deviation before, 1.0x after: measurably flatter, by more than
+    # #2291's claim margin — the keep row, so a restore here would be a defect.
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    verify_verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
+
+    assert verify_verdict.accepted is True
+    assert conductor.round_evaluation is None, (
+        "a Full session must NOT grade at VERIFY — the spatial arm has not "
+        "landed, so the round's evidence is not complete"
+    )
+
+    verdict = _walk_post_apply_cloud(conductor)
+
+    assert verdict.accepted is True
+    assert verdict.payload["group_complete"] == flow.PHASE_CLOUD_VERIFY
+    evaluation = conductor.round_evaluation
+    assert evaluation is not None, "the cloud close did not grade the round"
+    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP
+    assert evaluation.adoption.reason == ADOPTION_REALIZED_AND_IMPROVED
+    # Nothing was put back, because nothing needed to be.
+    assert attempts == []
+    # …and the round banked a receipt, at the path a later reader can build
+    # from the round id alone.
+    identity = conductor.round_receipt_identity
+    assert identity is not None
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
+    assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP.value
+    assert receipt["adoption"]["reason"] == ADOPTION_REALIZED_AND_IMPROVED
+    # Fingerprinted by the contract, not merely stamped — the same re-hash the
+    # Express receipt pin makes, so a Full round's receipt is held to it too.
+    core = {key: value for key, value in receipt.items() if key != "fingerprint"}
+    assert receipt["fingerprint"] == json_fingerprint(core)
+    assert identity["receipt_fingerprint"] == receipt["fingerprint"]
+
+
+def test_the_full_tier_restores_a_measured_regression_at_the_cloud_close(
+    monkeypatch, real_bundle,
+):
+    """The restore arm, reached through the close rather than through VERIFY.
+
+    A Full household whose correction made the speaker measurably worse must
+    get their previous sound back automatically, and the only code path that
+    can do that for them runs after the last cloud position. Every restore pin
+    above proves the Express path does it; none proves this one does, and the
+    two reach ``coordinator.run_round`` from different call sites.
+
+    ``scale=0.4`` is a before-side FLATTER than the after: the deviation grew,
+    which is a measured regression. Asserted on the counter the stubbed DSP leg
+    increments, so this cannot pass on a decision nobody acted on.
+    """
+    _seed_full_round_state()
+    conductor, attempts = _full_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=0.4)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted
+
+    verdict = _walk_post_apply_cloud(conductor)
+
+    evaluation = conductor.round_evaluation
+    assert evaluation is not None, "the cloud close did not grade the round"
+    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
+    assert evaluation.adoption.reason == ADOPTION_MEASURED_REGRESSION
+    # The graph really went back — once.
+    assert attempts == [1]
+    # And the household is told in the ROUND's words rather than the capture's:
+    # the group's own screens accepted this position, and the refusal that
+    # reaches the screen is the round's.
+    assert verdict.accepted is False
+    assert verdict.code == REASON_CORRECTION_MEASURED_REGRESSION
+    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
+
+
+def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
+    monkeypatch, real_bundle,
+):
+    """The mutual exclusion, measured on both shapes instead of stated in prose.
+
+    ``_grade_round_once``'s docstring has always said the two triggers are
+    "mutually exclusive by construction", and until now that sentence was the
+    whole guarantee: the fire-once re-entry pin exercises ONE trigger, and no
+    test had ever driven the other. A property asserted on one of its two cases
+    is a property nobody has checked.
+
+    Both branch on the same fact — ``PHASE_CLOUD_VERIFY in plan.phases`` — so
+    the honest way to pin it is to run both shapes and assert the complement:
+    the Express session grades at VERIFY **and plans no cloud close to reach**;
+    the Full session does **not** grade at VERIFY and grades at the close. A
+    regression that made both fire breaks the Full case's middle assertion; one
+    that made neither fire breaks its last.
+    """
+    # Express: the recovery/one-entry shape, which is what every other test in
+    # this module prepares.
+    _seed_round_state()
+    express, _attempts = _restoring_stage_2(monkeypatch)
+    _install_entry_baseline(express, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+
+    assert flow.PHASE_CLOUD_VERIFY not in express._journey.plan.phases
+    assert _consume_verify(express, _post_apply_analysis(express)).accepted
+    assert express.round_evaluation is not None, "Express grades at VERIFY"
+
+    # Full: the tier's own post-apply walk.
+    _seed_full_round_state()
+    full, _full_attempts = _full_stage_2(monkeypatch)
+    _install_entry_baseline(full, scale=1.5)
+
+    assert flow.PHASE_CLOUD_VERIFY in full._journey.plan.phases
+    assert _consume_verify(full, _post_apply_analysis(full)).accepted
+    assert full.round_evaluation is None, "Full does not grade at VERIFY"
+
+    _walk_post_apply_cloud(full)
+
+    assert full.round_evaluation is not None, "Full grades at the cloud close"
+
+
+def test_a_delta_probe_refusal_at_the_cloud_close_burns_no_round(
+    monkeypatch, real_bundle,
+):
+    """The ordering inside the close: refuse FIRST, grade only after.
+
+    ``_close_cloud_group`` runs the delta probe before it grades and returns on
+    a refusal without grading. That ordering is load-bearing and was
+    comment-only: the probe has already rolled back and named itself with the
+    more specific code, a group can be RETAKEN, and the receipt is write-once —
+    so grading here would burn the fire-once guard on evidence the household
+    may yet replace, exactly as it would on a rejected VERIFY.
+
+    The two shipped tests that drive a refusal through this branch
+    (``test_a_spent_final_slot_terminalizes_its_close_time_refusal`` and its
+    endpoint twin) assert only the terminal code, so swapping the two
+    statements left them green. This asserts the consequence the ordering
+    exists for.
+    """
+    _seed_full_round_state()
+    conductor, attempts = _full_stage_2(monkeypatch)
+    _install_entry_baseline(conductor, scale=1.5)
+    _install_applied_graph(monkeypatch, boosts=False)
+    assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted
+
+    monkeypatch.setattr(
+        flow.CrossoverV2Conductor, "_delta_probe_refusal",
+        lambda self, _probe: flow.REASON_CORRECTION_MODEL_ERROR,
+    )
+
+    verdict = _walk_post_apply_cloud(conductor)
+
+    assert verdict.accepted is False
+    assert verdict.code == flow.REASON_CORRECTION_MODEL_ERROR, (
+        "the probe's own, more specific code must reach the household"
+    )
+    # Nothing was graded, nothing was acted on, and nothing was banked.
+    assert conductor.round_evaluation is None
+    assert conductor.round_receipt_identity is None
+    assert attempts == []
+    with pytest.raises(FileNotFoundError):
+        _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)

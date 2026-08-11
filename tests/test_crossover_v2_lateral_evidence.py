@@ -39,6 +39,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.audio_measurement.program import KIND_SWEEP
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+    DriverResponse,
 )
 
 from tests.test_crossover_v2_conductor import (
@@ -760,6 +761,131 @@ def test_the_mark_return_bracket_measures_a_real_level_change():
     drift = c.lateral_mark_return_drift_db()
     assert drift is not None
     assert all(value == pytest.approx(2.0, abs=1e-6) for value in drift.values())
+
+
+# --------------------------------------------------------------------------- #
+# the screens run BEFORE the curves are built (#2291 Phase 5a-iv)
+#
+# ``_consume_lateral_pose`` screens first and only then resamples each driver
+# response onto the shared basis. That order is not a style choice:
+# ``lateral_pose_curve`` indexes its input's own frequency axis
+# (``freqs[left]`` after a ``searchsorted``/``clip``), so a degenerate response
+# with an EMPTY axis is an ``IndexError`` rather than a zero-length curve —
+# measured, not inferred: ``index -2 is out of bounds for axis 0 with size 0``.
+#
+# Hoisting the build above the ladder — which is what folding the two-curve
+# count into ``spatial.lateral_pose_screens`` would require — turns a household
+# retry screen into a terminal ``internal_error`` for exactly the captures the
+# ladder exists to reject.
+#
+# **The inversion was invisible, re-derived rather than quoted** (2026-08-11):
+# applied to `_consume_lateral_pose` with the three tests below DESELECTED, the
+# 16 crossover-reaching suites came back 891 passed / 11 skipped / 5 deselected,
+# exit 0. Two independent reviewers reached the same conclusion from a smaller
+# set. With the tests below in place the same inversion fails 3.
+# --------------------------------------------------------------------------- #
+
+
+def _empty_axis_response(role: str):
+    """A driver response the analyzer could emit and the resampler cannot take.
+
+    Degenerate rather than absent: it carries a role the sweep-band map knows
+    and ``repeat_index is None``, so it passes the comprehension's filter and
+    reaches ``lateral_pose_curve`` — which is the only way to exercise the
+    hazard. Every array is empty, which is the shape a capture that located
+    nothing reduces to.
+    """
+    return DriverResponse(
+        role=role,
+        freqs_hz=np.asarray([], dtype=float),
+        magnitude_db=np.asarray([], dtype=float),
+        complex_tf=np.asarray([], dtype=complex),
+        gating={"applied": True, "window_ms": 8.0},
+        snr=None,
+        validity_floor_hz=None,
+    )
+
+
+def test_the_resampler_really_does_raise_on_an_empty_axis():
+    """The premise, asserted rather than assumed.
+
+    The pin below is only meaningful if building a curve from this response
+    genuinely raises. If ``lateral_pose_curve`` ever grows a guard of its own,
+    this fails first and says so — rather than leaving the ordering test passing
+    for a reason that no longer exists.
+    """
+    with pytest.raises(IndexError):
+        flow.lateral_pose_curve(_empty_axis_response("woofer"), (100.0, 20000.0))
+
+
+@pytest.mark.parametrize(
+    "rung,mutate,expected_code",
+    [
+        # Confidence 0.2 clears LOCATE_MIN_CONFIDENCE (0.1) and fails
+        # SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3): a MID-ladder rung, so this proves
+        # the whole ladder runs before the build rather than only that the first
+        # check short-circuits.
+        (
+            "sweep_locate_confidence",
+            lambda a: replace(
+                a,
+                locations=tuple(
+                    replace(loc, confidence=0.2) for loc in a.locations
+                ),
+            ),
+            REASON_LOCATE_FAILED,
+        ),
+        (
+            "glitch",
+            lambda a: replace(a, glitch_detected=True),
+            REASON_DRIFT_BASELINES_DISAGREE,
+        ),
+        (
+            "linearity",
+            lambda a: replace(a, linearity_ok=False),
+            REASON_AGC_BEHAVIORAL_FAIL,
+        ),
+    ],
+)
+def test_a_screened_out_pose_refuses_before_any_curve_is_built(
+    rung, mutate, expected_code,
+):
+    """A rejected pose is refused cleanly, even when its curves cannot be built.
+
+    The two failures are independent in production — a capture too quiet to
+    locate is also a capture whose reduction can come back degenerate — so the
+    household-visible difference is entirely one of ORDER: screens first is
+    ``locate_failed`` and a retry; build first is an uncaught ``IndexError`` and
+    a terminal internal-error screen.
+
+    Driven through ``_run_phase`` rather than by calling the ladder, because the
+    ordering under test lives in ``_consume_lateral_pose`` and not in either
+    piece it sequences.
+    """
+    fakes = FakeSeams()
+    c = _lateral_conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+
+    def _degenerate(program):
+        analysis = mutate(_measure_analysis(program))
+        return replace(
+            analysis,
+            driver_responses=(
+                _empty_axis_response("woofer"), _empty_axis_response("tweeter"),
+            ),
+        )
+
+    fakes.measure = _degenerate
+
+    verdict = _run_phase(c, FIRST_LATERAL_INDEX, 1)
+
+    assert verdict["accepted"] is False, rung
+    # Each rung keeps its OWN household code — the refusal is the ladder's
+    # verdict, not a generic "something went wrong" the raise would have become.
+    assert verdict["code"] == expected_code, rung
+    # Nothing was retained from a pose that never became evidence.
+    assert c.lateral_poses == ()
 
 
 def test_the_evidence_basis_is_a_bounded_log_grid():

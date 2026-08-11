@@ -139,6 +139,7 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
+from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
@@ -2769,6 +2770,49 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items()
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
+
+#: #2291 Phase 5a-iv: the capture-consuming ladders' refusal KINDS, mapped to
+#: the codes whose copy the household reads.
+#:
+#: :mod:`jasper.active_speaker.crossover_v2.spatial` owns the ORDER those
+#: ladders run in and returns a kind; this file owns the registry above, so the
+#: sentence stays here. The same split :mod:`.crossover_v2.coordinator` makes
+#: with :data:`~jasper.active_speaker.crossover_v2.coordinator.REFUSAL_KINDS`,
+#: and it is a mapping rather than an identity because two kinds do NOT share
+#: their code's name: a glitched timeline renders as
+#: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
+#:
+#: Completeness is CHECKED, not trusted — see :func:`_screen_refusal_code` and
+#: ``test_every_screen_kind_has_a_household_sentence``.
+SCREEN_KIND_REASONS: dict[str, str] = {
+    _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
+    _spatial.SCREEN_PILOT_LEVEL_COLLAPSE: REASON_PILOT_LEVEL_COLLAPSE,
+    _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
+    _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
+    _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
+}
+
+
+def _screen_refusal_code(kind: str) -> str:
+    """One screen kind's household code, LOUDLY on an unmapped one.
+
+    A kind arriving here unmapped is a wiring defect — a new ladder step shipped
+    without a sentence — and answering it with another kind's copy is the shape
+    :meth:`CrossoverV2Conductor._round_refusal_for` already refuses. It still
+    returns rather than raising, under the most conservative code available: the
+    capture was screened and something was wrong with it, and losing that
+    refusal to a mapping gap would be worse than naming it imprecisely for one
+    release.
+    """
+    code = SCREEN_KIND_REASONS.get(kind)
+    if code is not None:
+        return code
+    log_event(
+        logger, "correction.crossover_v2_screen_kind_unmapped",
+        level=logging.ERROR, kind=str(kind),
+    )
+    return REASON_LOCATE_FAILED
+
 
 def correction_rollback_failed_message(rollback_anchor_available: bool | None) -> str:
     """``correction_rollback_failed``'s sentence, branched on the anchor.
@@ -8444,67 +8488,57 @@ class CrossoverV2Conductor:
         return {p.index for p in self._group_positions.get(phase, ())}
 
     def _group_position_floor(self, phase: str) -> int:
-        """How few resolved positions still lets a group stand.
-
-        A cloud is an AVERAGE: below :data:`MIN_RESOLVED_CLOUD_POSITIONS` there
-        is nothing to combine, so the session ends honestly. The lateral walk is
-        not — §4.4: "side evidence owns robustness, not the target". The
-        coefficients are the anchor's and already in hand, so a pose nobody
-        could capture costs a robustness sample and nothing else. Floor ZERO:
-        drop it, record why, keep walking, and let the consumer disclose that it
-        decided on fewer positions than planned.
+        """How few resolved positions still lets a group stand — see
+        :func:`~jasper.active_speaker.crossover_v2.spatial.group_position_floor`.
         """
-        return 0 if phase == PHASE_LATERAL else MIN_RESOLVED_CLOUD_POSITIONS
+        return _spatial.group_position_floor(
+            phase, min_resolved_cloud_positions=MIN_RESOLVED_CLOUD_POSITIONS,
+        )
 
     def _consume_lateral_pose(
         self, index: int, attempt: int, analysis: ProgramAnalysis,
     ) -> PhaseVerdict:
         """One pose of the R16 lateral walk (plan §4.4).
 
-        The screens are MEASURE's own capture-integrity gates, in MEASURE's
-        order, because a pose replays MEASURE's program: a pose that did not
-        record cleanly is not evidence, wherever the microphone was standing.
+        The screens — MEASURE's own capture-integrity gates in MEASURE's order,
+        minus the three that judge the alignment solve §4.4 forbids re-running —
+        belong to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.lateral_pose_screens`,
+        and the two-curve floor to its
+        :func:`~jasper.active_speaker.crossover_v2.spatial.lateral_curves_sufficient`
+        (which runs after the build, for the reason stated there).
 
-        Three MEASURE gates are deliberately NOT applied — the delay-search
-        status, the GCC trust floor and the plausibility backstop — because all
-        three judge the ALIGNMENT SOLVE, which §4.4 forbids re-running here. The
-        search window is a geometry prior about the MARK, so a microphone 40 cm
-        to the side legitimately fails it; refusing on those would quietly keep
-        only the poses that happen to align like the anchor, which is precisely
-        the off-axis consequence these samples exist to expose.
-
-        Nor does a rejected pose re-arm MEASURE with a level backoff: the pose
-        must be measured at the ANCHOR'S level or its curve is not comparable to
-        the anchor's, and a quieter retake would answer a different question.
+        What stays here is the retain-and-close half, and one rule that is this
+        method's rather than the ladder's: a rejected pose does NOT re-arm
+        MEASURE with a level backoff. The pose must be measured at the ANCHOR'S
+        level or its curve is not comparable to the anchor's, and a quieter
+        retake would answer a different question.
         """
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.pilot_snr_ok is False:
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
-        if not _sweep_locate_confidence_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.glitch_detected:
-            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
-        if not _sweep_schedule_ok(
-            analysis, self.program_for_phase(PHASE_LATERAL).sample_rate_hz
-        ):
-            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
-        if _any_sweep_clipped(analysis):
-            return PhaseVerdict(False, REASON_CLIPPED)
-        if analysis.linearity_ok is False:
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
-        bands = _primary_sweep_bands(self.program_for_phase(PHASE_LATERAL))
+        program = self.program_for_phase(PHASE_LATERAL)
+        kind = _spatial.lateral_pose_screens(
+            _spatial.CaptureScreens(
+                stimulus_located=_stimulus_locate_ok(analysis),
+                pilot_snr_ok=analysis.pilot_snr_ok,
+                linearity_ok=analysis.linearity_ok,
+                glitch_detected=bool(analysis.glitch_detected),
+                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
+                sweep_schedule_ok=_sweep_schedule_ok(
+                    analysis, program.sample_rate_hz
+                ),
+                any_sweep_clipped=_any_sweep_clipped(analysis),
+            )
+        )
+        if kind is not None:
+            return PhaseVerdict(False, _screen_refusal_code(kind))
+        bands = _primary_sweep_bands(program)
         curves = [
             lateral_pose_curve(response, bands[response.role])
             for response in analysis.driver_responses
             if response.repeat_index is None and response.role in bands
         ]
-        if len(curves) < 2:
-            # A pose that yielded fewer than both branches cannot answer any of
-            # §4.4's questions — every one of them is a woofer-versus-HF
-            # comparison. Reuse ``locate_failed`` rather than mint a code: the
-            # household action ("measure this spot again") is identical.
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        kind = _spatial.lateral_curves_sufficient(len(curves))
+        if kind is not None:
+            return PhaseVerdict(False, _screen_refusal_code(kind))
         prompt = self._prompt_shown_for(PHASE_LATERAL, index)
         pose = LateralPose(
             pose_id=f"{PHASE_LATERAL}_{index:02d}",
@@ -8984,49 +9018,37 @@ class CrossoverV2Conductor:
     ) -> PhaseVerdict:
         """One prompted position: light per-capture QC, then the group check.
 
-        **Per-position work is deliberately light** (the PR-3b design
-        contract): the same locate/linearity screens every phase runs, plus
-        "did this capture yield a usable summed response". The group analyses —
-        combine, null identification, spec evaluation — run ONCE per group, not
-        once per position, so their cost is paid once instead of N times.
-
-        Measured 2026-07-27 on the S0 ten-position corpus (this laptop; a Pi 5
-        is slower — :func:`combine_cloud_positions` states the 3-6 s
-        across-hosts regime): the **combine is 2.7-2.8 s and dominates
-        completely**, while everything layered on it — the null gate, the spec
-        evaluation, the carve-out assembly — totals **0.02-0.04 s**. Running
-        the set per position would multiply that by N instead of paying it
-        once. (This paragraph previously said "~40 s analyses" and "five
-        minutes" for an 8-position cloud; no measurement supports either, and
-        the real argument does not need them — 2.7 s x 9 is still worth not
-        spending.)
-
-        Two VERIFY gates are deliberately NOT applied here, because both assume
-        a stationary mic replaying the identical program:
-
-        * gate-comparability (a shorter gate than MEASURE's ⇒ inconclusive) —
-          a cloud position's gate legitimately differs from the anchor's, since
-          the nearest boundary changes when the mic moves. That is the
-          measurement, not a defect.
-        * the G3 pilot-transfer step — the reference it compares against is
-          "the same chain measuring the same thing"; moving the mic changes
-          the acoustic transfer by design, so a step here carries no
-          information about the recording chain drifting.
+        The QC ladder — which screens run, in which order, and the two VERIFY
+        gates a moved microphone makes inapplicable — belongs to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.cloud_position_screens`.
+        What stays here is the retain-and-close half: minting the position from
+        the prompt the operator was actually given, and taking the ONE critical
+        section that the group close and the eager fit share.
         """
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.pilot_snr_ok is False:
-            # Issue #1810, same ordering rule as the other two verdicts: the
-            # room/level discriminator runs before the linearity branch so a
-            # collapsed pilot pair is never reported as the phone's fault.
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
-        if analysis.linearity_ok is False:
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         response = analysis.summed_response
-        if response is None:
-            # The stimulus located but no summed response came back — the
-            # capture carries no curve to combine, so it is not evidence.
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        # All SEVEN screens stated, though this ladder reads three. A cloud
+        # position plays the summed VERIFY program, whose sweep is
+        # ``KIND_SUMMED_SWEEP``, so the three sweep-domain predicates are
+        # vacuously true here — but that is a fact about the capture, and it is
+        # the caller's to state rather than the record's to assume. See
+        # :class:`~jasper.active_speaker.crossover_v2.spatial.CaptureScreens`
+        # for what a permissive default would cost the day a rung reads one.
+        kind = _spatial.cloud_position_screens(
+            _spatial.CaptureScreens(
+                stimulus_located=_stimulus_locate_ok(analysis),
+                pilot_snr_ok=analysis.pilot_snr_ok,
+                linearity_ok=analysis.linearity_ok,
+                glitch_detected=bool(analysis.glitch_detected),
+                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
+                sweep_schedule_ok=_sweep_schedule_ok(
+                    analysis, self._verify_program.sample_rate_hz
+                ),
+                any_sweep_clipped=_any_sweep_clipped(analysis),
+            ),
+            has_summed_response=response is not None,
+        )
+        if kind is not None:
+            return PhaseVerdict(False, _screen_refusal_code(kind))
         prompt = self._prompt_shown_for(phase, index)
         position = _CloudPosition(
             position_id=f"{phase}_{index:02d}",
@@ -9069,15 +9091,11 @@ class CrossoverV2Conductor:
         a group can never carry two curves for one prompted spot.
 
         **WO-1 moved the ``retain_position is None`` early return BELOW the
-        metadata build**, so the metadata is now assembled whether or not a
-        retention seam is bound. That is deliberate, not an oversight: the
-        metadata has two consumers now. The seam is one; the group close is
-        the other — ``_run_cloud_pipeline`` reads
-        ``_group_position_meta`` to serialize the per-position members — and
-        the close happens on every session, including the offline/test
-        configurations that bind no retention seam at all. Building it only
-        when a storage seam existed would have made the per-position evidence
-        silently depend on operator retention being wired.
+        metadata build**, so the record is assembled whether or not a retention
+        seam is bound — see
+        :func:`~jasper.active_speaker.crossover_v2.spatial.cloud_position_record`
+        for the two consumers that ordering serves, and for what each field of
+        the record is.
 
         The added cost when no seam is bound is one small dict plus one
         SHA-256 of the capture's WAV bytes (:func:`_capture_wav_sha256`) — a
@@ -9097,48 +9115,27 @@ class CrossoverV2Conductor:
         retained.append(position)
         retained.sort(key=lambda p: p.index)
         gating = getattr(position.response, "gating", None) or {}
-        metadata = {
-            "position_id": position.position_id,
-            "phase": phase,
-            "index": position.index,
-            "attempt": position.attempt,
-            # WO-1: the take id, minted HERE rather than only at the storage
-            # seam, so the conductor's own evidence and the bundle's sidecar
-            # path name the same take. A geometry retake reuses the position
-            # id, so the id alone does not identify a take (attribution plan
-            # §6's "accepted-attempt <-> position mapping").
-            "take_id": f"{position.position_id}_a{int(position.attempt):02d}",
-            "prompt": position.prompt,
-            "wide": position.wide,
-            # The position's named question (attribution-stage plan §5's
-            # promotion-queue item 1). The prompt string alone cannot be parsed
-            # back into a role, so the label rides the record explicitly.
-            "role": position.role,
-            "captured_at": position.captured_at,
-            "session_id": self.session_id,
-            "gate_window_ms": _gate_window_ms(position.response),
-            # WHY that window (issue #1966). ``gating_applied`` below only says
-            # a window was applied at all; it cannot distinguish a window that
-            # stops at a found reflection from one capped at the search bound
-            # because none was found. Every position of the 2026-07-30 corpus
-            # was the second, and this record could not say so.
-            "gate_floor_source": _gate_floor_source(position.response),
-            # The same fact as a sentence, so a reader of this file does not
-            # have to know the enum's vocabulary to read the record honestly.
-            "gate_disclosure": _gate_disclosure(position.response),
-            "validity_floor_hz": getattr(
+        metadata = _spatial.cloud_position_record(
+            position_id=position.position_id,
+            phase=phase,
+            index=position.index,
+            attempt=position.attempt,
+            prompt=position.prompt,
+            wide=position.wide,
+            role=position.role,
+            captured_at=position.captured_at,
+            session_id=self.session_id,
+            gate_window_ms=_gate_window_ms(position.response),
+            gate_floor_source=_gate_floor_source(position.response),
+            gate_disclosure=_gate_disclosure(position.response),
+            validity_floor_hz=getattr(
                 position.response, "validity_floor_hz", None
             ),
-            "gating_applied": bool(gating.get("applied")),
-            "summed_ripple_db": analysis.summed_ripple_db,
-            "glitch_detected": bool(analysis.glitch_detected),
-            # WO-1: the capture's content digest. The VERIFIER for a replay,
-            # never the index — §6's rule that "content hashing stays the
-            # verifier; it must stop being the index". Recorded whether or
-            # not any store retained the bytes, because it is what lets a
-            # laptop-side WAV be matched back to this take at all.
-            "wav_sha256": _capture_wav_sha256(result),
-        }
+            gating_applied=bool(gating.get("applied")),
+            summed_ripple_db=analysis.summed_ripple_db,
+            glitch_detected=bool(analysis.glitch_detected),
+            wav_sha256=_capture_wav_sha256(result),
+        )
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
         ] = metadata
@@ -9192,35 +9189,24 @@ class CrossoverV2Conductor:
         )
         verdict = _geometry_verdict_from_combined(combined, len(positions))
         retries = self._geometry_retries_used[phase]
-        retry_warranted = (
-            verdict.get("locked") is True
-            # ``thin_evidence`` marks a verdict resting on the bare minimum
-            # number of usable echo estimates (see GeometryLock's docstring —
-            # it is a cliff, not a gradient). Asking an operator to walk two
-            # more positions on that basis spends real session minutes on a
-            # verdict the instrument itself qualifies, so a thin lock is
-            # disclosed and accepted rather than retried.
-            and verdict.get("thin_evidence") is not True
-            and retries < GEOMETRY_RETRY_POSITIONS
-            # …and never AFTER the group has already recorded a verdict. A
-            # VOLUNTARY retake (§2.6) re-enters this close with the group
-            # already closed, and the retry branch below DROPS the take at
-            # this index — which, on a voluntary retake, is the only copy
-            # (``_retain_cloud_position`` replaced the original in place).
-            # Dropping it would leave the household with LESS evidence than
-            # before they chose to redo a spot, which is the one thing the
-            # retake contract promises can never happen. So: re-combine, keep
-            # the verdict honest with the new take, and accept.
-            and phase not in self._group_geometry
+        # Four conjuncts and a narrowing, all of them subtle — see
+        # :func:`~jasper.active_speaker.crossover_v2.spatial.geometry_retake`,
+        # which owns why a THIN lock is accepted rather than retried and why a
+        # close that has already recorded a verdict never asks again.
+        retake = _spatial.geometry_retake(
+            locked=verdict.get("locked"),
+            thin_evidence=verdict.get("thin_evidence"),
+            retries_used=retries,
+            budget=GEOMETRY_RETRY_POSITIONS,
+            group_already_closed=phase in self._group_geometry,
+            have_take_to_replace=position is not None,
         )
-        # The take a warranted retry would replace — ``None`` on a SETTLED
-        # close, which is why such a close never asks (see the docstring).
-        # Carrying the narrowing in the value rather than in a second
-        # conjunct keeps "which take gets dropped" and "is a drop warranted"
-        # the same fact.
-        replacing = position if retry_warranted else None
-        if replacing is not None:
-            self._geometry_retries_used[phase] = retries + 1
+        if retake is not None:
+            # Narrowed by ``have_take_to_replace`` above: a retake is returned
+            # only when there is a take at this index to drop.
+            assert position is not None
+            replacing = position
+            self._geometry_retries_used[phase] = retake.retries_after
             # Drop the take being replaced FROM THE CLOUD. This is what the
             # protocol's retake lever means — the same index is measured again
             # — not a claim that dropping beats appending (see
@@ -9233,12 +9219,12 @@ class CrossoverV2Conductor:
             log_event(
                 logger, "correction.crossover_v2_cloud_geometry_retry",
                 session_id=self.session_id, phase=phase,
-                retry=retries + 1, of=GEOMETRY_RETRY_POSITIONS,
+                retry=retake.retries_after, of=GEOMETRY_RETRY_POSITIONS,
                 median_tau_us=verdict.get("median_tau_us"),
                 clustered_fraction=verdict.get("clustered_fraction"),
             )
             prompt = CLOUD_GEOMETRY_RETRY_PROMPTS[
-                min(retries, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
+                min(retake.rung, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
             ]
             return PhaseVerdict(
                 False, REASON_CLOUD_GEOMETRY_LOCKED,
@@ -10600,131 +10586,33 @@ class CrossoverV2Conductor:
         self, combined: Any, result: Mapping[str, Any],
     ) -> tuple[tuple[float, float], ...]:
         """Bands BELOW the null registry's own floor where this cloud's
-        positions disagree about a dip — so boosting one corrects nothing any
-        listener hears (#1967).
+        positions disagree about a dip (#1967) — the derivation, and what it
+        deliberately cannot do, belong to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.boost_excluded_bands_hz`.
 
-        **The hole this fills.** Boost permission is granted on ``cloud is not
-        None`` (see the boost gate in
-        :func:`~jasper.active_speaker.crossover_v2.intervention.plan_linearization`),
-        whose stated meaning is
-        that "null-exclusion stays a measured, registry-gated fact". The
-        registry's analysis band is floored at
-        :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the
-        registry contributes no exclusions — not because it was uncertain but
-        because it was never asked — and the gate's claim is satisfied in form
-        without being satisfied in substance. On the 2026-07-30 JTS3 session
-        the registry returned ``insufficient_evidence`` /
-        ``no_corroborating_arrivals`` with zero exclusions (re-derived from
-        that session's own ``cloud_measure.json``), while its largest
-        prescribed boost was **+8.06 dB at 3633.6 Hz** — 366 Hz under the
-        floor. That boost figure is the owner's, from the offline replay
-        recorded on issue #1967; it is quoted here rather than re-derived, and
-        no test pins it.
-
-        **What this does and, more importantly, what it does not.** It runs
-        :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
-        over the blind span and hands the dips the cloud's own positions
-        DISAGREE about to the fit vocabulary, which refuses a lift whose
-        realized cascade would put significant gain in one. It cannot grant
-        boost anywhere — the bound is monotone by construction (see
-        :func:`~jasper.active_speaker.linearization_fit._lift_stage`) and a
-        ``position_invariant`` dip is left exactly as the gate already had it.
-        That asymmetry is deliberate and is not this conductor's call to make
-        — ``interference_nulls``' module docstring ("position-invariance says
-        *this is real*; it does not say *this is correctable*"),
-        ``docs/attribution-stage-plan.md`` §5 (a finding supported only by
-        position variance stays ``unsure``, adjudicated by rotating the
-        speaker), and :mod:`jasper.attribution.promotion` (which routes
-        ``position_invariant`` to ``carve``) all refuse to read stationarity
-        as a driver property. So this narrows the gate where the evidence
-        decides against a boost and leaves it open otherwise, which is the
-        owner's ruling ("do not trade a blind gate for a blunt one") applied
-        rather than overridden.
-
-        The residual is therefore real and named: a dip that every position
-        sees may still be a source-fixed interference null rather than a
-        driver deficit, and separating those needs the post-apply arm to ask
-        "did this help" rather than "did this match the model" (#1868).
-
-        **Know what one band costs before adding to this list.** The fit
-        drops any boost filter whose own action region overlaps a band here —
-        per filter, so siblings working elsewhere survive, and a whole-lift
-        refusal (``lift_suppressed_reason="boost_excluded_band"``) only when
-        EVERY boost was aimed. Skirt spill from a surviving filter is kept and
-        disclosed rather than refused. Even so, each band here can cost a real
-        correction, which is why this returns only the positively-contradicted
-        class and never a "we were unsure here" list. Per-filter verdicts ride
-        ``event=correction.crossover_v2_boost_excluded_verdicts``.
-
-        **Fails OPEN**, disclosed. A span too narrow to analyse, a cloud that
-        never retained per-position curves, or an unexpected numeric failure
-        all yield no exclusions — i.e. exactly the permission the gate grants
-        today. Failing closed would blanket-ban boost below 4 kHz on a
-        computation hiccup, which is the blunt outcome this whole function
-        exists to avoid.
+        What stays here is the journal. The derivation is side-effect-free and
+        hands its fields back as data, so this owns the two event NAMES and the
+        ``session_id`` that identifies them — and the level rule, which is the
+        one place the answer changes how loudly it is reported: an empty result
+        is the ordinary case (INFO), a non-empty one narrows a shipped gate and
+        is worth seeing (WARNING).
         """
-        from jasper.audio_measurement.interference_nulls import (
-            CLASSIFICATION_POSITION_DEPENDENT,
-            classify_dip_position_variance,
+        exclusion = _spatial.boost_excluded_bands_hz(
+            combined, result, echo_band_hz=self._cloud_echo_band.band_hz,
         )
-
-        registry = result.get("null_registry") or {}
-        n_dependent = 0
-        floor_hz = float(self._cloud_echo_band.band_hz[0])
-        grid = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
-        # The cloud's own gated validity floor is the honest lower edge: below
-        # it every position's curve is a truncated-window artifact, which is
-        # the same bound the spec band already clamps to.
-        validity_floor_hz = result.get("validity_floor_hz")
-        lo_hz = float(validity_floor_hz) if validity_floor_hz else 0.0
-        if grid.size:
-            lo_hz = max(lo_hz, float(grid[0]))
-        span = (lo_hz, floor_hz)
-        bands: tuple[tuple[float, float], ...] = ()
-        reason = ""
-        n_dips = 0
-        if not (0.0 < lo_hz < floor_hz) or int(
-            np.count_nonzero((grid >= lo_hz) & (grid <= floor_hz))
-        ) < 3:
-            reason = "no_blind_span"
-        else:
-            try:
-                report = classify_dip_position_variance(combined, band_hz=span)
-            except Exception:  # noqa: BLE001 - see "Fails OPEN" above.
-                reason = "variance_check_failed"
-                log_event(
-                    logger, "correction.crossover_v2_boost_variance_failed",
-                    level=logging.WARNING, session_id=self.session_id,
-                    band_hz=[round(v, 3) for v in span],
-                )
-            else:
-                reason = report.reason
-                n_dips = len(report.dips)
-                n_dependent = sum(
-                    dip.classification == CLASSIFICATION_POSITION_DEPENDENT
-                    for dip in report.dips
-                )
-                bands = report.position_dependent_bands_hz
+        diagnostics = dict(exclusion.diagnostics)
+        if diagnostics.pop("variance_check_failed", False):
+            log_event(
+                logger, "correction.crossover_v2_boost_variance_failed",
+                level=logging.WARNING, session_id=self.session_id,
+                band_hz=diagnostics["unadjudicated_span_hz"],
+            )
         log_event(
             logger, "correction.crossover_v2_boost_evidence",
-            level=logging.WARNING if bands else logging.INFO,
-            session_id=self.session_id,
-            # The band the corroborating registry actually adjudicated, and
-            # the span below it where it structurally could not.
-            registry_band_hz=[round(v, 3) for v in self._cloud_echo_band.band_hz],
-            registry_classification=str(registry.get("classification") or ""),
-            registry_reason=str(registry.get("reason") or ""),
-            unadjudicated_span_hz=[round(v, 3) for v in span],
-            variance_reason=reason,
-            n_dips=n_dips,
-            # How many of those dips the cloud's positions DISAGREED about —
-            # the only class this bound acts on. `n_dips - n_position_dependent`
-            # is the invariant remainder, which keeps its boost and is exactly
-            # the residual #1868 has to close.
-            n_position_dependent=n_dependent,
-            boost_excluded_bands_hz=[[round(lo, 3), round(hi, 3)] for lo, hi in bands],
+            level=logging.WARNING if exclusion.bands else logging.INFO,
+            session_id=self.session_id, **diagnostics,
         )
-        return bands
+        return exclusion.bands
 
     def _run_cloud_pipeline(
         self, phase: str, combined: Any, positions: Sequence[_CloudPosition],
@@ -10902,57 +10790,16 @@ class CrossoverV2Conductor:
     ) -> PhaseVerdict:
         """#2291's "before" capture: screen it, reduce it, retain it.
 
-        **The accept rule reuses shipped gates; it invents none.** Which of
-        :meth:`_verify_verdict`'s this mirrors, and which it drops:
+        The accept rule reuses shipped gates and invents none; which of
+        VERIFY's it mirrors, which it drops, and why each drop is safe belong
+        to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.entry_baseline_screens`.
+        Every refusal it returns becomes an ordinary rejected
+        :class:`PhaseVerdict` with a shipped ``REASON_*``, so the slot's normal
+        retry budget and household copy apply with no new machinery.
 
-        * ``_stimulus_locate_ok`` — **reused**. A capture whose stimulus was
-          never located is not evidence about the speaker, whatever is being
-          asked of it.
-        * ``pilot_snr_ok is False`` — **reused**, and ahead of everything but
-          the locate check, for issue #1810's reason: a pilot pair that never
-          cleared the room floor is a room/level problem, and reporting it as
-          anything else sends the household to fix the wrong thing.
-        * capture integrity — **reused**, through
-          :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_capture_validity`,
-          which is the shipped comparability rule and the same function the
-          post-apply side is graded by. One difference from
-          ``_verify_verdict``, deliberate: an **absent** integrity record is
-          UNUSABLE here where VERIFY treats it as no-evidence-and-continue.
-          That evaluator owns the "``None`` means no evidence, never clean"
-          convention, and this capture exists only to be compared — a
-          before-side nobody graded cannot carry a before→after claim, so it
-          fails closed rather than seeding one.
-        * ``linearity_ok is False`` — **reused**. AGC in the recording chain
-          bends the curve this capture exists to measure.
-        * gate-comparability, §5.2 (VERIFY's gate shorter than MEASURE's ⇒
-          inconclusive) — **dropped**. It protects an OVERLAY of the measured
-          summed response against MEASURE's per-driver model, and this capture
-          makes no such overlay. Its partner is stage 2's VERIFY, which is
-          still graded against MEASURE's window by that rule; adding a second,
-          differently-motivated refusal here would cost retakes without
-          protecting a claim.
-        * the G3 pilot-transfer step — **dropped**. G3 asks whether the
-          recording chain moved BETWEEN two replays of the identical program
-          within one conductor's lifetime, and it exists to protect the
-          tracking comparison it immediately precedes. There is no tracking
-          comparison here, and stage 1 runs exactly one summed capture, so the
-          gate could only ever record a reference that stage 2's own fresh
-          conductor is forbidden to inherit (#1927).
-        * the tracking-max tolerance comparison — **dropped**, structurally:
-          :meth:`_entry_baseline_priors` withholds ``predicted_sum``, so
-          ``analysis.verify_tracking`` is ``None`` and there is nothing to
-          grade.
-
-        One more refusal that is this phase's own: the reduction
-        (:func:`~jasper.active_speaker.crossover_v2.round_evidence.measured_response_from_analysis`)
-        must produce a side. It returns ``None`` for a missing summed response
-        or a degenerate curve — the same "located, but carries no curve"
-        condition :meth:`_cloud_position_verdict` already answers with
-        ``locate_failed``, and this reuses that code rather than minting one.
-
-        Every refusal is an ordinary rejected :class:`PhaseVerdict` with a
-        shipped ``REASON_*``, so the slot's normal retry budget and household
-        copy apply with no new machinery.
+        What stays here is the order of the three steps — screen, retain only
+        on an accept, and journal either way.
         """
         verdict, measured = self._entry_baseline_verdict(analysis)
         if verdict.accepted and measured is not None:
@@ -10965,45 +10812,29 @@ class CrossoverV2Conductor:
     def _entry_baseline_verdict(
         self, analysis: ProgramAnalysis,
     ) -> tuple[PhaseVerdict, "MeasuredResponse | None"]:
-        """The screens above, and the reduced side when they all pass."""
-        from jasper.active_speaker.crossover_v2.round_evidence import (
-            measured_response_from_analysis,
-        )
-        from jasper.active_speaker.crossover_v2.verification import (
-            CaptureValidity,
-            evaluate_capture_validity,
-        )
+        """The screens above, and the reduced side when they all pass.
 
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED), None
-        if analysis.pilot_snr_ok is False:
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE), None
-        integrity = analysis.capture_integrity
-        validity = evaluate_capture_validity(integrity)
-        if validity.status is CaptureValidity.UNUSABLE:
-            payload = (
-                {"capture_integrity": integrity.to_dict()}
-                if integrity is not None else {"capture_integrity": None}
-            )
-            # The same two-code split ``_verify_verdict`` makes from the same
-            # evidence: a sweep nobody could hear is a level/mic problem, and a
-            # spliced or clipped timeline is the transient capture-glitch class
-            # (#1838 §5.2). An ABSENT record takes the glitch code's silent
-            # auto-retry, which is the right household action for "we could not
-            # tell" — nothing for them to fix, worth one more try.
-            if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
-                return PhaseVerdict(False, REASON_LOCATE_FAILED, payload=payload), None
+        The ladder itself — which of VERIFY's gates it reuses, which it drops,
+        and why — belongs to
+        :func:`~jasper.active_speaker.crossover_v2.spatial.entry_baseline_screens`.
+        This renders its answer as the household's :class:`PhaseVerdict`.
+        """
+        screen = _spatial.entry_baseline_screens(
+            analysis,
+            stimulus_located=_stimulus_locate_ok(analysis),
+            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+        )
+        if screen.kind is not None:
             return (
-                PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE, payload=payload),
+                PhaseVerdict(
+                    False,
+                    _screen_refusal_code(screen.kind),
+                    payload=dict(screen.integrity_payload or {}),
+                ),
                 None,
             )
-        if analysis.linearity_ok is False:
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL), None
-        measured = measured_response_from_analysis(
-            analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-        )
-        if measured is None:
-            return PhaseVerdict(False, REASON_LOCATE_FAILED), None
+        measured = screen.measured
+        assert measured is not None  # an accepted screen carries its side
         return PhaseVerdict(True, payload={"program_id": measured.program_id}), measured
 
     def _retain_entry_baseline(
@@ -11028,30 +10859,24 @@ class CrossoverV2Conductor:
         retake, and the reduced record (which is what the round actually
         grades) is banked whether or not any bytes were stored.
         """
-        take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
         fingerprint = self._entry_graph_fingerprint()
-        metadata = {
-            "position_id": take_id,
-            "phase": PHASE_ENTRY_BASELINE,
-            "index": index,
-            "attempt": attempt,
-            "take_id": take_id,
-            "session_id": self.session_id,
-            # The three facts that make this capture comparable to the
-            # post-apply one, on the artifact itself: WHAT was played, WHERE it
-            # was played from, and WHICH graph it went through.
-            "program_id": measured.program_id,
-            "reference_mark": measured.reference_mark,
-            "graph_fingerprint": fingerprint,
-            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "validity_floor_hz": getattr(
+        metadata = _spatial.entry_baseline_record(
+            index=index,
+            attempt=attempt,
+            session_id=self.session_id,
+            program_id=measured.program_id,
+            reference_mark=measured.reference_mark,
+            graph_fingerprint=fingerprint,
+            captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            validity_floor_hz=getattr(
                 analysis.summed_response, "validity_floor_hz", None
             ),
-            "gate_window_ms": _gate_window_ms(analysis.summed_response),
-            "summed_ripple_db": analysis.summed_ripple_db,
-            "glitch_detected": bool(analysis.glitch_detected),
-            "wav_sha256": _capture_wav_sha256(result),
-        }
+            gate_window_ms=_gate_window_ms(analysis.summed_response),
+            summed_ripple_db=analysis.summed_ripple_db,
+            glitch_detected=bool(analysis.glitch_detected),
+            wav_sha256=_capture_wav_sha256(result),
+        )
+        take_id = str(metadata["take_id"])
         artifact_ref = ""
         if self._seams.retain_position is not None:
             try:

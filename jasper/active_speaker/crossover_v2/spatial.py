@@ -1,0 +1,773 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""What a capture-consuming phase DECIDES about one take (#2291 Phase 5a-iv).
+
+The third sibling of :mod:`.programs` and :mod:`.priors`.  Those two answer
+"what does this phase play, and how loud" and "what is the analyzer told about
+what came back"; this one answers the question immediately after — **is this
+take evidence, what does it record, and does the group want another one**.  In
+``consume_capture`` the three are consecutive steps of one capture.
+
+The phases it serves are the ones that consume a take without prescribing
+anything from it: the two position clouds, the R16 lateral walk, and #2291's
+entry baseline.  They were three separate method families on the conductor with
+one shape between them — *run shipped gates in a documented order, and if they
+all pass, reduce the take to a record* — and the interesting content of all
+three is the ORDER and the DROPPED GATES, not the arithmetic.
+
+**Every screen here is a decision about which shipped gate does NOT apply, and
+that is why they are worth their own module.**  A cloud position drops VERIFY's
+gate-comparability and G3 pilot-transfer steps because the mic MOVED; a lateral
+pose drops the three gates that judge the alignment solve because §4.4 forbids
+re-running it; an entry baseline drops the tracking comparison because nothing
+is applied yet.  Each of those is a sentence that must survive refactoring, and
+each is a sentence that dies silently if the ladder it describes gets reordered
+by someone reading only the code.  Having one owner is what keeps the sentence
+and the ladder in the same place.
+
+**Inputs are stated, never reached for** — the rule :mod:`.priors` established
+and the behavioural difference between this module and the methods it replaced.
+The conductor's screens called module-level predicates
+(``_stimulus_locate_ok`` and friends) that also serve MEASURE and VERIFY, whose
+verdicts stay on the conductor; rather than give those predicates a second
+owner, the caller EVALUATES them and states the results in a
+:class:`CaptureScreens`.  The predicates are total and side-effect-free, so
+stating them eagerly is exact — see :class:`CaptureScreens` for the one
+consequence that has (a rejected take now evaluates every predicate rather than
+short-circuiting) and why it is safe.
+
+**No household vocabulary**, the rule :mod:`.coordinator` established: a refusal
+leaves as a *kind* from :data:`SCREEN_KINDS`, and the flow maps it to the
+``REASON_REGISTRY`` code whose copy the household reads.  The registry is the
+flow's, and importing it back would be the reverse dependency this package
+exists to prevent.
+
+**Side-effect-free**, unlike :mod:`.coordinator` — deliberately, because that
+module's docstring asserts it is the package's only exception and an assertion
+is worth keeping true.  :func:`boost_excluded_bands_hz` has a journal line in
+the shipped flow, so it returns its log fields as data
+(:attr:`BoostExclusion.diagnostics`) and the flow emits them under the event
+name it already owns.
+
+Dependency direction, as for every module here: no ``jasper.web`` import and
+nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+import numpy as np
+
+from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
+
+from .contracts import CaptureValidity
+from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .round_evidence import MeasuredResponse, measured_response_from_analysis
+from .verification import evaluate_capture_validity
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from jasper.audio_measurement.program_analysis import ProgramAnalysis
+
+__all__ = [
+    "SCREEN_LOCATE_FAILED",
+    "SCREEN_PILOT_LEVEL_COLLAPSE",
+    "SCREEN_LINEARITY_FAILED",
+    "SCREEN_CAPTURE_GLITCH",
+    "SCREEN_CLIPPED",
+    "SCREEN_KINDS",
+    "CaptureScreens",
+    "EntryBaselineScreen",
+    "GeometryRetake",
+    "BoostExclusion",
+    "cloud_position_screens",
+    "lateral_pose_screens",
+    "lateral_curves_sufficient",
+    "entry_baseline_screens",
+    "group_position_floor",
+    "geometry_retake",
+    "cloud_position_record",
+    "entry_baseline_record",
+    "boost_excluded_bands_hz",
+]
+
+
+# --------------------------------------------------------------------------- #
+# the refusal vocabulary — kinds, not household copy
+# --------------------------------------------------------------------------- #
+
+#: The stimulus was never located, or located but carried no usable curve.
+SCREEN_LOCATE_FAILED = "locate_failed"
+#: The two-level pilot pair never cleared the room floor (#1810).
+SCREEN_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
+#: AGC in the recording chain bent the curve being measured.
+SCREEN_LINEARITY_FAILED = "linearity_failed"
+#: A spliced or otherwise glitched timeline — the transient capture class.
+SCREEN_CAPTURE_GLITCH = "capture_glitch"
+#: A sweep clipped.
+SCREEN_CLIPPED = "clipped"
+
+#: Every kind above, so the flow's mapping can be CHECKED for completeness
+#: rather than trusted.  The same discipline :data:`.coordinator.REFUSAL_KINDS`
+#: keeps, and for the same reason: a kind added here without an arm there is a
+#: wiring defect, and a silent ``else`` is how a new kind ships wearing another
+#: kind's household sentence.
+SCREEN_KINDS = frozenset({
+    SCREEN_LOCATE_FAILED,
+    SCREEN_PILOT_LEVEL_COLLAPSE,
+    SCREEN_LINEARITY_FAILED,
+    SCREEN_CAPTURE_GLITCH,
+    SCREEN_CLIPPED,
+})
+
+
+@dataclass(frozen=True)
+class CaptureScreens:
+    """The shipped capture-integrity predicates, EVALUATED, for one take.
+
+    Every field is a fact the caller computed with the flow's own module-level
+    predicate — the same ones MEASURE's and VERIFY's verdicts use.  Those
+    predicates are not moved here on purpose: they serve verdicts that stay on
+    the conductor until the capture-dispatch vertical, and a shared predicate
+    with two owners is worse than one stated argument.
+
+    **Stating them eagerly is exact, and that is checkable rather than
+    asserted.**  The ladders below short-circuit, so on a rejected take the
+    shipped code never called the later predicates.  Each of them
+    (``_stimulus_locate_ok``, ``_sweep_locate_confidence_ok``,
+    ``_sweep_schedule_ok``, ``_any_sweep_clipped``) reads only
+    ``analysis.locations``, returns a bool, and **never raises on no input** —
+    they are total and side-effect-free — so evaluating one whose verdict is
+    then discarded costs a list comprehension and changes nothing observable.
+    What it buys is that the ORDER lives in exactly one place, as data rather
+    than as control flow spread across a call site.
+
+    ``pilot_snr_ok`` and ``linearity_ok`` are tri-state (``None`` = not
+    evaluated) exactly as they are on ``ProgramAnalysis``, because the ladders
+    below branch on ``is False`` rather than on falsiness: an unevaluated screen
+    is not a failed one.
+
+    **Every field is required, and the four that a shorter ladder does not read
+    are required for the same reason as the three it does.**  An earlier
+    revision defaulted ``glitch_detected``/``sweep_locate_confidence_ok``/
+    ``sweep_schedule_ok``/``any_sweep_clipped`` permissively, so
+    :func:`cloud_position_screens`' call site stated three of seven and inherited
+    four passes.  That reads as covered from either end while being a promise
+    nobody made: the day a rung is added to the cloud ladder reading one of
+    them, it would silently never fire — the caller was never asked, so the
+    default answers for a capture it has not looked at.  A default that is only
+    correct because the current ladder ignores the field is a defect waiting for
+    the ladder to change.  Requiring all seven costs each caller four pure,
+    total predicate calls and makes "what this capture was" a stated fact rather
+    than a partly-assumed one.
+    """
+
+    stimulus_located: bool
+    pilot_snr_ok: bool | None
+    linearity_ok: bool | None
+    glitch_detected: bool
+    sweep_locate_confidence_ok: bool
+    sweep_schedule_ok: bool
+    any_sweep_clipped: bool
+
+
+# --------------------------------------------------------------------------- #
+# the three ladders
+# --------------------------------------------------------------------------- #
+
+
+def cloud_position_screens(
+    screens: CaptureScreens, *, has_summed_response: bool,
+) -> str | None:
+    """One prompted cloud position: the light per-capture QC, or a refusal kind.
+
+    **Per-position work is deliberately light** (the PR-3b design contract): the
+    same locate/linearity screens every phase runs, plus "did this capture yield
+    a usable summed response".  The group analyses — combine, null
+    identification, spec evaluation — run ONCE per group, not once per position,
+    so their cost is paid once instead of N times.
+
+    Measured 2026-07-27 on the S0 ten-position corpus (a laptop; a Pi 5 is
+    slower — ``combine_cloud_positions`` states the 3-6 s across-hosts regime):
+    the **combine is 2.7-2.8 s and dominates completely**, while everything
+    layered on it — the null gate, the spec evaluation, the carve-out assembly —
+    totals **0.02-0.04 s**.  Running the set per position would multiply that by
+    N instead of paying it once.
+
+    Two VERIFY gates are deliberately NOT applied here, because both assume a
+    stationary mic replaying the identical program:
+
+    * gate-comparability (a shorter gate than MEASURE's ⇒ inconclusive) — a
+      cloud position's gate legitimately differs from the anchor's, since the
+      nearest boundary changes when the mic moves.  That is the measurement, not
+      a defect.
+    * the G3 pilot-transfer step — the reference it compares against is "the
+      same chain measuring the same thing"; moving the mic changes the acoustic
+      transfer by design, so a step here carries no information about the
+      recording chain drifting.
+
+    ``has_summed_response`` is the last screen and its own kind of refusal: the
+    stimulus located but no summed response came back, so the capture carries no
+    curve to combine and is not evidence.
+    """
+    if not screens.stimulus_located:
+        return SCREEN_LOCATE_FAILED
+    if screens.pilot_snr_ok is False:
+        # Issue #1810, the same ordering rule as the other two ladders: the
+        # room/level discriminator runs before the linearity branch so a
+        # collapsed pilot pair is never reported as the phone's fault.
+        return SCREEN_PILOT_LEVEL_COLLAPSE
+    if screens.linearity_ok is False:
+        return SCREEN_LINEARITY_FAILED
+    if not has_summed_response:
+        return SCREEN_LOCATE_FAILED
+    return None
+
+
+def lateral_pose_screens(screens: CaptureScreens) -> str | None:
+    """One pose of the R16 lateral walk (plan §4.4), or a refusal kind.
+
+    The screens are MEASURE's own capture-integrity gates, in MEASURE's order,
+    because a pose replays MEASURE's program: a pose that did not record cleanly
+    is not evidence, wherever the microphone was standing.
+
+    Three MEASURE gates are deliberately NOT applied — the delay-search status,
+    the GCC trust floor and the plausibility backstop — because all three judge
+    the ALIGNMENT SOLVE, which §4.4 forbids re-running here.  The search window
+    is a geometry prior about the MARK, so a microphone 40 cm to the side
+    legitimately fails it; refusing on those would quietly keep only the poses
+    that happen to align like the anchor, which is precisely the off-axis
+    consequence these samples exist to expose.
+
+    Nor does a rejected pose re-arm MEASURE with a level backoff: the pose must
+    be measured at the ANCHOR'S level or its curve is not comparable to the
+    anchor's, and a quieter retake would answer a different question.  That is
+    the caller's concern, stated here because it is the reason this ladder ends
+    in a plain refusal rather than in a re-arm.
+
+    The walk's LAST rung is :func:`lateral_curves_sufficient`, and it is a
+    separate call for a stated reason — see that function.
+    """
+    if not screens.stimulus_located:
+        return SCREEN_LOCATE_FAILED
+    if screens.pilot_snr_ok is False:
+        return SCREEN_PILOT_LEVEL_COLLAPSE
+    if not screens.sweep_locate_confidence_ok:
+        return SCREEN_LOCATE_FAILED
+    if screens.glitch_detected:
+        return SCREEN_CAPTURE_GLITCH
+    if not screens.sweep_schedule_ok:
+        return SCREEN_CAPTURE_GLITCH
+    if screens.any_sweep_clipped:
+        return SCREEN_CLIPPED
+    if screens.linearity_ok is False:
+        return SCREEN_LINEARITY_FAILED
+    return None
+
+
+def lateral_curves_sufficient(n_curves: int) -> str | None:
+    """The lateral walk's last rung: did this pose yield BOTH branches?
+
+    A pose that yielded fewer than two curves cannot answer any of §4.4's
+    questions — every one of them is a woofer-versus-HF comparison.  It reuses
+    the locate kind rather than minting one, because the household action
+    ("measure this spot again") is identical.
+
+    **Why this is a second call rather than an ``n_curves`` argument to
+    :func:`lateral_pose_screens`.**  Counting the curves means BUILDING them,
+    and the builder (``lateral_pose_curve``) resamples a driver response onto a
+    fixed grid by indexing its own frequency axis — on a degenerate response
+    with an empty axis that is an ``IndexError``, not a zero-length curve.  The
+    shipped ladder never reaches the builder on a capture the screens rejected,
+    and folding the count into the ladder above would have inverted that: the
+    build would run first, so a capture whose stimulus was never located could
+    raise where it used to refuse cleanly, turning a household retry screen into
+    a terminal internal error.  Two calls keep the shipped short-circuit exact.
+    """
+    return SCREEN_LOCATE_FAILED if n_curves < 2 else None
+
+
+@dataclass(frozen=True)
+class EntryBaselineScreen:
+    """The entry baseline's verdict: a refusal kind, or the reduced side.
+
+    ``integrity_payload`` is set only on the capture-integrity arm, and is the
+    fact the household screen needs beside the code — ``{"capture_integrity":
+    ...}``, with an explicit ``None`` inside when the record was ABSENT rather
+    than failed.  The other arms carry no payload because the code alone is the
+    whole finding.
+    """
+
+    kind: str | None
+    measured: MeasuredResponse | None = None
+    integrity_payload: Mapping[str, Any] | None = None
+
+
+def entry_baseline_screens(
+    analysis: "ProgramAnalysis",
+    *,
+    stimulus_located: bool,
+    reference_mark: str,
+) -> EntryBaselineScreen:
+    """#2291's "before" capture: screen it, and reduce it when it passes.
+
+    **The accept rule reuses shipped gates; it invents none.**  Which of
+    VERIFY's this mirrors, and which it drops:
+
+    * stimulus locate — **reused**.  A capture whose stimulus was never located
+      is not evidence about the speaker, whatever is being asked of it.
+    * ``pilot_snr_ok is False`` — **reused**, and ahead of everything but the
+      locate check, for issue #1810's reason: a pilot pair that never cleared
+      the room floor is a room/level problem, and reporting it as anything else
+      sends the household to fix the wrong thing.
+    * capture integrity — **reused**, through
+      :func:`~.verification.evaluate_capture_validity`, which is the shipped
+      comparability rule and the same function the post-apply side is graded by.
+      One difference from VERIFY's verdict, deliberate: an **absent** integrity
+      record is UNUSABLE here where VERIFY treats it as
+      no-evidence-and-continue.  That evaluator owns the "``None`` means no
+      evidence, never clean" convention, and this capture exists only to be
+      compared — a before-side nobody graded cannot carry a before→after claim,
+      so it fails closed rather than seeding one.
+    * ``linearity_ok is False`` — **reused**.  AGC in the recording chain bends
+      the curve this capture exists to measure.
+    * gate-comparability, §5.2 (VERIFY's gate shorter than MEASURE's ⇒
+      inconclusive) — **dropped**.  It protects an OVERLAY of the measured
+      summed response against MEASURE's per-driver model, and this capture makes
+      no such overlay.  Its partner is stage 2's VERIFY, which is still graded
+      against MEASURE's window by that rule; adding a second,
+      differently-motivated refusal here would cost retakes without protecting a
+      claim.
+    * the G3 pilot-transfer step — **dropped**.  G3 asks whether the recording
+      chain moved BETWEEN two replays of the identical program within one
+      conductor's lifetime, and it exists to protect the tracking comparison it
+      immediately precedes.  There is no tracking comparison here, and stage 1
+      runs exactly one summed capture, so the gate could only ever record a
+      reference that stage 2's own fresh conductor is forbidden to inherit
+      (#1927).
+    * the tracking-max tolerance comparison — **dropped**, structurally:
+      :func:`~.priors.entry_baseline_priors` withholds ``predicted_sum``, so
+      ``analysis.verify_tracking`` is ``None`` and there is nothing to grade.
+
+    One more refusal that is this phase's own: the reduction
+    (:func:`~.round_evidence.measured_response_from_analysis`) must produce a
+    side.  It returns ``None`` for a missing summed response or a degenerate
+    curve — the same "located, but carries no curve" condition
+    :func:`cloud_position_screens` already answers with the locate kind, and
+    this reuses that kind rather than minting one.
+
+    Every refusal is an ordinary kind the flow renders with a shipped
+    ``REASON_*``, so the slot's normal retry budget and household copy apply
+    with no new machinery.
+
+    ``analysis`` arrives whole here, unlike the other two ladders' stated
+    screens, because two of this ladder's steps CONSUME it rather than test it:
+    the shipped comparability evaluator reads the integrity record, and the
+    reduction reads the summed response.  Handing over a
+    :class:`CaptureScreens` and then the analysis as well would state one fact
+    twice.
+
+    ``stimulus_located`` is nonetheless a separate argument, and the split is
+    the same one :class:`CaptureScreens` makes: it is the answer of a flow-side
+    PREDICATE (``_stimulus_locate_ok``, which also serves MEASURE's and
+    VERIFY's verdicts and so keeps its owner there), whereas ``pilot_snr_ok``
+    and ``linearity_ok`` are plain attributes of the analysis this function was
+    handed.  Reading a field off an argument is not reaching; importing the
+    predicate would be.
+    """
+    if not stimulus_located:
+        return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
+    if analysis.pilot_snr_ok is False:
+        return EntryBaselineScreen(SCREEN_PILOT_LEVEL_COLLAPSE)
+    integrity = analysis.capture_integrity
+    validity = evaluate_capture_validity(integrity)
+    if validity.status is CaptureValidity.UNUSABLE:
+        payload = (
+            {"capture_integrity": integrity.to_dict()}
+            if integrity is not None else {"capture_integrity": None}
+        )
+        # The same two-code split VERIFY's verdict makes from the same evidence:
+        # a sweep nobody could hear is a level/mic problem, and a spliced or
+        # clipped timeline is the transient capture-glitch class (#1838 §5.2).
+        # An ABSENT record takes the glitch kind's silent auto-retry, which is
+        # the right household action for "we could not tell" — nothing for them
+        # to fix, worth one more try.
+        if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
+            return EntryBaselineScreen(SCREEN_LOCATE_FAILED, integrity_payload=payload)
+        return EntryBaselineScreen(SCREEN_CAPTURE_GLITCH, integrity_payload=payload)
+    if analysis.linearity_ok is False:
+        return EntryBaselineScreen(SCREEN_LINEARITY_FAILED)
+    measured = measured_response_from_analysis(
+        analysis, reference_mark=reference_mark,
+    )
+    if measured is None:
+        return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
+    return EntryBaselineScreen(None, measured=measured)
+
+
+# --------------------------------------------------------------------------- #
+# what a group will stand on, and when it asks for another take
+# --------------------------------------------------------------------------- #
+
+
+def group_position_floor(phase: str, *, min_resolved_cloud_positions: int) -> int:
+    """How few resolved positions still lets a group stand.
+
+    A cloud is an AVERAGE: below ``min_resolved_cloud_positions`` there is
+    nothing to combine, so the session ends honestly.  The lateral walk is not —
+    §4.4: "side evidence owns robustness, not the target".  The coefficients are
+    the anchor's and already in hand, so a pose nobody could capture costs a
+    robustness sample and nothing else.  Floor ZERO: drop it, record why, keep
+    walking, and let the consumer disclose that it decided on fewer positions
+    than planned.
+    """
+    return 0 if phase == PHASE_LATERAL else min_resolved_cloud_positions
+
+
+@dataclass(frozen=True)
+class GeometryRetake:
+    """A warranted geometry retake: which rung to show, and which take it drops.
+
+    ``rung`` indexes the caller's prompt ladder; ``retries_after`` is the
+    counter's new value.  Both are computed here rather than at the call site so
+    "how many have been spent" and "which sentence the household reads" cannot
+    drift apart.
+    """
+
+    rung: int
+    retries_after: int
+
+
+def geometry_retake(
+    *,
+    locked: bool | None,
+    thin_evidence: bool | None,
+    retries_used: int,
+    budget: int,
+    group_already_closed: bool,
+    have_take_to_replace: bool,
+) -> GeometryRetake | None:
+    """Whether this group close asks the household to walk two more positions.
+
+    Four conjuncts, and none of them is obvious:
+
+    * ``locked`` — the combine could not separate the room's arrivals, which is
+      the only condition a retake can improve.
+    * ``thin_evidence`` is NOT set — the flag marks a verdict resting on the
+      bare minimum number of usable echo estimates (a cliff, not a gradient).
+      Asking an operator to walk two more positions on that basis spends real
+      session minutes on a verdict the instrument itself qualifies, so a thin
+      lock is disclosed and accepted rather than retried.
+    * the budget is not spent.
+    * ``group_already_closed`` is False.  A VOLUNTARY retake (§2.6) re-enters
+      the close with the group already closed, and the retry branch DROPS the
+      take at this index — which, on a voluntary retake, is the only copy (the
+      retention replaced the original in place).  Dropping it would leave the
+      household with LESS evidence than before they chose to redo a spot, which
+      is the one thing the retake contract promises can never happen.  So:
+      re-combine, keep the verdict honest with the new take, and accept.
+
+    ``have_take_to_replace`` is the fifth condition and the reason this returns
+    an object rather than a bool.  A group can close because its last position
+    was SETTLED without a curve, and then there is no take: the retake lever
+    works by REJECTING the take at this index, so asking would re-open the slot
+    whose tries are exactly what just ran out.  Carrying the narrowing in the
+    return value rather than in a second conjunct at the call site keeps "which
+    take gets dropped" and "is a drop warranted" the same fact.
+    """
+    warranted = (
+        locked is True
+        and thin_evidence is not True
+        and retries_used < budget
+        and not group_already_closed
+    )
+    if not (warranted and have_take_to_replace):
+        return None
+    return GeometryRetake(rung=retries_used, retries_after=retries_used + 1)
+
+
+# --------------------------------------------------------------------------- #
+# what a retained take records
+# --------------------------------------------------------------------------- #
+
+
+def cloud_position_record(
+    *,
+    position_id: str,
+    phase: str,
+    index: int,
+    attempt: int,
+    prompt: str,
+    wide: bool,
+    role: str,
+    captured_at: float,
+    session_id: str,
+    gate_window_ms: float | None,
+    gate_floor_source: str | None,
+    gate_disclosure: str | None,
+    validity_floor_hz: float | None,
+    gating_applied: bool,
+    summed_ripple_db: float | None,
+    glitch_detected: bool,
+    wav_sha256: str | None,
+) -> dict[str, Any]:
+    """One retained cloud position, as the record two consumers read.
+
+    **WO-1 moved this assembly ahead of the retention seam's own early return**,
+    so it is built whether or not a retention seam is bound.  That is
+    deliberate: the metadata has two consumers.  The seam is one; the group
+    close is the other — the cloud pipeline reads these records to serialize the
+    per-position members — and the close happens on every session, including the
+    offline/test configurations that bind no retention seam at all.  Building it
+    only when a storage seam existed would have made the per-position evidence
+    silently depend on operator retention being wired.
+
+    ``take_id`` is minted HERE rather than only at the storage seam, so the
+    conductor's own evidence and the bundle's sidecar path name the same take.
+    A geometry retake reuses the position id, so the id alone does not identify
+    a take (attribution plan §6's "accepted-attempt ↔ position mapping").
+
+    ``gate_floor_source`` records WHY the gate window is what it is (issue
+    #1966).  ``gating_applied`` only says a window was applied at all; it cannot
+    distinguish a window that stops at a found reflection from one capped at the
+    search bound because none was found.  Every position of the 2026-07-30
+    corpus was the second, and this record could not say so.
+    ``gate_disclosure`` is the same fact as a sentence, so a reader does not
+    have to know the enum's vocabulary to read the record honestly.
+
+    ``wav_sha256`` is the capture's content digest — the VERIFIER for a replay,
+    never the index (§6's rule that "content hashing stays the verifier; it must
+    stop being the index").  Recorded whether or not any store retained the
+    bytes, because it is what lets a laptop-side WAV be matched back to this
+    take at all.
+    """
+    return {
+        "position_id": position_id,
+        "phase": phase,
+        "index": index,
+        "attempt": attempt,
+        "take_id": f"{position_id}_a{int(attempt):02d}",
+        "prompt": prompt,
+        "wide": wide,
+        # The position's named question (attribution-stage plan §5's promotion
+        # queue item 1). The prompt string alone cannot be parsed back into a
+        # role, so the label rides the record explicitly.
+        "role": role,
+        "captured_at": captured_at,
+        "session_id": session_id,
+        "gate_window_ms": gate_window_ms,
+        "gate_floor_source": gate_floor_source,
+        "gate_disclosure": gate_disclosure,
+        "validity_floor_hz": validity_floor_hz,
+        "gating_applied": gating_applied,
+        "summed_ripple_db": summed_ripple_db,
+        "glitch_detected": glitch_detected,
+        "wav_sha256": wav_sha256,
+    }
+
+
+def entry_baseline_record(
+    *,
+    index: int,
+    attempt: int,
+    session_id: str,
+    program_id: str,
+    reference_mark: str,
+    graph_fingerprint: str,
+    captured_at: str,
+    validity_floor_hz: float | None,
+    gate_window_ms: float | None,
+    summed_ripple_db: float | None,
+    glitch_detected: bool,
+    wav_sha256: str | None,
+) -> dict[str, Any]:
+    """The entry baseline's retained record — a cloud position's shape, minus
+    the group.
+
+    Structurally a cloud-position record: same take-id convention, same
+    gate/ripple/digest scalars, handed to the same retention seam so an entry
+    baseline lands in ``refs["position_artifacts"]`` beside every other retained
+    take and one replay path covers both.  It is NOT a group member, which is
+    exactly why the retention call is explicit at its call site — nothing in the
+    group bookkeeping would make it.
+
+    The three fields a cloud position has no use for are the three that make
+    THIS capture comparable to the post-apply one, and they are the reason it is
+    a separate builder rather than a keyword on the other: WHAT was played
+    (``program_id``), WHERE it was played from (``reference_mark``), and WHICH
+    graph it went through (``graph_fingerprint``).  A before→after claim is only
+    as good as those three matching on both sides.
+    """
+    take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
+    return {
+        "position_id": take_id,
+        "phase": PHASE_ENTRY_BASELINE,
+        "index": index,
+        "attempt": attempt,
+        "take_id": take_id,
+        "session_id": session_id,
+        "program_id": program_id,
+        "reference_mark": reference_mark,
+        "graph_fingerprint": graph_fingerprint,
+        "captured_at": captured_at,
+        "validity_floor_hz": validity_floor_hz,
+        "gate_window_ms": gate_window_ms,
+        "summed_ripple_db": summed_ripple_db,
+        "glitch_detected": glitch_detected,
+        "wav_sha256": wav_sha256,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# the blind span below the null registry's floor
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class BoostExclusion:
+    """:func:`boost_excluded_bands_hz`'s answer, plus the line it justifies.
+
+    ``diagnostics`` carries the journal fields the flow emits under
+    ``event=correction.crossover_v2_boost_evidence``.  They travel as data
+    rather than as a log call because this module is side-effect-free (see the
+    module docstring); the event NAME and the ``session_id`` stay with the flow,
+    which owns both.
+    """
+
+    bands: tuple[tuple[float, float], ...]
+    diagnostics: dict[str, Any]
+
+
+def boost_excluded_bands_hz(
+    combined: Any,
+    result: Mapping[str, Any],
+    *,
+    echo_band_hz: Sequence[float],
+) -> BoostExclusion:
+    """Bands BELOW the null registry's own floor where this cloud's positions
+    disagree about a dip — so boosting one corrects nothing any listener hears
+    (#1967).
+
+    **The hole this fills.**  Boost permission is granted on ``cloud is not
+    None`` (see the boost gate in
+    :func:`~.intervention.plan_linearization`), whose stated meaning is that
+    "null-exclusion stays a measured, registry-gated fact".  The registry's
+    analysis band is floored at 4 kHz, so below that edge the registry
+    contributes no exclusions — not because it was uncertain but because it was
+    never asked — and the gate's claim is satisfied in form without being
+    satisfied in substance.  On the 2026-07-30 JTS3 session the registry
+    returned ``insufficient_evidence`` / ``no_corroborating_arrivals`` with zero
+    exclusions (re-derived from that session's own ``cloud_measure.json``),
+    while its largest prescribed boost was **+8.06 dB at 3633.6 Hz** — 366 Hz
+    under the floor.  That boost figure is the owner's, from the offline replay
+    recorded on issue #1967; it is quoted here rather than re-derived, and no
+    test pins it.
+
+    **What this does and, more importantly, what it does not.**  It runs
+    :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
+    over the blind span and hands the dips the cloud's own positions DISAGREE
+    about to the fit vocabulary, which refuses a lift whose realized cascade
+    would put significant gain in one.  It cannot grant boost anywhere — the
+    bound is monotone by construction (see
+    :func:`~jasper.active_speaker.linearization_fit._lift_stage`) and a
+    ``position_invariant`` dip is left exactly as the gate already had it.  That
+    asymmetry is deliberate and is not this module's call to make —
+    ``interference_nulls``' module docstring ("position-invariance says *this is
+    real*; it does not say *this is correctable*"),
+    ``docs/attribution-stage-plan.md`` §5 (a finding supported only by position
+    variance stays ``unsure``, adjudicated by rotating the speaker), and
+    :mod:`jasper.attribution.promotion` (which routes ``position_invariant`` to
+    ``carve``) all refuse to read stationarity as a driver property.  So this
+    narrows the gate where the evidence decides against a boost and leaves it
+    open otherwise, which is the owner's ruling ("do not trade a blind gate for
+    a blunt one") applied rather than overridden.
+
+    The residual is therefore real and named: a dip that every position sees may
+    still be a source-fixed interference null rather than a driver deficit, and
+    separating those needs the post-apply arm to ask "did this help" rather than
+    "did this match the model" (#1868).
+
+    **Know what one band costs before adding to this list.**  The fit drops any
+    boost filter whose own action region overlaps a band here — per filter, so
+    siblings working elsewhere survive, and a whole-lift refusal
+    (``lift_suppressed_reason="boost_excluded_band"``) only when EVERY boost was
+    aimed.  Skirt spill from a surviving filter is kept and disclosed rather
+    than refused.  Even so, each band here can cost a real correction, which is
+    why this returns only the positively-contradicted class and never a "we were
+    unsure here" list.
+
+    **Fails OPEN**, disclosed.  A span too narrow to analyse, a cloud that never
+    retained per-position curves, or an unexpected numeric failure all yield no
+    exclusions — i.e. exactly the permission the gate grants today.  Failing
+    closed would blanket-ban boost below 4 kHz on a computation hiccup, which is
+    the blunt outcome this whole function exists to avoid.
+
+    ``variance_check_failed`` is the one arm the caller must still act on: it is
+    reported in :attr:`BoostExclusion.diagnostics` so the flow can raise the
+    journal line's level, because an unexpected numeric failure is worth seeing
+    even though it is answered by failing open.
+    """
+    from jasper.audio_measurement.interference_nulls import (
+        CLASSIFICATION_POSITION_DEPENDENT,
+        classify_dip_position_variance,
+    )
+
+    registry = result.get("null_registry") or {}
+    n_dependent = 0
+    floor_hz = float(echo_band_hz[0])
+    grid = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
+    # The cloud's own gated validity floor is the honest lower edge: below it
+    # every position's curve is a truncated-window artifact, which is the same
+    # bound the spec band already clamps to.
+    validity_floor_hz = result.get("validity_floor_hz")
+    lo_hz = float(validity_floor_hz) if validity_floor_hz else 0.0
+    if grid.size:
+        lo_hz = max(lo_hz, float(grid[0]))
+    span = (lo_hz, floor_hz)
+    bands: tuple[tuple[float, float], ...] = ()
+    reason = ""
+    n_dips = 0
+    variance_check_failed = False
+    if not (0.0 < lo_hz < floor_hz) or int(
+        np.count_nonzero((grid >= lo_hz) & (grid <= floor_hz))
+    ) < 3:
+        reason = "no_blind_span"
+    else:
+        try:
+            report = classify_dip_position_variance(combined, band_hz=span)
+        except Exception:  # noqa: BLE001 - see "Fails OPEN" above.
+            reason = "variance_check_failed"
+            variance_check_failed = True
+        else:
+            reason = report.reason
+            n_dips = len(report.dips)
+            n_dependent = sum(
+                dip.classification == CLASSIFICATION_POSITION_DEPENDENT
+                for dip in report.dips
+            )
+            bands = report.position_dependent_bands_hz
+    return BoostExclusion(
+        bands=bands,
+        diagnostics={
+            # The band the corroborating registry actually adjudicated, and the
+            # span below it where it structurally could not.
+            "registry_band_hz": [round(v, 3) for v in echo_band_hz],
+            "registry_classification": str(registry.get("classification") or ""),
+            "registry_reason": str(registry.get("reason") or ""),
+            "unadjudicated_span_hz": [round(v, 3) for v in span],
+            "variance_reason": reason,
+            "n_dips": n_dips,
+            # How many of those dips the cloud's positions DISAGREED about — the
+            # only class this bound acts on. ``n_dips - n_position_dependent`` is
+            # the invariant remainder, which keeps its boost and is exactly the
+            # residual #1868 has to close.
+            "n_position_dependent": n_dependent,
+            "boost_excluded_bands_hz": [
+                [round(lo, 3), round(hi, 3)] for lo, hi in bands
+            ],
+            "variance_check_failed": variance_check_failed,
+        },
+    )
