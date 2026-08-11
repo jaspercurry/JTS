@@ -717,9 +717,7 @@ def reconcile_coupling(
             # walk — a stale .so beside new daemons) has CamillaDSP failing to
             # start, and re-running the arm would meet the same -EINVAL. The only
             # state that plays audio is loopback, so go there directly.
-            caps_ok, caps_detail = ring_wire_caps_ready(
-                fanin_text=fanin_snapshot.text
-            )
+            caps_ok, caps_detail = ring_wire_caps_ready()
             if not caps_ok:
                 log_event(
                     logger,
@@ -1497,6 +1495,14 @@ class RingWireDeclaration:
     ``ring`` is ``"A"`` or ``"B"`` and selects which channel count this end is
     held to; the two rings differ on that axis by design (a stereo program in,
     per-driver channels out), so the comparison cannot use one number.
+
+    ``channels_excused`` marks an end that STRUCTURALLY states no channel count,
+    which is a different fact from one that tried and could not — only the
+    latter is an indeterminate declaration the gate refuses. It is a per-axis
+    flag rather than a reuse of ``note`` because the notes are not per-axis: the
+    outputd end carries a note explaining why its FORMAT is not compared before
+    arming, and that note must not also excuse its channels, which ARE compared
+    on an unarmed box.
     """
 
     end: str
@@ -1505,9 +1511,10 @@ class RingWireDeclaration:
     sample_format: str | None = None
     channels: int | None = None
     note: str = ""
+    channels_excused: bool = False
 
 
-def _load_topology_for_wire():
+def load_topology_for_wire():
     """The saved output topology for a wire resolution, or ``None``.
 
     Fail-SOFT on every error: ``resolve_ring_wire(None)`` answers the shipped
@@ -1624,6 +1631,10 @@ def ring_wire_declarations(
             sample_format=ring_conf_format(RING_A_CONF_PCM) if conf_present else None,
             channels=ring_conf_channels(RING_A_CONF_PCM) if conf_present else None,
             note=conf_absent_note,
+            # An ABSENT conf.d states nothing on either axis and the asset gate
+            # owns that refusal; a PRESENT one that cannot be parsed is a torn
+            # file whose channels line this gate must refuse.
+            channels_excused=not conf_present,
         ),
         RingWireDeclaration(
             end=f"conf.d {RING_B_CONF_PCM}",
@@ -1632,6 +1643,7 @@ def ring_wire_declarations(
             sample_format=ring_conf_format(RING_B_CONF_PCM) if conf_present else None,
             channels=ring_conf_channels(RING_B_CONF_PCM) if conf_present else None,
             note=conf_absent_note,
+            channels_excused=not conf_present,
         ),
         RingWireDeclaration(
             end="CamillaDSP emitted stanzas",
@@ -1639,6 +1651,9 @@ def ring_wire_declarations(
             ring="B",
             sample_format=content_lane_format_for_coupling(_SHM),
             note="counterfactual: what arming would emit",
+            # The coupling's kwargs carry a format and no channel count — this
+            # end genuinely has nothing to say on that axis, ever.
+            channels_excused=True,
         ),
         RingWireDeclaration(
             end="outputd (Ring B reader)",
@@ -1718,7 +1733,7 @@ def ring_edge_width_ready(
     if outputd_text is None:
         outputd_text = _read_snapshot(OUTPUTD_ENV_PATH).text
 
-    wire = resolve_ring_wire(_load_topology_for_wire())
+    wire = resolve_ring_wire(load_topology_for_wire())
     armed = resolve_coupling(read_value(fanin_text, COUPLING_ENV_VAR)) == (
         COUPLING_SHM_RING
     )
@@ -1748,6 +1763,19 @@ def ring_edge_width_ready(
                 f"{decl.end} declares {decl.channels} channels, expected "
                 f"{want_channels} (from {decl.source})"
             )
+        elif decl.channels is None and not decl.channels_excused:
+            # SYMMETRY WITH THE FORMAT AXIS. An end that meant to state a channel
+            # count and could not is indeterminate, and an indeterminate end
+            # cannot be proven to match — the shape that reaches here is a
+            # PRESENT conf.d whose block declares ``channels`` twice with
+            # different values (``ring_conf_channels`` answers None for exactly
+            # that torn file), or an outputd key that will not parse as an int.
+            # Without this the channels axis passed such a box silently while
+            # the format axis refused it.
+            problems.append(
+                f"{decl.end} declares no channel count at all (from "
+                f"{decl.source}) — an indeterminate end cannot be proven to match"
+            )
     if problems:
         return False, (
             f"the ring wire resolves to {wire.sample_format} / Ring A "
@@ -1763,9 +1791,7 @@ def ring_edge_width_ready(
     )
 
 
-def ring_wire_caps_ready(
-    *, fanin_text: str | None = None
-) -> tuple[bool, str]:
+def ring_wire_caps_ready() -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate: can the INSTALLED ioplug open this wire?
 
     A RECORD COMPARE, never an open-probe. The reconciler must never open a ring
@@ -1792,8 +1818,7 @@ def ring_wire_caps_ready(
     from jasper.fanin_coupling import resolve_ring_wire
     from jasper.ring_assets import ring_ioplug_wire_supported
 
-    del fanin_text  # accepted for call-shape symmetry with the width gate
-    support = ring_ioplug_wire_supported(resolve_ring_wire(_load_topology_for_wire()))
+    support = ring_ioplug_wire_supported(resolve_ring_wire(load_topology_for_wire()))
     return support.ok, support.detail
 
 
@@ -2509,7 +2534,7 @@ def _arm_ring(
     # A RECORD compare (installer-written provenance vs the .so on disk), never
     # an open-probe: probing a ring PCM from the reconciler would disturb a live
     # arm. No-op on the shipped wire, which renders no such key.
-    caps_ok, caps_detail = ring_wire_caps_ready(fanin_text=fanin_snapshot.text)
+    caps_ok, caps_detail = ring_wire_caps_ready()
     if not caps_ok:
         return _fail_ring_arm(
             do_restart,
@@ -2644,6 +2669,12 @@ def _arm_ring(
             restarted_outputd=True,
         )
 
+    # A completed arm is a SUCCESS for the strike record's purpose: CamillaDSP
+    # just loaded the ring config. Leaving stale strikes here would silently
+    # degrade the two-strike policy to one — an operator's fresh re-arm would be
+    # one transient confirm away from being recovered to loopback, with the
+    # escalation log citing a failure from before the arm that fixed it.
+    _clear_ring_confirm_failures()
     log_event(
         logger,
         "fanin.coupling_reconcile",
@@ -2767,6 +2798,12 @@ def _disarm(
         if not kick_ok:
             kick_detail = f"audio-hardware reconcile kick failed ({kick_fail})"
     ok = daemon_ops.ok
+    if ok:
+        # A completed disarm ends the incident the strikes were evidence of: the
+        # box is off the ring, and the next arm starts a fresh one. A PARTIAL
+        # disarm keeps the record — some of the box may still be on the ring, so
+        # the accumulated evidence is still about the live state.
+        _clear_ring_confirm_failures()
     detail = "; ".join(
         d
         for d in (
@@ -2805,7 +2842,23 @@ def _disarm(
 # The reconciler is EVENT-DRIVEN (boot, deploy, a /sources/ toggle, an operator
 # start) — there is no timer — so strikes accumulate across events rather than
 # on a schedule, and the window only DISCARDS evidence too old to be about the
-# same incident. Any success clears the record: these are consecutive strikes.
+# same incident.
+#
+# STRIKES ARE CONSECUTIVE, so EVERY successful transition clears the record, not
+# just a successful confirm: a completed ``_arm_ring`` and a completed
+# ``_disarm`` clear it too. Without those two the two-strike policy silently
+# degraded to one — an operator whose fresh re-arm succeeded was left holding a
+# pre-arm strike, and the next single transient recovered the box to loopback
+# citing a failure the arm had already fixed.
+#
+# INSTALL DOES NOT CLEAR IT, deliberately. The record survives a deploy inside
+# its window, and that is the honest behaviour: this reconciler is its single
+# owner, install already drives a reconcile whose success clears it through the
+# ordinary path, and an unconditional deploy-time wipe would discard real
+# evidence on exactly the box that needs the escalation — one whose confirm
+# fails, gets redeployed WITHOUT the cause being fixed, and fails again. Those
+# are two consecutive failures of one incident; a deploy in between proves
+# nothing about the ring. The 24 h window is what bounds stale evidence.
 RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
 RING_CONFIRM_STRIKE_LIMIT = 2
 RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600
@@ -2924,7 +2977,7 @@ def _reseed_loopback_statefile(reason: str) -> tuple[bool, str]:
             safe_graph_for_current_topology,
         )
 
-        topology = _load_topology_for_wire()
+        topology = load_topology_for_wire()
         decision = safe_graph_for_current_topology(
             topology, coupling=COUPLING_LOOPBACK
         )

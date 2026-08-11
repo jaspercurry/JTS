@@ -254,7 +254,7 @@ electrical method structurally cannot reach.
 The Scarlett also exposes playback endpoints — confirm the output stack ignored
 them and the dongle is still the output DAC:
 ```sh
-curl -s http://jts.local:8780/state | jq '.audio_graph.coupling'   # shm_ring, coherent:true
+curl -s http://jts.local:8780/state | jq '.audio_graph.coupling'   # persisted:shm_ring, intent_coherent:true
 cat /run/jasper-output-hardware/output_hardware.json | jq '{profile,status}'  # apple_usb_c_dongle / ready
 ```
 The output-hardware reconciler correctly leaves the dongle as the profile with a

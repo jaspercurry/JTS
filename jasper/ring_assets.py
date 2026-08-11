@@ -170,14 +170,23 @@ class RingIoplugProvenance:
 
 
 def read_ring_ioplug_provenance(
-    path: str = RING_IOPLUG_PROVENANCE,
+    path: str | None = None,
 ) -> RingIoplugProvenance:
     """Read the installer's ioplug provenance record. Never raises.
 
     Unparseable / absent / sha-less content answers ``recorded=False`` rather
     than a partial record: a record that cannot name WHICH ``.so`` it describes
     cannot vouch for the one on disk, so there is nothing to trust.
+
+    ``path=None`` resolves :data:`RING_IOPLUG_PROVENANCE` at CALL time, not as a
+    bound default — the same rule :func:`ring_conf_n_slots` follows, and for the
+    same reason: a default bound at import captures the constant forever, so a
+    caller (or a test) that repoints the module attribute is silently ignored
+    and the read lands on the real path. That silence had a live cost here — the
+    doctor's check named ``RING_IOPLUG_PROVENANCE`` in its own message while
+    reading a path nothing could redirect, which is one fact with two answers.
     """
+    path = RING_IOPLUG_PROVENANCE if path is None else path
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -258,7 +267,7 @@ def ring_ioplug_wire_supported(
     wire: RingWire,
     *,
     plugin_dir: str = RING_ALSA_PLUGIN_DIR,
-    provenance_path: str = RING_IOPLUG_PROVENANCE,
+    provenance_path: str | None = None,
 ) -> RingIoplugWireSupport:
     """Can the installed ioplug ``.so`` parse the conf.d this wire renders?
 
@@ -276,7 +285,13 @@ def ring_ioplug_wire_supported(
     Short-circuits to ``ok`` when the wire needs nothing (:func:`ring_wire_capabilities`
     is empty), which is every box on the shipped wire — no file is read and no
     hash is computed on that path.
+
+    ``provenance_path=None`` resolves the module constant at CALL time — see
+    :func:`read_ring_ioplug_provenance` for why a bound default is wrong here.
     """
+    provenance_path = (
+        RING_IOPLUG_PROVENANCE if provenance_path is None else provenance_path
+    )
     needed = ring_wire_capabilities(wire)
     if not needed:
         return RingIoplugWireSupport(

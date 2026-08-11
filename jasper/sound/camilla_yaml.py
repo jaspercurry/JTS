@@ -635,14 +635,27 @@ def render_flat_cutover_configs(
 
     **The ring sibling is written only on a NON-ROLEFUL box** (see
     :func:`_roleful_topology`). It is a solo-stereo FULL-RANGE graph, and on a
-    crossover box that is full-range content routed to a tweeter — so it is not
-    left lying on disk there for anything to select. A roleful box's ring graph
-    comes from the active-speaker emitters, which carry the per-driver channels
-    and mutes; it is not this file with a different name. A box that becomes
-    roleful after a ring render keeps the stale sibling until this runs again
-    on the new topology; the selection path refuses it in the meantime
-    (``safe_graph_for_current_topology`` reaches the ring branch only when the
-    contract is not roleful), so the render gate and the selection gate agree.
+    crossover box that is full-range content routed to a tweeter — which is why
+    a roleful topology is refused the render. A roleful box's ring graph comes
+    from the active-speaker emitters, which carry the per-driver channels and
+    mutes; it is not this file with a different name.
+
+    THE GATE SKIPS THE WRITE; IT DOES NOT DELETE. Nothing here removes an
+    ``outputd-cutover-ring.yml`` that a previous non-roleful render already
+    wrote, and re-running on the now-roleful topology skips the write again
+    rather than clearing it. So a box that becomes roleful AFTER a ring render
+    keeps that full-range file on disk until something else removes it. That is
+    a KNOWN RESIDUAL, not a claim that it is cleaned up; the rung that gives a
+    roleful box its own ring graph is R7b in
+    ``docs/HANDOFF-audio-graph-consolidation.md``, which is where removing it
+    belongs.
+
+    What the residual cannot do is get SELECTED:
+    ``safe_graph_for_current_topology`` reaches the ring branch only when the
+    contract is not roleful, so the selection gate refuses the file on exactly
+    the boxes this render gate refuses to write it for. It does stay VISIBLE to
+    anything that lists the config directory — a live camillagui picker is the
+    case that makes the residual worth naming rather than leaving implicit.
 
     THREE callers must produce byte-identical files or the box's graph depends
     on which one ran last: ``deploy/install.sh`` at deploy time,

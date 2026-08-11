@@ -191,7 +191,13 @@ _jts_ring_ioplug_caps() {
         caps+=("wire_channels")
     fi
     local IFS=,
-    printf '%s' "${caps[*]}"
+    # `${caps[*]-}`, not `${caps[*]}`: under `set -u` bash 3.2 (the macOS system
+    # bash the test lane runs on) treats an EMPTY array expansion as an unbound
+    # variable and aborts. An uncapable .so — the whole point of this probe — is
+    # exactly the empty case, so the guard is on the load-bearing path, not a
+    # corner. bash 5 on the Pi is happy either way; this keeps one script that
+    # runs on both.
+    printf '%s' "${caps[*]-}"
 }
 
 # Record what this install just put at ${so_dest}: the sha256 of the installed

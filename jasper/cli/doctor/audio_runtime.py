@@ -2240,9 +2240,20 @@ def _outputd_buffer_health(
         # reports its own declaration, which proves nothing about a ring that
         # does not exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
+            from jasper.fanin.coupling_reconcile import load_topology_for_wire
             from jasper.fanin_coupling import resolve_ring_wire
 
-            wire = resolve_ring_wire()
+            # TOPOLOGY-THREADED, like every reconciler gate that compares this
+            # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready`` both
+            # pass ``load_topology_for_wire()``). ``ring_b_channels`` is the one
+            # PER-TOPOLOGY axis in the wire, so resolving with ``None`` here
+            # would answer the shipped stereo declaration and report a FAIL
+            # against a box whose Ring B legitimately carries a different width
+            # — the doctor contradicting the reconciler that armed it. Threading
+            # the topology is also why the two agree on a box that cannot read
+            # its topology at all: the helper fails soft to ``None`` and both
+            # sides then ask the same shipped-geometry question.
+            wire = resolve_ring_wire(load_topology_for_wire())
             observed_format = shm_ring_block.get("format")
             observed_channels = shm_ring_block.get("channels")
             if observed_format is not None and observed_format != wire.sample_format:

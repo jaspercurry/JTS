@@ -278,3 +278,144 @@ def test_every_non_producing_install_path_revokes_the_record():
     text = _sh_text()
     assert text.count("revoke_ring_ioplug_provenance") >= 5  # 4 call sites + the def
     assert "rm -f \"${JTS_RING_IOPLUG_PROVENANCE}\"" in text
+
+
+# --- the doctor check, branch by branch -------------------------------------
+#
+# `check_ring_ioplug_provenance` is the standing surface for "is the plugin on
+# disk the one the installer built". It has four verdicts and each is a distinct
+# operator instruction, so each is pinned: an absent .so defers to the
+# missing-asset check, no record and a sha mismatch both WARN (with different
+# remedies), and a match reports the capability set. `warn` rather than `fail`
+# for the two unvouched shapes is itself a decision — the shipped wire opens on
+# a stale plugin, so the record matters at the moment a box's wire needs a
+# capability, which is where the coupling reconciler's gate fails closed.
+
+
+def _doctor_env(monkeypatch, tmp_path, *, so_bytes=None, record=None):
+    """Point the doctor's provenance check entirely inside ``tmp_path``.
+
+    Returns the ``.so`` path. ``so_bytes=None`` leaves it absent; ``record=None``
+    leaves the provenance file absent.
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    plugin_dir = tmp_path / "plugindir"
+    plugin_dir.mkdir()
+    monkeypatch.setattr(audio, "_JTS_RING_ALSA_PLUGIN_DIR", str(plugin_dir))
+    provenance = tmp_path / "ring-ioplug.provenance"
+    monkeypatch.setattr(ring_assets, "RING_IOPLUG_PROVENANCE", str(provenance))
+    so_path = plugin_dir / "libasound_module_pcm_jts_ring.so"
+    if so_bytes is not None:
+        so_path.write_bytes(so_bytes)
+    if record is not None:
+        provenance.write_text(record, encoding="utf-8")
+    return so_path
+
+
+def _record_text(sha, caps=""):
+    return (
+        "# installer-written\n"
+        f"{ring_assets.RING_PROVENANCE_SHA_KEY}={sha}\n"
+        f"{ring_assets.RING_PROVENANCE_CAPS_KEY}={caps}\n"
+    )
+
+
+def _sha_of(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_provenance_check_skips_when_the_so_is_absent(monkeypatch, tmp_path):
+    """ONE absent file, ONE reason. ``check_ring_platform_assets`` owns the
+    missing-asset verdict; a second refusal here would bury the one that names
+    the fix."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _doctor_env(monkeypatch, tmp_path)
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "ok"
+    assert "skipped" in res.detail
+    assert "ring platform" in res.detail
+
+
+def test_provenance_check_warns_when_the_plugin_is_unvouched(monkeypatch, tmp_path):
+    """Installed but no record — the shape a REVOKING deploy leaves behind, and
+    also the shape of every box that predates the recording. The detail must
+    cover both readings and name the redeploy."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "warn"
+    assert "UNVOUCHED" in res.detail
+    assert "a deploy revoked the record" in res.detail
+    assert "scripts/deploy-to-pi.sh" in res.detail
+
+
+def test_provenance_check_warns_when_the_installed_so_is_stale(monkeypatch, tmp_path):
+    """THE HOLE THIS CHECK CLOSES. The build degrades to a WARN, so a failed
+    rebuild leaves the PREVIOUS .so beside new daemons — structurally valid, so
+    the presence check and the open-probe both pass. The sha is what separates
+    it from a fresh build."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=b"\x7fELF the plugin actually on disk",
+        record=_record_text(_sha_of(b"\x7fELF a different plugin")),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "warn"
+    assert "STALE ioplug" in res.detail
+    assert "NOT the one" in res.detail
+
+
+def test_provenance_check_reports_the_caps_when_the_record_matches(
+    monkeypatch, tmp_path
+):
+    """The vouched path. The capability list is the operationally useful part —
+    it is what the reconciler's gate compares a wide wire against — so it is
+    printed rather than reduced to 'ok'."""
+    from jasper.cli.doctor import audio_runtime as audio
+
+    so_bytes = b"\x7fELF the real plugin"
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=so_bytes,
+        record=_record_text(
+            _sha_of(so_bytes),
+            f"{ring_assets.RING_CAP_WIRE_FORMAT},{ring_assets.RING_CAP_WIRE_CHANNELS}",
+        ),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "ok"
+    assert "matches the installer's record" in res.detail
+    assert ring_assets.RING_CAP_WIRE_FORMAT in res.detail
+    assert ring_assets.RING_CAP_WIRE_CHANNELS in res.detail
+
+
+def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
+    monkeypatch, tmp_path
+):
+    """A pre-ring-v2 plugin THIS deploy built is vouched and capability-less.
+
+    Those are two independent facts and the check must not collapse them: the
+    plugin is genuinely the one installed (so not stale), and it parses no
+    conf.d field (so a wide wire is still refused, by the reconciler's gate).
+    """
+    from jasper.cli.doctor import audio_runtime as audio
+
+    so_bytes = b"\x7fELF an old but freshly-installed plugin"
+    _doctor_env(
+        monkeypatch,
+        tmp_path,
+        so_bytes=so_bytes,
+        record=_record_text(_sha_of(so_bytes), ""),
+    )
+    res = audio.check_ring_ioplug_provenance()
+    assert res.status == "ok"
+    assert "[none]" in res.detail

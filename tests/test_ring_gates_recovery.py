@@ -276,6 +276,114 @@ def test_a_successful_confirm_clears_accumulated_strikes(
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 
+def test_a_successful_rearm_clears_accumulated_strikes(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """THE POLICY, DRIVEN END TO END: a fresh re-arm resets the strike count.
+
+    Without the clear at the end of ``_arm_ring`` the two-strike policy silently
+    degraded to ONE for any box that had failed a confirm before the arm: the
+    operator re-arms, CamillaDSP loads the ring config, everything is healthy —
+    and the very next transient confirm hits the limit and recovers the box to
+    loopback, citing a failure the arm had already fixed.
+
+    The walk is: confirm fails (strike 1) -> a real ARM lands -> one more
+    transient confirm failure. That last one must be strike 1 of a NEW incident,
+    which means it stays a strike and the box stays armed.
+    """
+    strikes = _strike_state(monkeypatch, tmp_path)
+
+    _confirm_once(tmp_path, camilla_ok=False)
+    assert strikes.exists(), "the pre-arm failure must have recorded a strike"
+
+    # A real ARM: loopback env -> shm_ring, so the coupling MOVES and the
+    # reconcile takes _arm_ring rather than the confirm path.
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+    armed = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert armed.ok is True and armed.direction == "arm", armed.detail
+    assert "camilla:shm_ring" in calls
+    assert not strikes.exists(), (
+        "a completed arm must clear the record — CamillaDSP just loaded the ring "
+        "config, which is the success the strike count is counting the absence of"
+    )
+
+    # One transient AFTER the arm is strike 1 of a new incident, not the limit.
+    result, calls_after, fanin_after = _confirm_once(tmp_path, camilla_ok=False)
+    assert result.recovered is False, (
+        "a single post-arm transient must not recover the box — that is the "
+        "one-strike degradation this clear prevents"
+    )
+    assert "camilla:loopback" not in calls_after
+    assert read_persisted_coupling(fanin_after) == COUPLING_SHM_RING
+
+
+def test_a_successful_disarm_clears_accumulated_strikes(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """Leaving the ring ends the incident the strikes were evidence of.
+
+    Strikes describe an ARMED ring whose confirm keeps failing. Once the box is
+    off the ring that evidence is spent, and carrying it forward would make the
+    next arm inherit a head start toward being recovered.
+    """
+    strikes = _strike_state(monkeypatch, tmp_path)
+    _confirm_once(tmp_path, camilla_ok=False)
+    assert strikes.exists()
+
+    fanin_env, outputd_env = _armed_env(tmp_path)
+    calls, ro, rf, rc = _recorder()
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok is True and result.direction == "disarm", result.detail
+    assert "camilla:loopback" in calls
+    assert not strikes.exists()
+
+
+def test_a_partial_disarm_keeps_the_strike_record(
+    tmp_path, monkeypatch, _ring_assets_present
+):
+    """The clear is gated on the disarm SUCCEEDING, and that boundary matters.
+
+    A partial disarm can leave part of the box still on the ring, so the
+    accumulated evidence is still about the live state. Clearing there would
+    throw away the strikes on exactly the box whose disarm did not land.
+    """
+    strikes = _strike_state(monkeypatch, tmp_path)
+    _confirm_once(tmp_path, camilla_ok=False)
+    assert strikes.exists()
+
+    fanin_env, outputd_env = _armed_env(tmp_path)
+    _calls, ro, rf, rc = _recorder(fanin_ok=False)
+    result = _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+        active_leader_check=lambda: False,
+    )
+    assert result.ok is False and result.direction == "disarm"
+    assert strikes.exists(), "a partial disarm must not discard live evidence"
+
+
 def test_strikes_outside_the_window_are_not_counted(tmp_path, monkeypatch):
     """Evidence ages out. The reconciler is event-driven — boot, deploy, a
     /sources/ toggle — so two failures a year apart are two incidents, not a
@@ -403,6 +511,204 @@ def test_reseed_swallows_realistic_failures_but_not_programming_errors(monkeypat
         cr._reseed_loopback_statefile("t")
 
 
+# --- the slot migration declines when the WIRE is sheared -------------------
+
+
+def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
+    """Run the slot migration against ``fanin_text`` on the SHIPPED conf.d.
+
+    Returns (post_migration_text, records) where ``records`` is the log_event
+    result tokens the migration emitted — the migration's only externally
+    visible statement about what it decided.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    path = _write(tmp_path / "fanin.env", fanin_text)
+
+    records: list[str] = []
+    real_log_event = cr.log_event
+
+    def _capture(logger, event, **kw):
+        records.append(str(kw.get("result", "")))
+        return real_log_event(logger, event, **kw)
+
+    monkeypatch.setattr(cr, "log_event", _capture)
+    snapshot = cr._read_snapshot(path)
+    result = cr._migrate_stale_fanin_ring_slots(snapshot, "t")
+    return result.text, records
+
+
+def test_slot_migration_writes_the_coherent_value_when_only_slots_are_stale(
+    tmp_path, monkeypatch
+):
+    """POSITIVE CONTROL for the decline below: the migration does fire.
+
+    Without this, a decline test proves only that the function wrote nothing —
+    which a broken migration that never writes would also satisfy.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+
+    text, records = _migrate(
+        tmp_path, monkeypatch, fanin_text=f"{RING_SLOTS_ENV_VAR}=8\n"
+    )
+    assert "stale_ring_slots_overridden" in records
+    assert f"{RING_SLOTS_ENV_VAR}=2" in text
+
+
+def test_slot_migration_declines_when_the_wire_format_is_sheared(
+    tmp_path, monkeypatch
+):
+    """It does not converge an axis it does not own, and says so.
+
+    Writing the slot count while fan-in and the conf.d disagree about the WIRE
+    would make the geometry look repaired — the operator reads
+    ``stale_ring_slots_overridden`` as progress — while the arm still cannot
+    succeed. The wire gate is the one that refuses with the reason that actually
+    describes the box, so the migration steps aside and leaves it to say so.
+    """
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR, RING_WIRE_FORMAT_ENV_VAR
+
+    text, records = _migrate(
+        tmp_path,
+        monkeypatch,
+        # Both true at once: a stale slot count the migration WOULD write, and a
+        # wire shear that must stop it.
+        fanin_text=(
+            f"{RING_SLOTS_ENV_VAR}=8\n{RING_WIRE_FORMAT_ENV_VAR}=S32_LE\n"
+        ),
+    )
+    assert "stale_ring_slots_override_declined" in records
+    assert "stale_ring_slots_overridden" not in records
+    assert f"{RING_SLOTS_ENV_VAR}=8" in text, (
+        "the declined migration must leave the stale value alone, not half-write it"
+    )
+
+
+def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatch):
+    """The channels axis declines the write for the same reason the format does."""
+    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+    import jasper.ring_assets as ra
+
+    # A conf.d whose Ring-A block declares a channel count fan-in's fixed-stereo
+    # mixer cannot produce.
+    conf = tmp_path / "sheared.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n"
+        "    channels 4\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
+
+    import jasper.fanin.coupling_reconcile as cr
+
+    path = _write(tmp_path / "fanin.env", f"{RING_SLOTS_ENV_VAR}=8\n")
+    records: list[str] = []
+    real_log_event = cr.log_event
+    monkeypatch.setattr(
+        cr,
+        "log_event",
+        lambda logger, event, **kw: (
+            records.append(str(kw.get("result", ""))) or real_log_event(
+                logger, event, **kw
+            )
+        ),
+    )
+    out = cr._migrate_stale_fanin_ring_slots(cr._read_snapshot(path), "t")
+    assert "stale_ring_slots_override_declined" in records
+    assert f"{RING_SLOTS_ENV_VAR}=8" in out.text
+
+
+# --- the sample_format axis at BOTH on-disk-header consumers ----------------
+
+
+def _ring_file(path, *, sample_format, n_slots=2, period=128, channels=2):
+    """Write a valid ring header (JRIN magic) with the given geometry."""
+    import struct
+
+    import jasper.ring_assets as ra
+
+    hdr = bytearray(ra._RING_HEADER_BYTES)
+    struct.pack_into("<I", hdr, ra._RING_OFF_MAGIC, 0x4A52_494E)
+    struct.pack_into("<I", hdr, ra._RING_OFF_VERSION, 1)
+    struct.pack_into("<I", hdr, ra._RING_OFF_RATE, 48000)
+    struct.pack_into("<I", hdr, ra._RING_OFF_CHANNELS, channels)
+    struct.pack_into("<I", hdr, ra._RING_OFF_SAMPLE_FORMAT, sample_format)
+    struct.pack_into("<I", hdr, ra._RING_OFF_PERIOD_FRAMES, period)
+    struct.pack_into("<I", hdr, ra._RING_OFF_N_SLOTS, n_slots)
+    path.write_bytes(bytes(hdr) + b"\x00" * 256)
+    return path
+
+
+def _point_ring_files_at(monkeypatch, tmp_path):
+    """Repoint both ring files into the tmpdir. Returns (ring_a, ring_b)."""
+    import jasper.ring_assets as ra
+
+    ring_a = tmp_path / "program.ring"
+    ring_b = tmp_path / "content.ring"
+    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(ring_a))
+    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(ring_b))
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    return ring_a, ring_b
+
+
+def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch):
+    """WHAT MAKES THE WIRE ROLLBACK LEVER ONE-SHOT-ABLE, as a behaviour.
+
+    While this guard was blind to ``sample_format``, forcing the wire narrow
+    again left the WIDE file on disk: the writer rejected it at attach as a
+    config-class fault and the box PARKED until someone ran ``rm`` by hand — so
+    the lever worked once and then needed an operator. The file must be cleared
+    here, on an axis where slots and period both still match.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    import jasper.ring_assets as ra
+
+    ring_a, ring_b = _point_ring_files_at(monkeypatch, tmp_path)
+    # Slots and period MATCH the shipped conf.d; only the format is wide. A guard
+    # that compared the old two axes would leave this file in place.
+    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    _ring_file(ring_b, sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+
+    cr._delete_stale_ring_files("t", "")
+
+    assert not ring_a.exists(), "a format-stale ring file must be deleted"
+    assert ring_b.exists(), "a coherent ring file must be left alone"
+
+
+def test_confirm_self_heal_escalates_on_a_format_mismatched_ring(
+    tmp_path, monkeypatch
+):
+    """The SECOND consumer of the same comparator must agree with the first.
+
+    The CONFIRM-path predicate decides whether to escalate to the arm that runs
+    the delete above. If it were blind to ``sample_format`` while the delete was
+    not, a format-stale file would read as coherent, the escalation would never
+    fire, and the file the arm is ready to remove would sit there — the two
+    halves meaning different things by "coherent" is exactly the drift the
+    shared comparator exists to prevent.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    import jasper.ring_assets as ra
+
+    ring_a, ring_b = _point_ring_files_at(monkeypatch, tmp_path)
+    _ring_file(ring_b, sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+
+    # Coherent on every axis -> stay lightweight (the positive control).
+    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
+    needed, detail = cr._ring_confirm_needs_self_heal("")
+    assert needed is False, detail
+
+    # Same file, wide format -> escalate, naming the axis.
+    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    needed, detail = cr._ring_confirm_needs_self_heal("")
+    assert needed is True
+    assert "sample_format" in detail
+    assert "stale-file self-heal" in detail
+
+
 # --- the four-ends wire gate, per end ---------------------------------------
 
 
@@ -502,6 +808,77 @@ def test_wire_gate_refuses_a_conf_d_that_is_present_but_unreadable(
     ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
     assert ok is False
     assert "declares no format at all" in detail
+
+
+def test_wire_gate_refuses_an_indeterminate_channel_count_like_an_indeterminate_format(
+    monkeypatch, tmp_path
+):
+    """SYMMETRY. The two axes must treat "cannot be read" the same way.
+
+    The reachable shape is a PRESENT conf.d whose block declares ``channels``
+    twice with different values — ``ring_conf_channels`` answers None for
+    exactly that torn file. The format axis already refused such a block; the
+    channels axis passed it silently, so a box could arm on a channel count
+    nothing had actually agreed. Note the format here is single and CORRECT, so
+    the refusal can only be coming from the channels axis.
+    """
+    import jasper.ring_assets as ra
+
+    torn = tmp_path / "torn.conf"
+    torn.write_text(
+        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n"
+        "    format S16_LE\n    channels 2\n    channels 4\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "RING_CONF_D", str(torn))
+    monkeypatch.setattr(
+        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
+    )
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is False
+    assert "declares no channel count at all" in detail
+    assert "jts_ring_capture" in detail
+    # The format axis is fine on this file — a refusal citing it would mean the
+    # test proved the wrong branch.
+    assert "declares no format at all" not in detail
+
+
+def test_wire_gate_refuses_an_outputd_channel_count_that_will_not_parse(monkeypatch):
+    """The other reachable indeterminate: a malformed outputd channels value.
+
+    This is why the excuse is a PER-AXIS flag rather than a reuse of ``note``.
+    The outputd end carries a note explaining why its FORMAT is not compared
+    before arming — and if that note also excused its channels, a value that
+    will not parse as an int would pass here on every unarmed box, which is
+    every box about to arm.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    ok, detail = ring_edge_width_ready(
+        fanin_text="", outputd_text="JASPER_OUTPUTD_ACTIVE_CHANNELS=stereo\n"
+    )
+    assert ok is False
+    assert "outputd (Ring B reader)" in detail
+    assert "declares no channel count at all" in detail
+
+
+def test_wire_gate_does_not_invent_a_channels_refusal_for_ends_that_state_none(
+    monkeypatch,
+):
+    """The CONTROL for the symmetry above: two ends legitimately say nothing.
+
+    ``CamillaDSP emitted stanzas`` carries a format and no channel count — the
+    coupling's kwargs simply have none — and an ABSENT conf.d states nothing on
+    either axis while the asset gate owns that refusal. Neither may be reported
+    as indeterminate, or the shipped fleet fails a gate it has always passed.
+    """
+    import jasper.ring_assets as ra
+
+    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
+    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    assert ok is True, detail
 
 
 def test_wire_gate_passes_on_the_shipped_wire(monkeypatch):

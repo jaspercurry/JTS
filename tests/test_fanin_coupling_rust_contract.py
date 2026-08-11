@@ -24,6 +24,8 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
     RING_SLOTS_MIN,
+    RING_WIRE_FORMAT_ENV_VAR,
+    RING_WIRE_FORMATS,
     resolve_ring_slots,
 )
 
@@ -105,6 +107,29 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     assert f'"{RING_SLOTS_ENV_VAR}", {DEFAULT_FANIN_RING_SLOTS}' in text, (
         f"Rust must default JASPER_FANIN_RING_SLOTS to {DEFAULT_FANIN_RING_SLOTS}"
     )
+
+
+def test_shm_ring_wire_format_env_var_name_agrees():
+    """The Ring-A wire FORMAT key is the third cross-language env name.
+
+    Its two siblings above (path, slots) have been pinned since the ring
+    shipped; the wire format arrived later and did not get the same treatment.
+    It is the same drift axis and a worse one to get wrong: the header compares
+    ``sample_format`` field-by-field, so a Python side reading one key name
+    while the daemon reads another does not mis-declare a wire — it silently
+    reads the DEFAULT wire while the reconciler's four-ends gate reports
+    agreement, and the ioplug attach is the first thing to notice.
+    """
+    text = _config_rs_text()
+    assert f'"{RING_WIRE_FORMAT_ENV_VAR}"' in text, (
+        f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
+    )
+    # The two-token vocabulary is the other half of the contract: a value Python
+    # accepts must be a value Rust accepts, spelled identically.
+    for token in RING_WIRE_FORMATS:
+        assert f'"{token}"' in text, (
+            f"Rust must accept the {token} wire token Python's vocabulary declares"
+        )
 
 
 def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
