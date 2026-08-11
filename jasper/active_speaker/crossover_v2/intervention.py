@@ -66,7 +66,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -129,15 +129,11 @@ class PlannerError(CrossoverV2ContractError):
 
     A subclass of :class:`~.contracts.CrossoverV2ContractError` so a host that
     already classifies contract failures needs no second ``except`` arm, and so
-    :mod:`.planner_facade` can map it to a typed
-    :class:`~.contracts.PlanRefusal` reason *by type* rather than by reading
-    the message text.
+    it inherits that base's :attr:`refusal_reason` — the facade maps a raise to
+    a typed :class:`~.contracts.PlanRefusal` by reading that attribute, never
+    the message text (#2307 gate note N5).
     """
 
-    #: The closed :data:`~.contracts.PLAN_REFUSAL_REASONS` member this raise
-    #: means. Subclasses set it; the facade reads it instead of substring-
-    #: matching the exception's prose (#2307 gate note N5).
-    refusal_reason = "contract_invalid"
 
 
 class PlannerInputError(PlannerError):
@@ -1448,44 +1444,3 @@ def request_from_analysis(
         cloud_phase_planned=bool(cloud_phase_planned),
         cloud=CloudFitTerms.from_evidence(cloud),
     )
-
-
-def context_from_sections(
-    sections_by_role: Mapping[str, Sequence[CrossoverSection]],
-) -> CandidateAcousticContext:
-    """:meth:`CandidateAcousticContext.from_sections`, refusing as a planner error.
-
-    Hosts building a context from a candidate's own sections want the failure
-    to arrive as the same typed refusal every other planner input error does,
-    so the facade can classify it without reading exception prose.
-    """
-    try:
-        return CandidateAcousticContext.from_sections(sections_by_role)
-    except CrossoverV2ContractError as exc:
-        raise _context_error(exc) from exc
-
-
-class _NoSectionsError(PlannerError):
-    refusal_reason = "no_crossover_sections"
-
-
-class _FcDisagreementError(PlannerError):
-    refusal_reason = "candidate_fc_disagreement"
-
-
-def _context_error(exc: CrossoverV2ContractError) -> PlannerError:
-    """Re-raise a context failure under the reason its *cause* names.
-
-    The two distinguishable causes are structural rather than textual: a
-    context with no sections at all, and a set of sections naming more than one
-    corner. Both are checked by
-    :class:`~.contracts.CandidateAcousticContext` at construction; this maps
-    them onto the closed refusal vocabulary once, here, so no caller has to
-    match on message text (#2307 gate note N5).
-    """
-    message = str(exc)
-    if "crossover section" in message:
-        return _NoSectionsError(message)
-    if "corners" in message or "disagrees with" in message:
-        return _FcDisagreementError(message)
-    return PlannerInputError(message)

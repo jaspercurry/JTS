@@ -38,6 +38,7 @@ from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
 from .contracts import (
+    PLAN_REFUSAL_REASONS,
     CandidateAcousticContext,
     CrossoverV2ContractError,
     InterventionProposal,
@@ -227,12 +228,26 @@ def plan_intervention_proposal(
 
 
 def _refusal_for(exc: Exception, candidate: Any) -> PlanRefusal:
+    """Classify one assembly failure onto the closed refusal vocabulary.
+
+    **By type, never by prose** (#2307 gate note N5). The first cut read the
+    exception's message for phrases like ``"disagrees with"``, which made the
+    household-facing reason a function of wording that no test owned: rephrase
+    a validator's message and a ``candidate_fc_disagreement`` silently becomes
+    a generic ``contract_invalid``. :class:`~.intervention.PlannerError`
+    carries its own :attr:`~.intervention.PlannerError.refusal_reason`, so the
+    classification travels with the raise instead of being re-derived here.
+    """
+
     detail = f"{type(exc).__name__}: {exc}"
     if candidate is None:
         return PlanRefusal(reason="no_candidate", detail=detail)
-    message = str(exc)
-    if "different crossover corners" in message or "disagrees with" in message:
-        return PlanRefusal(reason="candidate_fc_disagreement", detail=detail)
-    if "at least one crossover section" in message:
-        return PlanRefusal(reason="no_crossover_sections", detail=detail)
-    return PlanRefusal(reason="contract_invalid", detail=detail)
+    reason = getattr(exc, "refusal_reason", "contract_invalid")
+    # A non-contract exception (``KeyError`` on malformed planner output, say)
+    # has no ``refusal_reason``, and an unrecognised one would fail
+    # ``PlanRefusal``'s own closed-vocabulary check — which is the right
+    # failure for a bug, and the wrong one to take a household's session down
+    # with. Fall back to the generic member instead.
+    if reason not in PLAN_REFUSAL_REASONS:
+        reason = "contract_invalid"
+    return PlanRefusal(reason=reason, detail=detail)
