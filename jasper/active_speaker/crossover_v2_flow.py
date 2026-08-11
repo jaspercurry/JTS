@@ -136,6 +136,8 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     sections_by_role,
 )
+from jasper.active_speaker.crossover_v2 import accountability as _accountability
+from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
@@ -224,7 +226,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    RealizedLevelMatch,
     overlap_band_hz,
     summed_model_residual_delay_us,
 )
@@ -5548,34 +5549,19 @@ def carve_outs_by_band(
     return out
 
 
-@dataclass(frozen=True)
-class _CloudFitEvidence:
-    """What a closed spatial cloud contributes to the correction envelope.
-
-    The three optional arguments of
-    :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`,
-    travelling together as one value so the fit cannot be handed a half-supplied
-    pair (``compose_envelope`` raises on ``band_spread`` without
-    ``n_positions``, and this makes that unreachable from this module).
-
-    ``excluded_bands_hz`` is the MERGED honesty mask — the power-vs-median
-    screen union the identified-null registry, as
-    :func:`assemble_cloud_group_result` merged it. Not the screen's intervals
-    and not the registry's: the wiring contract (issue #1742 item 4) is that
-    the instruments are consumed together.
-
-    ``boost_excluded_bands_hz`` does NOT go to the envelope. It is the
-    boost-only bound (#1967) the fit vocabulary takes, and it rides here
-    because it is derived from the same closed cloud at the same moment —
-    see :meth:`CrossoverV2Conductor._boost_excluded_bands_hz`. Empty is the
-    ordinary case and means "nothing contradicted a boost", never "no
-    evidence".
-    """
-
-    excluded_bands_hz: tuple[tuple[float, float], ...]
-    band_spread: tuple[Any, ...]
-    n_positions: int
-    boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
+# --------------------------------------------------------------------------- #
+# what one candidate build produced — see crossover_v2.candidates
+# --------------------------------------------------------------------------- #
+#
+# The three values a build's product travels on. They moved to the package in
+# #2291 Phase 5a-v because they are the Fc sweep's blocking dependency —
+# ``_evaluate_fc_candidate`` consumes a build product and, through it, the
+# other two — and 5a-iii deferred the sweep on exactly that. Re-bound here
+# under their historical private names so every call site in this module, and
+# the prose that cites them, keeps resolving.
+_CloudFitEvidence = _candidates.CloudFitEvidence
+_LinearizationState = _candidates.LinearizationState
+_SpeculativeClose = _candidates.SpeculativeClose
 
 
 def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
@@ -6154,121 +6140,6 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
         )
         return None
     return grid, delta
-
-
-@dataclass(frozen=True)
-class _LinearizationState:
-    """What ONE candidate build's linearization produced, as a value (#2291).
-
-    **This class is the scratch channel's replacement.** Until Phase 2b the
-    same seven facts lived on the conductor as ``self._last_*`` fields written
-    as a side effect of the fit. That made them a *return channel with no
-    caller*: the Fc sweep had to snapshot and restore all seven around every
-    candidate (``_FC_SWEEP_CONDUCTOR_FIELDS``) precisely because a value
-    belonging to candidate N would otherwise be read as candidate N+1's — or as
-    the anchor's. One save/restore bug away from publishing a prescription
-    computed for a different crossover, which is the family the 2026-08-10
-    incident belongs to.
-
-    Held per build and passed by hand, the question cannot arise: a state
-    describes exactly the candidate whose build returned it, and a build a
-    retake moots is dropped whole — the same reason
-    :class:`_SpeculativeClose` exists, applied one layer down.
-
-    ``outcome`` is the union of the planner's own verdict
-    (``"fitted"``/``"trim_rejected"``) and the two the conductor decides
-    without planning at all: an eligibility refusal
-    (``"ineligible_mic_tier"``/``"ineligible_repeats"``) and the SF2 degrade
-    (``"fit_failed"``). Empty means no build ran. It is stamped verbatim onto
-    the candidate, which is then the single reader every other surface quotes.
-
-    Every other field is ``None``/empty on all three non-planning outcomes,
-    including ``linearized_predicted_sum`` — so a candidate that degraded to
-    trims-only publishes the RAW two-branch prediction as its VERIFY prior,
-    which is what the trims-only lane means. Legacy left that one field
-    un-cleared on the SF2 path (its own comment named the gap); a fit that
-    raised part-way has no linearized model, so carrying one forward was the
-    fail-open direction.
-    """
-
-    outcome: str = ""
-    level_frame: Any = None
-    level_frame_disagreement_db: float = 0.0
-    level_frame_cores: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    level_frame_trims: Mapping[str, float] = field(default_factory=dict)
-    linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
-    realized_level_match: RealizedLevelMatch | None = None
-
-    @classmethod
-    def from_plan(cls, plan: LinearizationPlan) -> "_LinearizationState":
-        """Everything a planned candidate leaves behind, read off the plan.
-
-        A straight projection — no policy, no re-derivation. The plan is the
-        single owner of each of these values; this is the conductor naming the
-        subset it consumes downstream.
-        """
-        return cls(
-            outcome=plan.outcome,
-            level_frame=plan.level_frame,
-            level_frame_disagreement_db=plan.level_frame_disagreement_db,
-            level_frame_cores=plan.level_frame_cores,
-            level_frame_trims=plan.level_frame_trims,
-            linearized_predicted_sum=plan.linearized_predicted_sum,
-            realized_level_match=plan.realized_level_match,
-        )
-
-    @property
-    def realized_branch_level(self) -> dict[str, Any] | None:
-        """The realized-level verdict serialized, or ``None`` when none ran."""
-        return (
-            None if self.realized_level_match is None
-            else self.realized_level_match.to_dict()
-        )
-
-
-@dataclass(frozen=True)
-class _SpeculativeClose:
-    """A group close that already RAN, waiting for the household to want it.
-
-    The eager-fit rider's one carried value (owner UX direction, 2026-07-30).
-    The household's last stage-1 position lands, the phone shows the confirm,
-    and the several seconds the fit costs used to start only when they walked
-    back to a browser and tapped Continue — dead air that read as a stalled
-    screen. The fit now starts on the ACCEPT and parks its product here.
-
-    **Why the built candidate cannot simply be stashed on the conductor.**
-    ``_candidate`` is :meth:`CrossoverV2Conductor.confirm_cloud_measure_group`'s
-    fire-once guard AND, until this rider, the held-set predicate; writing a
-    speculative build into it would have closed the retake window in the same
-    instant it opened (both seams carried a comment saying exactly that). So a
-    speculative build lands HERE, where nothing else reads it, and reaches
-    ``_candidate`` only through the household's own confirmation.
-
-    Everything :meth:`CrossoverV2Conductor._commit_measure_candidate` needs and
-    nothing else: ``analysis`` rides along for the raw ``predicted_sum`` the
-    commanded-delta diff needs, and ``cloud`` for the build's log line.
-
-    ``level_frame_finding`` is the #1866 record — present only when THIS
-    build's frame gate took the finding+proceed path. It rides the built
-    close rather than the conductor for the reason the whole class exists: a
-    speculative build a retake moots is dropped whole, and a record left on
-    ``self`` would survive that drop and be published against the next
-    candidate, which measured something else.
-    """
-
-    candidate: Any
-    predicted_sum: Any
-    analysis: Any
-    cloud: "_CloudFitEvidence | None"
-    level_frame_finding: Mapping[str, Any] | None = None
-    linearization: _LinearizationState = field(default_factory=_LinearizationState)
-    """What THIS build's linearization produced — see :class:`_LinearizationState`.
-
-    Rides the close for the same reason ``level_frame_finding`` does, and now
-    for the whole of the fit's output rather than one record of it: a
-    speculative build a retake moots is dropped whole, and anything left on
-    ``self`` would survive that drop and be read against the next candidate.
-    """
 
 
 # --------------------------------------------------------------------------- #
@@ -9806,12 +9677,13 @@ class CrossoverV2Conductor:
 
         **What it deliberately does NOT cover:** ``_measure_predicted_spec_
         report``, and the ``correction.crossover_v2_candidate_built``
-        disclosure.  Both differ between the two sites today — the walk installs
-        the spec report out-of-band from inside ``_assert_accountable``
-        (``_stash_predicted_spec_report``) while the selection installs it here,
-        and the two log lines carry different fields.  Folding either in would
-        be a behavior change, which Phase 1 is not; they stay at their call
-        sites until Phase 2 makes the planner return them as data.
+        disclosure.  Both still differ between the two sites — the walk installs
+        the spec report out-of-band, from the decision
+        :meth:`_assert_accountable` replays (#2291 Phase 5a-v made it a value on
+        that decision rather than a second conductor method), while the
+        selection installs it here; and the two log lines carry different
+        fields.  Folding either in would be a behavior change, which no phase
+        of this migration has sanctioned; they stay at their call sites.
 
         ``realized_branch_level`` arrives ALREADY SERIALIZED (#2291 Phase 2b).
         Both sites now hold their candidate's own verdict, but by different
@@ -10049,492 +9921,46 @@ class CrossoverV2Conductor:
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
         *, linearization: _LinearizationState | None = None,
     ) -> Mapping[str, Any] | None:
-        """The three accountability assertions, run before the PROPOSAL exists:
-        PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+        """The three accountability assertions — see
+        :func:`~jasper.active_speaker.crossover_v2.accountability.assess_accountability`,
+        which owns which refusal fires, what is said, and what is banked.
 
-        ``linearization`` is the candidate's own planner output — the
-        decision-as-data half of #2291. The gate reads its level-frame and
-        realized-level verdicts and owns only the *decision*: which refusal
-        fires, what the household is told, and what is banked. ``None`` means
-        no build produced one, which is the same evidence state as an
-        ineligible session and takes the same path: no frame to disagree, no
-        realized verdict to fail, and item 2's abstain below.
+        What stays here is everything the decision cannot do for itself, and
+        each half is irreversible in a way a pure function must not be: the
+        stash the host later persists, the journal's logger and
+        ``session_id``, and the ``CaptureBeginRefused`` construction — whose
+        ``_last_failure_code`` stamp is what makes a refusal reach the
+        household as its own sentence rather than as "the measurement link
+        timed out" (see :meth:`_refuse`).
 
-        "Pre-apply" until PR-T3, when the apply moved out of the session
-        entirely; the gate did not move with it, and did not need to. Refusing
-        here means no candidate is ever stashed or published, so the review
-        screen has nothing to offer and the household is never asked to decide
-        about a correction JTS cannot stand behind.
+        The four inputs the gate is TOLD rather than reaches for are the two
+        thresholds and the two household reason codes; that module's docstring
+        records why each stays owned here.
 
-        Raises :class:`CaptureBeginRefused` with a named
-        :data:`REASON_REGISTRY` code — the host's own refusal arm then persists
-        it and the envelope renders its copy, so a refusal here reaches the
-        household as a sentence rather than a stall.
-
-        Returns the caller's **banked finding record** when the frame gate took
-        the #1866 finding+proceed path, and ``None`` otherwise; either way the
-        caller proceeds to publish. It is returned rather than stashed on the
-        conductor on purpose: this method runs on the SPECULATIVE build too
-        (:meth:`run_speculative_group_close`), and a build a retake moots is
-        simply dropped — a record on ``self`` would outlive the candidate it
-        describes and be published against the next one.
-
-        Order is most-specific-first, and each step is a narrower diagnosis of
-        the one after it. The FRAME gate (PR-L5) leads: it asks whether the two
-        instruments a trim is derived from still agree about where the drivers
-        sit, which is upstream of any trim. Item 1 follows, grading the level
-        the committed trim actually REALIZES — the backstop for a frame that
-        agreed but a trim that still landed wrong. Item 2 is last and most
-        general: this correction does not measure better. When more than one is
-        true, naming the earliest cause is more useful to whoever reads the
-        journal, and the household copy is more actionable.
+        **Write-then-say, and the ordering that matters.** The stash is
+        installed before the journal is emitted, which differs from the
+        method this replaced only where nothing can observe it: a decision
+        carries a stash only when it got past the frame and realized-level
+        gates, so no refusal arm writes one. That is pinned rather than
+        argued, from both arms, in ``test_crossover_v2_accountability``.
         """
-        # --- PR-L5: the two level FRAMES agree ---------------------------
-        #
-        # Runs before item 1 because it is the more specific diagnosis of the
-        # same disease: item 1 grades the level the committed trim REALIZES,
-        # this grades whether the two instruments that trim was derived from
-        # still agree about where the drivers sit. On the 2026-07-27 captures
-        # the disagreement was 10.9-13.1 dB; PR-L3 fixed its cause, and this
-        # is what stops the next cause from shipping silently.
-        #
-        # It refuses under PR-L4's own ``driver_levels_disagree`` code, not a
-        # new one: the household's remedy is identical (re-check sensitivity
-        # and the pad in speaker setup) and one consistent sentence beats two
-        # near-duplicates. The journal separates them by ``event=``.
-        #
-        # **The refusal is no longer unconditional (owner ruling, #1866,
-        # 2026-07-30).** A disagreement over tolerance now asks ONE more
-        # question before it stops the session: does the realized-level check
-        # pass on the pair this session is about to ship? If it does, the
-        # session banks the disagreement as a finding and PROCEEDS; the hard
-        # refusal remains only when the realized check ALSO fails. Why the
-        # ruling went that way, in one line: #1929 removed a structural bias
-        # from one estimator, it did not make the two agree, and what is left
-        # refuses healthy speakers — a pair identical by construction reads
-        # 0.910 dB apart and ordinary woofer passband tilt adds ~1.33 dB per
-        # dB/octave, so a −2 dB/oct woofer refuses at 3.574 while the realized
-        # instrument reads 1.41 and passes. The field case is the 2026-07-30
-        # session: 3.2307 dB under the banded estimator, realized −0.247,
-        # predicted on-axis residual 3.106 → 1.333 dB (all recorded on #1870).
-        # Refusing that is a false negative on a good tune, and the diagnosis
-        # the gate already computed reached no artifact at all.
-        #
-        # **What "proceeds" commits, stated precisely — because the obvious
-        # reading is wrong.** The ruling's own wording is "proceeds on the
-        # near-Fc anchor (the trim solve)", and that describes an outcome the
-        # code does not produce. Proceeding changes NOTHING about the trims:
-        # the fit commits the anchor it always computed, and in
-        # ``anchor_base + giveback + level_frame_offset`` the trim term
-        # CANCELS — ``offset = system − trim − core``, leaving
-        # ``giveback + system − core`` (the cancellation is derived in
-        # ``anchor_base_db``'s own comment). So the committed inter-driver
-        # placement is set by the CORE-MEDIAN frame — the disputed estimator —
-        # not by the trim solve. On the conductor fixture: committed −0.674,
-        # which is the core-median value to 4 dp; anchoring on the trim solve's
-        # placement instead would give +2.535; the two differ by 3.209, exactly
-        # the banked disagreement, which is not a coincidence but the identity
-        # ``placement_trim − placement_core = −offset``.
-        #
-        # The honest description of this branch is therefore: **the pipeline
-        # commits the anchor it always computed (which embeds the disputed
-        # estimator); proceeding is the same tune, not refused; the realized
-        # check gates the OUTCOME rather than selecting an estimator.** That is
-        # a weaker claim than "we proceed on the corroborated estimator" and it
-        # is the true one — the realized check's pass is evidence that the
-        # shipped pair is level, not evidence about which estimator was right.
-        #
-        # **RATIFIED.** This description differs from the ruling's original
-        # wording, so it was put to the owner rather than merged under the
-        # inverted account; the owner confirmed it on 2026-07-30 (#1866 comment
-        # 5137494519) as "the ruling's operative form". The two phrases above
-        # are retired: anything still asserting them is describing a mechanism
-        # this code does not implement.
-        #
-        # **What the realized check is, and is not.** It is a CLOSED-LOOP
-        # check, not cross-band arbitration: its own docstring says "One
-        # estimator, not a second opinion" — the levels come from
-        # ``solve_branch_trims`` on the TRIMMED pair, the same power-band
-        # average over the same ``branch_level_bands_hz`` halves that set the
-        # trim. So it cannot referee the two frames against each other, and
-        # nothing here should read as if it did. What it IS: independent of the
-        # fit's core median (different inputs — the post-fit linearized
-        # branches — different band, different statistic), and non-vacuous —
-        # it fails on a −6 dB/oct woofer where the frame gate also fails. It
-        # answers one question, the useful one: did the pair we are about to
-        # ship end up level?
-        #
-        # **Ordering: nothing moved, and nothing needed to.** The realized
-        # verdict this branch consults is item 1's own
-        # ``linearization.realized_level_match``, which reads later in this
-        # method but was computed earlier in the build — the planner returns
-        # the frame and the realized match on one plan, complete before
-        # ``_build_measure_candidate`` calls this. There is no reordering here
-        # and no second computation: item 1 keeps its own gate, its own event,
-        # and its own refusal below, and every OTHER gate's semantics are
-        # byte-identical to before this change.
-        #
-        # ``match is None`` (no fit ran) falls to the refusal, and that is the
-        # fail-closed direction rather than an oversight: with no realized
-        # verdict there is no outcome check to gate on, so the ruling's
-        # precondition is unmet. In practice it is unreachable from here — the
-        # frame is only non-zero when a fit completed, and a fit that raised
-        # part-way yields a state carrying neither — but a future path that
-        # separates them must refuse, not proceed.
-        state = linearization if linearization is not None else _LinearizationState()
-        if (
-            state.level_frame_disagreement_db
-            > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-        ):
-            frame = state.level_frame
-            realized = state.realized_level_match
-            banked = realized is not None and realized.matched
-            log_event(
-                logger,
-                (
-                    "correction.crossover_v2_level_frame_finding" if banked
-                    else "correction.crossover_v2_level_frame_refused"
-                ),
-                level=logging.WARNING if banked else logging.ERROR,
-                session_id=self.session_id,
-                reason="" if banked else REASON_DRIVER_LEVELS_DISAGREE,
-                disagreement_db=round(
-                    float(state.level_frame_disagreement_db), 3
-                ),
-                tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
-                system_level_db=(
-                    round(float(frame.system_level_db), 3)
-                    if frame is not None else None
-                ),
-                reference_role=frame.reference_role if frame is not None else "",
-                offset_db=(
-                    {k: round(float(v), 3) for k, v in frame.offset_db.items()}
-                    if frame is not None else {}
-                ),
-                core_level_db=dict(state.level_frame_cores),
-                # The two fields the finding path adds, and only it: the OTHER
-                # estimator's per-role level-match term, and the realized
-                # verdict that decided which way this went. Both are ``None``/
-                # ``{}`` on the refusal arm so that line stays what #1934
-                # shipped.
-                trim_band_average_db=(
-                    {k: round(float(v), 3)
-                     for k, v in state.level_frame_trims.items()}
-                    if banked else {}
-                ),
-                realized_difference_db=(
-                    round(float(realized.difference_db), 3)
-                    if banked and realized is not None else None
-                ),
-            )
-            if not banked:
-                raise self._refuse(REASON_DRIVER_LEVELS_DISAGREE)
-            finding = self._level_frame_finding_record(state)
-        else:
-            finding = None
-
-        # --- item 1: the inter-driver realized level ---------------------
-        match = state.realized_level_match
-        if match is not None and not match.matched:
-            log_event(
-                logger, "correction.crossover_v2_level_match_refused",
-                level=logging.ERROR, session_id=self.session_id,
-                reason=REASON_DRIVER_LEVELS_DISAGREE,
-                difference_db=round(float(match.difference_db), 3),
-                tolerance_db=match.tolerance_db,
-                level_w_db=round(float(match.level_w_db), 3),
-                level_t_db=round(float(match.level_t_db), 3),
-            )
-            raise self._refuse(REASON_DRIVER_LEVELS_DISAGREE)
-
-        # --- item 2: spec-grade the prediction ---------------------------
-        #
-        # PR-6b made auto-apply unconditional at this seam ("this is
-        # unconditionally True here, not a second decision"). This deliberately
-        # AMENDS that, under the linearization-integrity work order's PR-L4
-        # item 2 (docs/linearization-integrity-plan.md), which is the sanction
-        # for the change: on 2026-07-27 the honest flatness instrument failed
-        # all three bands two seconds before an unconditional auto-apply, and
-        # its verdict reached zero surfaces. PR-6b's claim — that MEASURE's
-        # trust gates already decided — was true about the CAPTURE and silent
-        # about the CORRECTION. This adds the missing half: the capture is
-        # trusted, and now the thing built from it has to show its work.
-        #
-        # **BEFORE and AFTER, on the same instrument** (PR-L4 review B1). The
-        # first cut of this gate compared the model's residual against the
-        # MEASURED pre-apply cloud's, which is not a comparison: an
-        # eight-position in-room spatial mean and a gated two-branch model at
-        # the mark are different instruments in different frames, so the margin
-        # between them is room-sized. Held to a constant, excellent correction
-        # (predicted pooled 0.858 dB) the reviewer varied only the ROOM and
-        # watched the verdict flip — the shipped fixture applied at +0.333, and
-        # every BETTER room refused. That is exactly backwards: it punished
-        # good rooms, and it tightened as the correction improved. Worse, it was
-        # a live trap — an owner who undoes first re-measures a decent speaker
-        # and re-runs into a stricter bar.
-        #
-        # The fix is to ask the question the gate was always trying to ask, of
-        # one instrument: grade the RAW pre-fit two-branch prediction and the
-        # LINEARIZED one through the IDENTICAL `spec_report_for_predicted_sum`,
-        # and require the correction to move ITS OWN model materially. Same
-        # branches, same grid, same evaluator, same position — the room cancels
-        # because it is not in either term.
-        #
-        # **Graded ONCE, here** (two-stage commission D4). This is the last
-        # place the FULL-RESOLUTION `(freqs, magnitudes)` tuple exists: what
-        # survives to the durable state is `_decimate_sum`'s 512-point block
-        # average (issue #1858 — a raw stride before that fix), and re-grading
-        # that later would be a DIFFERENT instrument from the one this veto
-        # refuses on — the two can disagree on a narrow band,
-        # on the one screen whose entire purpose is the honest spec verdict. So
-        # the report this gate computes is the report the host persists, and
-        # the persisted curve stays what it is: a drawing, not the instrument.
-        #
-        # It is hoisted ABOVE the trims-only abstain below (it used to sit
-        # underneath) for a reason the gate itself does not care about but the
-        # review screen does: the trims-only lane still commits trims and still
-        # predicts a response, so it HAS a gradeable prediction. Leaving it
-        # ungraded would put "we could not predict this" in front of a
-        # household about a prediction we can in fact grade. **The gate's own
-        # decisions are untouched** — every `return` and `raise` below is
-        # exactly where it was, reached on exactly the same condition.
-        after = spec_report_for_predicted_sum(predicted_sum)
-        self._stash_predicted_spec_report(after, predicted_sum)
-        if raw_predicted_sum is None or state.linearized_predicted_sum is None:
-            # No fit ran this attempt (ineligible mic tier, or the fit failed
-            # into SF2's trims-only fallback), so `predicted_sum` IS
-            # `raw_predicted_sum` — the same object. Grading a thing against
-            # itself always returns "no improvement", which would refuse every
-            # trims-only candidate on the strength of arithmetic rather than
-            # evidence. Abstain, loudly — carrying the after-report the hoist
-            # above just produced, so the ledger and the wire cannot state
-            # different verdicts about one session's one prediction.
-            self._log_prediction_ledger(reason="no_linearization", after=after)
-            return finding
-        if after is None:
-            self._log_prediction_ledger(reason="prediction_ungradeable")
-            return finding
-        if after.overall_passed:
-            # A prediction that meets the spec on its own needs no improvement
-            # argument, and gating an in-spec result on "how much did it
-            # improve" would refuse the flattest speakers hardest.
-            self._log_prediction_ledger(reason="predicted_in_spec", after=after)
-            return finding
-        before = spec_report_for_predicted_sum(raw_predicted_sum)
-        if before is None:
-            self._log_prediction_ledger(reason="baseline_ungradeable", after=after)
-            return finding
-        from jasper.active_speaker.flat_spec import spec_convergence_residual
-
-        after_rms_db = spec_convergence_residual(after).rms_db
-        before_rms_db = spec_convergence_residual(before).rms_db
-        if after_rms_db is None or before_rms_db is None:
-            self._log_prediction_ledger(
-                reason="residual_unevaluable", after=after, before=before,
-            )
-            return finding
-        improvement_db = float(before_rms_db) - float(after_rms_db)
-        if improvement_db >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB:
-            self._log_prediction_ledger(
-                reason="improved", after=after, before=before,
-                improvement_db=improvement_db,
-            )
-            return finding
-        self._log_prediction_ledger(
-            reason=REASON_CORRECTION_NOT_AN_IMPROVEMENT, after=after, before=before,
-            improvement_db=improvement_db, level=logging.ERROR,
+        decision = _accountability.assess_accountability(
+            predicted_sum=predicted_sum,
+            raw_predicted_sum=raw_predicted_sum,
+            state=linearization,
+            grade_prediction=spec_report_for_predicted_sum,
+            level_frame_tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
+            material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+            reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
+            reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
         )
-        raise self._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
-
-    def _level_frame_finding_record(
-        self, state: _LinearizationState,
-    ) -> Mapping[str, Any] | None:
-        """This session's banked frame disagreement, as flat evidence (#1866).
-
-        Built ONLY on the finding+proceed path, from the plan this candidate's
-        own build returned — no measurement, no re-derivation, no second
-        verdict. Taking the state as an argument rather than reading it off
-        ``self`` is what makes "this session's" true of one candidate rather
-        than of whichever build ran last (#2291 Phase 2b). The
-        attribution package turns it into an M7 finding
-        (:func:`~jasper.attribution.promotion.promote_level_frame_disagreement`);
-        this method owns *what the evidence is*, that one owns *what it means*.
-        Nothing here imports attribution, so the flow keeps no dependency on
-        the diagnosis layer.
-
-        **Flat, and every value a finite scalar or a string**, because that is
-        what :class:`~jasper.attribution.findings.Finding` accepts — nesting
-        would be rejected at construction, and rejection is a lost diagnosis.
-        Per-role numbers are therefore suffixed with the role, which is also
-        what makes the record self-describing to a reader who has never seen
-        this schema.
-
-        **All THREE instruments ride, not just the two that disagreed.** A
-        reader of this finding is being asked to believe that a session
-        proceeded past a gate that would have stopped it, so the record has to
-        carry the whole basis for that: the fit's per-driver median
-        (``core_level_db_*``), the trim solve's per-driver level-match term
-        (``trim_band_average_db_*``), the reconciled per-role offset that IS
-        their disagreement, and the realized-level check whose PASS is what
-        let the session proceed. Banking only the first two would record the
-        argument and drop the reason it was allowed to stand.
-
-        Returns ``None`` when the frame produced no per-role bands to describe
-        — unreachable on this path (the gate fired on a frame that had roles),
-        but a record with no band cannot become a finding, and returning
-        ``None`` here says so at the producer instead of failing validation
-        two layers away.
-        """
-
-        frame = state.level_frame
-        cores = state.level_frame_cores
-        realized = state.realized_level_match
-        # The band this finding is ABOUT: the span the two level reads were
-        # actually taken over, unioned across roles. Deliberately the CORE
-        # bands and not the radiating ones — a high-pass branch radiates to
-        # infinity, so a radiating union has no upper edge, while the core
-        # band is exactly the finite span each median was computed on.
-        #
-        # **The union is an OUTER hull, and it spans a gap neither median
-        # read** — on the conductor fixture the woofer's core stops at 1255.8
-        # Hz and the tweeter's starts at 2020.0, so 1255.8-2020.0 Hz is inside
-        # the finding's band and inside no measurement. That is the right shape
-        # rather than a rounding of it: this finding is about the RELATIONSHIP
-        # between two drivers, which lives in the handoff sitting in that gap,
-        # and a band stated as two disjoint intervals would say the finding is
-        # about two places when it is about one. It is not, and must not be
-        # read as, a claim that anything was measured in the gap — the
-        # per-role ``core_band_*`` keys below are what say where each number
-        # actually came from.
-        edges = [
-            band for role in cores
-            if (band := cores[role].get("band_hz")) is not None
-        ]
-        lo_edges = [float(band[0]) for band in edges]
-        hi_edges = [float(band[1]) for band in edges if band[1] is not None]
-        if not lo_edges or not hi_edges:
-            return None
-        record: dict[str, Any] = {
-            "f_lo_hz": min(lo_edges),
-            "f_hi_hz": max(hi_edges),
-            "disagreement_db": round(
-                float(state.level_frame_disagreement_db), 3
-            ),
-            "tolerance_db": float(LEVEL_FRAME_AGREEMENT_TOLERANCE_DB),
-            "reference_role": frame.reference_role if frame is not None else "",
-            "system_level_db": (
-                round(float(frame.system_level_db), 3)
-                if frame is not None else None
-            ),
-        }
-        if realized is not None:
-            record.update(
-                realized_difference_db=round(float(realized.difference_db), 3),
-                realized_tolerance_db=float(realized.tolerance_db),
-                realized_level_w_db=round(float(realized.level_w_db), 3),
-                realized_level_t_db=round(float(realized.level_t_db), 3),
-            )
-        for role, core in cores.items():
-            band = core.get("band_hz") or (None, None)
-            radiating = core.get("radiating_band_hz") or (None, None)
-            record[f"core_level_db_{role}"] = core.get("level_db")
-            record[f"core_band_lo_hz_{role}"] = band[0]
-            record[f"core_band_hi_hz_{role}"] = band[1]
-            record[f"radiating_band_lo_hz_{role}"] = radiating[0]
-            record[f"radiating_band_hi_hz_{role}"] = radiating[1]
-            if role in state.level_frame_trims:
-                record[f"trim_band_average_db_{role}"] = round(
-                    float(state.level_frame_trims[role]), 3
-                )
-            if frame is not None and role in frame.offset_db:
-                record[f"frame_offset_db_{role}"] = round(
-                    float(frame.offset_db[role]), 3
-                )
-        return record
-
-    def _stash_predicted_spec_report(
-        self, report: Any, predicted_sum: Any,
-    ) -> None:
-        """Hold the graded prediction for the host to persist, and say so when
-        there is nothing to hold (two-stage commission D4).
-
-        The stash is the SERIALIZED report, taken from the one live
-        :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` this session
-        ever built for this curve — never a second evaluation.
-
-        **An absent report becomes a user-visible dead end, so it gets its own
-        named line.** The two-stage flow's review screen (PR-T2) will render
-        "we could not predict this" and refuse the Apply control on it; the
-        line lands with the ``None`` rather than with the screen, because per
-        AGENTS.md's no-silent-failure rule a disclosure nobody can grep for is
-        not a disclosure — and the ``None`` is already reachable. The gate's
-        own ``correction.crossover_v2_prediction_gate`` ledger cannot serve:
-        it carries this state as one ``reason=`` value among seven, and it does
-        not fire at all on the trims-only lane's behalf. ``why`` separates the
-        two causes, which have different remedies — a prediction that was never
-        built (no summed model to grade) from one the evaluator refused (a
-        malformed or degenerate curve, already logged in detail by
-        :func:`spec_report_for_predicted_sum` itself).
-        """
-        self._measure_predicted_spec_report = (
-            report.to_dict() if report is not None else None
-        )
-        if report is not None:
-            return
-        log_event(
-            logger, "correction.crossover_v2_prediction_ungradeable",
-            level=logging.WARNING, session_id=self.session_id,
-            why="no_prediction" if predicted_sum is None else "evaluator_refused",
-        )
-
-    def _log_prediction_ledger(
-        self,
-        *,
-        reason: str,
-        after: Any = None,
-        before: Any = None,
-        improvement_db: float | None = None,
-        level: int = logging.INFO,
-    ) -> None:
-        """One ledger line per session for item 2's gate, on EVERY path.
-
-        Mirrors item 1's ``correction.crossover_v2_realized_level_match``, which
-        logs whether or not it refuses (PR-L4 review S4). A gate that only
-        speaks when it fires leaves "it passed" and "it never ran" looking
-        identical in the journal — the exact ambiguity this PR exists to remove,
-        and the one a field diagnosis of a dark speaker would need first.
-        """
-        from jasper.active_speaker.flat_spec import spec_convergence_residual
-
-        def _rms(report: Any) -> float | None:
-            if report is None:
-                return None
-            value = spec_convergence_residual(report).rms_db
-            return round(float(value), 3) if value is not None else None
-
-        if self._measure_predicted_spec_report is not None:
-            self._measure_predicted_spec_report["comparison"] = {
-                "reason": reason,
-                "baseline_rms_db": _rms(before),
-                "selected_rms_db": _rms(after),
-                "improvement_db": (
-                    round(float(improvement_db), 3)
-                    if improvement_db is not None else None
-                ),
-                "required_db": PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-            }
-
-        log_event(
-            logger, "correction.crossover_v2_prediction_gate",
-            level=level, session_id=self.session_id, reason=reason,
-            before_rms_db=_rms(before),
-            after_rms_db=_rms(after),
-            after_passed=(after.overall_passed if after is not None else None),
-            improvement_db=(
-                round(float(improvement_db), 3) if improvement_db is not None else None
-            ),
-            required_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-        )
+        if decision.spec_report_written:
+            self._measure_predicted_spec_report = decision.spec_report
+        for record in decision.journal:
+            self._journal_linearization(record)
+        if decision.refusal_reason is not None:
+            raise self._refuse(decision.refusal_reason)
+        return decision.finding
 
     def _cloud_fit_evidence(self, combined: Any) -> "_CloudFitEvidence | None":
         """This group's honesty verdict, in the shape the fit envelope takes.
@@ -12326,15 +11752,24 @@ class CrossoverV2Conductor:
             return None
         return "ineligible_repeats"
 
-    def _journal_linearization(self, record: JournalRecord) -> None:
-        """Emit one planner record through this session's journal.
+    def _journal_linearization(
+        self, record: JournalRecord | _accountability.GateRecord,
+    ) -> None:
+        """Emit one planner or gate record through this session's journal.
 
-        The planner owns *what happened* and returns it as data; this owns
+        A pure module owns *what happened* and returns it as data; this owns
         *how it is said* — the logger and the session identity, neither of
-        which a pure function has. Forwarding here rather than iterating
-        ``plan.journal`` afterwards is what makes a fit that raises part-way
-        still disclose the lines it had reached, including the ``fit_band``
-        line naming the corner it ran at.
+        which a pure function has. Two producers reach it, and they carry
+        their payloads in deliberately different record types: the planner's
+        detaches (its payload becomes JSON), the accountability gate's does
+        not (its payload's logfmt bytes are the contract, and detaching
+        rewrote a tuple as a list). Both expose ``event``/``level``/
+        ``fields``, which is all this needs.
+
+        For the planner, forwarding here rather than iterating ``plan.journal``
+        afterwards is what makes a fit that raises part-way still disclose the
+        lines it had reached, including the ``fit_band`` line naming the corner
+        it ran at.
 
         ``record.fields`` is spread as keyword arguments rather than handed to
         ``log_event``'s ``fields=`` parameter so the rendered order matches
