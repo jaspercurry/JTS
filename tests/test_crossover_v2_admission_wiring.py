@@ -22,9 +22,19 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import admission
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+)
 from jasper.capture_relay.session import CaptureBeginDeferred
 
-from tests.test_crossover_v2_conductor import FakeSeams, _conductor, _run_phase
+from tests.test_crossover_v2_conductor import (
+    CLOUD_MEASURE_INDEXES,
+    FakeSeams,
+    _cloud_conductor,
+    _conductor,
+    _run_phase,
+)
 
 
 def _held_at_verify(fakes: FakeSeams, **kwargs):
@@ -124,6 +134,44 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
     with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
     assert "no extra attempts left" in str(excinfo.value)
+
+
+def test_the_spent_slot_outcome_tells_left_out_from_kept():
+    """The three group sentences, and the precedence between the first two.
+
+    Found unguarded by this slice's own mutation batch: swapping the
+    ``unresolved`` and ``retained`` reads left 330 conductor tests green. Only
+    the third sentence ("too few positions") was asserted anywhere, so a
+    position the flow gave up on and a position still covered by an earlier
+    take were interchangeable as far as the suite was concerned — two opposite
+    things to tell a household, one of which says work was lost when it was
+    not. The prose moved verbatim in this slice; the guard is what makes that
+    checkable.
+    """
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    index = CLOUD_MEASURE_INDEXES[0]
+
+    # Neither given up on nor already measured: the group has nothing here.
+    assert "too few positions" in c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index)
+
+    # Measured once, so an earlier curve stands.
+    _run_phase(c, index, 1)
+    assert c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index) == (
+        "JTS kept the earlier measurement for this position and "
+        "the group continued."
+    )
+
+    # Given up on WINS over the retained read — the order is the claim.
+    c._group_unresolved[PHASE_CLOUD_MEASURE][index] = flow.REASON_LOCATE_FAILED
+    assert c._spent_slot_outcome(PHASE_CLOUD_MEASURE, index) == (
+        "This position was left out and the group continued."
+    )
+
+    # A single-capture phase has no group to continue with.
+    assert c._spent_slot_outcome(PHASE_CHECK, 1) == (
+        "The measurement cannot continue because this step needs a clean read."
+    )
 
 
 def test_the_flow_and_the_module_name_one_ledger():
