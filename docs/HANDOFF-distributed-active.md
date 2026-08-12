@@ -648,11 +648,15 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
 - **Slice 1** — the compile/apply seam (`build_baseline_profile_candidate`,
   `apply_baseline_profile`) threads `capture_device` into
-  `emit_active_speaker_baseline_config` (default `plug:jasper_capture` keeps the
-  solo baseline byte-identical; `recompose_baseline_yaml` deliberately keeps the
-  default — program-domain EQ always captures from fan-in), and `OutputTopology`
-  carries a pure-data `pairing_intent` (`solo | will_be_follower | has_follower`,
-  absent == `solo`). Invariants 1, 2, and 7 are pinned by
+  `emit_active_speaker_baseline_config` (the default is now `None`, which
+  resolves through `active_emit_devices` to `plug:jasper_capture` on every
+  non-ring box and so keeps the solo baseline byte-identical — #2338;
+  `recompose_baseline_yaml` takes no capture parameter at all, so it keeps
+  `plug:jasper_capture` through `emit_active_speaker_baseline_config`'s own
+  unchanged `DEFAULT_CAPTURE_DEVICE` default — program-domain EQ always
+  captures from fan-in), and `OutputTopology` carries a pure-data
+  `pairing_intent` (`solo | will_be_follower | has_follower`, absent ==
+  `solo`). Invariants 1, 2, and 7 are pinned by
   [`tests/test_active_speaker_baseline_profile.py`](../tests/test_active_speaker_baseline_profile.py)
   and [`tests/test_output_topology.py`](../tests/test_output_topology.py).
 

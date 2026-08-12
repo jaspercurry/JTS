@@ -1601,34 +1601,145 @@ def _applied_ring_baseline(tmp_path):
     return topology, applied
 
 
-def _recorded_emit_kwargs(monkeypatch, call_site):
-    """Run ``call_site``, returning the kwargs it handed the baseline emitter."""
+def _recorded_emit_kwargs(
+    monkeypatch, call_site, emitter="emit_active_speaker_baseline_config"
+):
+    """Run ``call_site``, returning the kwargs it handed ``emitter``.
+
+    ``emitter`` names which emit function to record, because the candidate
+    builder has TWO branches and they take the same device contract: the solo
+    baseline emit and the wireless follower's driver-domain emit.
+    """
     from jasper.active_speaker import camilla_yaml as cy
 
     seen: dict = {}
-    real = cy.emit_active_speaker_baseline_config
+    real = getattr(cy, emitter)
 
     def recorder(preset, **kwargs):
         seen.update(kwargs)
         return real(preset, **kwargs)
 
-    monkeypatch.setattr(cy, "emit_active_speaker_baseline_config", recorder)
+    monkeypatch.setattr(cy, emitter, recorder)
     # baseline_profile imported the emitter by name at module import, so the
     # production seam has its own binding to rebind.
     import jasper.active_speaker.baseline_profile as bp
 
-    monkeypatch.setattr(bp, "emit_active_speaker_baseline_config", recorder)
+    monkeypatch.setattr(bp, emitter, recorder)
     call_site()
     return seen
 
 
+def _ring_candidate_site(
+    topology,
+    tmp_path,
+    *,
+    driver_domain=False,
+    playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+):
+    """Drive ``build_baseline_profile_candidate``'s WRITE emit against the ring.
+
+    The production CANDIDATE site (#2338), and the reason this guard grew past
+    two entries: its sink is marker-aware (``resolve_active_playback_device``)
+    while its capture lane and latency geometry took the emitter's ALSA-lane
+    defaults — playback=ring meeting capture=tap, the same half-moved graph one
+    emit site over. Both of its branches take the whole contract, so both are
+    walked: the solo baseline emit and the wireless follower's driver-domain
+    emit.
+
+    ``playback_device`` is overridable ONLY so a caller can drive the SAME site
+    at the ALSA active lane as a control — a ring-specific claim proven without
+    one is a claim about the site, not about the ring.
+    """
+    from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from tests.active_speaker_fixtures import (
+        standard_design_draft,
+        standard_measurements,
+        valid_camilla_config,
+    )
+
+    draft = standard_design_draft(topology)
+    out = tmp_path / ("driver_domain" if driver_domain else "solo")
+
+    def call_site():
+        build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=build_crossover_preview(draft),
+            measurements=standard_measurements(topology, out),
+            write=True,
+            state_path=out / "active-speaker-profile.json",
+            config_path=out / "configs" / "active-speaker-baseline.yml",
+            playback_device=playback_device,
+            driver_domain=driver_domain,
+            program_channel="left" if driver_domain else None,
+            validate=valid_camilla_config,
+        )
+
+    return call_site
+
+
+def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
+    tmp_path, monkeypatch
+):
+    """A typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses as the TYPED class.
+
+    This site derives its device block BEFORE it has an ``issues`` list to put a
+    blocker in — the cached fast-return exits above that point, and the
+    fingerprint has to describe the graph that will actually be emitted — so it
+    refuses by raising, and the TYPE of the raise is the whole contract. The
+    parser hands up a bare ``ValueError``
+    (:func:`jasper.fanin_coupling.resolve_ring_wire_format`); what leaves this
+    function must be ``ActiveSpeakerConfigError``, the class
+    ``jasper.multiroom.follower_config`` catches on its way to
+    ``fall_back_to_solo()``. That ``except`` names a SUBCLASS, so it does not
+    catch the bare parent: with one, an armed + bonded box carrying one typo'd
+    env line falls back to solo and logs
+    ``multiroom.reconcile.active_follower_blocked``; without one it aborts the
+    grouping reconcile inside the gate whose documented job is that fallback.
+
+    Being a ``ValueError`` subclass, the typed class leaves every surface that
+    already renders this as a clean refusal exactly as it was.
+    """
+    import jasper.active_speaker as active_speaker
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    topology = mono_output_topology()
+    with pytest.raises(active_speaker.ActiveSpeakerConfigError) as caught:
+        _ring_candidate_site(topology, tmp_path / "ring")()
+
+    # NON-DEGENERATE: assert the raise really is the wire parser's, and that the
+    # conversion carries its sentence rather than a type name. The operator has
+    # to see the var and the token they typed.
+    detail = str(caught.value)
+    assert RING_WIRE_FORMAT_ENV_VAR in detail
+    assert "s32le" in detail, "the operator needs to see the value they typed"
+
+    # CONTROL: the same site, the same typo'd file, the ALSA active lane. The
+    # wire is resolved only for a ring sink, so a typo cannot block an unarmed
+    # box's ordinary candidate build — a conversion that refused every box would
+    # satisfy the assertions above.
+    _ring_candidate_site(
+        topology,
+        tmp_path / "alsa",
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )()
+
+
 def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
-    """WALK ``dataclasses.fields(ActiveEmitDevices)`` at BOTH forwarding sites.
+    """WALK ``dataclasses.fields(ActiveEmitDevices)`` at EVERY forwarding site.
 
     This PR's whole defect class is a caller taking a SUBSET of a derived device
     contract — the ring re-emit forwarded the queue pair and let the format,
-    latency geometry and capture lane default. Both sites that forward the
-    contract now name every field explicitly, which is the readable shape but
+    latency geometry and capture lane default. Every site that forwards the
+    contract now names every field explicitly, which is the readable shape but
     also the re-armable one: adding a field to ``ActiveEmitDevices`` and
     forgetting one call site fails silently in exactly the original way.
 
@@ -1653,19 +1764,33 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     expected = active_emit_devices(RING_ACTIVE_PLAYBACK_DEVICE, topology=topology)
 
     sites = {
-        "recompose_applied_baseline_yaml": lambda: recompose_applied_baseline_yaml(
-            topology,
-            applied_profile=applied,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        "recompose_applied_baseline_yaml": (
+            lambda: recompose_applied_baseline_yaml(
+                topology,
+                applied_profile=applied,
+                playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            ),
+            "emit_active_speaker_baseline_config",
         ),
-        "tests._emit_active_baseline": lambda: _emit_active_baseline(
-            _mono_two_way_preset(),
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            topology=topology,
+        "tests._emit_active_baseline": (
+            lambda: _emit_active_baseline(
+                _mono_two_way_preset(),
+                RING_ACTIVE_PLAYBACK_DEVICE,
+                topology=topology,
+            ),
+            "emit_active_speaker_baseline_config",
+        ),
+        "build_baseline_profile_candidate": (
+            _ring_candidate_site(topology, tmp_path),
+            "emit_active_speaker_baseline_config",
+        ),
+        "build_baseline_profile_candidate(driver_domain)": (
+            _ring_candidate_site(topology, tmp_path, driver_domain=True),
+            "emit_active_speaker_driver_domain_config",
         ),
     }
-    for label, call_site in sites.items():
-        seen = _recorded_emit_kwargs(monkeypatch, call_site)
+    for label, (call_site, emitter) in sites.items():
+        seen = _recorded_emit_kwargs(monkeypatch, call_site, emitter)
         missing = [name for name in fields if name not in seen]
         assert not missing, (
             f"{label} does not forward {missing} from ActiveEmitDevices — the "
