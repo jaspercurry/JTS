@@ -755,10 +755,19 @@ def test_the_label_trim_matches_rusts_not_pythons(raw):
 
 def test_the_label_trim_still_strips_real_whitespace():
     """The floor for the test above: ordinary whitespace must still go, or the
-    fail-safe empty-value handling breaks."""
+    fail-safe empty-value handling breaks.
+
+    ``\xa0`` (NBSP) is here deliberately: it IS Unicode ``White_Space``, so both
+    languages strip it. A reimplementation as ``strip(" \\t\\n\\r\\v\\f")``
+    would keep every other pin in this file green while silently breaking NBSP,
+    which is exactly the shape of a plausible "simplification".
+    """
     assert rl.parse_armed_labels("  spotify  ") == ("spotify",)
     assert rl.parse_armed_labels("\t spotify \n") == ("spotify",)
+    assert rl.parse_armed_labels("\xa0spotify\xa0") == ("spotify",)
+    assert rl.parse_armed_labels("\x0bspotify\x0c") == ("spotify",)
     assert rl.parse_armed_labels(" , \t , ") == ()
+    assert rl.parse_armed_labels("\xa0,\xa0") == ()
 
 
 def test_the_rust_parser_uses_trim_not_a_wider_strip():
@@ -891,3 +900,76 @@ def test_the_probe_timeout_is_used_by_the_probe():
         "the probe must build its command from _PROBE_TIMEOUT_SEC, not a "
         "literal that the cross-language pin cannot see"
     )
+
+
+def test_the_c0_normalization_survives_the_FILE_read_end_to_end(tmp_path):
+    """The parser-level trim was not enough on its own — pin the whole path.
+
+    ``_env_file_value`` runs BEFORE ``parse_armed_labels``, and it used to trim
+    with Python's ``str.strip()``. So a value of ``spotify\x1c`` in a real file
+    had its separator eaten before the matched parser saw it: this side reported
+    the lane ARMED while ``jasper-fanin``'s ``env_csv_labels`` saw an unknown
+    label and refused with a config-class park. Two languages, one file, opposite
+    answers — precisely what the matched trim exists to prevent.
+
+    The CLI direction was always safe (raw arguments reach the parser directly
+    and are refused loudly); it was the FILE direction that lied. This drives a
+    real file on disk, because that is the only way to exercise the reader.
+    """
+    lanes = tmp_path / "renderer_lanes.env"
+    lanes.write_text(
+        "JASPER_FANIN_RENDERER_RING_LANES=spotify\x1c\n"
+        "JASPER_LIBRESPOT_DEVICE=librespot_substream\n"
+    )
+
+    armed = rl.read_armed_labels(str(lanes))
+    assert armed == ("spotify\x1c",), (
+        "the separator must SURVIVE the file read, so this side sees the same "
+        f"label fan-in's env_csv_labels sees; got {armed!r}"
+    )
+    assert "spotify" not in armed, (
+        "reporting the clean label would mean this side calls the lane armed "
+        "while fan-in parks on an unknown label, off identical bytes"
+    )
+    # And the drift surface inherits the honest answer rather than an
+    # armed-and-consistent one the daemon would refuse.
+    assert rl.fanin_env_expectations(str(lanes))[rl.FANIN_RING_LANES_KEY] == (
+        "spotify\x1c"
+    )
+    # The label is not one fan-in knows, so nothing is armed in the sense that
+    # matters: it would refuse at config rather than ingress a ring.
+    assert rl.lane_by_label(armed[0]) is None
+
+
+def test_a_trailing_separator_on_the_LINE_is_not_eaten_either(tmp_path):
+    """The line-level strip ran before value extraction, so it could eat a
+    separator that belonged to the value. Same bug, one layer earlier."""
+    lanes = tmp_path / "renderer_lanes.env"
+    lanes.write_bytes(
+        b"JASPER_FANIN_RENDERER_RING_LANES=spotify\x1c\n"
+        b"JASPER_LIBRESPOT_DEVICE=librespot_substream\n"
+    )
+    assert rl.read_armed_labels(str(lanes)) == ("spotify\x1c",)
+
+
+def test_the_file_reader_still_strips_ordinary_whitespace(tmp_path):
+    """The floor: the reader must still handle a normal file, including the
+    line terminator it has always removed."""
+    lanes = tmp_path / "renderer_lanes.env"
+    lanes.write_text(
+        "# a comment\n"
+        "  JASPER_FANIN_RENDERER_RING_LANES = spotify \n"
+        "JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\r\n"
+    )
+    assert rl.read_armed_labels(str(lanes)) == ("spotify",)
+    assert rl.fanin_env_expectations(str(lanes))["JASPER_LIBRESPOT_DEVICE"] == (
+        "librespot_ring_lane"
+    )
+
+
+def test_the_written_map_round_trips_a_clean_label(tmp_path):
+    """The writer's own output must read back identically — the normalization
+    must not have made the ordinary path lossy."""
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert rl.read_armed_labels(path) == ("spotify",)

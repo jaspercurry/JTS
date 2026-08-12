@@ -213,12 +213,15 @@ def parse_armed_labels(value: str | None) -> tuple[str, ...]:
     a key whose empty value must never be read as "arm everything". Order is
     preserved and duplicates are NOT collapsed.
 
-    **The trim is Rust's, not Python's.** ``str.strip()`` also removes the FOUR
-    C0 information separators (``\x1c`` FS, ``\x1d`` GS, ``\x1e`` RS, ``\x1f``
-    US); ``str::trim()`` does not, because they are not Unicode
-    ``White_Space``. Those four are enough for this parser to report a lane
-    armed that fan-in reports un-armed, off the same bytes. So the trim is
-    matched deliberately here, and
+    **The trim is Rust's, not Python's.** Swept across all 1,114,112
+    codepoints, exactly FOUR characters diverge: the C0 information separators
+    ``\x1c`` FS, ``\x1d`` GS, ``\x1e`` RS and ``\x1f`` US, which
+    ``str.strip()`` removes and ``str::trim()`` does not (they are not Unicode
+    ``White_Space``). That is 8 (character, position) combinations — leading
+    and trailing for each — of which the parametrized test below pins 5. Those
+    four characters are enough for this parser to report a lane armed that
+    fan-in reports un-armed, off the same bytes. So the trim is matched
+    deliberately here, and
     ``tests/test_renderer_ring_lanes.py`` pins the two against each other on
     exactly those characters.
     """
@@ -257,6 +260,24 @@ def _env_file_value(path: str, key: str) -> str | None:
     parser: this file is written by exactly one writer in exactly one shape,
     and a permissive parser would invite hand-editing the file it is the sole
     writer of.
+
+    **Every trim here is** :func:`_rust_trim`, not ``str.strip()``.
+    Matching the trim in :func:`parse_armed_labels` alone was not enough: this
+    reader runs FIRST, so a Python-strip here ate the C0 separators before the
+    matched parser could ever see them, and the two languages disagreed off the
+    same bytes after all. Measured end to end through a real file, a value of
+    ``spotify\x1c`` made :func:`read_armed_labels` report the lane ARMED while
+    ``jasper-fanin``'s ``env_csv_labels`` saw an unknown label and refused with
+    a config-class park — and :func:`fanin_env_expectations`, reading the same
+    file, reported armed-and-consistent while the daemon would not start. Rust
+    is the authority for this vocabulary, so the whole read path defers to it.
+
+    Severity, scoped honestly: this file has a single validated writer, so the
+    only ingress for such a value is a hand-edit, and whether systemd would
+    even deliver a raw 0x1C through ``EnvironmentFile=`` is unverified (no Pi
+    available). It is fixed regardless, because the claim in
+    :func:`parse_armed_labels` that the two parsers agree has to be TRUE, not
+    true-of-one-layer.
     """
     try:
         with open(path, encoding="utf-8") as fh:
@@ -265,13 +286,16 @@ def _env_file_value(path: str, key: str) -> str | None:
         return None
     found: str | None = None
     for line in lines:
-        stripped = line.strip()
+        # `_rust_trim` removes the line terminator too (\n and \r are Unicode
+        # White_Space), so this still strips the newline without eating a
+        # trailing separator that belongs to the value.
+        stripped = _rust_trim(line)
         if stripped.startswith("#") or "=" not in stripped:
             continue
         name, _, value = stripped.partition("=")
-        if name.strip() == key:
+        if _rust_trim(name) == key:
             # Last assignment wins, matching systemd's EnvironmentFile.
-            found = value.strip()
+            found = _rust_trim(value)
     return found
 
 
