@@ -632,26 +632,43 @@ def test_no_test_module_imports_the_conductor_test_file():
     Prose mentions are fine and deliberately not matched — several modules cite
     the file in a docstring to say where a behaviour is pinned. Only a real
     ``import`` counts.
+
+    **Every ``*.py`` under ``tests/``, not just ``test_*.py``.** The highest-
+    probability way to re-create the blocker is an import from
+    ``crossover_v2_fixtures.py`` itself — eighteen modules import that, so one
+    line there restores the blocker for all eighteen at once — and a
+    ``test_*`` glob cannot see it. Helper modules and ``conftest.py`` are in
+    scope for the same reason.
+
+    Both import spellings count: the absolute ``tests.test_crossover_v2_conductor``
+    and the relative ``from .test_crossover_v2_conductor import …``. The
+    relative form has no precedent in this suite, which is exactly why a guard
+    keyed only to the absolute one would be the easy thing to slip past.
     """
 
     tests_dir = Path(__file__).resolve().parent
-    modules = sorted(tests_dir.glob("test_*.py"))
+    modules = sorted(tests_dir.glob("*.py"))
     assert len(modules) >= 50, f"expected the test suite, saw {len(modules)}"
+    assert tests_dir / "crossover_v2_fixtures.py" in modules
 
-    doomed = "tests.test_crossover_v2_conductor"
+    absolute = "tests.test_crossover_v2_conductor"
+    relative = "test_crossover_v2_conductor"
+
+    def names_the_conductor_file(node: ast.AST) -> bool:
+        if isinstance(node, ast.ImportFrom):
+            return node.module == (relative if node.level else absolute)
+        if isinstance(node, ast.Import):
+            return any(alias.name == absolute for alias in node.names)
+        return False
+
     offenders: dict[str, list[int]] = {}
     for module in modules:
         if module.name == "test_crossover_v2_conductor.py":
             continue
         tree = ast.parse(module.read_text(), filename=str(module))
         lines = [
-            node.lineno
-            for node in ast.walk(tree)
-            if (isinstance(node, ast.ImportFrom) and node.module == doomed)
-            or (
-                isinstance(node, ast.Import)
-                and any(alias.name == doomed for alias in node.names)
-            )
+            node.lineno for node in ast.walk(tree)
+            if names_the_conductor_file(node)
         ]
         if lines:
             offenders[module.name] = lines
