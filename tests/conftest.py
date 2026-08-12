@@ -155,14 +155,32 @@ def _isolate_tts_wire_width_cache():
     Both sides matter. Clearing AFTER stops a test from handing its answer
     forward; clearing BEFORE means a test does not inherit one from a file that
     forgot to clean up, so this fixture is not itself a thing to remember.
-    """
-    from jasper.audio_io import tts_wire_is_wide
 
-    tts_wire_is_wide.cache_clear()
+    IT MUST NOT IMPORT ``jasper.audio_io``, and that is a CI constraint rather
+    than a preference. This fixture is autouse, so its body runs at the setup of
+    EVERY test in the repo — including the ``python-policy`` job, which installs
+    only the ``fast-landing`` dependency group and therefore has no numpy, while
+    ``jasper/audio_io.py`` imports numpy at module level. An unconditional import
+    here errored all 93 of that job's tests at setup, and because ``pytest-matrix``
+    runs ``needs: python-policy``, one fixture took the entire Python matrix down
+    with it.
+
+    Consulting ``sys.modules`` instead is not merely lighter — it is the more
+    precise statement of the invariant. The cache can only hold a stale answer
+    if something already imported the module, so an absent module means there is
+    nothing to clear, in a minimal environment exactly as in a full one.
+    """
+
+    def _clear() -> None:
+        module = sys.modules.get("jasper.audio_io")
+        if module is not None:
+            module.tts_wire_is_wide.cache_clear()
+
+    _clear()
     try:
         yield
     finally:
-        tts_wire_is_wide.cache_clear()
+        _clear()
 
 
 @pytest.fixture(autouse=True)
