@@ -189,16 +189,39 @@ def test_all_mode_catches_a_match_outside_the_branch_diff(branch_repo):
     assert "3 repo-tracked file(s)" in result.stdout
 
 
-def test_all_mode_groups_by_file_with_a_per_file_count(branch_repo):
-    result = _run(branch_repo, "--all")
+def test_all_mode_groups_by_file_with_a_per_file_count(make_repo):
+    """Deliberately gives changed.py TWO matches and untouched.py ONE, so
+    the header counts differ from each other. A one-match-per-file
+    fixture can't distinguish a genuinely computed count from a count
+    hardcoded to any single constant (gate finding: printing a literal
+    `999`, or pinning every count to `1`, flipped no existing test --
+    every prior fixture happened to have exactly one match per file)."""
+    repo = make_repo(
+        {
+            "untouched_with_match.py": (
+                "# nothing writes this file yet -- placeholder\n"
+            ),
+            "clean.py": "def g():\n    return 2\n",
+        },
+        {"changed_with_match.py": "# currently a stub\n# not yet finished\n"},
+    )
+
+    result = _run(repo, "--all")
 
     assert _group_body(result.stdout, "changed_with_match.py") == [
-        "1:# currently a stub"
+        "1:# currently a stub",
+        "2:# not yet finished",
     ]
     assert _group_body(result.stdout, "untouched_with_match.py") == [
         "1:# nothing writes this file yet -- placeholder"
     ]
-    assert "Total: 2 match(es) in 2 of 3 repo-tracked file(s)." in result.stdout
+    # The exact header strings, not just the parsed body length: a count
+    # that's off by one in the printf format (or hardcoded) can still
+    # leave `_group_body` parsing the right NUMBER of indented lines
+    # while the header text itself is wrong.
+    assert "changed_with_match.py (2)" in result.stdout
+    assert "untouched_with_match.py (1)" in result.stdout
+    assert "Total: 3 match(es) in 2 of 3 repo-tracked file(s)." in result.stdout
 
 
 def test_all_mode_no_matches(make_repo):
