@@ -1551,13 +1551,32 @@ def check_fanin_coupling() -> CheckResult:
                 "run: sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile "
                 "shm_ring"
             )
+        cause = (
+            "a stale baseline artifact re-seeded on a camilla restart is the "
+            "usual cause (finding-5 revert)"
+        )
+        # A ROLEFUL box that is still ARMED here cannot be told apart, by this
+        # check alone, from the CANONICAL rollback-ladder step-2 refusal
+        # (owner-ruled 2026-08-12, #2332): jasper-audio-hardware-reconcile
+        # refuses the aloop-rollback candidate with a ring-plan endpoint
+        # mismatch and exits 78 without touching the marker, so an armed box
+        # mid-rollback lands in exactly this warn. That refusal is expected,
+        # not a second symptom to chase — the way out is step 3
+        # (jasper-fanin-coupling-reconcile loopback), not re-running step 2, and
+        # a later hardware reconcile clears the stale marker once step 3 lands.
+        if roleful and armed:
+            cause += (
+                ", or an EXPECTED rollback-ladder step-2 refusal (#2332) if "
+                "jasper-audio-hardware-reconcile already exited 78 here after "
+                "baseline-reemit --endpoint aloop — normal on an armed box: skip "
+                "straight to jasper-fanin-coupling-reconcile loopback (step 3) "
+                "rather than re-running step 2"
+            )
         return CheckResult(
             label,
             "warn",
             f"intent={coupling} but loaded graph is not the ring config: "
-            f"{'; '.join(ring_mismatches)}; a stale baseline artifact re-seeded "
-            f"on a camilla restart is the usual cause (finding-5 revert) — "
-            f"{recovery}",
+            f"{'; '.join(ring_mismatches)}; {cause} — {recovery}",
         )
 
     # Non-ring intent (loopback). The env
