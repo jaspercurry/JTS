@@ -330,8 +330,11 @@ pub struct Config {
     /// DEFAULT-OFF USB DIRECT capture (PoC). When `true`, the lane labelled
     /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
     /// snd-aloop substream; instead the mixer opens `usb_direct_device`
-    /// (`hw:UAC2Gadget`) as an S32_LE capture, narrows to S16, and feeds the
-    /// SAME `LaneResampler` — deleting the usbsink bridge hop + the aloop cable
+    /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
+    /// `LaneResampler` — narrowing to S16 first only on a NARROW wire, which
+    /// is the fleet default; since U2 PR-1 a wide-wire box hands the
+    /// resampler the gadget's `i32` untouched — deleting the usbsink bridge
+    /// hop + the aloop cable
     /// (~25 ms measured) from the USB path. Direct mode IMPLIES a resampler on
     /// that lane regardless of `input_resampler_enabled` (see
     /// [`Config::lane_wants_resampler`]). Fail-safe: only the exact literal
@@ -527,8 +530,9 @@ impl Config {
     /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
     /// per-box width decision the whole daemon reads (U2 / #2223).
     ///
-    /// A wide wire needs BOTH halves: the ring transport (an snd-aloop output is
-    /// an S16 substream, full stop) AND an S32LE ring wire format. The ring's
+    /// A wide wire needs BOTH halves: the ring transport (this daemon's aloop
+    /// write is pinned narrow by [`crate::mixer::FORMAT`], so a loopback box
+    /// emits S16 whatever it declared) AND an S32LE ring wire format. The ring's
     /// own attached header is the RUNTIME authority for what
     /// `write_ring_period` publishes; this is the same fact resolved from config
     /// at construction, which is when the lane buffers and the direct lane's

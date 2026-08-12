@@ -382,8 +382,10 @@ def assistant_wire_is_wide(
     by reading the Rust source rather than by trusting this docstring.
 
     **BOTH halves, and the second one is not decoration.** A wide wire needs the
-    declared ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. An
-    snd-aloop substream is an S16 device, full stop, so a box that declared a
+    declared ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. fan-in's
+    snd-aloop write is pinned narrow (``jasper-fanin``'s ``mixer::FORMAT``, and
+    the dsnoop that reads it — see
+    :mod:`tests.test_aloop_program_lane_width`), so a box that declared a
     wide format but never armed the ring resolves NARROW — and `jasper-fanin`
     will mix narrow there whatever this says. Keying on the format token alone
     would make `jasper-voice` speak ``AUDIO32`` into a narrow mixer on exactly
