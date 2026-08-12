@@ -1441,11 +1441,22 @@ async def _load_applied_summed_measurement_config(
     topology: OutputTopology,
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
-    """Load a transient full Layer-A graph strictly from its applied snapshot."""
+    """Load a transient full Layer-A graph strictly from its applied snapshot.
+
+    The graph's CONTENT is the applied snapshot's, immutably. Its TRANSPORT is
+    the box's, freshly: this re-emits a graph the speaker is already running and
+    then LOADS it to play the excitation, so it is the same seam family as the
+    deploy reconcile and the household saves and reads the same one derivation
+    (:func:`~jasper.active_speaker.playback_route.resolve_live_active_endpoint`).
+    Inheriting the snapshot's lane instead is what made a sweep on a ring-armed
+    box excite the snd-aloop lane fan-in no longer feeds — an excitation into a
+    device nobody reads, measured as silence with every daemon healthy (#2344).
+    """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
         recompose_applied_baseline_yaml,
     )
+    from jasper.active_speaker.playback_route import resolve_live_active_endpoint
     from jasper.dsp_apply import validate_camilla_config
 
     applied = _dict_value(load_applied_baseline_profile_state())
@@ -1466,10 +1477,12 @@ async def _load_applied_summed_measurement_config(
         os.environ.get(AUTOMATIC_SUMMED_CONFIG_PATH_ENV)
         or DEFAULT_AUTOMATIC_SUMMED_CONFIG_PATH
     )
+    live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
     _yaml, issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
         out_path=target,
+        playback_device=live_endpoint,
     )
     if issues:
         return {

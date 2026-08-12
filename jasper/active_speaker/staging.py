@@ -1698,6 +1698,59 @@ def prepare_driver_commissioning_config(
         ),
     ))
 
+    # FAIL CLOSED ON AN ARMED BOX (#2344). This emit is the AUDIBLE one — the
+    # per-driver and summed commissioning graphs are loaded into CamillaDSP and
+    # swept — and it forwards only the device NAME to the emitter, so every other
+    # half of the device contract (`active_emit_devices`: the ring capture lane,
+    # the resolved wire format, the certified chunk/target/queue geometry) stays
+    # at the emitter's snd-aloop defaults. On a ring-armed box that emits a graph
+    # whose sink is the ring while its source is `plug:jasper_capture` — the tap
+    # fan-in stops feeding under `shm_ring` — so the sweep excites a device
+    # nobody reads and the measurement records silence with every daemon healthy.
+    #
+    # Refusing here rather than teaching this emitter the ring is deliberate:
+    # commissioning an already-armed box is a flow nobody has run, the ring
+    # geometry under sustained excitation is a hardware claim, and the live
+    # protection admission report asserts the tap capture route
+    # (`commissioning_admission`'s `capture_route_current` check), so moving this
+    # lane is a hearing-safety-adjacent change that needs its own evidence.
+    # Until then a loud, actionable blocker beats a silent silent sweep.
+    #
+    # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
+    # emits the all-muted durable BOOT anchor through the same context, and an
+    # armed box must keep being able to refresh that anchor.
+    #
+    # Membership is over ALL ring PCMs, the same set `active_emit_devices` keys
+    # on, so this reads the one owner of "is this a ring device" instead of
+    # becoming a second place that knows a name.
+    from jasper.fanin_coupling import RING_PCM_DEVICES
+
+    commissioning_transport_supported = resolved_playback_device not in RING_PCM_DEVICES
+    gates.append(_gate(
+        "commissioning_transport_supported",
+        label="Commissioning emits on a transport this graph can carry",
+        passed=commissioning_transport_supported,
+        message=(
+            "Commissioning emits on the active ALSA lane"
+            if commissioning_transport_supported
+            else (
+                f"This speaker's active graph is on {resolved_playback_device}, and "
+                "driver commissioning has not been validated on the ring transport"
+            )
+        ),
+    ))
+    if not commissioning_transport_supported:
+        issues.append(_issue(
+            "blocker",
+            "commissioning_ring_transport_unsupported",
+            (
+                "This speaker is armed on the ring transport, which driver "
+                "commissioning cannot measure through yet. Release it first with "
+                "`jasper-active-speaker baseline-reemit --endpoint aloop`, "
+                "commission, then re-arm."
+            ),
+        ))
+
     out_path = commissioning_config_path(config_dir=config_dir, path=config_path)
     validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
     classification: dict[str, Any] = {}

@@ -639,25 +639,34 @@ async def test_the_drift_check_reads_the_endpoint_out_of_a_round_tripped_readbac
 # a stale entry too — an exemption that no longer matches a real call site is a
 # rule protecting nothing.
 _ENDPOINT_EXEMPT_CALL_SITES = {
-    # Commissioning-time identity derivations. Neither graph is loaded: each is
-    # re-emitted only to FINGERPRINT it (``NormalizedActiveRawIdentity``, which
-    # does freeze the devices block) and compare that against a fingerprint a
-    # PLANNING step recorded from the same snapshot-default recompose. Both ends
-    # therefore move together and the endpoint cancels — while feeding the live
-    # endpoint to one end and not to the stored other would invalidate every
-    # fingerprint already on disk. Changing these is a separate decision about
-    # what commissioning evidence identity should bind, not this fix.
+    # Commissioning-time identity derivations, exempt because the endpoint
+    # CANCELS: each re-emit is FINGERPRINTED (``NormalizedActiveRawIdentity``,
+    # which does freeze the devices block) and compared against a fingerprint a
+    # PLANNING step recorded from the same snapshot-default recompose, so both
+    # ends move together — while feeding the live endpoint to one end and not to
+    # the stored other would invalidate every fingerprint already on disk.
+    # Changing these is a separate decision about what commissioning evidence
+    # identity should bind, not this fix.
+    #
+    # The isolated producer is fingerprint-ONLY: its ``normal_raw`` is loaded to
+    # compute ``active_raw_fingerprint`` and the text is then discarded.
     "jasper/active_speaker/commissioning_isolated_producer.py",
+    # The host is NOT fingerprint-only, and an earlier version of this comment
+    # said it was. Its ``normal_active_raw`` is fingerprinted AND rides into
+    # ``SummedGraphRequest`` -> ``commissioning_runtime`` (which mutates only
+    # ``devices["volume_limit"]``) -> ``port.apply_active_raw`` ->
+    # ``camilla.set_active_config_raw``, so the snapshot's ``devices:`` block
+    # would reach a live CamillaDSP verbatim. It stays exempt because it is BOTH
+    # halves — moving its endpoint without moving the stored fingerprints is the
+    # coupled decision above — and because the chain is not wired today:
+    # ``CommissioningCaptureService.capture_next`` has no production caller, so
+    # nothing reaches the apply. Wiring a handler to it re-opens this.
     "jasper/active_speaker/commissioning_host.py",
-    # NOT the same: this one WRITES the automatic-summed measurement graph and
-    # loads it into CamillaDSP to play the excitation, so on an armed box it
-    # would sweep into the snd-aloop lane and measure silence. It is exempt only
-    # because moving a commissioning sweep onto the ring transport is a claim
-    # that has to be made on hardware — chunk/target 128, a 2-slot ring, and
-    # rate_adjust off, under excitation — and commissioning an already-armed box
-    # is a flow nobody has run. Tracked as issue #2344; this entry is the
-    # deliberate omission, not an oversight.
-    "jasper/active_speaker/web_commissioning.py",
+    # ``jasper/active_speaker/web_commissioning.py`` USED to sit here (#2344): it
+    # WRITES the automatic-summed measurement graph and loads it into CamillaDSP
+    # to play the excitation, so inheriting the snapshot's lane swept a ring-armed
+    # box into the snd-aloop lane and measured silence. It now reads the same
+    # derivation as the other loaded-graph seams and is held by the walk below.
 }
 
 
@@ -808,3 +817,262 @@ async def test_the_re_emit_seams_forward_the_derived_endpoint(
 
     assert spy.call_args is not None, f"{seam} never reached the recomposer"
     assert spy.call_args.kwargs.get("playback_device") == sentinel_device
+
+
+# --------------------------------------------------------------------------
+# 6. #2344 — the COMMISSIONING WIZARD's two graphs on an armed box.
+#
+# The wizard's measurement flows were the one armed-box restriction #2343 did
+# not lift, and they break in two DIFFERENT ways:
+#
+#   * the applied-summed measurement graph re-emits the snapshot and LOADS it to
+#     play the excitation — a fifth member of the family above, fixed the same
+#     way: it reads the one derivation;
+#   * the per-driver / summed COMMISSIONING graph resolves the ring by NAME
+#     through the fresh-emit chooser but forwards none of the REST of the device
+#     contract, so it emits a ring sink over a ``plug:jasper_capture`` source.
+#     That one REFUSES on an armed box instead of being taught the ring, because
+#     the ring geometry under sustained excitation is a hardware claim and the
+#     live-protection admission report asserts the tap capture route.
+#
+# Both halves keep the same promise — never silently measure a device nobody
+# writes. One keeps it by emitting the right graph, the other by emitting none.
+# --------------------------------------------------------------------------
+
+
+def _stub_camilla_validation(monkeypatch):
+    """Accept any emitted graph — CamillaDSP's own syntax check needs a binary."""
+    from types import SimpleNamespace
+
+    from jasper import dsp_apply
+
+    monkeypatch.setattr(
+        dsp_apply,
+        "validate_camilla_config",
+        lambda path: SimpleNamespace(
+            ok_to_apply=True, to_dict=lambda: {"status": "valid", "path": str(path)}
+        ),
+    )
+
+
+async def test_the_measurement_sweep_graph_follows_the_live_endpoint(
+    tmp_path, monkeypatch,
+):
+    """An ARMED box's sweep excites the RING, on BOTH halves of the graph.
+
+    This is the seam #2344 records. It re-emits the applied Layer-A graph and
+    hands it to CamillaDSP to play the excitation, so an inherited snapshot lane
+    drove the snd-aloop tap that fan-in stops feeding under ``shm_ring`` — an
+    excitation into a device nobody reads, recorded as silence with every daemon
+    healthy.
+
+    The CAPTURE half is asserted alongside the playback half deliberately: a
+    sink-only move is the half-moved graph, which fails in the same silent way.
+    """
+    from jasper.active_speaker import web_commissioning
+
+    topology, applied = _applied_box(tmp_path, monkeypatch)
+    _point_statefile_at(
+        tmp_path,
+        monkeypatch,
+        _graph_for(topology, applied, RING_ACTIVE_PLAYBACK_DEVICE),
+        name="loaded.yml",
+    )
+    target = tmp_path / "summed_measurement.yml"
+    monkeypatch.setenv(web_commissioning.AUTOMATIC_SUMMED_CONFIG_PATH_ENV, str(target))
+    _stub_camilla_validation(monkeypatch)
+    camilla = _FakeCamilla(str(tmp_path / "normal.yml"))
+
+    payload = await web_commissioning._load_applied_summed_measurement_config(
+        topology=topology,
+        camilla_factory=lambda: camilla,
+    )
+
+    assert payload["load"]["status"] == "loaded", payload
+    assert camilla.loaded_path == str(target)
+    assert _both_halves(target.read_text(encoding="utf-8")) == (
+        RING_CAPTURE_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+
+async def test_an_unarmed_box_sweeps_the_byte_identical_graph(tmp_path, monkeypatch):
+    """The unarmed fleet sees NO change — asserted byte-for-byte, not argued.
+
+    The family's whole safety case is that deriving the endpoint is a no-op
+    wherever the box is not armed, so this compares the emitted FILE against the
+    snapshot-default recompose rather than against a device name.
+    """
+    from jasper.active_speaker import web_commissioning
+
+    topology, applied = _applied_box(tmp_path, monkeypatch)
+    _point_statefile_at(
+        tmp_path, monkeypatch, _graph_for(topology, applied, None), name="loaded.yml"
+    )
+    target = tmp_path / "summed_measurement.yml"
+    monkeypatch.setenv(web_commissioning.AUTOMATIC_SUMMED_CONFIG_PATH_ENV, str(target))
+    _stub_camilla_validation(monkeypatch)
+
+    payload = await web_commissioning._load_applied_summed_measurement_config(
+        topology=topology,
+        camilla_factory=lambda: _FakeCamilla(str(tmp_path / "normal.yml")),
+    )
+
+    assert payload["load"]["status"] == "loaded", payload
+    expected, issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=applied, playback_device=None
+    )
+    assert issues == [], issues
+    assert target.read_text(encoding="utf-8") == expected
+
+
+def _commissioning_box():
+    """The roleful bench shape the commissioning emitter is driven with."""
+    from tests.test_ring_active_endpoint import _active_topology, _mono_two_way_preset
+
+    return _active_topology("mono", "active_2_way"), _mono_two_way_preset()
+
+
+def _recorded_commissioning_emit(monkeypatch):
+    """Record every call the commissioning emitter receives, and pass it through."""
+    from jasper.active_speaker import camilla_yaml, staging
+
+    calls: list[dict] = []
+    real = camilla_yaml.emit_active_speaker_commissioning_config
+
+    def recording(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        staging, "emit_active_speaker_commissioning_config", recording
+    )
+    return calls
+
+
+@pytest.mark.parametrize("route", ["marker", "explicit"])
+async def test_driver_commissioning_refuses_the_ring_before_it_emits(
+    tmp_path, monkeypatch, route,
+):
+    """An armed box gets a LOUD refusal, not a half-moved graph.
+
+    ``resolve_active_playback_device`` is already ring-aware, so this emitter
+    resolved the ring by NAME while forwarding none of the rest of
+    ``active_emit_devices`` — no ring capture lane, no resolved wire format, no
+    certified chunk/target/queue geometry. The emitted graph therefore had a ring
+    sink over ``plug:jasper_capture``, the tap fan-in stops feeding under
+    ``shm_ring``: the sweep excites a device nobody reads and the capture records
+    silence with every daemon healthy.
+
+    The refusal is asserted BEFORE the emit, not merely on the returned status —
+    a blocker that still wrote a candidate would leave the half-moved graph on
+    disk for the next reader. Both routes to a ring device are covered: the
+    production marker, and an explicit lab override.
+    """
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    topology, preset = _commissioning_box()
+    emits = _recorded_commissioning_emit(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed",
+        lambda env=None: route == "marker",
+    )
+
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        playback_device=(
+            RING_ACTIVE_PLAYBACK_DEVICE if route == "explicit" else None
+        ),
+        config_dir=tmp_path / route,
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "blocked", payload
+    assert emits == [], "the commissioning graph was emitted anyway"
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_ring_transport_unsupported" in codes, payload
+    gate = next(
+        g
+        for g in payload.get("required_gates") or []
+        if g.get("id") == "commissioning_transport_supported"
+    )
+    assert gate["passed"] is False
+    # The operator has to be told the way OUT, not just that they are stuck.
+    message = next(
+        issue["message"]
+        for issue in payload["issues"]
+        if issue.get("code") == "commissioning_ring_transport_unsupported"
+    )
+    assert "baseline-reemit --endpoint aloop" in message
+
+
+async def test_driver_commissioning_still_emits_on_an_unarmed_box(
+    tmp_path, monkeypatch,
+):
+    """CONTROL: the refusal is keyed on the ring, not on commissioning at all.
+
+    Without this, a gate that refused every box would satisfy the assertions
+    above. The unarmed path must still reach the emitter on the ALSA lane.
+    """
+    from jasper.active_speaker.staging import prepare_driver_commissioning_config
+
+    topology, preset = _commissioning_box()
+    emits = _recorded_commissioning_emit(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
+    )
+
+    payload = prepare_driver_commissioning_config(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        config_dir=tmp_path / "unarmed",
+        run_config_check=False,
+    )
+
+    assert payload["status"] == "prepared", payload
+    assert len(emits) == 1, emits
+    assert emits[0]["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    gate = next(
+        g
+        for g in payload["required_gates"]
+        if g.get("id") == "commissioning_transport_supported"
+    )
+    assert gate["passed"] is True
+
+
+async def test_the_durable_boot_anchor_is_not_refused_on_an_armed_box(
+    tmp_path, monkeypatch,
+):
+    """SCOPE: the refusal covers the AUDIBLE emit only, never the boot anchor.
+
+    ``stage_protected_startup_config`` shares the same context builder but emits
+    the all-muted durable startup graph — the crash-recovery anchor a roleful box
+    boots from. Refusing THAT on an armed box would leave a speaker unable to
+    refresh its own boot config, which is a worse failure than the one being
+    fixed. This pins where the blocker lives, so a later tidy-up that lifts it
+    into the shared context fails here instead of on a Pi.
+    """
+    from jasper.active_speaker.staging import stage_protected_startup_config
+
+    topology, preset = _commissioning_box()
+    emits = _recorded_commissioning_emit(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+    )
+
+    payload = stage_protected_startup_config(
+        topology,
+        preset=preset,
+        config_dir=tmp_path / "anchor",
+        run_config_check=False,
+    )
+
+    codes = {issue.get("code") for issue in payload.get("issues") or []}
+    assert "commissioning_ring_transport_unsupported" not in codes, payload
+    assert len(emits) == 1, emits
+    assert emits[0]["playback_device"] == RING_ACTIVE_PLAYBACK_DEVICE
