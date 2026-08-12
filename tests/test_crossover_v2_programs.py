@@ -43,7 +43,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
     SESSION,

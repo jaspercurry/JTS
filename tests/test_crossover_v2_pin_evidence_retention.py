@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.attribution.position_evidence import position_evidence_block
 
 from tests.test_attribution_persistence import _combined, _records
-from tests.test_crossover_v2_conductor import FakeSeams, _conductor, _run_phase
+from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase
 
 
 # --- the identity join is by key, not by position ----------------------------

@@ -38,7 +38,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import attempt_grading
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FakeSeams,
     _run_phase,
     _verify_only_conductor,

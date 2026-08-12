@@ -93,7 +93,7 @@ from jasper.web import correction_crossover_v2 as v2host
 # emits for one summed VERIFY sweep. Imported rather than re-implemented so
 # there is one definition of "what a VERIFY capture looks like" — the same
 # reason ``tests/test_crossover_v2_entry_baseline.py`` imports them.
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     _in_room_summed_db,
     _verify_analysis,
 )
@@ -326,7 +326,7 @@ def _bare_conductor() -> Any:
     ``_round_refusal_for`` is a pure translation from a coordinator kind to a
     household code — giving it a prepared stage would test the harness.
     """
-    from tests.test_crossover_v2_conductor import (
+    from tests.crossover_v2_fixtures import (
         CAPS, FC_HZ, SESSION, SESSION_VOLUME_DB, FakeSeams, _preset, _roles,
     )
 

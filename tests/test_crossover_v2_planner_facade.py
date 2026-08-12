@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2 import (
 )
 from jasper.active_speaker.crossover_v2 import planner_facade
 from jasper.active_speaker.fc_selector import FcCandidateEvaluation
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT,
     FakeSeams,
     _cloud_conductor,

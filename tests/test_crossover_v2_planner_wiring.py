@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     CandidateFcDisagreementError,
     NoCrossoverSectionsError,
 )
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FakeSeams,
     _conductor,
     _eligible_measure_analysis,

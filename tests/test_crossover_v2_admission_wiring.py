@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
     FakeSeams,
     _cloud_conductor,

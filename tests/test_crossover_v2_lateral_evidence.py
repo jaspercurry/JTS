@@ -42,7 +42,7 @@ from jasper.audio_measurement.program_analysis import (
     DriverResponse,
 )
 
-from tests.test_crossover_v2_conductor import (
+from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
     _alignment,

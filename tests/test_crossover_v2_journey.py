@@ -473,8 +473,8 @@ def _conductor(**kwargs):
     """The shared conductor fixture, so this suite cannot drift from the corpus
     it is asserting about. Seams are the suite's fakes; this section reads
     phase state only."""
-    from tests.test_crossover_v2_conductor import FakeSeams
-    from tests.test_crossover_v2_conductor import _conductor as _build
+    from tests.crossover_v2_fixtures import FakeSeams
+    from tests.crossover_v2_fixtures import _conductor as _build
 
     return _build(FakeSeams(), **kwargs)
 
