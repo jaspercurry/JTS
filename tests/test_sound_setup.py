@@ -1434,10 +1434,9 @@ def test_the_ring_transport_blocker_is_registered_on_every_household_surface():
         code for code, _ in _SUMMED_TEST_FAILURE_COPY
     }, "the combined-test card has no copy for the ring-transport blocker"
     # And none of that copy may carry the operator's command.
-    for surface in (helper_js, ):
-        assert "baseline-reemit" not in surface, (
-            "a household surface carries the operator remedy verbatim"
-        )
+    assert "baseline-reemit" not in helper_js, (
+        "a household surface carries the operator remedy verbatim"
+    )
 
 
 def test_active_speaker_setup_copy_has_no_backend_jargon():
