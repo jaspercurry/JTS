@@ -32,6 +32,10 @@ order — so this list is what exists, not a plan:
   planner request its own sections imply, and the emitted candidate.
 * :mod:`.admission` — one position's attempt ledger, and whether the next
   ``begin_capture`` may start on it.
+* :mod:`.capture_dispatch` — which screens an anchor capture (CHECK, MEASURE,
+  VERIFY) must clear, and in what order.
+* :mod:`.attempt_grading` — whether a VERIFY capture is a new *tuning* attempt,
+  and whether the loop may grade it.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants
