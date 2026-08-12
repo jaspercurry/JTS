@@ -447,7 +447,7 @@ reordering better than the prior flat enumeration):
 |---|---|
 | **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
 | **Sound** | EQ → `/eq/` · Sound setup → `/sound/setup/` · Active speaker → `/sound/crossover/` · Room correction → `/sound/room/` · Bass → `/sound/bass/` |
-| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Microphone & wake → `/wake/` |
+| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Voice assistant → `/wake/` (wake word, microphone) · Chat history → `/chat/` · Tools → `/tools/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
 | **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |

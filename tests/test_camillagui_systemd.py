@@ -7,6 +7,7 @@ from __future__ import annotations
 import configparser
 from pathlib import Path
 
+from jasper.cli.doctor.web import CAMILLAGUI_PORT
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy" / "systemd"
@@ -47,6 +48,19 @@ def test_camillagui_socket_activates_the_bounded_proxy():
     assert unit["Socket"]["TriggerLimitIntervalSec"] == "10s"
     assert unit["Socket"]["TriggerLimitBurst"] == "100"
     assert unit["Install"]["WantedBy"] == "sockets.target"
+
+
+def test_doctor_camillagui_port_constant_mirrors_the_unit():
+    """jasper.cli.doctor.web.CAMILLAGUI_PORT is a second writer of the port
+    the shipped unit binds. Without this guard, a port move would update
+    the unit (caught by the ListenStream= assertion above) and the suite
+    would go green while the doctor's constant stayed stale — the doctor
+    would keep probing the OLD port, and a wide-open listener on the NEW
+    port would read "OK — not currently listening" instead of warning.
+    Precedent: tests/test_env_load_mirrors_unit.py."""
+    unit = _unit("camillagui.socket")
+    unit_port = int(unit["Socket"]["ListenStream"].rsplit(":", 1)[1])
+    assert CAMILLAGUI_PORT == unit_port
 
 
 def test_camillagui_proxy_owns_backend_lifetime_and_has_no_restart_loop():
@@ -93,3 +107,9 @@ def test_install_restarts_not_just_starts_the_camillagui_socket():
     reload_at = install.rindex("systemctl daemon-reload", 0, enable_at)
     restart_at = install.index("systemctl restart camillagui.socket", enable_at)
     assert reload_at < enable_at < restart_at
+    # Deliberately NOT swallowed with `|| true` like the wizard-socket
+    # loop's restart (deploy/lib/install/systemd-units.sh) — a failed
+    # rebind here leaves a security-relevant posture unchanged (still
+    # LAN-reachable) and must abort the install loudly, not continue
+    # past it. Precedent idiom: tests/test_first_party_arm64_release.py.
+    assert "systemctl restart camillagui.socket 2>/dev/null || true" not in install

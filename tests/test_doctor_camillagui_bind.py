@@ -111,6 +111,14 @@ def test_ipv6_loopback_is_ok(monkeypatch):
     )
     r = doctor_web.check_camillagui_loopback()
     assert r.status == "ok"
+    # Detail-content pinned, not just status: "not currently listening" is
+    # ALSO status "ok" (test_ok_when_not_listening) but reached via a
+    # completely different branch (empty addresses vs. a recognized
+    # loopback address). Without this, a mutation that misparses "[::1]"
+    # into "not found at all" would silently fall through to that other
+    # ok branch and this test would still pass for the wrong reason.
+    assert "loopback-only" in r.detail
+    assert "[::1]:5005" in r.detail
 
 
 def test_ipv6_wildcard_warns(monkeypatch):
@@ -126,6 +134,22 @@ def test_ipv6_wildcard_warns(monkeypatch):
 def test_warn_when_ss_missing(monkeypatch):
     def raises(cmd, timeout=5.0):
         raise FileNotFoundError("ss not found")
+
+    monkeypatch.setattr(doctor_web, "_run", raises)
+    r = doctor_web.check_camillagui_loopback()
+    assert r.status == "warn"
+    assert "can't verify" in r.detail
+
+
+def test_warn_when_ss_not_executable(monkeypatch):
+    """PermissionError (non-executable ss binary) and a fork failure under
+    memory pressure (OSError, e.g. errno ENOMEM) are OSError but not
+    FileNotFoundError — the probe must still degrade to warn, not crash
+    the whole doctor run. `PermissionError` is a concrete stand-in for
+    both: both are plain OSError subclasses the narrower
+    (SubprocessError, FileNotFoundError) except clause would miss."""
+    def raises(cmd, timeout=5.0):
+        raise PermissionError("ss not executable")
 
     monkeypatch.setattr(doctor_web, "_run", raises)
     r = doctor_web.check_camillagui_loopback()

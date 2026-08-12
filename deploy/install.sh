@@ -2052,9 +2052,9 @@ install_camillagui() {
     # (deploy/systemd/camillagui.socket binds 127.0.0.1:5005) — unlike
     # the other unauthenticated, home-LAN-only management surfaces, this
     # one can author and live-apply CamillaDSP configs naming any device,
-    # so it is not LAN-reachable. The landing page still links to
-    # http://${HOSTNAME}:5005, which now only resolves from the Pi itself;
-    # reach it with `ssh -L 5005:localhost:5005 <pi-host>`.
+    # so it is not LAN-reachable. The landing page has no link to it (a
+    # link that always connection-refuses is a silent failure); reach it
+    # with `ssh -L 5005:localhost:5005 <pi-host>`.
     local CAMILLAGUI_VERSION="4.1.0"
     local CAMILLAGUI_DIR="/opt/camillagui"
     local arch bundle bundle_sha256

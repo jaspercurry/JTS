@@ -272,16 +272,22 @@ def _camillagui_listen_addresses() -> list[str] | None:
     ListenStream= change actually re-binds; `ss` is the ground truth that
     proves the restart worked rather than trusting it did.
 
-    Returns None when the `ss` probe itself fails (not found, non-zero
-    exit) so the caller can report "can't verify" rather than silently
-    reading a failed probe as "nothing listening". Returns [] when the
-    probe ran cleanly and found no LISTEN socket on the port — covers both
-    "never installed" and "administratively stopped" (e.g. a hardware
-    runbook's precautionary `systemctl stop camillagui.socket`); either way
-    there is no live exposure to warn about."""
+    Returns None when the `ss` probe itself fails (not found, not
+    executable, a transient fork/resource failure, non-zero exit) so the
+    caller can report "can't verify" rather than silently reading a failed
+    probe as "nothing listening". `OSError` (not just `FileNotFoundError`)
+    is caught so a non-executable `ss` (PermissionError) or a fork failure
+    under memory pressure (OSError ENOMEM) also degrades to warn rather
+    than crashing the whole doctor run — the package's majority convention
+    for subprocess probes like this one (see jasper/cli/doctor/memory.py,
+    correction.py). Returns [] when the probe ran cleanly and found no
+    LISTEN socket on the port — covers both "never installed" and
+    "administratively stopped" (e.g. a hardware runbook's precautionary
+    `systemctl stop camillagui.socket`); either way there is no live
+    exposure to warn about."""
     try:
         proc = _run(["ss", "-H", "-ltn"], timeout=5.0)
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
     if proc.returncode != 0:
         return None
@@ -339,4 +345,8 @@ def check_camillagui_loopback() -> CheckResult:
             "redeploy, or `systemctl restart camillagui.socket`, to "
             "re-apply the shipped 127.0.0.1 bind",
         )
-    return CheckResult(label, "ok", f"loopback-only (127.0.0.1:{CAMILLAGUI_PORT})")
+    # Derived from the observed bind, not hardcoded to "127.0.0.1" — an
+    # [::1]-only bind is equally loopback-only and must not be misreported
+    # as an IPv4 address that isn't actually listening.
+    shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in sorted(set(addresses)))
+    return CheckResult(label, "ok", f"loopback-only ({shown})")
