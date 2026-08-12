@@ -111,18 +111,27 @@ EVENT_FIT_FAILED = "correction.crossover_v2_linearization_fit_failed"
 #: guard. A second, independent event name rather than a field on the
 #: dropped record: the broken port could not have carried that field either,
 #: so this one goes out the module's own logger (above), not the port.
+#: Deliberately NOT ``EVENT_FIT_FAILED`` plus a ``"_journal_dropped"`` suffix
+#: applied naively: that reads as ``..._fit_failed_journal_dropped``, which
+#: contains :data:`EVENT_FIT_FAILED`'s own value as a literal substring —
+#: three pre-existing consumers match that event by bare substring
+#: (``"event=correction..." in caplog.text``), and one pairs it with an
+#: adjacent ``reason=ValueError`` check that a same-shaped drop line could
+#: satisfy too. This value keeps the ``journal_dropped`` token (so
+#: ``grep journal_dropped`` still catches the whole vocabulary) while staying
+#: substring-clean of :data:`EVENT_FIT_FAILED` in both directions.
 EVENT_FIT_FAILED_JOURNAL_DROPPED = (
-    "correction.crossover_v2_linearization_fit_failed_journal_dropped"
+    "correction.crossover_v2_linearization_fit_journal_dropped"
 )
 
 #: The exceptions :func:`build_candidate`'s own ``journal`` call is guarded
-#: against — this module's copy of the same family as
-#: ``intervention._PORT_ERRORS``, ``fc_sweep._SWEEP_ERRORS`` and
-#: ``coordinator._SEAM_ERRORS``. Enumerated rather than a blind ``except
-#: Exception`` (ruff BLE, and the repository's frozen broad-except budget).
-#: ``OSError`` is in the set for the same reason it is in theirs: the port is
-#: a logging delegate, and a handler with nowhere to write raises exactly
-#: that.
+#: against — the same 8-exception family as ``intervention._PORT_ERRORS``
+#: and ``fc_sweep._SWEEP_ERRORS``, and a superset of
+#: ``coordinator._SEAM_ERRORS`` (whose 6 omit ``ArithmeticError`` and
+#: ``IndexError``). Enumerated rather than a blind ``except Exception``
+#: (ruff BLE, and the repository's frozen broad-except budget). ``OSError``
+#: is in the set for the same reason it is in theirs: the port is a logging
+#: delegate, and a handler with nowhere to write raises exactly that.
 _JOURNAL_ERRORS = (
     ArithmeticError,
     AttributeError,
