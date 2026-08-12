@@ -354,10 +354,19 @@ pub(super) fn open_ring_input(
 pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> usize {
     // Take ownership of the state machine so the reattach path can mutate `input`
     // (observability, resampler) without a double borrow. Restored before return.
-    let mut ring = input
-        .ring
-        .take()
-        .expect("read_ring_and_render only called on a ring lane");
+    //
+    // A `None` here would mean the mixer dispatched a non-ring lane to this
+    // function, which its `input.ring.is_some()` arm makes impossible. It is
+    // still handled as SILENCE rather than a panic: this is a production audio
+    // daemon, and the correct response to "a lane is somehow not what we thought"
+    // is the same as the correct response to every other lane fault in this
+    // module — contribute nothing and keep the mix running. A panic here would
+    // take the whole summed music path down to enforce an invariant whose
+    // violation costs one lane.
+    let Some(mut ring) = input.ring.take() else {
+        input.read_buf.fill(0);
+        return 0;
+    };
 
     let real_frames = match &mut ring {
         RingCapture::Attached(reader) => {

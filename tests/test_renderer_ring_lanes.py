@@ -1,0 +1,453 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Renderer-ingress lane map (U3 / P6a) — the activation rule and its writer.
+
+Three things are pinned here, in rising order of how expensive they are to get
+wrong:
+
+1. **The default is nothing.** An unarmed box behaves byte-identically to one
+   on which this mechanism does not exist. Every fail-safe direction (missing
+   file, empty value, malformed value) resolves to "nothing armed".
+2. **Both ends move together.** The renderer's device and fan-in's armed set
+   come from one render of one fact, so a half-flip — one end on the ring, the
+   other on snd-aloop, i.e. silence — is not representable.
+3. **The two language mirrors agree.** fan-in derives the ring path in Rust and
+   the conf.d declares it in ALSA config; a divergence would leave fan-in
+   reading a ring nothing writes, which presents as a silent source with a
+   healthy-looking daemon.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from jasper import renderer_lanes as rl
+
+REPO = Path(__file__).resolve().parent.parent
+FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
+RING_CAPTURE_RS = REPO / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
+LANES_CONF = REPO / "deploy" / "alsa" / "conf.d" / "61-jts-renderer-lanes.conf"
+LIBRESPOT_UNIT = REPO / "deploy" / "systemd" / "librespot.service"
+FANIN_UNIT = REPO / "deploy" / "systemd" / "jasper-fanin.service"
+TMPFILES = REPO / "deploy" / "tmpfiles" / "jts-ring.conf"
+SERVICE_USERS = REPO / "deploy" / "lib" / "install" / "service-users.sh"
+RING_PLATFORM = REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
+
+
+# --- 1. The default is nothing -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "", " ", ",", ",,", "  ,  ,  "],
+)
+def test_every_empty_shape_means_nothing_armed(raw):
+    """Unset, empty, and whitespace/comma-only all mean NO lanes armed.
+
+    This is the fail-safe direction and it is load-bearing in both languages:
+    an empty value that read as "arm everything" would flip the whole fleet on
+    a malformed write.
+    """
+    assert rl.parse_armed_labels(raw) == ()
+
+
+def test_a_missing_lane_map_reads_as_nothing_armed(tmp_path):
+    assert rl.read_armed_labels(str(tmp_path / "absent.env")) == ()
+
+
+def test_an_unreadable_lane_map_reads_as_nothing_armed(tmp_path):
+    """A directory where a file should be is unreadable, not empty — and still
+    must resolve to the shipped state rather than raising into a doctor check
+    or a reconcile pass."""
+    d = tmp_path / "lane.env"
+    d.mkdir()
+    assert rl.read_armed_labels(str(d)) == ()
+
+
+def test_the_unarmed_render_names_every_lanes_aloop_device():
+    text = rl.render_env_text(())
+    assert f"{rl.FANIN_RING_LANES_KEY}=\n" in text
+    for lane in rl.RENDERER_LANES:
+        assert f"{lane.device_key}={lane.aloop_device}\n" in text
+
+
+# --- 2. Both ends move together ------------------------------------------
+
+
+def test_arming_moves_both_ends_in_one_render():
+    """The renderer's device and fan-in's armed set are derived from ONE fact.
+
+    Mutating either half alone is what produces the failure this test exists to
+    make unrepresentable: a renderer writing snd-aloop while fan-in reads a ring
+    (silence), or a renderer writing a ring nothing reads (silence).
+    """
+    text = rl.render_env_text(("spotify",))
+    assert f"{rl.FANIN_RING_LANES_KEY}=spotify\n" in text
+    assert "JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\n" in text
+
+
+def test_disarming_writes_the_aloop_device_rather_than_omitting_the_key(tmp_path):
+    """A disarm must WRITE the aloop device, not drop the line.
+
+    systemd's EnvironmentFile leaves a previously-set variable in place when a
+    later file omits it only if the same file set it — but the failure this
+    guards is simpler and worse: if the render omitted the key, a box whose file
+    already carried the armed device would keep it after a disarm, and rollback
+    would silently do nothing.
+    """
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert "librespot_ring_lane" in Path(path).read_text()
+
+    rl.render_renderer_lanes_env((), path=path)
+    text = Path(path).read_text()
+    assert "JASPER_LIBRESPOT_DEVICE=librespot_substream\n" in text
+    assert "librespot_ring_lane" not in text
+    assert rl.read_armed_labels(path) == ()
+
+
+def test_the_render_round_trips_through_its_own_reader(tmp_path):
+    """The written file IS the intent record — there is no second file that
+    could disagree with it."""
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert rl.read_armed_labels(path) == ("spotify",)
+    assert rl.fanin_env_expectations(path) == {
+        rl.FANIN_RING_LANES_KEY: "spotify",
+        "JASPER_LIBRESPOT_DEVICE": "librespot_ring_lane",
+    }
+
+
+def test_the_render_is_write_on_change(tmp_path):
+    path = str(tmp_path / "lanes.env")
+    first = rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert first.changed is True
+    mtime = Path(path).stat().st_mtime_ns
+
+    second = rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert second.changed is False
+    assert Path(path).stat().st_mtime_ns == mtime, "an unchanged map must not churn the file"
+
+
+def test_the_render_refuses_an_unknown_label(tmp_path):
+    path = str(tmp_path / "lanes.env")
+    with pytest.raises(ValueError, match="unknown renderer lane"):
+        rl.render_renderer_lanes_env(("airplay",), path=path)
+    assert not Path(path).exists(), "a refused render must write nothing"
+
+
+def test_the_lane_map_is_world_readable(tmp_path):
+    """Every renderer user must be able to read it; it carries no secret."""
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=path)
+    assert Path(path).stat().st_mode & 0o777 == rl.RENDERER_LANES_ENV_MODE
+
+
+# --- Arming preconditions -------------------------------------------------
+
+
+def test_arming_is_refused_without_the_ring_platform():
+    """A renderer whose jts_ring PCM cannot resolve is a SILENT source, and
+    silence is the failure mode hardest to trace back to an arm command — so
+    the arm fails closed instead."""
+    reason = rl.arm_refusal_reason(
+        "spotify", assets_present=False, missing_assets=("ioplug .so absent",)
+    )
+    assert reason is not None
+    assert "ioplug .so absent" in reason
+
+
+def test_arming_is_allowed_with_the_ring_platform_present():
+    assert rl.arm_refusal_reason("spotify", assets_present=True) is None
+
+
+def test_arming_an_unknown_lane_is_refused_even_with_assets():
+    reason = rl.arm_refusal_reason("nope", assets_present=True)
+    assert reason is not None and "unknown lane" in reason
+
+
+# --- 3. The mirrors agree -------------------------------------------------
+
+
+def _rust_const(name: str) -> str:
+    text = FANIN_CONFIG_RS.read_text()
+    m = re.search(rf'pub const {name}: &str = "([^"]+)";', text)
+    assert m, f"{name} not found in {FANIN_CONFIG_RS}"
+    return m.group(1)
+
+
+def test_the_ring_directory_and_prefix_match_the_rust_mirror():
+    """fan-in DERIVES the ring path in Rust; this module derives it in Python;
+    the conf.d spells it literally. All three must agree or fan-in reads a ring
+    nothing writes — a silent source with a healthy-looking daemon."""
+    assert _rust_const("RING_SHM_DIR") == rl.RING_SHM_DIR
+    assert _rust_const("RENDERER_RING_PREFIX") == rl.RENDERER_RING_PREFIX
+
+
+def test_every_lanes_ring_path_is_declared_verbatim_in_the_confd():
+    conf = LANES_CONF.read_text()
+    for lane in rl.RENDERER_LANES:
+        path = rl.renderer_ring_path(lane.label)
+        assert f'path "{path}"' in conf, (
+            f"{lane.label}'s ring path {path} is not declared in "
+            f"{LANES_CONF.name}; fan-in would read a ring nothing writes"
+        )
+
+
+def test_every_lanes_ring_device_is_declared_in_the_confd():
+    conf = LANES_CONF.read_text()
+    for lane in rl.RENDERER_LANES:
+        assert re.search(rf"^pcm\.{re.escape(lane.ring_device)}\s*\{{", conf, re.M), (
+            f"{lane.ring_device} (what {lane.renderer}'s --device becomes when "
+            "armed) has no PCM block"
+        )
+
+
+def test_the_confd_ring_geometry_matches_the_shipped_fanin_geometry():
+    """The conf.d numbers are the derivation rule evaluated at the shipped
+    fan-in geometry. If either fan-in default moves, these must move with it or
+    the ring header comparison refuses the attach."""
+    fanin_unit = FANIN_UNIT.read_text()
+    fanin_rs = FANIN_CONFIG_RS.read_text()
+
+    m = re.search(r'JASPER_FANIN_INPUT_BUFFER_FRAMES=(\d+)"', fanin_unit)
+    assert m, "the fan-in unit no longer declares an input buffer default"
+    shipped_buffer = int(m.group(1))
+
+    m = re.search(r'env_u32_positive\("JASPER_FANIN_PERIOD_FRAMES", (\d+)\)', fanin_rs)
+    assert m, "fan-in's period default moved"
+    shipped_period = int(m.group(1))
+
+    expected_slots = shipped_buffer // shipped_period
+    conf = LANES_CONF.read_text()
+    for lane in rl.RENDERER_LANES:
+        block = re.search(
+            rf"pcm\.jts_ring_lane_{lane.label}\s*\{{(.*?)\n\}}", conf, re.S
+        )
+        assert block, f"no ring block for {lane.label}"
+        body = block.group(1)
+        assert re.search(rf"period_frames\s+{shipped_period}\b", body), (
+            f"{lane.label}'s conf.d slot must be one fan-in period "
+            f"({shipped_period})"
+        )
+        assert re.search(rf"n_slots\s+{expected_slots}\b", body), (
+            f"{lane.label}'s conf.d depth must be the aloop cushion it replaces "
+            f"({shipped_buffer}/{shipped_period} = {expected_slots} slots)"
+        )
+
+
+def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire():
+    """The `plug:` wrapper is load-bearing: librespot emits 44.1 kHz S24_3, the
+    lane is 48 kHz S16_LE, and doing the conversion here keeps it on
+    `defaults.pcm.rate_converter` — the knob whose fallback to ALSA's linear
+    resampler cost ~12 dB of 4-8 kHz in the 2026-05 AEC investigation."""
+    conf = LANES_CONF.read_text()
+    block = re.search(r"pcm\.librespot_ring_lane\s*\{(.*?)\n\}", conf, re.S)
+    assert block
+    body = block.group(1)
+    assert "type plug" in body
+    assert 'pcm "jts_ring_lane_spotify"' in body
+    assert "rate 48000" in body
+    assert "format S16_LE" in body
+    assert "channels 2" in body
+
+
+# --- Unit wiring ----------------------------------------------------------
+
+
+def test_the_renderer_unit_reads_its_device_from_the_lane_map():
+    unit = LIBRESPOT_UNIT.read_text()
+    lane = rl.lane_by_label("spotify")
+    assert lane is not None
+    assert f"--device ${{{lane.device_key}}}" in unit.replace("\\\n", " ")
+    assert f'Environment="{lane.device_key}={lane.aloop_device}"' in unit, (
+        "the in-unit DEFAULT must be the shipped snd-aloop device, so a box with "
+        "no lane map behaves byte-identically"
+    )
+
+
+def test_both_ends_load_the_same_lane_map_file_last():
+    """One file, both ends. The renderer must load it AFTER its Environment=
+    default or the default would win and the arm would silently do nothing."""
+    for unit_path in (LIBRESPOT_UNIT, FANIN_UNIT):
+        text = unit_path.read_text()
+        assert f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}" in text, unit_path.name
+
+    unit = LIBRESPOT_UNIT.read_text()
+    lane = rl.lane_by_label("spotify")
+    assert lane is not None
+    default_at = unit.index(f'Environment="{lane.device_key}=')
+    envfile_at = unit.index(f"EnvironmentFile=-{rl.RENDERER_LANES_ENV}")
+    assert envfile_at > default_at, (
+        "systemd applies a later EnvironmentFile= over an earlier Environment=; "
+        "the lane map must come last or an arm cannot take effect"
+    )
+
+
+def test_every_ring_writing_renderer_unit_sets_the_group_and_umask():
+    """Both are prerequisites and neither is sufficient alone.
+
+    The directory's setgid bit fixes a new ring file's GROUP; only the umask
+    fixes its MODE. The ioplug creates the ring `0660 & ~umask`, so under
+    systemd's default 0022 it would land 0640 — group-readable, NOT
+    group-writable — and fan-in would take EACCES stamping read_seq into a ring
+    the renderer created.
+    """
+    unit = LIBRESPOT_UNIT.read_text()
+    assert re.search(r"^SupplementaryGroups=.*\bjts-ring\b", unit, re.M)
+    assert re.search(r"^UMask=0007$", unit, re.M)
+
+
+def test_the_ring_directory_group_matches_what_the_installer_creates():
+    tmpfiles = TMPFILES.read_text()
+    m = re.search(r"^d /dev/shm/jts-ring (\d+) (\S+) (\S+)", tmpfiles, re.M)
+    assert m, "the tmpfiles entry no longer declares the ring directory"
+    mode, owner, group = m.groups()
+    assert mode == "2775", "setgid + group-write is what lets both ends share a ring"
+    assert owner == "root"
+
+    users = SERVICE_USERS.read_text()
+    assert f"groupadd -r {group}" in users, (
+        f"the tmpfiles entry wants group {group!r} but the installer never "
+        "creates it; systemd-tmpfiles would fail and the directory would keep "
+        "its old ownership"
+    )
+    unit = LIBRESPOT_UNIT.read_text()
+    assert re.search(rf"^SupplementaryGroups=.*\b{re.escape(group)}\b", unit, re.M), (
+        f"the renderer must be in {group!r} to write its ring"
+    )
+
+
+def test_the_installer_adds_the_renderer_user_to_the_ring_group():
+    """`pi` is the distro's login account, not one this installer creates, so
+    the membership needs an explicit guarded usermod — a `useradd -G` would
+    never fire on an existing box."""
+    users = SERVICE_USERS.read_text()
+    assert "usermod -aG jts-ring pi" in users
+    assert "getent passwd pi" in users, (
+        "a box brought up with a custom user has no `pi`; an unguarded usermod "
+        "would fail the install under set -euo pipefail"
+    )
+
+
+def test_the_installer_ships_the_renderer_lane_confd():
+    platform = RING_PLATFORM.read_text()
+    assert "61-jts-renderer-lanes.conf" in platform
+    assert re.search(
+        r'install -m 0644 "\$\{lanes_src\}" /etc/alsa/conf\.d/61-jts-renderer-lanes\.conf',
+        platform,
+    ), "the lane PCMs must be system-wide 0644 so non-root renderer users resolve them"
+
+
+# --- fan-in's own contract ------------------------------------------------
+
+
+def _audio_runtime():
+    """The doctor's audio_runtime module, imported through the package.
+
+    `jasper.cli.doctor` populates a global check registry at import and refuses
+    a duplicate order, so importing a submodule directly on a fresh interpreter
+    registers the same checks twice. Every other doctor test imports the
+    package for exactly this reason.
+    """
+    from jasper.cli import doctor
+
+    return doctor.audio_runtime
+
+
+def test_the_doctor_lane_roster_follows_the_armed_set(tmp_path):
+    """An armed lane reports its RING PATH as its STATUS `pcm`, so the doctor's
+    roster check must follow the map or it diagnoses a correctly-armed box as
+    drifted."""
+    path = str(tmp_path / "lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=path)
+
+    roster = dict(_audio_runtime()._fanin_expected_inputs(lanes_env=path))
+    assert roster["spotify"] == rl.renderer_ring_path("spotify")
+    assert roster["airplay"] == "hw:Loopback,1,1", "unarmed lanes are untouched"
+
+
+def test_the_doctor_lane_roster_is_the_shipped_one_when_nothing_is_armed(tmp_path):
+    audio_runtime = _audio_runtime()
+    path = str(tmp_path / "absent.env")
+    assert (
+        audio_runtime._fanin_expected_inputs(lanes_env=path)
+        == audio_runtime._FANIN_EXPECTED_ALOOP_INPUTS
+    )
+
+
+def test_the_rust_lane_selector_consults_only_the_armed_set():
+    """fan-in must NOT consult the CamillaDSP coupling to decide a lane's
+    transport: they are independent transports, and keying on the coupling
+    would arm every ring-coupled box by deploy with no per-box source pass."""
+    rs = FANIN_CONFIG_RS.read_text()
+    m = re.search(
+        r"pub fn lane_is_renderer_ring\(&self, label: &str\) -> bool \{(.*?)\n    \}",
+        rs,
+        re.S,
+    )
+    assert m, "lane_is_renderer_ring moved or changed shape"
+    body = m.group(1)
+    assert "renderer_ring_lanes" in body
+    assert "coupling" not in body.lower(), (
+        "the lane selector must not read the CamillaDSP coupling"
+    )
+
+
+def test_the_rust_ring_path_derivation_matches_this_module():
+    """Both sides derive `<dir>/<prefix><label>.ring` from the label alone —
+    there is no per-ring env key that could disagree."""
+    rs = FANIN_CONFIG_RS.read_text()
+    m = re.search(
+        r"pub fn renderer_ring_path\(label: &str\) -> String \{\n\s*format!\(\"([^\"]+)\"\)",
+        rs,
+    )
+    assert m, "renderer_ring_path moved or changed shape"
+    template = m.group(1)
+    rendered = (
+        template.replace("{RING_SHM_DIR}", rl.RING_SHM_DIR)
+        .replace("{RENDERER_RING_PREFIX}", rl.RENDERER_RING_PREFIX)
+        .replace("{label}", "spotify")
+    )
+    assert rendered == rl.renderer_ring_path("spotify")
+
+
+def test_the_ring_lane_reader_never_calls_the_aloop_catchup_drain():
+    """A bounded ring cannot back up past its own depth the way an aloop capture
+    ring can, so `drain_input_excess` has nothing to do on this arm — and
+    calling it would try to `avail_update` a PCM the lane does not have."""
+    rs = RING_CAPTURE_RS.read_text()
+    # A mention in prose is the explanation; a CALL would be the bug.
+    assert not re.search(r"^\s*drain_input_excess\(", rs, re.M)
+    # And the mixer's dispatch must not route the ring arm through it either.
+    mixer = (REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text()
+    ring_arm = re.search(
+        r"\} else if input\.ring\.is_some\(\) \{(.*?)\n            \} else if",
+        mixer,
+        re.S,
+    )
+    assert ring_arm, "the ring dispatch arm moved"
+    # Strip comments before looking for the call: the arm EXPLAINS why it does
+    # not drain, and the explanation must not read as the thing it forbids.
+    code = "\n".join(
+        line for line in ring_arm.group(1).splitlines()
+        if not line.strip().startswith("//")
+    )
+    assert "drain_input_excess" not in code
+
+
+def test_the_ring_lane_holds_no_spine_scale_buffer():
+    """U3 moves the transport, not the width: a renderer lane is S16 at its wire
+    and the boundary table's pins are unchanged."""
+    rs = RING_CAPTURE_RS.read_text()
+    assert "read_buf_wide: Vec::new()" in rs
+    assert "SAMPLE_FORMAT_S16LE" in rs
+    assert "SAMPLE_FORMAT_S32LE" not in rs, (
+        "a renderer ring lane must not declare a wide wire without its own "
+        "evidence"
+    )

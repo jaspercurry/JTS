@@ -269,7 +269,7 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
         for label in newly_armed:
             refusal = rl.arm_refusal_reason(
                 label,
-                assets_present=presence.all_present(),
+                assets_present=presence.all_present,
                 missing_assets=presence.missing(),
             )
             if refusal is not None:

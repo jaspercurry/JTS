@@ -2364,6 +2364,79 @@ mod tests {
 
     // ---- C7: source + direct{} STATUS shape --------------------------------
 
+    /// A renderer-ingress lane publishes `source:"ring"` and a `ring{}` block,
+    /// and NO other lane grows one — the same optional-block discipline the
+    /// `direct{}` block follows, so an unarmed box's STATUS shape is unchanged.
+    #[test]
+    fn snapshot_json_ring_block_present_only_on_a_ring_lane() {
+        use crate::mixer::LaneSource;
+        use jasper_ring::{Geometry, SAMPLE_FORMAT_S16LE};
+
+        let mut server = make_test_server();
+        let obs = RingLaneObservability {
+            path: "/dev/shm/jts-ring/lane-spotify.ring".to_string(),
+            geometry: Geometry {
+                rate: 48_000,
+                channels: 2,
+                sample_format: SAMPLE_FORMAT_S16LE,
+                period_frames: 256,
+                n_slots: 16,
+            },
+            attached: Arc::new(AtomicBool::new(true)),
+            detach_reason: Arc::new(AtomicU64::new(0)),
+            attaches: Arc::new(AtomicU64::new(1)),
+            retries: Arc::new(AtomicU64::new(0)),
+            writer_alive: Arc::new(AtomicBool::new(true)),
+            writer_pid: Arc::new(AtomicU64::new(4242)),
+            occupancy: Arc::new(AtomicU64::new(3)),
+            empty_reads: Arc::new(AtomicU64::new(7)),
+            startup_empty_reads: Arc::new(AtomicU64::new(11)),
+            epoch_resets: Arc::new(AtomicU64::new(2)),
+        };
+        // Move the spotify lane onto the ring, exactly as an armed box does.
+        server.inputs[0].source = LaneSource::Ring;
+        server.inputs[0].pcm_name = obs.path.clone();
+        server.inputs[0].ring = Some(obs);
+
+        let j = server.snapshot_json();
+        assert_eq!(
+            j.matches(r#""ring":{"#).count(),
+            1,
+            "only the ring lane renders a ring block: {j}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let inputs = parsed["inputs"].as_array().unwrap();
+        let ring = inputs.iter().find(|i| i["label"] == "spotify").unwrap();
+        assert_eq!(ring["source"].as_str(), Some("ring"));
+        assert_eq!(
+            ring["pcm"].as_str(),
+            Some("/dev/shm/jts-ring/lane-spotify.ring"),
+            "a ring lane's `pcm` must name where its audio ACTUALLY comes from, \
+             not the aloop device it ignores"
+        );
+        let block = &ring["ring"];
+        assert_eq!(block["attached"].as_bool(), Some(true));
+        assert_eq!(block["detach_reason"].as_str(), Some("unavailable"));
+        assert_eq!(block["slot_frames"].as_u64(), Some(256));
+        assert_eq!(block["n_slots"].as_u64(), Some(16));
+        assert_eq!(block["attaches"].as_u64(), Some(1));
+        assert_eq!(block["retries"].as_u64(), Some(0));
+        assert_eq!(block["writer_alive"].as_bool(), Some(true));
+        assert_eq!(block["writer_pid"].as_u64(), Some(4242));
+        assert_eq!(block["occupancy"].as_u64(), Some(3));
+        // empty_reads and startup_empty_reads stay SPLIT: "this lane has never
+        // been written" and "this lane slipped" need different responses.
+        assert_eq!(block["empty_reads"].as_u64(), Some(7));
+        assert_eq!(block["startup_empty_reads"].as_u64(), Some(11));
+        // The discriminator the standing ring watch reads alongside empty_reads.
+        assert_eq!(block["epoch_resets"].as_u64(), Some(2));
+
+        // The other lanes are untouched — no ring block, original source.
+        let airplay = inputs.iter().find(|i| i["label"] == "airplay").unwrap();
+        assert!(airplay.get("ring").is_none());
+        assert_eq!(airplay["source"].as_str(), Some("lane"));
+    }
+
     #[test]
     fn snapshot_json_source_field_on_every_input() {
         let server = make_test_server();

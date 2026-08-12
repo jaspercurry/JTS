@@ -237,9 +237,20 @@ def test_fanin_control_socket_is_the_same_socket_as_status():
 def test_fanin_direct_source_marker_matches_rust_state_serializer():
     # state.rs renders `source:"direct"` on the USB DIRECT lane; the combo
     # detection (jasper.fanin.status) keys off exactly that literal.
+    #
+    # Since U3 / P6 the token is no longer a boolean ternary in the serializer —
+    # `mixer::LaneSource` owns the vocabulary (lane | direct | ring) and the
+    # serializer just prints `input.source.as_str()`. So pin the SPELLING at its
+    # single source rather than the expression at its use site: what Python keys
+    # off is the string the enum produces, and that is the only thing whose
+    # divergence would break the combo detection.
     rust = _FANIN_STATE_RS.read_text(encoding="utf-8")
     assert '"source"' in rust
-    assert f'if input.is_direct {{ "{FANIN_INPUT_SOURCE_DIRECT}" }} else {{ "lane" }}' in rust
+    assert 'push_kv_str(buf, "source", input.source.as_str());' in rust
+
+    mixer = (_FANIN_STATE_RS.parent / "mixer.rs").read_text(encoding="utf-8")
+    assert f'Self::Direct => "{FANIN_INPUT_SOURCE_DIRECT}",' in mixer
+    assert 'Self::Lane => "lane",' in mixer
 
 
 # --------------------------------------------------------------------------

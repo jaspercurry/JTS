@@ -30,6 +30,14 @@ from typing import Any
 # its ``source":"direct"`` unit tests). This is the load-bearing USB signal:
 # fan-in owns the gadget capture directly as the sole live ingress owner.
 FANIN_INPUT_SOURCE_DIRECT = "direct"
+# The STATUS input-lane ``source`` value on a renderer-ingress SHM-ring lane
+# (U3 / P6). A third alternative beside ``lane`` and ``direct``, not a layer on
+# either: a ring lane opens no aloop substream and no gadget capture. Nothing in
+# this module keys off it — the USB predicates below are deliberately bound to
+# ``direct`` AND ``label=usbsink``, so a ring lane can never be mistaken for the
+# USB one — but the token is named here because this module owns the vocabulary
+# the Rust serializer publishes.
+FANIN_INPUT_SOURCE_RING = "ring"
 USBSINK_INPUT_LABEL = "usbsink"
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
