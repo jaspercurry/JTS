@@ -1316,8 +1316,13 @@ def test_the_coupling_warn_on_an_armed_box_names_the_2332_canonical_rollback_rou
     result = audio_runtime.check_fanin_coupling()
     assert result.status == "warn", result.detail
     assert "2332" in result.detail
+    assert "exited 78" in result.detail
     assert "EXPECTED" in result.detail
     assert "jasper-fanin-coupling-reconcile loopback (step 3)" in result.detail
+    # The step-3 advice and the recovery ladder must not run together as one
+    # em-dash-joined clause — a `;` separates "skip to step 3" from "here is
+    # the ladder", so a reader can tell the two apart at a glance.
+    assert "step 2; the ACTIVE-ring ladder" in result.detail
 
     # The CLEARED-marker case (the sibling test above) must NOT claim the #2332
     # canonical-route framing — that reading only holds while the marker is

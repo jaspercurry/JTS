@@ -1576,7 +1576,7 @@ def check_fanin_coupling() -> CheckResult:
             label,
             "warn",
             f"intent={coupling} but loaded graph is not the ring config: "
-            f"{'; '.join(ring_mismatches)}; {cause} — {recovery}",
+            f"{'; '.join(ring_mismatches)}; {cause}; {recovery}",
         )
 
     # Non-ring intent (loopback). The env
