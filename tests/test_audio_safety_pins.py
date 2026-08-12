@@ -66,11 +66,18 @@ REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 #   here before (deep-audit DA-0590: a private `db_to_linear` duplicating
 #   the shared helper).
 #
-# Of these, 6304556a4 deleted ceiling references from three:
-# fanin/tts.rs and outputd/tts.rs (the MAX_ constant) and core.rs (the
-# clamp helper). assistant_source.rs postdates that removal — it was
-# created later by 2ac841f24 (#2063) — and is covered because it is now a
-# gain applier, not because it ever carried a ceiling.
+# Of these eight, 6304556a4 deleted ceiling references from five — and not
+# uniformly, which is itself the argument for banning both symbols rather
+# than one: tts-protocol/loudness.rs (which declared them), outputd/mixer.rs
+# (which re-exported them) and fanin/tts.rs carried BOTH; outputd/tts.rs
+# carried only the MAX_ constant; core.rs carried only the clamp helper. A
+# one-symbol ban would have missed a file either way round.
+#
+# The other three are covered structurally, not historically: the two daemon
+# loudness.rs files re-export the shared policy wholesale, and
+# assistant_source.rs postdates the removal — created later by 2ac841f24
+# (#2063) — so it is covered because it applies gain today, not because it
+# ever carried a ceiling.
 #
 # Deliberately NOT covered: fanin/state.rs and outputd/state.rs. They are
 # pure STATUS renderers — they read a decided gain and serialize it, and
