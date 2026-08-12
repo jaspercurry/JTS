@@ -40,6 +40,14 @@ at wiring time would file an earlier close's registry beside this candidate.
 module's one disclosure needs a traceback, which is why it carries a third
 record type.  See :class:`FailureRecord`.
 
+**One exception: the port's own failure (#2361).**  A ``journal`` that raises
+being handed a record cannot also be asked to carry the news that it raised —
+:func:`build_candidate` guards that one call and says the drop through this
+module's OWN logger instead, the one channel a broken port cannot also take
+down.  Everywhere else this module writes nothing and logs nothing itself,
+exactly like :mod:`.intervention` and :mod:`.fc_sweep`; :mod:`.coordinator`
+states the identical exception for its own seams.
+
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.  Two consequences
 are visible in the signatures below.  The conductor keeps the preconditions
@@ -61,6 +69,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, ProgramAnalysis
+from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
 from .candidates import CloudFitEvidence, LinearizationState
@@ -73,8 +82,15 @@ from .intervention import (
 )
 from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
 
+#: This module's own logger, reached for in exactly one place — see the
+#: module docstring's "One exception" paragraph and :func:`build_candidate`'s
+#: guard. Not a general-purpose capability: every other line this module
+#: could say still goes back through an injected port.
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "EVENT_FIT_FAILED",
+    "EVENT_FIT_FAILED_JOURNAL_DROPPED",
     "FailureRecord",
     "alignment_to_candidate_fields",
     "analysis_json",
@@ -89,6 +105,34 @@ __all__ = [
 #: gives: a journal name is a grep contract, so a rename should be visible as
 #: one.
 EVENT_FIT_FAILED = "correction.crossover_v2_linearization_fit_failed"
+
+#: Said INSTEAD of :data:`EVENT_FIT_FAILED` when the ``journal`` port itself
+#: raises trying to carry that record (#2361) — see :func:`build_candidate`'s
+#: guard. A second, independent event name rather than a field on the
+#: dropped record: the broken port could not have carried that field either,
+#: so this one goes out the module's own logger (above), not the port.
+EVENT_FIT_FAILED_JOURNAL_DROPPED = (
+    "correction.crossover_v2_linearization_fit_failed_journal_dropped"
+)
+
+#: The exceptions :func:`build_candidate`'s own ``journal`` call is guarded
+#: against — this module's copy of the same family as
+#: ``intervention._PORT_ERRORS``, ``fc_sweep._SWEEP_ERRORS`` and
+#: ``coordinator._SEAM_ERRORS``. Enumerated rather than a blind ``except
+#: Exception`` (ruff BLE, and the repository's frozen broad-except budget).
+#: ``OSError`` is in the set for the same reason it is in theirs: the port is
+#: a logging delegate, and a handler with nowhere to write raises exactly
+#: that.
+_JOURNAL_ERRORS = (
+    ArithmeticError,
+    AttributeError,
+    IndexError,
+    KeyError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 @dataclass(frozen=True)
@@ -473,7 +517,7 @@ def build_candidate(
     tweeter_role: str,
     plan: Callable[..., LinearizationPlan],
     exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
-    journal: Callable[[Any], None] | None = None,
+    journal: Callable[[Any], None],
 ) -> tuple[Any, LinearizationState]:
     """Build one candidate, and return what its linearization produced.
 
@@ -493,6 +537,13 @@ def build_candidate(
     ``plan`` and ``exclusion_evidence`` are ports; ``journal`` is the
     disclosure port the SF2 arm below says its one line through.  See the
     module docstring for why each is injected rather than reached for.
+
+    ``journal`` is REQUIRED (#2361): the sole production caller always
+    supplies it, and a default that is only correct because today's caller
+    always supplies the argument is the permissive-default trap
+    :class:`~.candidates.CloudFitEvidence`'s own docstring names — a defect
+    waiting for a caller that does not. A ``journal`` that RAISES stays
+    safe either way: see the guard below.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverAlignment,
@@ -559,13 +610,37 @@ def build_candidate(
             # Said HERE, inside the handler, and carrying the exception
             # itself: see :class:`FailureRecord` for why a record built
             # after the block cannot render this traceback.
-            if journal is not None:
+            #
+            # #2361: the port call itself is guarded IN TURN, mirroring
+            # intervention.py:936-942 (the planner's own port guard) and the
+            # identical exception coordinator.py states for its own seams.
+            # Probed directly, an unguarded OSError/RuntimeError/ValueError
+            # from ``journal`` PROPAGATED here and skipped the ``return``
+            # below — the candidate build failing because its OWN disclosure
+            # of an unrelated fit failure broke. Unlike the planner's own
+            # ``emit()``, there is no return-value slot to carry the drop on
+            # here: this function's product IS the candidate, and
+            # LinearizationState/MeasuredCrossoverCandidate have no
+            # journal_dropped-shaped field to widen for a loss that is
+            # unreachable in production today (both installed handlers guard
+            # their own ``emit``). So the drop goes out this module's own
+            # logger instead — the one channel a broken journal port cannot
+            # also take down.
+            try:
                 journal(FailureRecord(
                     EVENT_FIT_FAILED,
                     {"reason": type(exc).__name__},
                     logging.WARNING,
                     exc,
                 ))
+            except _JOURNAL_ERRORS as port_exc:
+                log_event(
+                    logger, EVENT_FIT_FAILED_JOURNAL_DROPPED,
+                    level=logging.WARNING,
+                    dropped_event=EVENT_FIT_FAILED,
+                    reason=type(port_exc).__name__,
+                    exc_info=True,
+                )
             role_attenuations_db = dict(cand.trim_db)
             linearization = {}
             # PR-L4 item 1: a fit that raised part-way may already have

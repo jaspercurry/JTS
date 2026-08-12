@@ -25,6 +25,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2 import planning
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateFcDisagreementError,
     NoCrossoverSectionsError,
@@ -404,6 +405,96 @@ def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
     exc_type, _exc, tb = line.exc_info
     assert exc_type is NoCrossoverSectionsError
     assert tb is not None, "an exception with no traceback renders none"
+
+
+# --------------------------------------------------------------------------- #
+# the build's own disclosure port (#2361)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("port_error", [OSError, ValueError])
+def test_a_raising_journal_costs_a_log_line_not_the_candidate(caplog, port_error):
+    """#2361 — ``build_candidate``'s OWN journal call is guarded, not just the
+    planner's.
+
+    ``test_a_journal_consumer_that_raises_is_disclosed_not_swallowed`` above
+    covers ``plan_linearization``'s ``emit()`` — a DIFFERENT call, one layer
+    in. This is the ``journal(FailureRecord(...))`` call inside
+    ``build_candidate``'s own SF2 arm, which said port failure PROPAGATED
+    through before this fix (probed directly on the pre-guard code): the
+    household would have lost the whole candidate to a broken log handler
+    reporting an unrelated, already-degraded fit.
+
+    Reached through the SAME ``empty``-sections fixture as
+    ``test_a_candidate_with_no_crossover_degrades_to_trims_only`` above,
+    which raises inside ``CandidateAcousticContext.from_sections`` — BEFORE
+    the planner's own ``emit()`` calls ever run — so the hostile journal is
+    invoked exactly once here, by ``build_candidate``'s own SF2 arm, and
+    nothing else in this path exercises the guard under test.
+    """
+    caplog.set_level("WARNING")
+    c, analysis = _walked_to_measure()
+    empty: dict = {"woofer": (), "tweeter": ()}
+
+    def hostile(_self, _record):
+        raise port_error("simulated closed log stream")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow.CrossoverV2Conductor, "_journal_linearization", hostile)
+        candidate, state = c._build_candidate(
+            analysis, None, candidate_sections=empty, source_preset=c._preset,
+        )
+
+    # The degrade result survives, byte-for-byte the healthy-journal case in
+    # test_a_candidate_with_no_crossover_degrades_to_trims_only above.
+    assert state.outcome == "fit_failed"
+    assert candidate.linearization_outcome == "fit_failed"
+    assert dict(candidate.role_attenuations_db) == dict(analysis.candidate.trim_db)
+    assert candidate.linearization == {}
+    assert state.linearized_predicted_sum is None
+    assert state.realized_level_match is None
+
+    # …and the drop is disclosed, not silently swallowed.
+    dropped = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED_JOURNAL_DROPPED} ")
+    ]
+    assert len(dropped) == 1, dropped
+    assert f"dropped_event={planning.EVENT_FIT_FAILED}" in dropped[0]
+    assert f"reason={port_error.__name__}" in dropped[0]
+
+    # The ORIGINAL fit_failed line never got said — the broken port is
+    # exactly why this test exists. Checked per-record with startswith()
+    # rather than a raw substring search on caplog.text: the dropped line's
+    # own "dropped_event=" field ends in the six characters "event=", so a
+    # bare `in` check on the text blob would find EVENT_FIT_FAILED inside it
+    # and pass even if the original line were never said.
+    said_fit_failed = [
+        r for r in caplog.records
+        if r.getMessage().startswith(f"event={planning.EVENT_FIT_FAILED} ")
+    ]
+    assert said_fit_failed == []
+
+
+def test_a_healthy_journal_never_says_the_port_dropped_anything(caplog):
+    """The control for the test above: a working port discloses nothing extra.
+
+    Without this, a build that ALWAYS said ``EVENT_FIT_FAILED_JOURNAL_DROPPED``
+    — whether or not the port actually failed — would satisfy the test above
+    just as well.
+    """
+    caplog.set_level("WARNING")
+    c, analysis = _walked_to_measure()
+    empty: dict = {"woofer": (), "tweeter": ()}
+
+    candidate, state = c._build_candidate(
+        analysis, None, candidate_sections=empty, source_preset=c._preset,
+    )
+
+    assert state.outcome == "fit_failed"
+    assert candidate.linearization_outcome == "fit_failed"
+    assert planning.EVENT_FIT_FAILED_JOURNAL_DROPPED not in caplog.text
+    assert f"event={planning.EVENT_FIT_FAILED} " in caplog.text
 
 
 def test_a_split_section_set_refuses_before_the_missing_measure_program():
