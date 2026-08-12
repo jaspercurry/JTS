@@ -318,3 +318,67 @@ def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None
     assert seen == {"format": 1, "coupling": 1}, (
         "both halves must be read from their own SSOT reader"
     )
+
+
+# ---------------------------------------------------------------------------
+# The DOCS are a declaring end too.
+# ---------------------------------------------------------------------------
+
+_CONSOLIDATION_DOC = _REPO / "docs" / "HANDOFF-audio-graph-consolidation.md"
+
+# The superseded rule, in the spellings the doc actually used before the panel
+# round. Named phrases, not a general pattern: this must fire on the regression
+# and stay silent through ordinary rewording.
+_TOKEN_ONLY_ASSISTANT_WIDTH_CLAIMS = (
+    "both ends derive the width from the one `JASPER_FANIN_RING_WIRE_FORMAT`",
+    "a box speaks only when its one `JASPER_FANIN_RING_WIRE_FORMAT` declaration is wide",
+)
+
+
+def test_the_docs_do_not_restate_the_superseded_token_only_width_rule() -> None:
+    """The assistant width is a CONJUNCTION; the docs must not say otherwise.
+
+    Two places in this one file described the same rule, and when the rule
+    changed only one of them was updated — so the boundary table (which a reader
+    reaches first) taught the token-only rule while the arc row below it taught
+    the conjunction. A mutation reverting that clause left every suite green.
+
+    Asserted as the absence of the DEAD phrasings rather than the presence of
+    the live one: a positive prose match would break on any honest rewrite,
+    which is how a guard gets deleted instead of fixed.
+    """
+    if not _CONSOLIDATION_DOC.exists():
+        pytest.skip(f"doc not present: {_CONSOLIDATION_DOC}")
+    text = _CONSOLIDATION_DOC.read_text(encoding="utf-8")
+    stale = [claim for claim in _TOKEN_ONLY_ASSISTANT_WIDTH_CLAIMS if claim in text]
+    assert not stale, (
+        "the assistant wire's width needs BOTH declared halves "
+        f"({RING_WIRE_FORMAT_WIDE} AND the shm_ring coupling); these clauses "
+        "state the superseded token-only rule:\n"
+        + "\n".join(f"  {claim}" for claim in stale)
+    )
+
+
+def test_the_docs_name_both_halves_wherever_they_explain_the_assistant_width() -> None:
+    """And the live wording does carry the coupling half.
+
+    The negative test above cannot tell "correctly rewritten" from "the
+    explanation was deleted". This one is coarse on purpose — it asks only that
+    each place introducing the `AUDIO32` verb as a per-box choice mentions the
+    coupling somewhere in the same table row or paragraph, not that it uses any
+    particular sentence.
+    """
+    if not _CONSOLIDATION_DOC.exists():
+        pytest.skip(f"doc not present: {_CONSOLIDATION_DOC}")
+    text = _CONSOLIDATION_DOC.read_text(encoding="utf-8")
+    blocks = [
+        block
+        for block in text.split("\n\n")
+        if "AUDIO32" in block and RING_WIRE_FORMAT_WIDE in block
+    ]
+    assert blocks, "the doc no longer explains the wide assistant verb at all"
+    for block in blocks:
+        assert "shm_ring" in block or "coupling" in block, (
+            "a block introduces the wide assistant verb without naming the "
+            f"coupling half:\n{block[:400]}"
+        )

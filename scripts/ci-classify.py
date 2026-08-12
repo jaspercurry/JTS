@@ -211,6 +211,7 @@ DOCS_TEST_FILES = (
     "tests/test_lib_usb_gadget_advisory.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
+    "tests/test_ring_wire_format_contract.py",
     "tests/test_run_wake_training_phase0.py",
     "tests/test_script_help_excludes_spdx.py",
     "tests/test_system_supervisor.py",

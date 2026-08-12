@@ -2807,3 +2807,87 @@ def test_voice_is_try_restarted_so_a_stopped_unit_stays_stopped(monkeypatch):
     # flip, so it cannot walk the start-limit window the per-transaction fan-in
     # bounces could. A reset-failed here would be the only call before it.
     assert cr.VOICE_UNIT not in cr._CRASH_BUDGET_UNITS
+
+
+def test_the_default_voice_restart_wiring_issues_try_restart(
+    tmp_path, monkeypatch, _wide_arm_gates_pass
+):
+    """THE JOIN, not the pieces.
+
+    `test_voice_is_try_restarted_so_a_stopped_unit_stays_stopped` pins
+    `_try_restart_voice`'s verb, and the transition tests pin WHEN a restart is
+    issued — but both sides could be right while the wire between them is wrong,
+    because every one of those tests supplies its own `restart_voice`. Mutating
+    the default lambda's verb to ``restart`` left the whole suite green.
+
+    So this one calls `reconcile_coupling` with `restart_voice` DELIBERATELY not
+    injected, and stubs one layer lower — at the restart broker — so the real
+    `restart_voice or (lambda: _try_restart_voice(reason=reason))` join is the
+    code under test. Everything else is still injected, which is what makes the
+    single recorded broker call unambiguous: if the join were wired to any other
+    helper, or to `restart`, this fails.
+    """
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_LOOPBACK)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    broker_calls = []
+
+    def _manage_units(unit, *, verb, reason, no_block, timeout):
+        broker_calls.append((unit, verb))
+        return {"ok": True}
+
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", _manage_units)
+
+    result = reconcile_coupling(
+        COUPLING_SHM_RING,
+        reason="t",
+        env_path=fanin_env,
+        outputd_env_path=outputd_env,
+        # Everything EXCEPT restart_voice, so the only broker traffic this test
+        # can observe is the join it is pinning.
+        restart_fanin=lambda: (True, ""),
+        restart_outputd=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        kick_hardware_reconcile=lambda: (True, ""),
+    )
+
+    assert result.ok, result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert broker_calls == [("jasper-voice.service", "try-restart")], (
+        "the default wiring must reach the broker exactly once, as a "
+        f"try-restart of jasper-voice; got {broker_calls}"
+    )
+
+
+def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
+    tmp_path, monkeypatch, _wide_arm_gates_pass
+):
+    """The same join, from the other side.
+
+    Without this, a default wired to fire unconditionally would still satisfy
+    the test above. Same setup, same absent injection, narrow box: the broker
+    must see nothing at all.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    broker_calls = []
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda unit, **kw: broker_calls.append((unit, kw.get("verb"))) or {"ok": True},
+    )
+
+    reconcile_coupling(
+        COUPLING_SHM_RING,
+        reason="t",
+        env_path=fanin_env,
+        outputd_env_path=outputd_env,
+        restart_fanin=lambda: (True, ""),
+        restart_outputd=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        kick_hardware_reconcile=lambda: (True, ""),
+    )
+
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert broker_calls == [], (
+        f"a narrow box's assistant width never moved; got {broker_calls}"
+    )

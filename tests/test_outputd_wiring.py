@@ -449,6 +449,27 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     proto_rs = (
         REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
     ).read_text()
+    # The assistant width fan-in RESOLVED, published at start. Its content has a
+    # Rust unit test (`the_startup_width_line_names_the_verdict_and_both_declared_halves`),
+    # but that test cannot see whether anything CALLS the renderer — deleting
+    # this one `info!` would leave every suite green and the daemon silent about
+    # its own width, which is the failure class the extraction was made for.
+    # Both halves pinned here: the renderer is invoked, and it is invoked from
+    # the daemon's startup path rather than defined and forgotten.
+    assert "config.assistant_wire_resolved_line()" in main_rs, (
+        "fan-in must emit its resolved assistant width at startup; without it a "
+        "support read cannot tell a converting mismatch from a coherent box "
+        "except by waiting for a once-per-lifetime warn"
+    )
+    assert 'info!("{}", config.assistant_wire_resolved_line());' in main_rs
+    assert "pub fn assistant_wire_resolved_line(" in config_rs
+    # The voice half of the pair, so the two lines a support read compares are
+    # pinned together rather than one of them drifting away silently.
+    assert (
+        '"tts_wire.resolved"'
+        in (REPO / "jasper" / "audio_io.py").read_text()
+    ), "jasper-voice must publish the width it resolved, to pair with fan-in's"
+
     assert '"PROGRAM_DUCK_ON"' in proto_rs
     # The whole-stereo-frame rule is stated ONCE, in the shared payload
     # reader, and interpolates the verb — so `AUDIO` and `AUDIO32` cannot
