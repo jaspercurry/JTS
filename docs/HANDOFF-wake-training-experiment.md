@@ -749,6 +749,20 @@ are on while the operator is testing, off when they are not. DTLN
 cleanup falls back to the reconciler's production wake-leg intent
 instead of forcing the production DTLN leg off.
 
+The rollback above is an **enter-direction** behaviour. Exiting a chip
+corpus profile puts `jasper-aec-init` back on the production path, where
+a box with no commissioned alignment artifact parks by design
+(`outcome=parked action="run jasper-aec-commission"`, exit 2, unit
+failed). That park is the correct post-corpus state, so the exit does
+**not** roll back on it: the overrides stay removed and the chip stack is
+handed to `jasper-aec-reconcile`, which publishes the disposition
+(`commission_required` alignment status, the voice-input-absent marker,
+doctor and `/state`). Restoring the corpus env there would be a trap —
+the artifact the box lacks cannot be obtained from inside corpus mode, so
+the operator could never leave (issue #2254). Any other `aec-init`
+failure still rolls the exit back, and so does an exit status systemd
+cannot report.
+
 Equivalent manual env:
 
 ```sh

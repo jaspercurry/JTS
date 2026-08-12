@@ -1163,6 +1163,12 @@ def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
         "restart_aec_bridge",
         lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
     )
+    kicks: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "_hand_chip_stack_to_reconciler",
+        lambda *, reason: kicks.append(reason),
+    )
 
     assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
 
@@ -1172,6 +1178,351 @@ def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
         wake_corpus_setup.AEC_INIT_UNIT,
         wake_corpus_setup.BRIDGE_UNIT,
     ]
+    # A commissioned box converges on its own: nothing is handed to the
+    # reconciler, so the #2254 park branch stays off the healthy path.
+    assert kicks == []
+
+
+def _chip_corpus_disable_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    stub_handoff: bool = True,
+) -> tuple[Path, list[str], list[str]]:
+    """A chip-corpus box whose aec-init restart fails on the way out.
+
+    Returns (bridge env path, restart log, reconciler-kick log). Tests that
+    exercise the real handoff pass ``stub_handoff=False``; the kick log stays
+    empty for them.
+    """
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+        ),
+    )
+    restarts: list[str] = []
+    kicks: list[str] = []
+
+    def fake_restart_unit(
+        unit: str, timeout: float = wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC,
+    ) -> None:
+        restarts.append(unit)
+        if unit == wake_corpus_setup.AEC_INIT_UNIT:
+            raise subprocess.CalledProcessError(
+                1,
+                ["systemctl", "restart", unit],
+                stderr="Job for jasper-aec-init.service failed",
+            )
+
+    monkeypatch.setattr(bridge_session, "restart_unit", fake_restart_unit)
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+    if stub_handoff:
+        monkeypatch.setattr(
+            bridge_session,
+            "_hand_chip_stack_to_reconciler",
+            lambda *, reason: kicks.append(reason),
+        )
+    return bridge_path, restarts, kicks
+
+
+def test_disable_on_a_box_with_no_corpus_overrides_touches_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A box that was never in corpus mode restarts nothing at all.
+
+    The #2254 branch lives inside the chip arm of the restart closure, so it
+    cannot be reached from here — but pin the no-op rather than argue it.
+    """
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_unit",
+        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+            restarts.append(unit)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+    kicks: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "_hand_chip_stack_to_reconciler",
+        lambda *, reason: kicks.append(reason),
+    )
+
+    assert wake_corpus_setup.disable_bridge_corpus_outputs() is False
+
+    assert restarts == []
+    assert kicks == []
+    assert not bridge_path.exists()
+
+
+def test_corpus_exit_survives_the_designed_commissioning_park(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Issue #2254: an exit intent is never rolled back by a designed park.
+
+    Leaving a chip corpus profile puts aec-init on the production path, where
+    an uncommissioned box parks (exit 2) and the unit fails. Treating that as a
+    broken restart restored the corpus env and re-entered corpus mode — and the
+    artifact the box lacks cannot be obtained from inside corpus mode, so the
+    operator could never leave. The disable must stick.
+    """
+    bridge_path, restarts, kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        bridge_session,
+        "_aec_init_exec_main_status",
+        lambda: 2,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+
+    # The corpus overrides are gone and stayed gone: no rollback write.
+    assert not bridge_path.exists()
+    # The bridge is left to the reconciler's park, which stops it.
+    assert restarts == [
+        wake_corpus_setup.OUTPUTD_UNIT,
+        wake_corpus_setup.AEC_INIT_UNIT,
+    ]
+    # The park is loud and names an operator action, and its owner is asked to
+    # converge rather than this surface deciding locally.
+    assert any(
+        "event=wake_corpus.corpus_exit_parked" in message
+        and "jasper-aec-commission" in message
+        and "not commissioned" in message
+        for message in caplog.messages
+    ), caplog.messages
+    assert len(kicks) == 1
+
+
+def test_corpus_exit_still_rolls_back_a_genuine_aec_init_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Only the designed park is exempt; a fault keeps the rollback."""
+    bridge_path, restarts, kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
+    original = bridge_path.read_text()
+    monkeypatch.setattr(
+        bridge_session,
+        "_aec_init_exec_main_status",
+        lambda: 1,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        wake_corpus_setup.disable_bridge_corpus_outputs()
+
+    assert bridge_path.read_text() == original
+    assert kicks == []
+    # Rollback re-runs the same closure, so aec-init is attempted twice.
+    assert restarts.count(wake_corpus_setup.AEC_INIT_UNIT) == 2
+
+
+def test_corpus_exit_rolls_back_when_the_park_cannot_be_confirmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Unreadable exit status is not evidence of a park — fail closed.
+
+    We skip a rollback only on positive evidence, so an unavailable systemd
+    keeps the pre-#2254 behaviour rather than silently swallowing a real fault.
+    """
+    bridge_path, _restarts, kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
+    original = bridge_path.read_text()
+    monkeypatch.setattr(
+        bridge_session,
+        "_aec_init_exec_main_status",
+        lambda: None,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        wake_corpus_setup.disable_bridge_corpus_outputs()
+
+    assert bridge_path.read_text() == original
+    assert kicks == []
+
+
+def test_park_detection_reads_the_exit_code_aec_init_owns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The predicate is bound to aec-init's own constant, not a local 2."""
+    from jasper.cli.aec_init import COMMISSION_REQUIRED_EXIT
+
+    monkeypatch.setattr(
+        bridge_session,
+        "_aec_init_exec_main_status",
+        lambda: COMMISSION_REQUIRED_EXIT,
+    )
+    assert bridge_session._aec_init_parked_for_commissioning() is True
+
+    monkeypatch.setattr(
+        bridge_session,
+        "_aec_init_exec_main_status",
+        lambda: COMMISSION_REQUIRED_EXIT + 1,
+    )
+    assert bridge_session._aec_init_parked_for_commissioning() is False
+
+
+def test_exec_main_status_parses_systemctl_show_and_fails_soft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="2\n", stderr="")
+
+    monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
+    assert bridge_session._aec_init_exec_main_status() == 2
+    assert calls == [[
+        "systemctl", "show", "-p", "ExecMainStatus", "--value",
+        wake_corpus_setup.AEC_INIT_UNIT,
+    ]]
+
+    monkeypatch.setattr(
+        bridge_session.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout="[not set]\n", stderr="",
+        ),
+    )
+    assert bridge_session._aec_init_exec_main_status() is None
+
+    monkeypatch.setattr(
+        bridge_session.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Failed to connect to bus",
+        ),
+    )
+    assert bridge_session._aec_init_exec_main_status() is None
+
+    def raise_timeout(argv, **kwargs):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(argv, 1.5)
+
+    monkeypatch.setattr(bridge_session.subprocess, "run", raise_timeout)
+    assert bridge_session._aec_init_exec_main_status() is None
+
+
+def test_reconciler_kick_is_non_blocking_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The exit already landed, so a failed handoff warns instead of raising.
+
+    Non-blocking because the reconciler's own start budget (120 s) does not fit
+    this module's 30 s restart timeout.
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_manage_units(unit, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append({"unit": unit, **kwargs})
+        return {"ok": False, "rc": 5}
+
+    monkeypatch.setattr(
+        bridge_session.restart_broker, "manage_units", fake_manage_units,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        bridge_session._hand_chip_stack_to_reconciler(reason="exit")
+
+    assert seen[0]["unit"] == bridge_session.AEC_RECONCILE_UNIT
+    assert seen[0]["verb"] == "start"
+    assert seen[0]["no_block"] is True
+    assert any(
+        "event=wake_corpus.aec_reconcile_kick_failed" in message
+        for message in caplog.messages
+    ), caplog.messages
+
+
+def test_a_broken_reconciler_kick_cannot_resurrect_the_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The handoff runs inside the restart closure, so it must not raise.
+
+    An exception escaping the kick would be caught as a failed restart and roll
+    the corpus env back — the #2254 trap through a second door.
+    """
+    # The real handoff, not the fixture's stub: the point is what the live
+    # function does when the broker call under it explodes.
+    bridge_path, _restarts, _kicks = _chip_corpus_disable_env(
+        monkeypatch, tmp_path, stub_handoff=False,
+    )
+    monkeypatch.setattr(
+        bridge_session, "_aec_init_exec_main_status", lambda: 2,
+    )
+
+    def exploding_manage_units(unit, **kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("broker socket vanished")
+
+    monkeypatch.setattr(
+        bridge_session.restart_broker, "manage_units", exploding_manage_units,
+    )
+
+    assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+    assert not bridge_path.exists()
+
+
+def test_reconcile_unit_is_brokerable_from_the_wizard_process() -> None:
+    """jasper-web asks the broker; a unit outside its allowlist can't be kicked."""
+    from jasper.control import restart_broker
+
+    assert bridge_session.AEC_RECONCILE_UNIT in restart_broker.MANAGED_UNITS
+
+
+def test_session_configure_keeps_rollback_when_leaving_a_chip_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Deliberate non-change: only the EXIT direction drops the rollback.
+
+    Switching corpus profiles hits the same aec-init park, but rolling that
+    back returns the operator to a working corpus state they can still leave —
+    it is a refusal, not the #2254 trap. Configuring a session that cannot run
+    must keep failing loudly rather than reporting a session it did not apply.
+    """
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+        ),
+    )
+    original = bridge_path.read_text()
+
+    def fake_restart_unit(
+        unit: str, timeout: float = wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC,
+    ) -> None:
+        if unit == wake_corpus_setup.AEC_INIT_UNIT:
+            raise subprocess.CalledProcessError(
+                1, ["systemctl", "restart", unit],
+            )
+
+    monkeypatch.setattr(bridge_session, "restart_unit", fake_restart_unit)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(
+        bridge_session, "_aec_init_exec_main_status", lambda: 2,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        wake_corpus_setup.set_bridge_outputs_for_session(
+            corpus_profile=wake_corpus_setup.PROFILE_STANDARD,
+            include_dtln=False,
+            include_usb_mic=False,
+            include_usb_dtln=False,
+        )
+
+    assert bridge_path.read_text() == original
 
 
 def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
