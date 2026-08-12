@@ -233,6 +233,12 @@ _CAPTURE_PLAN_PROBE_ERRORS = (
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
+# Owner of the chip-or-park decision and single writer of the daemon-facing mic
+# env. The recorder owns its corpus overrides and nothing else, so a corpus exit
+# that lands the box in a state only this reconciler can resolve hands off here
+# rather than deciding locally — same shape as jasper/accessories/reconcile.py's
+# VOICE_INPUT_GATE_UNIT.
+AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 _UNIT_STATE_TIMEOUT_SEC = 1.5
 BRIDGE_CORPUS_OUTPUT_VARS = (
@@ -1248,6 +1254,87 @@ _BRIDGE_RESTART_ERRORS = (
 )
 
 
+def _aec_init_exec_main_status() -> int | None:
+    """jasper-aec-init's last ExecStart exit code, or None if unreadable.
+
+    The same signal jasper-aec-reconcile's ``activate_managed_chip_aec``
+    branches on to tell a designed park from a fault: `systemctl restart`
+    collapses every unit failure to rc=1, so the unit's own exit code is the
+    only place that distinction survives. A read-only `systemctl show` — no
+    privilege, no broker.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", "show",
+                "-p", "ExecMainStatus", "--value", AEC_INIT_UNIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_UNIT_STATE_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _aec_init_parked_for_commissioning() -> bool:
+    """True when aec-init's failure is its designed commissioning park.
+
+    Unreadable status answers False, which keeps the caller on the existing
+    rollback path: we only skip a rollback on positive evidence that the box
+    parked by design.
+    """
+    # aec-init owns this exit-code contract; import it rather than restate the
+    # integer here. Lazily, because jasper.cli.aec_init pulls the XVF / output-
+    # hardware stack into the socket-activated jasper-web process, and this
+    # runs only after an aec-init restart has already failed.
+    from jasper.cli.aec_init import COMMISSION_REQUIRED_EXIT
+
+    return _aec_init_exec_main_status() == COMMISSION_REQUIRED_EXIT
+
+
+def _hand_chip_stack_to_reconciler(*, reason: str) -> None:
+    """Ask the AEC reconciler to converge the chip stack. Best-effort.
+
+    Non-blocking on purpose: the reconciler restarts aec-init inside its own
+    120 s start budget, which does not fit this module's 30 s restart timeout,
+    and nothing in the caller's response depends on the converged state — the
+    park it lands on is published by its owner (alignment status/reason/action,
+    the voice-input-absent marker, doctor, /state).
+
+    A failed kick is logged, not raised: the operator's env change has already
+    landed, and jasper-aec-init.service's ``OnFailure=`` names this same unit as
+    the backstop (pinned by tests/test_aec_init.py).
+    """
+    try:
+        resp = restart_broker.manage_units(
+            AEC_RECONCILE_UNIT, verb="start", reason=reason, no_block=True,
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            "wake_corpus.aec_reconcile_kick_failed",
+            unit=AEC_RECONCILE_UNIT,
+            error=exc,
+            level=logging.WARNING,
+        )
+        return
+    if not resp.get("ok"):
+        log_event(
+            logger,
+            "wake_corpus.aec_reconcile_kick_failed",
+            unit=AEC_RECONCILE_UNIT,
+            error=resp.get("error") or f"rc={resp.get('rc')}",
+            level=logging.WARNING,
+        )
+
+
 def _write_env_and_restart_with_rollback(
     *,
     env_path: str,
@@ -1373,6 +1460,11 @@ def disable_bridge_corpus_outputs() -> bool:
     flag written by `jasper-aec-reconcile`, so cleanup must not force it
     off when the /system Wake detection card intentionally enabled it.
     Unrelated settings such as the selected USB mic device are preserved.
+
+    Leaving a chip corpus profile puts jasper-aec-init back on the production
+    path, where an uncommissioned box parks by design. That park is the
+    *correct* post-corpus state, not a broken restart, so it does not roll the
+    exit back — see the aec-init branch in ``restart`` below.
     """
     env_path = str(BRIDGE_CORPUS_ENV_PATH)
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
@@ -1395,7 +1487,34 @@ def disable_bridge_corpus_outputs() -> bool:
     def restart() -> None:
         if had_chip_profile:
             restart_unit(OUTPUTD_UNIT)
-            restart_unit(AEC_INIT_UNIT)
+            try:
+                restart_unit(AEC_INIT_UNIT)
+            except _BRIDGE_RESTART_ERRORS:
+                if not _aec_init_parked_for_commissioning():
+                    raise
+                # The exit landed and the box is now on the production path,
+                # where it correctly requires commissioning. Rolling back here
+                # would restore the corpus env and re-enter corpus mode — an
+                # inescapable trap, because the artifact an uncommissioned box
+                # lacks is exactly what it cannot obtain from inside corpus
+                # mode (issue #2254). Returning instead of raising leaves the
+                # env written: an exit intent is never reverted.
+                #
+                # The bridge is deliberately NOT restarted: park_managed_xvf
+                # stops it, so starting it here would race the owner's stop and
+                # can leave a bridge running against a parked mic.
+                log_event(
+                    logger,
+                    "wake_corpus.corpus_exit_parked",
+                    unit=AEC_INIT_UNIT,
+                    reason="chip-AEC alignment is not commissioned",
+                    action="run sudo jasper-aec-commission",
+                    level=logging.WARNING,
+                )
+                _hand_chip_stack_to_reconciler(
+                    reason="wake-corpus exit: chip-AEC needs commissioning",
+                )
+                return
         restart_aec_bridge()
 
     _write_env_and_restart_with_rollback(

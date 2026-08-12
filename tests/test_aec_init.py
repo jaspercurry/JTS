@@ -903,6 +903,19 @@ def test_deferred_and_commission_required_exits_stay_distinct() -> None:
     assert aec_init.OUTPUTD_ENV_STALE_EXIT not in (0, 1)
 
 
+def test_a_parked_init_hands_the_box_to_the_reconciler() -> None:
+    # Every exit above 0 leaves this oneshot failed, and the reconciler is what
+    # turns that into a published disposition (alignment status/reason/action,
+    # the voice-input-absent marker). The wake-corpus exit path documents this
+    # directive as its backstop when a corpus exit parks an uncommissioned box
+    # (issue #2254), so it is load-bearing rather than incidental.
+    unit = (
+        ROOT / "deploy" / "systemd" / "jasper-aec-init.service"
+    ).read_text(encoding="utf-8")
+
+    assert "OnFailure=jasper-aec-reconcile.service\n" in unit
+
+
 def test_output_hardware_key_uses_deterministic_i2s_profile_and_card() -> None:
     assert aec_init.output_hardware_key(
         {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
