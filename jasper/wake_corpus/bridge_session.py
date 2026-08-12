@@ -1311,6 +1311,11 @@ def _hand_chip_stack_to_reconciler(*, reason: str) -> None:
     A failed kick is logged, not raised: the operator's env change has already
     landed, and jasper-aec-init.service's ``OnFailure=`` names this same unit as
     the backstop (pinned by tests/test_aec_init.py).
+
+    ``manage_units`` documents that it never raises, and the guard below is not
+    idle defensiveness against that: this runs inside the ``restart`` closure,
+    so anything escaping here would be caught as a failed restart and roll the
+    corpus env back — resurrecting the very trap this path exists to close.
     """
     try:
         resp = restart_broker.manage_units(

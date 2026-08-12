@@ -1403,6 +1403,30 @@ def test_reconciler_kick_is_non_blocking_and_never_raises(
     ), caplog.messages
 
 
+def test_a_broken_reconciler_kick_cannot_resurrect_the_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The handoff runs inside the restart closure, so it must not raise.
+
+    An exception escaping the kick would be caught as a failed restart and roll
+    the corpus env back — the #2254 trap through a second door.
+    """
+    bridge_path, _restarts, _kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        bridge_session, "_aec_init_exec_main_status", lambda: 2,
+    )
+
+    def exploding_manage_units(unit, **kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("broker socket vanished")
+
+    monkeypatch.setattr(
+        bridge_session.restart_broker, "manage_units", exploding_manage_units,
+    )
+
+    assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+    assert not bridge_path.exists()
+
+
 def test_reconcile_unit_is_brokerable_from_the_wizard_process() -> None:
     """jasper-web asks the broker; a unit outside its allowlist can't be kicked."""
     from jasper.control import restart_broker
