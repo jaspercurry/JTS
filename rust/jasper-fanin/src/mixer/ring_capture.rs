@@ -62,12 +62,25 @@ use super::*;
 
 use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
 
-/// Render periods between reattach attempts while `Detached`. At the shipped
-/// geometry (256 frames @ 48 kHz ≈ 5.33 ms) 384 periods ≈ 2 s — the same cadence
-/// as the USB DIRECT lane's `DIRECT_REOPEN_RETRY_PERIODS`, and for the same
-/// reason: frequent enough that a renderer coming up is picked up within a couple
-/// of seconds, rare enough that a box whose renderer is switched OFF at
-/// `/sources/` is not opening a file 187 times a second forever.
+/// Render periods between reattach attempts while `Detached`, and between
+/// orphaned-inode probes while `Attached`.
+///
+/// At the shipped geometry one period is 256 frames @ 48 kHz = 5.333 ms, so 384
+/// periods is 2.048 s. (375 would be the exact 2 s; 384 is chosen instead
+/// because it is a power-of-two multiple, which keeps the arithmetic exact
+/// across the period sizes fan-in actually runs and costs 48 ms of latency
+/// nobody can perceive on a reattach.) Same cadence and same reasoning as the
+/// USB DIRECT lane's `DIRECT_REOPEN_RETRY_PERIODS`: frequent enough that a
+/// renderer coming up is picked up within a couple of seconds, rare enough that
+/// a box whose renderer is switched OFF at `/sources/` is not opening a file
+/// 187 times a second forever.
+///
+/// **Relationship to the renderer's own `RestartSec`.** librespot restarts at
+/// `RestartSec=5`, comfortably longer than this window, so a crash-looping
+/// renderer is always found by the FIRST retry after each respawn rather than
+/// being missed between probes. Keep this cadence below any ring-writing
+/// renderer's `RestartSec`; if a renderer ever restarts faster than ~2 s, this
+/// constant is what has to move, not the unit.
 pub(super) const RING_REATTACH_RETRY_PERIODS: u64 = 384;
 
 /// Why a renderer-ingress lane is not attached. A copy `enum` of `&'static str`
@@ -91,6 +104,15 @@ pub(super) enum RingDetachReason {
     /// different: this one usually means the renderer user is not in the ring
     /// directory's group, or a unit is missing `UMask=0007`.
     Refused,
+    /// The mapping outlived the FILE: the ring at this path was replaced (a
+    /// geometry change cleared and recreated it, or an arm/disarm did) while
+    /// this reader held it open. An mmap survives an unlink, so the lane would
+    /// otherwise report `attached:true` and read an ORPHANED inode forever —
+    /// indistinguishable from an idle source on every other counter. Detected
+    /// on the slow check cadence and self-heals by re-latching onto the live
+    /// file, so it needs no operator; it is a distinct token only so the
+    /// journal shows the re-latch happened rather than an unexplained gap.
+    Orphaned,
 }
 
 impl RingDetachReason {
@@ -99,6 +121,7 @@ impl RingDetachReason {
             Self::Unavailable => "unavailable",
             Self::Geometry => "geometry",
             Self::Refused => "refused",
+            Self::Orphaned => "orphaned",
         }
     }
 
@@ -210,6 +233,7 @@ impl RingLaneObservability {
         match self.detach_reason.load(Ordering::Relaxed) {
             x if x == RingDetachReason::Geometry as u64 => RingDetachReason::Geometry.as_str(),
             x if x == RingDetachReason::Refused as u64 => RingDetachReason::Refused.as_str(),
+            x if x == RingDetachReason::Orphaned as u64 => RingDetachReason::Orphaned.as_str(),
             _ => RingDetachReason::Unavailable.as_str(),
         }
     }
@@ -219,7 +243,13 @@ impl RingLaneObservability {
 /// presence model; see [`RingDetachReason`] for what each detached state means.
 pub(super) enum RingCapture {
     /// The ring is mapped; the lane consumes one slot per render period.
-    Attached(Box<RingReader>),
+    /// `periods_until_check` counts down to the next orphaned-inode probe (see
+    /// [`RingDetachReason::Orphaned`]); it shares the reattach cadence, because
+    /// both are "sample something slow, not every period".
+    Attached {
+        reader: Box<RingReader>,
+        periods_until_check: u64,
+    },
     /// No ring. The lane renders silence and retries the attach at most once per
     /// [`RING_REATTACH_RETRY_PERIODS`], counted down one per render period.
     Detached { periods_until_retry: u64 },
@@ -229,13 +259,15 @@ pub(super) enum RingCapture {
 /// box's sample rate, one slot per fan-in render period, depth derived from the
 /// aloop cushion the lane replaced.
 ///
-/// **The wire stays S16 here on purpose, and it is not the U2 width axis.** A
+/// **The wire stays S16 here on purpose, and it is not the U2 width axis.** Every
 /// renderer lane's producer is an ALSA `plug:` wrapper over a 48 kHz `S16_LE`
-/// substream today, and the boundary table pins it there; U3 moves the transport
-/// and deliberately does not move the width, so a narrow renderer sums exactly the
-/// bytes it summed before. Widening a renderer lane is a separate decision with
-/// its own evidence, taken on the same `RingWireFormat` axis the program ring
-/// already has.
+/// substream — the consolidation plan's boundary table pins it there — and U3
+/// moves the transport WITHOUT moving the width, so a narrow renderer sums
+/// exactly the bytes it summed before. That is a property of the lane class, not
+/// of which lanes happen to be migrated, so it holds unchanged for each lane
+/// P6b-d adds. Widening a renderer lane is a separate decision with its own
+/// evidence, taken on the same `RingWireFormat` axis the program ring already
+/// has.
 pub(super) fn renderer_ring_geometry(config: &Config) -> Option<Geometry> {
     Some(Geometry {
         rate: config.sample_rate,
@@ -292,7 +324,10 @@ pub(super) fn open_ring_input(
                 "event=fanin.ring_lane.attached label={} path={} slot_frames={} n_slots={} attaches=1 (initial attach)",
                 label, path, geometry.period_frames, geometry.n_slots,
             );
-            RingCapture::Attached(Box::new(reader))
+            RingCapture::Attached {
+                reader: Box::new(reader),
+                periods_until_check: RING_REATTACH_RETRY_PERIODS,
+            }
         }
         Err(reason) => {
             obs.detach_reason.store(reason as u64, Ordering::Relaxed);
@@ -368,8 +403,30 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
         return 0;
     };
 
+    // Set by the Attached arm's orphan probe; acted on after its borrow ends.
+    let mut orphaned = false;
     let real_frames = match &mut ring {
-        RingCapture::Attached(reader) => {
+        RingCapture::Attached {
+            reader,
+            periods_until_check,
+        } => {
+            // ORPHANED-INODE probe, on the slow cadence (an fstat + a stat is a
+            // syscall pair, not something to pay per period). An mmap survives
+            // an unlink, so a ring replaced underneath this reader leaves a
+            // perfectly valid mapping of a file nothing writes any more — the
+            // lane would report attached and read silence forever, which no
+            // counter here distinguishes from an idle renderer. Detaching
+            // re-latches onto the live file on the next period.
+            if *periods_until_check == 0 {
+                let owns = reader.owns_linked_path().unwrap_or(false);
+                if !owns {
+                    orphaned = true;
+                } else {
+                    *periods_until_check = RING_REATTACH_RETRY_PERIODS;
+                }
+            } else {
+                *periods_until_check -= 1;
+            }
             let want = period_frames * (CHANNELS as usize);
             // Guard the slot-shaped copy: `try_consume_slot` requires exactly one
             // slot's worth of samples. `read_buf` is built at
@@ -407,6 +464,29 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
         }
     };
 
+    if orphaned {
+        if let Some(obs) = &input.ring_obs {
+            obs.attached.store(false, Ordering::Relaxed);
+            obs.detach_reason
+                .store(RingDetachReason::Orphaned as u64, Ordering::Relaxed);
+            warn!(
+                "event=fanin.ring_lane.detached label={} path={} reason={} \
+                 (the ring at this path was replaced while we held it open; \
+                 re-latching onto the live file)",
+                input.label,
+                obs.path,
+                RingDetachReason::Orphaned.as_str(),
+            );
+        }
+        if let Some(r) = input.resampler.as_mut() {
+            r.reset();
+        }
+        // periods_until_retry = 0: re-latch on the very next period. This is a
+        // live file waiting to be opened, not an absent one to back off from.
+        ring = RingCapture::Detached {
+            periods_until_retry: 0,
+        };
+    }
     input.ring = Some(ring);
     real_frames
 }
@@ -457,7 +537,10 @@ fn maybe_reattach_ring(ring: RingCapture, input: &mut Input) -> RingCapture {
                 attaches,
                 obs.retries.load(Ordering::Relaxed),
             );
-            RingCapture::Attached(Box::new(reader))
+            RingCapture::Attached {
+                reader: Box::new(reader),
+                periods_until_check: RING_REATTACH_RETRY_PERIODS,
+            }
         }
         Err(reason) => {
             // Record the CURRENT reason (it can change — an `unavailable` ring that
@@ -517,7 +600,10 @@ mod tests {
             Ok(reader) => {
                 obs.attached.store(true, Ordering::Relaxed);
                 obs.attaches.fetch_add(1, Ordering::Relaxed);
-                RingCapture::Attached(Box::new(reader))
+                RingCapture::Attached {
+                    reader: Box::new(reader),
+                    periods_until_check: RING_REATTACH_RETRY_PERIODS,
+                }
             }
             Err(reason) => {
                 obs.detach_reason.store(reason as u64, Ordering::Relaxed);
@@ -702,6 +788,13 @@ mod tests {
             obs.empty_reads.load(Ordering::Relaxed) >= 8,
             "steady-state empty reads must be counted after the first filled slot"
         );
+        assert!(
+            !obs.writer_alive.load(Ordering::Relaxed),
+            "a dead writer must READ as dead in /state — `writer_alive` is the \
+             observability half of the split (the flock owns exclusivity), and \
+             an operator seeing attached=true needs this to tell a silent lane \
+             from a live one"
+        );
 
         // A renderer returning re-publishes; the lane picks it up with no reattach.
         let mut writer2 = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
@@ -851,6 +944,75 @@ mod tests {
         cleanup(&path);
     }
 
+    /// A ring REPLACED underneath a live reader is detected and re-latched.
+    ///
+    /// An mmap survives an unlink, so without the orphan probe the lane would
+    /// hold a valid mapping of a dead inode: `attached:true`, reads succeeding,
+    /// silence forever, and no counter separating it from an idle renderer.
+    /// This is the shape an arm/disarm (which clears a stale ring) or a
+    /// geometry change produces on a running box.
+    #[test]
+    fn a_ring_replaced_underneath_the_reader_is_relatched_not_read_forever() {
+        let path = ring_path("orphan");
+        cleanup(&path);
+        let mut input = ring_lane(&path);
+        let samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
+
+        // Prove the lane works on the ORIGINAL file first.
+        {
+            let mut w = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
+            assert!(w.try_publish_slot(&vec![0x0A0A_i16; samples]));
+            assert_eq!(
+                read_ring_and_render(&mut input, TEST_PERIOD as usize),
+                TEST_PERIOD as usize
+            );
+        }
+
+        // Replace the file at the same path — exactly what clearing a stale ring
+        // does. The reader still holds the OLD inode.
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_file(format!("{path}.open.lock"));
+        let mut fresh = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
+        assert!(fresh.try_publish_slot(&vec![0x0B0B_i16; samples]));
+
+        // Drive periods. The probe fires on the slow cadence, so this needs the
+        // full window plus the re-latch period — which is the point: the lane
+        // must recover on its own, without an operator and without a restart.
+        let mut recovered = None;
+        for _ in 0..(RING_REATTACH_RETRY_PERIODS + 4) {
+            let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
+            if frames > 0 && input.read_buf[0] == 0x0B0B {
+                recovered = Some(frames);
+                break;
+            }
+        }
+        assert_eq!(
+            recovered,
+            Some(TEST_PERIOD as usize),
+            "the lane must re-latch onto the LIVE file and carry its audio; \
+             holding the orphaned mapping would read silence forever while \
+             reporting attached"
+        );
+        let obs = input.ring_obs.as_ref().unwrap();
+        assert!(obs.attached.load(Ordering::Relaxed));
+        assert!(
+            obs.attaches.load(Ordering::Relaxed) >= 2,
+            "a re-latch is a second attach, and must be visible as one"
+        );
+
+        cleanup(&path);
+    }
+
+    /// An orphan detach names ITSELF, not one of the other three reasons — the
+    /// remedies differ and a mislabelled one sends an operator the wrong way.
+    #[test]
+    fn every_detach_reason_including_orphaned_has_its_own_token() {
+        let obs = RingLaneObservability::new("/tmp/x.ring".to_string(), test_geometry());
+        obs.detach_reason
+            .store(RingDetachReason::Orphaned as u64, Ordering::Relaxed);
+        assert_eq!(obs.detach_reason_str(), "orphaned");
+    }
+
     /// Every detach reason round-trips through the atomic `/state` publishes as
     /// its own token. A reason that collapsed onto another's spelling would tell
     /// an operator to apply the wrong remedy.
@@ -861,6 +1023,7 @@ mod tests {
             RingDetachReason::Unavailable,
             RingDetachReason::Geometry,
             RingDetachReason::Refused,
+            RingDetachReason::Orphaned,
         ];
         let mut seen = std::collections::BTreeSet::new();
         for reason in all {

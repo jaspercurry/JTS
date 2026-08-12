@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
 from jasper.audio_hardware.dac import (
@@ -266,11 +268,20 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
     newly_armed = [label for label in desired if label not in current]
     if newly_armed:
         presence = ring_asset_presence()
+        lane_conf = os.path.exists(rl.RENDERER_LANES_CONF_D)
         for label in newly_armed:
+            lane = rl.lane_by_label(label)
+            user = _renderer_unit_user(lane.unit) if lane else None
             refusal = rl.arm_refusal_reason(
                 label,
                 assets_present=presence.all_present,
                 missing_assets=presence.missing(),
+                lane_conf_present=lane_conf,
+                user_in_ring_group=(
+                    rl.renderer_user_in_ring_group(user) if user else None
+                ),
+                input_buffer_frames=args.input_buffer_frames,
+                period_frames=args.period_frames,
             )
             if refusal is not None:
                 print(f"refused {label}: {refusal}", file=sys.stderr)
@@ -295,6 +306,17 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
+    # A ring file left over from a PRIOR geometry is a create-or-ATTACH error,
+    # not something either end recovers from: the renderer would fail its open
+    # and the lane would be silent until someone ran `rm` by hand. Clear it on
+    # EVERY transition — arm and disarm alike — so the lever can be pulled and
+    # released, which is exactly the trap the format axis sprang on Ring A's
+    # rollback. tmpfs transport state, recreated by whichever end opens next.
+    for label in set(desired) ^ set(current):
+        reason = rl.delete_stale_ring(label)
+        if reason is not None:
+            print(f"cleared_stale_ring {label} {reason}")
+
     print(f"result {'rendered' if outcome.changed else 'unchanged'}")
     print(f"armed {','.join(outcome.armed)}")
     print(f"previous {','.join(current)}")
@@ -304,6 +326,24 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
     )
     print(f"restart_required jasper-fanin.service {restart}".rstrip())
     return 0
+
+
+def _renderer_unit_user(unit: str) -> str | None:
+    """The `User=` a renderer unit runs as, read from the installed unit file.
+
+    Deliberately parses the unit rather than asking systemd: the arm can be run
+    on a box whose renderer is stopped, and `systemctl show -p User` on an
+    inactive unit is less reliable than the file that defines it.
+    """
+    for base in ("/etc/systemd/system", "/usr/lib/systemd/system"):
+        try:
+            text = Path(base, unit).read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.strip().startswith("User="):
+                return line.split("=", 1)[1].strip() or None
+    return None
 
 
 def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
@@ -515,6 +555,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="override the lane-map env path (default: the renderer_lanes SSOT)",
     )
+    # The arm preflights the DERIVED ring geometry so an inexpressible one is
+    # refused where the operator is watching, rather than only as a fan-in park
+    # at its next start. Defaults are the shipped fan-in geometry.
+    renderer_lanes.add_argument("--input-buffer-frames", type=int, default=4096)
+    renderer_lanes.add_argument("--period-frames", type=int, default=256)
     renderer_lanes.set_defaults(func=_cmd_renderer_lanes)
 
     validate_outputd = sub.add_parser(

@@ -1113,15 +1113,25 @@ static void test_attach_second_writer_bumps_epoch(void) {
     CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 open");
     jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
     uint64_t e1 = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    uint64_t wseq1 = w1.write_seq;
     // A second writer attaching to the SAME file bumps the epoch again.
+    //
+    // Writer 1 is CLOSED first: that is what a reattach IS in production (the
+    // old writer's process exits, or the ioplug closes its PCM). Since U3/P6a a
+    // writer holds an EXCLUSIVE flock for the life of its mapping, so two live
+    // writers on one ring is refused rather than modelled. The epoch and
+    // write_seq both live in the HEADER and survive the close, which is exactly
+    // what this test asserts.
+    jts_ring_writer_close(&w1);
+    h = NULL; // w1's mapping is gone; do not read through it again.
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 attach");
-    uint64_t e2 = atomic_load_explicit(&h->writer_epoch, memory_order_acquire);
+    uint64_t e2 = atomic_load_explicit(
+        &((jts_ring_header_t *)w2.base)->writer_epoch, memory_order_acquire);
     CHECK(e2 > e1, "epoch bumped on second writer attach");
     // write_seq is file-lifetime monotonic: the second writer continues from it.
-    CHECK(w2.write_seq == w1.write_seq, "second writer continues from stored write_seq");
+    CHECK(w2.write_seq == wseq1, "second writer continues from stored write_seq");
     jts_ring_writer_close(&w2);
-    jts_ring_writer_close(&w1);
     unlink(path);
 }
 
@@ -2149,45 +2159,82 @@ static void test_writer_ebusy_second_writer(void) {
         atomic_load_explicit(&h->writer_epoch, memory_order_relaxed);
     CHECK(wseq_before > 0, "writer 1 advanced write_seq");
 
-    // Writer 1's pid == getpid() here (same process), and foreign_writer_is_live
-    // deliberately returns 0 for OUR pid so a re-prepare in the same process is
-    // never refused. Model a DIFFERENT process by stamping a foreign live pid.
-    uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
-    atomic_store_explicit(&h->writer_pid, foreign, memory_order_relaxed);
-    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
-                          memory_order_relaxed);
-
+    // --- (1) THE LOCK, in isolation --------------------------------------
+    //
+    // Writer 1 is still open and its pid is OURS, so `foreign_writer_is_live`
+    // returns 0 (a same-process re-prepare is deliberately not a pid conflict).
+    // The ONLY thing that can refuse here is the fd-scoped flock — which is the
+    // point: this is the `aplay -D` probe arriving while the renderer holds its
+    // ring.
     jts_ring_writer_t w2;
     memset(&w2, 0, sizeof(w2));
     int rc = jts_ring_writer_open(path, &g, &w2);
-    CHECK(rc == -EBUSY, "second live writer refused with -EBUSY");
-    // The incumbent's state is untouched: the guard bailed BEFORE any stamp, so
-    // neither the epoch (which a reader watches for reattach) nor write_seq moved.
-    CHECK(atomic_load_explicit(&h->writer_pid, memory_order_relaxed) == foreign,
-          "EBUSY did not clobber the incumbent writer_pid");
+    CHECK(rc == -EBUSY, "a second live writer is refused with -EBUSY by the lock");
+    CHECK(w2.base == NULL, "refused writer struct left detached");
+    CHECK(w2.fd == -1, "refused writer fd left detached");
     CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
           "EBUSY did not clobber write_seq");
     CHECK(atomic_load_explicit(&h->writer_epoch, memory_order_relaxed) == epoch_before,
           "EBUSY did not bump writer_epoch (a reader must not see a phantom "
           "reattach because someone probed the device)");
-    CHECK(w2.base == NULL, "refused writer struct left detached");
-    CHECK(w2.fd == -1, "refused writer fd left detached");
 
-    // A DEAD foreign writer (stale heartbeat — a crashed renderer, or a ring left
-    // by a previous boot) must NOT block a fresh attach: ownership is takeable
-    // when the incumbent is gone, which is what lets a restarted renderer reclaim
-    // its own lane without an operator.
-    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    // --- (2) A PAUSED-BUT-OPEN writer stays protected ---------------------
+    //
+    // THE HOLE THE LOCK EXISTS TO CLOSE. `writer_heartbeat_ns` is stamped on
+    // PUBLISH paths only, so a renderer that holds its PCM open and stops
+    // writing — an ordinary pause — goes heartbeat-stale within
+    // JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Under the heartbeat test alone its
+    // ring would become takeable while it still owned the device, and a probe
+    // could then interleave slots into a stream it resumes into. The lock is
+    // held for the LIFE OF THE MAPPING, so it survives the pause.
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed); // ancient
+    jts_ring_writer_t w_paused;
+    memset(&w_paused, 0, sizeof(w_paused));
+    CHECK(jts_ring_writer_open(path, &g, &w_paused) == -EBUSY,
+          "a PAUSED but still-open writer keeps its ring (the heartbeat has gone "
+          "stale; the fd-scoped lock has not)");
+    CHECK(w_paused.base == NULL, "refused paused-case writer left detached");
+
+    // --- (3) A DEAD writer's ring IS reclaimable --------------------------
+    //
+    // Death closes the fd and the kernel drops the flock, so the reclaim
+    // property survives without depending on heartbeat timing — a restarted
+    // renderer takes its own lane back with no operator. Closing is exactly what
+    // a crash/SIGKILL does to the lock.
+    jts_ring_writer_close(&w1);
     jts_ring_writer_t w3;
     CHECK(jts_ring_writer_open(path, &g, &w3) == 0,
-          "dead foreign writer does not block a fresh attach");
-    CHECK(atomic_load_explicit(&h->writer_pid, memory_order_relaxed) == (uint64_t)getpid(),
+          "a dead writer's ring is reclaimable");
+    jts_ring_header_t *h3 = (jts_ring_header_t *)w3.base;
+    CHECK(atomic_load_explicit(&h3->writer_pid, memory_order_relaxed)
+              == (uint64_t)getpid(),
           "fresh attach took ownership (our pid)");
-    CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
+    CHECK(atomic_load_explicit(&h3->write_seq, memory_order_relaxed) == wseq_before,
           "takeover continues the file-lifetime write_seq rather than resetting it");
 
+    // --- (4) The HEARTBEAT guard still covers the cross-implementation case -
+    //
+    // A Rust `RingWriter` does not take this lock, so on a ring whose writer is
+    // the Rust side the heartbeat is the only signal available and the guard
+    // must still fire. Model that: release the lock (close), then stamp a
+    // FOREIGN live pid + fresh heartbeat through a reader's mapping.
     jts_ring_writer_close(&w3);
-    jts_ring_writer_close(&w1);
+    jts_ring_reader_t rr;
+    CHECK(jts_ring_reader_open(path, &g, &rr) == 0, "reader mapping for step 4");
+    jts_ring_header_t *hf = (jts_ring_header_t *)rr.base;
+    uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
+    atomic_store_explicit(&hf->writer_pid, foreign, memory_order_relaxed);
+    atomic_store_explicit(&hf->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+    jts_ring_writer_t w4;
+    memset(&w4, 0, sizeof(w4));
+    CHECK(jts_ring_writer_open(path, &g, &w4) == -EBUSY,
+          "a live FOREIGN writer with no lock (the Rust writer) is still refused "
+          "by the heartbeat guard");
+    CHECK(atomic_load_explicit(&hf->writer_pid, memory_order_relaxed) == foreign,
+          "EBUSY did not clobber the incumbent writer_pid");
+    jts_ring_reader_close(&rr);
+
     unlink(path);
 }
 
@@ -2233,7 +2280,16 @@ static void test_reader_epoch_reset_on_writer_reattach(void) {
     (void)jts_ring_reader_consume(&r, out); // observes epoch 1
     CHECK(r.epoch_resets == 0, "no epoch reset yet");
 
-    // Second writer attaches to the SAME ring (writer 1 still mapped) -> epoch++.
+    // Second writer attaches to the SAME ring -> epoch++.
+    //
+    // Writer 1 is CLOSED first, which is what a reattach actually is in
+    // production: the old writer's process exits (or the ioplug closes its PCM)
+    // and a new one opens. This used to leave writer 1 mapped, which worked only
+    // because the pid guard exempted our own pid; since U3/P6a a writer holds an
+    // EXCLUSIVE flock for the life of its mapping, so two live writers on one
+    // ring is refused rather than simulated. The epoch lives in the HEADER and
+    // survives the close, so this still exercises exactly what it always did.
+    jts_ring_writer_close(&w1);
     jts_ring_writer_t w2;
     CHECK(jts_ring_writer_open(path, &g, &w2) == 0, "writer 2 reattach (epoch++)");
     (void)jts_ring_reader_consume(&r, out); // observes the epoch change
@@ -2561,9 +2617,16 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     int16_t *s = calloc(n, sizeof(int16_t));
     int16_t *out = calloc(n, sizeof(int16_t));
 
-    // Writer 1 dies immediately (stale heartbeat); the app free-runs on silence.
-    jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
-    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    // Writer 1 DIES; the app free-runs on silence.
+    //
+    // Death is modelled by CLOSING the writer rather than by stamping a stale
+    // heartbeat under a still-open mapping. That is what dying is: the process
+    // exits, its fd closes, and the kernel drops the writer's flock — which is
+    // precisely the property that lets a new writer reclaim the ring without
+    // waiting on heartbeat timing (U3/P6a). The reader's verdict is unchanged
+    // either way: a closed writer clears `writer_pid`, so `writer_is_live` is
+    // false for the same reason a stale heartbeat made it false.
+    jts_ring_writer_close(&w1);
     (void)cap_model_avail(&m, &r);
     uint64_t hw_before = m.alsa_hw_ptr;
     uint64_t prev = m.alsa_hw_ptr;

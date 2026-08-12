@@ -3068,3 +3068,154 @@ def check_aec_clock_drift() -> CheckResult:
             f"chip-AEC clock drift cannot be trusted: {reason}. {detail}",
         )
     return CheckResult(label, "ok", detail)
+
+
+@doctor_check(order=52.65, group="audio")
+def check_renderer_ring_lanes() -> CheckResult:
+    """Every ARMED renderer-ingress lane is attached, fed, and coherent (U3/P6).
+
+    SKIPS on the shipped fleet state — no lane armed means nothing to judge, and
+    a check that reported on an unarmed box would be noise on every speaker.
+
+    On an armed box it answers three questions, in the order an operator needs
+    them, because they have different remedies:
+
+    1. **Is the lane ATTACHED?** A detached lane renders silence. The
+       ``detach_reason`` token names which remedy: ``geometry`` is a conf.d /
+       fan-in shear, ``refused`` is almost always the renderer user's
+       ``jts-ring`` membership or a missing ``UMask=0007``, ``unavailable`` is a
+       ring that has not been created yet.
+    2. **Is anything WRITING it?** ``writer_alive`` false on an attached lane is
+       the ordinary "renderer is not playing" state and NOT a fault, so it never
+       fails on its own — but combined with (3) it separates two very different
+       situations.
+    3. **Has it EVER been written?** This is what
+       ``startup_empty_reads`` vs ``empty_reads`` discriminates, and it is the
+       reason both are published separately. A lane whose empty reads are ALL
+       startup ones has never received a single slot since fan-in attached — the
+       renderer has never successfully opened its ring, which looks identical to
+       "paused" on every other signal. A lane with steady-state ``empty_reads``
+       has been fed and is now idle, which is just a paused renderer.
+
+    Never FAILS on a paused renderer; WARNs on a lane that is detached or has
+    never been fed, with the remediation on the line.
+    """
+    from jasper import renderer_lanes as rl
+
+    label_name = "renderer ring lanes"
+    armed = rl.read_armed_labels()
+    if not armed:
+        return CheckResult(label_name, "skip", "no renderer lane armed (fleet default)")
+
+    try:
+        status = _read_status_socket(_FANIN_STATUS_SOCKET)
+    except (OSError, ValueError) as e:
+        return CheckResult(
+            label_name,
+            "warn",
+            f"{len(armed)} lane(s) armed ({', '.join(armed)}) but fan-in STATUS is "
+            f"unreadable ({type(e).__name__}) — cannot confirm they are attached",
+        )
+    inputs = status.get("inputs")
+    if not isinstance(inputs, list):
+        return CheckResult(
+            label_name, "warn", "fan-in STATUS carries no inputs[] to judge"
+        )
+    by_label = {
+        inp.get("label"): inp for inp in inputs if isinstance(inp, dict)
+    }
+
+    problems: list[str] = []
+    healthy: list[str] = []
+    for lane_label in armed:
+        entry = by_label.get(lane_label)
+        if entry is None:
+            problems.append(
+                f"{lane_label}: armed but fan-in reports no such lane — restart "
+                "jasper-fanin to pick up the lane map"
+            )
+            continue
+        if entry.get("source") != rl_source_ring():
+            problems.append(
+                f"{lane_label}: armed but fan-in reports source="
+                f"{entry.get('source')!r} — jasper-fanin has not restarted since "
+                "the lane map changed"
+            )
+            continue
+        ring = entry.get("ring")
+        if not isinstance(ring, dict):
+            problems.append(f"{lane_label}: source=ring but no ring{{}} block")
+            continue
+        if not ring.get("attached"):
+            reason = ring.get("detach_reason", "unknown")
+            problems.append(
+                f"{lane_label}: DETACHED (reason={reason}, retries="
+                f"{ring.get('retries')}) — {_ring_detach_remedy(str(reason))}"
+            )
+            continue
+        # Attached. Has it ever actually been fed? All-startup empty reads with
+        # no filled slot means the renderer has never opened its ring.
+        steady = ring.get("empty_reads") or 0
+        startup = ring.get("startup_empty_reads") or 0
+        frames = entry.get("frames_read") or 0
+        if not frames and startup:
+            problems.append(
+                f"{lane_label}: attached but NEVER FED (startup_empty_reads="
+                f"{startup}, frames_read=0) — the renderer has not opened its "
+                f"ring. Check that {_ring_lane_unit(lane_label)} restarted after "
+                "the arm, and that its ALSA device resolves"
+            )
+            continue
+        healthy.append(
+            f"{lane_label}(writer_alive={ring.get('writer_alive')}, "
+            f"occupancy={ring.get('occupancy')}, empty_reads={steady}, "
+            f"epoch_resets={ring.get('epoch_resets')})"
+        )
+
+    if problems:
+        return CheckResult(label_name, "warn", "; ".join(problems))
+    return CheckResult(label_name, "ok", "; ".join(healthy))
+
+
+def rl_source_ring() -> str:
+    """The STATUS ``source`` token a ring lane publishes.
+
+    Read from ``jasper.fanin.status`` rather than spelled here, so the doctor
+    and the Rust serializer cannot disagree about the token.
+    """
+    from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
+
+    return FANIN_INPUT_SOURCE_RING
+
+
+def _ring_lane_unit(label: str) -> str:
+    from jasper import renderer_lanes as rl
+
+    lane = rl.lane_by_label(label)
+    return lane.unit if lane else "the renderer"
+
+
+def _ring_detach_remedy(reason: str) -> str:
+    """The remediation for each detach reason. One line each, actionable."""
+    if reason == "geometry":
+        from jasper import renderer_lanes as rl
+
+        return (
+            f"the on-disk ring header disagrees with {rl.RENDERER_LANES_CONF_D}; "
+            "re-run `jasper-audio-config renderer-lanes --disarm <lane> --arm "
+            "<lane>` (which clears a stale ring) or revert the fan-in geometry "
+            "override"
+        )
+    if reason == "refused":
+        from jasper import renderer_lanes as rl
+
+        return (
+            f"the ring could not be mapped — usually the renderer user missing "
+            f"from group {rl.RING_GROUP!r}, or its unit missing UMask=0007 "
+            f"(which leaves a new ring 0640, group-unwritable). Redeploy and "
+            "restart the renderer"
+        )
+    return (
+        "the ring file does not exist yet — normal briefly at boot; persistent "
+        "means the renderer has never opened its device"
+    )

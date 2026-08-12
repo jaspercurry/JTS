@@ -174,10 +174,20 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
 
 A fan-in lane's audio arrives over exactly one of three transports, and the
 lane is otherwise identical in every case: same position in the sum, same
-selection/mute gate at the sum stage, same per-period RMS meter, same
-`LaneResampler` placement (where a lane has one). `Input::pcm` is `Option<PCM>`
-and is `None` on the two non-aloop sources, which do not open an aloop
-substream at all.
+selection/mute gate at the sum stage, same per-period RMS meter. `Input::pcm`
+is `Option<PCM>` and is `None` on the two non-aloop sources, which do not open
+an aloop substream at all.
+
+**A ring lane has no `LaneResampler`, and may not have one.** No renderer lane
+does: `lane_wants_resampler` is true only for the configured clock-crossing
+lane, which is the USB one, and that lane is `direct`. A renderer's producer is
+DAC-paced through its own blocking write, so it needs no rate matcher. The ring
+read path renders slots straight into the lane buffer and never feeds
+`input.resampler`, so arming both on one lane would report a resampler that
+reconciles nothing — `Config::from_env` REFUSES that combination as a
+config-class fault (fan-in parks; it does not silently drop the resampler). If
+a ring lane ever needs one, P6b designs the placement rather than inheriting a
+combination nobody validated.
 
 | `source` | Transport | `Input` field | Armed by |
 |---|---|---|---|
@@ -220,6 +230,31 @@ coupling — a renderer ring and the fan-in → CamillaDSP hop are separate
 transports. See
 [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
 Appendix A and its P6a row.
+
+### Arming a lane
+
+```sh
+# Report (never writes):
+python3 -m jasper.cli.audio_config renderer-lanes
+
+# Arm / disarm one lane, then restart BOTH ends:
+python3 -m jasper.cli.audio_config renderer-lanes --arm spotify
+systemctl restart jasper-fanin.service librespot.service
+```
+
+The command is the single writer of `/var/lib/jasper/renderer_lanes.env`, which
+carries both halves of the flip and which `jasper-fanin.service` and the
+renderer unit each load LAST. It preflights the ring platform, the lane conf.d,
+the renderer user's `jts-ring` membership, and the derived geometry, refusing
+rather than arming into a silent source; it also clears a geometry-mismatched
+ring file so an arm after a geometry change is not a one-shot lever. It restarts
+nothing — the two restarts are the operator's, and the gap between them is
+silence on that lane.
+
+`jasper-doctor`'s `check_renderer_ring_lanes` reports every armed lane's attach
+state, writer liveness, and whether the lane has ever actually been fed
+(`startup_empty_reads` with no frames means the renderer never opened its ring —
+which looks identical to "paused" on every other signal).
 
 ### What this preserves
 
@@ -1155,15 +1190,15 @@ Each renderer's `--device` / `output_device` flag shifts from
 
 | Renderer | Old | New |
 |---|---|---|
-| librespot | `--device jasper_renderer_in` | `--device librespot_substream` [^p6a] |
+| librespot | `--device jasper_renderer_in` | `--device librespot_substream` (see note below) |
 | shairport-sync | `output_device = "jasper_renderer_in"` | `output_device = "shairport_substream"` |
 | bluealsa-aplay | `--pcm=jasper_renderer_in` | `--pcm=bluealsa_substream` |
 
-[^p6a]: Since U3 / P6a the unit spells this `--device ${JASPER_LIBRESPOT_DEVICE}`,
-    whose in-unit default IS `librespot_substream` — so the value in this table
-    is still what every unarmed box runs. The variable exists so a per-box ring
-    flip is one env write plus a restart rather than a unit-file edit; see
-    "Lane sources" above.
+Note (U3 / P6a): librespot's unit now spells this `--device
+${JASPER_LIBRESPOT_DEVICE}`, whose in-unit default IS `librespot_substream` — so
+the value in the table is still what every unarmed box runs. The variable exists
+so a per-box ring flip is one env write plus a restart rather than a unit-file
+edit; see "Lane sources" above.
 
 USB no longer has a renderer device: `jasper-usbsink.service` is a process-free
 readiness marker and fan-in owns the direct gadget capture.

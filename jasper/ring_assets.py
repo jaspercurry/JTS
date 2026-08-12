@@ -50,7 +50,8 @@ RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
 RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
 RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"
 # The tmpfs directory the ring files live in (shipped by
-# ``deploy/tmpfiles/jts-ring.conf``, mode 2775 root:jasper).
+# ``deploy/tmpfiles/jts-ring.conf``, mode 3775 root:jts-ring — sticky +
+# setgid + group-write; see that file for what each bit buys).
 RING_SHM_DIR = "/dev/shm/jts-ring"
 # Ring A (fan-in -> CamillaDSP program) and Ring B (CamillaDSP -> outputd content)
 # on-disk ring files under RING_SHM_DIR. Basenames match the conf.d ``path``

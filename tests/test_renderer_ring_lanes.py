@@ -308,7 +308,20 @@ def test_the_ring_directory_group_matches_what_the_installer_creates():
     m = re.search(r"^d /dev/shm/jts-ring (\d+) (\S+) (\S+)", tmpfiles, re.M)
     assert m, "the tmpfiles entry no longer declares the ring directory"
     mode, owner, group = m.groups()
-    assert mode == "2775", "setgid + group-write is what lets both ends share a ring"
+    # 3775 = sticky + setgid + group-write. Each bit is load-bearing:
+    #   7xx group-write — both ends WRITE the ring header, so each needs write
+    #        access to a file the other may have created;
+    #   2xxx setgid     — a new ring inherits the directory's group, so it is
+    #        group-writable to the other end whichever end created it;
+    #   1xxx sticky     — a group member may only DELETE or RENAME its own ring.
+    #        Without it, group-write on a shared directory lets any member unlink
+    #        ANY file in it — a compromised renderer could remove Ring A or
+    #        Ring B, regardless of those files' own modes.
+    assert mode == "3775", (
+        "the ring directory needs sticky + setgid + group-write; dropping any "
+        "one of the three either breaks the shared header or widens deletion "
+        "across every ring on the box"
+    )
     assert owner == "root"
 
     users = SERVICE_USERS.read_text()
@@ -396,6 +409,58 @@ def test_the_rust_lane_selector_consults_only_the_armed_set():
     assert "renderer_ring_lanes" in body
     assert "coupling" not in body.lower(), (
         "the lane selector must not read the CamillaDSP coupling"
+    )
+
+
+def test_the_ring_writer_pid_offset_matches_the_ring_layout():
+    """`ring_writer_pid` reads the header by RAW BYTE OFFSET, so it is pinned to
+    the layout the ring crate owns.
+
+    A silent drift here does not crash — it returns some OTHER header field's
+    bytes as a pid. The doctor would then compare a garbage pid's cgroup, decide
+    the ring is held by a stranger, and FAIL a perfectly healthy armed lane (or,
+    worse, coincidentally match and accept a real stray writer). Pinning the
+    offset and the width against `rust/jasper-ring/src/layout.rs` is the only
+    thing standing between that and a rename.
+    """
+    layout = (REPO / "rust" / "jasper-ring" / "src" / "layout.rs").read_text()
+    m = re.search(r"pub const OFF_WRITER_PID: usize = (\d+);", layout)
+    assert m, "OFF_WRITER_PID moved or changed shape in the ring layout"
+    off = int(m.group(1))
+
+    src = (REPO / "jasper" / "renderer_lanes.py").read_text()
+    fn = re.search(
+        r"def ring_writer_pid\(label: str\) -> int \| None:(.*?)(?=\n\ndef |\Z)",
+        src,
+        re.S,
+    )
+    assert fn, "ring_writer_pid moved or changed shape"
+    body = fn.group(1)
+    assert f"header[{off}:{off + 8}]" in body, (
+        f"ring_writer_pid must read the writer pid at byte offset {off}..{off + 8} "
+        f"(rust/jasper-ring/src/layout.rs OFF_WRITER_PID = {off}); a drifted "
+        "offset silently returns another field's bytes as a pid"
+    )
+    assert '"little"' in body, "the ring header is little-endian"
+
+    hb = re.search(r"pub const HEADER_BYTES: usize = (\d+);", layout)
+    assert hb, "HEADER_BYTES moved"
+    assert f"fh.read({hb.group(1)})" in body, (
+        "the reader must read the full header the layout declares"
+    )
+
+
+def test_the_doctor_reads_the_ring_source_token_from_the_status_module():
+    """The doctor's armed-lane check compares STATUS `source` against a token.
+    It must take that token from `jasper.fanin.status` — the module that owns
+    the vocabulary the Rust serializer publishes — not spell it locally."""
+    from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
+
+    assert FANIN_INPUT_SOURCE_RING == "ring"
+    mixer = (REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text()
+    assert f'Self::Ring => "{FANIN_INPUT_SOURCE_RING}",' in mixer, (
+        "the Rust LaneSource token and the Python constant have drifted; the "
+        "doctor would then never recognise an armed lane as a ring lane"
     )
 
 

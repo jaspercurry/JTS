@@ -92,6 +92,27 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // Writer liveness window (ns): past this heartbeat age the reader is treated as
 // gone and the writer free-runs (drops frames) instead of blocking. Mirrors the
 // Rust WRITER_LIVENESS_TIMEOUT_NS.
+//
+// THE HEARTBEAT OWNS OBSERVABILITY, THE LOCK OWNS EXCLUSIVITY (U3/P6a). Since a
+// C writer holds an EXCLUSIVE flock on <ring>.writer.lock for the life of its
+// mapping, this window no longer decides who may WRITE a ring — it decides only
+// what a reader REPORTS (`writer_alive` in /state) and when a blocked writer
+// gives up on a reader. That split is deliberate and each half is the right
+// tool: a heartbeat is stamped on publish, so it correctly says "nothing is
+// flowing" the moment a renderer pauses — which is exactly what makes it WRONG
+// as an ownership test, because a paused renderer still owns its device. The
+// lock is fd-scoped, so it holds through a pause and drops automatically when
+// the process dies, with no timing window either way.
+//
+// One consequence worth naming: the two can legitimately disagree. A paused
+// renderer reports `writer_alive:false` while still holding the ring, and that
+// is correct on both counts.
+//
+// A Rust `RingWriter` does NOT take the lock (fan-in owns Ring A by
+// construction and has no second opener), so on a Rust-written ring the
+// heartbeat remains the only exclusivity signal available — which is why
+// `foreign_writer_is_live` still runs as a secondary guard rather than being
+// deleted.
 #define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS 2000000000ull
 
 // One bounded attach budget covers the O_EXCL creator's ftruncate and its
@@ -107,6 +128,13 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // file is persistent (flock ownership is on the fd), group-shared like the ring,
 // and bounded so a wedged opener cannot stall audio startup indefinitely.
 #define JTS_RING_OPEN_LOCK_SUFFIX ".open.lock"
+
+// Adjacent lock file whose EXCLUSIVE flock a C writer holds for the LIFE of its
+// mapping — the fd-open-scoped half of the SPSC writer guard. Distinct from
+// JTS_RING_OPEN_LOCK_SUFFIX, which is released as soon as the open transaction
+// completes. See foreign_writer_is_live / jts_ring_writer_open for why a
+// heartbeat alone is not enough.
+#define JTS_RING_WRITER_LOCK_SUFFIX ".writer.lock"
 #define JTS_RING_OPEN_LOCK_MODE 0660
 #define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS 500ull
 #define JTS_RING_OPEN_LOCK_WAIT_STEP_US 1000ull
@@ -180,6 +208,10 @@ typedef struct {
     uint64_t published_slots;
     uint64_t drop_no_reader;   // slots discarded because no live reader
     uint64_t full_waits;       // publish attempts that had to wait for space
+    // EXCLUSIVE flock held for the life of this mapping (see
+    // JTS_RING_WRITER_LOCK_SUFFIX). -1 when not held: the guard degrades to the
+    // heartbeat test rather than refusing to open.
+    int writer_lock_fd;
 } jts_ring_writer_t;
 
 // Result of jts_ring_writer_publish.

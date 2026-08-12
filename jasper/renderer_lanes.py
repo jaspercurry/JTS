@@ -32,10 +32,19 @@ last so it beats their in-unit defaults:
 * ``JASPER_<RENDERER>_DEVICE`` — read by the renderer unit's ``ExecStart``;
   selects the ALSA PCM it writes.
 
-Writing them together is what makes a half-flip unrepresentable. Neither end
-is restarted by the write: the values take effect on each unit's next start,
-so a deploy (which bounces both) or an explicit restart pair is the arm, and
-there is no window in which one end has moved and the other has not.
+Writing them together is what makes a half-flip unrepresentable **in the
+file**. Be precise about what that does and does not buy: neither end is
+restarted by the write, so both keep running their OLD values until each is
+restarted. The transition is atomic ON DISK and NOT atomic in the running
+system — between the two restarts one end has moved and the other has not, and
+that window is silence on the affected lane.
+
+That is deliberate, and it is why nothing here restarts anything. A writer that
+restarted one unit would be choosing which end leads and making the window a
+property of this code; leaving both restarts to the operator (or to a deploy,
+which bounces both) keeps the window short, visible, and owned by whoever is
+watching. So the arm is: write -> restart jasper-fanin AND the renderer. The
+CLI prints exactly which units that means.
 
 Why the CamillaDSP coupling is deliberately NOT an input
 --------------------------------------------------------
@@ -63,6 +72,7 @@ else either (see ``Config::lane_is_renderer_ring``).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from jasper.atomic_io import atomic_write_text
@@ -84,6 +94,22 @@ FANIN_RING_LANES_KEY = "JASPER_FANIN_RENDERER_RING_LANES"
 # fan-in reading a ring nothing writes.
 RING_SHM_DIR = "/dev/shm/jts-ring"
 RENDERER_RING_PREFIX = "lane-"
+
+# The conf.d drop-in that declares every renderer-lane ring PCM and its `plug:`
+# wrapper. Distinct from :data:`jasper.ring_assets.RING_CONF_D` (the program /
+# content / active rings), and the attach authority for a renderer lane's
+# geometry — so every geometry comparison on this side passes it explicitly
+# rather than defaulting to the other file's.
+RENDERER_LANES_CONF_D = "/etc/alsa/conf.d/61-jts-renderer-lanes.conf"
+
+# The group that owns /dev/shm/jts-ring (deploy/tmpfiles/jts-ring.conf). A
+# renderer must be a member for its ioplug to create the lane's ring file.
+RING_GROUP = "jts-ring"
+
+# Mirrors ``jasper_ring::{MIN,MAX}_N_SLOTS`` and fan-in's RING_SLOTS_{MIN,MAX};
+# the ring header validates the same range at attach.
+RING_SLOTS_MIN = 2
+RING_SLOTS_MAX = 16
 
 
 @dataclass(frozen=True)
@@ -115,9 +141,14 @@ class RendererLane:
     ring_device: str
 
 
-#: Every lane this mechanism knows about. P6a migrates Spotify only; the
-#: remaining three rows land with their own PRs (and their own on-box source
-#: passes), so they are deliberately absent rather than pre-declared.
+#: Every lane this mechanism knows about — one row per MIGRATED renderer.
+#:
+#: A lane appears here when its own PR lands, together with its conf.d block and
+#: its unit edit; a lane that has not been migrated is absent rather than
+#: pre-declared, because a row here is what makes a label armable and arming a
+#: renderer whose ring PCM does not exist would be a silent source. Adding the
+#: next one (P6b bluealsa, P6c correction, P6d shairport) is one entry plus
+#: those two files — not a new rule.
 RENDERER_LANES: tuple[RendererLane, ...] = (
     RendererLane(
         label="spotify",
@@ -229,7 +260,10 @@ def render_env_text(armed: tuple[str, ...]) -> str:
         "# WRITTEN BY jasper.renderer_lanes.render_renderer_lanes_env (via",
         "# `jasper-audio-config renderer-lanes`). Do not hand-edit: this file is",
         "# the single writer's own record of the armed set, and both ends of every",
-        "# lane are derived from it together so a half-flip cannot be expressed.",
+        "# lane are derived from it together, so no EDIT can express a half-flip.",
+        "# The RUNNING system still transitions one unit at a time: both keep their",
+        "# old values until restarted, and the gap between the two restarts is",
+        "# silence on that lane. Restart jasper-fanin and the renderer together.",
         "#",
         "# Loaded LAST by jasper-fanin.service and by each migrated renderer unit,",
         "# so these values beat the in-unit Environment= defaults. Neither end is",
@@ -288,23 +322,68 @@ def render_renderer_lanes_env(
     return RenderOutcome(armed=armed, changed=True, path=path)
 
 
+def renderer_user_in_ring_group(unit_user: str, group: str = RING_GROUP) -> bool | None:
+    """Whether ``unit_user`` is a member of the ring directory's group.
+
+    ``None`` when the question cannot be answered on this host (no such user or
+    group — a dev laptop, or a box where the installer has not run). The caller
+    treats `None` as "unknown, do not refuse": refusing on an unanswerable
+    question would make the arm impossible to run anywhere but a live Pi.
+    """
+    try:
+        import grp
+        import pwd
+    except ImportError:  # pragma: no cover - POSIX only
+        return None
+    try:
+        entry = grp.getgrnam(group)
+    except KeyError:
+        return None
+    if unit_user in entry.gr_mem:
+        return True
+    try:
+        pw = pwd.getpwnam(unit_user)
+    except KeyError:
+        return None
+    # A primary-group match counts too: gr_mem lists only SUPPLEMENTARY members.
+    return pw.pw_gid == entry.gr_gid
+
+
 def arm_refusal_reason(
     label: str,
     *,
     assets_present: bool,
     missing_assets: tuple[str, ...] = (),
+    lane_conf_present: bool | None = None,
+    user_in_ring_group: bool | None = None,
+    input_buffer_frames: int | None = None,
+    period_frames: int | None = None,
 ) -> str | None:
     """Why ``label`` may not be armed right now, or ``None`` if it may.
 
-    The only precondition is the ring PLATFORM: the compiled ioplug and the
-    ``/dev/shm/jts-ring`` directory. Without them the renderer's ``jts_ring``
-    PCM cannot resolve, so arming would silence that source with a message
-    nobody would connect to this action — fail closed here instead.
+    Everything checked here is a precondition whose absence would make the arm
+    produce SILENCE rather than an error the operator could connect to this
+    command. That is the whole selection rule: fail closed where the failure
+    would otherwise be quiet.
 
-    Takes the presence answer as an argument rather than probing, so the
-    decision is testable without a Pi and so the caller reads
-    :func:`jasper.ring_assets.ring_asset_presence` once for both this and its
-    own reporting.
+    * **ring platform** — the compiled ioplug and ``/dev/shm/jts-ring``. Without
+      them the renderer's ``jts_ring`` PCM cannot resolve.
+    * **the lane conf.d** — ``61-jts-renderer-lanes.conf``, which declares the
+      lane's ring PCM and its ``plug:`` wrapper. The platform check above does
+      not cover it (it looks at ``60-``), and without this file the renderer's
+      device name resolves to nothing.
+    * **group membership** — the renderer user must be in ``jts-ring`` or its
+      ioplug cannot create the ring under a 2775 directory it does not have
+      write access to.
+    * **the geometry** — the derived slot count must be expressible. fan-in
+      REFUSES an inexpressible one at config with a park, which is correct but
+      lands in the journal after the fact; surfacing it here puts it where the
+      operator is actually watching.
+
+    Presence answers are passed IN rather than probed, so the decision is
+    testable without a Pi and the caller reads each surface once. A ``None``
+    answer means "could not determine" and never refuses — an unanswerable
+    question must not make the arm impossible to run off-box.
     """
     if lane_by_label(label) is None:
         return f"unknown lane {label!r} (known: {', '.join(MIGRATABLE_LABELS)})"
@@ -314,7 +393,46 @@ def arm_refusal_reason(
             f"ring platform assets missing ({detail}) — arming would leave the "
             "renderer unable to resolve its ring PCM; redeploy to install them"
         )
+    if lane_conf_present is False:
+        return (
+            f"{RENDERER_LANES_CONF_D} is missing — it declares this lane's ring "
+            "PCM and its plug: wrapper, so the renderer's device would resolve "
+            "to nothing; redeploy to install it"
+        )
+    if user_in_ring_group is False:
+        lane = lane_by_label(label)
+        unit = lane.unit if lane else "the renderer"
+        return (
+            f"{unit}'s runtime user is not in group {RING_GROUP!r} — its ioplug "
+            f"could not create the ring under {RING_SHM_DIR} (mode 2775). "
+            "Redeploy (the installer adds it) and restart the unit"
+        )
+    if input_buffer_frames is not None and period_frames is not None:
+        slots = renderer_ring_slots(input_buffer_frames, period_frames)
+        if slots is None:
+            return (
+                f"this box's lane geometry has no whole-slot expression: "
+                f"input_buffer_frames={input_buffer_frames} / "
+                f"period_frames={period_frames} must divide evenly into "
+                f"{RING_SLOTS_MIN}..={RING_SLOTS_MAX} slots. Arming would park "
+                "jasper-fanin at its next start (config-class, exit 78)"
+            )
     return None
+
+
+def renderer_ring_slots(input_buffer_frames: int, period_frames: int) -> int | None:
+    """Slots for a renderer ring — MIRRORS ``jasper_fanin::config::renderer_ring_slots``.
+
+    Kept in Python so the arm can refuse an inexpressible geometry where the
+    operator is watching, instead of only as a fan-in park at the next start.
+    ``tests/test_renderer_ring_lanes.py`` pins this against the Rust source.
+    """
+    if period_frames <= 0 or input_buffer_frames % period_frames != 0:
+        return None
+    slots = input_buffer_frames // period_frames
+    if not (RING_SLOTS_MIN <= slots <= RING_SLOTS_MAX):
+        return None
+    return slots
 
 
 def expected_fanin_lane_pcm(label: str, aloop_pcm: str, armed: tuple[str, ...]) -> str:
@@ -337,6 +455,64 @@ def fanin_env_expectations(path: str | None = None) -> dict[str, str]:
     for lane in RENDERER_LANES:
         out[lane.device_key] = device_for(lane, lane.label in armed)
     return out
+
+
+def ring_conf_pcm_name(label: str) -> str:
+    """The `jts_ring` PCM block in the lane conf.d that declares this lane's ring."""
+    return f"jts_ring_lane_{label}"
+
+
+def stale_ring_verdict(label: str, *, conf_d: str | None = None):
+    """Compare this lane's on-disk ring header against its conf.d block.
+
+    Delegates to :func:`jasper.ring_assets.ring_header_matches_conf` — the ONE
+    comparator Ring A/B already use — so "coherent" cannot mean two things
+    across the ring platform. Scoped to :data:`RENDERER_LANES_CONF_D`, which is
+    the attach authority for a renderer lane.
+    """
+    from jasper.ring_assets import ring_header_matches_conf
+
+    return ring_header_matches_conf(
+        renderer_ring_path(label),
+        ring_conf_pcm_name(label),
+        conf_d=conf_d or RENDERER_LANES_CONF_D,
+    )
+
+
+def delete_stale_ring(label: str, *, conf_d: str | None = None) -> str | None:
+    """Delete this lane's ring file when its header cannot attach. Best-effort.
+
+    Mirrors Ring A/B's `_delete_stale_ring_files` for renderer lanes, and exists
+    for the same reason: a ring file left over from a PRIOR geometry is a
+    create-or-attach ERROR, not something either end recovers from. The renderer
+    would fail its `snd_pcm_open` and the lane would be silent until someone ran
+    `rm` by hand — so a re-arm after any geometry change would be a one-shot
+    lever, exactly the trap the format axis sprang on Ring A's rollback.
+
+    Safe because these files are pure transport state on tmpfs, recreated by
+    whichever end opens next — never user data. A header that is absent, invalid
+    (magic-less, which the writer reclaims itself), or COHERENT is left
+    untouched.
+
+    Returns a human-readable reason when it deleted something, else ``None``.
+    """
+    verdict = stale_ring_verdict(label, conf_d=conf_d)
+    if not verdict.present or verdict.ok:
+        return None
+    path = renderer_ring_path(label)
+    try:
+        os.unlink(path)
+    except OSError:
+        # The writer's own attach error is the backstop; never raise from a
+        # best-effort self-heal.
+        return None
+    for suffix in (".open.lock",):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
+    axis = verdict.axis or "geometry"
+    return f"{axis} mismatch{f': {verdict.detail}' if verdict.detail else ''}"
 
 
 def ring_writer_pid(label: str) -> int | None:

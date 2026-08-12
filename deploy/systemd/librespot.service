@@ -81,10 +81,16 @@ CacheDirectoryMode=0700
 # Format: S24_3 + tpdf dither = 24-bit packed output with triangular-
 # distribution dither, ~141 dB SNR, well below any DAC noise floor.
 #
-# Audio device: librespot_substream — Spotify's private snd-aloop
-# lane. jasper-fanin reads the capture side and publishes the summed
-# music stream to CamillaDSP/AEC. The private lane keeps renderer
-# opens independent; latest-source-wins remains jasper-mux policy.
+# Audio device: ${JASPER_LIBRESPOT_DEVICE}, whose default is
+# librespot_substream — Spotify's private snd-aloop lane. jasper-fanin
+# reads the capture side and publishes the summed music stream to
+# CamillaDSP/AEC. The private lane keeps renderer opens independent;
+# latest-source-wins remains jasper-mux policy.
+#
+# On a box whose Spotify lane is ARMED for ring ingress (U3/P6a) the same
+# variable resolves to librespot_ring_lane and the audio reaches fan-in
+# over an SHM slot ring instead — same private-lane property, same mux
+# policy, different transport. Nothing else about this unit changes.
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source spotify
 ExecStart=/usr/bin/librespot \

@@ -747,7 +747,7 @@ is jts3's 2026-08-11 arm.
 
 | Row | What survives, and where |
 |---|---|
-| **P6** (U3) | Four aloop renderer lanes — librespot, shairport-sync, bluealsa-aplay, correction sweeps — all `plug:` wrappers over `*_substream` PCMs. fan-in's `Input` carries an aloop `pcm` or a USB `direct` capture and nothing else, so the ring-reader lane source is a **net-new build**, not a re-point |
+| **P6** (U3) | Four aloop renderer lanes — librespot, shairport-sync, bluealsa-aplay, correction sweeps — all `plug:` wrappers over `*_substream` PCMs. fan-in's `Input` carried an aloop `pcm` or a USB `direct` capture and nothing else, which is why the ring-reader lane source was a **net-new build** rather than a re-point; P6a adds it as a third variant (`ring`), so P6b–d ARE re-points through that seam |
 | **P7** (U4) | `aec_tune` runs `arecord -D jasper_capture`; the AEC bridge carries `REF_DEVICE = "jasper_ref"`; fan-in's `RingOutput` keeps a lossy aloop MIRROR on lane 7 — which is *why* the dsnoop consumers survive ring coupling, and why the re-point may follow the default flip but must precede snd-aloop removal. Doctor pins to rewrite: `check_loopback` (`doctor/audio.py`), `check_fanin_asound_wiring` (`doctor/audio_runtime.py`), `check_shairport_sync_loopback_plughw` (`doctor/renderers.py`) |
 | **P8** (U1) | outputd admits `shm_ring` on **two** paths since R7b — the stereo one (`is_full_range_stereo_lr_sink`) and an armed ACTIVE-ring endpoint (`ring_active_ok`), both in `Config::from_env` (`rust/jasper-outputd/src/config.rs`; read the predicates there rather than a copy here). The second is what jts3 runs, so a roleful box's post-crossover program is now a live ring content path alongside aloop lane 5 — but only on an armed roleful box, and only at **two channels**. P8a's channel half is still unexercised: no ring in the fleet has carried more than stereo (jts3's active ring is 2ch), so N>2 waits for a wider roleful box to arm. Unarmed roleful boxes, composite sinks, and bonded ACTIVE followers' snapclient (`hw:Loopback,0,6`) still need the aloop lanes, which is why P9 stays hard-gated on P8 |
 | **P9** (U4) | Both snd-aloop drop-ins ship, and `deploy/alsa/asoundrc.jasper` defines the renderer substreams, the `outputd_content_*` / `outputd_active_content_*` pairs, and the `jasper_capture` / `jasper_ref` dsnoop taps |
@@ -903,16 +903,36 @@ the aloop ring; and the 0.2 threshold may be revisitable afterwards, but
 only on measurement — keep 0.2 through the migration. This is why
 AirPlay migrates last.
 
-**Per-lane clock reconciliation stays at fan-in ring-read.** Renderer
-lanes keep their `LaneResampler` exactly as on aloop: the transport
-changes, the one-rate-matcher-per-foreign-clock placement does not. The
-ioplug is a dumb frame carrier.
+**Per-lane clock reconciliation stays at fan-in ring-read.** The
+one-rate-matcher-per-foreign-clock PLACEMENT does not move: the transport
+changes, the reconciliation stays at fan-in's per-lane read. The ioplug is
+a dumb frame carrier.
+
+> **Corrected by P6a.** "Renderer lanes keep their `LaneResampler`" reads as
+> though a renderer lane HAS one. None does — `lane_wants_resampler` is true
+> only for the configured clock-crossing lane, which is the USB one, and that
+> lane is `direct`, not a ring. A renderer's producer is DAC-paced through its
+> own blocking write, so it needs no rate matcher. P6a's ring read path
+> consequently renders slots straight into the lane buffer and never feeds
+> `input.resampler`; arming both on one lane is REFUSED at config
+> (`ConfigClassError`, so fan-in parks rather than reporting a resampler that
+> reconciles nothing). If a ring lane ever does need one, P6b designs the
+> placement.
 
 **ALSA conf shape per renderer.** Renderers emit native rates (AirPlay
 44.1 k, BT variable), so each lane keeps its `plug:` wrapper layered over
 a ring device — preserving `defaults.pcm.rate_converter` (the AEC HF-loss
 history) and keeping renderer device names stable, so each flip is one
-conf edit plus a renderer restart rather than a unit-file change.
+edit plus a restart rather than a unit-file change.
+
+> **Amended by P6a.** The edit is an ENV edit, not a conf.d edit. A conf.d
+> flip would rewrite an ALSA config block by regex while the fan-in half lived
+> in a second file; instead both halves live in one file
+> (`/var/lib/jasper/renderer_lanes.env`) with one writer, the renderer's
+> `--device` reads it as `${JASPER_LIBRESPOT_DEVICE}`, and the conf.d ships
+> static. What this paragraph actually promised is kept: the unit changes ONCE
+> (to introduce the variable) and never again per box. And the restart is
+> BOTH ends, not just the renderer — fan-in must re-read the lane map too.
 Definitions ship system-wide 0644 in conf.d, and **each migration PR
 re-runs the PR #214 probe** (`sudo -u <runtime-user> aplay -D <device> …`,
 codified as `check_renderer_device_resolvable`). The ioplug WRITER creates

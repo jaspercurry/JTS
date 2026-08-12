@@ -717,12 +717,59 @@ static void reader_take_mapping(jts_ring_reader_t *out, ring_mapping_t *mapping)
     ring_mapping_reset(mapping);
 }
 
+// Take the EXCLUSIVE writer lock for the life of a mapping. Returns the fd on
+// success, -1 when another process holds it (the caller then refuses with
+// -EBUSY), and -2 when the lock file itself could not be opened.
+//
+// WHY A LOCK AND NOT JUST THE HEARTBEAT. `writer_heartbeat_ns` is stamped on
+// PUBLISH paths only, so a writer that holds its PCM open but stops writing —
+// a PAUSED renderer, which is the single most ordinary state a music source is
+// in — goes heartbeat-stale after JTS_RING_WRITER_LIVENESS_TIMEOUT_NS and its
+// ring becomes takeable while it still owns the device. Then an `aplay -D`
+// probe (or a second renderer) would attach, bump the epoch, and interleave
+// slots into a stream the paused writer resumes into. A callback-driven
+// heartbeat does not fix that either: ALSA stops calling `pointer` on a stream
+// nobody is writing, which is exactly the state at issue.
+//
+// An flock held from open to close IS fd-open-scoped, which is the property
+// snd-aloop's substream exclusivity has and the one the doctor's EBUSY
+// acceptance assumes. It is also robust where a pid test is not: the kernel
+// releases it on crash or SIGKILL (no stale-lock recovery needed), and it
+// cannot misfire on pid reuse.
+static int acquire_writer_lock(const char *path) {
+    char lock_path[PATH_MAX];
+    int n = snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+                     JTS_RING_WRITER_LOCK_SUFFIX);
+    if (n < 0 || (size_t)n >= sizeof(lock_path)) return -2;
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
+                  JTS_RING_OPEN_LOCK_MODE);
+    if (fd < 0) return -2;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void release_writer_lock(int *lock_fd) {
+    if (!lock_fd || *lock_fd < 0) return;
+    (void)flock(*lock_fd, LOCK_UN);
+    close(*lock_fd);
+    *lock_fd = -1;
+}
+
 // True iff a live FOREIGN writer already owns the ring (the SPSC guard's writer
 // half). Exact mirror of foreign_reader_is_live below: pid stamped, pid != ours,
 // heartbeat fresh. A dead/stale foreign writer (pid set but heartbeat older than
 // the window — a crashed renderer, or a ring left behind by a previous boot) does
 // NOT block us; our OWN pid never blocks, so a re-open / re-prepare of the same
 // process is unaffected.
+//
+// SECONDARY to acquire_writer_lock above. It still runs because it catches the
+// cross-implementation case the lock cannot: a Rust `RingWriter` does not take
+// this lock, so on a ring whose writer is the Rust side the heartbeat is the
+// only signal available. Where both apply the lock is strictly stronger — it
+// holds through a pause, which the heartbeat does not.
 static int foreign_writer_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
     uint64_t pid = atomic_load_explicit(&h->writer_pid, memory_order_relaxed);
     if (pid == 0) return 0;
@@ -737,6 +784,9 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_writer_t *out) {
     memset(out, 0, sizeof(*out));
     out->fd = -1;
+    // memset leaves this 0, which is a VALID fd (stdin) — an unheld lock must
+    // read as -1 or close() would take stdin down on the first teardown.
+    out->writer_lock_fd = -1;
 
     ring_mapping_t mapping;
     int rc = ring_mapping_open(path, expected, RING_ROLE_WRITER, &mapping);
@@ -769,16 +819,30 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
     // misfire the close guard. Neither is reachable in the intended
     // one-renderer-per-lane topology, and the productization (a futex on the
     // reserved header word) closes both for either role at once.
+    // (a) The fd-open-scoped lock: held from here to close, so a PAUSED writer
+    //     keeps its ring even though its heartbeat has gone stale.
+    int writer_lock_fd = acquire_writer_lock(path);
+    if (writer_lock_fd == -1) {
+        fprintf(stderr,
+                "event=jts_ring.writer.busy path=%s reason=writer_lock_held\n",
+                path);
+        ring_mapping_close(&mapping);
+        return -EBUSY;
+    }
+    // (b) The heartbeat test, for the cross-implementation case (a) cannot see.
     if (foreign_writer_is_live(h0, jts_ring_monotonic_ns())) {
         uint64_t other = atomic_load_explicit(&h0->writer_pid, memory_order_relaxed);
         fprintf(stderr,
-                "event=jts_ring.writer.busy path=%s existing_writer_pid=%llu\n",
+                "event=jts_ring.writer.busy path=%s existing_writer_pid=%llu "
+                "reason=heartbeat_live\n",
                 path, (unsigned long long)other);
+        release_writer_lock(&writer_lock_fd);
         ring_mapping_close(&mapping);
         return -EBUSY;
     }
 
     writer_take_mapping(out, &mapping);
+    out->writer_lock_fd = writer_lock_fd;
 
     // Writer-attach stamp: epoch++ (release), pid, heartbeat, continue from the
     // stored write_seq (file-lifetime monotonic).
@@ -918,6 +982,9 @@ void jts_ring_writer_close(jts_ring_writer_t *w) {
     if (w->fd >= 0) close(w->fd);
     w->base = NULL;
     w->fd = -1;
+    // Release LAST: the ring must stay claimed until its mapping is gone, or a
+    // waiting writer could attach to a header this one is still tearing down.
+    release_writer_lock(&w->writer_lock_fd);
 }
 
 // ============================================================================
