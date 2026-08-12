@@ -1232,6 +1232,42 @@ def _chip_corpus_disable_env(
     return bridge_path, restarts, kicks
 
 
+def test_disable_on_a_box_with_no_corpus_overrides_touches_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A box that was never in corpus mode restarts nothing at all.
+
+    The #2254 branch lives inside the chip arm of the restart closure, so it
+    cannot be reached from here — but pin the no-op rather than argue it.
+    """
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_unit",
+        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+            restarts.append(unit)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge_session,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+    kicks: list[str] = []
+    monkeypatch.setattr(
+        bridge_session,
+        "_hand_chip_stack_to_reconciler",
+        lambda *, reason: kicks.append(reason),
+    )
+
+    assert wake_corpus_setup.disable_bridge_corpus_outputs() is False
+
+    assert restarts == []
+    assert kicks == []
+    assert not bridge_path.exists()
+
+
 def test_corpus_exit_survives_the_designed_commissioning_park(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
