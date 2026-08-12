@@ -35,13 +35,33 @@ from yaml.nodes import MappingNode, ScalarNode
 from jasper.audio_io import TtsPlayout
 
 REPO = Path(__file__).resolve().parents[1]
-REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
 
+# The two symbols commit 6304556a4 ("Remove fixed TTS gain ceiling",
+# 2026-07-01) deleted: the ceiling constant itself, and the helper that
+# clamped a requested gain up against it. Today's replacement is
+# `sanitize_tts_gain_db` (floor + non-finite only, no ceiling). Both names
+# are assembled from fragments so this file does not itself contain the
+# banned text — the pin greps source, and a literal here would make the
+# grep hit its own guard if the scan ever widens.
+REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
+REMOVED_TTS_CLAMP_SYMBOL = "clamp_" + "tts_gain_db"
+REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
+
+# Files the ban covers. The first four DEFINE the shared gain policy; the
+# last three APPLY it to samples. Both halves matter: a ceiling
+# reintroduced at the application site never touches the policy modules,
+# which is how the gate found the applying files uncovered (PR #2355
+# adversarial review, note N4 — "a reintroduced fixed ceiling there would
+# evade the ban pin"). 6304556a4 in fact deleted ceiling references from
+# two of the three appliers.
 RUST_TTS_GAIN_FILES = (
     "rust/jasper-tts-protocol/src/loudness.rs",
     "rust/jasper-fanin/src/loudness.rs",
     "rust/jasper-outputd/src/loudness.rs",
     "rust/jasper-outputd/src/mixer.rs",
+    "rust/jasper-fanin/src/tts.rs",
+    "rust/jasper-outputd/src/assistant_source.rs",
+    "rust/jasper-outputd/src/core.rs",
 )
 
 RUST_SHARED_LOUDNESS_SHIMS = (
@@ -67,12 +87,20 @@ _RUST_SHARED_LOUDNESS_USE_PAT = re.compile(
 
 def test_fixed_tts_gain_ceiling_is_removed() -> None:
     for rel in RUST_TTS_GAIN_FILES:
-        text = (REPO / rel).read_text()
-        assert REMOVED_TTS_MAX_SYMBOL not in text, (
-            f"{rel}: reintroduced a fixed max TTS gain ceiling. Assistant "
-            "loudness should be governed by the measured target plus the "
-            "dynamic peak-aware cap, not a universal source-gain clamp."
+        path = REPO / rel
+        assert path.is_file(), (
+            f"{rel}: file in the TTS gain ban list no longer exists. If gain "
+            "code moved, re-point RUST_TTS_GAIN_FILES at its new home — a "
+            "silently-vanished entry is a hole in the ban, not a pass."
         )
+        text = path.read_text()
+        for symbol in REMOVED_TTS_CEILING_SYMBOLS:
+            assert symbol not in text, (
+                f"{rel}: reintroduced a fixed max TTS gain ceiling "
+                f"({symbol}). Assistant loudness should be governed by the "
+                "measured target plus the dynamic peak-aware cap, not a "
+                "universal source-gain clamp."
+            )
     assert not hasattr(TtsPlayout, REMOVED_TTS_MAX_SYMBOL)
 
 
