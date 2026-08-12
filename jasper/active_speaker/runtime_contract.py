@@ -3478,14 +3478,22 @@ def classify_camilla_graph(
 
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
-    issues: list[dict[str, str]] = list(contract.issues)
+    # The two issue sources are kept APART because they answer different
+    # questions, and the tail below gates the PARKED verdict on only one of
+    # them (#2145). ``topology_issues`` describe the saved speaker LAYOUT (a
+    # half-assigned mid-edit draft); ``graph_issues`` describe the CamillaDSP
+    # config TEXT in hand (a missing volume_limit). Merged, they were
+    # indistinguishable, which is how a topology blocker came to refuse a graph
+    # it cannot make unsafe.
+    topology_issues: list[dict[str, str]] = list(contract.issues)
+    graph_issues: list[dict[str, str]] = []
     path_s = str(config_path) if config_path is not None else None
     if text is None:
         return GraphSafety(
             classification=GRAPH_UNKNOWN,
             allowed=False,
             config_path=path_s,
-            issues=tuple(issues) or (
+            issues=tuple(topology_issues) or (
                 _issue("blocker", "camilla_graph_missing", "no CamillaDSP graph was provided"),
             ),
         )
@@ -3493,7 +3501,7 @@ def classify_camilla_graph(
     summary = classify_camilla_config_text(text)
     for issue in summary.get("issues", []):
         if isinstance(issue, dict):
-            issues.append(_issue(
+            graph_issues.append(_issue(
                 str(issue.get("severity") or "blocker"),
                 str(issue.get("code") or "camilla_config_issue"),
                 str(issue.get("message") or issue.get("code") or "CamillaDSP issue"),
@@ -3574,10 +3582,55 @@ def classify_camilla_graph(
             details={"volume_limit_ok": bool(summary.get("volume_limit_ok"))},
         )
 
+    issues = topology_issues + graph_issues
     if issues:
+        # A PROVED-PARKED graph is refused only by its OWN blockers (#2145).
+        #
+        # Every other classification is refused whenever ANYTHING is wrong,
+        # because every other graph drives the DAC: if the saved topology is
+        # half-assigned, a graph built against it can send the wrong band to a
+        # tweeter. The parked graph cannot. Its safety is STRUCTURAL and was
+        # just proved by `_parked_graph_allowed` against the graph's own bytes:
+        # a `File` sink, a pipeline that is exhaustively one Mixer plus one
+        # mute-only Filter per output, and a wired hard mute on every output.
+        #
+        # The load-bearing pair is the pipeline exactness plus the hard mutes —
+        # NOT the File sink on its own. A File sink is not proof that no DAC is
+        # reached: the program-bake exemption in this same function exists
+        # because a File sink can feed outputd's pipe, and outputd drives the
+        # DAC. So the silence guarantee is that every output is hard-muted and
+        # the pipeline provably cannot add anything back, whatever consumes the
+        # sink. ("Exhaustively" bounds the PIPELINE steps; the mixer's internal
+        # mapping is checked by the mute proof, not by step counting.)
+        #
+        # None of those facts can be falsified by a topology blocker, so
+        # refusing on one only prevented the box from parking — it never made it
+        # quieter.
+        #
+        # Keyed on the VERDICT (`GRAPH_PARKED_ALL_MUTED`), not on the claimed
+        # input class: `_parked_graph_allowed` returns that classification if
+        # and only if all four structural facts hold, and `GRAPH_UNSAFE`
+        # otherwise. So a graph that merely CLAIMS the parked source marker and
+        # fails its proof cannot reach the exemption.
+        #
+        # Stated honestly, that key is defence in depth rather than the load-
+        # bearing guard: `graph.allowed` is already False for a failed proof, so
+        # keying on the claimed marker instead would refuse the same graphs, and
+        # no test distinguishes the two (verified by mutation — the swap
+        # survives the suite). It is kept because it makes the exemption's
+        # precondition legible at the point of use, and because it stays correct
+        # if a future classification ever returns `allowed=True` alongside a
+        # parked-looking marker.
+        #
+        # `graph_issues` still gate: they describe this graph's own text, so
+        # they are exactly the class of defect that CAN make it unsafe.
+        # `topology_issues` are reported either way — the deploy proceeds, but
+        # it proceeds LOUDLY, with each blocker in the transcript.
+        parked_proof_holds = graph.classification == GRAPH_PARKED_ALL_MUTED
+        gating = graph_issues if parked_proof_holds else issues
         return GraphSafety(
             classification=graph.classification,
-            allowed=False,
+            allowed=graph.allowed and not gating,
             config_path=graph.config_path,
             camilla_classification=graph.camilla_classification,
             playback_device=graph.playback_device,
@@ -4738,7 +4791,10 @@ def safe_graph_for_current_topology(
         # considered, so a parked file can never shadow a graph that carries
         # actual driver protection. Recovery needs no operator action: the
         # moment commissioning stages a startup graph, `select_active_startup`
-        # above wins on the next reconcile/deploy.
+        # above wins on the next deploy. (Deploy, not reconcile:
+        # `jasper-audio-hardware-reconcile` never re-runs this selection —
+        # `tests/test_audio_hardware_reconcile.py` pins that its script names
+        # neither `runtime-safe-graph` nor `safe_graph_for_current_topology`.)
         parked_text, parked_graph = build_parked_muted_graph(
             topology, config_path=parked_config_path
         )
@@ -4746,8 +4802,9 @@ def safe_graph_for_current_topology(
             # No `event=` line here: this function is a pure decision and is
             # also reached by read-only callers. The stable
             # `event=active_speaker.runtime_graph decision=parked_muted` line is
-            # emitted by `apply_safe_graph_decision_to_statefile`, at the moment
-            # the box is actually parked.
+            # emitted by `apply_safe_graph_decision_to_statefile`, on every apply
+            # that resolves to parked — including one that finds the statefile
+            # already pointing at the parked config and writes nothing.
             selected = str(parked_muted_config_path(parked_config_path))
             return SafeGraphDecision(
                 status=PARKED_MUTED_STATUS,
@@ -4757,6 +4814,18 @@ def safe_graph_for_current_topology(
                 current_graph=current_graph,
                 preferred_graph=preferred_graph,
                 fallback_graph=parked_graph,
+                # Proceeding is not the same as being clean (#2145). Parking is
+                # now reachable for a topology that still carries blockers, so
+                # the decision REPORTS them: `ok` stays True (it is derived from
+                # `status`, never from `issues`), the deploy continues, and the
+                # household still sees each blocker in the install transcript.
+                # Deliberately `contract.issues` alone — exactly the set the
+                # parked verdict declined to refuse on — rather than the wider
+                # `issues` list above, which also collects "no candidate at this
+                # path" noise from graphs a parked box is EXPECTED not to have.
+                # On a blocker-free topology this is empty, so the clean parked
+                # decision is unchanged.
+                issues=tuple(contract.issues),
             )
         issues.append(_issue(
             "blocker",
@@ -4846,6 +4915,15 @@ def apply_safe_graph_decision_to_statefile(
         # --write-statefile, the correction reset probe, the multiroom follower's
         # restore candidates), and a `decision=parked_muted` line from those
         # would read as "the box was just parked" when nothing was written.
+        #
+        # It DOES fire on a statefile no-op (the `_path_matches` return below),
+        # and that is deliberate: `_materialise_parked_muted_config` above has
+        # already RE-PROVED the parked graph all-muted by this point, so real
+        # work happened. (Re-proved, not rewritten — that function returns early
+        # without touching the file when the on-disk bytes already match.)
+        # The line means "this apply resolved to parked", not
+        # "the statefile changed" — moving it below the compare would silence a
+        # parked box on every deploy after the first.
         log_event(
             logger,
             "active_speaker.runtime_graph",

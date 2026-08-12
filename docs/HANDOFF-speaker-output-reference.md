@@ -725,15 +725,24 @@ What exists:
   topology with a tweeter, protected
   output, or subwoofer roleful assignment must preserve/select a matching
   all-muted active startup graph. Guarded commissioning graphs are active test
-  surfaces, not persisted boot/deploy fallbacks. When the SOLE missing piece is
-  the staged startup graph, install and recovery helpers seed the generated
+  surfaces, not persisted boot/deploy fallbacks. When the missing piece is the
+  staged startup graph, install and recovery helpers seed the generated
   DAC-less all-muted **parked** graph (issue #2135) instead of repointing
-  Camilla at flat stereo. Parking is deliberately narrow: a staged graph that
-  exists but fails its safety proof still fails closed, and so does a
-  topology-level safety blocker (for example a channel saved
-  `protection_status="required_missing"`, which makes the contract itself
-  refuse) — those are unsafe states, not a paused household, and they must stay
-  visible. `jasper-doctor` uses the same runtime classifier and
+  Camilla at flat stereo — parking gates on the absence of that staged graph,
+  and (since #2145, below) tolerates topology blockers alongside it rather than
+  requiring the staged graph to be the *only* thing missing. Parking is deliberately narrow: a staged graph that
+  exists but fails its safety proof still fails closed — that is a
+  commissioning bug, not a paused household. A topology-level blocker (for
+  example a channel saved `protection_status="required_missing"`) no longer
+  fails closed, per issue #2145: the parked graph is silent by *structure*
+  (`File` sink, wired hard mute on every output, both re-proved off its own
+  bytes), so no fact about the saved layout can make it audible, and refusing
+  on one only pinned the box on whatever graph it was already running — which
+  on a mid-commission box is the illegal flat one. Those blockers must still
+  **stay visible**, and do: the parked decision reports them, so
+  `runtime-safe-graph` prints each in the install transcript while exiting 0,
+  and `jasper-doctor`'s `check_active_speaker_topology_blockers` warns naming
+  them. `jasper-doctor` uses the same runtime classifier and
   reports a failure when a saved tweeter/protected topology is running
   `outputd-cutover.yml`, `v1.yml`, or another flat full-range graph.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send

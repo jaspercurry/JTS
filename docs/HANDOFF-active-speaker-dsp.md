@@ -157,14 +157,28 @@ above; this is only the entry points:
   deploy. What did *not* change: the flat-graph-on-roleful-topology
   refusal, and a staged graph that exists but fails its safety proof
   (that still blocks, with its blockers — a commissioning bug is not a
-  paused household), and neither does a topology-level safety blocker such
-  as a channel saved `protection_status="required_missing"`, which makes
-  `classify_output_contract` itself refuse. Parking covers exactly one
-  state: the sole missing piece is the staged startup graph.
+  paused household). A topology-level blocker (a half-assigned mid-edit
+  draft, a channel saved `protection_status="required_missing"`) does
+  **not** block: issue #2145 exempted the parked verdict from
+  `classify_camilla_graph`'s blanket "any issue refuses" tail, because the
+  parked graph's safety is *structural* — a `File` sink and a wired hard
+  mute on every output, both re-proved off its own bytes — and no fact
+  about the saved layout can falsify either. Refusing on one only stopped
+  the box parking; it never made it quieter. The one topology-dependent
+  parked check, `parked_graph_width_too_narrow`, lives inside that
+  structural proof and still applies. The blockers stay **visible**: the
+  parked decision reports them, so `runtime-safe-graph` prints each one in
+  the install transcript while exiting 0, and `jasper-doctor`'s
+  `check_active_speaker_topology_blockers` warns with the blocker names and
+  the wizard step. Only a graph's *own* defects (a bad
+  `devices.volume_limit`) still refuse a parked graph.
   Recovery is automatic and needs no operator action:
   the parked branch is last in the selector, so the moment commissioning
   stages a startup graph the `select_active_startup` branch wins on the
-  next reconcile/deploy. Both exits out of parked work: the parked graph is
+  next deploy. (Deploy specifically — `jasper-audio-hardware-reconcile`
+  never re-runs this selection; `tests/test_audio_hardware_reconcile.py`
+  pins that its script names neither `runtime-safe-graph` nor
+  `safe_graph_for_current_topology`.) Both exits out of parked work: the parked graph is
   an accepted `path_safety.restore_classifications` rollback target so
   `/sound/setup/` can start commissioning on a parked box, and
   `jasper-output-topology-reset` (and the `/sound/setup/` reset endpoint)
@@ -217,7 +231,11 @@ above; this is only the entry points:
   (`jasper-active-speaker runtime-safe-graph`), never a hand-written
   outputd statefile. A fourth check,
   `check_active_speaker_output_hardware_match`, flags a saved topology
-  that no longer matches observed hardware.
+  that no longer matches observed hardware. A fifth,
+  `check_active_speaker_topology_blockers`, WARNs when a **parked**
+  speaker's saved layout still carries topology blockers, naming each and
+  the wizard step that clears it — since #2145 those no longer fail the
+  deploy, so this is where they stay visible.
 - **Room correction is solo-active only.** A grouped active leader
   returns `active_grouped_room_correction_not_supported`
   (`jasper.active_speaker.setup_status`); grouped support needs a
@@ -247,7 +265,8 @@ canonical, kept current there rather than duplicated here.
 
 Recovery when a saved topology has drifted from physical reality (for
 example a physically passive box still carrying a stale roleful
-topology, which fails closed and can block a deploy):
+topology, which parks the speaker silent — and still blocks the deploy
+outright if a staged graph exists but fails its safety proof):
 
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-output-topology-reset --dry-run
@@ -739,8 +758,9 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > from physical reality: e.g. a physically passive single-DAC box left carrying
 > a leftover `active_2_way` (roleful/tweeter-protected) topology from an old
 > experiment. That stale topology makes this fail-closed gate correctly refuse a
-> flat graph and can BLOCK a deploy at the install-time outputd-statefile
-> contract check. The blessed one-command fix is
+> flat graph, so the box parks silent at the install-time outputd-statefile
+> contract check — and, when a staged graph exists but fails its safety proof,
+> still BLOCKs the deploy there. The blessed one-command fix is
 > `sudo /opt/jasper/.venv/bin/jasper-output-topology-reset` (add `--yes` for
 > non-interactive use, `--dry-run` to preview). It rewrites
 > `/var/lib/jasper/output_topology.json` to a clean passive draft built by

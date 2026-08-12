@@ -1171,6 +1171,139 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     )
     return CheckResult("active speaker runtime graph", "fail", detail)
 
+
+@doctor_check(order=28.6, group="audio")
+def check_active_speaker_topology_blockers() -> CheckResult:
+    """Name the saved layout's unresolved blockers on a parked speaker.
+
+    Before #2145 a roleful topology carrying any topology-level blocker made
+    every deploy abort, so the blockers were impossible to miss — the install
+    transcript was the notification. They no longer abort it: the parked graph
+    is structurally silent (File sink, every output hard-muted), so a blocker
+    that cannot make it unsafe no longer refuses it, and the box parks and takes
+    the deploy. That is the right outcome, but it removes the loud signal, so
+    this check restores one at the household's own diagnostic surface and names
+    each blocker plus the wizard step that clears it.
+
+    The blockers and the way OUT of parked are stated as two facts, because
+    they are two: parking is gated on the absence of a staged startup graph, not
+    on the blockers, so clearing them does not on its own restore sound. The
+    exits therefore come from :func:`parked_muted_exits`, the owned
+    capability-aware helper the CLI and `/state` also use — it drops "finish
+    crossover preview" on a DAC that has no active outputd lane, where that
+    action can never succeed.
+
+    WARN, never FAIL: a parked speaker is silent, not broken, and nothing here
+    is audible or at risk — the state is "commissioning is unfinished", which is
+    the household's to finish, not an error to fix. `jasper-doctor` exits
+    non-zero only on fails, so warning keeps a mid-commission box deployable,
+    which is the whole point of #2145.
+
+    Scoped to the parked outcome on purpose. A blocker-bearing topology that
+    DOES have a staged graph still fails the deploy and is already reported by
+    `check_active_speaker_runtime_graph`; repeating it here would be a second
+    voice for one fact.
+    """
+
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_STATUS,
+        classify_output_contract,
+        parked_muted_exits,
+        safe_graph_for_current_topology,
+    )
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    name = "active speaker topology blockers"
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError:
+        # POINTS, does not restate. `check_active_speaker_runtime_graph` and
+        # `check_active_speaker_output_hardware_match` both already print the
+        # parse error verbatim; a third copy is the same fact in a third voice,
+        # which this check's own docstring rules out.
+        #
+        # Still a `fail`, not an ok-defer: this check cannot answer its question
+        # without a topology, and a green line next to two reds would read as
+        # "the layout is fine" about the very artifact that failed to load.
+        return CheckResult(
+            name,
+            "fail",
+            (
+                "saved output topology could not be loaded, so its blockers "
+                "cannot be listed; the active speaker runtime graph check "
+                "reports the parse error"
+            ),
+        )
+
+    contract = classify_output_contract(topology)
+    if not contract.requires_roleful_graph:
+        return CheckResult(
+            name,
+            "ok",
+            f"{contract.classification}: no roleful/protected outputs configured",
+        )
+    if not contract.issues:
+        return CheckResult(
+            name, "ok", f"{contract.classification}: no topology blockers"
+        )
+
+    codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
+    messages = "; ".join(
+        str(issue.get("message") or "")
+        for issue in contract.issues
+        if issue.get("message")
+    )
+    try:
+        decision = safe_graph_for_current_topology(topology)
+    except (OSError, ValueError, OutputTopologyError) as exc:
+        # The blockers are the finding; a failed selection probe must not hide
+        # them, so report what is known and say the probe did not answer.
+        return CheckResult(
+            name,
+            "warn",
+            (
+                f"saved layout has unresolved blockers={codes}"
+                f"{': ' + messages if messages else ''}; "
+                f"could not determine the selected runtime graph ({exc}). "
+                "Fix the speaker layout at http://<speaker>/sound/setup/"
+            ),
+        )
+
+    if decision.status != PARKED_MUTED_STATUS:
+        return CheckResult(
+            name,
+            "ok",
+            (
+                f"saved layout has blockers={codes}, but the speaker is not "
+                f"parked (runtime graph: {decision.status}); reported by the "
+                "active speaker runtime graph check"
+            ),
+        )
+
+    # The exits come from the OWNED capability-aware helper, never a hand-rolled
+    # sentence: on a DAC with no active outputd lane "finish crossover preview"
+    # can never succeed, and this is one of three surfaces (CLI, doctor,
+    # `/state`) that must name the same actions.
+    #
+    # And the blockers are stated as a SEPARATE fact from the exits, because
+    # they are one: parking is gated on there being no staged startup graph, not
+    # on the blockers. A household told to "clear the blockers to get sound
+    # back" would clear them, still hear silence, and watch this check go green
+    # while the speaker stayed parked.
+    return CheckResult(
+        name,
+        "warn",
+        (
+            f"speaker is parked silent and its saved layout still has "
+            f"unresolved blockers={codes}"
+            f"{': ' + messages if messages else ''}. "
+            "Clearing them does not by itself unpark the speaker — "
+            f"next: {parked_muted_exits(topology)}. "
+            "Fix the layout at http://<speaker>/sound/setup/"
+        ),
+    )
+
+
 def _sound_profile_path() -> Path:
     return Path(
         os.environ.get(
