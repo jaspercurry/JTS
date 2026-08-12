@@ -6,8 +6,16 @@
 
 Split out of ``tests/test_ring_wire_format_contract.py`` so a file in the docs
 bundle need not import ``jasper`` to check prose. This file's job is pure text
-reads over two documents, and it imports STDLIB ONLY (plus pytest, the runner) —
-asserted mechanically at the bottom of this file rather than promised here.
+reads — one document (``docs/HANDOFF-audio-graph-consolidation.md``) plus
+``jasper/fanin_coupling.py`` read AS TEXT for the token cross-check — and it
+imports STDLIB ONLY (plus pytest, the runner), asserted mechanically at the
+bottom of this file rather than promised here.
+
+**Scoped to that one document deliberately.** It is where both regressions this
+file guards actually happened, and it is the prose a reader reaches first. The
+other HANDOFFs are clean; widening is the right fix if a claim reappears
+elsewhere, and widening the FILE LIST is that fix — never loosening the
+matching, which is named-phrase by design (see the tuples below).
 
 BE PRECISE ABOUT WHY, because the obvious reason is not the true one. The docs
 bundle is NOT a minimal environment: ten files already in it import numpy
