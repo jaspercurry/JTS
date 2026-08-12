@@ -123,6 +123,19 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
         ("summed_test_already_active",),
         "A combined speaker test is already running. Stop it, then try again.",
     ),
+    # The speaker is armed on the ring transport, which commissioning does not
+    # measure through (#2344). MUST be mapped rather than left to fall through:
+    # the blocker's own prose carries the operator's `baseline-reemit` command,
+    # and `_household_safe_reason` would NOT strip it — no absolute path, no
+    # exception class, no underscore — so an unmapped code would print a shell
+    # command to a household. The operator remedy stays on the CLI and journal
+    # surfaces that already carry it.
+    (
+        ("commissioning_ring_transport_unsupported",),
+        "The combined test can’t run while this speaker is in ring output "
+        "mode. Switch it back to the standard output path, then retry the "
+        "combined test.",
+    ),
     # The quiet test path could not be opened or restored. Nothing the household
     # can prepare differently — retry, then escalate.
     (

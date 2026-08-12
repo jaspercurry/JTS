@@ -482,4 +482,63 @@ const STEREO_WITH_SUB_UNSET_FC = {
   assert.equal(dirty.label, "Save");
 }
 
+// #2344 — the armed-box refusal has to REACH the household, from every array the
+// backend can park it in. Behavioural, not a substring check on the source: a
+// rung whose code is misspelled still contains the code as a substring, and a
+// walker that dropped an array still mentions it in a comment.
+{
+  const RING = "commissioning_ring_transport_unsupported";
+  const expected =
+    "Driver tests can’t run while this speaker is in ring output mode. " +
+    "Switch it back to the standard output path first, then test the drivers again.";
+
+  // The blocked driver-test payload: the preflight's issues are copied into
+  // `load.issues` by load_driver_commissioning_config.
+  assert.equal(
+    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: RING }] } }),
+    expected,
+  );
+
+  // A blocked RAMP step reports `ramp_prepare_failed` at the top level and parks
+  // the reason that explains it in a sibling array. Before #2344 the walker never
+  // read that array, so the household got the generic sentence.
+  assert.equal(
+    commissionPayloadFailure({
+      status: "blocked",
+      issues: [{ code: "ramp_prepare_failed" }],
+      prepare_issues: [{ code: RING }],
+    }),
+    expected,
+  );
+
+  // It outranks step-level advice: while the speaker is in ring mode, "start the
+  // tone again" is true-but-useless for something a retry cannot fix.
+  assert.equal(
+    commissionPayloadFailure({
+      status: "blocked",
+      issues: [{ code: "commission_not_loaded" }, { code: RING }],
+    }),
+    expected,
+  );
+
+  // No household surface may carry the operator's shell command.
+  assert.ok(!expected.includes("baseline-reemit"));
+
+  // The gate path: when no issue code matched, the lifted preflight gate is what
+  // the renderer falls back to, and it must not degrade to the generic sentence.
+  const gateOnly = commissionPayloadFailure({
+    status: "blocked",
+    preflight: {
+      required_gates: [
+        { id: "commissioning_transport_supported", passed: false },
+      ],
+    },
+  });
+  assert.ok(
+    gateOnly.includes("ring output mode"),
+    `transport gate rendered the generic fallback: ${gateOnly}`,
+  );
+  assert.ok(!gateOnly.includes("baseline-reemit"));
+}
+
 console.log(JSON.stringify({ ok: true }));

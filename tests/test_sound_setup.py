@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -1191,6 +1192,251 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
     assert "Saved speaker layout. No sound was played." in js
+
+
+# --------------------------------------------------------------------------
+# Commissioning blocker copy — the COMPLETENESS guards (#2344).
+#
+# #2344 shipped a blocker whose message carried an operator shell command and
+# whose code was registered in NO renderer map. Nothing failed, because every
+# copy map was only ever asserted for the entries it already had. These walk the
+# BACKEND's codes instead, so the next unregistered one fails here.
+#
+# What is deliberately NOT asserted: "every backend blocker code has its own
+# entry in every map". 78 literal blocker codes exist and 46 have no specific
+# mapping BY DESIGN — the preparation failures out of `staging.py` (an invalid
+# crossover preview, an unassigned subwoofer output) are collapsed into the
+# `commissioning_candidate_prepared` gate's one sentence, which is the right
+# household copy for all of them. A guard demanding per-code entries would be a
+# 46-line exemption list restating that design, which protects nothing. These
+# assert the two properties that actually bite instead.
+# --------------------------------------------------------------------------
+
+_COMMISSION_CODE_MODULES = (
+    "jasper/active_speaker/staging.py",
+    "jasper/active_speaker/startup_load.py",
+    "jasper/active_speaker/commission_ramp.py",
+    "jasper/active_speaker/web_commissioning.py",
+    # Reachable through the same payloads: the preflight aggregates path-safety
+    # and topology blockers, and tone playback contributes its own.
+    "jasper/active_speaker/path_safety.py",
+    "jasper/active_speaker/playback.py",
+    "jasper/active_speaker/safe_playback.py",
+    "jasper/active_speaker/driver_protection.py",
+    "jasper/active_speaker/measurement.py",
+    "jasper/web/sound_setup.py",
+)
+
+# An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
+# long CLI flag. Household surfaces must never carry one.
+_OPERATOR_COMMAND_RE = re.compile(
+    r"(?:^|\s)(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
+)
+
+
+def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
+    """AST-walk the commissioning modules for literal (code, message, where).
+
+    Mechanical on purpose: a hand-kept list of codes is the same class of bug as
+    a hand-kept list of copy entries.
+
+    ARITY, not name, disambiguates the ``_issue`` alias. Most modules do
+    ``from ._common import issue as _issue`` — 3 positional args, severity first.
+    ``web_commissioning`` does ``from ._common import blocker_issue as _issue``
+    — 2 args, code first, always a blocker. Reading ``args[1]`` blindly would
+    collect MESSAGES as codes there, so each arity is handled on its own branch.
+    Keyword ``code=`` / ``message=`` forms are collected too
+    (``_blocked_startup_anchor``, ``_commission_setup_issue``).
+
+    Codes built from an f-string or a variable are invisible here. That is a
+    known bound, not an oversight: the property under test is about the literal
+    prose an author writes next to a literal code, and a computed code carries a
+    computed message the walk could not check either.
+    """
+    import ast
+
+    def _lit(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):  # f-string: keep the literal parts
+            return "".join(
+                v.value
+                for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            )
+        return None
+
+    repo = Path(__file__).resolve().parent.parent
+    pairs: list[tuple[str, str, str]] = []
+    for rel in _COMMISSION_CODE_MODULES:
+        path = repo / rel
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else func.id
+                if isinstance(func, ast.Name)
+                else None
+            )
+            code = message = None
+            if name == "_issue" and len(node.args) >= 3:
+                if _lit(node.args[0]) == "blocker":
+                    code, message = _lit(node.args[1]), _lit(node.args[2])
+            elif name == "_issue" and len(node.args) == 2:
+                code, message = _lit(node.args[0]), _lit(node.args[1])
+            elif name in {"blocker_issue", "_blocked"} and len(node.args) >= 2:
+                code, message = _lit(node.args[0]), _lit(node.args[1])
+            if code is None:
+                kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                if "code" in kwargs:
+                    code = _lit(kwargs["code"])
+                    message = _lit(kwargs.get("message"))
+            if code:
+                pairs.append((code, message or "", f"{rel}:{node.lineno}"))
+    return pairs
+
+
+def test_every_commissioning_blocker_carrying_a_command_is_mapped():
+    """A blocker whose MESSAGE tells an operator what to run must have household copy.
+
+    The summed-test surface is the one that can print a backend message verbatim:
+    `summed_test_failure_message` falls through to `_household_safe_reason`, which
+    strips absolute paths and exception classes but has no reason to know about
+    shell commands — #2344's blocker ("Release it first with
+    `jasper-active-speaker baseline-reemit --endpoint aloop`") passed it cleanly.
+    So the rule is: if a blocker message carries an operator remedy, the household
+    gets WRITTEN copy for that code instead of the raw sentence.
+    """
+    from jasper.active_speaker.commissioning_coordinator import (
+        _SUMMED_TEST_FAILURE_COPY,
+    )
+
+    pairs = _commission_blocker_pairs()
+    assert len(pairs) > 50, "the AST walk found almost nothing — this guard is vacuous"
+    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
+
+    unmapped = sorted(
+        f"{code} ({where})"
+        for code, message, where in pairs
+        if _OPERATOR_COMMAND_RE.search(message) and code not in mapped
+    )
+    assert not unmapped, (
+        "these blockers tell an operator what to run, but have no household copy, "
+        "so the raw sentence — shell command and all — is what a household would "
+        f"read on the combined-test card: {unmapped}"
+    )
+
+
+def test_no_commissioning_blocker_leaks_an_operator_command_to_a_household():
+    """The property itself, not the proxy: what the household would actually see.
+
+    Runs the REAL `_household_safe_reason` over every unmapped blocker message
+    and asserts nothing survives it carrying a command. This is the assertion the
+    map-coverage test above is a cheaper stand-in for, and it stays honest if the
+    sanitiser is ever taught (or untaught) something.
+    """
+    from jasper.active_speaker.commissioning_coordinator import (
+        _SUMMED_TEST_FAILURE_COPY,
+        _household_safe_reason,
+    )
+
+    mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
+    leaks = []
+    for code, message, where in _commission_blocker_pairs():
+        if code in mapped:
+            continue
+        shown = _household_safe_reason(message)
+        if shown and _OPERATOR_COMMAND_RE.search(shown):
+            leaks.append(f"{code} ({where}): {shown!r}")
+    assert not leaks, f"a household would be shown an operator command: {leaks}"
+
+
+def test_every_preflight_gate_id_has_household_copy():
+    """Every gate the preflight PUBLISHES has copy — the map is the closed set.
+
+    `commissionGateReason` is the /sound/ renderer's fallback when no issue code
+    matched, and it keys on the gate id. The preflight's top-level
+    `required_gates` is the only list the renderer walks, so a gate added there
+    without copy degrades silently to "A setup step still needs finishing" —
+    which is how #2344's transport gate would have rendered.
+    """
+    import ast
+
+    repo = Path(__file__).resolve().parent.parent
+    source = (repo / "jasper" / "active_speaker" / "startup_load.py").read_text()
+    tree = ast.parse(source)
+    builder = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_driver_commission_load_preflight"
+    )
+    published = set()
+    for node in ast.walk(builder):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else None
+        if name != "_gate" or not node.args:
+            continue
+        arg = node.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            published.add(arg.value)
+        elif isinstance(arg, ast.Name):
+            # A gate id held in a module constant (the shared transport gate id
+            # imported from staging). Resolve it through the module namespace
+            # rather than re-parsing its source.
+            from jasper.active_speaker import startup_load
+
+            value = getattr(startup_load, arg.id, None)
+            assert isinstance(value, str), (
+                f"preflight gate id {arg.id!r} is not a resolvable module "
+                "constant; this walk would silently skip it"
+            )
+            published.add(value)
+    assert len(published) >= 5, f"gate walk found too few ids: {published}"
+
+    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
+    gate_block = helper_js.split("export function commissionGateReason")[1].split(
+        "}[gateId]"
+    )[0]
+    rendered = set(re.findall(r"^\s{4}([a-z0-9_]+):", gate_block, re.M))
+    missing = sorted(published - rendered)
+    assert not missing, (
+        "these preflight gates would render the generic 'a setup step still "
+        f"needs finishing' instead of telling the household what is wrong: {missing}"
+    )
+
+
+def test_the_ring_transport_blocker_is_registered_on_every_household_surface():
+    """The instance #2344 shipped without: all three renderer surfaces carry it."""
+    from jasper.active_speaker.commissioning_coordinator import (
+        _SUMMED_TEST_FAILURE_COPY,
+    )
+    from jasper.active_speaker.staging import COMMISSIONING_TRANSPORT_GATE_ID
+
+    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
+    # EXACT tokens, not substrings: `..._unsupported_X` contains
+    # `..._unsupported`, so a substring assertion passes over a misspelled rung —
+    # proved by mutation, which is why the ladder's real coverage is asserted
+    # BEHAVIOURALLY in tests/js/active_speaker_ui_test.mjs. This is the cheap
+    # second layer, not the guarantee.
+    assert "'commissioning_ring_transport_unsupported'" in helper_js, (
+        "the /sound/ issue ladder does not name the ring-transport blocker"
+    )
+    assert f"\n    {COMMISSIONING_TRANSPORT_GATE_ID}:" in helper_js, (
+        "the /sound/ gate map does not name the transport gate"
+    )
+    assert "commissioning_ring_transport_unsupported" in {
+        code for code, _ in _SUMMED_TEST_FAILURE_COPY
+    }, "the combined-test card has no copy for the ring-transport blocker"
+    # And none of that copy may carry the operator's command.
+    assert "baseline-reemit" not in helper_js, (
+        "a household surface carries the operator remedy verbatim"
+    )
 
 
 def test_active_speaker_setup_copy_has_no_backend_jargon():

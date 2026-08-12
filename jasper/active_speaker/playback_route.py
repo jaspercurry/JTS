@@ -220,8 +220,9 @@ def resolve_live_active_endpoint(
 
     COST: one statefile read plus one config read, fresh, per call — nothing is
     cached, deliberately, because a re-emit that acted on a stale endpoint is the
-    defect this exists to prevent. That is right for the three cold seams that
-    call it (a deploy reconcile, a wizard save, a bass-extension apply); a future
+    defect this exists to prevent. That is right for the four cold seams that
+    call it (a deploy reconcile, a wizard save, a bass-extension apply, and the
+    commissioning wizard's applied-summed measurement load); a future
     caller on a warm path should know it is paying two file reads each time and
     snapshot the answer itself rather than making this one lie.
     """

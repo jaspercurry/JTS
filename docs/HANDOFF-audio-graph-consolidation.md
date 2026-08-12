@@ -246,10 +246,29 @@ writer epoch: the apply is a live websocket load, not a CamillaDSP restart.
 [#2339](https://github.com/jaspercurry/JTS/issues/2339) are closed against that
 evidence.
 
-The measurement/commissioning **wizard** flows are a separate case and stay off
-the armed box until [#2344](https://github.com/jaspercurry/JTS/issues/2344) is
-resolved: that graph swap sweeps into the unfed aloop lane and would measure
-silence. The arm3 finale's `correction_substream` sweep is not affected — it
+The measurement/commissioning **wizard** flows are a separate case and **stay
+off the armed box** — [#2344](https://github.com/jaspercurry/JTS/issues/2344),
+addressed by PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up
+2026-08-12, not merged). The restriction is unchanged; what changed is that it is
+now **enforced in code rather than only written here**, and that the mechanism
+turned out to be two different defects rather than one:
+
+- The **applied-summed measurement graph** re-emits the applied snapshot and
+  loads it to play the excitation, so it inherited the snd-aloop lane the way
+  the deploy and household seams did. It now reads the same
+  `resolve_live_active_endpoint` derivation as the rest of that family.
+- The **per-driver / summed commissioning graph** fails the other way round: it
+  already resolved the ring by *name* through the fresh-emit chooser, but
+  forwarded none of the rest of `active_emit_devices`, emitting a ring sink over
+  a `plug:jasper_capture` source — the tap fan-in stops feeding under
+  `shm_ring`. It now **refuses before it emits**, naming the release command,
+  because teaching that emitter the ring is a hardware claim and its
+  live-protection admission report asserts the tap capture route.
+
+**No COMMISSIONING/WIZARD sweep has been run through the armed ring**, so the
+first bullet is code-correct and hardware-unvalidated, and the restriction stands
+until an on-device wizard sweep passes. A MEASURE-lane sweep is a different
+claim and has already been made: the arm3 finale's `correction_substream` sweep
 traverses the armed ring, which is what proved the lane clean.
 
 Certified USB route-latency baseline to compare against: **p50 36.35 /
@@ -420,10 +439,10 @@ detail.
 | [#2327](https://github.com/jaspercurry/JTS/issues/2327) | jts3's corpus-mode chip-AEC `sys_delay` needs re-derivation after the DAC8x floor changed the period geometry | Open and **live-owed** from the 2026-08-11 floor deploy — jts3 has been running post-floor since then |
 | [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open — architect call deferred: validator symmetry vs the documented refuse-then-complete route. The route out is in the lifecycle section below; still unverified on hardware, since no rollback has run from a fully-armed box |
 | [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) and proven on armed jts3 the same day — two household-path `/sound/apply` saves preserved every armed-state field. The jts3 operating restriction is **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
-| [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | Open — filed at #2335's merge, same family as #2337/#2339. PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) is **up, not merged** — it routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
+| [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | **Closed** by PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) (merged 2026-08-12, `f6e2ea640`) — filed at #2335's merge, same family as #2337/#2339. It routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | Open. Found in the 2026-08-11 jts.local pass; the workaround is to deploy over the Wi-Fi address |
-| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open — the reason the wizard measurement flows stay off armed jts3, and the one armed-box restriction the 2026-08-11 proofs did **not** lift |
+| [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but forwarded none of the rest of `active_emit_devices` and now **refuses** on an armed box instead of emitting a ring sink over the aloop capture — and that refusal is **permanent, not a stopgap**: the owner's 2026-08-12 ruling on [#2254](https://github.com/jaspercurry/JTS/issues/2254) fixes the corpus-exit shape as de-arm → chip-AEC commission on the aloop path → re-arm, so commissioning never has to learn the ring. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not merged), mutation-proved; on-device armed-ring sweep **pending**, so the jts3 restriction is **ENFORCED** until it passes and this issue closes on the sweep validating the *first* half's route |
 | [#2345](https://github.com/jaspercurry/JTS/issues/2345) | fan-in emits `tts.assistant_loudness.final_gain_db=+3.0` while the doctor asserts the clamp is `[-60, 0]` — the assistant can be boosted past a bound the doctor believes is enforced | **Closed** by PR [#2355](https://github.com/jaspercurry/JTS/pull/2355) (merged 2026-08-11, `3ef3e74cd`). **The doctor's assertion was the stale half.** The engine has had no fixed positive ceiling since `6304556a4` "Remove fixed TTS gain ceiling" (2026-07-01), which updated `audio-paths.md` and `HANDOFF-volume.md` and missed the doctor; positive gain there is intentional, because a pre-DSP decision pre-compensates for CamillaDSP's downstream attenuation. The `+3.0` was not a clamp at all but the computed peak cap (`max_peak_dbfs=-3.0` minus the uncalibrated fallback source peak `-6.0`) holding a `+5.0` request down, so whether ordinary music re-anchors the target positively never had to be answered. The doctor now asserts the per-decision contract `max(floor, min(requested_gain_db, peak_cap_gain_db))` — the real floor and the computed peak cap — rather than a positive ceiling nothing enforces. |
 | [#2348](https://github.com/jaspercurry/JTS/issues/2348) | Gain-structure normalization at prescribe time — push the static trim set to the computed headroom ceiling | Open — [#2291](https://github.com/jaspercurry/JTS/issues/2291)'s prescribe stage, raised by the gain structures the arm's re-emit exposed on jts3 |
 
@@ -545,10 +564,11 @@ reason the arm needs it.)
 endpoint.** A separate set of seams rebuilds the roleful graph from the
 immutable applied snapshot without being asked to move anything: `jasper-sound
 reconcile-current-dsp` (which `install.sh` runs on every deploy, and which step
-3 of the ladder runs too), a `/sound/` or `/eq/` save, and a bass-extension
-apply. The snapshot is immutable by design, so it keeps naming whichever lane
+3 of the ladder runs too), a `/sound/` or `/eq/` save, a bass-extension apply,
+and — since #2344 — the commissioning wizard's applied-summed measurement load.
+The snapshot is immutable by design, so it keeps naming whichever lane
 was resolved at Apply time — the snd-aloop lane, forever, on an armed box. Each
-of those seams now reads
+of those four seams now reads
 `jasper.active_speaker.playback_route.resolve_live_active_endpoint`, one
 derivation that asks the **statefile-pointed graph** first and the marker only
 when that graph cannot be read: the marker is derived FROM the graph, so in

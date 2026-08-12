@@ -416,7 +416,11 @@ function commissionIssueCodes(payload) {
     payload && payload.tone_playback && payload.tone_playback.issues,
     payload && payload.startup_setup && payload.startup_setup.startup_load &&
       payload.startup_setup.startup_load.load &&
-      payload.startup_setup.startup_load.load.issues
+      payload.startup_setup.startup_load.load.issues,
+    // A blocked ramp step reports `ramp_prepare_failed` at the top level and
+    // parks the REASON it failed in a sibling array. Without this the household
+    // saw the outer code and none of the codes that explain it (#2344).
+    payload && payload.prepare_issues
   ].forEach(function(issues) {
     if (!Array.isArray(issues)) return;
     issues.forEach(function(issue) {
@@ -427,6 +431,16 @@ function commissionIssueCodes(payload) {
 }
 
 function commissionIssueReason(codes) {
+  // First in the ladder on purpose: this is a whole-speaker state, not a step
+  // that failed. While it holds, every later reason below would be true-but-
+  // useless advice ("try again", "finish the earlier step") for something the
+  // household cannot fix by retrying. Names the state and the way out WITHOUT
+  // the operator's shell command — that remedy lives on the CLI and journal
+  // surfaces, never here (#2344).
+  if (codes.indexOf('commissioning_ring_transport_unsupported') >= 0) {
+    return 'Driver tests can’t run while this speaker is in ring output mode. ' +
+      'Switch it back to the standard output path first, then test the drivers again.';
+  }
   if (codes.indexOf('commission_live_state_stale') >= 0) {
     return 'The previous tone session expired safely. Start the tone again so JTS can reopen it quietly.';
   }
@@ -494,7 +508,10 @@ export function commissionGateReason(gateId) {
     commissioning_protection_while_audible:
       'This driver isn’t ready to test yet — confirm the tweeter’s protection above first.',
     commissioning_candidate_present:
-      'JTS couldn’t build this driver’s test setup — refresh the page and try again.'
+      'JTS couldn’t build this driver’s test setup — refresh the page and try again.',
+    commissioning_transport_supported:
+      'This speaker is in ring output mode, which driver tests can’t measure ' +
+      'through. Switch it back to the standard output path first.'
   }[gateId] || 'A setup step still needs finishing before this driver can be tested.';
 }
 

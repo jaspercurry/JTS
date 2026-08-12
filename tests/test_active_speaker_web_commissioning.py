@@ -2753,11 +2753,22 @@ def test_summed_measurement_loader_recomposes_validates_and_loads_snapshot(
     )
     recompose_call = {}
 
-    def recompose(_topology, *, applied_profile, out_path):
+    # The endpoint the box is LIVE on, threaded in so the sweep excites the lane
+    # fan-in is actually feeding (#2344). A sentinel rather than a real device
+    # name: this pins that the loader FORWARDS the derivation's answer, which is
+    # a different fact from the derivation being correct.
+    live_endpoint = "jts_sentinel_live_endpoint"
+    monkeypatch.setattr(
+        "jasper.active_speaker.playback_route.resolve_live_active_endpoint",
+        lambda _topology: (live_endpoint, "loaded_graph"),
+    )
+
+    def recompose(_topology, *, applied_profile, out_path, playback_device):
         recompose_call.update(
             topology=_topology,
             applied_profile=applied_profile,
             out_path=out_path,
+            playback_device=playback_device,
         )
         return "pipeline: {}\n", []
 
@@ -2796,6 +2807,7 @@ def test_summed_measurement_loader_recomposes_validates_and_loads_snapshot(
         "topology": topology,
         "applied_profile": applied,
         "out_path": target,
+        "playback_device": live_endpoint,
     }
     assert loaded_paths == [str(target)]
 
