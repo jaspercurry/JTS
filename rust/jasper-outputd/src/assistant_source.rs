@@ -34,7 +34,7 @@ use crate::loudness::{
     GainRamp, MIN_TTS_GAIN_DB,
 };
 use crate::types::ProgramSample;
-use jasper_tts_protocol::VolumeContext;
+use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
 
 /// The playout facts captured when an assistant segment finishes rendering,
 /// needed to complete its learned quiet-room reference: the decision, the
@@ -76,16 +76,17 @@ pub struct AssistantSource {
 
 struct AssistantSegment {
     id: SegmentId,
-    /// The TTS wire's own samples, kept at the wire's S16 width.
+    /// The TTS wire's own samples, kept at the width the wire declared.
     ///
-    /// Deliberately NOT widened at enqueue: the wire protocol
-    /// (`jasper_tts_protocol`) is S16 and shared with jasper-fanin, a queued
-    /// reply can be seconds long, and widening here would double the queue's
-    /// resident bytes under `mlockall` for no resolution gain — nothing between
-    /// the socket and here touches the samples. The widen happens once per
-    /// sample at the gain application in `read_period_into`, which is the first
-    /// stage that produces a spine sample at all.
-    samples: Vec<i16>,
+    /// Deliberately NOT promoted at enqueue: a queued reply can be seconds
+    /// long, and widening an S16 payload here would double the queue's resident
+    /// bytes under `mlockall` for no resolution gain — nothing between the
+    /// socket and here touches the samples. The widen happens once per sample
+    /// at the gain application in `read_period_into`, which is the first stage
+    /// that produces a spine sample at all. A box whose wire is already wide
+    /// (`AUDIO32`) queues `Vec<i32>` and has nothing to widen; that box pays the
+    /// doubled bytes because its samples genuinely carry them.
+    samples: TtsAudioSamples,
     cursor_samples: usize,
     /// Loudness-decided gain for this segment before any live adjustment.
     base_gain_db: f32,
@@ -131,7 +132,7 @@ impl AssistantSource {
     pub fn enqueue_segment(
         &mut self,
         id: SegmentId,
-        samples: Vec<i16>,
+        samples: impl Into<TtsAudioSamples>,
         base_gain_db: f32,
         peak_cap_gain_db: f32,
         decision: Option<Arc<AssistantGainDecision>>,
@@ -139,7 +140,7 @@ impl AssistantSource {
     ) {
         self.segments.push_back(AssistantSegment {
             id,
-            samples,
+            samples: samples.into(),
             cursor_samples: 0,
             base_gain_db,
             peak_cap_gain_db,
@@ -233,13 +234,13 @@ impl AssistantSource {
                     return;
                 };
                 for (channel, slot) in frame.iter_mut().enumerate() {
-                    // Widen the S16 wire sample into the spine, THEN gain it in
+                    // Promote the wire sample into the spine, THEN gain it in
                     // f64. Gaining first at i16 and widening after would round
                     // every gained sample onto the S16 grid — the requantization
-                    // the wide spine exists to remove.
-                    let wide = jasper_resampler::widen_i16_to_i32(
-                        front.samples[front.cursor_samples + channel],
-                    );
+                    // the wide spine exists to remove. `spine_sample` is
+                    // `widen_i16_to_i32` for an S16 payload (the shipped path,
+                    // unchanged) and the identity for an S32 one.
+                    let wide = front.samples.spine_sample(front.cursor_samples + channel);
                     *slot = apply_gain(wide, gain);
                 }
                 front.cursor_samples += channels;

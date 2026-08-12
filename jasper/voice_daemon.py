@@ -27,6 +27,7 @@ from .audio_io import (
     InputDeviceUnavailable,
     MicCapture,
     TtsPlayout,
+    tts_wire_is_wide as _tts_wire_is_wide,
     wait_tts_drained_owned,
 )
 from .assistant_loudness import (
@@ -112,6 +113,7 @@ def _synthetic_audio_profile(
     model: str,
     voice: str,
     pcm: bytes,
+    wide: bool = False,
     fallback_source_lufs: float = -24.0,
     fallback_peak_dbfs: float = -12.0,
 ):
@@ -120,6 +122,7 @@ def _synthetic_audio_profile(
         model=model,
         voice=voice,
         pcm=pcm,
+        wide=wide,
         fallback_source_lufs=fallback_source_lufs,
         fallback_peak_dbfs=fallback_peak_dbfs,
     )
@@ -1184,34 +1187,50 @@ class WakeLoop:
         # Pre-render generated earcons once. Synthesis is pure (no
         # instance state used), so caching the PCM bytes keeps hot paths
         # off any per-call cost. Same shape `TtsPlayout.write()` accepts
-        # (24 kHz int16 mono).
+        # (24 kHz mono at the box's wire width).
+        #
+        # The bake width comes from the SAME resolution the playout writes at,
+        # asked ONCE here, so the recipe's float render is quantized at the
+        # wire's grid instead of being flattened onto the S16 grid first and
+        # promoted after. On a narrow box `earcon_wide` is False and every byte
+        # below is what it always was.
+        earcon_wide = _tts_wire_is_wide()
+        self._earcon_wide = earcon_wide
         self._chirp_on_pcm: bytes = _generate_listening_chirp(
-            going_on=True,
+            going_on=True, wide=earcon_wide,
         )
         self._chirp_off_pcm: bytes = _generate_listening_chirp(
-            going_on=False,
+            going_on=False, wide=earcon_wide,
         )
         self._chirp_on_profile = _synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="wake_start",
             pcm=self._chirp_on_pcm,
+            wide=earcon_wide,
         )
         self._chirp_off_profile = _synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="turn_end",
             pcm=self._chirp_off_pcm,
+            wide=earcon_wide,
         )
-        self._mute_click_on_pcm: bytes = _generate_mute_click(going_on=True)
-        self._mute_click_off_pcm: bytes = _generate_mute_click(going_on=False)
+        self._mute_click_on_pcm: bytes = _generate_mute_click(
+            going_on=True, wide=earcon_wide,
+        )
+        self._mute_click_off_pcm: bytes = _generate_mute_click(
+            going_on=False, wide=earcon_wide,
+        )
         self._mute_click_on_profile = _synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="unmute",
             pcm=self._mute_click_on_pcm,
+            wide=earcon_wide,
         )
         self._mute_click_off_profile = _synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="mute",
             pcm=self._mute_click_off_pcm,
+            wide=earcon_wide,
         )
 
         # Monotonic wallclock at the moment wake fires. Used by
@@ -3200,6 +3219,7 @@ class WakeLoop:
                     pcm,
                     segment_kind="cue",
                     source_profile=profile,
+                    pcm_wide=self._earcon_wide,
                 )
             finally:
                 await wait_tts_drained_owned(self._tts)
@@ -3254,6 +3274,7 @@ class WakeLoop:
                 pcm,
                 segment_kind="chirp",
                 source_profile=profile,
+                pcm_wide=self._earcon_wide,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("listening chirp failed: %s", e)

@@ -6,7 +6,7 @@
 
 These are the short musical cues the speaker plays around a voice
 interaction. They are NOT the spoken TTS cues in `jasper.cues` — they
-are tone recipes rendered to 24 kHz int16 mono PCM once at daemon
+are tone recipes rendered to 24 kHz mono PCM once at daemon
 startup (the same shape `TtsPlayout.write()` accepts), then played
 fire-and-forget through outputd.
 
@@ -54,9 +54,19 @@ from ..log_event import log_event
 
 logger = logging.getLogger("jasper.voice_daemon")
 
-# 24 kHz int16 mono — what TtsPlayout.write() / outputd accept, and the
-# rate every supported voice provider streams.
+# 24 kHz mono — what TtsPlayout.write() / outputd accept, and the rate every
+# supported voice provider streams. The SAMPLE WIDTH is the box's, not this
+# module's: int16 on a narrow wire, int32 at spine scale on a wide one (see
+# `_to_pcm32`).
 _SR = 24000
+
+# The narrow bake's full-scale constant promoted by the exact 2^16 the Rust
+# `widen_i16_to_i32` shifts by. Deliberately NOT `2**31 - 1`: the wide earcon
+# must be the SAME signal at the SAME level as the narrow one, and 32767 << 16
+# is where a narrow full-scale sample lands after promotion.
+_PCM32_FULL_SCALE = 32767 * 65536
+_I32_MIN = -(2 ** 31)
+_I32_MAX = 2 ** 31 - 1
 
 # Final peak the rendered buffer is normalized to (~-6 dBFS). Outputd's
 # loudness stage matches perceived level to the room's silence target
@@ -79,6 +89,7 @@ def _synthetic_audio_profile(
     model: str,
     voice: str,
     pcm: bytes,
+    wide: bool = False,
     fallback_source_lufs: float = -24.0,
     fallback_peak_dbfs: float = -12.0,
 ) -> AssistantLoudnessProfile:
@@ -88,9 +99,13 @@ def _synthetic_audio_profile(
     voice profile would misdescribe their source level. Outputd still
     owns the final gain decision; this profile only tells it what
     loudness/peak the synthetic source PCM starts with.
+
+    `wide` says which width `pcm` was baked at; the measurement normalizes
+    both to the same sample units, so an earcon's profile is identical on a
+    narrow and a wide box.
     """
     try:
-        measurement = measure_pcm_24k_mono(pcm)
+        measurement = measure_pcm_24k_mono(pcm, wide=wide)
         source_lufs = measurement.source_lufs
         source_peak_dbfs = measurement.source_peak_dbfs
         confidence = 1.0
@@ -263,19 +278,38 @@ def _apply_shimmer(dry: list[float], sh: _Shimmer) -> list[float]:
     return out
 
 
-def _to_pcm16(buf: list[float]) -> bytes:
-    """Normalize to `_TARGET_PEAK`, apply a short raised-cosine tail fade,
-    and pack to little-endian int16."""
+def _normalized(buf: list[float]):
+    """Yield the recipe's samples normalized to `_TARGET_PEAK` with the short
+    raised-cosine tail fade applied — the shape both bakes pack, in ±1.0 units.
+
+    Extracted so the narrow and wide bakes share ONE normalization and ONE
+    fade. The float operations happen here in exactly the order `_to_pcm16`
+    always applied them, which is why the narrow bake's bytes are unchanged;
+    `test_earcons_wire_width.py` pins that against a committed golden rather
+    than against this argument.
+    """
     peak = max((abs(x) for x in buf), default=0.0)
     scale = (_TARGET_PEAK / peak) if peak > 0.0 else 0.0
     n = len(buf)
     fade = min(int(_TAIL_FADE_SEC * _SR), n)
-    out = bytearray(n * 2)
     for i, x in enumerate(buf):
         v = x * scale
         if i >= n - fade:
             k = n - i  # fade..1
             v *= 0.5 * (1.0 - math.cos(math.pi * k / fade))
+        yield v
+
+
+def _to_pcm16(buf: list[float]) -> bytes:
+    """Bake to little-endian int16 — the narrow wire, byte-for-byte as shipped.
+
+    `int(v * 32767.0)` truncates toward zero. Kept exactly, including that:
+    these bytes are what every narrow box has always emitted, and rounding them
+    "better" would change the earcon on the whole fleet for no reason this
+    change needs.
+    """
+    out = bytearray(len(buf) * 2)
+    for i, v in enumerate(_normalized(buf)):
         s = int(v * 32767.0)
         if s > 32767:
             s = 32767
@@ -286,31 +320,65 @@ def _to_pcm16(buf: list[float]) -> bytes:
     return bytes(out)
 
 
-def _render_recipe(recipe: _Recipe) -> bytes:
+def _to_pcm32(buf: list[float]) -> bytes:
+    """Bake to little-endian int32 at the i32 spine scale — the wide wire.
+
+    The scale is the narrow bake's own full-scale constant PROMOTED by the
+    exact 2^16 `widen_i16_to_i32` shifts by (`_PCM32_FULL_SCALE`), not
+    `i32::MAX`. That keeps the wide earcon the same signal at the same level as
+    the narrow one, differing only in the bits below the S16 grid — which is
+    the whole claim. Using the container's own top code instead would make the
+    wide earcon a hair louder and break the equivalence the tests assert.
+
+    Round-to-nearest saturating, per the campaign's rule for a JTS-owned
+    quantizer; no dither. This is a NEW edge, so unlike `_to_pcm16` it has no
+    shipped bytes to preserve.
+    """
+    out = bytearray(len(buf) * 4)
+    for i, v in enumerate(_normalized(buf)):
+        s = round(v * _PCM32_FULL_SCALE)
+        if s > _I32_MAX:
+            s = _I32_MAX
+        elif s < _I32_MIN:
+            s = _I32_MIN
+        out[4 * i:4 * i + 4] = (s & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(out)
+
+
+def _bake(buf: list[float], *, wide: bool) -> bytes:
+    """Pack a rendered recipe onto the box's assistant wire."""
+    return _to_pcm32(buf) if wide else _to_pcm16(buf)
+
+
+def _render_recipe(recipe: _Recipe, *, wide: bool = False) -> bytes:
     buf = _render_layers(recipe.layers)
     if recipe.shimmer is not None:
         buf = _apply_shimmer(buf, recipe.shimmer)
-    return _to_pcm16(buf)
+    return _bake(buf, wide=wide)
 
 
-def _generate_mute_click(*, going_on: bool) -> bytes:
-    """Sparkle earcon as 24 kHz int16 mono PCM — same shape
-    `TtsPlayout.write()` accepts. `going_on=True` (unmute / assistant
+def _generate_mute_click(*, going_on: bool, wide: bool = False) -> bytes:
+    """Sparkle earcon as 24 kHz mono PCM at the box's wire width — the
+    shape `TtsPlayout.write()` accepts. `going_on=True` (unmute / assistant
     resumed) is the ascending arpeggio; `going_on=False` (mute / paused)
     is the descending arpeggio one octave lower.
 
     Named `_generate_mute_click` for historical reasons — see the module
     docstring. Rendered once at startup and cached by the caller; not a
     registered TTS cue (those are spoken text)."""
-    return _render_recipe(_SPARKLE_ASCENDING if going_on else _SPARKLE_DESCENDING)
+    return _render_recipe(
+        _SPARKLE_ASCENDING if going_on else _SPARKLE_DESCENDING, wide=wide
+    )
 
 
-def _generate_listening_chirp(*, going_on: bool) -> bytes:
-    """Chime earcon as 24 kHz int16 mono PCM — same shape
-    `TtsPlayout.write()` accepts. `going_on=True` (wake) is the ascending
+def _generate_listening_chirp(*, going_on: bool, wide: bool = False) -> bytes:
+    """Chime earcon as 24 kHz mono PCM at the box's wire width — the
+    shape `TtsPlayout.write()` accepts. `going_on=True` (wake) is the ascending
     perfect fifth; `going_on=False` (end of turn) is the descending fifth
     one octave lower, so "closing" reads as downward and lower.
 
     Named `_generate_listening_chirp` for historical reasons — see the
     module docstring. Rendered once at startup and cached by the caller."""
-    return _render_recipe(_CHIME_ASCENDING if going_on else _CHIME_DESCENDING)
+    return _render_recipe(
+        _CHIME_ASCENDING if going_on else _CHIME_DESCENDING, wide=wide
+    )

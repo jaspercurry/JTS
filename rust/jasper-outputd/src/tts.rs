@@ -66,7 +66,7 @@ use crate::core::OutputCore;
 use crate::json::json_string;
 use crate::ledger::{PlayoutEvent, SegmentId};
 use crate::mixer::gain_db_to_linear;
-use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
+use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
@@ -370,7 +370,7 @@ fn try_enqueue_tts_command(
     queued: QueuedTtsCommand,
     metrics: &TtsMetrics,
 ) -> bool {
-    if !matches!(queued.command, TtsCommand::Audio(_)) {
+    if !queued.command.is_audio() {
         return enqueue_reliable_tts_command(tx, queued);
     }
     match tx.try_send(queued) {
@@ -407,10 +407,7 @@ fn enqueue_reliable_tts_command(
 }
 
 fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    match &queued.command {
-        TtsCommand::Audio(samples) => (samples.len() / (CHANNELS as usize)) as u64,
-        _ => 0,
-    }
+    queued.command.audio_frames()
 }
 
 // ---------------------------------------------------------------------
@@ -607,8 +604,12 @@ impl TtsBridge {
                         core.start_assistant_segment_with_profile(provider_item_id, kind, profile);
                     self.open_segment = Some(id);
                 }
-                TtsCommand::Audio(samples) => {
-                    let incoming = (samples.len() / (CHANNELS as usize)) as u64;
+                // Both payload verbs, one body. Spelled out rather than
+                // guarded on `is_audio()` so the compiler's exhaustiveness
+                // check — which ignores guards — still forces a future third
+                // payload verb to be handled here.
+                command @ (TtsCommand::Audio(_) | TtsCommand::AudioWide(_)) => {
+                    let incoming = command.audio_frames();
                     if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
@@ -632,6 +633,11 @@ impl TtsBridge {
                             self.open_segment = Some(id);
                             id
                         }
+                    };
+                    // Cannot be None inside this arm: the same two patterns
+                    // select it.
+                    let Some(samples) = command.into_audio_samples() else {
+                        continue;
                     };
                     core.append_assistant_audio_with_segment_gain(id, samples);
                 }

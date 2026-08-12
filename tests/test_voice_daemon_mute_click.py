@@ -30,7 +30,9 @@ def test_synthetic_audio_profile_uses_measured_source_level(monkeypatch):
     monkeypatch.setattr(
         vd,
         "measure_pcm_24k_mono",
-        lambda pcm: _FakeMeasurement(source_lufs=-31.25, source_peak_dbfs=-12.0),
+        lambda pcm, **_: _FakeMeasurement(
+            source_lufs=-31.25, source_peak_dbfs=-12.0
+        ),
     )
 
     profile = vd._synthetic_audio_profile(
@@ -54,7 +56,7 @@ def test_synthetic_audio_profile_fallback_log_is_structured(
 ):
     import jasper.voice_daemon as vd
 
-    def fail_measurement(_pcm):
+    def fail_measurement(_pcm, **_kwargs):
         raise RuntimeError("meter failed")
 
     monkeypatch.setattr(vd, "measure_pcm_24k_mono", fail_measurement)
@@ -103,6 +105,9 @@ async def test_mute_click_uses_matched_cue_path():
             {
                 "segment_kind": "cue",
                 "source_profile": profile,
+                # The earcon bake's width travels with its bytes. This
+                # WakeLoop is built narrow, so the flag reads False.
+                "pcm_wide": False,
             },
         )
     ]
@@ -138,6 +143,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
             {
                 "segment_kind": "chirp",
                 "source_profile": profile,
+                "pcm_wide": False,
             },
         )
     ]

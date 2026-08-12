@@ -2202,7 +2202,11 @@ impl Mixer {
         if program_target == 1.0 && self.program_duck_current == 1.0 {
             // no duck — common path, nothing to do
         } else if program_target == self.program_duck_current {
-            apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current);
+            apply_gain_to_sum(
+                &mut self.sum_buf,
+                self.program_duck_current,
+                self.program_width,
+            );
         } else {
             self.program_duck_current = ramp_program_duck(
                 &mut self.sum_buf,
@@ -2211,6 +2215,7 @@ impl Mixer {
                 program_target,
                 self.program_duck_attack_step,
                 self.program_duck_release_step,
+                self.program_width,
             );
         }
         // Music-only side-tap (multi-room sync): the program AS PLAYED
@@ -3019,26 +3024,47 @@ fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
 /// after pre-duck content metering so the assistant loudness baseline
 /// tracks the listener-facing content, not the temporary ducked level.
 ///
-/// Width-agnostic on purpose: a linear gain commutes with the promotion, so the
-/// `f32` multiply and the i32-range clamp are the SAME operation at either
-/// scale, and the narrow path's bytes are untouched.
+/// Width-dispatched. A linear gain commutes with the promotion, so the two arms
+/// are the same operation on paper — but not in floating point, and not at the
+/// rails, which is why PR [#2330](https://github.com/jaspercurry/JTS/pull/2330)
+/// deferred this to the tail that owns gain width. Both halves of that note are
+/// closed here:
 ///
-/// The clamp rails are `i32`, not `i64`, on what is now an `i64` accumulator.
-/// That is deliberate and currently unreachable: a duck only ever attenuates
-/// (`gain <= 1.0`), so it cannot lift a sum toward the `i64` rails, and the sum
-/// is saturated into the `i32` spine range at every consumer anyway. Widening
-/// the gain stages — rails included — belongs to the TTS/earcon/gain tail of
-/// U2, which owns gain width; changing the arithmetic here would move the
-/// narrow path's bytes for no present benefit. The `f32` mantissa is 24
-/// bits, so at spine scale the product carries ~24 of the sum's 32 bits — a
-/// −138 dBFS floor on a ducked wide program, not a level error. Making the
-/// gain stages themselves wide is the next rung's work (the TTS/earcon/gain
-/// tail of U2), not this one's.
-fn apply_gain_to_sum(sum: &mut [i64], gain: f32) {
-    for sample in sum {
-        *sample = ((*sample as f32) * gain)
-            .round()
-            .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
+/// **The rails.** `Narrow` keeps the `i32` clamp verbatim, where it has always
+/// been unreachable (a narrow sum of every lane is ~2^18 and a duck only ever
+/// attenuates) and where changing it would move shipped bytes for no benefit.
+/// `Wide` drops it: a spine-scale sum LEGITIMATELY exceeds `i32::MAX` — that
+/// headroom above full scale is the reason the accumulator is `i64` — and the
+/// duck's whole job is to pull such a sum back into range. Clamping to `i32`
+/// first would spend the headroom before the duck could use it, turning a
+/// recoverable over-full-scale sum into a clipped one. Saturation is the
+/// consumer's job (`saturate_to_i16` / `clamp_sum_to_spine`), where it can see
+/// the value that is actually leaving.
+///
+/// **The mantissa.** `f32` carries 24 bits, so `sum as f32` at spine scale
+/// discards the bottom bits before the multiply happens — the same reason
+/// `apply_gain` exists beside `apply_gain_i16`. `Wide` computes in `f64`, whose
+/// 53-bit mantissa represents every `i32` (and every reachable sum) exactly.
+/// `Narrow` stays `f32`: a narrow sum is under 2^24, so `f32` holds it exactly,
+/// and an `f64` product can round differently in the last place — identical
+/// arithmetic is not identical bytes.
+///
+/// Rust's float→int cast saturates, so the `Wide` arm needs no `i64` clamp of
+/// its own; a product that overflowed would land on the rails rather than wrap.
+fn apply_gain_to_sum(sum: &mut [i64], gain: f32, width: ProgramWidth) {
+    match width {
+        ProgramWidth::Narrow => {
+            for sample in sum {
+                *sample = ((*sample as f32) * gain)
+                    .round()
+                    .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
+            }
+        }
+        ProgramWidth::Wide => {
+            for sample in sum {
+                *sample = ((*sample as f64) * f64::from(gain)).round() as i64;
+            }
+        }
     }
 }
 
@@ -3061,6 +3087,10 @@ fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
 /// switched levels in one sample injected a broadband click and a "pump"
 /// into music playing under a short earcon/cue. Ramping the edges removes
 /// both.
+///
+/// Width-dispatched for exactly the reasons [`apply_gain_to_sum`] documents —
+/// this is the same multiply with a per-frame gain, and its steady state is
+/// asserted equal to that function's.
 fn ramp_program_duck(
     sum: &mut [i64],
     channels: usize,
@@ -3068,6 +3098,7 @@ fn ramp_program_duck(
     target: f32,
     attack_step: f32,
     release_step: f32,
+    width: ProgramWidth,
 ) -> f32 {
     debug_assert!(channels >= 1);
     let frames = sum.len() / channels;
@@ -3079,10 +3110,20 @@ fn ramp_program_duck(
         }
         if current != 1.0 {
             let base = f * channels;
-            for s in &mut sum[base..base + channels] {
-                *s = ((*s as f32) * current)
-                    .round()
-                    .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
+            match width {
+                ProgramWidth::Narrow => {
+                    for s in &mut sum[base..base + channels] {
+                        *s = ((*s as f32) * current)
+                            .round()
+                            .clamp(i32::MIN as f32, i32::MAX as f32)
+                            as i64;
+                    }
+                }
+                ProgramWidth::Wide => {
+                    for s in &mut sum[base..base + channels] {
+                        *s = ((*s as f64) * f64::from(current)).round() as i64;
+                    }
+                }
             }
         }
     }
@@ -5046,7 +5087,7 @@ mod tests {
     #[test]
     fn apply_gain_to_sum_ducks_after_program_sum() {
         let mut sum = vec![20_000i64, -20_000, 1_500, -1_500];
-        apply_gain_to_sum(&mut sum, 0.1);
+        apply_gain_to_sum(&mut sum, 0.1, ProgramWidth::Narrow);
         assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
     }
 
@@ -5070,7 +5111,15 @@ mod tests {
         let mut sum = vec![10_000i64; frames * channels];
         // attack_step chosen so it takes ~the whole period to reach target.
         let attack = (1.0 - 0.5) / (frames as f32);
-        let current = ramp_program_duck(&mut sum, channels, 1.0, 0.5, attack, 1.0);
+        let current = ramp_program_duck(
+            &mut sum,
+            channels,
+            1.0,
+            0.5,
+            attack,
+            1.0,
+            ProgramWidth::Narrow,
+        );
         // First frame is essentially un-ducked (no instantaneous 25 dB drop).
         assert!(
             sum[0] > 9_800,
@@ -5101,7 +5150,8 @@ mod tests {
         let frames = 8usize;
         let mut sum = vec![10_000i64; frames * channels];
         // release_step large enough to reach 1.0 within the first frame.
-        let current = ramp_program_duck(&mut sum, channels, 0.5, 1.0, 1.0, 1.0);
+        let current =
+            ramp_program_duck(&mut sum, channels, 0.5, 1.0, 1.0, 1.0, ProgramWidth::Narrow);
         assert_eq!(current, 1.0);
         // The last frame, fully released, is unscaled.
         assert_eq!(sum[(frames - 1) * channels], 10_000);
@@ -5115,8 +5165,16 @@ mod tests {
         let channels = 2usize;
         let mut ramped = vec![20_000i64, -20_000, 1_500, -1_500];
         let mut flat = ramped.clone();
-        let current = ramp_program_duck(&mut ramped, channels, 0.1, 0.1, 0.01, 0.01);
-        apply_gain_to_sum(&mut flat, 0.1);
+        let current = ramp_program_duck(
+            &mut ramped,
+            channels,
+            0.1,
+            0.1,
+            0.01,
+            0.01,
+            ProgramWidth::Narrow,
+        );
+        apply_gain_to_sum(&mut flat, 0.1, ProgramWidth::Narrow);
         assert_eq!(current, 0.1);
         assert_eq!(ramped, flat);
     }
@@ -5138,7 +5196,7 @@ mod tests {
             ProgramWidth::Narrow,
         );
         // Program duck applies (TTS active): attenuate the program by 0.5.
-        apply_gain_to_sum(&mut sum, 0.5);
+        apply_gain_to_sum(&mut sum, 0.5, ProgramWidth::Narrow);
         // TAP HERE — clamp to i16 for the music-only output.
         let mut music_only = vec![0i16; 4];
         saturate_to_i16(&sum, &mut music_only, ProgramWidth::Narrow);
@@ -5568,7 +5626,7 @@ mod tests {
         let total = (period_frames as usize) * (CHANNELS as usize);
         let mut sum = vec![0i64; total];
         mix_into(&mut sum, &vec![10_000i16; total], ProgramWidth::Narrow); // program lane
-        apply_gain_to_sum(&mut sum, 0.5); // duck (TTS active)
+        apply_gain_to_sum(&mut sum, 0.5, ProgramWidth::Narrow); // duck (TTS active)
         for s in sum.iter_mut() {
             *s = s.saturating_add(4_000); // stand-in for tts.mix_period
         }
@@ -5679,14 +5737,14 @@ mod tests {
         let mut narrow = vec![0i64; 1];
         mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
         mix_into(&mut narrow, &[i16::MAX], ProgramWidth::Narrow);
-        apply_gain_to_sum(&mut narrow, duck);
+        apply_gain_to_sum(&mut narrow, duck, ProgramWidth::Narrow);
         // 65534 * 0.1 — recovered cleanly, well inside i16.
         assert_eq!(narrow[0], 6_553);
 
         let mut wide = vec![0i64; 1];
         mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
         mix_into(&mut wide, &[i16::MAX], ProgramWidth::Wide);
-        apply_gain_to_sum(&mut wide, duck);
+        apply_gain_to_sum(&mut wide, duck, ProgramWidth::Wide);
         let mut out = vec![0i16; 1];
         saturate_to_i16(&wide, &mut out, ProgramWidth::Wide);
         assert_eq!(
@@ -6808,5 +6866,157 @@ mod tests {
                  config-class marker, or a permanent fault reboot-loops the Pi",
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // U2 PR-2 — closing PR #2330's deferred correctness-n5: the `i32` rails
+    // and the `f32` mantissa on what is now an `i64` accumulator.
+    // ------------------------------------------------------------------
+
+    /// THE NARROW DUCK'S BYTES, pinned as literals.
+    ///
+    /// `apply_gain_to_sum` and `ramp_program_duck` gained a width parameter;
+    /// the narrow arm must be the same arithmetic it always was, down to the
+    /// `f32` multiply and the (unreachable) `i32` clamp. These are the numbers
+    /// a narrow box has always produced.
+    #[test]
+    fn the_narrow_duck_is_byte_identical_to_its_committed_golden() {
+        let mut sum = vec![20_000i64, -20_000, 1_500, -1_500, 32_767, -32_768];
+        apply_gain_to_sum(&mut sum, 0.1, ProgramWidth::Narrow);
+        assert_eq!(sum, vec![2_000, -2_000, 150, -150, 3_277, -3_277]);
+
+        let mut ramped = vec![20_000i64, -20_000, 1_500, -1_500, 32_767, -32_768];
+        let current = ramp_program_duck(&mut ramped, 2, 0.1, 0.1, 0.01, 0.01, ProgramWidth::Narrow);
+        assert_eq!(current, 0.1);
+        assert_eq!(ramped, sum, "the ramp's steady state IS the flat multiply");
+
+        // THE MANTISSA IS PART OF THOSE BYTES. The vectors above do not
+        // distinguish an `f32` product from an `f64` one — mutation testing
+        // showed an f64 narrow arm passing them — because the two agree on
+        // very nearly every value. `50 * 0.01` is one of the few where they do
+        // not: the f32 product rounds UP to exactly 0.5 and `round()` takes it
+        // to 1, while f64 keeps 0.49999998... and rounds to 0. That one-step
+        // difference is the shipped behaviour, quirk included.
+        let mut edge = vec![50i64];
+        apply_gain_to_sum(&mut edge, 0.01, ProgramWidth::Narrow);
+        assert_eq!(edge[0], 1, "the shipped f32 product rounds up here");
+        let via_f64 = (50.0_f64 * f64::from(0.01f32)).round() as i64;
+        assert_eq!(via_f64, 0, "an f64 product would round down");
+        assert_ne!(
+            edge[0], via_f64,
+            "the probe must distinguish f32 from f64, or this guards nothing",
+        );
+        let mut edge_ramped = vec![50i64];
+        ramp_program_duck(
+            &mut edge_ramped,
+            1,
+            0.01,
+            0.01,
+            0.001,
+            0.001,
+            ProgramWidth::Narrow,
+        );
+        assert_eq!(edge_ramped[0], 1, "the ramp keeps the same f32 product");
+    }
+
+    /// THE RAILS — the correctness half of n5.
+    ///
+    /// A spine-scale sum legitimately exceeds `i32::MAX`: that headroom above
+    /// full scale is why the accumulator is `i64`, and the duck's job is to
+    /// bring such a sum back into range. Clamping the ducked value to `i32`
+    /// spent the headroom before anything downstream could use it. This drives
+    /// `step()`'s real order — sum the lanes, duck the program, THEN add the
+    /// assistant — because that is where the clamped and unclamped values stop
+    /// agreeing at the speaker.
+    #[test]
+    fn the_wide_duck_keeps_the_i64_headroom_the_i32_rails_would_have_spent() {
+        const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
+        let duck = 0.5f32;
+        // Three full-scale wide lanes: 6_442_254_336, three times over the
+        // `i32` rail and entirely legitimate mid-chain.
+        let mut sum = vec![0i64; 1];
+        for _ in 0..3 {
+            mix_into(&mut sum, &[i16::MAX], ProgramWidth::Wide);
+        }
+        assert_eq!(sum[0], 3 * FULL_SCALE_WIDE);
+        assert!(
+            sum[0] > i32::MAX as i64,
+            "the probe must exceed the old rails, or this test guards nothing",
+        );
+
+        apply_gain_to_sum(&mut sum, duck, ProgramWidth::Wide);
+        assert_eq!(sum[0], 3_221_127_168, "the ducked sum keeps its headroom");
+        let clamped = i32::MAX as i64;
+        assert_ne!(
+            sum[0], clamped,
+            "the old i32 rails would have landed exactly here",
+        );
+
+        // Now the assistant enters, as it does in `step()`, pulling the sum
+        // back into range. The clamped and unclamped paths differ by ~18 dB at
+        // the speaker, not by a rounding step.
+        let assistant = -2_000_000_000i64;
+        let kept = vec![sum[0] + assistant];
+        let spent = vec![clamped + assistant];
+        let mut kept_out = vec![0i16; 1];
+        let mut spent_out = vec![0i16; 1];
+        saturate_to_i16(&kept, &mut kept_out, ProgramWidth::Wide);
+        saturate_to_i16(&spent, &mut spent_out, ProgramWidth::Wide);
+        assert_eq!(kept_out[0], 18_633);
+        assert_eq!(spent_out[0], 2_250);
+    }
+
+    /// The ramp carries the same fix — it is the same multiply with a per-frame
+    /// gain, and `step()` reaches it on every duck transition.
+    #[test]
+    fn the_wide_ramp_keeps_the_same_headroom_as_the_flat_wide_multiply() {
+        const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
+        let mut ramped = vec![3 * FULL_SCALE_WIDE, 3 * FULL_SCALE_WIDE];
+        let mut flat = ramped.clone();
+        // current == target means every frame scales by the same constant.
+        let current = ramp_program_duck(&mut ramped, 2, 0.5, 0.5, 0.01, 0.01, ProgramWidth::Wide);
+        apply_gain_to_sum(&mut flat, 0.5, ProgramWidth::Wide);
+        assert_eq!(current, 0.5);
+        assert_eq!(ramped, flat);
+        assert_eq!(ramped[0], 3_221_127_168);
+        assert!(
+            ramped[0] > i32::MAX as i64,
+            "the ramp must not clamp to the i32 rails either",
+        );
+    }
+
+    /// THE MANTISSA — the precision half of n5.
+    ///
+    /// `f32` carries 24 bits, so `sum as f32` at spine scale rounds the value
+    /// before the multiply happens; near `2^31` the `f32` grid is 256 wide. The
+    /// wide arm computes in `f64`, whose 53-bit mantissa holds every reachable
+    /// sum exactly. This is a −144 dBFS-class correction, not a level fix —
+    /// stated as what it is.
+    #[test]
+    fn the_wide_duck_multiplies_in_f64_because_f32_cannot_hold_a_spine_sum() {
+        let probe = 2_147_483_000i64;
+        let gain = 0.5f32;
+        let mut wide = vec![probe];
+        apply_gain_to_sum(&mut wide, gain, ProgramWidth::Wide);
+        assert_eq!(wide[0], 1_073_741_500, "f64: the exact half of the probe");
+
+        // What an f32 multiply would have produced, spelled out rather than
+        // asserted by inequality alone, so the test names the value it rejects.
+        let via_f32 = ((probe as f32) * gain).round() as i64;
+        assert_eq!(via_f32, 1_073_741_504);
+        assert_ne!(
+            wide[0], via_f32,
+            "the probe must distinguish f32 from f64, or this test guards nothing",
+        );
+
+        // And the narrow arm keeps f32 deliberately: a narrow sum is under
+        // 2^24, where f32 is exact, and an f64 product can round differently in
+        // the last place. Same value, both widths, when the sum is small.
+        let small = 20_000i64;
+        let mut narrow_small = vec![small];
+        let mut wide_small = vec![small];
+        apply_gain_to_sum(&mut narrow_small, 0.1, ProgramWidth::Narrow);
+        apply_gain_to_sum(&mut wide_small, 0.1, ProgramWidth::Wide);
+        assert_eq!(narrow_small, wide_small);
     }
 }

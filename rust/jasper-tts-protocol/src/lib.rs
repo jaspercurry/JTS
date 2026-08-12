@@ -28,8 +28,149 @@ use std::io::{self, BufRead, Read};
 
 pub mod loudness;
 
-/// Wire frames are interleaved stereo S16LE.
+/// Wire frames are interleaved stereo.
 pub const CHANNELS: u16 = 2;
+
+/// The numeric width one AUDIO payload carries — the assistant half of the
+/// campaign's single per-box wire resolution (U2 / #2223).
+///
+/// SELF-DESCRIBING, NOT NEGOTIATED. The writer spells its width in the command
+/// verb (`AUDIO` / `AUDIO32`) and the reader parses exactly what arrived, so
+/// there is no round trip and no agreement step. Both ends nevertheless derive
+/// the SAME answer from the SAME input — the box's declared
+/// `JASPER_FANIN_RING_WIRE_FORMAT`, through [`TtsWireWidth::from_ring_wire_format`]
+/// in Rust and `jasper.fanin_coupling.resolve_ring_wire_format` in Python — so
+/// in a coherent box the declaration and the reader's own resolution agree by
+/// construction.
+///
+/// WHY A DISAGREEMENT IS A WARNING AND NOT A PARK. A ring header or an ALSA
+/// open carries no width of its own, so guessing wrong there is a 96 dB level
+/// error and must fail closed (`jasper_fanin::mixer::program_width_disagreement`).
+/// This payload names its own width on the wire, so neither direction is a level
+/// error: a narrow payload entering a wide mix is `widen_i16_to_i32`, a wide
+/// payload entering a narrow mix is `narrow_i32_to_i16_round`, and both are the
+/// exact conversions those primitives exist for. What a mismatch DOES mean is
+/// config drift — a box whose wire flipped without restarting `jasper-voice` —
+/// so each daemon logs it once per connection rather than muting the speaker's
+/// only voice path over a precision difference. This is PR #2330's round-3
+/// lesson applied: check each axis at its own strength, and do not park a
+/// configuration that is merely suboptimal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsWireWidth {
+    /// `AUDIO` — interleaved stereo S16LE, the shipped fleet default.
+    Narrow,
+    /// `AUDIO32` — interleaved stereo S32LE at the i32 program-spine scale
+    /// (`widen_i16_to_i32`'s scale: full scale is ±2^31, and an S16 value `s`
+    /// appears as `s << 16`).
+    Wide,
+}
+
+impl TtsWireWidth {
+    /// Bytes per sample on the wire.
+    pub fn sample_bytes(self) -> usize {
+        match self {
+            TtsWireWidth::Narrow => 2,
+            TtsWireWidth::Wide => 4,
+        }
+    }
+
+    /// The command verb a writer at this width spells.
+    pub fn verb(self) -> &'static str {
+        match self {
+            TtsWireWidth::Narrow => "AUDIO",
+            TtsWireWidth::Wide => "AUDIO32",
+        }
+    }
+
+    /// The box's TTS wire width, from its declared ring wire format token.
+    ///
+    /// The token vocabulary is the ring's (`S16_LE` / `S32_LE`) because it is
+    /// the box's ONE format declaration; see [`TtsWireWidth`]. An unrecognized
+    /// token resolves `Narrow` here rather than raising: `jasper-fanin`'s own
+    /// `RingWireFormat::from_env_value` already treats it as a config-class
+    /// fault and parks at exit 78, so this reader's job is only to avoid
+    /// inventing a second, quieter verdict for the same byte.
+    pub fn from_ring_wire_format(token: &str) -> TtsWireWidth {
+        match token.trim() {
+            "S32_LE" => TtsWireWidth::Wide,
+            _ => TtsWireWidth::Narrow,
+        }
+    }
+}
+
+/// One audio payload's samples, at the width the wire declared.
+///
+/// Both daemons queue this rather than a `Vec<i16>` so a narrow box allocates
+/// EXACTLY the bytes a bare `Vec<i16>` allocated — the narrow variant IS that
+/// vector. `jasper-outputd` already declined to widen at enqueue for the same
+/// reason (a multi-second reply's queue is `mlockall`'d); keeping the two
+/// representations distinct honours that instead of paying the wide cost on
+/// every box for a feature only a wide box uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TtsAudioSamples {
+    Narrow(Vec<i16>),
+    Wide(Vec<i32>),
+}
+
+impl TtsAudioSamples {
+    pub fn len(&self) -> usize {
+        match self {
+            TtsAudioSamples::Narrow(s) => s.len(),
+            TtsAudioSamples::Wide(s) => s.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn width(&self) -> TtsWireWidth {
+        match self {
+            TtsAudioSamples::Narrow(_) => TtsWireWidth::Narrow,
+            TtsAudioSamples::Wide(_) => TtsWireWidth::Wide,
+        }
+    }
+
+    /// One sample promoted to the i32 program-spine scale.
+    ///
+    /// A narrow sample is widened with the shared `widen_i16_to_i32`; a wide
+    /// sample is already there. Callers that mix into an i32-spine program
+    /// (`jasper-outputd` always, `jasper-fanin` on a wide wire) use this so the
+    /// promotion has one implementation.
+    #[inline]
+    pub fn spine_sample(&self, index: usize) -> i32 {
+        match self {
+            TtsAudioSamples::Narrow(s) => jasper_resampler::widen_i16_to_i32(s[index]),
+            TtsAudioSamples::Wide(s) => s[index],
+        }
+    }
+
+    /// One sample reduced to the i16 sample scale.
+    ///
+    /// A narrow sample is returned untouched — that identity is what keeps the
+    /// narrow mix path byte-identical. A wide sample is narrowed with the
+    /// shared round-to-nearest saturating quantizer, which inverts
+    /// `widen_i16_to_i32` exactly.
+    #[inline]
+    pub fn narrow_sample(&self, index: usize) -> i16 {
+        match self {
+            TtsAudioSamples::Narrow(s) => s[index],
+            TtsAudioSamples::Wide(s) => jasper_resampler::narrow_i32_to_i16_round(s[index]),
+        }
+    }
+}
+
+impl From<Vec<i16>> for TtsAudioSamples {
+    fn from(samples: Vec<i16>) -> Self {
+        TtsAudioSamples::Narrow(samples)
+    }
+}
+
+impl From<Vec<i32>> for TtsAudioSamples {
+    fn from(samples: Vec<i32>) -> Self {
+        TtsAudioSamples::Wide(samples)
+    }
+}
 
 /// Hard per-AUDIO-command byte cap (matches fanin: ~10.9 s of stereo
 /// S16 at 48 kHz). A malformed length header cannot OOM the daemon.
@@ -159,11 +300,58 @@ pub enum TtsCommand {
         provider_item_id: Option<String>,
         profile: Option<AssistantProfile>,
     },
+    /// `AUDIO <bytes>` — interleaved stereo S16LE, the narrow wire.
     Audio(Vec<i16>),
+    /// `AUDIO32 <bytes>` — interleaved stereo S32LE at the i32 program-spine
+    /// scale, the wide wire. Sent only by a box whose declared ring wire
+    /// format is `S32_LE`; see [`TtsWireWidth`].
+    AudioWide(Vec<i32>),
     SegmentEnd,
     Flush,
     FlushSync,
     Close,
+}
+
+impl TtsCommand {
+    /// Whether this command carries an audio payload, at EITHER wire width.
+    ///
+    /// Both daemons gate stale-epoch logging, the pending-budget check, and
+    /// frame accounting on "is this audio?". Asking here rather than at each
+    /// site is what keeps a second payload verb from having to be remembered in
+    /// seven places.
+    pub fn is_audio(&self) -> bool {
+        self.audio_width().is_some()
+    }
+
+    /// The wire width this payload declares, or `None` for a non-audio command.
+    pub fn audio_width(&self) -> Option<TtsWireWidth> {
+        match self {
+            TtsCommand::Audio(_) => Some(TtsWireWidth::Narrow),
+            TtsCommand::AudioWide(_) => Some(TtsWireWidth::Wide),
+            _ => None,
+        }
+    }
+
+    /// Whole stereo frames this command carries; 0 for a non-audio command.
+    pub fn audio_frames(&self) -> u64 {
+        let samples = match self {
+            TtsCommand::Audio(samples) => samples.len(),
+            TtsCommand::AudioWide(samples) => samples.len(),
+            _ => return 0,
+        };
+        (samples / (CHANNELS as usize)) as u64
+    }
+
+    /// Take this command's payload as width-tagged samples, or `None` for a
+    /// non-audio command. Consumes the command so the queue never copies a
+    /// multi-second reply.
+    pub fn into_audio_samples(self) -> Option<TtsAudioSamples> {
+        match self {
+            TtsCommand::Audio(samples) => Some(TtsAudioSamples::Narrow(samples)),
+            TtsCommand::AudioWide(samples) => Some(TtsAudioSamples::Wide(samples)),
+            _ => None,
+        }
+    }
 }
 
 pub fn command_name(command: &TtsCommand) -> &'static str {
@@ -177,6 +365,7 @@ pub fn command_name(command: &TtsCommand) -> &'static str {
         TtsCommand::ProgramDuckOff => "program_duck_off",
         TtsCommand::SegmentStart { .. } => "segment_start",
         TtsCommand::Audio(_) => "audio",
+        TtsCommand::AudioWide(_) => "audio32",
         TtsCommand::SegmentEnd => "segment_end",
         TtsCommand::Flush => "flush",
         TtsCommand::FlushSync => "flush_sync",
@@ -261,35 +450,20 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
         })));
     }
     if let Some(rest) = line.strip_prefix("AUDIO ") {
-        let byte_len = rest
-            .parse::<usize>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid AUDIO length"))?;
-        if byte_len > MAX_AUDIO_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length exceeds max chunk size",
-            ));
-        }
-        if byte_len % 2 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length must be even",
-            ));
-        }
-        let frame_bytes = (CHANNELS as usize) * 2;
-        if byte_len % frame_bytes != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length must contain whole stereo frames",
-            ));
-        }
-        let mut bytes = vec![0u8; byte_len];
-        reader.read_exact(&mut bytes)?;
+        let bytes = read_audio_payload(reader, rest, TtsWireWidth::Narrow)?;
         let samples = bytes
             .chunks_exact(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         return Ok(Some(TtsCommand::Audio(samples)));
+    }
+    if let Some(rest) = line.strip_prefix("AUDIO32 ") {
+        let bytes = read_audio_payload(reader, rest, TtsWireWidth::Wide)?;
+        let samples = bytes
+            .chunks_exact(4)
+            .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        return Ok(Some(TtsCommand::AudioWide(samples)));
     }
     if let Some(rest) = line.strip_prefix("SEGMENT_START ") {
         let mut parts = rest.split(' ');
@@ -476,6 +650,48 @@ fn validate_token(value: &str, field: &str) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Read one AUDIO/AUDIO32 binary payload after its length header.
+///
+/// Shared by both payload verbs so the byte cap, the sample alignment, and the
+/// whole-stereo-frame rule are stated ONCE and cannot drift between widths. The
+/// cap is a BYTE cap, deliberately: it bounds the allocation a malformed header
+/// can request, and that bound must not move because a box declared a wider
+/// wire. A wide payload therefore carries half the frames of a narrow one at
+/// the cap — which is why the Python writer chunks by BYTES, not frames.
+fn read_audio_payload<R: BufRead>(
+    reader: &mut R,
+    raw_len: &str,
+    width: TtsWireWidth,
+) -> io::Result<Vec<u8>> {
+    let verb = width.verb();
+    let byte_len = raw_len.parse::<usize>().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("invalid {verb} length"))
+    })?;
+    if byte_len > MAX_AUDIO_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{verb} byte length exceeds max chunk size"),
+        ));
+    }
+    let sample_bytes = width.sample_bytes();
+    if byte_len % sample_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{verb} byte length must be a whole number of samples"),
+        ));
+    }
+    let frame_bytes = (CHANNELS as usize) * sample_bytes;
+    if byte_len % frame_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{verb} byte length must contain whole stereo frames"),
+        ));
+    }
+    let mut bytes = vec![0u8; byte_len];
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn parse_optional_f32(value: &str, field: &str) -> io::Result<Option<f32>> {
@@ -728,5 +944,174 @@ mod tests {
                 "flushed_frames",
             ]
         );
+    }
+
+    // ------------------------------------------------------------------
+    // U2 PR-2 — the assistant wire's two widths.
+    // ------------------------------------------------------------------
+
+    /// THE NARROW WIRE'S BYTES, pinned exactly.
+    ///
+    /// Captured from the pre-change parser: `AUDIO 8` followed by four LE i16
+    /// samples yields those four samples, and the command reports itself as
+    /// narrow. Everything else in this PR is allowed to move; this is not.
+    #[test]
+    fn the_narrow_audio_verb_parses_exactly_as_it_always_has() {
+        let mut reader = Cursor::new(b"AUDIO 8\n\x01\x00\x02\x00\xfe\xff\x00\x80".to_vec());
+        let command = read_command(&mut reader).unwrap().unwrap();
+        assert_eq!(command, TtsCommand::Audio(vec![1, 2, -2, i16::MIN]));
+        assert_eq!(command.audio_width(), Some(TtsWireWidth::Narrow));
+        assert_eq!(command.audio_frames(), 2);
+        assert_eq!(command_name(&command), "audio");
+    }
+
+    /// The wide verb, and that it is a DIFFERENT verb rather than the same one
+    /// reinterpreted — `AUDIO32` does not match the `AUDIO ` prefix, so the two
+    /// cannot be confused by a reader that only knows one of them.
+    #[test]
+    fn the_wide_audio_verb_parses_s32_samples_at_spine_scale() {
+        let mut reader = Cursor::new(
+            b"AUDIO32 16\n\x00\x00\x01\x00\x00\x00\x02\x00\x34\x12\x00\x00\x00\x00\x00\x80"
+                .to_vec(),
+        );
+        let command = read_command(&mut reader).unwrap().unwrap();
+        assert_eq!(
+            command,
+            TtsCommand::AudioWide(vec![0x0001_0000, 0x0002_0000, 0x0000_1234, i32::MIN]),
+        );
+        assert_eq!(command.audio_width(), Some(TtsWireWidth::Wide));
+        assert_eq!(command.audio_frames(), 2);
+        assert_eq!(command_name(&command), "audio32");
+    }
+
+    /// A stream carrying an `AUDIO32` header must not be readable as `AUDIO`
+    /// by accident: the prefix test is `"AUDIO "` WITH the space.
+    #[test]
+    fn the_wide_verb_is_not_a_prefix_of_the_narrow_one() {
+        assert!(!"AUDIO32 16".starts_with("AUDIO "));
+        assert_eq!(TtsWireWidth::Narrow.verb(), "AUDIO");
+        assert_eq!(TtsWireWidth::Wide.verb(), "AUDIO32");
+        assert_eq!(TtsWireWidth::Narrow.sample_bytes(), 2);
+        assert_eq!(TtsWireWidth::Wide.sample_bytes(), 4);
+    }
+
+    /// Non-audio commands report no width and no frames — the property the
+    /// daemons' stale-epoch and budget checks rely on.
+    #[test]
+    fn only_audio_commands_report_a_width_or_frames() {
+        for command in [
+            TtsCommand::ProgramDuckOn,
+            TtsCommand::SegmentEnd,
+            TtsCommand::Flush,
+            TtsCommand::GainDb(-12.0),
+        ] {
+            assert!(!command.is_audio(), "{command:?} must not read as audio");
+            assert_eq!(command.audio_width(), None);
+            assert_eq!(command.audio_frames(), 0);
+            assert_eq!(command.into_audio_samples(), None);
+        }
+        assert!(TtsCommand::Audio(vec![1, 2]).is_audio());
+        assert!(TtsCommand::AudioWide(vec![1, 2]).is_audio());
+    }
+
+    /// Both verbs enforce the SAME byte cap and the SAME whole-stereo-frame
+    /// rule, at their own sample size.
+    #[test]
+    fn the_wide_verb_rejects_oversized_partial_sample_and_partial_frame() {
+        let mut reader = Cursor::new(format!("AUDIO32 {}\n", MAX_AUDIO_BYTES + 4).into_bytes());
+        assert!(
+            read_command(&mut reader).is_err(),
+            "cap must apply to AUDIO32"
+        );
+        let mut reader = Cursor::new(b"AUDIO32 6\n".to_vec());
+        assert!(read_command(&mut reader).is_err(), "6 bytes is 1.5 samples");
+        let mut reader = Cursor::new(b"AUDIO32 4\n\x01\0\0\0".to_vec());
+        assert!(
+            read_command(&mut reader).is_err(),
+            "one sample is half a frame"
+        );
+    }
+
+    /// THE PRECISION CLAIM, stated as a contrast rather than a bare survival.
+    ///
+    /// A signal below the S16 grid reaches a wide payload's consumer intact and
+    /// is entirely absent from a narrow one's — the narrow wire has no code for
+    /// it at all. This is what the wide verb buys.
+    #[test]
+    fn a_sub_16_bit_signal_reaches_a_wide_payload_and_cannot_reach_a_narrow_one() {
+        // 0x0000_4000: a quarter of one i16 LSB. Nothing on the S16 grid.
+        let wide = TtsAudioSamples::Wide(vec![0x0000_4000, -0x0000_4000]);
+        assert_eq!(wide.spine_sample(0), 0x0000_4000);
+        assert_eq!(wide.spine_sample(1), -0x0000_4000);
+        // The narrow wire's own answer for that signal is silence (round to
+        // nearest of a quarter-step is zero), which is the contrast.
+        assert_eq!(wide.narrow_sample(0), 0);
+        assert_eq!(wide.narrow_sample(1), 0);
+        let narrow = TtsAudioSamples::Narrow(vec![0, 0]);
+        assert_eq!(narrow.spine_sample(0), 0);
+        assert_ne!(
+            narrow.spine_sample(0),
+            wide.spine_sample(0),
+            "an S16 payload cannot carry what the S32 one just did",
+        );
+    }
+
+    /// The two conversions are exact inverses on every promoted value, which is
+    /// what makes a width DISAGREEMENT a precision question and not a level
+    /// error — the reason this axis warns instead of parking.
+    #[test]
+    fn narrowing_a_promoted_payload_returns_the_original_sample() {
+        for probe in [0i16, 1, -1, 1234, -4321, i16::MAX, i16::MIN] {
+            let narrow = TtsAudioSamples::Narrow(vec![probe]);
+            let promoted = narrow.spine_sample(0);
+            assert_eq!(promoted, (probe as i32) << 16, "promotion must be << 16");
+            let wide = TtsAudioSamples::Wide(vec![promoted]);
+            assert_eq!(
+                wide.narrow_sample(0),
+                probe,
+                "narrowing must invert the promotion exactly",
+            );
+        }
+    }
+
+    /// The width comes from the box's ONE format declaration, spelled the way
+    /// the ring spells it. `tests/test_ring_wire_format_contract.py` pins the
+    /// Python half of the same token set.
+    #[test]
+    fn the_wire_width_is_resolved_from_the_ring_wire_format_token() {
+        assert_eq!(
+            TtsWireWidth::from_ring_wire_format("S32_LE"),
+            TtsWireWidth::Wide,
+        );
+        assert_eq!(
+            TtsWireWidth::from_ring_wire_format(" S32_LE "),
+            TtsWireWidth::Wide,
+        );
+        // Unset, narrow, and every unrecognized spelling resolve narrow here —
+        // fan-in's own parser owns the refusal verdict for a bad token.
+        for token in ["S16_LE", "", "s32_le", "S32LE", "bogus"] {
+            assert_eq!(
+                TtsWireWidth::from_ring_wire_format(token),
+                TtsWireWidth::Narrow,
+                "{token} must not resolve wide here",
+            );
+        }
+    }
+
+    /// A payload's own accessors agree with the command that carried it.
+    #[test]
+    fn a_payload_reports_the_width_of_the_verb_that_delivered_it() {
+        let narrow = TtsCommand::Audio(vec![1, 2, 3, 4])
+            .into_audio_samples()
+            .unwrap();
+        assert_eq!(narrow.width(), TtsWireWidth::Narrow);
+        assert_eq!(narrow.len(), 4);
+        assert!(!narrow.is_empty());
+        let wide = TtsCommand::AudioWide(vec![1, 2])
+            .into_audio_samples()
+            .unwrap();
+        assert_eq!(wide.width(), TtsWireWidth::Wide);
+        assert_eq!(wide.len(), 2);
+        assert!(TtsAudioSamples::Narrow(Vec::new()).is_empty());
     }
 }

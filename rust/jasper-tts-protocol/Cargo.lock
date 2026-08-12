@@ -3,5 +3,19 @@
 version = 4
 
 [[package]]
+name = "jasper-clock"
+version = "0.1.0"
+
+[[package]]
+name = "jasper-resampler"
+version = "0.1.0"
+dependencies = [
+ "jasper-clock",
+]
+
+[[package]]
 name = "jasper-tts-protocol"
 version = "0.1.0"
+dependencies = [
+ "jasper-resampler",
+]

@@ -357,6 +357,26 @@ both scales — the program duck can pull an over-full-scale sum back into
 range, so saturating at the mix would distort where clipping at the write
 does not.
 
+The duck itself is width-dispatched for the same reason (`apply_gain_to_sum`
+and `ramp_program_duck`). `Narrow` keeps its `f32` multiply and its `i32`
+clamp verbatim, where the clamp has always been unreachable and the bytes are
+a shipped contract. `Wide` computes in `f64` — an `f32` mantissa is 24 bits
+and cannot hold a spine-scale sum — and drops the `i32` clamp, because a
+spine-scale sum legitimately exceeds `i32::MAX` and clamping there would spend
+the `i64` headroom before the duck could use it. Saturation stays the
+consumer's job.
+
+**The assistant lane carries its own width.** The TTS wire has two
+self-describing payload verbs — `AUDIO` (S16LE) and `AUDIO32` (S32LE at spine
+scale) — and `jasper-voice` speaks whichever the box's
+`JASPER_FANIN_RING_WIRE_FORMAT` names, so nothing is negotiated. The sum's
+width and the payload's are independent axes and all four pairings are
+defined; the two conversions between them (`widen_i16_to_i32` /
+`narrow_i32_to_i16_round`) are exact inverses, which is why a disagreement is
+logged (`event=fanin.tts_wire_width_mismatch`) rather than parked. On a wide
+sum the gain is applied AFTER the promotion, in `f64` (`apply_gain`), so a
+deep assistant attenuation no longer rounds the reply back onto the S16 grid.
+
 The choice is reversible — if a future case demands scaled summing
 (multi-listener environment where simultaneous sources are intentional),
 add a configuration flag.

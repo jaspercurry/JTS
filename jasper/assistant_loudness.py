@@ -39,6 +39,10 @@ INPUT_RATE = 24_000
 MEASURE_RATE = 48_000
 FULL_SCALE = 32768.0
 FULL_SCALE_SQ = FULL_SCALE * FULL_SCALE
+# The exact i16 -> i32 spine-scale factor, 2^16 — the same power of two the Rust
+# `widen_i16_to_i32` shifts by. A wide (S32) buffer is divided by it before
+# measurement so the reported LUFS/peak describe the sound, not the container.
+SPINE_SCALE = 65536.0
 BS1770_OFFSET_DB = -0.691
 K_WEIGHTING_PRE_COEFFICIENTS = (
     1.53512485958697,
@@ -335,10 +339,21 @@ def ensure_seed_profile(
     )
 
 
-def measure_pcm_24k_mono(pcm: bytes) -> LoudnessMeasurement:
+def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasurement:
+    """Measure 24 kHz mono PCM. `wide=True` reads S32LE at the i32 spine scale.
+
+    Both widths are reduced to i16 SAMPLE UNITS before any measurement runs, so
+    a wide buffer and the narrow bake of the same sound report the same LUFS and
+    the same peak — the measurement describes the SOUND, not the container. The
+    reduction is a divide by the exact 2^16 the Rust `widen_i16_to_i32` shifts
+    by, kept in float so it costs no precision.
+    """
     import numpy as np
 
-    mono = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+    if wide:
+        mono = np.frombuffer(pcm, dtype=np.int32).astype(np.float64) / SPINE_SCALE
+    else:
+        mono = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
     if mono.size == 0:
         raise ValueError("empty PCM")
     if mono.size % 2:

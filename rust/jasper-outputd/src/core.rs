@@ -22,7 +22,7 @@ use crate::mixer::{mix_saturating, sanitize_tts_gain_db};
 use crate::types::{
     narrow_period, AssistantProfile, AudioFormat, ProgramSample, SegmentKind, CHANNELS, SAMPLE_RATE,
 };
-use jasper_tts_protocol::VolumeContext;
+use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -137,7 +137,7 @@ impl OutputCore {
         &mut self,
         provider_item_id: Option<String>,
         kind: SegmentKind,
-        samples: Vec<i16>,
+        samples: impl Into<TtsAudioSamples>,
     ) -> SegmentId {
         let id = self.start_assistant_segment(provider_item_id, kind);
         self.append_assistant_audio_with_segment_gain(id, samples);
@@ -171,13 +171,22 @@ impl OutputCore {
         id
     }
 
-    pub fn append_assistant_audio(&mut self, id: SegmentId, gain: f32, samples: Vec<i16>) {
+    pub fn append_assistant_audio(
+        &mut self,
+        id: SegmentId,
+        gain: f32,
+        samples: impl Into<TtsAudioSamples>,
+    ) {
         // Legacy direct path: render at the given gain with no headroom
         // (peak cap == base), no live tracking, and no reference learning.
         self.append_assistant_audio_planned(id, gain, None, false, samples);
     }
 
-    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
+    pub fn append_assistant_audio_with_segment_gain(
+        &mut self,
+        id: SegmentId,
+        samples: impl Into<TtsAudioSamples>,
+    ) {
         let segment = self.ledger.segment(id);
         let base_gain_db = segment.gain;
         // Only Assistant-kind segments train the learned quiet-room reference;
@@ -202,8 +211,9 @@ impl OutputCore {
         base_gain_db: f32,
         decision: Option<Arc<AssistantGainDecision>>,
         reference_eligible: bool,
-        samples: Vec<i16>,
+        samples: impl Into<TtsAudioSamples>,
     ) {
+        let samples = samples.into();
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
         if samples.is_empty() {
             return;
