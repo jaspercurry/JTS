@@ -134,6 +134,7 @@ from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
+from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
@@ -2553,6 +2554,15 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
+    # The five an ANCHOR phase adds (#2291 Phase 5a-vii). Two of them do not
+    # share their code's name either: an unresolved alignment renders as
+    # ``delay_exceeds_search_window``, and a bent curve the room caused renders
+    # as ``noisy_room_linearity`` rather than blaming the phone's microphone.
+    _dispatch.SCREEN_CHANNEL_MAP_MISMATCH: REASON_CHANNEL_MAP_MISMATCH,
+    _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
+    _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
+    _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
+    _dispatch.SCREEN_LOW_ALIGNMENT_CONFIDENCE: REASON_LOW_ALIGNMENT_CONFIDENCE,
 }
 
 
@@ -7679,40 +7689,36 @@ class CrossoverV2Conductor:
         return verdict
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.channel_map_ok is False:
-            return PhaseVerdict(False, REASON_CHANNEL_MAP_MISMATCH)
-        if analysis.pilot_snr_ok is False:
-            # Band-relative ambient-compensated linearity fix (2026-07-20):
-            # the quiet pilot's own in-band SNR was too low to trust the
-            # ambient-subtracted delta either way — ``analysis.linearity_ok``
-            # is already None (unknown) in this case since issue #1838 (see
-            # ``program_analysis._pilot_observations``'s docstring), so this
-            # branch is the ONLY path that can fail on it. Route to the
-            # honest room/positioning reason, never AGC — the phone's mic
-            # didn't misbehave, there just wasn't enough signal above the
-            # room to measure.
-            return PhaseVerdict(False, REASON_SNR_FLOOR)
-        if analysis.linearity_ok is False:
-            # W6.12: don't blame the phone's mic when the room was the actual
-            # cause. The CHECK gain solve ALREADY computes an SNR-floor
-            # verdict against THIS capture's own ambient bands (``_analyze_check``
-            # runs ``_solve_gain_plan`` unconditionally, before this branch),
-            # independent of whether linearity itself passed — reuse that
-            # existing evidence rather than re-deriving a second ambient
-            # judgment. The other phases reach the same honest destination by
-            # a different route: since issue #1810 their own pre-pilot ambient
-            # window makes ``pilot_snr_ok`` a real verdict, and they branch on
-            # it to ``REASON_PILOT_LEVEL_COLLAPSE`` above their own linearity
-            # check. CHECK keeps the gain-solve route because it already has
-            # a stronger, band-resolved ambient judgment in hand.
-            if analysis.gain_plan is not None and not analysis.gain_plan.snr_floor_ok:
-                return PhaseVerdict(False, REASON_NOISY_ROOM_LINEARITY)
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        """CHECK's verdict: the ladder's answer, then the accept-side banking.
+
+        The rungs — which screens run, in which order, and why "too quiet" has
+        to be asked before the microphone is blamed — belong to
+        :func:`~jasper.active_speaker.crossover_v2.capture_dispatch.check_screens`.
+        What stays here is what an acceptance CAUSES: banking the solved gains
+        and this capture's ambient report, composing the MEASURE program from
+        them, and publishing CHECK evidence across the seam.
+        """
         gain_plan = analysis.gain_plan
-        if gain_plan is None or not gain_plan.snr_floor_ok:
-            return PhaseVerdict(False, REASON_SNR_FLOOR)
+        kind = _dispatch.check_screens(
+            _dispatch.CheckScreens(
+                stimulus_located=_stimulus_locate_ok(analysis),
+                channel_map_ok=analysis.channel_map_ok,
+                pilot_snr_ok=analysis.pilot_snr_ok,
+                linearity_ok=analysis.linearity_ok,
+                gain_plan_present=gain_plan is not None,
+                # Read only when a plan exists; ``False`` is the value the
+                # ladder is documented to ignore in that case, never a claim
+                # that an absent solve cleared its floor.
+                gain_plan_snr_floor_ok=(
+                    bool(gain_plan.snr_floor_ok) if gain_plan is not None else False
+                ),
+            )
+        )
+        if kind is not None:
+            return PhaseVerdict(False, _screen_refusal_code(kind))
+        # mypy: the ladder's final rung refuses an absent plan, so reaching
+        # here proves one exists — restated because the checker cannot see it.
+        assert gain_plan is not None
         # Accept: keep the solved gains + ambient, compose the MEASURE program,
         # publish CHECK evidence.
         self._gain_plan_db = dict(gain_plan.gain_db)
@@ -7781,123 +7787,78 @@ class CrossoverV2Conductor:
         # (#2291 Phase 2b): a build returns its own :class:`_LinearizationState`
         # and nothing outlives the build, so there is no prior attempt's value
         # left to leak into this one.
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        # --- "too quiet" runs BEFORE "glitched" (D3, issue #1838) ---
-        #
-        # A capture nobody could hear produces the same symptoms as a spliced
-        # one: the locator lands the sweeps in the wrong place, the residual
-        # blows past its ceiling, and `glitch_detected` fires on noise. Until
-        # #1838 the glitch branch sat second and swallowed both level
-        # verdicts below it, so session cap_-Us10xORVNlFa_dgi-sP7g — whose
-        # MEASURE played 33 dB below flat — told the household its capture had
-        # glitched and silently re-armed the SAME unwinnable level, twice,
-        # until the session timed out. Low SNR CAUSES the glitch signal, so
-        # the level verdicts have to be asked first or the reported cause is
-        # never the real one. (This very likely also explains a share of the
-        # historical "capture glitched" reports.)
-        #
-        # Neither branch re-arms: re-running an inaudible measurement at the
-        # same level cannot succeed, and both reason codes already carry a
-        # household action that can. ``pilot_level_collapse`` names the room
-        # and the level ("quiet the room / move the microphone closer");
-        # ``locate_failed`` picks its own sentence from the pilot evidence
-        # since #2085, because the ORDER here means the locate branch below
-        # is reached only once the pilot has been asked — see
-        # ``locate_failed_message``.
-        if analysis.pilot_snr_ok is False:
-            # Issue #1810. Also ahead of the linearity branch: below the SNR
-            # floor the two-pilot delta is not evidence about anything
-            # (``_pilot_observations`` reports ``linearity_ok`` as None), so
-            # the honest verdict is about the room and the level, never the
-            # phone's microphone.
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
-        if not _sweep_locate_confidence_ok(analysis):
-            self._last_measure_guard = "sweep_locate_confidence"
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.glitch_detected:
-            # Repeat-level disagreement reuses this same code (§5.2) — the
-            # analysis already folded it into glitch_detected.
-            self._rearm_measure_after_transient()
-            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
-        # Measurement-honesty gate G2 (2026-07-22 — the xrun detector): a
-        # uniform whole-capture schedule shift the repeat-pair drift check
-        # above is structurally blind to (see SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-        # for the evidence). Routed identically to the glitch branch above —
-        # same silent auto-retry, same reused reason code (§5.2's "never a
-        # new user-facing code for a capture-glitch class" convention) — the
-        # ``guard`` diag field (below) is what tells telemetry the two apart.
-        # ``program_for_phase`` (not the bare ``self._measure_program``,
-        # which mypy types ``ExcitationProgram | None``) is the ALREADY
-        # type-narrowed accessor — it raises if MEASURE were somehow armed
-        # before CHECK produced a program, which can't happen on this path
-        # (we are actively processing a MEASURE analysis).
-        if not _sweep_schedule_ok(
-            analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
-        ):
-            self._last_measure_guard = "sweep_schedule"
-            self._rearm_measure_after_transient()
-            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
-        if _any_sweep_clipped(analysis):
-            self._rearm_measure_after_transient(extra_backoff_db=CLIP_RETRY_BACKOFF_DB)
-            return PhaseVerdict(False, REASON_CLIPPED)
-        if analysis.linearity_ok is False:
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
-        if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
-            return PhaseVerdict(False, REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
-        # Trust gate (owner ruling, 2026-07-20): this is GCC's capture/seed
-        # confidence, not confidence in T2's refined delay (the alignment and
-        # candidate retain both facts separately). Below the floor the
-        # candidate is never built or published — a household has no basis to
-        # judge a confidence number, so this is guidance ("move the mic"), not
-        # a question ("apply anyway?"). Skipped entirely when there is no
-        # alignment estimate at all (a trims-only candidate) — same condition
-        # the former review-screen nudge used.
-        if (
-            analysis.alignment is not None
-            and analysis.alignment.confidence < ALIGNMENT_CONFIDENCE_TRUST_FLOOR
-        ):
-            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
-        # Physical-plausibility backstop (Fix 3): a confidently-WRONG delay
-        # (high GCC correlation confidence at the wrong lag) clears the trust
-        # gate above but is still physically implausible against the
-        # preset's declared search bound — reuses the SAME re-measure
-        # guidance rather than a new reason code, since the household action
-        # is identical ("move the mic, measure again").
-        if (
-            analysis.alignment is not None
-            and analysis.alignment.status == ALIGNMENT_OK
-            and not alignment_delay_plausible(analysis.alignment.delay_us, self._preset)
-        ):
-            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
+        screen = _dispatch.measure_screens(
+            _dispatch.MeasureScreens(
+                stimulus_located=_stimulus_locate_ok(analysis),
+                pilot_snr_ok=analysis.pilot_snr_ok,
+                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
+                glitch_detected=bool(analysis.glitch_detected),
+                # A CALLABLE, and the rung whose eager resolution would be
+                # OBSERVABLE: ``program_for_phase`` RAISES when MEASURE has no
+                # composed program, and the shipped ladder never reaches this
+                # rung on a capture the three above it already refused. (It is
+                # also the already type-narrowed accessor — the bare
+                # ``self._measure_program`` is ``ExcitationProgram | None``.)
+                sweep_schedule_ok=lambda: _sweep_schedule_ok(
+                    analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
+                ),
+                any_sweep_clipped=_any_sweep_clipped(analysis),
+                linearity_ok=analysis.linearity_ok,
+                alignment_present=analysis.alignment is not None,
+                alignment_status_ok=(
+                    analysis.alignment is not None
+                    and analysis.alignment.status == ALIGNMENT_OK
+                ),
+                # The trust gate (owner ruling 2026-07-20): GCC's capture/seed
+                # confidence, not confidence in the refined delay. ``True`` with
+                # no estimate at all, which is what makes the trims-only path
+                # skip all three alignment rungs rather than fail them.
+                alignment_confidence_ok=(
+                    analysis.alignment is None
+                    or analysis.alignment.confidence
+                    >= ALIGNMENT_CONFIDENCE_TRUST_FLOOR
+                ),
+                # Also a callable: the physical backstop (Fix 3) is asked ONLY
+                # of an estimate that already cleared the two rungs above, and
+                # it reads the preset's declared search bound.
+                delay_physically_plausible=lambda: (
+                    analysis.alignment is None
+                    or alignment_delay_plausible(
+                        analysis.alignment.delay_us, self._preset
+                    )
+                ),
+            ),
+            clip_retry_backoff_db=CLIP_RETRY_BACKOFF_DB,
+        )
+        if screen is not None:
+            if screen.guard:
+                self._last_measure_guard = screen.guard
+            if screen.rearm:
+                self._rearm_measure_after_transient(
+                    extra_backoff_db=screen.rearm_backoff_db
+                )
+            return PhaseVerdict(False, _screen_refusal_code(screen.kind))
         # Measurement-honesty DISCLOSURE G1 (2026-07-22; owner ruling
-        # 2026-08-03, issue #2087). **This branch does not refuse.** A
-        # predicted ripple above the threshold says the two branches sum less
-        # coherently in this room, on this rig, than the calibration corpus
-        # did — see MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB for the evidence and
-        # for why the owner converted it. So the capture is ACCEPTED and the
-        # measurement carries an honest reservation to the household instead of
-        # sending them to move a microphone that was never the problem.
-        #
-        # Deliberately NOT a `return` — control falls through to the same
-        # candidate build every accepted MEASURE runs, so the reservation
-        # changes what the household is TOLD and nothing about what is built,
-        # fitted, gated, or applied. Every accountability gate below
-        # (``_assert_accountable``'s level-frame, realized-level and
+        # 2026-08-03, issue #2087). **This does not refuse.** The capture is
+        # ACCEPTED and carries an honest reservation to the household instead
+        # of sending them to move a microphone that was never the problem, so
+        # the reservation changes what the household is TOLD and nothing about
+        # what is built, fitted, gated, or applied. Every accountability gate
+        # below (``_assert_accountable``'s level-frame, realized-level and
         # predicted-improvement refusals) still runs unchanged on this
         # candidate, which is what keeps "proceed" from meaning "unchecked".
         #
-        # Skipped when there is no candidate or no alignment estimate (a
-        # trims-only path) — the same skip condition the gate carried, kept
-        # because a reservation about a candidate that does not exist would
-        # describe nothing.
-        if (
-            analysis.candidate is not None
-            and analysis.alignment is not None
-            and analysis.candidate.predicted_ripple_db
-            > MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB
+        # The candidate presence check is the caller's because reading the
+        # ripple off it requires it; the alignment half of the shipped skip
+        # belongs to the predicate. See
+        # :func:`~jasper.active_speaker.crossover_v2.capture_dispatch.ripple_reservation_due`.
+        candidate = analysis.candidate
+        if candidate is not None and _dispatch.ripple_reservation_due(
+            predicted_ripple_db=candidate.predicted_ripple_db,
+            has_alignment=analysis.alignment is not None,
+            disclosure_threshold_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
         ):
-            self._note_ripple_reservation(analysis.candidate.predicted_ripple_db)
+            self._note_ripple_reservation(candidate.predicted_ripple_db)
         if analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
@@ -10147,51 +10108,32 @@ class CrossoverV2Conductor:
         # confusing the two produced a household-visible bug they should not
         # share a name.
         gate_record = _gate_record(analysis.summed_response)
-        if not _stimulus_locate_ok(analysis):
-            return PhaseVerdict(False, REASON_LOCATE_FAILED)
-        if analysis.pilot_snr_ok is False:
-            # Issue #1810 — the verdict the JTS3 session of 2026-07-28 should
-            # have got. It runs ahead of BOTH the linearity branch and the G3
-            # transfer gate below: a pilot pair that never cleared the room
-            # floor cannot establish or move a transfer baseline either, so
-            # letting it reach G3 would seed that gate with noise.
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
-        # Capture-integrity gate (issue #1971). Ahead of EVERY grade below it,
-        # for the reason ``_measure_verdict`` puts the same class of check
-        # ahead of its own: a spliced or clipped recording is not evidence
-        # about the speaker, so no verdict drawn from it — linearity, the
-        # gate-window comparison, G3's transfer step, or the tracking max — is
-        # worth reporting. Until this existed nothing on the VERIFY path ever
-        # looked: ``glitch_detected`` came from ``_estimate_drift``, which is
-        # structurally MEASURE-only, and both ``_sweep_schedule_ok`` and
-        # ``_sweep_locate_confidence_ok`` filter ``KIND_SWEEP`` while VERIFY's
-        # sweep is ``KIND_SUMMED_SWEEP``.
+        # The pre-grade ladder — locate, pilot level, capture integrity (issue
+        # #1971), linearity — belongs to
+        # :func:`~jasper.active_speaker.crossover_v2.capture_dispatch.verify_integrity_screens`,
+        # which owns the order and the two-code split the integrity record
+        # produces. It runs ahead of EVERY grade below it for the reason
+        # ``_measure_verdict`` puts the same class of check ahead of its own: a
+        # spliced or clipped recording is not evidence about the speaker, so no
+        # verdict drawn from it — linearity, the gate-window comparison, G3's
+        # transfer step, or the tracking max — is worth reporting.
         #
-        # ``None`` is the pre-#1971 analysis shape and means NO EVIDENCE —
-        # the same convention ``linearity_ok`` / ``pilot_snr_ok`` use two
-        # lines up, where only an explicit ``False`` refuses. It is not a
-        # silent pass: ``_log_verify_diag`` prints ``integrity=unavailable``
-        # for it, distinct from ``integrity=ok``, and the production analyze
-        # seam always populates the record (pinned by test).
-        #
-        # Two reason codes, because the two failures need different household
-        # actions and #1838's D3 is explicit that they must not share one:
-        # a sweep nobody could hear is a level/mic problem that re-running at
-        # the same level cannot fix (``locate_failed``), while a spliced or
-        # clipped timeline is the transient capture-glitch class §5.2 says
-        # reuses ``drift_baselines_disagree`` rather than minting a new code.
-        # The diag's ``integrity=`` field names which check fired, the way
-        # ``guard=`` disambiguates MEASURE's own shared codes.
-        integrity = analysis.capture_integrity
-        if integrity is not None and integrity.failed:
-            payload = {"capture_integrity": integrity.to_dict()}
-            if INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
-                return PhaseVerdict(False, REASON_LOCATE_FAILED, payload=payload)
-            return PhaseVerdict(
-                False, REASON_DRIFT_BASELINES_DISAGREE, payload=payload,
+        # What stays here is every rung that reads state outliving ONE capture:
+        # the gate-comparability rule against MEASURE's window, G3's
+        # pilot-transfer baseline, and the tracking comparison.
+        integrity_screen = _dispatch.verify_integrity_screens(
+            analysis, stimulus_located=_stimulus_locate_ok(analysis),
+        )
+        if integrity_screen is not None:
+            payload = (
+                dict(integrity_screen.integrity_payload)
+                if integrity_screen.integrity_payload is not None else {}
             )
-        if analysis.linearity_ok is False:
-            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+            return PhaseVerdict(
+                False,
+                _screen_refusal_code(integrity_screen.kind),
+                payload=payload,
+            )
         # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
         # overlay differences that aren't driver alignment ⇒ inconclusive.
         verify_gate = _gate_window_ms(analysis.summed_response)
@@ -12098,6 +12040,12 @@ async def abandon_measurement_volume(
 __all__ = [
     "CrossoverV2Conductor",
     "CrossoverV2FlowError",
+    # Re-exported, not used here, since #2291 Phase 5a-vii moved VERIFY's
+    # integrity ladder to :mod:`.crossover_v2.capture_dispatch` (the entry
+    # baseline's went to :mod:`.crossover_v2.spatial` before it). Five test
+    # modules reach it as ``flow.INTEGRITY_CHECK_SWEEP_HEARD``; listing it here
+    # is what says the import survived on purpose rather than as an orphan.
+    "INTEGRITY_CHECK_SWEEP_HEARD",
     "bind_program_playback_seams",
     "build_v2_capture_plan",
     "build_v2_session_spec",

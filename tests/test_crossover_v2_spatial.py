@@ -27,7 +27,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import spatial
+from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
@@ -501,12 +501,27 @@ def test_only_the_lateral_walk_can_stand_on_nothing():
 def test_every_screen_kind_has_a_household_sentence():
     """The completeness check the mapping exists to make possible.
 
-    ``SCREEN_KINDS`` is declared so the flow's mapping can be verified rather
+    The kind sets are declared so the flow's mapping can be verified rather
     than trusted — the same discipline ``coordinator.REFUSAL_KINDS`` keeps. A
     kind added without an arm ships wearing another kind's copy, and this is
     what stops that from being discovered by a household.
+
+    Since #2291 Phase 5a-vii there are TWO owners: ``spatial.SCREEN_KINDS``
+    (the walked phases) and ``capture_dispatch.ANCHOR_SCREEN_KINDS`` (CHECK,
+    MEASURE, VERIFY).  The registry is checked against their union, which
+    :data:`~jasper.active_speaker.crossover_v2.capture_dispatch.CAPTURE_SCREEN_KINDS`
+    is.  Equality, not containment, so the guard bites in BOTH directions: a
+    kind that ships without a sentence fails, and so does a registry arm for a
+    kind no ladder can return — a stale arm is how a mapping outlives the rung
+    it was written for.
     """
-    assert set(flow.SCREEN_KIND_REASONS) == set(spatial.SCREEN_KINDS)
+    assert capture_dispatch.CAPTURE_SCREEN_KINDS == (
+        spatial.SCREEN_KINDS | capture_dispatch.ANCHOR_SCREEN_KINDS
+    )
+    # The two owners partition the vocabulary; an overlap would mean one kind
+    # with two declarations, which is the drift a union quietly hides.
+    assert not (spatial.SCREEN_KINDS & capture_dispatch.ANCHOR_SCREEN_KINDS)
+    assert set(flow.SCREEN_KIND_REASONS) == set(capture_dispatch.CAPTURE_SCREEN_KINDS)
     for code in flow.SCREEN_KIND_REASONS.values():
         assert code in flow.REASON_REGISTRY, code
 
