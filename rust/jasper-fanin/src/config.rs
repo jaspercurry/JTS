@@ -39,6 +39,60 @@ pub const RING_SLOT_FRAMES: u32 = 128;
 pub const RING_SLOTS_MIN: u32 = 2;
 pub const RING_SLOTS_MAX: u32 = 16;
 
+/// The directory every SHM slot ring lives in. Mirrors
+/// `jasper.ring_assets.RING_SHM_DIR` by VALUE (the tmpfiles.d entry
+/// `deploy/tmpfiles/jts-ring.conf` is the authority that creates it);
+/// `tests/test_renderer_ring_lanes.py` pins the two spellings against each other.
+///
+/// Ring A (`program.ring`) and Ring B (`content.ring`) name their own files
+/// through `JASPER_FANIN_RING_PATH` / outputd's default. The RENDERER-ingress
+/// rings (U3 / P6) do NOT get a per-ring env key: their path is DERIVED from the
+/// lane label by [`renderer_ring_path`], because a lane's ring is an attribute of
+/// the lane, and a second env key naming it could disagree with the label that
+/// selected it.
+pub const RING_SHM_DIR: &str = "/dev/shm/jts-ring";
+
+/// Filename prefix for a RENDERER-ingress ring, so `ls /dev/shm/jts-ring/` tells
+/// an operator which files are renderer lanes and which are the program/content
+/// hops. Mirrored in Python by `jasper.renderer_lanes.RENDERER_RING_PREFIX`.
+pub const RENDERER_RING_PREFIX: &str = "lane-";
+
+/// The ring file a renderer-ingress lane reads, derived from the fan-in lane
+/// LABEL — the one identity fan-in already has for that lane. This is the whole
+/// path rule; there is no env override, so the reader's path and the conf.d
+/// writer's path cannot drift through a second knob (they drift only if the two
+/// language mirrors disagree, which the contract test catches).
+pub fn renderer_ring_path(label: &str) -> String {
+    format!("{RING_SHM_DIR}/{RENDERER_RING_PREFIX}{label}.ring")
+}
+
+/// The slot count a renderer-ingress ring is built with, DERIVED from the lane
+/// buffer geometry fan-in already owns: `input_buffer_frames / period_frames`,
+/// with the ring's slot equal to one fan-in period.
+///
+/// **Why derived and not a constant.** The aloop lane this replaces gives the
+/// renderer exactly `input_buffer_frames` of cushion (fan-in opens the capture
+/// side with that buffer and snd-aloop locks the pair to it). A renderer is a
+/// network player whose ALSA write blocks when its buffer is full; shrinking that
+/// cushion silently changes how much network jitter it absorbs before it
+/// underruns. Deriving the ring's depth from the SAME number keeps the renderer's
+/// flow-control regime identical across the transport change, which is the only
+/// way "the transport changed and nothing else did" can be true.
+///
+/// Returns `None` when the geometry cannot be expressed as whole slots inside the
+/// ring header's `n_slots` range — the caller FAILS LOUD rather than quietly
+/// handing the renderer a different cushion than the aloop lane gave it.
+pub fn renderer_ring_slots(input_buffer_frames: u32, period_frames: u32) -> Option<u32> {
+    if period_frames == 0 || input_buffer_frames % period_frames != 0 {
+        return None;
+    }
+    let slots = input_buffer_frames / period_frames;
+    if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&slots) {
+        return None;
+    }
+    Some(slots)
+}
+
 /// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
 /// target — a small working cushion the outer DLL always has to steer within.
 /// The decay never descends below `input_resampler_target_frames + this` (the
@@ -362,6 +416,25 @@ pub struct Config {
     /// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`.
     pub usb_direct_period_frames: u32,
 
+    /// DEFAULT-EMPTY renderer-ingress lane set (U3 / P6): the fan-in LABELS whose
+    /// audio arrives over a per-renderer SHM slot ring instead of that lane's
+    /// snd-aloop capture substream. Empty on every box that has not been armed,
+    /// which is byte-identically the behaviour that existed before this key.
+    ///
+    /// A label listed here makes that lane open [`renderer_ring_path`] with the
+    /// [`renderer_ring_slots`] geometry and IGNORE its `input_pcms` entry — the
+    /// aloop substream is never opened on a ring lane, exactly as the USB DIRECT
+    /// lane never opens its own (`Input::pcm` is `None` on both).
+    ///
+    /// Membership is the ONLY input: fan-in does not consult the CamillaDSP
+    /// coupling, because a renderer ring and the fan-in -> CamillaDSP hop are
+    /// independent transports (a loopback-coupled box can ring-ingress a renderer
+    /// and vice versa). The policy that decides WHICH labels land here lives in
+    /// one place on the Python side (`jasper.renderer_lanes`), which is also the
+    /// single writer of the env file both fan-in and the renderer read.
+    /// Env: `JASPER_FANIN_RENDERER_RING_LANES` (comma-separated labels).
+    pub renderer_ring_lanes: Vec<String>,
+
     /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
     /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
     /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
@@ -395,6 +468,28 @@ impl Config {
     pub fn lane_wants_resampler(&self, label: &str) -> bool {
         (self.input_resampler_enabled || self.usb_direct_enabled)
             && label == self.input_resampler_lane_label
+    }
+
+    /// Whether the lane labelled `label` ingresses over a per-renderer SHM slot
+    /// ring instead of its snd-aloop capture substream (U3 / P6). Membership in
+    /// [`Config::renderer_ring_lanes`] is the WHOLE rule on this side — see that
+    /// field's docs for why the coupling is deliberately not consulted.
+    ///
+    /// A one-line predicate on purpose: it is read at construction (which lane
+    /// source to build), and making it a named method keeps the ring lane's
+    /// selection testable without an ALSA device, the same way
+    /// `lane_wants_spine_buffer` isolates the width decision.
+    pub fn lane_is_renderer_ring(&self, label: &str) -> bool {
+        self.renderer_ring_lanes.iter().any(|l| l == label)
+    }
+
+    /// The ring geometry a renderer-ingress lane attaches with: one slot per
+    /// fan-in period, depth derived from the aloop cushion this lane replaces.
+    /// `None` when the geometry is not expressible in whole slots —
+    /// `Config::from_env` already refuses that combination when any lane is
+    /// armed, so a live ring lane always resolves `Some`.
+    pub fn renderer_ring_slots(&self) -> Option<u32> {
+        renderer_ring_slots(self.input_buffer_frames, self.period_frames)
     }
 
     /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
@@ -880,6 +975,40 @@ impl Config {
             );
         }
 
+        // DEFAULT-EMPTY renderer-ingress ring lanes (U3 / P6). Unset / empty =>
+        // every lane reads its aloop substream, byte-identically to before this
+        // key existed. Parsed and VALIDATED unconditionally so a typo fails on any
+        // boot rather than only on an armed box.
+        let renderer_ring_lanes = env_csv_labels("JASPER_FANIN_RENDERER_RING_LANES");
+        for label in &renderer_ring_lanes {
+            if !input_renderers.iter().any(|l| l == label) {
+                anyhow::bail!(
+                    "JASPER_FANIN_RENDERER_RING_LANES names '{}', which is not one of this \
+                     daemon's lanes [{}] — a ring lane is selected by its fan-in LABEL, and an \
+                     unmatched label would silently arm nothing",
+                    label,
+                    input_renderers.join(", "),
+                );
+            }
+        }
+        if !renderer_ring_lanes.is_empty()
+            && renderer_ring_slots(input_buffer_frames, period_frames).is_none()
+        {
+            anyhow::bail!(
+                "JASPER_FANIN_RENDERER_RING_LANES is armed ([{}]) but this box's lane geometry \
+                 cannot be expressed as whole ring slots: \
+                 JASPER_FANIN_INPUT_BUFFER_FRAMES={} / JASPER_FANIN_PERIOD_FRAMES={} must divide \
+                 evenly into {}..={} slots. A renderer ring's depth is DERIVED from the aloop \
+                 cushion it replaces so the renderer's flow control is unchanged; refusing here \
+                 rather than rounding keeps that promise honest",
+                renderer_ring_lanes.join(", "),
+                input_buffer_frames,
+                period_frames,
+                RING_SLOTS_MIN,
+                RING_SLOTS_MAX,
+            );
+        }
+
         // STATIC held-target churn guard (the symmetric sibling of the decay-floor
         // validation above). When a resampler is armed on the clock-crossing lane
         // — either via JASPER_FANIN_INPUT_RESAMPLER=enabled OR implied by
@@ -1115,6 +1244,7 @@ impl Config {
             usb_direct_enabled,
             usb_direct_device,
             usb_direct_period_frames,
+            renderer_ring_lanes,
             host_clock_enabled,
             host_clock_probe_ppm,
         })
@@ -1122,6 +1252,22 @@ impl Config {
 }
 
 // ---- env var helpers ------------------------------------------------
+
+/// Parse a comma-separated LABEL set. Whitespace around each label is trimmed and
+/// empty entries are dropped, so `""`, `" "`, and `",,"` all mean "no labels" —
+/// the fail-safe direction for a key whose empty value must mean "nothing armed".
+/// Order is preserved and duplicates are kept: the only consumer is a membership
+/// test, and silently de-duplicating would hide a malformed write from the one
+/// writer that produces this value.
+fn env_csv_labels(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
 /// Fail-safe feature gate: only the exact `enabled` token, ignoring case and
 /// surrounding whitespace, arms the feature.
