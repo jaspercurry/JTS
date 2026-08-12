@@ -7458,37 +7458,35 @@ class CrossoverV2Conductor:
     def _resolve_spent_slot(
         self, phase: str, index: int, slot: str, verdict: PhaseVerdict
     ) -> PhaseVerdict:
-        """Decide a position whose extras are gone — attribute, then degrade.
+        """Act on a position whose extras are gone — attribute, then degrade.
 
-        Returns ``verdict`` unchanged while the slot still has extras left; the
-        household keeps retrying exactly as before. Once they are spent there
-        are three honest outcomes, in this order:
+        The ladder — which outcomes exist, in which order, and why a retained
+        earlier take has to be asked about before the floor is counted —
+        belongs to
+        :func:`~jasper.active_speaker.crossover_v2.admission.settle_spent_slot`
+        and its group half. What stays here is what each outcome CAUSES:
+        rendering the diagnosis the household reads, the journal line, the
+        ``_group_unresolved`` attribution, the group close under
+        :attr:`_close_lock`, and building the ``PhaseVerdict`` the phone reads.
 
-        1. **An earlier take is still standing** (the household retook a
-           position that had already been accepted, and the retakes failed).
-           Nothing was lost — keep the earlier curve and move on. This is the
-           `Keep the earlier measurement` escape, applied automatically once
-           there is no try left to offer.
-        2. **The group can still reach a usable cloud** — drop this position,
-           record the observed condition against it, and advance. The cloud
-           tolerates variable position counts down to
-           :data:`MIN_RESOLVED_CLOUD_POSITIONS`; below the declared plan length
-           the claim is degraded and disclosed, not refused.
-        3. **It cannot** (a single-capture phase, or a group with too few
-           curves in hand and too few positions left to reach the floor) —
-           return a terminal result on THIS final capture. The runner ends the
-           set immediately and the phone renders diagnosis + count + exact
-           outcome with no retry affordance. :meth:`authorize_begin` retains a
-           defensive backstop for a replayed/older page only.
+        The ladder's two halves bracket the lock exactly, because its group
+        rungs read facts that are only true while it is held.
 
-        A group phase never reaches (3) with anything left to measure, which is
-        why the 2026-08-03 shape — a pre-play refusal at a cloud position while
-        the screen read "step 6, one last time" — is now unreachable from
-        ordinary retry exhaustion.
+        A group phase never reaches a terminal outcome with anything left to
+        measure, which is why the 2026-08-03 shape — a pre-play refusal at a
+        cloud position while the screen read "step 6, one last time" — is
+        unreachable from ordinary retry exhaustion.
         """
         ledger = self._slot_attempts.get(slot)
-        if ledger is None or ledger.extras_left > 0:
+        kind = _admission.settle_spent_slot(
+            ledger=ledger,
+            is_group=lambda: self._journey.plan.is_group(phase),
+        )
+        if kind == _admission.SETTLE_RETRY_REMAINS:
             return verdict
+        # Past the first rung the meter exists — the ladder answers
+        # ``SETTLE_RETRY_REMAINS`` for a slot with no ledger — which is what
+        # lets the terminal builder below index ``_slot_attempts`` directly.
         observed = verdict.code or self._last_reason.get(slot) or ""
         diagnosis = ""
         if observed in REASON_REGISTRY:
@@ -7498,10 +7496,24 @@ class CrossoverV2Conductor:
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
             )
-        if not self._journey.plan.is_group(phase):
-            outcome = "phase_cannot_proceed"
+        if kind != _admission.SETTLE_GROUP_CLOSE_REQUIRED:
+            # One arm per :data:`admission.SETTLE_KINDS` member, and this is
+            # both ``SETTLE_PHASE_CANNOT_PROCEED``'s arm and the LOUD fallback
+            # for a kind nobody wired. Unlike the begin gate, the dangerous
+            # direction here is the PERMISSIVE one: returning the verdict
+            # unchanged hands back a retry screen whose button leads to a
+            # pre-play refusal — the exact 2026-08-03 shape this ladder exists
+            # to make unreachable. So an unknown kind ends the phase honestly,
+            # with the diagnosis and count it already has in hand.
+            if kind != _admission.SETTLE_PHASE_CANNOT_PROCEED:
+                log_event(
+                    logger, "correction.crossover_v2_settle_kind_unmapped",
+                    level=logging.ERROR, session_id=self.session_id,
+                    phase=phase, index=index, kind=str(kind),
+                )
+                kind = _admission.SETTLE_PHASE_CANNOT_PROCEED
             self._log_slot_spent(
-                phase, index, observed, outcome,
+                phase, index, observed, kind,
                 diagnosis=diagnosis,
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
@@ -7509,15 +7521,21 @@ class CrossoverV2Conductor:
             return self._terminal_spent_verdict(
                 phase, index, slot, verdict,
                 diagnosis=diagnosis,
-                outcome=outcome,
+                outcome=kind,
             )
         with self._close_lock:
             retained = self._retained_group_indexes(phase)
-            if index in retained:
-                # (1) The earlier take survives — a rejection never replaces a
-                # retained curve — so this position is not unresolved at all.
+            kind = _admission.settle_group_position(
+                index=index,
+                retained=retained,
+                floor=self._group_position_floor(phase),
+                unwalked_count=lambda: len(
+                    self._journey.unresolved_in_group(phase, excluding=index)
+                ),
+            )
+            if kind == _admission.SETTLE_KEPT_EARLIER_TAKE:
                 self._log_slot_spent(
-                    phase, index, observed, "kept_earlier_take",
+                    phase, index, observed, kind,
                     diagnosis=diagnosis,
                     pilot_heard=verdict.pilot_heard,
                     reflection_measured=verdict.reflection_measured,
@@ -7525,42 +7543,46 @@ class CrossoverV2Conductor:
                 return self._settled_group_verdict(
                     phase, index, {"kept_earlier_take": True}
                 )
-            # (3) Can this group still reach the floor? Curves in hand PLUS the
-            # positions the household has not walked yet — never the count so
-            # far, which would make the answer depend on walk order and end the
-            # session at position 1 of 8 with seven good spots still ahead.
-            unwalked = self._journey.unresolved_in_group(phase, excluding=index)
-            if len(retained) + len(unwalked) < self._group_position_floor(phase):
-                outcome = "below_position_floor"
+            if kind == _admission.SETTLE_POSITION_UNRESOLVED:
+                self._group_unresolved[phase][index] = observed
                 self._log_slot_spent(
-                    phase, index, observed, outcome,
+                    phase, index, observed, kind,
                     diagnosis=diagnosis,
                     pilot_heard=verdict.pilot_heard,
                     reflection_measured=verdict.reflection_measured,
                 )
-                return self._terminal_spent_verdict(
-                    phase, index, slot, verdict,
-                    diagnosis=diagnosis,
-                    outcome=outcome,
+                return self._settled_group_verdict(
+                    phase,
+                    index,
+                    {
+                        "unresolved": {
+                            "index": index,
+                            "code": observed,
+                            "diagnosis": diagnosis,
+                        }
+                    },
                 )
-            # (2) Attribute and continue.
-            self._group_unresolved[phase][index] = observed
+            # ``SETTLE_BELOW_POSITION_FLOOR``'s arm, and the group half's LOUD
+            # fallback, degrading in the same conservative direction as above:
+            # a group that cannot be shown to still reach its floor ends
+            # honestly rather than advancing on an answer nobody wired.
+            if kind != _admission.SETTLE_BELOW_POSITION_FLOOR:
+                log_event(
+                    logger, "correction.crossover_v2_settle_kind_unmapped",
+                    level=logging.ERROR, session_id=self.session_id,
+                    phase=phase, index=index, kind=str(kind),
+                )
+                kind = _admission.SETTLE_BELOW_POSITION_FLOOR
             self._log_slot_spent(
-                phase, index, observed, "position_unresolved",
+                phase, index, observed, kind,
                 diagnosis=diagnosis,
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
             )
-            return self._settled_group_verdict(
-                phase,
-                index,
-                {
-                    "unresolved": {
-                        "index": index,
-                        "code": observed,
-                        "diagnosis": diagnosis,
-                    }
-                },
+            return self._terminal_spent_verdict(
+                phase, index, slot, verdict,
+                diagnosis=diagnosis,
+                outcome=kind,
             )
 
     def _terminal_spent_verdict(
@@ -12042,7 +12064,7 @@ __all__ = [
     "CrossoverV2FlowError",
     # Re-exported, not used here, since #2291 Phase 5a-vii moved VERIFY's
     # integrity ladder to :mod:`.crossover_v2.capture_dispatch` (the entry
-    # baseline's went to :mod:`.crossover_v2.spatial` before it). Five test
+    # baseline's went to :mod:`.crossover_v2.spatial` before it). Three test
     # modules reach it as ``flow.INTEGRITY_CHECK_SWEEP_HEARD``; listing it here
     # is what says the import survived on purpose rather than as an orphan.
     "INTEGRITY_CHECK_SWEEP_HEARD",

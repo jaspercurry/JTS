@@ -107,6 +107,7 @@ from jasper.audio_measurement.program_analysis import (
     _compose_configured_path_ir,
     _deconvolve_window,
     _gate_floor_hz,
+    _gcc_correlation,
     _gcc_local_peak_snap,
     _gcc_phat,
     _global_offset,
@@ -1799,6 +1800,53 @@ def test_gcc_phat_sign_convention():
     )
     assert sign2 == -1
     assert lag2 == pytest.approx(30.0, abs=0.5)
+
+
+def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
+    """Two NaN blocks, pinned — a downstream gate's equivalence rests on them.
+
+    ``_gcc_phat``'s confidence flows into ``ProgramAnalysis.alignment.confidence``,
+    which MEASURE screens with ``alignment_confidence_ok`` (``crossover_v2_flow``:
+    ``confidence >= ALIGNMENT_CONFIDENCE_TRUST_FLOOR``). That phrasing and its
+    negation are only interchangeable while the value is a real number: ``NaN``
+    compares False both ways, so a NaN confidence would make the rung's sense
+    depend on which way it was written. Nothing downstream re-checks for NaN, so
+    the property has to hold HERE, and it does for two reasons this pins:
+
+    * :func:`_gcc_correlation` clamps the phase-transform magnitude
+      (``mag[mag < 1e-12] = 1e-12``), so a silent band cannot divide by zero and
+      seed the correlation with NaN;
+    * the confidence itself is ``max(0.0, (primary - secondary) / primary) if
+      primary > 0 else 0.0`` — the guard blocks 0/0 and the ``max`` blocks a
+      negative.
+
+    Silence is the input that reaches both: every bin is zero, so the clamp is
+    what the division sees and ``primary`` is what the guard rejects.
+    """
+    silence = np.zeros(2048, dtype=np.float64)
+
+    cc, m = _gcc_correlation(
+        silence, silence, sample_rate=SR, band_hz=(800.0, 3200.0), upsample=16,
+    )
+    assert cc.size == m
+    assert np.all(np.isfinite(cc)), "the magnitude clamp is what keeps this finite"
+
+    _lag, _sign, conf, _at_edge = _gcc_phat(
+        silence, silence, sample_rate=SR, band_hz=(800.0, 3200.0),
+        upsample=16, max_lag_samples=200,
+    )
+    assert not np.isnan(conf)
+    assert conf == 0.0, "no evidence at all reads as no confidence, not as NaN"
+
+    # And on a real capture the same expression stays inside [0, 1], so the
+    # comparison against the trust floor is total in both directions.
+    base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
+    _l, _s, real_conf, _e = _gcc_phat(
+        np.roll(base, 30), base, sample_rate=SR, band_hz=(800.0, 3200.0),
+        upsample=16, max_lag_samples=200,
+    )
+    assert not np.isnan(real_conf)
+    assert 0.0 <= real_conf <= 1.0
 
 
 def test_delay_sign_convention_tweeter_earlier_is_positive():
