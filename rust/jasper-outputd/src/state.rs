@@ -3051,6 +3051,57 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_json_stays_valid_json_when_the_loudness_snapshot_is_non_finite() {
+        // End-to-end half of the shared writer's finite-or-null guarantee
+        // (jasper_tts_protocol::loudness::push_json_finite_or_null). outputd
+        // is the daemon that can carry a non-finite value this far: it copies
+        // engine floats straight into the snapshot, where fan-in's packed
+        // atomics cannot represent one. Proven here against the COMPLETE
+        // STATUS document with a real parser, not a substring check — the
+        // failure this guards is `inf` making a reader reject every other
+        // fact in the document, and `NaN` slipping past a numeric check as a
+        // value no comparison is ever true against.
+        use jasper_tts_protocol::loudness::{HeldLoudnessReference, TtsLoudnessSnapshot};
+
+        let state = OutputdState::new(&test_config());
+        let metrics = TtsMetrics::new(96_000);
+        let cell = metrics.loudness_cell();
+        {
+            let mut slot = cell.lock().expect("loudness cell");
+            *slot = TtsLoudnessSnapshot {
+                decision_seen: true,
+                profile_confidence: f64::NAN,
+                requested_gain_db: Some(f64::INFINITY),
+                peak_cap_gain_db: Some(f64::NEG_INFINITY),
+                final_gain_db: Some(f64::NAN),
+                held_assistant: Some(HeldLoudnessReference {
+                    speaker_lufs: f32::NAN,
+                    canonical_db: f32::INFINITY,
+                    calibration_offset_lu: f32::NEG_INFINITY,
+                }),
+                ..TtsLoudnessSnapshot::default()
+            };
+        } // drop before snapshot_json: the reader uses try_lock.
+        state.set_tts("/run/jasper-outputd/tts.sock".to_string(), metrics);
+
+        let j = state.snapshot_json();
+        let parsed = parse_snapshot_json(&j);
+        let loudness = &parsed["tts"]["assistant_loudness"];
+        for key in [
+            "profile_confidence",
+            "requested_gain_db",
+            "peak_cap_gain_db",
+            "final_gain_db",
+        ] {
+            assert!(loudness[key].is_null(), "{key} should be null: {j}");
+        }
+        assert!(loudness["held_assistant"]["speaker_lufs"].is_null(), "{j}");
+        // The poisoned floats did not cost the surrounding facts.
+        assert_eq!(loudness["decision_seen"], serde_json::json!(true));
+        assert_eq!(parsed["tts"]["budget_frames"], serde_json::json!(96_000));
+    }
+
+    #[test]
     fn snapshot_json_accumulates_clipping() {
         let state = OutputdState::new(&test_config());
         state.mark_period(IoCounters::default(), 1, 2);

@@ -35,13 +35,63 @@ from yaml.nodes import MappingNode, ScalarNode
 from jasper.audio_io import TtsPlayout
 
 REPO = Path(__file__).resolve().parents[1]
-REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
 
+# The two symbols commit 6304556a4 ("Remove fixed TTS gain ceiling",
+# 2026-07-01) deleted: the ceiling constant itself, and the helper that
+# clamped a requested gain up against it. Today's replacement is
+# `sanitize_tts_gain_db` (floor + non-finite only, no ceiling). Both names
+# are assembled from fragments so this file does not itself contain the
+# banned text — the pin greps source, and a literal here would make the
+# grep hit its own guard if the scan ever widens.
+REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
+REMOVED_TTS_CLAMP_SYMBOL = "clamp_" + "tts_gain_db"
+REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
+
+# Files the ban covers, in three groups — every entry is a place a fixed
+# ceiling could live, and the group says why.
+#
+#   DEFINE the shared gain policy (4). Where the removed ceiling was
+#   declared, and the modules re-exporting that policy.
+#
+#   APPLY the policy to samples (3). A ceiling reintroduced at an
+#   application site never touches a policy module, so covering only the
+#   definers left these open — PR #2355 adversarial review, note N4:
+#   "a reintroduced fixed ceiling there would evade the ban pin".
+#
+#   CARRY the gain command (1). outputd's TTS bridge held
+#   `fallback_gain_db: MAX_TTS_GAIN_DB` until 6304556a4 removed it, and
+#   still owns the live `TtsCommand::GainDb` handler — today a deliberate
+#   no-op with no fallback-gain state behind it, which makes it the
+#   natural place for one to grow back. Local gain math has in fact grown
+#   here before (deep-audit DA-0590: a private `db_to_linear` duplicating
+#   the shared helper).
+#
+# Of these eight, 6304556a4 deleted ceiling references from five — and not
+# uniformly, which is itself the argument for banning both symbols rather
+# than one: tts-protocol/loudness.rs (which declared them), outputd/mixer.rs
+# (which re-exported them) and fanin/tts.rs carried BOTH; outputd/tts.rs
+# carried only the MAX_ constant; core.rs carried only the clamp helper. A
+# one-symbol ban would have missed a file either way round.
+#
+# The other three are covered structurally, not historically: the two daemon
+# loudness.rs files re-export the shared policy wholesale, and
+# assistant_source.rs postdates the removal — created later by 2ac841f24
+# (#2063) — so it is covered because it applies gain today, not because it
+# ever carried a ceiling.
+#
+# Deliberately NOT covered: fanin/state.rs and outputd/state.rs. They are
+# pure STATUS renderers — they read a decided gain and serialize it, and
+# have no authority to cap one. Adding them would widen the ban past what
+# it can honestly claim to guard.
 RUST_TTS_GAIN_FILES = (
     "rust/jasper-tts-protocol/src/loudness.rs",
     "rust/jasper-fanin/src/loudness.rs",
     "rust/jasper-outputd/src/loudness.rs",
     "rust/jasper-outputd/src/mixer.rs",
+    "rust/jasper-fanin/src/tts.rs",
+    "rust/jasper-outputd/src/assistant_source.rs",
+    "rust/jasper-outputd/src/core.rs",
+    "rust/jasper-outputd/src/tts.rs",
 )
 
 RUST_SHARED_LOUDNESS_SHIMS = (
@@ -67,12 +117,20 @@ _RUST_SHARED_LOUDNESS_USE_PAT = re.compile(
 
 def test_fixed_tts_gain_ceiling_is_removed() -> None:
     for rel in RUST_TTS_GAIN_FILES:
-        text = (REPO / rel).read_text()
-        assert REMOVED_TTS_MAX_SYMBOL not in text, (
-            f"{rel}: reintroduced a fixed max TTS gain ceiling. Assistant "
-            "loudness should be governed by the measured target plus the "
-            "dynamic peak-aware cap, not a universal source-gain clamp."
+        path = REPO / rel
+        assert path.is_file(), (
+            f"{rel}: file in the TTS gain ban list no longer exists. If gain "
+            "code moved, re-point RUST_TTS_GAIN_FILES at its new home — a "
+            "silently-vanished entry is a hole in the ban, not a pass."
         )
+        text = path.read_text()
+        for symbol in REMOVED_TTS_CEILING_SYMBOLS:
+            assert symbol not in text, (
+                f"{rel}: reintroduced a fixed max TTS gain ceiling "
+                f"({symbol}). Assistant loudness should be governed by the "
+                "measured target plus the dynamic peak-aware cap, not a "
+                "universal source-gain clamp."
+            )
     assert not hasattr(TtsPlayout, REMOVED_TTS_MAX_SYMBOL)
 
 

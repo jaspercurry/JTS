@@ -834,15 +834,61 @@ fn push_json_u64(buf: &mut String, key: &str, value: u64) {
     buf.push_str(&value.to_string());
 }
 
+/// Serialization-boundary guarantee for every number this writer emits:
+/// **a finite JSON number, or `null` — never a non-finite token.**
+///
+/// Rust's float formatting renders `NaN`/`inf`/`-inf` verbatim, and none of
+/// those is JSON. That is not a cosmetic defect: `inf` makes a reader reject
+/// the WHOLE STATUS document (one bad field takes down every other daemon
+/// fact in it), while `NaN` is worse — Python's `json` accepts it as a
+/// non-standard extension, so it arrives as a float that passes an
+/// `isinstance(v, float)` check and every `abs(a - b) > tol` comparison
+/// against it is False. A silently-OK loudness contract check is exactly the
+/// failure the doctor exists to catch.
+///
+/// `null` is the substitute rather than omission because the key set is a
+/// pinned wire contract (`ASSISTANT_LOUDNESS_STATUS_KEYS`, asserted present
+/// by both daemons' state tests), and it lands somewhere a consumer already
+/// reads: `jasper/cli/doctor/audio_runtime.py` WARNs on `decision_seen=true`
+/// with a non-numeric `final_gain_db`. That loud path is scoped to
+/// `final_gain_db` — the one doctor-guarded field. Every other float here
+/// maps to `null` **silently, by design**: this is a polled render, so a
+/// value nobody checks should cost a null in a STATUS reply, not a journal
+/// line per poll.
+///
+/// This filters at the render, not at the producer, because only outputd
+/// needs it and both daemons share this writer. fan-in is already safe by
+/// two separate mechanisms, neither of which outputd has:
+///   * its `Option<f64>` fields ride packed integer atomics, and
+///     `pack_optional_db` maps a non-finite input to the NONE sentinel;
+///   * `profile_confidence` rides a scaled `AtomicU64` — `clamp(0.0, 1.0)`
+///     bounds ±inf, and NaN (which `clamp` returns unchanged) is absorbed by
+///     Rust's saturating float→int cast, which yields 0.
+///
+/// outputd copies engine floats straight into the snapshot struct, so it has
+/// neither. Filtering in the one shared writer makes the guarantee hold for
+/// both from a single place rather than a rule written twice.
+///
+/// It also keeps the cost off the audio thread: outputd's
+/// `publish_loudness_snapshot` runs per period on the audio loop, but this
+/// runs on the state-server thread answering a STATUS read.
+fn push_json_finite_or_null(buf: &mut String, value: f64, decimals: usize) {
+    if value.is_finite() {
+        buf.push_str(&format!("{value:.decimals$}"));
+    } else {
+        buf.push_str("null");
+    }
+}
+
 fn push_json_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     push_json_key(buf, key);
-    buf.push_str(&format!("{value:.decimals$}"));
+    push_json_finite_or_null(buf, value, decimals);
 }
 
 fn push_json_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
     push_json_key(buf, key);
     match value {
-        Some(value) => buf.push_str(&format!("{value:.decimals$}")),
+        Some(value) => push_json_finite_or_null(buf, value, decimals),
         None => buf.push_str("null"),
     }
 }
@@ -1925,6 +1971,105 @@ mod tests {
         }
         assert!(empty.contains(r#""volume_context":null"#));
         assert!(empty.contains(r#""held_assistant":null"#));
+    }
+
+    #[test]
+    fn render_assistant_loudness_substitutes_null_for_every_non_finite_number() {
+        // The serialization-boundary guarantee (see `push_json_finite_or_null`):
+        // no non-finite float can reach STATUS as a bare `NaN`/`inf` token,
+        // because neither is JSON. fan-in's producer already filters
+        // (`pack_optional_db` -> NONE sentinel); outputd's copies engine floats
+        // straight through, which is why the guarantee lives in the one shared
+        // writer both daemons render through. NaN, +inf and -inf are spread
+        // across the fields so all three shapes are exercised at both the
+        // `Option<f64>` and the bare-`f64` sites.
+        let hostile = TtsLoudnessSnapshot {
+            content_short_lufs: Some(f64::NAN),
+            content_anchor_lufs: Some(f64::INFINITY),
+            decision_seen: true,
+            calibrated: true,
+            profile_confidence: f64::NAN,
+            baseline_lufs: Some(f64::NEG_INFINITY),
+            target_lufs: Some(f64::NAN),
+            source_lufs: Some(f64::INFINITY),
+            source_peak_dbfs: Some(f64::NEG_INFINITY),
+            requested_gain_db: Some(f64::NAN),
+            peak_cap_gain_db: Some(f64::INFINITY),
+            final_gain_db: Some(f64::NEG_INFINITY),
+            target_speaker_lufs: Some(f64::NAN),
+            envelope_offset_lu: Some(f64::INFINITY),
+            reference_kind: Some("held_assistant"),
+            volume_context: Some(VolumeContext {
+                canonical_db: f32::NAN,
+                downstream_db: f32::INFINITY,
+                tts_envelope_lufs: f32::NEG_INFINITY,
+                muted: false,
+                stamp_boot_ns: 7,
+            }),
+            volume_context_rejected: 2,
+            held_content: Some(HeldLoudnessReference {
+                speaker_lufs: f32::NAN,
+                canonical_db: f32::INFINITY,
+                calibration_offset_lu: f32::NEG_INFINITY,
+            }),
+            held_assistant: Some(HeldLoudnessReference {
+                speaker_lufs: f32::NEG_INFINITY,
+                canonical_db: f32::NAN,
+                calibration_offset_lu: f32::INFINITY,
+            }),
+        };
+        let mut buf = String::new();
+        render_assistant_loudness(&mut buf, &hostile);
+
+        // Every float-valued key becomes null — the key stays present (the
+        // key set is a pinned wire contract), the value becomes readable-as-
+        // absent rather than unparseable.
+        for key in [
+            "content_short_lufs",
+            "content_anchor_lufs",
+            "profile_confidence",
+            "baseline_lufs",
+            "target_lufs",
+            "source_lufs",
+            "source_peak_dbfs",
+            "requested_gain_db",
+            "peak_cap_gain_db",
+            "final_gain_db",
+            "target_speaker_lufs",
+            "envelope_offset_lu",
+            "canonical_db",
+            "downstream_db",
+            "tts_envelope_lufs",
+            "speaker_lufs",
+            "calibration_offset_lu",
+        ] {
+            assert!(
+                buf.contains(&format!("\"{key}\":null")),
+                "non-finite {key} did not render as null: {buf}"
+            );
+        }
+
+        // Non-float neighbours are untouched: a poisoned float must not take
+        // the rest of the object with it.
+        assert!(buf.contains(r#""decision_seen":true"#), "{buf}");
+        assert!(buf.contains(r#""muted":false"#), "{buf}");
+        assert!(buf.contains(r#""stamp_boot_ns":7"#), "{buf}");
+        assert!(buf.contains(r#""volume_context_rejected":2"#), "{buf}");
+        assert!(
+            buf.contains(r#""reference_kind":"held_assistant""#),
+            "{buf}"
+        );
+
+        // Blanket check: not one non-finite token anywhere in the document.
+        // (No key or reference_kind value contains these substrings today; a
+        // future key that does should re-scope this assertion, not drop it.)
+        for token in ["NaN", "nan", "inf", "Inf", "INF"] {
+            assert!(
+                !buf.contains(token),
+                "non-finite token {token:?} leaked into STATUS: {buf}"
+            );
+        }
+        assert!(buf.starts_with('{') && buf.ends_with('}'), "{buf}");
     }
 
     #[test]
