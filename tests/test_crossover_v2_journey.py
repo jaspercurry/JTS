@@ -619,6 +619,46 @@ def test_no_domain_module_imports_the_host_or_the_legacy_flow():
     assert offenders == {}
 
 
+def test_no_test_module_imports_the_conductor_test_file():
+    """#2291 5c-i's own result, held: the conductor test file has no importers.
+
+    It had eighteen. They reached it for twenty-five fixture symbols — including
+    all three Phase-0 characterization pins — which is what made a file of
+    conductor-specific tests undeletable while the conductor is being dissolved.
+    The fixtures now live in ``tests/crossover_v2_fixtures.py``; this asserts
+    nobody re-creates the blocker between here and the deletion, when a new
+    importer would be an easy and invisible thing to add.
+
+    Prose mentions are fine and deliberately not matched — several modules cite
+    the file in a docstring to say where a behaviour is pinned. Only a real
+    ``import`` counts.
+    """
+
+    tests_dir = Path(__file__).resolve().parent
+    modules = sorted(tests_dir.glob("test_*.py"))
+    assert len(modules) >= 50, f"expected the test suite, saw {len(modules)}"
+
+    doomed = "tests.test_crossover_v2_conductor"
+    offenders: dict[str, list[int]] = {}
+    for module in modules:
+        if module.name == "test_crossover_v2_conductor.py":
+            continue
+        tree = ast.parse(module.read_text(), filename=str(module))
+        lines = [
+            node.lineno
+            for node in ast.walk(tree)
+            if (isinstance(node, ast.ImportFrom) and node.module == doomed)
+            or (
+                isinstance(node, ast.Import)
+                and any(alias.name == doomed for alias in node.names)
+            )
+        ]
+        if lines:
+            offenders[module.name] = lines
+
+    assert offenders == {}
+
+
 def test_the_journey_holds_no_dsp_no_filesystem_and_no_rendering():
     """Phase 4's explicit boundary: bookkeeping only."""
 
