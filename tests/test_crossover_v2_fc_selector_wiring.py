@@ -1263,3 +1263,69 @@ def test_only_the_corner_moves_when_a_candidate_is_re_cornered(fc_hz):
         == base.configured_polarity_sign_by_role
     )
     assert priors.measurement_protection_response_by_role is not None
+
+
+def test_a_raising_journal_costs_the_walk_close_a_log_line_not_the_recommendation():
+    """The publish-before-say ordering at the walk close (#2357 item 4).
+
+    ``_adjudicate_fc`` publishes both selection fields and THEN says the
+    disclosure, and its docstring states the property that ordering buys: a
+    journal that raises should cost a log line rather than the recommendation
+    it was about. Nothing exercised that. The two statements could be swapped
+    and every fc and conductor test stayed green, which is the same
+    green-while-testing-nothing shape the ports work exists to remove.
+
+    The guard is written against the site rather than the line number, so it
+    survives the moves the remaining #2291 slices will make. Two things are
+    asserted and both are load-bearing:
+
+    * the recommendation and its selected evaluation SURVIVE — this is what
+      swapping the statements breaks; and
+    * the failure is NOT swallowed. The call is deliberately unguarded (see
+      its caller's own comment), so a raising journal fails the walk close
+      loudly instead of publishing a candidate whose disclosure blew up.
+    """
+    from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
+
+    c = _selector_conductor(_eligible_seams())
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+    assert c._fc_evaluations, "the sweep must have produced evidence to judge"
+    winner = next(
+        item for item in c._fc_evaluations
+        if item.fc_hz != FC_HZ and item.candidate is not None
+    )
+
+    def choose(*args, **kwargs):
+        # A verdict that RECOMMENDS, because the selected evaluation is
+        # published only for one — a "keep the configured corner" verdict
+        # clears the field on purpose and would make this guard vacuous.
+        return flow.FcSelection(
+            verdict="recommend_alternative", configured_hz=FC_HZ,
+            recommended_hz=winner.fc_hz, margin_db=2.0, scores=(), refusals=(),
+            limits={}, evaluated=2, planned=len(c._fc_evaluations),
+            candidate_order=tuple(item.fc_hz for item in c._fc_evaluations),
+            attempted=tuple(item.fc_hz for item in c._fc_evaluations), skipped=(),
+            comparison_complete=True,
+        )
+
+    said: list[str] = []
+
+    def hostile(record):
+        said.append(record.event)
+        if record.event == _fc.EVENT_SELECTION:
+            raise OSError("simulated closed log stream")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "select_fc", choose)
+        mp.setattr(c, "_journal_linearization", hostile)
+        with pytest.raises(OSError):
+            c._adjudicate_fc()
+
+    assert _fc.EVENT_SELECTION in said, "the disclosure must have been attempted"
+    assert c.fc_selection is not None, "the recommendation must outlive its disclosure"
+    assert c.fc_selection.recommended_hz is not None
+    assert c._fc_selected_evaluation is not None, (
+        "the selected evaluation is published on the same side of the say"
+    )
+    assert c._fc_selected_evaluation.fc_hz == c.fc_selection.recommended_hz

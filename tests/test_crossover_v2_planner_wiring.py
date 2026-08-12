@@ -360,3 +360,71 @@ def test_a_valid_candidate_still_plans(caplog):
     assert state.linearized_predicted_sum is not None
     assert state.realized_level_match is not None
     assert "linearization_fit_failed" not in caplog.text
+
+
+def test_the_fit_failure_line_is_said_through_the_host_and_keeps_its_traceback(
+    caplog,
+):
+    """The SF2 degrade's disclosure, and the two facts that make it useful.
+
+    Both are claims #2291 Phase 5a-v(c) makes and neither was asserted before
+    it: the line is said through the conductor's OWN journal delegate, and it
+    still carries the failure's stack.
+
+    * **``session_id``** can only be on the line if it came through
+      ``CrossoverV2Conductor._journal_linearization`` — a pure module has no
+      session identity to add. An organ that logged the degrade itself would
+      produce a line that reads almost the same and names no session.
+    * **``exc_info``** is why the build hands over a
+      :class:`~jasper.active_speaker.crossover_v2.planning.FailureRecord`
+      rather than one of its two sibling record types. ``logging`` resolves
+      ``exc_info=True`` against ``sys.exc_info()`` when the ``LogRecord`` is
+      created, so a record carrying only ``(event, fields, level)`` and emitted
+      after the handler exits renders NO traceback — the disclosure survives
+      and the diagnosis does not. Carrying the caught exception makes the
+      deferred emission identical to the inline one.
+    """
+    caplog.set_level("WARNING", logger=_DIAG_LOGGER)
+    c, analysis = _walked_to_measure()
+    empty: dict = {"woofer": (), "tweeter": ()}
+
+    c._build_candidate(
+        analysis, None, candidate_sections=empty, source_preset=c._preset,
+    )
+
+    said = [
+        record for record in caplog.records
+        if "event=correction.crossover_v2_linearization_fit_failed"
+        in record.getMessage()
+    ]
+    assert len(said) == 1, "the degrade discloses exactly once"
+    line = said[0]
+    assert f"session_id={c.session_id}" in line.getMessage()
+    assert line.exc_info is not None, "the degrade must carry its stack"
+    exc_type, _exc, tb = line.exc_info
+    assert exc_type is NoCrossoverSectionsError
+    assert tb is not None, "an exception with no traceback renders none"
+
+
+def test_a_split_section_set_refuses_before_the_missing_measure_program():
+    """Why ``program_for_phase`` is passed to the organ instead of its answer.
+
+    Both can raise, and the order decides which failure a household is told
+    about. The candidate's own section set is the more specific answer, so it
+    must be judged FIRST — and a caller that resolved the program eagerly to
+    hand the organ a value would invert exactly that, turning a named contract
+    refusal into the conductor's generic phase-transition error.
+
+    The un-walked conductor is the reachable shape: before the CHECK gain solve
+    there is no MEASURE program at all.
+    """
+    _walked, analysis = _walked_to_measure()
+    fresh = _conductor(FakeSeams())
+    with pytest.raises(flow.CrossoverV2FlowError):
+        fresh.program_for_phase(flow.PHASE_MEASURE)
+
+    with pytest.raises(NoCrossoverSectionsError):
+        fresh._plan_linearization(
+            analysis, analysis.candidate, None,
+            candidate_sections={"woofer": (), "tweeter": ()},
+        )
