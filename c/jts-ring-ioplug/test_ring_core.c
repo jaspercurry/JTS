@@ -1342,6 +1342,11 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) jts_ring_writer_close(&w);
+        // Exit 1 encodes -EBUSY specifically: since U3/P6a a writer holds an
+        // EXCLUSIVE flock for the life of its mapping, so being refused as a
+        // SECOND LIVE WRITER is a correct outcome here, not a failure. Any
+        // other rc is still 3 (a real fault).
+        if (rc == -EBUSY) _exit(1);
         _exit(rc == 0 ? 0 : 3);
     }
     pid_t attacher_c = fork();
@@ -1353,6 +1358,11 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) jts_ring_writer_close(&w);
+        // Exit 1 encodes -EBUSY specifically: since U3/P6a a writer holds an
+        // EXCLUSIVE flock for the life of its mapping, so being refused as a
+        // SECOND LIVE WRITER is a correct outcome here, not a failure. Any
+        // other rc is still 4 (a real fault).
+        if (rc == -EBUSY) _exit(1);
         _exit(rc == 0 ? 0 : 4);
     }
     unsetenv("JTS_RING_TEST_LOCK_WAIT_FD");
@@ -1389,10 +1399,32 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
           "join simultaneous public attacher C");
     CHECK(WIFEXITED(creator_status) && WEXITSTATUS(creator_status) == 0,
           "O_EXCL-winning public opener succeeds");
-    CHECK(WIFEXITED(attacher_b_status) && WEXITSTATUS(attacher_b_status) == 0,
-          "competing public opener B waits and attaches");
-    CHECK(WIFEXITED(attacher_c_status) && WEXITSTATUS(attacher_c_status) == 0,
-          "competing public opener C waits and attaches");
+    // What this test is actually about is the OPEN-lock transaction: competing
+    // public openers must SERIALIZE behind the O_EXCL creator rather than tear
+    // the file, and must all end up pointed at the one creator inode (asserted
+    // below). It reaches that through three concurrent WRITER opens.
+    //
+    // Since U3/P6a a writer additionally holds an exclusive flock for the life
+    // of its mapping (the SPSC writer guard), so "three concurrent writers all
+    // attach" is no longer a property this codebase wants — exactly one may
+    // hold a ring at a time. Each competitor therefore has TWO correct
+    // outcomes, and which one it gets is a timing detail of when the incumbent
+    // closed:
+    //   exit 0 — it waited on the open lock and then attached;
+    //   exit 1 — it was refused -EBUSY as a second live writer.
+    // Both prove it serialized rather than raced; neither is a torn file. Any
+    // other status (2/3/4) is still a real failure, and the inode-identity
+    // assertions below are unchanged and remain the load-bearing half.
+    CHECK(WIFEXITED(attacher_b_status) &&
+              (WEXITSTATUS(attacher_b_status) == 0 ||
+               WEXITSTATUS(attacher_b_status) == 1),
+          "competing public opener B either waits and attaches or is refused "
+          "as a second live writer");
+    CHECK(WIFEXITED(attacher_c_status) &&
+              (WEXITSTATUS(attacher_c_status) == 0 ||
+               WEXITSTATUS(attacher_c_status) == 1),
+          "competing public opener C either waits and attaches or is refused "
+          "as a second live writer");
     struct stat path_st;
     CHECK(creator_ready_rc == 0 && stat(path, &path_st) == 0 &&
               (uint64_t)path_st.st_dev == creator_observation.dev &&
@@ -2233,8 +2265,24 @@ static void test_writer_ebusy_second_writer(void) {
           "by the heartbeat guard");
     CHECK(atomic_load_explicit(&hf->writer_pid, memory_order_relaxed) == foreign,
           "EBUSY did not clobber the incumbent writer_pid");
-    jts_ring_reader_close(&rr);
 
+    // --- (5) A DEAD foreign writer must NOT block -------------------------
+    //
+    // The other half of the heartbeat guard, and the one that keeps a ring
+    // RECLAIMABLE: a foreign pid with a STALE heartbeat is a crashed renderer or
+    // a ring left behind by a previous boot, and it must not wedge the lane
+    // until an operator intervenes. Same foreign pid as step 4, ancient
+    // heartbeat — the only thing that changed is liveness.
+    atomic_store_explicit(&hf->writer_heartbeat_ns, 1, memory_order_relaxed);
+    jts_ring_writer_t w5;
+    CHECK(jts_ring_writer_open(path, &g, &w5) == 0,
+          "a DEAD foreign writer (stale heartbeat) does not block a fresh attach");
+    CHECK(atomic_load_explicit(&hf->writer_pid, memory_order_relaxed)
+              == (uint64_t)getpid(),
+          "the fresh attach took ownership from the dead foreign writer");
+    jts_ring_writer_close(&w5);
+
+    jts_ring_reader_close(&rr);
     unlink(path);
 }
 

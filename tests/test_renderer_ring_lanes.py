@@ -21,6 +21,7 @@ wrong:
 
 from __future__ import annotations
 
+import pathlib
 import re
 from pathlib import Path
 
@@ -516,3 +517,158 @@ def test_the_ring_lane_holds_no_spine_scale_buffer():
         "a renderer ring lane must not declare a wide wire without its own "
         "evidence"
     )
+
+
+# --- Arm preconditions: each must actually refuse ------------------------
+#
+# Everything here would otherwise produce SILENCE rather than an error the
+# operator could connect to the arm command, which is the whole selection rule
+# for what belongs in the preflight.
+
+
+def test_arming_is_refused_without_the_lane_confd():
+    """The lane conf.d declares the ring PCM and its plug: wrapper. Without it
+    the renderer's device resolves to nothing — a silent source."""
+    reason = rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=False
+    )
+    assert reason is not None
+    assert rl.RENDERER_LANES_CONF_D in reason
+
+
+def test_arming_is_refused_when_the_renderer_user_is_not_in_the_ring_group():
+    """Without group membership the renderer's ioplug cannot create its ring
+    under a 2775/3775 directory, so the lane never receives a frame."""
+    reason = rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=True,
+        user_in_ring_group=False,
+    )
+    assert reason is not None
+    assert rl.RING_GROUP in reason
+
+
+def test_arming_is_refused_on_an_inexpressible_geometry():
+    """fan-in REFUSES this at config with a park (exit 78). Surfacing it here
+    puts it where the operator is watching instead of in the journal after the
+    fact. period 128 with the shipped 4096 buffer derives 32 slots."""
+    reason = rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=True,
+        user_in_ring_group=True, input_buffer_frames=4096, period_frames=128,
+    )
+    assert reason is not None
+    assert "whole-slot" in reason
+
+
+def test_an_unanswerable_precondition_does_not_refuse():
+    """`None` means "could not determine on this host" — a dev laptop has no
+    jts-ring group and no installed conf.d. Refusing on an unanswerable
+    question would make the arm impossible to run anywhere but a live Pi, which
+    is a worse failure than a preflight that occasionally cannot check."""
+    assert rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=None,
+        user_in_ring_group=None, input_buffer_frames=None, period_frames=None,
+    ) is None
+
+
+def test_the_shipped_geometry_is_expressible():
+    """Sanity floor for the check above: the fleet's own numbers must pass, or
+    the preflight would refuse every real box."""
+    assert rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=True,
+        user_in_ring_group=True, input_buffer_frames=4096, period_frames=256,
+    ) is None
+    assert rl.renderer_ring_slots(4096, 256) == 16
+
+
+@pytest.mark.parametrize(
+    "buffer_frames,period,expected",
+    [
+        (4096, 256, 16),   # the shipped geometry, exactly at RING_SLOTS_MAX
+        (2048, 256, 8),
+        (512, 256, 2),     # the floor
+        (4096, 128, None), # 32 slots — above the max
+        (256, 256, None),  # 1 slot — below the min
+        (4000, 256, None), # not a whole number of slots
+        (4096, 0, None),   # degenerate
+    ],
+)
+def test_the_python_slot_derivation_matches_the_rust_rule(
+    buffer_frames, period, expected
+):
+    assert rl.renderer_ring_slots(buffer_frames, period) == expected
+
+
+def test_the_python_slot_derivation_mirrors_the_rust_bounds():
+    """Both sides must reject the same range, or the arm would accept a
+    geometry fan-in then parks on."""
+    rs = FANIN_CONFIG_RS.read_text()
+    lo = re.search(r"pub const RING_SLOTS_MIN: u32 = (\d+);", rs)
+    hi = re.search(r"pub const RING_SLOTS_MAX: u32 = (\d+);", rs)
+    assert lo and hi
+    assert int(lo.group(1)) == rl.RING_SLOTS_MIN
+    assert int(hi.group(1)) == rl.RING_SLOTS_MAX
+
+
+# --- Stale-ring self-heal -------------------------------------------------
+
+
+def _write_ring_header(path, *, n_slots, period_frames, channels=2, fmt=1):
+    """A minimal valid jts_ring header, so the coherence comparator has
+    something real to judge. Field offsets come from
+    rust/jasper-ring/src/layout.rs."""
+    import struct
+
+    header = bytearray(128)
+    header[0:4] = struct.pack("<I", 0x4A52_494E)   # MAGIC 'JRIN'
+    header[4:8] = struct.pack("<I", 1)             # VERSION
+    header[8:12] = struct.pack("<I", 48000)        # rate
+    header[12:16] = struct.pack("<I", channels)
+    header[16:20] = struct.pack("<I", fmt)         # SAMPLE_FORMAT_S16LE
+    header[20:24] = struct.pack("<I", period_frames)
+    header[24:28] = struct.pack("<I", n_slots)
+    pathlib.Path(path).write_bytes(bytes(header) + b"\0" * (n_slots * period_frames * channels * 2))
+
+
+def test_a_geometry_mismatched_ring_is_deleted(tmp_path, monkeypatch):
+    """A ring left from a PRIOR geometry is a create-or-ATTACH error, not
+    something either end recovers from: the renderer would fail its open and the
+    lane would stay silent until someone ran `rm` by hand. Clearing it is what
+    makes the arm lever re-pullable — the exact trap the format axis sprang on
+    Ring A's rollback."""
+    monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
+    path = rl.renderer_ring_path("spotify")
+    _write_ring_header(path, n_slots=8, period_frames=256)   # conf.d says 16
+    assert pathlib.Path(path).exists()
+
+    reason = rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF))
+    assert reason is not None, "a sheared ring must be cleared"
+    assert "n_slots" in reason
+    assert not pathlib.Path(path).exists()
+
+
+def test_a_coherent_ring_is_left_alone(tmp_path, monkeypatch):
+    """Deleting a HEALTHY ring would tear down a live lane on every arm/disarm
+    of some OTHER lane — the self-heal must be surgical."""
+    monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
+    path = rl.renderer_ring_path("spotify")
+    _write_ring_header(path, n_slots=16, period_frames=256)  # matches conf.d
+
+    assert rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF)) is None
+    assert pathlib.Path(path).exists(), "a coherent ring must survive"
+
+
+def test_an_absent_ring_is_not_an_error(tmp_path, monkeypatch):
+    """The overwhelmingly common case: nothing to clear."""
+    monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
+    assert rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF)) is None
+
+
+def test_a_magicless_ring_is_left_for_the_writer_to_reclaim(tmp_path, monkeypatch):
+    """A file with no JRIN magic is one the writer reclaims itself. Deleting it
+    here would race that reclaim for no benefit."""
+    monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
+    path = rl.renderer_ring_path("spotify")
+    pathlib.Path(path).write_bytes(b"\0" * 4096)
+
+    assert rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF)) is None
+    assert pathlib.Path(path).exists()
