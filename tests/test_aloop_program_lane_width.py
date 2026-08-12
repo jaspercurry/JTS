@@ -115,6 +115,21 @@ def test_the_dsnoop_reader_declares_the_same_width():
     )
 
 
+def _slice_between(text: str, start: str, end: str) -> str:
+    """The region of `text` from `start` up to the next `end` after it.
+
+    SCOPED ON PURPOSE. Both files below name this format TWICE — once for a
+    lane this contract does not own (the renderer substreams in the doctor, the
+    mic capture in aec_tune) and once for the dsnoop. A bare substring
+    assertion passes while the site that matters moves, which is the
+    half-guarded shape that reads as covered and guards nothing.
+    """
+    begin = text.index(start)
+    tail = text[begin + len(start) :]
+    stop = tail.index(end)
+    return tail[:stop]
+
+
 def test_the_doctor_pins_the_same_width_on_the_live_box():
     """`check_fanin_asound_wiring` is the on-box half of this contract.
 
@@ -123,9 +138,17 @@ def test_the_doctor_pins_the_same_width_on_the_live_box():
     capture.
     """
     text = DOCTOR_AUDIO_RUNTIME.read_text()
-    assert f'"format {ALOOP_PROGRAM_LANE_FORMAT}"' in text, (
-        "jasper/cli/doctor/audio_runtime.py must pin the jasper_capture dsnoop "
-        "slave format; see check_fanin_asound_wiring"
+    # From where the doctor takes the jasper_capture stanza to where it moves on
+    # to jasper_ref — the renderer-lane loop that names the same format lives
+    # OUTSIDE this window.
+    window = _slice_between(
+        text,
+        '_asound_pcm_block(active, "jasper_capture")',
+        '_asound_pcm_block(active, "jasper_ref")',
+    )
+    assert f'"format {ALOOP_PROGRAM_LANE_FORMAT}"' in window, (
+        "check_fanin_asound_wiring must pin the jasper_capture dsnoop slave "
+        "format between taking that block and moving on to jasper_ref"
     )
 
 
@@ -138,7 +161,11 @@ def test_the_raw_dsnoop_diagnostic_reader_declares_the_same_width():
     """
     text = AEC_TUNE.read_text()
     assert '"jasper_capture",' in text, "aec_tune must still open the raw dsnoop"
-    assert f'"{ALOOP_PROGRAM_LANE_FORMAT}",' in text, (
+    # The argv list of the capture that names the raw dsnoop, only — the mic
+    # capture a few lines below asks for the same format for its own reasons.
+    argv = _slice_between(text, '"jasper_capture",', "]")
+    assert '"-f",' in argv, "the raw dsnoop capture must ask for an explicit format"
+    assert f'"{ALOOP_PROGRAM_LANE_FORMAT}",' in argv, (
         "jasper/cli/aec_tune.py opens the RAW dsnoop and asks arecord for an "
         "explicit format; dsnoop does not convert, so this must equal the "
         "slave format"
