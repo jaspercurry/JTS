@@ -531,6 +531,17 @@ def test_the_floor_rung_counts_unwalked_spots_not_the_walk_so_far():
     assert admission.settle_group_position(
         index=2, retained={1}, floor=3, unwalked_count=lambda: 0,
     ) == admission.SETTLE_BELOW_POSITION_FLOOR
+    # EXACTLY at the floor still stands. ``MIN_RESOLVED_CLOUD_POSITIONS`` is the
+    # fewest positions that still make a cloud, not the fewest that fail — the
+    # comparison is strict, and an off-by-one here would end a session that had
+    # just enough spots left to finish. Neither case above sits on the boundary,
+    # so without this the two phrasings are indistinguishable.
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 2,
+    ) == admission.SETTLE_POSITION_UNRESOLVED
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 1,
+    ) == admission.SETTLE_BELOW_POSITION_FLOOR
 
 
 @pytest.mark.parametrize(
