@@ -67,6 +67,7 @@ from typing import Any, Callable, Container
 __all__ = [
     "ATTEMPT_INITIATOR_HOUSEHOLD",
     "ATTEMPT_INITIATOR_SPEAKER",
+    "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
     "AttemptOverspendError",
     "BeginDecision",
@@ -144,6 +145,25 @@ REFUSE_APPLY_FAILED = "refuse_apply_failed"
 REFUSE_NON_RETRIABLE = "refuse_non_retriable"
 #: Refuse: the slot's extras are gone (the backstop — see :func:`assess_begin`).
 REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
+
+#: Every kind :func:`assess_begin` can return.  Declared so the flow's handling
+#: can be VERIFIED rather than trusted — the discipline
+#: :data:`.spatial.SCREEN_KINDS` and :data:`.coordinator.REFUSAL_KINDS` already
+#: keep, and the reason a kind added here without an arm in ``authorize_begin``
+#: is caught by a test rather than by a household.
+#:
+#: **The unhandled direction is REFUSE.**  A begin gate's catch-all decides
+#: whether an unrecognised answer starts a capture, and the honest default for
+#: an admission decision nobody wired is to not admit: an extra take costs the
+#: household a try it may need, while a refusal costs it a retry it can make
+#: again.  The flow's fallback says so loudly for exactly that reason.
+DECISION_KINDS = frozenset({
+    ADMIT,
+    DEFER_AWAITING_APPLY,
+    REFUSE_APPLY_FAILED,
+    REFUSE_NON_RETRIABLE,
+    REFUSE_EXTRAS_SPENT,
+})
 
 
 @dataclass

@@ -7171,6 +7171,27 @@ class CrossoverV2Conductor:
                     outcome=self._spent_slot_outcome(phase, index),
                 ),
             )
+        if decision.kind != _admission.ADMIT:
+            # One explicit arm per :data:`admission.DECISION_KINDS` member above,
+            # and this fallback is LOUD rather than a catch-all that admits. A
+            # kind arriving here unhandled is a wiring defect — a new decision
+            # shipped without an arm — and on a BEGIN gate the silent direction
+            # is the dangerous one: falling through starts a capture and charges
+            # a try nobody decided to spend. It refuses under the most
+            # conservative code available, the same choice
+            # ``_screen_refusal_code`` makes for an unmapped screen kind.
+            log_event(
+                logger, "correction.crossover_v2_begin_decision_kind_unmapped",
+                level=logging.ERROR, session_id=self.session_id,
+                phase=phase, index=index, kind=str(decision.kind),
+            )
+            self.relay_published_refusal = True
+            raise CaptureBeginRefused(
+                REASON_LOCATE_FAILED,
+                reason_message(
+                    REASON_LOCATE_FAILED, REASON_REGISTRY[REASON_LOCATE_FAILED],
+                ),
+            )
         ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
         if decision.spends_extra:
             try:
