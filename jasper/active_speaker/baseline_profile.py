@@ -1676,12 +1676,29 @@ def build_baseline_profile_candidate(
     # recording the caller's ``None`` would let two different capture lanes
     # share one candidate identity.
     #
-    # A ring device whose declared wire this repo cannot parse raises out of
-    # here rather than resolving to something plausible. Only an armed box with
-    # a typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` can reach it, jasper-fanin
-    # parks on that same value, and the alternative is emitting the half-moved
-    # graph this derivation exists to prevent.
-    devices = active_emit_devices(resolved_playback_device, topology=topology)
+    # A ring device whose declared wire this repo cannot parse REFUSES here
+    # rather than resolving to something plausible: failing loud beats emitting
+    # the half-moved graph this derivation exists to prevent, and nothing has
+    # been written at this point either way. Only an armed box with a typo'd
+    # ``JASPER_FANIN_RING_WIRE_FORMAT`` reaches it — and it reaches it with a
+    # perfectly healthy jasper-fanin, because fan-in resolves that value once in
+    # ``Config::from_env`` at process start while this reader is file-fresh per
+    # call. A file edited after fan-in came up is a refusal here and nothing at
+    # all there; the two coexist indefinitely.
+    #
+    # The parser raises a bare ``ValueError``; ``ActiveSpeakerConfigError`` is
+    # the shape this function owes its callers. Being a ``ValueError`` subclass
+    # it leaves every existing rendering alone (typed blocker, 400, 502) and
+    # adds the one this conversion is for: the multiroom follower gate
+    # (``jasper.multiroom.follower_config``) catches it, converts it to
+    # ``ActiveFollowerError`` and reaches ``fall_back_to_solo()``. A bare
+    # ``ValueError`` escapes that gate and aborts the grouping reconcile
+    # instead, skipping the fallback the gate exists for. The parser's own
+    # sentence rides through: it names the env var and the value that was typed.
+    try:
+        devices = active_emit_devices(resolved_playback_device, topology=topology)
+    except ValueError as exc:
+        raise ActiveSpeakerConfigError(str(exc)) from exc
     emit_capture_device = (
         devices.capture_device if capture_device is None else capture_device
     )

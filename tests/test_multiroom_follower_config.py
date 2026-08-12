@@ -364,6 +364,63 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     assert cam.loaded == []  # no unprotected-tweeter emit reached CamillaDSP
 
 
+def test_typod_ring_wire_refusal_surfaces_as_follower_error(
+    monkeypatch, tmp_path
+) -> None:
+    """The SAME ``except``, one seam earlier: the candidate's device derivation.
+
+    An ARMED box resolves its sink to the active ring, so the follower's build
+    reaches ``active_emit_devices`` — and a typo'd
+    ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses there, ABOVE the L0 emit gate the
+    test above provokes. #2338 gives that refusal the ``ActiveSpeakerConfigError``
+    type precisely so it lands in this same clause: the wire parser raises a
+    BARE ``ValueError``, which this ``except`` (a subclass) does not catch, so
+    an armed + bonded box with one typo'd env line would abort the grouping
+    reconcile oneshot rather than fall back to solo. CamillaDSP is never loaded.
+    """
+    from jasper.fanin_coupling import (
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        RING_WIRE_FORMAT_ENV_VAR,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+
+    # ARM the box — the endpoint marker is the whole difference between this
+    # test and the solo boxes every other case here drives — then typo its wire.
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
+    with pytest.raises(fc.ActiveFollowerError) as exc:
+        asyncio.run(
+            fc.apply_active_follower_config(
+                _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
+            )
+        )
+    assert exc.value.reason == "driver_domain_emit_refused"
+    assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
+    # NON-DEGENERATE: this is the WIRE refusal, not some other emit-gate refusal
+    # the armed box might have hit on the way.
+    assert RING_WIRE_FORMAT_ENV_VAR in str(exc.value)
+    assert "s32le" in str(exc.value)
+    assert cam.loaded == []
+
+
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     """Stub the topology load + the graph re-proof for restore tests."""
     monkeypatch.setattr(

@@ -1629,7 +1629,13 @@ def _recorded_emit_kwargs(
     return seen
 
 
-def _ring_candidate_site(topology, tmp_path, *, driver_domain=False):
+def _ring_candidate_site(
+    topology,
+    tmp_path,
+    *,
+    driver_domain=False,
+    playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+):
     """Drive ``build_baseline_profile_candidate``'s WRITE emit against the ring.
 
     The production CANDIDATE site (#2338), and the reason this guard grew past
@@ -1639,6 +1645,10 @@ def _ring_candidate_site(topology, tmp_path, *, driver_domain=False):
     emit site over. Both of its branches take the whole contract, so both are
     walked: the solo baseline emit and the wireless follower's driver-domain
     emit.
+
+    ``playback_device`` is overridable ONLY so a caller can drive the SAME site
+    at the ALSA active lane as a control — a ring-specific claim proven without
+    one is a claim about the site, not about the ring.
     """
     from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
     from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -1660,13 +1670,67 @@ def _ring_candidate_site(topology, tmp_path, *, driver_domain=False):
             write=True,
             state_path=out / "active-speaker-profile.json",
             config_path=out / "configs" / "active-speaker-baseline.yml",
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=playback_device,
             driver_domain=driver_domain,
             program_channel="left" if driver_domain else None,
             validate=valid_camilla_config,
         )
 
     return call_site
+
+
+def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
+    tmp_path, monkeypatch
+):
+    """A typo'd ``JASPER_FANIN_RING_WIRE_FORMAT`` refuses as the TYPED class.
+
+    This site derives its device block BEFORE it has an ``issues`` list to put a
+    blocker in — the cached fast-return exits above that point, and the
+    fingerprint has to describe the graph that will actually be emitted — so it
+    refuses by raising, and the TYPE of the raise is the whole contract. The
+    parser hands up a bare ``ValueError``
+    (:func:`jasper.fanin_coupling.resolve_ring_wire_format`); what leaves this
+    function must be ``ActiveSpeakerConfigError``, the class
+    ``jasper.multiroom.follower_config`` catches on its way to
+    ``fall_back_to_solo()``. That ``except`` names a SUBCLASS, so it does not
+    catch the bare parent: with one, an armed + bonded box carrying one typo'd
+    env line falls back to solo and logs
+    ``multiroom.reconcile.active_follower_blocked``; without one it aborts the
+    grouping reconcile inside the gate whose documented job is that fallback.
+
+    Being a ``ValueError`` subclass, the typed class leaves every surface that
+    already renders this as a clean refusal exactly as it was.
+    """
+    import jasper.active_speaker as active_speaker
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+    topology = mono_output_topology()
+    with pytest.raises(active_speaker.ActiveSpeakerConfigError) as caught:
+        _ring_candidate_site(topology, tmp_path / "ring")()
+
+    # NON-DEGENERATE: assert the raise really is the wire parser's, and that the
+    # conversion carries its sentence rather than a type name. The operator has
+    # to see the var and the token they typed.
+    detail = str(caught.value)
+    assert RING_WIRE_FORMAT_ENV_VAR in detail
+    assert "s32le" in detail, "the operator needs to see the value they typed"
+
+    # CONTROL: the same site, the same typo'd file, the ALSA active lane. The
+    # wire is resolved only for a ring sink, so a typo cannot block an unarmed
+    # box's ordinary candidate build — a conversion that refused every box would
+    # satisfy the assertions above.
+    _ring_candidate_site(
+        topology,
+        tmp_path / "alsa",
+        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+    )()
 
 
 def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
