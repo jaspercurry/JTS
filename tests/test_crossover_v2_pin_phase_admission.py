@@ -242,14 +242,14 @@ def _linearity_admission_sites() -> dict[str, int]:
     methods and still be the same unasserted rule. Returned per module so a
     failure names which file drifted rather than only that the total did.
     """
-    from jasper.active_speaker.crossover_v2 import spatial
+    from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
 
     return {
         module.__name__.rsplit(".", 1)[-1]: sum(
             inspect.getsource(module).count(spelling)
             for spelling in LINEARITY_SITE_SPELLINGS
         )
-        for module in (flow, spatial)
+        for module in (flow, spatial, capture_dispatch)
     }
 
 
@@ -281,14 +281,28 @@ def test_the_tripwire_looks_in_every_module_that_carries_the_rule():
 
     A total is not evidence that every module was searched: 6 could be six sites
     in one file and none in the other, which is what the guard would report the
-    day someone moves the last ladder out and forgets this list. So assert the
-    SHAPE — both modules present, and neither empty — because "we looked there"
-    is the property that actually failed in Phase 5a-iv, not "the sum is right".
+    day someone moves the last ladder out and forgets this list.
+
+    **That day arrived** — #2291 Phase 5a-vii moved CHECK's, MEASURE's and
+    VERIFY's ladders into :mod:`.capture_dispatch`, and this test is how the
+    move was noticed rather than announced.  The flow now carries ZERO sites,
+    which is asserted rather than dropped from the search: the whole point of
+    the list is that a rule reappearing in the conductor must fail here, and a
+    module removed from it can never fail again.
+
+    So: all three searched, the two CARRIERS non-empty, and the conductor
+    empty — because "we looked there" is the property that failed in Phase
+    5a-iv, not "the sum is right".
     """
     by_module = _linearity_admission_sites()
 
-    assert set(by_module) == {"crossover_v2_flow", "spatial"}
-    assert all(count > 0 for count in by_module.values()), by_module
+    assert set(by_module) == {"crossover_v2_flow", "spatial", "capture_dispatch"}
+    carriers = {"spatial", "capture_dispatch"}
+    assert all(by_module[name] > 0 for name in carriers), by_module
+    assert by_module["crossover_v2_flow"] == 0, (
+        "the conductor carries no linearity ladder since Phase 5a-vii; a site "
+        "here is either a ladder that came back or a new unclassified rule"
+    )
 
 
 def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():
