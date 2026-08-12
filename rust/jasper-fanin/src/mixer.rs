@@ -79,10 +79,23 @@ pub use direct_capture::{DirectObservability, DrainStats};
 /// channels (matches the dmix's declared shape). Not configurable.
 pub const CHANNELS: u32 = 2;
 
-/// PCM sample format. Matches the dmix's declared format and the
-/// dsnoop slave's format. Changing this would cascade through the
-/// asoundrc, CamillaDSP, and the AEC bridge — out of scope for the
-/// daemon.
+/// PCM sample format for this daemon's snd-aloop lanes — the per-renderer
+/// capture inputs and the summed program write to `hw:Loopback,0,7`.
+///
+/// THE WRITER'S HALF OF A FOUR-PLACE FACT, and until U2 PR-3 the only one of
+/// the four with no test at all. `pcm.jasper_capture`'s dsnoop slave, the
+/// doctor's `check_fanin_asound_wiring` pin, and `jasper/cli/aec_tune.py`'s
+/// RAW dsnoop open must all name this same format — dsnoop does not convert,
+/// unlike the `plug:` wrapper every other consumer reaches this lane through.
+/// `tests/test_aloop_program_lane_width.py` pins the set, so moving this is a
+/// same-commit change to all four rather than a daemon-local edit.
+///
+/// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the post-DSP
+/// content lane (`hw:Loopback,0/1,6`) is a substream pair on the same card
+/// running `S32_LE` on every box. The per-box program-width capability is the
+/// RING's (`ring_wire_format` + the `shm_ring` coupling); this lane is owned
+/// by P7/P9, which re-point its consumers and remove snd-aloop rather than
+/// widen it.
 pub const FORMAT: Format = Format::S16LE;
 
 /// Sentinel for "no ALSA playback delay sample has landed yet".

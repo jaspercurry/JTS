@@ -527,8 +527,9 @@ impl Config {
     /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
     /// per-box width decision the whole daemon reads (U2 / #2223).
     ///
-    /// A wide wire needs BOTH halves: the ring transport (an snd-aloop output is
-    /// an S16 substream, full stop) AND an S32LE ring wire format. The ring's
+    /// A wide wire needs BOTH halves: the ring transport (this daemon's aloop
+    /// write is pinned narrow by [`crate::mixer::FORMAT`], so a loopback box
+    /// emits S16 whatever it declared) AND an S32LE ring wire format. The ring's
     /// own attached header is the RUNTIME authority for what
     /// `write_ring_period` publishes; this is the same fact resolved from config
     /// at construction, which is when the lane buffers and the direct lane's

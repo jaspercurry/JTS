@@ -28,7 +28,7 @@ dependency, this guard is not what breaks.
 
 WHAT THESE PIN. The assistant IPC wire is wide only when BOTH declared halves
 are (``JASPER_FANIN_RING_WIRE_FORMAT=S32_LE`` AND the ``shm_ring`` coupling),
-because an snd-aloop substream is an S16 device however the box spelled its
+because fan-in's aloop write is pinned narrow however the box spelled its
 format. That rule is stated in three places — Rust
 (``TtsWireWidth::from_box_declaration``), Python
 (``jasper.fanin_coupling.assistant_wire_is_wide``), and the prose a reader

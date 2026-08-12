@@ -371,8 +371,8 @@ self-describing payload verbs — `AUDIO` (S16LE) and `AUDIO32` (S32LE at spine
 scale) — and `jasper-voice` speaks whichever this box's declaration resolves to,
 so nothing is negotiated. That declaration is a CONJUNCTION, not the wire-format
 token alone: `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and**
-`JASPER_FANIN_CAMILLA_COUPLING=shm_ring`, because an snd-aloop substream is an
-S16 device however the box spelled its format. One rule decides it —
+`JASPER_FANIN_CAMILLA_COUPLING=shm_ring`, because fan-in's aloop write is
+pinned narrow (`mixer::FORMAT`) however the box spelled its format. One rule decides it —
 `jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which
 `Config::program_wire_is_wide` calls and
 `jasper.fanin_coupling.assistant_wire_is_wide` mirrors — and

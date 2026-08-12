@@ -92,11 +92,20 @@ impl TtsWireWidth {
     ///
     /// A wide wire needs the declared `S32_LE` ring wire format **and** the
     /// `shm_ring` coupling. The format alone is not enough and the omission is
-    /// not academic: an snd-aloop substream is an S16 device, full stop, so a
-    /// loopback-coupled box resolves NARROW however it spelled its format. That
-    /// is exactly the conjunction `jasper_fanin::Config::program_wire_is_wide`
-    /// has always applied; this is that function's body, lifted here so the
-    /// Python control plane can mirror ONE rule instead of re-deriving it.
+    /// not academic: fan-in's snd-aloop write is pinned narrow by
+    /// `jasper_fanin::mixer::FORMAT`, so a loopback-coupled box mixes and emits
+    /// S16 however it spelled its format, and a wide assistant payload entering
+    /// that mix would be narrowed right back. That is exactly the conjunction
+    /// `jasper_fanin::Config::program_wire_is_wide` has always applied; this is
+    /// that function's body, lifted here so the Python control plane can mirror
+    /// ONE rule instead of re-deriving it.
+    ///
+    /// SAY IT THAT WAY, not "an snd-aloop substream is an S16 device". That
+    /// earlier phrasing was over-broad and a reader could design around a limit
+    /// snd-aloop does not have: the post-DSP content lane (`hw:Loopback,0/1,6`)
+    /// is a substream pair on the same card running `S32_LE` on every box in
+    /// the fleet. The narrow half of this conjunction is a JTS declaration, and
+    /// `tests/test_aloop_program_lane_width.py` pins both facts.
     ///
     /// Callers pass their own already-parsed halves rather than tokens, because
     /// both ends have them typed by the time they ask: fan-in has `Coupling` and
@@ -1097,10 +1106,11 @@ mod tests {
     /// THE VERDICT TABLE — all four pairings of the box's two declared halves.
     ///
     /// Only the conjunction is wide. The single most important row is
-    /// (wide format, loopback coupling) → **Narrow**: an snd-aloop substream is
-    /// an S16 device, so a box that declared a wide format but never armed the
-    /// ring must NOT speak `AUDIO32`. An earlier revision of this PR keyed the
-    /// Python side on the format token alone and got that row wrong.
+    /// (wide format, loopback coupling) → **Narrow**: fan-in's aloop write is
+    /// pinned narrow (`from_box_declaration` above), so a box that declared a
+    /// wide format but never armed the ring must NOT speak `AUDIO32`. An
+    /// earlier revision of this PR keyed the Python side on the format token
+    /// alone and got that row wrong.
     ///
     /// `tests/test_ring_wire_format_contract.py` pins the Python mirror against
     /// this same table, by reading this function's source.

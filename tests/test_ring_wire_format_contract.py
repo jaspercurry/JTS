@@ -22,8 +22,9 @@ drift from.
 **Two contracts live here, and the second is not implied by the first.** Token
 normalization (above) says what ``S32_LE`` means. The ASSISTANT WIDTH VERDICT
 (below, U2 PR-2) says what a BOX is — and it is a conjunction: the declared
-format AND the ``shm_ring`` coupling, because an snd-aloop substream is an S16
-device however the box spelled its format. Pinning only the normalizer left the
+format AND the ``shm_ring`` coupling, because fan-in's aloop write is pinned
+narrow however the box spelled its format
+(:mod:`tests.test_aloop_program_lane_width`). Pinning only the normalizer left the
 two languages free to reach different verdicts about the same box from the same
 tokens, which is exactly what happened: the Python assistant-width predicate
 keyed on the token alone while ``Config::program_wire_is_wide`` had always
@@ -293,7 +294,7 @@ def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -
             wire_format=RING_WIRE_FORMAT_WIDE, coupling="loopback"
         )
         is False
-    ), "a declared-wide box that never armed the ring outputs to an S16 substream"
+    ), "a declared-wide box that never armed the ring writes fan-in's narrow aloop lane"
 
 
 def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None:

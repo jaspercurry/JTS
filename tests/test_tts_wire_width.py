@@ -283,8 +283,8 @@ def _declare(monkeypatch, *, wire_format: str, coupling: str) -> None:
 
 # The verdict table, mirroring `the_assistant_width_needs_both_halves_of_the_box_declaration`
 # in rust/jasper-tts-protocol/src/lib.rs. The (S32_LE, loopback) row is the one
-# that matters: an snd-aloop substream is an S16 device, so a box that declared
-# a wide format but never armed the ring is NARROW.
+# that matters: fan-in's aloop write is pinned narrow (mixer::FORMAT), so a box
+# that declared a wide format but never armed the ring is NARROW.
 _VERDICTS = [
     ("S32_LE", "shm_ring", True),
     ("S32_LE", "loopback", False),
