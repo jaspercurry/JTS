@@ -102,9 +102,12 @@ impl TtsWireWidth {
     ///
     /// SAY IT THAT WAY, not "an snd-aloop substream is an S16 device". That
     /// earlier phrasing was over-broad and a reader could design around a limit
-    /// snd-aloop does not have: the post-DSP content lane (`hw:Loopback,0/1,6`)
-    /// is a substream pair on the same card running `S32_LE` on every box in
-    /// the fleet. The narrow half of this conjunction is a JTS declaration, and
+    /// snd-aloop does not have: the **post-DSP content lane role** runs
+    /// `S32_LE` on every box in the fleet, on a substream pair
+    /// (`hw:Loopback,0/1,6`) on the same card. The claim is about the ROLE, not
+    /// the device — that same pair also carries the bonded active-follower
+    /// round-trip, which opens it raw at `S16_LE`. The narrow half of this
+    /// conjunction is a JTS declaration, and
     /// `tests/test_aloop_program_lane_width.py` pins both facts.
     ///
     /// Callers pass their own already-parsed halves rather than tokens, because

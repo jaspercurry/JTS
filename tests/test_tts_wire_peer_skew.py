@@ -18,21 +18,37 @@ question this file answers is not "does the width convert correctly" (PR-2 owns
 that) but "can a box ever reach the state where a new ``jasper-voice`` speaks
 to an old ``jasper-fanin``".
 
-It cannot, and the guarantee is structural rather than defensive — which is
-precisely why it needs a test. Two independent orderings already put fan-in
-first, and both were INHERITED from code written for other reasons. A future
-edit could drop either one without any current test noticing:
+**It can — on one path, and this file does NOT close it.** Say that plainly,
+because an earlier revision of this docstring claimed the guarantee was
+structural and it is not. What the two orderings below actually cover is the
+SUCCESSFUL deploy and the boot transaction; both were INHERITED from code
+written for other reasons, and a future edit could drop either without any
+current test noticing, which is what they are asserted for here:
 
 1. **Boot** — ``jasper-voice.service`` declares ``After=jasper-fanin.service``.
-2. **Deploy** — the installer STOPS ``jasper-voice`` (first entry of the
-   canonical park set) before it restarts ``jasper-fanin``, so the voice daemon
-   that comes back is always newer than the fan-in it talks to.
+2. **Deploy (success)** — the installer STOPS ``jasper-voice`` (first entry of
+   the canonical park set) before it restarts ``jasper-fanin``, so the voice
+   daemon that comes back is always newer than the fan-in it talks to.
 
-A capability handshake was considered for this and deliberately not built:
-R-WIDTH forbids cross-daemon format negotiation, the two orderings above
-already close the window, and a fan-in STATUS read at voice startup would add a
-new cross-daemon runtime dependency whose own failure mode (STATUS unreadable
-during a fan-in restart) would silently narrow the fleet's one wide box.
+**The residual, stated rather than waived.** An **aborted** deploy — a fan-in
+build failure on a Pi 5-class box, which never reaches the park step — can
+leave the new Python installed beside a still-running old fan-in binary. Any
+lone ``jasper-voice`` restart after that (a routine event: the AEC reconciler,
+a wizard save, a watchdog) then puts a new voice against an old peer. Nothing
+holds it closed: fan-in is not in the park set, ``jasper-voice.service``
+declares ``Wants=`` and not ``Requires=``, and — the part that makes it
+genuinely invisible — the ``Err`` arm that logs
+``event=fanin.tts_socket.protocol_error`` bumps **no metric**, so the skew does
+not reach ``/state`` or the doctor either. On a wide-declared box that is a
+silent assistant, cue included.
+
+Detecting it is [#2378](https://github.com/jaspercurry/JTS/issues/2378) and is
+deliberately NOT solved here. A capability handshake was the obvious reach and
+was declined for this PR: R-WIDTH forbids cross-daemon format negotiation, and
+a fan-in STATUS read at voice startup would add a runtime dependency whose own
+failure mode — STATUS unreadable while fan-in restarts — silently narrows the
+fleet's one wide box. That is a design decision #2378 owns, not a line this
+file can add.
 """
 
 from __future__ import annotations
@@ -150,10 +166,15 @@ def test_a_pre_audio32_peer_accepts_the_narrow_wire(peer_pair):
 def test_a_pre_audio32_peer_hangs_up_on_the_wide_wire(peer_pair):
     """The banked exposure, in-tree: rejection is a dead socket, not a bad sample.
 
-    The documented mode is an `OSError` (`BrokenPipeError` in practice) out of
-    the writer. It is asserted as `OSError` rather than the exact errno because
-    which write trips it depends on the kernel's send buffer; what must never
-    change is that it RAISES rather than silently discarding the reply.
+    The documented mode is an `OSError` out of the writer, and the BASE CLASS
+    is asserted on measured evidence rather than on caution: a 20-run survey on
+    this developer's macOS host produced `BrokenPipeError` (EPIPE, errno 32)
+    20/20, while the review of this PR observed `[Errno 57] Socket is not
+    connected` (ENOTCONN) once in five on another host. Same rejection, two
+    errnos — which write trips it, and with what, depends on the kernel's send
+    buffer and on when the RST lands. Pinning either would make this a
+    host-portability trap; what must never change is that it RAISES rather than
+    silently discarding the reply.
     """
     ours, peer = peer_pair
     adapter = _OutputdStreamAdapter(ours, wire_wide=True)
@@ -198,8 +219,14 @@ def test_voice_is_ordered_after_fanin_at_boot():
     """`After=jasper-fanin.service` on the voice unit.
 
     Present today for other reasons (the TTS socket must exist before voice
-    connects). It also carries the width guarantee, so it is pinned here with
+    connects). It also carries the width ordering, so it is pinned here with
     that reason attached.
+
+    ORDERING ONLY, and the distinction is the residual in the module docstring:
+    systemd `After=` sequences a boot transaction that starts BOTH units. It
+    says nothing about a lone `systemctl restart jasper-voice` against an
+    already-running fan-in, which is the aborted-deploy path #2378 owns. This
+    test pins what the directive does, not a guarantee it does not give.
     """
     text = VOICE_UNIT.read_text()
     after = [ln for ln in text.splitlines() if ln.startswith("After=")]
@@ -217,6 +244,13 @@ def test_voice_is_parked_before_the_installer_restarts_fanin():
     Checked per shell function rather than over the whole file, so a future
     function that restarts fan-in without parking first cannot hide behind an
     unrelated earlier park call.
+
+    THE SUCCESS PATH ONLY. A deploy that aborts before this step — a fan-in
+    build failure — never parks anything, so this ordering is simply not
+    reached; see the module docstring's residual and #2378. Two edges are known
+    narrow and left so deliberately: the function split keys on a bash function
+    header, and the unit names are matched as written, so a restart moved to a
+    helper or spelled without `.service` would not be seen here.
     """
     text = INSTALL_SYSTEMD_UNITS.read_text()
     bodies = re.split(r"^(?=[a-z_][a-z0-9_]*\(\) \{$)", text, flags=re.MULTILINE)

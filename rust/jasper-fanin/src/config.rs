@@ -330,8 +330,11 @@ pub struct Config {
     /// DEFAULT-OFF USB DIRECT capture (PoC). When `true`, the lane labelled
     /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
     /// snd-aloop substream; instead the mixer opens `usb_direct_device`
-    /// (`hw:UAC2Gadget`) as an S32_LE capture, narrows to S16, and feeds the
-    /// SAME `LaneResampler` — deleting the usbsink bridge hop + the aloop cable
+    /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
+    /// `LaneResampler` — narrowing to S16 first only on a NARROW wire, which
+    /// is the fleet default; since U2 PR-1 a wide-wire box hands the
+    /// resampler the gadget's `i32` untouched — deleting the usbsink bridge
+    /// hop + the aloop cable
     /// (~25 ms measured) from the USB path. Direct mode IMPLIES a resampler on
     /// that lane regardless of `input_resampler_enabled` (see
     /// [`Config::lane_wants_resampler`]). Fail-safe: only the exact literal

@@ -65,6 +65,23 @@ _TOKEN_ONLY_ASSISTANT_WIDTH_CLAIMS = (
     "a box speaks only when its one `JASPER_FANIN_RING_WIRE_FORMAT` declaration is wide",
 )
 
+# The superseded REASON for the coupling half, which is a different defect from
+# the rule above: the rule was right and its justification was false. An
+# snd-aloop substream is not an S16 device — the post-DSP content lane role on
+# `hw:Loopback,0/1,6` runs `S32_LE` on every box in the fleet. The coupling half
+# holds because fan-in's aloop write is pinned narrow by `mixer::FORMAT`, which
+# `tests/test_aloop_program_lane_width.py` pins along with the counter-example.
+#
+# Guarded because it already came back once: U2 PR-3 corrected this sentence at
+# six sites and it SURVIVED in the U2 arc row of this same document — inside the
+# very cell that PR rewrote, because the rewrite appended a paragraph and
+# re-committed the false first half. A reader who believes snd-aloop cannot
+# carry S32 will design around a limit that is not there.
+_FALSE_SND_ALOOP_WIDTH_CLAIMS = (
+    "an snd-aloop substream is an S16 device",
+    "an snd-aloop output is an S16 substream",
+)
+
 
 def test_the_docs_do_not_restate_the_superseded_token_only_width_rule() -> None:
     """The assistant width is a CONJUNCTION; the docs must not say otherwise.
@@ -86,6 +103,28 @@ def test_the_docs_do_not_restate_the_superseded_token_only_width_rule() -> None:
         "the assistant wire's width needs BOTH declared halves "
         f"({RING_WIRE_FORMAT_WIDE} AND the shm_ring coupling); these clauses "
         "state the superseded token-only rule:\n"
+        + "\n".join(f"  {claim}" for claim in stale)
+    )
+
+
+def test_the_docs_do_not_restate_the_false_snd_aloop_width_reason() -> None:
+    """The coupling half is right; "snd-aloop can only do S16" never was.
+
+    A separate guard from the one above because it is a separate defect class:
+    that one catches a doc teaching the WRONG RULE, this one catches a doc
+    teaching the right rule for a REASON THAT IS NOT TRUE. The second is the
+    more durable kind of drift — every test stays green, and the next design
+    inherits a hardware limit that does not exist.
+    """
+    if not _CONSOLIDATION_DOC.exists():
+        pytest.skip(f"doc not present: {_CONSOLIDATION_DOC}")
+    text = _CONSOLIDATION_DOC.read_text(encoding="utf-8")
+    stale = [claim for claim in _FALSE_SND_ALOOP_WIDTH_CLAIMS if claim in text]
+    assert not stale, (
+        "an snd-aloop substream is not an S16 device — the post-DSP content "
+        "lane role on hw:Loopback,0/1,6 runs S32_LE on every box. The coupling "
+        "half holds because fan-in's aloop write is pinned narrow "
+        "(mixer::FORMAT). These clauses state the false reason:\n"
         + "\n".join(f"  {claim}" for claim in stale)
     )
 

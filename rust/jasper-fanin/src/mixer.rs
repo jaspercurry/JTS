@@ -90,12 +90,16 @@ pub const CHANNELS: u32 = 2;
 /// `tests/test_aloop_program_lane_width.py` pins the set, so moving this is a
 /// same-commit change to all four rather than a daemon-local edit.
 ///
-/// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the post-DSP
-/// content lane (`hw:Loopback,0/1,6`) is a substream pair on the same card
-/// running `S32_LE` on every box. The per-box program-width capability is the
-/// RING's (`ring_wire_format` + the `shm_ring` coupling); this lane is owned
-/// by P7/P9, which re-point its consumers and remove snd-aloop rather than
-/// widen it.
+/// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the **post-DSP
+/// content lane role** runs `S32_LE` on every box, on a substream pair
+/// (`hw:Loopback,0/1,6`) on this same card. State it role-first: that pair
+/// carries a second, mutually-exclusive role, the bonded active-follower
+/// round-trip, which opens the raw device at `S16_LE`
+/// (`jasper.multiroom.reconcile`), so the bare device name proves nothing in
+/// either direction. The per-box program-width capability is the RING's
+/// (`ring_wire_format` + the `shm_ring` coupling); this lane is owned by
+/// P7/P9, which re-point its consumers and remove snd-aloop rather than widen
+/// it.
 pub const FORMAT: Format = Format::S16LE;
 
 /// Sentinel for "no ALSA playback delay sample has landed yet".

@@ -19,11 +19,21 @@ here with the list of what it missed.
 
 **Narrow here is a DECLARATION, not a driver limit**, and that distinction is
 load-bearing enough to be a test rather than a comment. An snd-aloop substream
-is not "an S16 device": the post-DSP content lane (``hw:Loopback,0/1,6``) is a
-substream pair on the SAME card and it runs ``S32_LE`` on every box in the
-fleet, and has since the wide-output-path program's PR-6. So the reason this
+is not "an S16 device": the **post-DSP content lane role** runs ``S32_LE`` on
+every box in the fleet, and has since the wide-output-path program's PR-6, on a
+substream pair (``hw:Loopback,0/1,6``) on the SAME card. So the reason this
 lane is narrow is ``mixer::FORMAT`` and the three literals that follow it —
 nothing about snd-aloop.
+
+**The counter-example is a ROLE, not a device, and the difference is real.**
+That same pair carries a second, mutually-exclusive role — the bonded
+active-follower grouping round-trip — which opens the RAW device at ``S16_LE``
+(``jasper.multiroom.reconcile``'s ``GROUPING_LOOPBACK_CAPTURE`` /
+``GROUPING_LOOPBACK_CAPTURE_FORMAT``), bypassing the asound.conf aliases
+entirely. So "``hw:Loopback,0/1,6`` is wide" would be false as a statement
+about the device. What is true, and what the test below asserts, is that the
+named post-DSP content PCMs declare ``S32_LE`` — which is all the
+counter-example needs: an snd-aloop substream demonstrably CAN carry S32.
 
 Why the campaign has not widened it (U2 PR-3): the box-level program-width
 capability is the ring's — ``JASPER_FANIN_RING_WIRE_FORMAT`` plus the
@@ -178,12 +188,16 @@ def test_the_raw_dsnoop_diagnostic_reader_declares_the_same_width():
 
 
 def test_a_snd_aloop_substream_is_not_inherently_narrow():
-    """The same card already runs a WIDE substream pair, today, on every box.
+    """The same card already runs a WIDE substream ROLE, today, on every box.
 
     This is the guard behind the docstring's claim. It exists so a future
     reader cannot re-derive "snd-aloop can only do S16" from the narrow lane
-    above and design around a limit that is not there: the post-DSP content
-    lane is `S32_LE` and has been since the wide-output-path program.
+    above and design around a limit that is not there.
+
+    Asserted on the named post-DSP content PCMs, deliberately — NOT on
+    "hw:Loopback,0/1,6 is wide", which is false: the bonded active-follower
+    role opens that same raw pair at S16_LE. One role being wide is the whole
+    counter-example, and it is the honest form of it.
     """
     rc = _non_comment(ASOUNDRC.read_text())
     for name in ("outputd_content_playback", "outputd_content_capture"):
