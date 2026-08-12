@@ -2186,8 +2186,28 @@ static void test_writer_ebusy_second_writer(void) {
     // ring.
     jts_ring_writer_t w2;
     memset(&w2, 0, sizeof(w2));
+    // TIME the refusal. The wait's only SAFETY requirement is that it is
+    // FINITE (see acquire_writer_lock), and nothing else in this suite pins
+    // that: raising the ceiling 10x leaves every assertion green and merely
+    // slower, and removing the deadline entirely makes the whole binary HANG —
+    // caught today only by CI's 15-minute job timeout. One elapsed-time bound
+    // turns both into an immediate, local failure.
+    //
+    // The bound is deliberately generous. This is ONE lock wait
+    // (JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS = 500 ms; measured ~501 ms here), and
+    // 1.5 s leaves room for a loaded CI box without admitting a 10x regression.
+    uint64_t t0 = jts_ring_monotonic_ns();
     int rc = jts_ring_writer_open(path, &g, &w2);
+    uint64_t elapsed_ms = (jts_ring_monotonic_ns() - t0) / 1000000ull;
     CHECK(rc == -EBUSY, "a second live writer is refused with -EBUSY by the lock");
+    CHECK(elapsed_ms < 1500,
+          "the writer-lock wait must be BOUNDED — a refusal took too long, "
+          "which means the deadline was raised or removed (an unbounded wait "
+          "hangs the daemon inside snd_pcm_prepare, not just this test)");
+    CHECK(elapsed_ms >= 400,
+          "...and it must actually WAIT: a refusal that returns instantly means "
+          "the bounded wait became fail-fast again, which spuriously fails the "
+          "transient concurrent-open case this suite also covers");
     CHECK(w2.base == NULL, "refused writer struct left detached");
     CHECK(w2.fd == -1, "refused writer fd left detached");
     CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
@@ -2334,6 +2354,15 @@ static void test_writer_lock_unopenable_fails_open_and_is_logged(void) {
                   strstr(log_buf, "event=jts_ring.writer.lock_unavailable") != NULL,
               "losing fd-scoped exclusivity emits a stable, greppable event — "
               "a box running without it must be VISIBLE");
+        // ...and the errno in it must be the REAL cause, not whatever close(2)
+        // last set. A directory where the lock file belongs makes open(O_RDWR)
+        // fail EISDIR; an operator reading `errno=0` (or a stale EBADF) would
+        // be sent looking in the wrong place entirely.
+        char want_errno[32];
+        snprintf(want_errno, sizeof(want_errno), "errno=%d", EISDIR);
+        CHECK(got > 0 && strstr(log_buf, want_errno) != NULL,
+              "the fail-open event must carry the REAL errno (EISDIR here); "
+              "close(2) clobbers errno, so every -2 path has to preserve it");
     }
 
     if (rc == 0) jts_ring_writer_close(&w);
@@ -3205,6 +3234,13 @@ static void test_capture_destage_partial_reads(void) {
 }
 
 int main(void) {
+    // WATCHDOG for the M1 class: a lock wait that loses its deadline makes this
+    // binary HANG rather than fail. Without this, the only thing that notices is
+    // CI's 15-minute job timeout — a slow, remote, uninformative signal for a
+    // local, immediate bug. SIGALRM kills us in seconds with an obvious cause.
+    // The budget is far above any legitimate run (the whole suite is ~1 s
+    // wall-clock, and the slowest single test is one 500 ms lock wait).
+    alarm(120);
     snprintf(g_owned_dir, sizeof(g_owned_dir), "/tmp/jts-ring-ctest-owned-%d",
              (int)getpid());
     CHECK(setenv("JTS_RING_TEST_OWNED_DIR", g_owned_dir, 1) == 0,

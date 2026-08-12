@@ -736,14 +736,31 @@ static void reader_take_mapping(jts_ring_reader_t *out, ring_mapping_t *mapping)
 // acceptance assumes. It is also robust where a pid test is not: the kernel
 // releases it on crash or SIGKILL (no stale-lock recovery needed), and it
 // cannot misfire on pid reuse.
+// RETURN VALUES ARE SENTINELS, NOT -errno (F-4). -1 = "a live holder refused
+// us" (the caller maps it to -EBUSY); -2 = "the lock file itself was
+// unusable" (the caller fails open and logs). The caller dispatches on
+// `== -1` / `== -2`, so converting these to `-errno` — which reads like an
+// improvement, and is what acquire_open_lock does — would silently break it:
+// EPERM (1) would arrive as -1 and read as LOCK HELD, and ENOENT (2) as -2 and
+// read as fail-open. If these ever become -errno, the call site must change in
+// the same commit.
+//
+// `errno` is set on EVERY -2 return so the caller's log line is honest. That
+// takes deliberate care because close(2) clobbers it — the same trap
+// acquire_open_lock avoids with its own `int chmod_errno = errno;` capture.
 static int acquire_writer_lock(const char *path) {
     char lock_path[PATH_MAX];
     int n = snprintf(lock_path, sizeof(lock_path), "%s%s", path,
                      JTS_RING_WRITER_LOCK_SUFFIX);
-    if (n < 0 || (size_t)n >= sizeof(lock_path)) return -2;
+    if (n < 0 || (size_t)n >= sizeof(lock_path)) {
+        // snprintf sets no errno for truncation; name the condition ourselves
+        // rather than letting the caller log whatever happened to be there.
+        errno = ENAMETOOLONG;
+        return -2;
+    }
     int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
                   JTS_RING_OPEN_LOCK_MODE);
-    if (fd < 0) return -2;
+    if (fd < 0) return -2;  // open's own errno is still live here.
     // Heal a creator's restrictive umask so future group peers can participate,
     // exactly as acquire_open_lock does. This matters more here than there: an
     // out-of-unit first creator (the doctor's sudo aplay probe, an operator
@@ -753,7 +770,9 @@ static int acquire_writer_lock(const char *path) {
     // it deleting the file, so only a reboot clears it. A non-owner peer may see
     // EPERM on an already-correct file; that is not a failure.
     if (fchmod(fd, JTS_RING_OPEN_LOCK_MODE) < 0 && errno != EPERM) {
+        int chmod_errno = errno;  // close(2) would clobber it
         close(fd);
+        errno = chmod_errno;
         return -2;
     }
     // BOUNDED WAIT, not fail-fast. Two different situations reach this lock and
@@ -786,11 +805,25 @@ static int acquire_writer_lock(const char *path) {
     // decide the lane is legitimately owned, and anything else reads as a
     // broken device.
     //
-    // Same loop shape as acquire_open_lock. Note the budgets ADD rather than
+    // Same loop shape as acquire_open_lock (and the same open_lock_sleep,
+    // which both lock waits now share). Note the budgets ADD rather than
     // overlap — this lock is taken AFTER ring_mapping_open has already spent
     // its own wait — so a fully contended open can spend ~1 s inside ALSA's
     // snd_pcm_prepare. Any caller with its own deadline (the doctor probe:
     // see _PROBE_TIMEOUT_SEC) must outlast the sum, not just this half.
+    //
+    // RESIDUAL, stated so the durability here is not read as stronger than it
+    // is: an flock's identity is the PATHNAME, not the inode. UNLINKING
+    // <ring>.writer.lock while a writer holds it therefore voids exclusivity
+    // SILENTLY — the incumbent keeps a lock on an inode nothing can name, the
+    // next opener creates a fresh file and locks that, and two live writers
+    // proceed with no log line between them. Measured. It is reachable today:
+    // scripts/ring-proto/disarm.sh does `rm -rf` over the tmpfs directory.
+    // This is the pre-existing shape of ANY path-named lock (the open lock has
+    // it too) rather than something this guard introduced, and it is why
+    // delete_stale_ring deliberately unlinks the ring file ALONE. The real fix
+    // is a doctor check that notices two live writer pids on one ring; that is
+    // a follow-up, not this lock's job.
     uint64_t deadline = jts_ring_monotonic_ns() +
                         JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS * 1000000ull;
     for (;;) {
@@ -799,6 +832,7 @@ static int acquire_writer_lock(const char *path) {
         if (lock_errno != EWOULDBLOCK && lock_errno != EAGAIN &&
             lock_errno != EINTR) {
             close(fd);
+            errno = lock_errno;  // restore after close(2) clobbered it
             return -2;
         }
         if (jts_ring_monotonic_ns() >= deadline) {
