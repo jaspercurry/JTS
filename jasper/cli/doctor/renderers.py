@@ -19,6 +19,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from ...config import Config
+from ...log_event import log_event
+
+_LANE_LOG = logging.getLogger(__name__)
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
 from ...source_intent import (
@@ -858,11 +861,16 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
     for name, value in declared.items():
         was = observed.get(name)
         if was is not None and was != value:
-            logging.warning(
-                "event=renderer_lane.device_disagreement unit=%s key=%s "
-                "lane_map=%s running=%s (the unit has not restarted since the "
-                "lane map changed; the probe follows the map)",
-                unit, name, value, was,
+            # The unit has not restarted since the lane map changed; the
+            # probe follows the map.
+            log_event(
+                _LANE_LOG,
+                "renderer_lane.device_disagreement",
+                level=logging.WARNING,
+                unit=unit,
+                key=name,
+                lane_map=value,
+                running=was,
             )
     env_map.update(declared)
 

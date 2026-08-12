@@ -82,6 +82,9 @@ import os
 from dataclasses import dataclass
 
 from jasper.atomic_io import atomic_write_text
+from jasper.log_event import log_event
+
+_LOG = logging.getLogger(__name__)
 
 # The file both ``jasper-fanin`` and each migrated renderer unit load LAST, so
 # its values beat the in-unit ``Environment=`` defaults. Mode 0644: it carries
@@ -603,10 +606,14 @@ def delete_stale_ring(label: str, *, conf_d: str | None = None) -> str | None:
         # The writer's own attach error is the backstop; never raise from a
         # best-effort self-heal. But a delete that FAILED is worth a line: the
         # lane will keep refusing its attach and nothing else says why.
-        logging.warning(
-            "event=renderer_lane.stale_ring_delete_failed label=%s path=%s "
-            "errno=%s detail=%s",
-            label, path, getattr(e, "errno", "?"), e,
+        log_event(
+            _LOG,
+            "renderer_lane.stale_ring_delete_failed",
+            level=logging.WARNING,
+            label=label,
+            path=path,
+            errno=getattr(e, "errno", "?"),
+            detail=str(e),
         )
         return None
     # DELIBERATELY unlinks the ring FILE ONLY.
@@ -619,11 +626,16 @@ def delete_stale_ring(label: str, *, conf_d: str | None = None) -> str | None:
     # creates a fresh file and locks THAT, so two processes hold "exclusive"
     # locks on different inodes and neither excludes the other. It buys nothing:
     # a lock file carries no geometry, so it is never the thing that is stale.
-    logging.warning(
-        "event=renderer_lane.stale_ring_cleared label=%s path=%s axis=%s "
-        "detail=%s (a ring from a prior geometry cannot attach; cleared so the "
-        "next open recreates it)",
-        label, path, verdict.axis or "geometry", verdict.detail or "",
+    # A ring from a prior geometry cannot attach; cleared so the next open
+    # recreates it.
+    log_event(
+        _LOG,
+        "renderer_lane.stale_ring_cleared",
+        level=logging.WARNING,
+        label=label,
+        path=path,
+        axis=verdict.axis or "geometry",
+        detail=verdict.detail or "",
     )
     axis = verdict.axis or "geometry"
     return f"{axis} mismatch{f': {verdict.detail}' if verdict.detail else ''}"
