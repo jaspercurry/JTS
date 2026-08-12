@@ -23,9 +23,10 @@ in scope to read even by accident.
 per-candidate linearization plan and the cloud exclusion evidence — are injected
 into :func:`build_candidate` as callables rather than called through a sibling
 here, so a class- or instance-level substitution of
-``CrossoverV2Conductor._plan_linearization`` (nine such sites across three
-suites) or ``_exclusion_evidence_json`` still binds on production instead of
-addressing a name production no longer routes through (issue #2354).
+``CrossoverV2Conductor._plan_linearization`` (nine such sites across two suites
+— six on the class, three on an instance) or ``_exclusion_evidence_json`` still
+binds on production instead of addressing a name production no longer routes
+through (issue #2354).
 :func:`ineligible_reason` is the counter-case and follows :mod:`.fc_sweep`'s own
 rule: nothing substitutes it, so :func:`build_candidate` calls it directly and
 the conductor's delegate calls the same function — one derivation either way.

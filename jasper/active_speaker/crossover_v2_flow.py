@@ -6567,8 +6567,8 @@ class CrossoverV2Conductor:
     def post_apply_verifies(self) -> bool:
         """Will this session's correction be MEASURED after it is applied?
 
-        The boost-permission evidence gate (see the ``FitVocabulary``
-        construction in ``_build_candidate``): a round nobody will verify may
+        The boost-permission evidence gate (passed into the planner request by
+        ``crossover_v2.planning.plan_for_candidate``): a round nobody will verify may
         not put energy in. Public because it is a fact ABOUT the journey that
         callers legitimately ask — tests reached the private field for it before
         this property existed.
@@ -10993,7 +10993,8 @@ class CrossoverV2Conductor:
         ``_plan_linearization`` and ``_exclusion_evidence_json`` are passed as
         bound attributes rather than reached for inside the organ, so a
         substituted one still binds on production (#2354) — nine substitution
-        sites across three suites reach the first of them.
+        sites across two suites reach the first of them — six substituting the
+        class attribute, three substituting it on a conductor instance.
         """
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
