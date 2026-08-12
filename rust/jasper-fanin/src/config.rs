@@ -82,6 +82,23 @@ pub fn renderer_ring_path(label: &str) -> String {
 /// Returns `None` when the geometry cannot be expressed as whole slots inside the
 /// ring header's `n_slots` range — the caller FAILS LOUD rather than quietly
 /// handing the renderer a different cushion than the aloop lane gave it.
+/// Whether a lane gets a `LaneResampler`, from the four loose values rather than
+/// a built `Config`.
+///
+/// Exists as a free function so `Config::from_env` can ask the question BEFORE
+/// the `Config` is built — it must refuse the resampler+ring combination at
+/// config time, and re-spelling the predicate there would give the refusal and
+/// the construction two rules that could drift apart. `Config::lane_wants_resampler`
+/// is the one caller that has a `Config`; both go through here.
+pub fn lane_wants_resampler_for(
+    label: &str,
+    resampler_lane_label: &str,
+    input_resampler_enabled: bool,
+    usb_direct_enabled: bool,
+) -> bool {
+    (input_resampler_enabled || usb_direct_enabled) && label == resampler_lane_label
+}
+
 pub fn renderer_ring_slots(input_buffer_frames: u32, period_frames: u32) -> Option<u32> {
     if period_frames == 0 || input_buffer_frames % period_frames != 0 {
         return None;
@@ -466,8 +483,12 @@ impl Config {
     /// MUST own a resampler (C6). A label that doesn't match the resampler lane
     /// never gets one.
     pub fn lane_wants_resampler(&self, label: &str) -> bool {
-        (self.input_resampler_enabled || self.usb_direct_enabled)
-            && label == self.input_resampler_lane_label
+        lane_wants_resampler_for(
+            label,
+            &self.input_resampler_lane_label,
+            self.input_resampler_enabled,
+            self.usb_direct_enabled,
+        )
     }
 
     /// Whether the lane labelled `label` ingresses over a per-renderer SHM slot
@@ -979,22 +1000,32 @@ impl Config {
         // every lane reads its aloop substream, byte-identically to before this
         // key existed. Parsed and VALIDATED unconditionally so a typo fails on any
         // boot rather than only on an armed box.
+        //
+        // EVERY rejection below carries `ConfigClassError`, for exactly the reason
+        // the Ring A block above states and this block reaches sooner: a bad lane
+        // map is IDENTICAL on every restart, so without the marker `main` exits 1,
+        // the unit burns StartLimitBurst, and `StartLimitAction=reboot` reboots the
+        // speaker every few minutes forever. The trigger is not hypothetical — a
+        // box on `JASPER_FANIN_PERIOD_FRAMES=128` derives 4096/128 = 32 slots,
+        // above `RING_SLOTS_MAX`, and any armed lane there would hit the geometry
+        // rejection on every boot.
         let renderer_ring_lanes = env_csv_labels("JASPER_FANIN_RENDERER_RING_LANES");
         for label in &renderer_ring_lanes {
             if !input_renderers.iter().any(|l| l == label) {
-                anyhow::bail!(
+                return Err(anyhow::anyhow!(
                     "JASPER_FANIN_RENDERER_RING_LANES names '{}', which is not one of this \
                      daemon's lanes [{}] — a ring lane is selected by its fan-in LABEL, and an \
                      unmatched label would silently arm nothing",
                     label,
                     input_renderers.join(", "),
-                );
+                )
+                .context(crate::ConfigClassError));
             }
         }
         if !renderer_ring_lanes.is_empty()
             && renderer_ring_slots(input_buffer_frames, period_frames).is_none()
         {
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "JASPER_FANIN_RENDERER_RING_LANES is armed ([{}]) but this box's lane geometry \
                  cannot be expressed as whole ring slots: \
                  JASPER_FANIN_INPUT_BUFFER_FRAMES={} / JASPER_FANIN_PERIOD_FRAMES={} must divide \
@@ -1006,7 +1037,40 @@ impl Config {
                 period_frames,
                 RING_SLOTS_MIN,
                 RING_SLOTS_MAX,
-            );
+            )
+            .context(crate::ConfigClassError));
+        }
+        // A ring lane that ALSO wants a `LaneResampler` is REFUSED, loudly.
+        //
+        // The two features are individually correct and their combination is not
+        // designed. `read_ring_and_render` consumes one slot per period straight
+        // into `read_buf` and never touches `input.resampler`, so a lane holding
+        // both would build a resampler, feed it nothing, and render the ring
+        // directly — the resampler's rate reconciliation silently absent while
+        // `/state` reported it armed. Nothing needs the combination today (the
+        // resampler lane is the USB one, which is `direct`, and a ring lane's
+        // producer is DAC-paced through its own blocking write), so the honest
+        // answer is to refuse rather than to ship a silent drop. P6b designs the
+        // placement if a ring lane ever needs one.
+        if let Some(label) = renderer_ring_lanes.iter().find(|label| {
+            lane_wants_resampler_for(
+                label,
+                &input_resampler_lane_label,
+                input_resampler_enabled,
+                usb_direct_enabled,
+            )
+        }) {
+            return Err(anyhow::anyhow!(
+                "lane '{}' is in JASPER_FANIN_RENDERER_RING_LANES and is also the armed \
+                 resampler lane (JASPER_FANIN_INPUT_RESAMPLER / JASPER_FANIN_USB_DIRECT with \
+                 JASPER_FANIN_INPUT_RESAMPLER_LANE={}). That combination is not designed: the \
+                 ring read path renders slots directly and never feeds the resampler, so the \
+                 lane would report a resampler that reconciles nothing. Pick one transport for \
+                 this lane",
+                label,
+                input_resampler_lane_label,
+            )
+            .context(crate::ConfigClassError));
         }
 
         // STATIC held-target churn guard (the symmetric sibling of the decay-floor
@@ -2802,6 +2866,105 @@ mod tests {
                 assert_eq!(cfg.ring_slots, 2);
                 // Default period (256) is a multiple of the 128-frame slot.
                 assert_eq!(cfg.period_frames, 256);
+            },
+        );
+    }
+
+    /// EVERY renderer-ring-lane rejection MUST carry `ConfigClassError`.
+    ///
+    /// This is a REBOOT-LOOP guard, not a tidiness one. A bad lane map is
+    /// identical on every restart. Without the marker `main` exits 1 instead of
+    /// 78, the unit's `Restart=` burns `StartLimitBurst`, and
+    /// `StartLimitAction=reboot` reboots the speaker every few minutes forever
+    /// — the failure mode the Ring A block's own comment exists to prevent, and
+    /// the one this block reaches sooner (an armed lane on a `period_frames=128`
+    /// box derives 32 slots, above `RING_SLOTS_MAX`, on every boot).
+    ///
+    /// Asserted per rejection rather than in bulk so a NEW rejection that
+    /// forgets the marker cannot hide behind its siblings.
+    #[test]
+    fn every_renderer_ring_lane_rejection_parks_instead_of_rebooting() {
+        // 1. A label that matches no lane.
+        with_env(
+            &[("JASPER_FANIN_RENDERER_RING_LANES", Some("nosuchlane"))],
+            || {
+                let err = Config::from_env().expect_err("an unmatched label must fail");
+                assert!(
+                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                    "unmatched-label rejection must PARK (exit 78), not restart-loop \
+                     into StartLimitAction=reboot: {err:#}"
+                );
+            },
+        );
+        // 2. A geometry with no whole-slot expression. period 128 with the
+        //    shipped 4096 buffer derives 32 slots — above RING_SLOTS_MAX.
+        with_env(
+            &[
+                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("128")),
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
+            ],
+            || {
+                let err = Config::from_env().expect_err("32 slots is out of range");
+                assert!(
+                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                    "inexpressible-geometry rejection must PARK: {err:#}"
+                );
+            },
+        );
+        // 3. A ring lane that is ALSO the armed resampler lane.
+        with_env(
+            &[
+                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("spotify")),
+            ],
+            || {
+                let err = Config::from_env().expect_err("ring + resampler must fail");
+                assert!(
+                    err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                    "ring+resampler rejection must PARK: {err:#}"
+                );
+            },
+        );
+    }
+
+    /// A ring lane and a `LaneResampler` on the SAME lane is refused at config.
+    ///
+    /// The read path renders slots straight into `read_buf` and never feeds
+    /// `input.resampler`, so the combination would build a resampler, starve it,
+    /// and report it armed in `/state` while it reconciled nothing. Refusing is
+    /// the honest answer; P6b designs the placement if a ring lane ever needs
+    /// one.
+    #[test]
+    fn a_ring_lane_may_not_also_be_the_resampler_lane() {
+        // The refusal is bound to the SAME lane, not to the features existing.
+        // A ring lane beside a DIFFERENT resampler lane is the ordinary shipped
+        // shape (usbsink is the resampler lane; spotify is the ring one).
+        with_env(
+            &[
+                ("JASPER_FANIN_RENDERER_RING_LANES", Some("spotify")),
+                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink")),
+            ],
+            || {
+                let cfg = Config::from_env()
+                    .expect("a ring lane beside a different resampler lane is fine");
+                assert!(cfg.lane_is_renderer_ring("spotify"));
+                assert!(cfg.lane_wants_resampler("usbsink"));
+                assert!(!cfg.lane_wants_resampler("spotify"));
+            },
+        );
+        // USB DIRECT implies a resampler on its lane, so arming that lane as a
+        // ring must be refused through the same predicate.
+        with_env(
+            &[
+                ("JASPER_FANIN_RENDERER_RING_LANES", Some("usbsink")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
+            ],
+            || {
+                Config::from_env()
+                    .expect_err("usb-direct implies a resampler on usbsink; ring must refuse");
             },
         );
     }

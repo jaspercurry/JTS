@@ -166,14 +166,22 @@ def parse_armed_labels(value: str | None) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
-def read_armed_labels(path: str = RENDERER_LANES_ENV) -> tuple[str, ...]:
+def read_armed_labels(path: str | None = None) -> tuple[str, ...]:
     """The armed lane set recorded on this box.
 
     The written file is its own intent record: there is no second
     "intent" file that could disagree with what was rendered. A missing or
     unreadable file means nothing is armed, which is the shipped fleet state.
+
+    ``path`` defaults to :data:`RENDERER_LANES_ENV` resolved AT CALL TIME, not
+    bound as a default argument. A default argument would capture the module
+    constant at import, so redirecting the constant (tests, a future per-box
+    override) would silently keep reading the production path — the shape that
+    makes a redirect look applied while nothing moved.
     """
-    return parse_armed_labels(_env_file_value(path, FANIN_RING_LANES_KEY))
+    return parse_armed_labels(
+        _env_file_value(path or RENDERER_LANES_ENV, FANIN_RING_LANES_KEY)
+    )
 
 
 def _env_file_value(path: str, key: str) -> str | None:
@@ -246,7 +254,7 @@ class RenderOutcome:
 def render_renderer_lanes_env(
     armed: tuple[str, ...],
     *,
-    path: str = RENDERER_LANES_ENV,
+    path: str | None = None,
 ) -> RenderOutcome:
     """Publish the lane map. **The single writer of** :data:`RENDERER_LANES_ENV`.
 
@@ -267,6 +275,7 @@ def render_renderer_lanes_env(
                 f"unknown renderer lane {label!r}; known lanes: "
                 f"{', '.join(MIGRATABLE_LABELS)}"
             )
+    path = path or RENDERER_LANES_ENV
     text = render_env_text(armed)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -318,8 +327,11 @@ def expected_fanin_lane_pcm(label: str, aloop_pcm: str, armed: tuple[str, ...]) 
     return renderer_ring_path(label) if label in armed else aloop_pcm
 
 
-def fanin_env_expectations(path: str = RENDERER_LANES_ENV) -> dict[str, str]:
-    """The env values a correctly-rendered map implies, for drift checks."""
+def fanin_env_expectations(path: str | None = None) -> dict[str, str]:
+    """The env values a correctly-rendered map implies, for drift checks.
+
+    ``path`` resolves at call time — see :func:`read_armed_labels`.
+    """
     armed = read_armed_labels(path)
     out = {FANIN_RING_LANES_KEY: ",".join(armed)}
     for lane in RENDERER_LANES:

@@ -727,41 +727,122 @@ def _systemd_user_for(unit: str) -> Optional[str]:
     u = r.stdout.strip()
     return u or None
 
+def _renderer_lane_device_overrides() -> dict[str, str]:
+    """Renderer `--device` values the lane map declares (U3 / P6).
+
+    The lane map is the SSOT for which PCM each migrated renderer writes, so
+    resolving from it is exact by construction rather than reconstructed from a
+    systemd surface. This is the pattern-3 shape the rest of the ring platform
+    uses: the reconciler/CLI is the single writer of the resolved value, and
+    every reader — the daemon, the doctor — reads that same file.
+
+    Returns `{}` when NO map exists, which is the shipped fleet state. That
+    emptiness is load-bearing: an absent map has no opinion about any device, so
+    it must not assert the aloop default over a genuine operator override that
+    `/proc/<MainPID>/environ` can see. (`fanin_env_expectations` deliberately
+    names every lane's device including the unarmed ones — that is right for a
+    drift check against a map that exists, and wrong as a claim when none does.)
+    """
+    try:
+        from jasper import renderer_lanes as rl
+    except ImportError:  # pragma: no cover - the package is always present
+        return {}
+    if not os.path.exists(rl.RENDERER_LANES_ENV):
+        return {}
+    try:
+        return rl.fanin_env_expectations()
+    except OSError:
+        return {}
+
+
+def _unit_runtime_environ(unit: str) -> dict[str, str]:
+    """The FULLY RESOLVED environment the running unit was exec'd with.
+
+    Read from `/proc/<MainPID>/environ`, which carries the complete
+    `EnvironmentFile=` chain. `systemctl show -p Environment` does NOT: see
+    :func:`_resolve_systemd_env_vars` for why that matters here.
+
+    Returns `{}` when the unit has no MainPID (parked/stopped/failed) or the
+    environ cannot be read — the caller then falls back, and a genuinely
+    unresolvable `${VAR}` reaches aplay and fails loudly, which is correct.
+    """
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    pid = r.stdout.strip()
+    if r.returncode != 0 or not pid.isdigit() or pid == "0":
+        return {}
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for entry in raw.split(b"\0"):
+        if not entry or b"=" not in entry:
+            continue
+        name, _, value = entry.partition(b"=")
+        out[name.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return out
+
+
 def _resolve_systemd_env_vars(device: str, unit: str) -> str:
-    """Expand `${VAR}` references in a device string using the
-    systemd unit's resolved environment.
+    """Expand `${VAR}` references in a device string to what the renderer
+    actually writes.
 
-    Most renderer service files now use literal fan-in lane names, but
-    this helper remains useful for operator overrides that use systemd
-    environment variables. systemd expands those references at daemon
-    start time; when the doctor reads the unit file directly it sees
-    the literal `${VAR}` string. Passing that to aplay would fail with
-    "Unknown PCM ${VAR}" — a false positive.
+    Renderer units use a `${VAR}` device so a per-box ring flip is one env write
+    rather than a unit edit (U3 / P6). systemd expands the reference at daemon
+    start; the doctor reading the unit file sees the literal `${VAR}`, and
+    passing that to aplay would fail with "Unknown PCM ${VAR}" — a false
+    positive.
 
-    We ask systemd for the unit's resolved environment
-    (`systemctl show -p Environment`), which already accounts for
-    both `Environment=` directives and `EnvironmentFile=` lookups
-    (with the leading-`-` "optional file" semantics). Whatever
-    value systemd would substitute at ExecStart time is what we
-    pass to aplay.
+    **`systemctl show -p Environment` CANNOT answer this, and used to be the
+    only thing this function asked.** That property returns the unit's
+    `Environment=` directives ONLY — it does not include `EnvironmentFile=`
+    layers, which is exactly where every JTS runtime override lives.
+    `scripts/ring-proto/arm.sh` documents the same finding empirically
+    (2026-07-02): "on jts.local `systemctl show` reports PERIOD_FRAMES=1024
+    while the box actually runs 128; on jts3 ACTIVE_LANE=1 is invisible to
+    `systemctl show`", and it reads `/proc/<MainPID>/environ` for that reason.
+    Confirmed again on jts.local hardware during the P6a review. Trusting the
+    old surface here would have made the doctor probe an ARMED box's *aloop*
+    device — reporting a lane healthy while the live ring lane went unprobed.
 
-    Returns the original string unchanged if it contains no
-    `${VAR}` references or if resolution fails (best-effort — the
-    caller's aplay probe will then fail loudly with a clear
-    error, which is the right behavior).
+    Three sources, most authoritative first:
+
+    1. **The lane map** (`jasper.renderer_lanes`) — the SSOT that WROTE the
+       override. Exact by construction, and readable whether or not the unit is
+       running.
+    2. **`/proc/<MainPID>/environ`** — the running daemon's real environment,
+       the arm.sh precedent. Catches an operator override the lane map does not
+       know about, and disagreement with (1) is itself worth surfacing.
+    3. **`systemctl show -p Environment`** — kept LAST, and only for what it can
+       actually answer: a genuine in-unit `Environment=` directive on a unit
+       that is not running.
+
+    Returns the original string unchanged when it contains no `${VAR}` or when
+    nothing can resolve it (best-effort — the caller's aplay probe then fails
+    loudly with a clear error, which is the right behavior).
     """
     if "${" not in device:
         return device
+
+    env_map: dict[str, str] = {}
+    # Least authoritative first, so the better source overwrites it.
     try:
         r = subprocess.run(
             ["systemctl", "show", unit, "-p", "Environment", "--value"],
             capture_output=True, text=True, timeout=2,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return device
-    if r.returncode != 0:
-        return device
-    env_map = _parse_systemd_environment(r.stdout)
+        if r.returncode == 0:
+            env_map.update(_parse_systemd_environment(r.stdout))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    env_map.update(_unit_runtime_environ(unit))
+    env_map.update(_renderer_lane_device_overrides())
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1)
