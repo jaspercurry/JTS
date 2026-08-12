@@ -870,7 +870,7 @@ def test_active_speaker_topology_blockers_registered_in_sync_checks():
 
 
 def _blocker_bearing_roleful_topology():
-    """A roleful topology whose tweeter is not yet assigned to a DAC output."""
+    """A roleful topology whose tweeter has no DAC output assigned."""
     from dataclasses import replace
 
     from tests.test_active_speaker_runtime_contract import _active_topology
