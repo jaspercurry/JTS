@@ -115,13 +115,44 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-_FANIN_EXPECTED_INPUTS = [
+#: The lane roster on a box with NO renderer lane armed — the shipped fleet
+#: shape, and the one this check compared against unconditionally before U3.
+_FANIN_EXPECTED_ALOOP_INPUTS = [
     ("spotify", "hw:Loopback,1,0"),
     ("airplay", "hw:Loopback,1,1"),
     ("bluealsa", "hw:Loopback,1,2"),
     ("usbsink", "hw:Loopback,1,3"),
     ("correction", "hw:Loopback,1,4"),
 ]
+
+
+def _fanin_expected_inputs(
+    lanes_env: str | None = None,
+) -> list[tuple[str, str]]:
+    """The `(label, pcm)` roster fan-in's STATUS should report on THIS box.
+
+    A renderer-ingress lane (U3 / P6) reports its RING PATH as its `pcm`,
+    because that is where its audio actually comes from — so on an armed box
+    the roster legitimately differs from the shipped aloop one, and comparing
+    against a hardcoded list would diagnose a correctly-armed box as drifted.
+
+    The armed set is read from the lane map (`jasper.renderer_lanes`), which is
+    the same file fan-in itself reads, so this check's expectation and the
+    daemon's behaviour come from ONE source. That is also what keeps the drift
+    check meaningful: a lane whose STATUS `pcm` disagrees with what the map
+    says is a real fault, and still fails.
+    """
+    from jasper import renderer_lanes as rl
+
+    armed = (
+        rl.read_armed_labels()
+        if lanes_env is None
+        else rl.read_armed_labels(lanes_env)
+    )
+    return [
+        (label, rl.expected_fanin_lane_pcm(label, pcm, armed))
+        for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
+    ]
 
 _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
 
@@ -638,13 +669,15 @@ def check_fanin_service() -> CheckResult:
         for inp in inputs
         if isinstance(inp, dict)
     ]
-    if actual_inputs != _FANIN_EXPECTED_INPUTS:
+    expected_inputs = _fanin_expected_inputs()
+    if actual_inputs != expected_inputs:
         return CheckResult(
             "jasper-fanin service",
             "fail",
             "active but STATUS inputs drifted. Expected "
-            f"{_FANIN_EXPECTED_INPUTS!r}; got {actual_inputs!r}. "
-            "Check /var/lib/jasper/fanin.env.",
+            f"{expected_inputs!r}; got {actual_inputs!r}. "
+            "Check /var/lib/jasper/fanin.env and "
+            "/var/lib/jasper/renderer_lanes.env.",
         )
 
     progress_age = data.get("watchdog", {}).get(

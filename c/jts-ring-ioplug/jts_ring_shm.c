@@ -717,6 +717,22 @@ static void reader_take_mapping(jts_ring_reader_t *out, ring_mapping_t *mapping)
     ring_mapping_reset(mapping);
 }
 
+// True iff a live FOREIGN writer already owns the ring (the SPSC guard's writer
+// half). Exact mirror of foreign_reader_is_live below: pid stamped, pid != ours,
+// heartbeat fresh. A dead/stale foreign writer (pid set but heartbeat older than
+// the window — a crashed renderer, or a ring left behind by a previous boot) does
+// NOT block us; our OWN pid never blocks, so a re-open / re-prepare of the same
+// process is unaffected.
+static int foreign_writer_is_live(const jts_ring_header_t *h, uint64_t now_ns) {
+    uint64_t pid = atomic_load_explicit(&h->writer_pid, memory_order_relaxed);
+    if (pid == 0) return 0;
+    if (pid == (uint64_t)getpid()) return 0; // ours — re-prepare, not a conflict
+    uint64_t hb = atomic_load_explicit(&h->writer_heartbeat_ns, memory_order_relaxed);
+    if (hb == 0) return 0; // stamped a pid but never a heartbeat: treat as dead
+    uint64_t age = (now_ns > hb) ? (now_ns - hb) : 0;
+    return age < JTS_RING_WRITER_LIVENESS_TIMEOUT_NS;
+}
+
 int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_writer_t *out) {
     memset(out, 0, sizeof(*out));
@@ -725,6 +741,43 @@ int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
     ring_mapping_t mapping;
     int rc = ring_mapping_open(path, expected, RING_ROLE_WRITER, &mapping);
     if (rc != 0) return rc;
+
+    jts_ring_header_t *h0 = (jts_ring_header_t *)mapping.base;
+
+    // SPSC GUARD, WRITER HALF. Refuse if a live FOREIGN writer already owns the
+    // ring. Done AFTER the mmap but BEFORE any stamp, so a rejected open leaves
+    // writer_epoch / writer_pid / write_seq exactly as the incumbent left them.
+    //
+    // WHY THIS EXISTS AT ALL, given the reader half shipped alone. Until U3 / P6
+    // every ring writer was a single controlled daemon (jasper-fanin on Ring A,
+    // one CamillaDSP on Ring B), so a second writer was unreachable and the
+    // asymmetry was harmless. A RENDERER-ingress ring is different in kind: its
+    // writer is a renderer whose device name is public, resolvable by every user
+    // on the box, and DELIBERATELY probed — jasper-doctor's
+    // `check_renderer_device_resolvable` runs `aplay -D <device>` as the renderer
+    // user on every install (the PR #214 class), and an operator debugging a lane
+    // will do the same by hand. On an snd-aloop lane that second open returns
+    // EBUSY and the doctor accepts it as proof the incumbent owns the lane. With
+    // no guard here the ring's second open would SUCCEED, and two writers
+    // advancing write_seq interleave their slots — the probe would inject silence
+    // into live music instead of bouncing off it. This restores the aloop path's
+    // exclusivity, which is a property operators and the doctor already rely on.
+    //
+    // Same best-effort caveats as the reader half (documented at
+    // foreign_reader_is_live): no compare-and-swap, so two writers that both pass
+    // this check before either stamps would both proceed, and pid reuse could
+    // misfire the close guard. Neither is reachable in the intended
+    // one-renderer-per-lane topology, and the productization (a futex on the
+    // reserved header word) closes both for either role at once.
+    if (foreign_writer_is_live(h0, jts_ring_monotonic_ns())) {
+        uint64_t other = atomic_load_explicit(&h0->writer_pid, memory_order_relaxed);
+        fprintf(stderr,
+                "event=jts_ring.writer.busy path=%s existing_writer_pid=%llu\n",
+                path, (unsigned long long)other);
+        ring_mapping_close(&mapping);
+        return -EBUSY;
+    }
+
     writer_take_mapping(out, &mapping);
 
     // Writer-attach stamp: epoch++ (release), pid, heartbeat, continue from the

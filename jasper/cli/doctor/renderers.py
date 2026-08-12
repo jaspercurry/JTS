@@ -823,6 +823,47 @@ def _alsa_busy(detail: str) -> bool:
         or "errno 16" in detail
     )
 
+# The renderer-ingress RING lane devices (U3 / P6): the `plug:` PCM a migrated
+# renderer writes, mapped to the fan-in lane LABEL whose ring it carries. Like
+# the aloop lanes above these are single-writer, but the exclusivity is enforced
+# by the ioplug's writer guard rather than by snd-aloop, and the owner pid lives
+# in the ring HEADER rather than in /proc/asound.
+_FANIN_RING_RENDERER_DEVICES = {
+    "librespot_ring_lane": "spotify",
+}
+
+
+def _ring_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
+    """Return whether an EBUSY renderer RING lane is owned by `unit`.
+
+    The ring's exact analogue of the aloop `owner_pid` check below: the ioplug
+    stamps its pid into the ring header's `writer_pid` on attach and refuses a
+    second live writer with EBUSY, so an EBUSY here proves the PCM resolved AND
+    that someone holds it — this then proves it is the RIGHT someone, by reading
+    the pid the ring itself published and checking its cgroup.
+
+    Without this the probe could not tell "the renderer legitimately owns its
+    ring" from "some stray process is writing frames into the mix", which is the
+    same distinction the aloop path already refuses to skip.
+    """
+    label = _FANIN_RING_RENDERER_DEVICES.get(device)
+    if label is None:
+        return False, "not a known fan-in ring lane"
+    from jasper.renderer_lanes import ring_writer_pid
+
+    pid = ring_writer_pid(label)
+    if pid is None:
+        return False, f"ring for lane {label} names no writer"
+    cgroup_path = Path(f"/proc/{pid}/cgroup")
+    try:
+        cgroup = cgroup_path.read_text()
+    except OSError as e:
+        return False, f"could not read {cgroup_path}: {e}"
+    if f"/{unit}" in cgroup:
+        return True, f"busy/owned pid={pid} (ring writer)"
+    return False, f"busy but ring writer pid={pid} cgroup={cgroup.strip()!r}"
+
+
 def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     """Return whether an EBUSY private fan-in lane is owned by `unit`.
 
@@ -830,7 +871,12 @@ def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
     prove the expected renderer owns the lane. The snd-aloop proc status
     exposes `owner_pid`; systemd cgroups expose the owning unit. Combine
     both so a stale test process cannot make doctor green.
+
+    Ring lanes take the sibling path above (`_ring_lane_busy_owner_matches`),
+    which reads the same fact out of the ring header.
     """
+    if device in _FANIN_RING_RENDERER_DEVICES:
+        return _ring_lane_busy_owner_matches(device, unit)
     substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
     if substream is None:
         return False, "not a known fan-in private lane"
@@ -921,7 +967,10 @@ def check_renderer_device_resolvable() -> CheckResult:
         if ok:
             successes.append(f"{name}({who})→{display}")
         elif (
-            resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+            (
+                resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+                or resolved_device in _FANIN_RING_RENDERER_DEVICES
+            )
             and _alsa_busy(detail)
         ):
             owned, owner_detail = _fanin_lane_busy_owner_matches(

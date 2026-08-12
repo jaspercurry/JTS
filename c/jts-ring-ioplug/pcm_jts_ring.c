@@ -294,7 +294,15 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
         jts_ring_geometry_t g = pcm_geometry(p);
         int rc = jts_ring_writer_open(p->path, &g, &p->writer);
         if (rc != 0) {
-            SNDERR("jts_ring: writer_open(%s) failed rc=%d", p->path, rc);
+            // -EBUSY (a live foreign writer already owns the ring) is the SPSC
+            // guard firing — surface it verbatim so a stray second playback
+            // opener (an `aplay -D` probe, an operator's hand test) sees EBUSY
+            // rather than interleaving its slots into the incumbent's stream.
+            // This is the ring's equivalent of an snd-aloop substream's own
+            // exclusivity, which jasper-doctor's renderer probe already relies
+            // on.
+            SNDERR("jts_ring: writer_open(%s) failed rc=%d%s", p->path, rc,
+                   rc == -EBUSY ? " (ring already has a live writer — EBUSY)" : "");
             return rc < 0 ? rc : -EIO;
         }
         p->stage_capacity_frames = p->period_frames;

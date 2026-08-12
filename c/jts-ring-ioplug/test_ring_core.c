@@ -2118,6 +2118,79 @@ static void test_reader_ebusy_second_reader(void) {
     unlink(path);
 }
 
+static void test_writer_ebusy_second_writer(void) {
+    // The SPSC guard's WRITER half (U3 / P6a) — the exact mirror of
+    // test_reader_ebusy_second_reader above.
+    //
+    // Why it exists now and not before: until renderer-ingress rings, every ring
+    // WRITER was a single controlled daemon and a second one was unreachable. A
+    // renderer lane's ring is written by a renderer whose ALSA device name is
+    // public and DELIBERATELY probed — jasper-doctor runs `aplay -D <device>` as
+    // the renderer user on every install (the PR #214 class). Without this guard
+    // that probe's open would SUCCEED and two writers advancing write_seq would
+    // interleave their slots, injecting the probe's silence into live music. On
+    // an snd-aloop lane the same probe bounces off with EBUSY, which the doctor
+    // accepts as proof the incumbent owns the lane; this restores that property.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-ebusy");
+    jts_ring_geometry_t g = proto_geometry();
+    g.n_slots = 4;
+
+    jts_ring_writer_t w1;
+    CHECK(jts_ring_writer_open(path, &g, &w1) == 0, "writer 1 attaches");
+    jts_ring_header_t *h = (jts_ring_header_t *)w1.base;
+    // Publish a slot so write_seq/epoch are nonzero and a corrupting second open
+    // would be observable.
+    unsigned char slot[JTS_RING_MAX_SLOT_BYTES];
+    memset(slot, 0x5A, jts_ring_slot_bytes(&g));
+    (void)jts_ring_writer_publish(&w1, slot);
+    uint64_t wseq_before = atomic_load_explicit(&h->write_seq, memory_order_relaxed);
+    uint64_t epoch_before =
+        atomic_load_explicit(&h->writer_epoch, memory_order_relaxed);
+    CHECK(wseq_before > 0, "writer 1 advanced write_seq");
+
+    // Writer 1's pid == getpid() here (same process), and foreign_writer_is_live
+    // deliberately returns 0 for OUR pid so a re-prepare in the same process is
+    // never refused. Model a DIFFERENT process by stamping a foreign live pid.
+    uint64_t foreign = (uint64_t)getpid() + 1; // definitely not us
+    atomic_store_explicit(&h->writer_pid, foreign, memory_order_relaxed);
+    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+
+    jts_ring_writer_t w2;
+    memset(&w2, 0, sizeof(w2));
+    int rc = jts_ring_writer_open(path, &g, &w2);
+    CHECK(rc == -EBUSY, "second live writer refused with -EBUSY");
+    // The incumbent's state is untouched: the guard bailed BEFORE any stamp, so
+    // neither the epoch (which a reader watches for reattach) nor write_seq moved.
+    CHECK(atomic_load_explicit(&h->writer_pid, memory_order_relaxed) == foreign,
+          "EBUSY did not clobber the incumbent writer_pid");
+    CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
+          "EBUSY did not clobber write_seq");
+    CHECK(atomic_load_explicit(&h->writer_epoch, memory_order_relaxed) == epoch_before,
+          "EBUSY did not bump writer_epoch (a reader must not see a phantom "
+          "reattach because someone probed the device)");
+    CHECK(w2.base == NULL, "refused writer struct left detached");
+    CHECK(w2.fd == -1, "refused writer fd left detached");
+
+    // A DEAD foreign writer (stale heartbeat — a crashed renderer, or a ring left
+    // by a previous boot) must NOT block a fresh attach: ownership is takeable
+    // when the incumbent is gone, which is what lets a restarted renderer reclaim
+    // its own lane without an operator.
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    jts_ring_writer_t w3;
+    CHECK(jts_ring_writer_open(path, &g, &w3) == 0,
+          "dead foreign writer does not block a fresh attach");
+    CHECK(atomic_load_explicit(&h->writer_pid, memory_order_relaxed) == (uint64_t)getpid(),
+          "fresh attach took ownership (our pid)");
+    CHECK(atomic_load_explicit(&h->write_seq, memory_order_relaxed) == wseq_before,
+          "takeover continues the file-lifetime write_seq rather than resetting it");
+
+    jts_ring_writer_close(&w3);
+    jts_ring_writer_close(&w1);
+    unlink(path);
+}
+
 static void test_reader_close_clears_pid_only_if_ours(void) {
     // Close must clear reader_pid ONLY if it is still ours — a second reader that
     // stamped its own pid then this instance dropping must not clear the new
@@ -2951,6 +3024,7 @@ int main(void) {
     test_reader_attach_resync_drops_stale();
     test_reader_defensive_resync_on_overrun();
     test_reader_ebusy_second_reader();
+    test_writer_ebusy_second_writer();
     test_reader_close_clears_pid_only_if_ours();
     test_reader_epoch_reset_on_writer_reattach();
     test_capture_pointer_advances_on_publish();

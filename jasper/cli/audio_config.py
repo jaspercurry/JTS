@@ -225,6 +225,87 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
+    """Arm / disarm renderer-ingress ring lanes — the SINGLE writer of the map.
+
+    Both ends of a lane flip are written together (fan-in's armed set and the
+    renderer's ``--device``), into one file both units load last, so a half-flip
+    is not representable. Neither end is restarted here: the values take effect
+    on each unit's next start, and the operator restarts the pair (or deploys,
+    which bounces both). Not restarting is the conservative half — it means
+    there is no window in which one end has moved and the other has not.
+
+    ``--arm`` / ``--disarm`` are applied to the CURRENTLY armed set read back
+    from the file, so this is idempotent and composable; ``--set`` replaces the
+    set outright. With no flags it REPORTS, which is what makes the file's own
+    contents the intent record rather than needing a second file.
+
+    Arming preflights the ring platform (ioplug + ``/dev/shm/jts-ring``) and
+    refuses when it is absent, because a renderer whose ``jts_ring`` PCM cannot
+    resolve is a SILENT source, and silence is the failure mode hardest to
+    trace back to this command.
+    """
+    from jasper import renderer_lanes as rl
+    from jasper.ring_assets import ring_asset_presence
+
+    path = args.path or rl.RENDERER_LANES_ENV
+    current = list(rl.read_armed_labels(path))
+
+    if args.set is not None:
+        desired = rl.parse_armed_labels(args.set)
+    else:
+        desired_list = list(current)
+        for label in args.arm:
+            if label not in desired_list:
+                desired_list.append(label)
+        for label in args.disarm:
+            if label in desired_list:
+                desired_list.remove(label)
+        desired = tuple(desired_list)
+
+    newly_armed = [label for label in desired if label not in current]
+    if newly_armed:
+        presence = ring_asset_presence()
+        for label in newly_armed:
+            refusal = rl.arm_refusal_reason(
+                label,
+                assets_present=presence.all_present(),
+                missing_assets=presence.missing(),
+            )
+            if refusal is not None:
+                print(f"refused {label}: {refusal}", file=sys.stderr)
+                print("result refused")
+                print(f"reason {refusal}")
+                return 1
+
+    if desired == tuple(current) and args.set is None and not args.arm and not args.disarm:
+        # Pure report: never write on a read.
+        print("result reported")
+        print(f"armed {','.join(current)}")
+        print(f"path {path}")
+        for lane in rl.RENDERER_LANES:
+            armed = lane.label in current
+            print(f"lane {lane.label} {'ring' if armed else 'aloop'} "
+                  f"{rl.device_for(lane, armed)} {rl.renderer_ring_path(lane.label)}")
+        return 0
+
+    try:
+        outcome = rl.render_renderer_lanes_env(desired, path=path)
+    except (OSError, ValueError) as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"result {'rendered' if outcome.changed else 'unchanged'}")
+    print(f"armed {','.join(outcome.armed)}")
+    print(f"previous {','.join(current)}")
+    print(f"path {outcome.path}")
+    restart = " ".join(
+        sorted({lane.unit for lane in rl.RENDERER_LANES if lane.label in set(desired) ^ set(current)})
+    )
+    print(f"restart_required jasper-fanin.service {restart}".rstrip())
+    return 0
+
+
 def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     base = read_env_file_state(args.base_env)
     outputd = read_env_file_state(args.outputd_env)
@@ -401,6 +482,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="saved output topology the Ring B channel count is resolved from",
     )
     render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
+
+    renderer_lanes = sub.add_parser(
+        "renderer-lanes",
+        help=(
+            "report or change which renderer lanes ingress over an SHM ring "
+            "(U3/P6); writes both ends of the flip into one file"
+        ),
+    )
+    renderer_lanes.add_argument(
+        "--arm",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help="arm this fan-in lane label for ring ingress (repeatable)",
+    )
+    renderer_lanes.add_argument(
+        "--disarm",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help="return this lane to its snd-aloop substream (repeatable)",
+    )
+    renderer_lanes.add_argument(
+        "--set",
+        default=None,
+        metavar="LABELS",
+        help="replace the armed set outright (comma-separated; empty disarms all)",
+    )
+    renderer_lanes.add_argument(
+        "--path",
+        default="",
+        help="override the lane-map env path (default: the renderer_lanes SSOT)",
+    )
+    renderer_lanes.set_defaults(func=_cmd_renderer_lanes)
 
     validate_outputd = sub.add_parser(
         "validate-outputd-env",

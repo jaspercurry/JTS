@@ -190,6 +190,16 @@ Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
 # `-`): absent on a fresh box, where the 1024 default above is live.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
+# Renderer-ingress lane map (U3/P6a) — which renderer lanes reach this daemon
+# over an SHM slot ring rather than an snd-aloop capture substream. Written by
+# jasper.renderer_lanes (the single writer) and loaded by the RENDERER units too,
+# so both ends of a lane flip come from one file and a half-flip is not
+# representable. Absent (the fleet default) means every lane reads its aloop
+# substream, byte-identically to before this file existed. Loaded after
+# fanin.env because the two files own disjoint keys; the order is for
+# determinism, not precedence.
+EnvironmentFile=-/var/lib/jasper/renderer_lanes.env
+
 ExecStart=/opt/jasper/bin/jasper-fanin
 
 # Host-slaved USB clock cleanup (C6). In direct mode
