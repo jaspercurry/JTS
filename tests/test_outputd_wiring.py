@@ -432,22 +432,51 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     # `tts.mix_period`.
     assert "program_target" in mixer_rs
     assert "ramp_program_duck(" in mixer_rs
-    assert (
-        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
-        in mixer_rs
-    )
+    # Both duck paths take the box's `program_width`: the gain stage's rails
+    # and mantissa are width-dependent (U2 PR-2 closing #2330's n5), and a
+    # width-blind duck would clamp a spine-scale sum at the i32 rails before
+    # the duck could recover it.
+    duck_call = "apply_gain_to_sum(\n                &mut self.sum_buf,\n                self.program_duck_current,\n                self.program_width,\n            )"
+    assert duck_call in mixer_rs
+    assert "self.program_duck_release_step,\n                self.program_width,\n            );" in mixer_rs
     assert "tts.mix_period(&mut self.sum_buf, self.program_width)" in mixer_rs
-    assert mixer_rs.index(
-        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
-    ) < mixer_rs.index("tts.mix_period(&mut self.sum_buf, self.program_width)")
+    assert mixer_rs.index(duck_call) < mixer_rs.index(
+        "tts.mix_period(&mut self.sum_buf, self.program_width)"
+    )
     # The wire layer itself (command vocabulary + parser) lives ONCE in
     # the shared crate; both daemons consume it as a path dependency —
     # the structural guarantee the old byte-twin asserts approximated.
     proto_rs = (
         REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
     ).read_text()
+    # The assistant width fan-in RESOLVED, published at start. Its content has a
+    # Rust unit test (`the_startup_width_line_names_the_verdict_and_both_declared_halves`),
+    # but that test cannot see whether anything CALLS the renderer — deleting
+    # this one `info!` would leave every suite green and the daemon silent about
+    # its own width, which is the failure class the extraction was made for.
+    # Both halves pinned here: the renderer is invoked, and it is invoked from
+    # the daemon's startup path rather than defined and forgotten.
+    assert "config.assistant_wire_resolved_line()" in main_rs, (
+        "fan-in must emit its resolved assistant width at startup; without it a "
+        "support read cannot tell a converting mismatch from a coherent box "
+        "except by waiting for a once-per-lifetime warn"
+    )
+    assert 'info!("{}", config.assistant_wire_resolved_line());' in main_rs
+    assert "pub fn assistant_wire_resolved_line(" in config_rs
+    # The voice half of the pair, so the two lines a support read compares are
+    # pinned together rather than one of them drifting away silently.
+    assert (
+        '"tts_wire.resolved"'
+        in (REPO / "jasper" / "audio_io.py").read_text()
+    ), "jasper-voice must publish the width it resolved, to pair with fan-in's"
+
     assert '"PROGRAM_DUCK_ON"' in proto_rs
-    assert "AUDIO byte length must contain whole stereo frames" in proto_rs
+    # The whole-stereo-frame rule is stated ONCE, in the shared payload
+    # reader, and interpolates the verb — so `AUDIO` and `AUDIO32` cannot
+    # enforce different framing (U2 PR-2).
+    assert '{verb} byte length must contain whole stereo frames' in proto_rs
+    assert 'strip_prefix("AUDIO ")' in proto_rs
+    assert 'strip_prefix("AUDIO32 ")' in proto_rs
     assert "pub fn read_command" in proto_rs
     for crate in ("jasper-fanin", "jasper-outputd"):
         manifest = (REPO / "rust" / crate / "Cargo.toml").read_text()

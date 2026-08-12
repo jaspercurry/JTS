@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -596,14 +597,27 @@ class TtsPlayout:
         provider_item_id: str | None = None,
         segment_kind: str = "assistant",
         source_profile=None,
+        pcm_wide: bool = False,
     ) -> None:
         """Write one provider audio chunk.
 
         The sounddevice transport has no playout ledger, so segment
         metadata is intentionally ignored here. Outputd overrides this
         to carry provider identity across the IPC boundary.
+
+        `pcm_wide` is accepted so the signature matches the outputd override
+        and REJECTED rather than ignored: this path has no wide route (it
+        writes S16 straight to ALSA), and silently narrowing a wide buffer
+        would play the earcon 96 dB down. It cannot be reached in production —
+        `JASPER_TTS_TRANSPORT=sounddevice` is refused at config load — so this
+        guards a direct unit-test or archaeology caller.
         """
         _ = (provider_item_id, segment_kind, source_profile)
+        if pcm_wide:
+            raise ValueError(
+                "the sounddevice TtsPlayout has no wide (S32) input route; "
+                "pcm_wide=True is only valid on OutputdTtsPlayout"
+            )
         await self.write(pcm)
 
     async def end_segment(self) -> None:
@@ -773,8 +787,18 @@ class TtsPlayout:
         return v
 
 
-_OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE
+_OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE — the narrow wire
+_OUTPUTD_AUDIO_FRAME_BYTES_WIDE = 8  # stereo S32_LE — the wide wire
 _OUTPUTD_SAMPLE_RATE = 48_000
+
+# The exact i16 -> i32 spine-scale factor, 2^16. Named here because it is a
+# CONTRACT with Rust, not a local convenience: it is the same power of two
+# `jasper_resampler::widen_i16_to_i32` shifts by, so a wide payload and a narrow
+# one describe the same signal at two scales and `narrow_i32_to_i16_round`
+# inverts the promotion exactly. Pinned by tests/test_tts_wire_width.py.
+_SPINE_SCALE = 65_536
+_I32_MIN = -(2 ** 31)
+_I32_MAX = 2 ** 31 - 1
 _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 # All IPC is local to the Pi. Healthy connects and control writes complete in
 # milliseconds, while one second tolerates scheduler pressure without letting
@@ -793,6 +817,13 @@ _OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC = 0.25
 # 250 ms chunks make barge-in/flush sharper and set the granularity at
 # which the writer's pacing (below) applies backpressure. Chunking alone
 # applies none — the owner drops on overflow rather than blocking.
+#
+# This is a BYTE ceiling, and deliberately stays one on both wires: it bounds
+# the allocation a single AUDIO/AUDIO32 command can ask the daemon for, and that
+# bound must not double because a box declared a wider wire. So the duration it
+# buys is wire-dependent — 250 ms of the narrow S16 wire, 125 ms of the wide S32
+# one — while the memory it costs the daemon is the same either way. Barge-in
+# granularity on a wide box is correspondingly finer, not coarser.
 _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
     _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 4
 )
@@ -820,7 +851,7 @@ _OUTPUTD_PACE_AHEAD_SEC = 1.2
 _pace_sleep = asyncio.sleep
 
 
-def _outputd_audio_chunks(data: bytes):
+def _outputd_audio_chunks(data: bytes, frame_bytes: int = _OUTPUTD_AUDIO_FRAME_BYTES):
     """Split TTS IPC AUDIO payloads below the daemon's protocol cap.
 
     Rust rejects AUDIO chunks above 2 MiB before allocation. Cached cue
@@ -828,16 +859,113 @@ def _outputd_audio_chunks(data: bytes):
     be long enough after 24 kHz mono -> 48 kHz stereo conversion to cross
     that limit. Chunking here keeps the protocol bounded without changing
     the public TtsPlayout.write contract.
+
+    ``frame_bytes`` is the wire's stereo frame size — 4 on the narrow S16 wire,
+    8 on the wide S32 one. The chunk ceiling stays a BYTE ceiling on both, which
+    is the same bound the Rust parser applies, so a wide payload simply carries
+    half the frames per chunk. Sizing by frames instead would double the bytes a
+    single command asks the daemon to allocate.
     """
     if not data:
         return []
-    if len(data) % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
+    if len(data) % frame_bytes != 0:
         raise ValueError("TTS IPC audio payload must contain whole stereo frames")
     chunk_size = _OUTPUTD_MAX_AUDIO_CHUNK_BYTES
-    if chunk_size % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
-        raise AssertionError("TTS IPC chunk size must align to stereo frames")
+    chunk_size -= chunk_size % frame_bytes
+    if chunk_size <= 0:
+        raise AssertionError("TTS IPC chunk size must hold at least one frame")
     for i in range(0, len(data), chunk_size):
         yield data[i:i + chunk_size]
+
+
+def _quantize_to_wire(arr, *, wide: bool):
+    """Quantize a resampled float array onto the box's assistant wire.
+
+    ``arr`` is in i16 SAMPLE UNITS (the provider streams S16, and the resampler
+    keeps that scale), regardless of which wire it is headed for. This is THE
+    one place the assistant path leaves floating point.
+
+    NARROW is preserved verbatim — ``np.clip(...).astype(np.int16)``, the same
+    saturating truncate-toward-zero it has always been. Its bytes are a shipped
+    contract; "the same thing but rounded" would be a different signal on every
+    box in the fleet for no reason this PR needs.
+
+    WIDE scales to the i32 spine (``_SPINE_SCALE``, the exact 2^16 the Rust
+    ``widen_i16_to_i32`` shifts by) and quantizes ROUND-TO-NEAREST saturating —
+    the campaign's rule for a JTS-owned quantizer, and a new edge that does not
+    inherit the narrow one's history.
+
+    The scaling multiply runs in **float64**, and it is worth being exact about
+    why, because the obvious reason is wrong. ``arr`` is float32 (``resample_poly``
+    returns what it was given), and multiplying it by 2^16 is EXACT in float32:
+    a power of two changes only the exponent, so no mantissa bit moves and no
+    precision is recovered by widening. The upcast buys two smaller things —
+    ``np.rint`` and the clip compare against the i32 rails at a width that
+    represents every i32 exactly, so the rounding decision and the saturation
+    boundary are not themselves approximated — and it costs one temporary per
+    chunk on a path that already allocates several. It is insurance on the
+    quantizer's own arithmetic, not a wider signal. (The ``pcm_wide`` ingest
+    below states the same power-of-two exactness for the inverse divide; the two
+    should read alike, because they are the same fact.)
+
+    What actually survives is therefore bounded by float32, and that is fine:
+    resampling a 16-bit source produces values off the S16 grid, and float32's
+    24-bit mantissa carries ~8 of those bits into the payload. The remaining 8
+    bits of the i32 container sit below that mantissa and below the source's own
+    resolution — the container is sized by the spine, not by a claim about the
+    assistant's precision. Widening the RESAMPLE path is not proposed here: it
+    would cost a real float64 pass over every chunk for bits the 16-bit source
+    never had.
+    """
+    if wide:
+        scaled = np.rint(arr.astype(np.float64) * _SPINE_SCALE)
+        return np.clip(scaled, _I32_MIN, _I32_MAX).astype(np.int32)
+    return np.clip(arr, -32768, 32767).astype(np.int16)
+
+
+@lru_cache(maxsize=1)
+def tts_wire_is_wide() -> bool:
+    """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
+
+    ONE RULE, TWO LANGUAGES. Delegates to
+    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
+    the shared crate's ``TtsWireWidth::from_box_declaration`` that
+    ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
+    the box's declaration are required — the ``S32_LE`` wire format AND the
+    ``shm_ring`` coupling — and both are read file-fresh, not from
+    ``os.environ``: ``jasper-voice`` never loaded ``fanin.env``, which is the
+    stale-``os.environ`` class AGENTS.md canonizes.
+
+    WHY A BAD TOKEN DOES NOT RAISE HERE. ``jasper-fanin`` already treats an
+    unrecognized value as a config-class fault and parks at exit 78, and the
+    doctor surfaces it. Re-raising in ``jasper-voice`` would take down the
+    daemon that plays the failure cues, turning one operator typo into a silent
+    speaker. So the fault is reported loudly here and resolved narrow — the
+    conservative width, and the one every unarmed box uses.
+
+    CACHED so the process has exactly ONE answer. Two callers ask — the playout
+    (which quantizes provider TTS) and the daemon (which bakes earcons) — and a
+    second file read between them could return a second answer, which is the
+    drift this campaign exists to remove. A coupling flip that changes this
+    answer restarts ``jasper-voice`` (``coupling_reconcile``), so a per-process
+    answer is also a bounded-staleness one. Tests reset it with
+    ``tts_wire_is_wide.cache_clear()``; ``tests/conftest.py`` does it
+    automatically around every test.
+    """
+    from .fanin_coupling import assistant_wire_is_wide
+
+    try:
+        return assistant_wire_is_wide()
+    except (OSError, ValueError) as e:
+        log_event(
+            logger,
+            "tts_wire.declaration_unreadable",
+            resolved="S16_LE",
+            exc_type=type(e).__name__,
+            err=str(e),
+            level=logging.WARNING,
+        )
+        return False
 
 
 async def _send_outputd_audio_chunk(stream, chunk: bytes) -> bool:
@@ -964,7 +1092,14 @@ class _OutputdStreamAdapter:
     sink from PortAudio to the local TTS Unix socket.
     """
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, *, wire_wide: bool = False) -> None:
+        # The payload verb this connection speaks — the wire's own DECLARATION
+        # of its sample width ("AUDIO" = S16LE, "AUDIO32" = S32LE at spine
+        # scale). Fixed for the life of the connection because the box's wire is
+        # fixed for the life of the daemon; see `TtsWireWidth` in
+        # rust/jasper-tts-protocol/src/lib.rs for why the reader honours the
+        # declaration rather than assuming one.
+        self._audio_verb = "AUDIO32" if wire_wide else "AUDIO"
         self._sock = sock
         self._sock.settimeout(_OUTPUTD_IPC_IO_TIMEOUT_SEC)
         self._recv_buffer = bytearray()
@@ -1217,7 +1352,7 @@ class _OutputdStreamAdapter:
 
     def write(self, data: bytes) -> None:
         with self._bounded_lock():
-            self._sendall_locked(f"AUDIO {len(data)}\n".encode("ascii"))
+            self._sendall_locked(f"{self._audio_verb} {len(data)}\n".encode("ascii"))
             self._sendall_locked(data)
 
     def abort(self) -> None:
@@ -1287,6 +1422,7 @@ class OutputdTtsPlayout(TtsPlayout):
         model: str = "",
         voice: str = "",
         profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
+        wire_wide: bool | None = None,
     ) -> None:
         if output_rate != _OUTPUTD_SAMPLE_RATE:
             raise RuntimeError(
@@ -1304,6 +1440,32 @@ class OutputdTtsPlayout(TtsPlayout):
         self._model = model
         self._voice = voice
         self._profile_path = profile_path
+        # Resolved ONCE, at construction: `jasper-voice` is restarted by every
+        # deploy and by the wizards that could change this, and a per-write file
+        # read would put an open() on the audio path. A coupling flip that
+        # changes the answer restarts this daemon (`coupling_reconcile`), so the
+        # window in which this value can be stale is bounded by that restart;
+        # fan-in logs `event=fanin.tts_wire_width_mismatch` if a payload lands
+        # inside it.
+        self._wire_wide = tts_wire_is_wide() if wire_wide is None else wire_wide
+        self._frame_bytes = (
+            _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
+            if self._wire_wide
+            else _OUTPUTD_AUDIO_FRAME_BYTES
+        )
+        # Item 4 (observability): a support read must be able to answer "what
+        # width is this box speaking, and why" without journal archaeology or a
+        # code read. One line, at construction, naming the resolved width AND
+        # where it came from — a resolver answer or an explicit caller override.
+        log_event(
+            logger,
+            "tts_wire.resolved",
+            width="S32_LE" if self._wire_wide else "S16_LE",
+            verb="AUDIO32" if self._wire_wide else "AUDIO",
+            frame_bytes=self._frame_bytes,
+            source="explicit" if wire_wide is not None else "box_declaration",
+            socket=socket_path,
+        )
         self._assistant_meter: AssistantSourceMeter | None = None
         self._profile_cache_key: tuple[str, str, str, str] | None = None
         self._profile_cache = None
@@ -1356,7 +1518,7 @@ class OutputdTtsPlayout(TtsPlayout):
                 self._socket_path, type(e).__name__, e,
             )
             raise
-        stream = _OutputdStreamAdapter(sock)
+        stream = _OutputdStreamAdapter(sock, wire_wide=self._wire_wide)
         try:
             stream.set_gain_db(self.gain_db)
         except OSError:
@@ -1554,12 +1716,21 @@ class OutputdTtsPlayout(TtsPlayout):
         provider_item_id: str | None = None,
         segment_kind: str = "assistant",
         source_profile=None,
+        pcm_wide: bool = False,
     ) -> None:
         """Send un-gained 48 kHz stereo PCM to the TTS IPC owner.
 
         Gain is sent as metadata and enforced by fan-in's final mix
         clamp. Drain accounting mirrors TtsPlayout.write so the voice
         daemon's turn-ending contract stays identical.
+
+        ``pcm`` is 24 kHz mono. ``pcm_wide`` names its INPUT width, which is a
+        per-caller fact rather than a per-box one: provider TTS is S16 from
+        every supported API whatever this box's wire is, while a locally
+        generated earcon is baked at the wire's own width (see
+        ``jasper.voice.earcons._to_pcm32``). A wide input is normalized to i16
+        sample units on the way in — an exact power-of-two divide — so
+        everything downstream of this line is one code path at one scale.
         """
         if not pcm:
             return
@@ -1578,7 +1749,14 @@ class OutputdTtsPlayout(TtsPlayout):
         if stream is None:
             return
 
-        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if pcm_wide:
+            # /2^16 is exact in binary floating point (it changes the exponent
+            # only), so this costs nothing beyond the float32 mantissa the
+            # whole path already runs at.
+            arr = np.frombuffer(pcm, dtype=np.int32).astype(np.float32)
+            arr = arr / np.float32(_SPINE_SCALE)
+        else:
+            arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
         if (
             segment_kind == "assistant"
             and self._provider
@@ -1591,10 +1769,10 @@ class OutputdTtsPlayout(TtsPlayout):
         if self._upsample > 1:
             from scipy.signal import resample_poly
             arr = resample_poly(arr, up=self._upsample, down=1)
-        mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
-        stereo_i16 = np.repeat(mono_i16, 2)
+        mono = _quantize_to_wire(arr, wide=self._wire_wide)
+        stereo = np.repeat(mono, 2)
 
-        chunk_duration_sec = len(mono_i16) / self._output_rate
+        chunk_duration_sec = len(mono) / self._output_rate
         write_start = time.monotonic()
         for attempt in range(2):
             try:
@@ -1631,7 +1809,7 @@ class OutputdTtsPlayout(TtsPlayout):
                     continue
                 raise
         paced_sec = 0.0
-        for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
+        for chunk in _outputd_audio_chunks(stereo.tobytes(), self._frame_bytes):
             now = time.monotonic()
             queued_end = self._ring_end_monotonic
             if queued_end is None or queued_end < now:
@@ -1661,9 +1839,7 @@ class OutputdTtsPlayout(TtsPlayout):
             committed_end = self._ring_end_monotonic
             if committed_end is None or committed_end < sent_at:
                 committed_end = sent_at
-            committed_end += len(chunk) / (
-                self._output_rate * _OUTPUTD_AUDIO_FRAME_BYTES
-            )
+            committed_end += len(chunk) / (self._output_rate * self._frame_bytes)
             self._ring_end_monotonic = committed_end
             if cancelled:
                 raise asyncio.CancelledError
@@ -1676,7 +1852,7 @@ class OutputdTtsPlayout(TtsPlayout):
             logger.warning(
                 "fan-in TTS IPC write slow: %.0fms for %.0fms of audio "
                 "(%d frames @ %d Hz)",
-                write_ms, chunk_ms, len(mono_i16), self._output_rate,
+                write_ms, chunk_ms, len(mono), self._output_rate,
             )
 
     def _profile_for_segment(self, segment_kind: str, *, source_profile=None):

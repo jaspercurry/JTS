@@ -120,6 +120,9 @@ dependencies = [
 [[package]]
 name = "jasper-tts-protocol"
 version = "0.1.0"
+dependencies = [
+ "jasper-resampler",
+]
 
 [[package]]
 name = "libc"

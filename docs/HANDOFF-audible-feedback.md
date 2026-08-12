@@ -25,11 +25,22 @@ cached files live, and why the design is the way it is.
 ## Generated feedback sounds
 
 Not every audible feedback sound is a pre-rendered spoken WAV. A few
-short earcons are generated inline in `jasper.voice_daemon` because
-they are sub-100 ms sine blips, not phrases worth caching through
-`jasper/cues/`.
+short earcons are rendered by `jasper/voice/earcons.py` and cached by
+`jasper.voice_daemon` at startup, because they are short tone recipes,
+not phrases worth caching through `jasper/cues/`.
 
-- **Mic mute/unmute click**: `WakeLoop._generate_mute_click` builds
+They are rendered in float and baked ONCE, at the sample width the box's
+wire declares (U2 PR-2): 24 kHz mono S16 on a narrow box —
+byte-identical to every earcon the fleet has played — and 24 kHz mono
+S32 at the i32 spine scale on a box whose
+`JASPER_FANIN_RING_WIRE_FORMAT` is `S32_LE`, so the recipe's own detail
+is not flattened onto the 16-bit grid before the wire could carry it.
+`measure_pcm_24k_mono` takes the same width and normalizes it out, so an
+earcon's source-loudness profile is identical either way. Spoken cue
+WAVs are NOT affected: their source is a 16-bit provider TTS render on
+disk, so a wider bake would add container and no signal.
+
+- **Mic mute/unmute click**: `jasper.voice.earcons._generate_mute_click` builds
   the lower-pitch mute and higher-pitch unmute click. WakeLoop
   pre-renders both PCM buffers at startup, measures their source
   loudness with `measure_pcm_24k_mono`, and sends playback as
@@ -38,7 +49,7 @@ they are sub-100 ms sine blips, not phrases worth caching through
   assistant-owned cue audio: current content baseline when music is
   playing, otherwise the listening-level-derived silence target, with
   the same peak cap.
-- **Wake start/end chirps**: `WakeLoop._generate_listening_chirp`
+- **Wake start/end chirps**: `jasper.voice.earcons._generate_listening_chirp`
   builds the two-note ascending wake chirp and descending turn-end
   chirp. WakeLoop pre-renders both PCM buffers at startup, measures
   their source loudness with `measure_pcm_24k_mono`, and sends

@@ -19,6 +19,20 @@ prevent. So this file pins them against each other by READING the Rust source
 and re-deriving its table, rather than by restating a table both sides could
 drift from.
 
+**Two contracts live here, and the second is not implied by the first.** Token
+normalization (above) says what ``S32_LE`` means. The ASSISTANT WIDTH VERDICT
+(below, U2 PR-2) says what a BOX is — and it is a conjunction: the declared
+format AND the ``shm_ring`` coupling, because an snd-aloop substream is an S16
+device however the box spelled its format. Pinning only the normalizer left the
+two languages free to reach different verdicts about the same box from the same
+tokens, which is exactly what happened: the Python assistant-width predicate
+keyed on the token alone while ``Config::program_wire_is_wide`` had always
+required both halves.
+
+The third declaring end — the PROSE — is pinned in
+``tests/test_docs_assistant_width_phrasing.py`` rather than here, because that
+lane's environment is minimal and this file imports ``jasper``.
+
 Rust-source pins ``pytest.skip()`` when the sources are absent, mirroring
 ``tests/test_fanin_host_clock_contract.py``'s idiom.
 """
@@ -72,11 +86,21 @@ def _from_env_value_body(source: str) -> str:
 
 
 def _rust_variant_tokens(source: str) -> dict[str, str]:
-    """``{"S16Le": "S16_LE", ...}`` from the daemon's own ``as_str``."""
-    start = source.index("pub fn as_str(")
+    """``{"S16Le": "S16_LE", ...}`` from the daemon's own ``as_str``.
+
+    Anchored on ``impl RingWireFormat`` rather than the first ``pub fn as_str(``
+    in the file: ``Coupling`` grew one too (U2 PR-2's startup width line needs
+    the transport token), and it is declared earlier, so an unanchored search
+    silently read the wrong enum's map.
+    """
+    impl_at = source.index("impl RingWireFormat {")
+    start = source.index("pub fn as_str(", impl_at)
     end = source.index("\n}", start)
     variants = dict(_AS_STR_RE.findall(source[start:end]))
     assert variants, "could not read RingWireFormat::as_str's token map"
+    # The map must be the FORMAT vocabulary, not the transport's — the exact
+    # confusion the anchor above prevents.
+    assert set(variants.values()) == set(RING_WIRE_FORMATS), variants
     return variants
 
 
@@ -186,3 +210,115 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
         fc, "read_declared_ring_wire_format", lambda env=None: RING_WIRE_FORMAT
     )
     assert fc.resolve_ring_wire().sample_format == RING_WIRE_FORMAT
+
+
+
+# ---------------------------------------------------------------------------
+# The ASSISTANT WIDTH verdict (U2 PR-2) — a conjunction, pinned across the two
+# languages by re-deriving the Rust rule's own truth table from its source.
+# ---------------------------------------------------------------------------
+
+_PROTOCOL_RS = _REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
+# `if wire_format_is_wide && coupling_is_shm_ring { Wide } else { Narrow }`
+_FROM_BOX_DECLARATION_RE = re.compile(
+    r"pub fn from_box_declaration\(\s*"
+    r"wire_format_is_wide: bool,\s*"
+    r"coupling_is_shm_ring: bool,\s*"
+    r"\) -> TtsWireWidth \{\s*"
+    r"if (?P<cond>[^\{]+?)\s*\{\s*"
+    r"TtsWireWidth::(?P<then>\w+)\s*\}\s*else\s*\{\s*"
+    r"TtsWireWidth::(?P<other>\w+)\s*\}",
+    re.S,
+)
+
+
+def _rust_assistant_width_rule() -> "tuple[str, str, str]":
+    """(condition, then-variant, else-variant) read out of the Rust source."""
+    if not _PROTOCOL_RS.exists():
+        pytest.skip(f"rust source not present: {_PROTOCOL_RS}")
+    match = _FROM_BOX_DECLARATION_RE.search(_PROTOCOL_RS.read_text(encoding="utf-8"))
+    assert match, (
+        "could not locate TtsWireWidth::from_box_declaration in "
+        f"{_PROTOCOL_RS} — if it was renamed or reshaped, this contract must be "
+        "re-pointed rather than deleted"
+    )
+    return match.group("cond").strip(), match.group("then"), match.group("other")
+
+
+def test_the_rust_assistant_width_rule_is_the_conjunction_of_both_halves() -> None:
+    """The Rust side, re-derived rather than restated.
+
+    If someone relaxes that `&&` to an `||`, or drops the coupling term, this
+    fails here — before the Python mirror below is compared against a rule that
+    has quietly changed.
+    """
+    cond, then_variant, else_variant = _rust_assistant_width_rule()
+    assert cond == "wire_format_is_wide && coupling_is_shm_ring", cond
+    assert then_variant == "Wide"
+    assert else_variant == "Narrow"
+
+
+def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -> None:
+    """VERDICT PARITY over the full 2x2, not token parity.
+
+    The Rust verdict is evaluated from the rule this file just read out of the
+    source; the Python verdict comes from the live predicate. Both are computed
+    here — neither side is a hand-written expectation, so a change to either
+    that is not matched by the other fails.
+    """
+    from jasper.fanin_coupling import assistant_wire_is_wide
+
+    cond, then_variant, else_variant = _rust_assistant_width_rule()
+    assert cond == "wire_format_is_wide && coupling_is_shm_ring"
+
+    for wire_format in (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE):
+        for coupling in ("loopback", "shm_ring"):
+            # Evaluate the RUST rule's own condition on these two halves.
+            rust_variant = (
+                then_variant
+                if (wire_format == RING_WIRE_FORMAT_WIDE and coupling == "shm_ring")
+                else else_variant
+            )
+            python_wide = assistant_wire_is_wide(
+                wire_format=wire_format, coupling=coupling
+            )
+            assert python_wide is (rust_variant == "Wide"), (
+                f"verdict shear at ({wire_format}, {coupling}): "
+                f"rust={rust_variant} python={'Wide' if python_wide else 'Narrow'}"
+            )
+
+    # The row that made this contract necessary, named so a reader sees it.
+    assert (
+        assistant_wire_is_wide(
+            wire_format=RING_WIRE_FORMAT_WIDE, coupling="loopback"
+        )
+        is False
+    ), "a declared-wide box that never armed the ring outputs to an S16 substream"
+
+
+def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None:
+    """Both halves default to a FILE-FRESH read of the same SSOT the daemons use.
+
+    Not ``os.environ``: ``jasper-voice`` and the socket-activated wizards never
+    loaded ``fanin.env``, which is the stale-``os.environ`` class AGENTS.md
+    canonizes.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    import jasper.fanin_coupling as fc
+
+    seen = {"format": 0, "coupling": 0}
+
+    def _format() -> str:
+        seen["format"] += 1
+        return RING_WIRE_FORMAT_WIDE
+
+    def _coupling(*_a, **_k) -> str:
+        seen["coupling"] += 1
+        return "shm_ring"
+
+    monkeypatch.setattr(fc, "read_declared_ring_wire_format", _format)
+    monkeypatch.setattr(cr, "read_persisted_coupling", _coupling)
+    assert fc.assistant_wire_is_wide() is True
+    assert seen == {"format": 1, "coupling": 1}, (
+        "both halves must be read from their own SSOT reader"
+    )

@@ -430,6 +430,7 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
             {
                 "segment_kind": "chirp",
                 "source_profile": profile,
+                "pcm_wide": False,
             },
         )
     ]

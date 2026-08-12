@@ -357,6 +357,55 @@ both scales — the program duck can pull an over-full-scale sum back into
 range, so saturating at the mix would distort where clipping at the write
 does not.
 
+The duck itself is width-dispatched for the same reason (`apply_gain_to_sum`
+and `ramp_program_duck`). `Narrow` keeps its `f32` multiply and its `i32`
+clamp verbatim, where the clamp has always been unreachable and the bytes are
+a shipped contract. `Wide` computes in `f64` — an `f32` mantissa is 24 bits
+and cannot hold a spine-scale sum — and drops the `i32` clamp, because a
+spine-scale sum legitimately exceeds `i32::MAX` and clamping there would spend
+the `i64` headroom before the duck could use it. Saturation stays the
+consumer's job.
+
+**The assistant lane carries its own width.** The TTS wire has two
+self-describing payload verbs — `AUDIO` (S16LE) and `AUDIO32` (S32LE at spine
+scale) — and `jasper-voice` speaks whichever this box's declaration resolves to,
+so nothing is negotiated. That declaration is a CONJUNCTION, not the wire-format
+token alone: `JASPER_FANIN_RING_WIRE_FORMAT=S32_LE` **and**
+`JASPER_FANIN_CAMILLA_COUPLING=shm_ring`, because an snd-aloop substream is an
+S16 device however the box spelled its format. One rule decides it —
+`jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which
+`Config::program_wire_is_wide` calls and
+`jasper.fanin_coupling.assistant_wire_is_wide` mirrors — and
+`tests/test_ring_wire_format_contract.py` pins the two languages' verdicts
+against each other over all four pairings.
+
+The sum's width and the payload's are independent axes and all four pairings are
+defined; the two conversions between them (`widen_i16_to_i32` /
+`narrow_i32_to_i16_round`) are exact inverses, which is why a disagreement is
+logged (`event=fanin.tts_wire_width_mismatch`) rather than parked. Its window is
+bounded rather than open-ended: `coupling_reconcile` `try-restart`s
+`jasper-voice` whenever a flip changes the resolved assistant width, so the
+disagreement is a transient across a flip, not a state a box sits in. Both ends
+publish their resolved width at start — `event=tts_wire.resolved` from voice,
+`event=fanin.tts_wire.resolved` from fan-in — so "is a mismatch converting right
+now" is answerable from two lines without waiting for the (once-per-lifetime)
+warn. On a wide sum the gain is applied AFTER the promotion, in `f64`
+(`apply_gain`), so a deep assistant attenuation no longer rounds the reply back
+onto the S16 grid.
+
+**The bonded-multiroom route (`jasper-outputd`) parses the same verbs and does
+NOT warn.** A grouping member points voice at outputd's own TTS socket, and
+outputd consumes the shared parser, so `AUDIO32` reaches it identically; its
+program spine is `i32` unconditionally, so a wide payload is the identity where
+a narrow one is `widen_i16_to_i32`, and both land at the same level
+(`a_wide_audio_payload_mixes_at_the_same_level_as_its_narrow_twin`). It is the
+one assistant route with no width-mismatch warning — outputd has no width
+decision to disagree with, since it never narrows. That is not a gap to fill
+with a second warn: the *disagreement* it could not report is made structurally
+impossible upstream, because voice and fan-in now resolve the width through one
+shared rule from one pair of persisted keys, and a flip in those keys restarts
+voice. The unified predicate is the fix; a warn here would only restate it.
+
 The choice is reversible — if a future case demands scaled summing
 (multi-listener environment where simultaneous sources are intentional),
 add a configuration flag.

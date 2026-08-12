@@ -66,7 +66,7 @@ use crate::core::OutputCore;
 use crate::json::json_string;
 use crate::ledger::{PlayoutEvent, SegmentId};
 use crate::mixer::gain_db_to_linear;
-use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
+use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
@@ -370,7 +370,7 @@ fn try_enqueue_tts_command(
     queued: QueuedTtsCommand,
     metrics: &TtsMetrics,
 ) -> bool {
-    if !matches!(queued.command, TtsCommand::Audio(_)) {
+    if !queued.command.is_audio() {
         return enqueue_reliable_tts_command(tx, queued);
     }
     match tx.try_send(queued) {
@@ -407,10 +407,7 @@ fn enqueue_reliable_tts_command(
 }
 
 fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    match &queued.command {
-        TtsCommand::Audio(samples) => (samples.len() / (CHANNELS as usize)) as u64,
-        _ => 0,
-    }
+    queued.command.audio_frames()
 }
 
 // ---------------------------------------------------------------------
@@ -607,8 +604,12 @@ impl TtsBridge {
                         core.start_assistant_segment_with_profile(provider_item_id, kind, profile);
                     self.open_segment = Some(id);
                 }
-                TtsCommand::Audio(samples) => {
-                    let incoming = (samples.len() / (CHANNELS as usize)) as u64;
+                // Both payload verbs, one body. Spelled out rather than
+                // guarded on `is_audio()` so the compiler's exhaustiveness
+                // check — which ignores guards — still forces a future third
+                // payload verb to be handled here.
+                command @ (TtsCommand::Audio(_) | TtsCommand::AudioWide(_)) => {
+                    let incoming = command.audio_frames();
                     if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
@@ -632,6 +633,11 @@ impl TtsBridge {
                             self.open_segment = Some(id);
                             id
                         }
+                    };
+                    // Cannot be None inside this arm: the same two patterns
+                    // select it.
+                    let Some(samples) = command.into_audio_samples() else {
+                        continue;
                     };
                     core.append_assistant_audio_with_segment_gain(id, samples);
                 }
@@ -1027,5 +1033,77 @@ mod tests {
                 "outputd ack missing event key {key}: {line}"
             );
         }
+    }
+
+    /// C-SF4: A REAL `AUDIO32` PAYLOAD THROUGH THE OUTPUTD TTS PATH.
+    ///
+    /// outputd is the bonded-multiroom assistant route, and it accepts the wide
+    /// verb by consuming the SAME shared parser fan-in does — but nothing here
+    /// exercised it, so `TtsCommand::AudioWide` reaching `OutputCore` was
+    /// argued rather than tested. This enqueues a genuine `Vec<i32>` and pins
+    /// that it lands at the SAME level as the S16 payload carrying the same
+    /// signal, which is the whole claim: outputd's spine is already i32, so a
+    /// wide payload is the identity where a narrow one is `widen_i16_to_i32`.
+    #[test]
+    fn a_wide_audio_payload_mixes_at_the_same_level_as_its_narrow_twin() {
+        let render = |command: TtsCommand| -> Vec<ProgramSample> {
+            let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+            send(
+                &tx,
+                0,
+                TtsCommand::PrepareAssistant {
+                    provider: "openai".to_string(),
+                    model: "gpt-realtime-2".to_string(),
+                    voice: "marin".to_string(),
+                    tts_envelope_lufs: -41.0,
+                    volume_context: Some(jasper_tts_protocol::VolumeContext {
+                        canonical_db: -30.0,
+                        downstream_db: -30.0,
+                        tts_envelope_lufs: -41.0,
+                        muted: false,
+                        stamp_boot_ns: 1,
+                    }),
+                },
+            );
+            send(
+                &tx,
+                0,
+                TtsCommand::SegmentStart {
+                    kind: SegmentKind::Assistant,
+                    provider_item_id: Some("item-wide".into()),
+                    profile: None,
+                },
+            );
+            send(&tx, 0, command);
+            send(&tx, 0, TtsCommand::SegmentEnd);
+            bridge.drain(&mut core);
+            core.push_content_period(vec![0; 8]);
+            let report = core.step();
+            assert_eq!(report.clipped_samples, 0);
+            core.dac().periods[0].clone()
+        };
+
+        // The same signal, offered at both widths. `w()` is the promotion the
+        // narrow route applies internally, so the wide payload is what an
+        // `AUDIO32` writer sends for that sample.
+        let narrow = render(TtsCommand::Audio(vec![4000i16; 8]));
+        let wide = render(TtsCommand::AudioWide(vec![w(4000); 8]));
+
+        assert!(
+            narrow.iter().any(|&s| s != 0),
+            "the narrow render must produce audio for this comparison to mean anything",
+        );
+        assert_eq!(
+            wide, narrow,
+            "a promoted narrow payload and its AUDIO32 twin must render identically",
+        );
+
+        // And a payload carrying detail BELOW the S16 grid survives — the thing
+        // the narrow route structurally cannot deliver here.
+        let sub_lsb = render(TtsCommand::AudioWide(vec![w(4000) + 0x4000; 8]));
+        assert_ne!(
+            sub_lsb, wide,
+            "a quarter-LSB offset must reach outputd's mix, not round away",
+        );
     }
 }

@@ -114,6 +114,10 @@ def _reconcile(
     # Keep tests hermetic: never let the disarm path's default hardware-reconcile
     # kick reach the real restart broker. Kick-behaviour tests inject their own.
     kwargs.setdefault("kick_hardware_reconcile", lambda: (True, ""))
+    # Same for the assistant-width voice restart: it fires only on a width
+    # TRANSITION, so most tests never reach it, but a test that flips a
+    # declared-wide box's coupling would otherwise drive the real broker.
+    kwargs.setdefault("restart_voice", lambda: (True, ""))
     return reconcile_coupling(
         desired,
         reason="t",
@@ -2582,3 +2586,308 @@ def test_outputd_actions_unset_legacy_local_content_pipe(tmp_path):
             f"{coupling} branch must unset {_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV}"
         )
     assert _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV == "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
+
+
+
+# ---------------------------------------------------------------------------
+# The ASSISTANT-WIDTH transient (U2 PR-2, item 1e).
+#
+# jasper-voice resolves the box's assistant wire width ONCE at start and is not
+# part of the ordered audio-graph bounce. A coupling flip can change that width,
+# so without a restart the box would sit in a standing width disagreement —
+# converted losslessly and logged, but permanent. These pin that the reconciler
+# ends it, that it does so only on an actual transition, and that it cannot
+# start a unit that was deliberately stopped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _wide_arm_gates_pass(monkeypatch, _ring_assets_present):
+    """Assets + geometry (from `_ring_assets_present`) plus the two WIDE gates.
+
+    A declared-wide box fails `ring_edge_width_ready` against this repo's
+    shipped narrow conf.d, and `ring_wire_caps_ready` against a dev host with no
+    ioplug installed. Both refusals are correct and both have dedicated tests;
+    stubbing them here keeps these tests about the assistant-width transition
+    instead of re-testing the arm preflight.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    monkeypatch.setattr(
+        cr, "ring_edge_width_ready", lambda **kw: (True, "")
+    )
+    monkeypatch.setattr(cr, "ring_wire_caps_ready", lambda **kw: (True, ""))
+
+
+def _wide_declared_env(tmp_path, coupling: str) -> Path:
+    """A fanin.env declaring the wide wire format at the given coupling."""
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR, RING_WIRE_FORMAT_WIDE
+
+    return _write(
+        tmp_path / "fanin.env",
+        f"{COUPLING_ENV_VAR}={coupling}\n"
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE}\n",
+    )
+
+
+def test_arming_a_declared_wide_box_restarts_voice_once(
+    tmp_path, _wide_arm_gates_pass
+):
+    """narrow -> wide: the flip changes the assistant width, so voice re-reads it."""
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_LOOPBACK)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert result.ok, result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert calls == ["voice"], (
+        "a declared-wide box crossing into shm_ring changes the assistant width "
+        "from S16_LE to S32_LE; voice resolves that once at start"
+    )
+
+
+def test_disarming_a_declared_wide_box_restarts_voice_once(tmp_path):
+    """wide -> narrow is equally a transition, and equally standing if unhandled."""
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_SHM_RING)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    _reconcile(
+        COUPLING_LOOPBACK,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+    assert calls == ["voice"]
+
+
+def test_a_narrow_box_flipping_coupling_does_not_restart_voice(
+    tmp_path, _ring_assets_present
+):
+    """THE PRECISION OF THE TRIGGER.
+
+    Almost every coupling flip in the fleet is on a narrow-declared box, where
+    the assistant width is S16_LE on both sides of the flip. Restarting voice
+    there would cut a reply for nothing — and would make this a per-flip bounce
+    rather than a per-transition one.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert calls == [], "the assistant width never moved; voice had nothing to re-read"
+
+
+def test_a_confirm_pass_on_an_armed_wide_box_does_not_restart_voice(
+    tmp_path, _wide_arm_gates_pass
+):
+    """The reconciler runs on boot, deploy and every source transaction.
+
+    A confirm pass moves nothing, so it must not bounce voice — otherwise every
+    /sources/ toggle on an armed wide box would cut the assistant off.
+    """
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_SHM_RING)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert calls == []
+
+
+def test_a_staging_write_never_restarts_voice(tmp_path):
+    """``apply=False`` writes the env and runs NO daemon ops. Voice included."""
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_LOOPBACK)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls = []
+
+    _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        apply=False,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (calls.append("voice") or (True, "")),
+    )
+
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert calls == [], "a staging pass performing one daemon op is not a staging pass"
+
+
+def test_a_failed_voice_restart_does_not_change_the_coupling_verdict(
+    tmp_path, _wide_arm_gates_pass
+):
+    """Best-effort, and deliberately so.
+
+    The coupling IS reconciled either way; the remaining exposure is a width
+    disagreement the reader converts losslessly. Failing the reconcile over it
+    would trade a precision difference for an audio-path outage.
+    """
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_LOOPBACK)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=lambda: (True, ""),
+        restart_fanin=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        restart_voice=lambda: (False, "broker refused"),
+    )
+
+    assert result.ok, "a best-effort voice restart must not fail the coupling"
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+
+
+def test_voice_is_try_restarted_so_a_stopped_unit_stays_stopped(monkeypatch):
+    """THE VERB IS THE SAFETY PROPERTY.
+
+    ``restart`` would START jasper-voice on a box where it is deliberately down
+    — a no-mic box parks it through
+    ``ConditionPathExists=!/var/lib/jasper/voice-input-absent``, and an operator
+    can stop it. A coupling flip is not permission to start either one.
+    ``try-restart`` is a no-op on an inactive unit.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    seen = {}
+
+    def _manage_units(unit, *, verb, reason, no_block, timeout):
+        seen["unit"] = unit
+        seen["verb"] = verb
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units", _manage_units
+    )
+    ok, _detail = cr._try_restart_voice(reason="t")
+    assert ok
+    assert seen["unit"] == cr.VOICE_UNIT == "jasper-voice.service"
+    assert seen["verb"] == "try-restart", (
+        "restart would start a parked or deliberately-stopped jasper-voice"
+    )
+    # And it is NOT in the crash-budget reset set: this fires once per coupling
+    # flip, so it cannot walk the start-limit window the per-transaction fan-in
+    # bounces could. A reset-failed here would be the only call before it.
+    assert cr.VOICE_UNIT not in cr._CRASH_BUDGET_UNITS
+
+
+def test_the_default_voice_restart_wiring_issues_try_restart(
+    tmp_path, monkeypatch, _wide_arm_gates_pass
+):
+    """THE JOIN, not the pieces.
+
+    `test_voice_is_try_restarted_so_a_stopped_unit_stays_stopped` pins
+    `_try_restart_voice`'s verb, and the transition tests pin WHEN a restart is
+    issued — but both sides could be right while the wire between them is wrong,
+    because every one of those tests supplies its own `restart_voice`. Mutating
+    the default lambda's verb to ``restart`` left the whole suite green.
+
+    So this one calls `reconcile_coupling` with `restart_voice` DELIBERATELY not
+    injected, and stubs one layer lower — at the restart broker — so the real
+    `restart_voice or (lambda: _try_restart_voice(reason=reason))` join is the
+    code under test. Everything else is still injected, which is what makes the
+    single recorded broker call unambiguous: if the join were wired to any other
+    helper, or to `restart`, this fails.
+    """
+    fanin_env = _wide_declared_env(tmp_path, COUPLING_LOOPBACK)
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    broker_calls = []
+
+    def _manage_units(unit, *, verb, reason, no_block, timeout):
+        broker_calls.append((unit, verb))
+        return {"ok": True}
+
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", _manage_units)
+
+    result = reconcile_coupling(
+        COUPLING_SHM_RING,
+        reason="t",
+        env_path=fanin_env,
+        outputd_env_path=outputd_env,
+        # Everything EXCEPT restart_voice, so the only broker traffic this test
+        # can observe is the join it is pinning.
+        restart_fanin=lambda: (True, ""),
+        restart_outputd=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        kick_hardware_reconcile=lambda: (True, ""),
+    )
+
+    assert result.ok, result.detail
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert broker_calls == [("jasper-voice.service", "try-restart")], (
+        "the default wiring must reach the broker exactly once, as a "
+        f"try-restart of jasper-voice; got {broker_calls}"
+    )
+
+
+def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
+    tmp_path, monkeypatch, _wide_arm_gates_pass
+):
+    """The same join, from the other side.
+
+    Without this, a default wired to fire unconditionally would still satisfy
+    the test above. Same setup, same absent injection, narrow box: the broker
+    must see nothing at all.
+    """
+    fanin_env = _write(tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_LOOPBACK}\n")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    broker_calls = []
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda unit, **kw: broker_calls.append((unit, kw.get("verb"))) or {"ok": True},
+    )
+
+    reconcile_coupling(
+        COUPLING_SHM_RING,
+        reason="t",
+        env_path=fanin_env,
+        outputd_env_path=outputd_env,
+        restart_fanin=lambda: (True, ""),
+        restart_outputd=lambda: (True, ""),
+        reconcile_camilla=lambda _c: (True, ""),
+        kick_hardware_reconcile=lambda: (True, ""),
+    )
+
+    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
+    assert broker_calls == [], (
+        f"a narrow box's assistant width never moved; got {broker_calls}"
+    )
