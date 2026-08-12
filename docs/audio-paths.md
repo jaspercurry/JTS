@@ -29,6 +29,11 @@ MUSIC chain (gets CamillaDSP processing)
     renderers / correction sweeps → private fan-in lanes
               → hw:Loopback,0,0..4 → snd-aloop → hw:Loopback,1,0..4
               → jasper-fanin → hw:Loopback,0,7
+              (a lane ARMED for ring ingress replaces its snd-aloop hop with
+               a per-renderer SHM slot ring — /dev/shm/jts-ring/lane-<label>.ring,
+               written by the renderer's own jts_ring ioplug and read by fan-in.
+               No box is armed today; the aloop path above is what every box
+               runs. See HANDOFF-fan-in-daemon.md "Lane sources".)
               → snd-aloop → pcm.jasper_capture (dsnoop on hw:Loopback,1,7)
               → jasper-camilla (main_volume + filters)
               → outputd_content_playback
