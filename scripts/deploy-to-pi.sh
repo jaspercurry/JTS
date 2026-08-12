@@ -351,10 +351,14 @@ PY
 
 # USB-gadget-network deploy advisory (non-blocking, prints BEFORE rsync).
 # See _lib.sh's usb_gadget_management_cidr/ipv4_in_cidr docstrings for the
-# "why" (issue #2340): install.sh's mid-install gadget rebuild can sever a
-# deploy whose own ssh session is riding ncm.usb0. Only a deploy that runs
-# install.sh can hit that failure mode — SKIP_INSTALL=1 rsync-only never
-# touches the gadget — so the caller invokes this only inside that guard.
+# "why" (issue #2340): when USB Audio Input is enabled on the speaker,
+# install.sh's mid-install gadget rebuild can sever a deploy whose own
+# ssh session is riding ncm.usb0 (a USB-audio-off box's converged
+# NCM-only gadget is not bounced — tests/test_install_usbgadget_migration.py).
+# This fires regardless of that state since the laptop can't see it from
+# here. Only a deploy that runs install.sh can hit that failure mode —
+# SKIP_INSTALL=1 rsync-only never touches the gadget — so the caller
+# invokes this only inside that guard.
 # Degrades to a quiet skip whenever the subnet or PI_HOST's address can't
 # be determined (a checkout missing deploy/usb-network/, offline, an
 # unresolvable hostname): the goal is to warn when we KNOW, never to guess
@@ -389,13 +393,15 @@ warn_if_pi_host_on_gadget_network() {
 ─────────────────────────────────────────────────────────────
  ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
    management network (${cidr}).
-   If that's this deploy's own transport: install.sh rebuilds the
-   composite USB gadget mid-install and tears down that link out
-   from under it. The ssh session dies with no FIN, this script's
-   keepalive bounds the resulting error to about a minute (see
-   SSH_BATCH_OPTS) instead of hanging forever, and the transcript
-   will look wedged around event=install.usb_gadget_baseline — even
-   though install.sh keeps going and succeeds on the Pi (#2340).
+   If that's this deploy's own transport AND USB Audio Input is
+   enabled on the speaker: install.sh rebuilds the composite USB
+   gadget mid-install and tears down that link out from under it
+   (a USB-audio-off box's converged NCM-only gadget is not bounced).
+   The ssh session dies with no FIN, this script's keepalive bounds
+   the resulting error to about a minute (see SSH_BATCH_OPTS)
+   instead of hanging forever, and the transcript will look wedged
+   around event=install.usb_gadget_baseline — even though install.sh
+   keeps going and succeeds on the Pi (#2340).
    Workaround: deploy over the Wi-Fi/LAN address instead, e.g.
      PI_HOST=<pi-lan-hostname-or-ip> bash scripts/deploy-to-pi.sh
    Proceeding — this is advisory only. If ssh does exit early, check

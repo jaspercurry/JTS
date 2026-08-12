@@ -911,14 +911,19 @@ interactive-sudo deploys skip it too. The helper
 **USB-gadget-network deploy advisory:** the preflight also warns (never
 blocks) when `PI_HOST` resolves inside the USB gadget's management subnet
 — `10.12.194.1/24` on `usb0`, see
-[docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md). Deploying over
-that link is risky: `install.sh` rebuilds the composite USB gadget
-mid-install, which can tear down `ncm.usb0` out from under the deploy's
-own ssh session. The install itself keeps going and **succeeds on the
-Pi** — but the laptop's ssh half-opens with no FIN, and the transcript
-freezes around `event=install.usb_gadget_baseline`, which reads as a
-wedged deploy that actually landed (issue #2340, the 2026-08-11 U2
-deploy). The advisory never blocks — `SKIP_INSTALL=1` rsync-only deploys
+[docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md). It fires on
+every in-subnet address regardless of the speaker's USB-audio state,
+since the laptop can't see that state from here — warning often is the
+safe default. What it's warning about: if USB Audio Input is enabled on
+the speaker, `install.sh` rebuilds the composite USB gadget mid-install
+and tears down `ncm.usb0` out from under the deploy's own ssh session (a
+USB-audio-off box's converged NCM-only gadget is not bounced — pinned by
+`tests/test_install_usbgadget_migration.py`). When that happens, the
+install itself keeps going and **succeeds on the Pi** — but the laptop's
+ssh half-opens with no FIN, and the transcript freezes around
+`event=install.usb_gadget_baseline`, which reads as a wedged deploy that
+actually landed (issue #2340, the 2026-08-11 U2 deploy — USB Audio Input
+was on). The advisory never blocks — `SKIP_INSTALL=1` rsync-only deploys
 never touch the gadget, and deploying over USB anyway is sometimes the
 only option — but the fix is to deploy over the Wi-Fi/LAN address instead
 (`PI_HOST=<lan-hostname-or-ip>`). `SSH_BATCH_OPTS` also now carries
