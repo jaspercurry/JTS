@@ -318,7 +318,6 @@
       border-color: var(--primary-040);
       background: var(--accent-faint);
     }
-    .setting-row.external .chevron { transform: rotate(-45deg); }
     .setting-row.operator .row-icon {
       color: var(--danger);
       background: var(--danger-soft);
@@ -669,15 +668,6 @@
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row external" id="camilla-card" data-port="5005"
-             data-path="/" href="#" target="_blank" rel="noopener">
-            <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sliders"></use></svg></span>
-            <span class="setting-copy">
-              <span class="setting-title">Advanced DSP</span>
-              <span class="setting-status">CamillaGUI</span>
-            </span>
-            <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
-          </a>
         </div>
       </section>
 
@@ -862,14 +852,6 @@
     // /system/data.json poll refreshes live values only; it never drives layout.
     var BAKED_CAPS = __JTS_CAPS_JSON__;
     applyCapabilities(BAKED_CAPS);
-
-    // CamillaGUI runs on its own port (5005) rather than under an
-    // nginx path prefix. Derive the hostname at click time so custom
-    // speaker hostnames work without hard-coded jts.local links.
-    document.querySelectorAll('a[data-port]').forEach(function(a) {
-      a.href = 'http://' + window.location.hostname + ':' +
-        a.dataset.port + a.dataset.path;
-    });
 
     // Light landing-page status hydration. /system/data.json proxies the
     // existing system snapshot; one slow-ish endpoint is preferable to a

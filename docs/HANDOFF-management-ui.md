@@ -446,7 +446,7 @@ reordering better than the prior flat enumeration):
 | Section | Rows — title → destination |
 |---|---|
 | **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
-| **Sound** | EQ → `/eq/` · Sound setup → `/sound/setup/` · Active speaker → `/sound/crossover/` · Room correction → `/sound/room/` · Bass → `/sound/bass/` · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
+| **Sound** | EQ → `/eq/` · Sound setup → `/sound/setup/` · Active speaker → `/sound/crossover/` · Room correction → `/sound/room/` · Bass → `/sound/bass/` |
 | **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Microphone & wake → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
@@ -563,9 +563,9 @@ Static and external companion surfaces:
   loopback-only since [#2319](https://github.com/jaspercurry/JTS/issues/2319)
   (`127.0.0.1:5005`, was `0.0.0.0:5005`) — the unauthenticated, root-backed
   GUI can author and live-apply CamillaDSP configs naming any device, so
-  it is no longer LAN-reachable. The landing page's Advanced DSP row still
-  opens `http://<hostname>:5005/` in a new tab, which now fails to connect
-  from any LAN device; reach the GUI instead with
+  it is no longer LAN-reachable. The landing page's Advanced DSP row was
+  removed in the same change (a household-facing link that always
+  connection-refuses is a silent failure); reach the GUI with
   `ssh -L 5005:localhost:5005 <pi-host>` and browse
   `http://localhost:5005/` from the laptop. `jasper-doctor`'s "CamillaGUI
   socket bind" check pins the live posture.
