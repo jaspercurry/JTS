@@ -4918,8 +4918,10 @@ def apply_safe_graph_decision_to_statefile(
         #
         # It DOES fire on a statefile no-op (the `_path_matches` return below),
         # and that is deliberate: `_materialise_parked_muted_config` above has
-        # already re-proved and written the parked config by this point, so real
-        # work happened. The line means "this apply resolved to parked", not
+        # already RE-PROVED the parked graph all-muted by this point, so real
+        # work happened. (Re-proved, not rewritten — that function returns early
+        # without touching the file when the on-disk bytes already match.)
+        # The line means "this apply resolved to parked", not
         # "the statefile changed" — moving it below the compare would silence a
         # parked box on every deploy after the first.
         log_event(

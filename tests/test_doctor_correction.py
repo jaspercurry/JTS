@@ -895,7 +895,7 @@ def _blocker_bearing_roleful_topology():
 
 # Branch-distinguishing markers for `check_active_speaker_topology_blockers`.
 #
-# Each of the five branches asserts a substring the OTHERS must not carry, and
+# Each of the six branches asserts a substring the OTHERS must not carry, and
 # every test cross-asserts absence. Without that, "warn + blockers + URL" is
 # satisfied by both the parked branch and the probe-failure branch, so one
 # refactor collapsing them would leave the suite green — the tests would be
@@ -984,9 +984,95 @@ def test_topology_blockers_warn_names_each_blocker_and_the_real_exits(
     assert "physical_output_unassigned" in r.detail
     assert "tweeter is not assigned to a DAC output" in r.detail
     assert "/sound/setup/" in r.detail
-    # ...and the exits come from the OWNED capability-aware helper, so a
-    # no-active-lane DAC's wording follows the helper rather than a copy here.
+    # NOT the discriminator: this fixture is an ordinary DAC, where the helper
+    # and the bare constant return the same string, so this line only checks the
+    # wording is PRESENT — it cannot tell which produced it. That claim belongs
+    # to `test_topology_blockers_exits_are_capability_aware` below, which uses a
+    # DAC that makes the two disagree.
     assert parked_muted_exits(topology) in r.detail
+
+
+def test_topology_blockers_exits_are_capability_aware(monkeypatch, tmp_path):
+    """The doctor detail must resolve the exits through the OWNED helper.
+
+    The sibling test above cannot prove this: on an ordinary DAC
+    `parked_muted_exits(topology) == PARKED_MUTED_EXITS`, so asserting the
+    helper's output appears in the detail is a tautology that a revert to the
+    bare constant satisfies just as well. Only a DAC that declares NO active
+    outputd lane separates them — there "finish crossover preview" can never
+    succeed, so the helper drops it and the constant still offers it.
+
+    Same discriminating shape as
+    `test_runtime_safe_graph_cli_names_capability_aware_exits`: register the
+    passive-only profile, assert up front that the helper and the constant
+    DISAGREE, then assert the detail follows the helper.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        parked_muted_exits,
+    )
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+    from tests.active_speaker_fixtures import register_passive_only_dac
+
+    profile = register_passive_only_dac(monkeypatch)
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": profile.id,
+            "device_label": profile.label,
+            "physical_output_count": profile.physical_output_count,
+        },
+        "speaker_groups": [{
+            "id": "mono",
+            "label": "Mono",
+            "kind": "mono",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                },
+                {
+                    # Unassigned -> the topology-level blocker this check reports.
+                    "role": "tweeter",
+                    "physical_output_index": None,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        }],
+        "routing": {"mono_group_id": "mono"},
+    })
+    # The fixture is only meaningful if the helper and the constant DISAGREE.
+    assert parked_muted_exits(topology) != PARKED_MUTED_EXITS
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "warn"
+    _assert_only_branch(r, _MARK_PARKED)
+    # Follows the helper...
+    assert parked_muted_exits(topology) in r.detail
+    assert profile.label in r.detail
+    # ...and therefore does NOT offer the impossible action on this hardware.
+    assert PARKED_MUTED_EXITS not in r.detail
+    # The check's own contribution still rides alongside.
+    assert "physical_output_unassigned" in r.detail
+    assert "/sound/setup/" in r.detail
 
 
 def test_topology_blockers_warn_survives_a_failed_selection_probe(
