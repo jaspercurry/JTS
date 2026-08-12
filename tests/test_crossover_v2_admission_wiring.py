@@ -332,3 +332,328 @@ def test_the_flow_and_the_module_name_one_ledger():
     )
     assert flow.ATTEMPT_INITIATOR_HOUSEHOLD is admission.ATTEMPT_INITIATOR_HOUSEHOLD
     assert flow.ATTEMPT_INITIATOR_SPEAKER is admission.ATTEMPT_INITIATOR_SPEAKER
+
+
+# --------------------------------------------------------------------------- #
+# the settle ladder (#2291 Phase 5b)
+# --------------------------------------------------------------------------- #
+#
+# The same trio the begin gate keeps — declared set, every member handled, an
+# unrecognised member loud and CONSERVATIVE — plus the two laziness properties a
+# "gather the inputs, then ask" rewrite of the split would lose. The
+# conservative direction is inverted here and that inversion is the point: on a
+# begin gate, falling through admits a capture nobody authorised; on a settle,
+# falling through hands back a retry screen whose button leads to a pre-play
+# refusal, which is the 2026-08-03 shape the ruling exists to make unreachable.
+
+SETTLE_UNMAPPED_EVENT = "crossover_v2_settle_kind_unmapped"
+
+
+def _spent(extras=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION):
+    return admission.SlotAttempts(admitted=1 + extras, by_household=extras)
+
+
+def _settled_conductor(index):
+    """A cloud conductor whose slot for ``index`` has spent every extra."""
+    c = _cloud_conductor(FakeSeams())
+    c._slot_attempts[c._slot_of_index(index)] = _spent()
+    return c
+
+
+def test_the_declared_settle_kinds_are_the_ones_the_ladder_can_return():
+    """``SETTLE_KINDS`` is a declaration, and a declaration can go stale.
+
+    Both directions, as the begin gate's sibling does: every kind the two halves
+    actually produce is driven out of them here, so a kind that stops being
+    reachable — or one returned but never declared — shows up as a set
+    difference rather than as a settle nobody wired an arm for. One vocabulary
+    across both halves is what makes the union the right comparison.
+    """
+    produced = {
+        admission.settle_spent_slot(ledger=None, is_group=lambda: False),
+        admission.settle_spent_slot(
+            ledger=admission.SlotAttempts(admitted=1), is_group=lambda: False,
+        ),
+        admission.settle_spent_slot(ledger=_spent(), is_group=lambda: False),
+        admission.settle_spent_slot(ledger=_spent(), is_group=lambda: True),
+        admission.settle_group_position(
+            index=2, retained={2}, floor=3, unwalked_count=lambda: 0,
+        ),
+        admission.settle_group_position(
+            index=2, retained={1}, floor=3, unwalked_count=lambda: 0,
+        ),
+        admission.settle_group_position(
+            index=2, retained={1}, floor=1, unwalked_count=lambda: 0,
+        ),
+    }
+
+    assert produced == set(admission.SETTLE_KINDS)
+    # The two halves PARTITION the vocabulary, and that is load-bearing: a group
+    # kind arriving from the first half is a wiring defect, not a valid answer,
+    # so each arm below is checked against the half that produces it.
+    assert admission.SETTLE_SLOT_KINDS | admission.SETTLE_GROUP_KINDS == (
+        admission.SETTLE_KINDS
+    )
+    assert not (admission.SETTLE_SLOT_KINDS & admission.SETTLE_GROUP_KINDS)
+    assert {
+        admission.settle_group_position(
+            index=i, retained=r, floor=f, unwalked_count=(lambda u=u: u),
+        )
+        for i, r, f, u in (
+            (2, {2}, 3, 0), (2, {1}, 3, 0), (2, {1}, 1, 0), (2, set(), 4, 1),
+        )
+    } <= set(admission.SETTLE_GROUP_KINDS)
+
+
+def test_the_ladder_does_not_ask_the_journey_while_the_slot_has_retries():
+    """``is_group`` is a port for call count, and this is the count.
+
+    The shipped flow reads the phase's group-ness only once a slot's extras are
+    gone. Passing it as a VALUE — the obvious rewrite — asks the journey plan on
+    every rejected capture instead, which is a read the flow does not make.
+    Bypassing the port therefore reddens exactly this test.
+    """
+    asked = []
+
+    assert admission.settle_spent_slot(
+        ledger=admission.SlotAttempts(admitted=1),
+        is_group=lambda: asked.append("plan") or True,
+    ) == admission.SETTLE_RETRY_REMAINS
+    assert asked == [], "the journey was asked about a slot that still has tries"
+
+    # And it IS asked once the meter is empty — otherwise the guard above would
+    # pass for a port that is never invoked at all.
+    assert admission.settle_spent_slot(
+        ledger=_spent(), is_group=lambda: asked.append("plan") or True,
+    ) == admission.SETTLE_GROUP_CLOSE_REQUIRED
+    assert asked == ["plan"]
+
+
+def test_the_group_rung_does_not_count_unwalked_spots_for_a_retained_one():
+    """``unwalked_count`` is the second call-count port.
+
+    A position whose earlier take still stands is answered by rung 1, and the
+    shipped flow never reaches the journey for it. Resolving the count eagerly
+    would ask on every settled group position, including the one rung 1 has
+    already answered for.
+    """
+    counted = []
+
+    assert admission.settle_group_position(
+        index=4, retained={4}, floor=3,
+        unwalked_count=lambda: counted.append("walk") or 0,
+    ) == admission.SETTLE_KEPT_EARLIER_TAKE
+    assert counted == [], "the journey was walked for a position already retained"
+
+    assert admission.settle_group_position(
+        index=4, retained={1}, floor=3,
+        unwalked_count=lambda: counted.append("walk") or 0,
+    ) == admission.SETTLE_BELOW_POSITION_FLOOR
+    assert counted == ["walk"]
+
+
+def test_the_conductor_passes_the_group_ness_port_rather_than_resolving_it(monkeypatch):
+    """The wiring half of the port, which the two guards above cannot see.
+
+    Those assert the pure ladder does not INVOKE what it was handed; this
+    asserts the conductor hands it something to invoke. Bypassing the port —
+    ``is_group=self._journey.plan.is_group(phase)`` — passes both of them and
+    reddens only this one, because the read has then already happened by the
+    time the ladder declines to ask.
+    """
+    index = CLOUD_MEASURE_INDEXES[0]
+    c = _cloud_conductor(FakeSeams())
+    slot = c._slot_of_index(index)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)  # two extras left
+
+    asked = []
+    real = c._journey.plan.is_group
+    monkeypatch.setattr(
+        type(c._journey.plan), "is_group",
+        lambda self, phase: asked.append(phase) or real(phase),
+    )
+
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
+
+    assert settled is verdict, "a slot with tries left must settle nothing"
+    assert asked == [], (
+        "the conductor resolved the group-ness of a phase whose slot still has tries"
+    )
+
+
+def test_the_conductor_passes_the_unwalked_port_rather_than_resolving_it(monkeypatch):
+    """The wiring half of the second port.
+
+    A settled position whose earlier take still stands is answered by rung 1,
+    and the journey is never walked for it. Passing ``unwalked_count`` as a
+    resolved value walks it on every settled group position — invisible to the
+    pure guard above, caught here.
+    """
+    index = CLOUD_MEASURE_INDEXES[0]
+    c = _settled_conductor(index)
+    slot = c._slot_of_index(index)
+
+    walked = []
+    real = c._journey.unresolved_in_group
+    monkeypatch.setattr(
+        type(c._journey), "unresolved_in_group",
+        lambda self, phase, *, excluding: (
+            walked.append(phase) or real(phase, excluding=excluding)
+        ),
+    )
+    # Rung 1's condition: this index already holds a retained curve.
+    monkeypatch.setattr(
+        type(c), "_retained_group_indexes", lambda self, phase: {index},
+    )
+
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    settled = c._resolve_spent_slot(PHASE_CLOUD_MEASURE, index, slot, verdict)
+
+    assert settled.payload["kept_earlier_take"] is True
+    assert walked == [], (
+        "the conductor walked the journey for a position rung 1 had already answered"
+    )
+
+
+def test_the_floor_rung_counts_unwalked_spots_not_the_walk_so_far():
+    """Rung 2's stated rule, pinned as arithmetic rather than as prose.
+
+    Curves in hand PLUS positions not yet walked. Counting only what is in hand
+    would end a session at position 1 of 8 with seven good spots still ahead —
+    the failure the rung's comment names — so one retained curve and four
+    unwalked spots must clear a floor of three.
+    """
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 4,
+    ) == admission.SETTLE_POSITION_UNRESOLVED
+    # Same curve in hand, nothing left to walk: now it genuinely cannot reach.
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 0,
+    ) == admission.SETTLE_BELOW_POSITION_FLOOR
+    # EXACTLY at the floor still stands. ``MIN_RESOLVED_CLOUD_POSITIONS`` is the
+    # fewest positions that still make a cloud, not the fewest that fail — the
+    # comparison is strict, and an off-by-one here would end a session that had
+    # just enough spots left to finish. Neither case above sits on the boundary,
+    # so without this the two phrasings are indistinguishable.
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 2,
+    ) == admission.SETTLE_POSITION_UNRESOLVED
+    assert admission.settle_group_position(
+        index=2, retained={1}, floor=3, unwalked_count=lambda: 1,
+    ) == admission.SETTLE_BELOW_POSITION_FLOOR
+
+
+@pytest.mark.parametrize(
+    "half,declared",
+    [
+        ("settle_spent_slot", admission.SETTLE_SLOT_KINDS),
+        ("settle_group_position", admission.SETTLE_GROUP_KINDS),
+    ],
+)
+def test_every_settle_kind_is_handled(caplog, half, declared):
+    """The catch-all must not answer for a kind somebody did wire.
+
+    Each half is driven with the kinds IT declares, and the other half is left
+    real — patching both with one kind would feed a group answer to the rung
+    above the lock, which is a defect the fallback is *supposed* to catch.
+
+    The assertion is the JOURNAL, not the verdict: an unmapped kind also
+    produces a terminal verdict, so "some terminal happened" would pass for
+    exactly the case this exists to catch. Its siblings below prove the event
+    does fire for a kind with no arm, so this guard cannot be vacuous.
+    """
+    index = CLOUD_MEASURE_INDEXES[0]
+
+    with caplog.at_level("INFO"):
+        for kind in sorted(declared):
+            c = _settled_conductor(index)
+            verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(flow._admission, half, lambda kind=kind, **_: kind)
+                c._resolve_spent_slot(
+                    PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
+                )
+
+    unmapped = [
+        r.getMessage() for r in caplog.records
+        if SETTLE_UNMAPPED_EVENT in r.getMessage()
+    ]
+    assert unmapped == [], (
+        f"a declared settle kind reached a fallback instead of its own arm: {unmapped}"
+    )
+
+
+def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog):
+    """The other half, on the rungs decided before the close lock.
+
+    Reached with a kind no released ladder returns — the shape of the future
+    defect. The DIRECTION is the assertion: the verdict must be terminal, with
+    no retry affordance, because returning the capture's own rejection unchanged
+    is what puts a household in front of a button the meter will refuse.
+    """
+    index = CLOUD_MEASURE_INDEXES[0]
+    c = _settled_conductor(index)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_spent_slot",
+            lambda **_: "a_kind_from_the_future",
+        )
+        settled = c._resolve_spent_slot(
+            PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
+        )
+
+    unmapped = [r for r in caplog.records if SETTLE_UNMAPPED_EVENT in r.getMessage()]
+    assert [r.levelname for r in unmapped] == ["ERROR"]
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == admission.SETTLE_PHASE_CANNOT_PROCEED
+    assert "try again" not in settled.payload["reason"].lower()
+    # It did NOT degrade in the permissive direction: the capture's own
+    # retryable verdict is not what came back.
+    assert settled is not verdict
+
+
+def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(caplog):
+    """Same direction on the rungs decided UNDER the close lock.
+
+    The group half's failure mode is different and just as bad: advancing the
+    group on an answer nobody wired would drop a position without recording why,
+    and the cloud would later combine a set it cannot account for.
+    """
+    index = CLOUD_MEASURE_INDEXES[0]
+    c = _settled_conductor(index)
+    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+
+    with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow._admission, "settle_group_position",
+            lambda **_: "a_kind_from_the_future",
+        )
+        settled = c._resolve_spent_slot(
+            PHASE_CLOUD_MEASURE, index, c._slot_of_index(index), verdict,
+        )
+
+    unmapped = [r for r in caplog.records if SETTLE_UNMAPPED_EVENT in r.getMessage()]
+    assert [r.levelname for r in unmapped] == ["ERROR"]
+    assert settled.payload["terminal"] is True
+    assert settled.payload["terminal_outcome"] == admission.SETTLE_BELOW_POSITION_FLOOR
+    # Nothing was attributed and nothing advanced: an unwired answer must not
+    # leave a dropped position behind.
+    assert index not in c._group_unresolved[PHASE_CLOUD_MEASURE]
+
+
+def test_the_settle_kinds_are_the_journal_and_payload_words_the_phone_reads():
+    """The kind IS the outcome token, not a translation of it.
+
+    ``terminal_outcome`` and the ``position_attempts_spent`` journal line
+    carried these exact strings before the ladder was named, and the phone and
+    support tooling read them. Declaring the vocabulary must not have renamed
+    the wire words — so the constants are pinned to their literals rather than
+    only to each other.
+    """
+    assert admission.SETTLE_PHASE_CANNOT_PROCEED == "phase_cannot_proceed"
+    assert admission.SETTLE_BELOW_POSITION_FLOOR == "below_position_floor"
+    assert admission.SETTLE_KEPT_EARLIER_TAKE == "kept_earlier_take"
+    assert admission.SETTLE_POSITION_UNRESOLVED == "position_unresolved"

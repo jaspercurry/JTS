@@ -45,15 +45,16 @@ callable and invokes it exactly where the conductor did.  Its ``OSError`` /
 ``RuntimeError`` / ``ValueError`` guard stays with the conductor, whose seam it
 is.
 
-**What deliberately stayed behind**, so a reader does not go looking for it
-here: the *settle* path (``_resolve_spent_slot`` and the three verdicts it
-returns).  It is retry policy by subject, but it is written in the flow's
-``PhaseVerdict`` — which carries ``to_relay_dict`` and so binds
-``REASON_REGISTRY``, ``reason_message`` and ``TRANSIENT_AUTO_RETRY_CODES`` —
-and its group arm performs an irreversible host act (the group close) under
-``_close_lock``.  Moving it would mean either relocating the household
-vocabulary or inventing ports whose only purpose is to dodge a type import.
-It travels with the carrier, not with this organ.
+**The settle path's decision half lives here too** (#2291 Phase 5b), in
+:func:`settle_spent_slot` and :func:`settle_group_position`.  This module's
+first version recorded that it could not leave — true of moving
+``_resolve_spent_slot`` *whole*, since it returns the flow's ``PhaseVerdict``
+and performs the group close under ``_close_lock``, and false of the
+decision/act split the package actually uses: a ladder that answers with a
+*kind* never touches the carrier.  What stayed with the conductor is every act
+— rendering the diagnosis, the journal line, the ``_group_unresolved``
+attribution, the group close, and building the verdict.  See those two
+functions for why the ladder is split in two at exactly the lock boundary.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
@@ -62,13 +63,22 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Container
+from typing import Any, Callable, Collection, Container
 
 __all__ = [
     "ATTEMPT_INITIATOR_HOUSEHOLD",
     "ATTEMPT_INITIATOR_SPEAKER",
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
+    "SETTLE_BELOW_POSITION_FLOOR",
+    "SETTLE_GROUP_CLOSE_REQUIRED",
+    "SETTLE_GROUP_KINDS",
+    "SETTLE_KEPT_EARLIER_TAKE",
+    "SETTLE_KINDS",
+    "SETTLE_PHASE_CANNOT_PROCEED",
+    "SETTLE_POSITION_UNRESOLVED",
+    "SETTLE_RETRY_REMAINS",
+    "SETTLE_SLOT_KINDS",
     "AttemptOverspendError",
     "BeginDecision",
     "SlotAttempts",
@@ -77,6 +87,8 @@ __all__ = [
     "extras_spent_message",
     "pilot_heard_for",
     "reflection_measured_for",
+    "settle_group_position",
+    "settle_spent_slot",
     "spent_slot_outcome",
 ]
 
@@ -421,3 +433,128 @@ def assess_begin(
             last_reason, geometry_locked_code=geometry_locked_code
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# the settle ladder — a position whose meter is empty (#2291 Phase 5b)
+# --------------------------------------------------------------------------- #
+#
+# The other half of the bounded-retry ruling. :func:`assess_begin` answers "may
+# one more capture start"; this answers "the last one is spent — what is the
+# honest outcome". Owner ruling #2086 item 3 put the answer HERE, at the verdict
+# that spent the extra, rather than at the next begin: a household must never be
+# shown a retry screen whose button only leads to a pre-play refusal, which is
+# the 2026-08-03 shape (a screen reading "step 6, one last time" over a slot the
+# meter had already closed).
+
+#: The slot still has extras. Nothing settles; the household retries as before.
+SETTLE_RETRY_REMAINS = "retry_remains"
+#: A single-capture phase with nothing left to spend: this take is the last word.
+SETTLE_PHASE_CANNOT_PROCEED = "phase_cannot_proceed"
+#: A position group — the outcome needs the group's own lock-guarded facts, so
+#: the ladder continues in :func:`settle_group_position` under the caller's
+#: close lock. Not an outcome: the one kind that names a rung rather than an end.
+SETTLE_GROUP_CLOSE_REQUIRED = "group_close_required"
+#: An earlier take of this position is still standing — nothing was lost.
+SETTLE_KEPT_EARLIER_TAKE = "kept_earlier_take"
+#: Too few curves in hand and too few positions left to reach the floor.
+SETTLE_BELOW_POSITION_FLOOR = "below_position_floor"
+#: Drop this position, record the observed condition against it, and advance.
+SETTLE_POSITION_UNRESOLVED = "position_unresolved"
+
+#: What :func:`settle_spent_slot` can answer — the rungs decided before the
+#: caller takes its close lock.
+SETTLE_SLOT_KINDS = frozenset({
+    SETTLE_RETRY_REMAINS,
+    SETTLE_PHASE_CANNOT_PROCEED,
+    SETTLE_GROUP_CLOSE_REQUIRED,
+})
+
+#: What :func:`settle_group_position` can answer — the three outcomes only a
+#: position group can produce, decided under that lock.
+SETTLE_GROUP_KINDS = frozenset({
+    SETTLE_KEPT_EARLIER_TAKE,
+    SETTLE_BELOW_POSITION_FLOOR,
+    SETTLE_POSITION_UNRESOLVED,
+})
+
+#: Every kind the settle ladder can answer with. One vocabulary for one ladder
+#: — the split is the LOCK boundary, not a second decision — but the two halves
+#: partition it, and the partition is load-bearing: a group kind arriving from
+#: the first half is as much a wiring defect as an undeclared one, so each arm
+#: is checked against the set of the half that produces it.
+SETTLE_KINDS = SETTLE_SLOT_KINDS | SETTLE_GROUP_KINDS
+
+
+def settle_spent_slot(
+    *, ledger: SlotAttempts | None, is_group: Callable[[], bool],
+) -> str:
+    """Does this rejection settle the position, and can it settle alone?
+
+    The ladder's first two rungs. A slot with extras left (or no meter yet) is
+    not settled at all. Once the extras are gone, a single-capture phase is
+    decided right here — there is no group to fall back on — while a position
+    group's outcome depends on facts that are only true while its close lock is
+    held, so it answers :data:`SETTLE_GROUP_CLOSE_REQUIRED` and the caller
+    continues into :func:`settle_group_position` under that lock.
+
+    Splitting the ladder there is the lock boundary and nothing else: the group
+    rungs read "what has this group retained" and "what is still unwalked", and
+    a decision made from those facts outside the lock could be acted on after
+    another close had already changed them.
+
+    ``is_group`` is a **callable** for the reason :func:`assess_begin`'s
+    ``apply_failure_code`` is one — call count. It reaches the journey plan, and
+    the shipped flow does not ask it while a slot still has retries to offer; a
+    value resolved at call time would ask it on every rejected capture.
+    """
+    if ledger is None or ledger.extras_left > 0:
+        return SETTLE_RETRY_REMAINS
+    return (
+        SETTLE_GROUP_CLOSE_REQUIRED if is_group()
+        else SETTLE_PHASE_CANNOT_PROCEED
+    )
+
+
+def settle_group_position(
+    *,
+    index: int,
+    retained: Collection[int],
+    floor: int,
+    unwalked_count: Callable[[], int],
+) -> str:
+    """The outcome for a spent position of a group — the ladder's last three rungs.
+
+    In order, and the order is the point:
+
+    1. **An earlier take is still standing.** The household retook a position
+       that had already been accepted and the retakes failed; a rejection never
+       replaces a retained curve, so nothing was lost and this position is not
+       unresolved at all. It is the "keep the earlier measurement" escape,
+       applied automatically once there is no try left to offer — and it has to
+       be asked FIRST, because a position with a curve in hand must never be
+       counted as a loss against the floor.
+    2. **The group can no longer reach its floor.** Curves in hand PLUS the
+       positions the household has not walked yet — never the count so far,
+       which would make the answer depend on walk order and end a session at
+       position 1 of 8 with seven good spots still ahead.
+    3. **Otherwise, drop it and carry on.** The cloud tolerates variable
+       position counts down to its floor; below the declared plan length the
+       claim is degraded and disclosed, not refused.
+
+    ``retained`` is passed as a collection because both rungs read it — rung 1
+    for membership, rung 2 for size — and it is already in the caller's hand.
+    ``floor`` is a plain value: it is a total function of the phase alone
+    (:func:`~jasper.active_speaker.crossover_v2.spatial.group_position_floor`
+    is two constants), so resolving it eagerly can neither raise nor be
+    observed. ``unwalked_count`` is a callable for the same call-count reason
+    ``is_group`` is: it reaches the journey, and rung 2 is asked only of a
+    position rung 1 did not already answer for.
+
+    Called with the caller's close lock held — see :func:`settle_spent_slot`.
+    """
+    if index in retained:
+        return SETTLE_KEPT_EARLIER_TAKE
+    if len(retained) + unwalked_count() < floor:
+        return SETTLE_BELOW_POSITION_FLOOR
+    return SETTLE_POSITION_UNRESOLVED
