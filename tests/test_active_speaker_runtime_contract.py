@@ -32,6 +32,7 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_shelf_name,
     driver_linearization_taper_name,
 )
+from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -4333,16 +4334,15 @@ def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
     assert not list(tmp_path.glob(".*check*"))
 
 
-def test_parked_blocked_path_does_not_repeat_topology_issues(
-    tmp_path: Path,
-) -> None:
-    """n5: the parked verifier re-runs the classifier, which re-prepends
-    contract.issues that the current/preferred/staged classifications already
-    contributed. Appending them verbatim printed each blocker twice."""
+def _topology_with_unprotected_tweeter() -> OutputTopology:
+    """A roleful topology carrying a topology-level blocker.
+
+    ``protection_status="required_missing"`` makes ``classify_output_contract``
+    itself report a blocker, without touching the CamillaDSP graph text.
+    """
+
     topology = _active_topology("mono", "active_2_way")
-    # A topology-level blocker makes classify refuse, so parking cannot happen
-    # and the blocked branch collects issues from every classification.
-    broken = replace(
+    return replace(
         topology,
         speaker_groups=tuple(
             replace(
@@ -4357,6 +4357,70 @@ def test_parked_blocked_path_does_not_repeat_topology_issues(
             for group in topology.speaker_groups
         ),
     )
+
+
+def test_parked_path_reports_each_topology_issue_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """n5, re-aimed by #2145: report the blocker ONCE, on the path now taken.
+
+    The property under test is unchanged — a topology-level blocker must reach
+    the install transcript exactly once, never doubled. What changed is which
+    branch carries it. Before #2145 a topology blocker forced the parked graph's
+    verdict to ``allowed=False``, so this shape fell through to ``blocked`` and
+    the count was asserted there. Now the structurally-safe parked graph is
+    allowed, the box parks, and the decision reports the same blocker once.
+    """
+    broken = _topology_with_unprotected_tweeter()
+    decision = safe_graph_for_current_topology(
+        broken,
+        statefile_path=tmp_path / "outputd-statefile.yml",
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == PARKED_MUTED_STATUS
+    codes = collections.Counter(issue["code"] for issue in decision.issues)
+    # Reported, because parking past a blocker must not be silent...
+    assert codes["tweeter_protection_unverified"] == 1
+    # ...and reported ONCE: the parked verifier re-runs `classify_camilla_graph`,
+    # which re-prepends the identical `contract.issues`, so a naive union would
+    # print the blocker twice in the install transcript.
+    assert len(decision.issues) == len(set(
+        (issue["code"], issue["message"]) for issue in decision.issues
+    ))
+    # The parked decision carries ONLY the topology blockers it declined to
+    # refuse on — not the "no candidate at this path" noise a parked box is
+    # expected to produce.
+    assert "bass_extension_snapshot_unstable" not in codes
+    assert "active_startup_graph_missing" not in codes
+
+
+def test_blocked_path_still_dedupes_topology_issues_when_parking_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The blocked branch's dedupe survives #2145 on the path that still reaches it.
+
+    #2145 narrowed *when* the blocked fallthrough runs (a topology blocker alone
+    no longer gets there), but did not change the branch itself. It is still
+    reached when the parked graph fails its OWN proof, so the dedupe it exists
+    for still needs a test: here the emitter is forced to produce a graph too
+    narrow for the saved topology, which `parked_graph_width_too_narrow` refuses.
+    """
+    from jasper.active_speaker import camilla_yaml
+
+    real_emit = camilla_yaml.emit_active_speaker_parked_config
+
+    def _too_narrow(*, output_count: int, topology_id: str) -> str:
+        # One output for a 2-way topology that assigns two.
+        return real_emit(output_count=1, topology_id=topology_id)
+
+    monkeypatch.setattr(
+        camilla_yaml, "emit_active_speaker_parked_config", _too_narrow
+    )
+
+    broken = _topology_with_unprotected_tweeter()
     decision = safe_graph_for_current_topology(
         broken,
         statefile_path=tmp_path / "outputd-statefile.yml",
@@ -4366,14 +4430,210 @@ def test_parked_blocked_path_does_not_repeat_topology_issues(
 
     assert decision.status == "blocked"
     codes = collections.Counter(issue["code"] for issue in decision.issues)
-    # The topology-level blocker is reported ONCE. Without the dedupe the parked
-    # verifier's own `classify_camilla_graph` call re-prepends the identical
-    # `contract.issues` and the operator sees it twice in the install transcript.
+    # An unsafe parked graph is refused by its own structural blocker...
+    assert codes["parked_graph_width_too_narrow"] == 1
+    # ...and the topology blocker it carries alongside is still printed ONCE.
     assert codes["tweeter_protection_unverified"] == 1
     assert codes["active_startup_graph_missing"] == 1
-    # NOT asserted: total uniqueness. `bass_extension_snapshot_unstable` is
-    # reported once per classification (current / preferred / staged) and that
-    # pre-dates #2135 — it is issue #2135 item 3, deliberately untouched here.
+    assert not (tmp_path / "active_speaker_parked.yml").exists()
+
+
+# --- #2145: a topology blocker cannot make the PARKED graph unsafe -----------
+#
+# The four-shape matrix from the issue. Row 2 is the fix; the other three are
+# the guard that the exemption did not widen past it.
+
+
+def test_blocker_bearing_roleful_draft_parks_instead_of_blocking(
+    tmp_path: Path,
+) -> None:
+    """#2145 row 2: a savable mid-edit draft no longer aborts every deploy.
+
+    `/sound/setup/` saves a draft at every card, so a household can persist a
+    roleful topology whose channels are not all assigned yet. That topology
+    carries `physical_output_unassigned`, which before #2145 forced the parked
+    graph's verdict to `allowed=False` and blocked the install — even though the
+    parked graph's safety is STRUCTURAL (File sink, all outputs hard-muted) and
+    no topology blocker can falsify it.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    draft = replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if channel.role == "tweeter"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+    contract = classify_output_contract(draft)
+    assert contract.requires_roleful_graph is True
+    assert [issue["code"] for issue in contract.issues] == [
+        "physical_output_unassigned"
+    ]
+
+    _text, parked_graph = build_parked_muted_graph(draft)
+    # The structural proof passes: the blocker never touched it.
+    assert parked_graph.classification == GRAPH_PARKED_ALL_MUTED
+    assert parked_graph.allowed is True
+
+    decision = safe_graph_for_current_topology(
+        draft,
+        statefile_path=tmp_path / "outputd-statefile.yml",
+        parked_config_path=tmp_path / "active_speaker_parked.yml",
+        **_write_authority(tmp_path),
+    )
+
+    assert decision.status == PARKED_MUTED_STATUS
+    assert decision.ok is True
+    # Loud, not silent: the deploy proceeds AND the blocker is reported.
+    assert [issue["code"] for issue in decision.issues] == [
+        "physical_output_unassigned"
+    ]
+
+
+def test_parked_exemption_is_scoped_to_the_parked_verdict(tmp_path: Path) -> None:
+    """#2145 rows 3+4: every other graph class still refuses a topology blocker.
+
+    The exemption keys on the parked VERDICT, so widening it to any other
+    classification must break this. A flat graph and an active startup graph are
+    both DAC-driving, so a half-assigned topology can genuinely make them unsafe
+    — they keep the blanket refusal.
+    """
+    broken = _topology_with_unprotected_tweeter()
+
+    flat = classify_camilla_graph(topology=broken, text=_flat_yaml())
+    assert flat.classification != GRAPH_PARKED_ALL_MUTED
+    assert flat.allowed is False
+    assert "tweeter_protection_unverified" in {
+        issue["code"] for issue in flat.issues
+    }
+
+    active = classify_camilla_graph(
+        topology=broken, text=_active_yaml("mono", 2, set())
+    )
+    assert active.classification != GRAPH_PARKED_ALL_MUTED
+    assert active.allowed is False
+
+    # And an unknown/custom graph stays refused too.
+    unknown = classify_camilla_graph(
+        topology=broken, text="devices:\n  volume_limit: 0.0\n"
+    )
+    assert unknown.allowed is False
+
+
+def test_parked_exemption_still_refuses_the_graphs_own_blockers(
+    tmp_path: Path,
+) -> None:
+    """#2145: only TOPOLOGY issues are exempt; the graph's own text still gates.
+
+    A parked graph whose config text is itself defective — here a
+    `devices.volume_limit` above the project ceiling — is refused exactly as
+    before, topology blockers or not. That is the class of defect that CAN make
+    a graph unsafe, so it must keep failing closed.
+    """
+    text, clean = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    assert clean.allowed is True
+    assert text is not None
+
+    tampered = text.replace("volume_limit: 0.0", "volume_limit: 6.0")
+    assert tampered != text
+
+    # Clean topology: refused by the graph's own blocker alone.
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=tampered
+    )
+    assert graph.allowed is False
+    assert "volume_limit_positive" in {issue["code"] for issue in graph.issues}
+
+    # Blocker-bearing topology: still refused — the exemption never reaches it.
+    graph = classify_camilla_graph(
+        topology=_topology_with_unprotected_tweeter(), text=tampered
+    )
+    assert graph.allowed is False
+    assert "volume_limit_positive" in {issue["code"] for issue in graph.issues}
+
+
+def test_parked_graph_claiming_the_marker_but_failing_its_proof_is_refused(
+    tmp_path: Path,
+) -> None:
+    """#2145: the exemption keys on the PROOF, never on the claimed source marker.
+
+    A graph that carries the parked source marker but fails the structural proof
+    classifies `GRAPH_UNSAFE`, not `GRAPH_PARKED_ALL_MUTED`, so it never reaches
+    the exemption. Here the mute is un-done by a trailing `+240 dB` gain — the
+    exact falsification the #2135 panel used.
+    """
+    text, _clean = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
+    assert text is not None
+    # Tampered as TEXT, not via a yaml round-trip: the source marker is a
+    # comment, and re-dumping the parsed document would drop it, so the graph
+    # would stop claiming to be parked and the test would prove nothing.
+    tampered = text.replace(
+        "\nmixers:",
+        "\n  loud:\n"
+        "    type: Gain\n"
+        "    parameters: { gain: 240.0, inverted: false, mute: false }\n"
+        "\nmixers:",
+    ).rstrip("\n") + "\n  - type: Filter\n    channels: [0]\n    names: [loud]\n"
+    assert "emit_active_speaker_parked_config" in tampered
+
+    graph = classify_camilla_graph(
+        topology=_topology_with_unprotected_tweeter(), text=tampered
+    )
+
+    # It still CLAIMS to be parked...
+    assert graph.camilla_classification == CAMILLA_CLASS_ACTIVE_PARKED
+    # ...but the proof fails, so the verdict is UNSAFE and the exemption — which
+    # keys on the verdict — never applies.
+    assert graph.classification == GRAPH_UNSAFE
+    assert graph.allowed is False
+
+
+def test_blocker_bearing_box_actually_writes_the_parked_statefile(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """#2145 end to end: the write-time re-proof clears too, and it logs.
+
+    `_materialise_parked_muted_config` re-derives and re-verifies the graph
+    rather than replaying decision-time bytes, so it is a genuine SECOND gate on
+    the same predicate. If the exemption had cleared only the decision, the
+    install would still have aborted here.
+    """
+    import logging
+
+    draft = _topology_with_unprotected_tweeter()
+    statefile = tmp_path / "outputd-statefile.yml"
+    parked_path = tmp_path / "active_speaker_parked.yml"
+
+    decision = safe_graph_for_current_topology(
+        draft,
+        statefile_path=statefile,
+        parked_config_path=parked_path,
+        **_write_authority(tmp_path),
+    )
+    assert decision.status == PARKED_MUTED_STATUS
+
+    with caplog.at_level(logging.INFO):
+        apply_safe_graph_decision_to_statefile(
+            decision, statefile_path=statefile, topology=draft
+        )
+
+    assert parked_path.exists()
+    assert _statefile_config_path(statefile) == str(parked_path)
+    # The stable observability line still fires for the newly-reachable state.
+    assert "active_speaker.runtime_graph" in caplog.text
+    assert f"decision={PARKED_MUTED_STATUS}" in caplog.text
+    # The written graph is genuinely all-muted and DAC-less.
+    written = yaml.safe_load(parked_path.read_text(encoding="utf-8"))
+    assert written["devices"]["playback"]["type"] == "File"
 
 
 #: The exact canonicalizer expressions the six production call sites may pass,

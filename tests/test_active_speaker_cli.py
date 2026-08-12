@@ -825,6 +825,77 @@ def test_runtime_safe_graph_cli_parks_and_exits_success(
     assert f"config_path: {parked}" in statefile.read_text(encoding="utf-8")
 
 
+def test_runtime_safe_graph_cli_parks_a_blocker_bearing_draft_and_prints_it(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    # #2145: a roleful topology carrying a topology-level blocker used to exit 1
+    # here and abort every deploy, even though the parked graph it was refusing
+    # is structurally silent. It now parks and exits 0 — but LOUDLY: the CLI
+    # prints only `SafeGraphDecision.issues`, so this asserts the blocker
+    # actually reaches the install transcript rather than vanishing with the
+    # refusal that used to carry it.
+    from dataclasses import replace
+
+    from jasper.active_speaker.runtime_contract import PARKED_MUTED_EXITS
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _flat_yaml,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    draft = replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if channel.role == "tweeter"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(draft, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text("{}\n", encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
+    parked = _parked_config_dir(monkeypatch, tmp_path)
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--staged-metadata",
+        str(metadata),
+        "--write-statefile",
+    ])
+
+    printed = capsys.readouterr().out
+    # The deploy proceeds...
+    assert code == 0
+    assert "Runtime graph decision: parked_muted" in printed
+    assert f"next: {PARKED_MUTED_EXITS}" in printed
+    assert parked.exists()
+    assert f"config_path: {parked}" in statefile.read_text(encoding="utf-8")
+    # ...and the blocker is still on screen, named, exactly once.
+    assert "[blocker] physical_output_unassigned:" in printed
+    assert printed.count("physical_output_unassigned") == 1
+
+
 def test_runtime_safe_graph_cli_still_fails_on_an_unsafe_staged_graph(
     tmp_path: Path,
     capsys,
