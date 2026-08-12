@@ -660,7 +660,8 @@ _ENDPOINT_EXEMPT_CALL_SITES = {
     # halves — moving its endpoint without moving the stored fingerprints is the
     # coupled decision above — and because the chain is not wired today:
     # ``CommissioningCaptureService.capture_next`` has no production caller, so
-    # nothing reaches the apply. Wiring a handler to it re-opens this.
+    # nothing reaches the apply. Wiring a handler to it re-opens this — tracked
+    # as #2362.
     "jasper/active_speaker/commissioning_host.py",
     # ``jasper/active_speaker/web_commissioning.py`` USED to sit here (#2344): it
     # WRITES the automatic-summed measurement graph and loads it into CamillaDSP
@@ -831,9 +832,9 @@ async def test_the_re_emit_seams_forward_the_derived_endpoint(
 #   * the per-driver / summed COMMISSIONING graph resolves the ring by NAME
 #     through the fresh-emit chooser but forwards none of the REST of the device
 #     contract, so it emits a ring sink over a ``plug:jasper_capture`` source.
-#     That one REFUSES on an armed box instead of being taught the ring, because
-#     the ring geometry under sustained excitation is a hardware claim and the
-#     live-protection admission report asserts the tap capture route.
+#     That one REFUSES on an armed box instead of being taught the ring, and
+#     that refusal is PERMANENT rather than provisional — the reason lives with
+#     the guard in ``staging.prepare_driver_commissioning_config``, not here.
 #
 # Both halves keep the same promise — never silently measure a device nobody
 # writes. One keeps it by emitting the right graph, the other by emitting none.

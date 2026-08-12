@@ -1708,13 +1708,19 @@ def prepare_driver_commissioning_config(
     # fan-in stops feeding under `shm_ring` — so the sweep excites a device
     # nobody reads and the measurement records silence with every daemon healthy.
     #
-    # Refusing here rather than teaching this emitter the ring is deliberate:
-    # commissioning an already-armed box is a flow nobody has run, the ring
-    # geometry under sustained excitation is a hardware claim, and the live
-    # protection admission report asserts the tap capture route
-    # (`commissioning_admission`'s `capture_route_current` check), so moving this
-    # lane is a hearing-safety-adjacent change that needs its own evidence.
-    # Until then a loud, actionable blocker beats a sweep that measures nothing.
+    # Refusing here rather than teaching this emitter the ring is the PERMANENT
+    # contract, not a stopgap awaiting a braver implementation. The owner's
+    # 2026-08-12 ruling on #2254 fixes the corpus-exit shape as de-arm ->
+    # chip-AEC commission on the aloop path -> re-arm, so commissioning never
+    # has to learn the ring: an armed box asking to commission is always
+    # redirected to de-arm first, which is exactly what the blocker below says.
+    #
+    # The supporting facts still hold and are why the ruling is the cheap answer
+    # as well as the settled one — the ring geometry under sustained excitation
+    # is a hardware claim, and the live protection admission report asserts the
+    # tap capture route (`commissioning_admission`'s `capture_route_current`
+    # check), so moving this lane would be a hearing-safety-adjacent change
+    # needing its own evidence and its own review panel.
     #
     # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
     # emits the all-muted durable BOOT anchor through the same context, and an
