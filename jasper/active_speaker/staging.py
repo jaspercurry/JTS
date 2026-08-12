@@ -84,6 +84,10 @@ DEFAULT_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 DEFAULT_COMMISSIONING_CONFIG_NAME = "active_speaker_commissioning.yml"
 COMMISSIONING_CONFIG_KIND = "jts_active_speaker_commissioning_config"
 SUMMED_COMMISSION_TARGET_ROLE = "summed"
+# ONE owner for the transport gate's identity (#2344). The preflight lifts this
+# gate to the level consumers walk and the /sound/ renderer keys its household
+# copy on it, so the id is shared rather than spelled three times.
+COMMISSIONING_TRANSPORT_GATE_ID = "commissioning_transport_supported"
 STAGED_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 
@@ -1724,7 +1728,10 @@ def prepare_driver_commissioning_config(
     #
     # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
     # emits the all-muted durable BOOT anchor through the same context, and an
-    # armed box must keep being able to refresh that anchor.
+    # armed box must keep being able to refresh that anchor. Disclosed rather
+    # than implied: that anchor therefore still emits the TAP shape on an armed
+    # box. It is all-muted and this path never loads it, so it excites nothing —
+    # but it is a real residual, and #2364 owns it.
     #
     # Membership is over ALL ring PCMs, the same set `active_emit_devices` keys
     # on, so this reads the one owner of "is this a ring device" instead of
@@ -1733,15 +1740,15 @@ def prepare_driver_commissioning_config(
 
     commissioning_transport_supported = resolved_playback_device not in RING_PCM_DEVICES
     gates.append(_gate(
-        "commissioning_transport_supported",
+        COMMISSIONING_TRANSPORT_GATE_ID,
         label="Commissioning emits on a transport this graph can carry",
         passed=commissioning_transport_supported,
         message=(
             "Commissioning emits on the active ALSA lane"
             if commissioning_transport_supported
             else (
-                f"This speaker's active graph is on {resolved_playback_device}, and "
-                "driver commissioning has not been validated on the ring transport"
+                f"This speaker's active graph is on {resolved_playback_device}; "
+                "driver commissioning does not run on the ring transport"
             )
         ),
     ))
@@ -1751,7 +1758,7 @@ def prepare_driver_commissioning_config(
             "commissioning_ring_transport_unsupported",
             (
                 "This speaker is armed on the ring transport, which driver "
-                "commissioning cannot measure through yet. Release it first with "
+                "commissioning does not measure through. Release it first with "
                 "`jasper-active-speaker baseline-reemit --endpoint aloop`, "
                 "commission, then re-arm."
             ),

@@ -70,6 +70,7 @@ from .graph_evidence import (
 )
 from .safe_playback import load_safe_playback_state
 from .staging import (
+    COMMISSIONING_TRANSPORT_GATE_ID,
     SUMMED_COMMISSION_TARGET_ROLE,
     load_staged_startup_config,
     prepare_driver_commissioning_config,
@@ -1470,6 +1471,20 @@ def build_driver_commission_load_preflight(
     audible_passed = bool((prepare.get("audible_evidence") or {}).get("passed"))
     candidate = prepare.get("config") or {}
     candidate_present = bool(candidate.get("exists"))
+    transport_gate = next(
+        (
+            gate
+            for gate in prepare.get("required_gates") or []
+            if isinstance(gate, dict)
+            and gate.get("id") == COMMISSIONING_TRANSPORT_GATE_ID
+        ),
+        None,
+    )
+    # Absent gate reads as supported: this is a rendering mirror, and inventing a
+    # failure from a missing field would block a box no owner refused.
+    transport_supported = (
+        bool(transport_gate.get("passed")) if transport_gate else True
+    )
 
     gates = [
         _gate(
@@ -1510,6 +1525,22 @@ def build_driver_commission_load_preflight(
                 "Generated commissioning config is on disk"
                 if candidate_present
                 else "Generated commissioning config is missing"
+            ),
+        ),
+        # LIFTED, not re-derived (#2344). `prepare_driver_commissioning_config`
+        # owns whether commissioning can emit on this box's transport; this
+        # mirrors its answer at the level consumers actually walk. The /sound/
+        # renderer reads only the top-level `required_gates` and never descends
+        # into `prepare`, so a gate that stayed nested was a gate no household
+        # ever saw. `load_allowed` is unchanged: the same condition already
+        # fails `prepared` below, so this is a rendering surface, not a new gate.
+        _gate(
+            COMMISSIONING_TRANSPORT_GATE_ID,
+            label="Commissioning emits on a transport this graph can carry",
+            passed=transport_supported,
+            message=str(
+                (transport_gate or {}).get("message")
+                or "Commissioning emits on the active ALSA lane"
             ),
         ),
     ]

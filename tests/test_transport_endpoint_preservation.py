@@ -951,7 +951,7 @@ def _recorded_commissioning_emit(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("route", ["marker", "explicit"])
+@pytest.mark.parametrize("route", ["marker", "explicit", "second_ring_member"])
 async def test_driver_commissioning_refuses_the_ring_before_it_emits(
     tmp_path, monkeypatch, route,
 ):
@@ -967,11 +967,27 @@ async def test_driver_commissioning_refuses_the_ring_before_it_emits(
 
     The refusal is asserted BEFORE the emit, not merely on the returned status —
     a blocker that still wrote a candidate would leave the half-moved graph on
-    disk for the next reader. Both routes to a ring device are covered: the
-    production marker, and an explicit lab override.
+    disk for the next reader.
+
+    Three routes to a ring device, and the third is the one that keeps the guard
+    honest. The production marker and an explicit lab override both land on the
+    ACTIVE ring, so a guard keyed on that single name would pass them — the
+    `second_ring_member` case drives a DIFFERENT member of `RING_PCM_DEVICES`,
+    which only a set-membership test refuses. That is the difference between
+    reading `active_emit_devices`' owner of "is this a ring device" and becoming
+    a second place that knows one name.
     """
     from jasper.active_speaker.staging import prepare_driver_commissioning_config
+    from jasper.fanin_coupling import RING_PCM_DEVICES, RING_PLAYBACK_DEVICE
 
+    assert RING_PLAYBACK_DEVICE in RING_PCM_DEVICES
+    assert RING_PLAYBACK_DEVICE != RING_ACTIVE_PLAYBACK_DEVICE
+
+    explicit_device = {
+        "marker": None,
+        "explicit": RING_ACTIVE_PLAYBACK_DEVICE,
+        "second_ring_member": RING_PLAYBACK_DEVICE,
+    }[route]
     topology, preset = _commissioning_box()
     emits = _recorded_commissioning_emit(monkeypatch)
     monkeypatch.setattr(
@@ -984,9 +1000,7 @@ async def test_driver_commissioning_refuses_the_ring_before_it_emits(
         speaker_group_id="mono",
         role="woofer",
         preset=preset,
-        playback_device=(
-            RING_ACTIVE_PLAYBACK_DEVICE if route == "explicit" else None
-        ),
+        playback_device=explicit_device,
         config_dir=tmp_path / route,
         run_config_check=False,
     )
@@ -1106,6 +1120,10 @@ async def test_the_durable_boot_anchor_is_not_refused_on_an_armed_box(
         topology,
         preset=preset,
         config_dir=tmp_path / "anchor",
+        # Pinned to tmp_path like every other call site: the default is the real
+        # `/var/lib/jasper/active_speaker_staged_config.json`, so omitting it
+        # makes a Pi-side test run overwrite a live speaker's staged metadata.
+        metadata_path=tmp_path / "anchor" / "staged_metadata.json",
         run_config_check=False,
     )
 

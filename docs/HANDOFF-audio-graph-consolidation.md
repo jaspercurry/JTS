@@ -265,10 +265,11 @@ turned out to be two different defects rather than one:
   because teaching that emitter the ring is a hardware claim and its
   live-protection admission report asserts the tap capture route.
 
-**No sweep has been run through the armed ring**, so the first bullet is
-code-correct and hardware-unvalidated, and the restriction stands until an
-on-device sweep passes. The arm3 finale's `correction_substream` sweep is not
-affected — it traverses the armed ring, which is what proved the lane clean.
+**No COMMISSIONING/WIZARD sweep has been run through the armed ring**, so the
+first bullet is code-correct and hardware-unvalidated, and the restriction stands
+until an on-device wizard sweep passes. A MEASURE-lane sweep is a different
+claim and has already been made: the arm3 finale's `correction_substream` sweep
+traverses the armed ring, which is what proved the lane clean.
 
 Certified USB route-latency baseline to compare against: **p50 36.35 /
 p95 37.93 / p99 38.29 ms** over 1094 impulses / 32.6 minutes. The quick
@@ -438,7 +439,7 @@ detail.
 | [#2327](https://github.com/jaspercurry/JTS/issues/2327) | jts3's corpus-mode chip-AEC `sys_delay` needs re-derivation after the DAC8x floor changed the period geometry | Open and **live-owed** from the 2026-08-11 floor deploy — jts3 has been running post-floor since then |
 | [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open — architect call deferred: validator symmetry vs the documented refuse-then-complete route. The route out is in the lifecycle section below; still unverified on hardware, since no rollback has run from a fully-armed box |
 | [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) and proven on armed jts3 the same day — two household-path `/sound/apply` saves preserved every armed-state field. The jts3 operating restriction is **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
-| [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | Open — filed at #2335's merge, same family as #2337/#2339. PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) is **up, not merged** — it routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
+| [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | **Closed** by PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) (merged 2026-08-12, `f6e2ea640`) — filed at #2335's merge, same family as #2337/#2339. It routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2340](https://github.com/jaspercurry/JTS/issues/2340) | Deploying to jts.local over its USB management address self-severs the deploy's own ssh — install succeeds on the Pi while the laptop hangs on a half-open socket | Open. Found in the 2026-08-11 jts.local pass; the workaround is to deploy over the Wi-Fi address |
 | [#2344](https://github.com/jaspercurry/JTS/issues/2344) | A `web_commissioning` measurement sweep on an armed box excites the unfed aloop lane and measures silence | Open. The mechanism is **two** defects, not one, and they take opposite fixes: the applied-summed measurement graph inherited the snapshot's lane and now reads `resolve_live_active_endpoint` like the rest of that family, while the per-driver/summed **commissioning** graph resolved the ring by name but forwarded none of the rest of `active_emit_devices` and now **refuses** on an armed box instead of emitting a ring sink over the aloop capture — and that refusal is **permanent, not a stopgap**: the owner's 2026-08-12 ruling on [#2254](https://github.com/jaspercurry/JTS/issues/2254) fixes the corpus-exit shape as de-arm → chip-AEC commission on the aloop path → re-arm, so commissioning never has to learn the ring. Code in PR [#2363](https://github.com/jaspercurry/JTS/pull/2363) (up 2026-08-12, not merged), mutation-proved; on-device armed-ring sweep **pending**, so the jts3 restriction is **ENFORCED** until it passes and this issue closes on the sweep validating the *first* half's route |
@@ -563,10 +564,11 @@ reason the arm needs it.)
 endpoint.** A separate set of seams rebuilds the roleful graph from the
 immutable applied snapshot without being asked to move anything: `jasper-sound
 reconcile-current-dsp` (which `install.sh` runs on every deploy, and which step
-3 of the ladder runs too), a `/sound/` or `/eq/` save, and a bass-extension
-apply. The snapshot is immutable by design, so it keeps naming whichever lane
+3 of the ladder runs too), a `/sound/` or `/eq/` save, a bass-extension apply,
+and — since #2344 — the commissioning wizard's applied-summed measurement load.
+The snapshot is immutable by design, so it keeps naming whichever lane
 was resolved at Apply time — the snd-aloop lane, forever, on an armed box. Each
-of those seams now reads
+of those four seams now reads
 `jasper.active_speaker.playback_route.resolve_live_active_endpoint`, one
 derivation that asks the **statefile-pointed graph** first and the marker only
 when that graph cannot be read: the marker is derived FROM the graph, so in
