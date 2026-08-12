@@ -225,7 +225,7 @@ def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one(
     assert baseline is not None
 
     post = measured_response_from_analysis(
-        _verify_analysis(conductor._verify_program),
+        _verify_analysis(conductor.program_for_phase(PHASE_VERIFY)),
         reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
     )
     # Comparable by construction, or the benefit verdict is about the fixture
@@ -5387,7 +5387,7 @@ def test_conductor_composed_programs_include_courtesy_tone_by_default():
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {
-        s.segment_id for s in c._check_program.segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in c.program_for_phase(PHASE_CHECK).segments if s.kind == KIND_COURTESY_TONE
     }
     assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
@@ -5398,7 +5398,7 @@ def test_conductor_composed_programs_include_courtesy_tone_by_default():
     assert measure_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
     verify_tone_ids = {
-        s.segment_id for s in c._verify_program.segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in c.program_for_phase(PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
     }
     assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
 
@@ -5844,7 +5844,7 @@ def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
             role_targets=targets, session_volume_db=sv,
         )
 
-    adm_check = _admit(c._check_program)
+    adm_check = _admit(c.program_for_phase(PHASE_CHECK))
     assert adm_check.allowed, adm_check.refusals
 
     _run_phase(c, 1, 1)  # CHECK solve → MEASURE composed
@@ -5853,9 +5853,9 @@ def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
 
     # VERIFY has no admission path by design; its clamp is the only guard.
     with pytest.raises(ProgramAdmissionError):
-        _admit(c._verify_program)
+        _admit(c.program_for_phase(PHASE_VERIFY))
     binding_cap = min(woofer_peak, tweeter_peak)
-    for seg in c._verify_program.stimulus_segments():
+    for seg in c.program_for_phase(PHASE_VERIFY).stimulus_segments():
         assert seg.effective_peak_dbfs <= binding_cap + 1e-9
 
 
@@ -5866,7 +5866,7 @@ def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
     c, _topology, _profile, _targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    check = c._check_program
+    check = c.program_for_phase(PHASE_CHECK)
 
     # Woofer: cap (-8) leaves headroom, so the pair rides the reference base and
     # keeps the full 10 dB delta.
@@ -5893,7 +5893,7 @@ def test_verify_pilot_pair_preserves_delta_after_clamp():
     c, _topology, _profile, _targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    verify = c._verify_program
+    verify = c.program_for_phase(PHASE_VERIFY)
     v_hi = verify.segment("pilot_summed_hi")
     v_lo = verify.segment("pilot_summed_lo")
     assert v_hi.gain_db - v_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
@@ -5939,9 +5939,9 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
     wav = tmp_path / "verify_program.wav"
-    write_program_wav(wav, c._verify_program)
+    write_program_wav(wav, c.program_for_phase(PHASE_VERIFY))
     rate, data = wavfile.read(str(wav))
-    assert rate == c._verify_program.sample_rate_hz
+    assert rate == c.program_for_phase(PHASE_VERIFY).sample_rate_hz
     peak = float(np.max(np.abs(data.astype(np.float64) / 32767.0)))
     assert peak > 0.0  # the clamped program still carries signal
     peak_dbfs = 20.0 * _math.log10(peak)
@@ -6013,12 +6013,12 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     )
     # Probe (b): the composed CHECK tweeter hi pilot rides the DERIVED cap
     # (back_off margin under -35), not the legacy -65.01 the gate measured.
-    t_hi = c._check_program.segment("pilot_tweeter_hi")
+    t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
     assert t_hi.effective_peak_dbfs == pytest.approx(-35.0 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
     adm = admit_excitation_program(
-        c._check_program, topology=topology, safety_profile=profile,
+        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
         declared_sensitivities=declared,
     )
@@ -6028,7 +6028,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     # Without the declared mapping (the pre-fix admission view) the SAME
     # composed program is refused — the incoherence the threading closes.
     stale = admit_excitation_program(
-        c._check_program, topology=topology, safety_profile=profile,
+        c.program_for_phase(PHASE_CHECK), topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
     assert not stale.allowed
@@ -6320,7 +6320,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_snr_verdict=ok" in caplog.text
     assert "tweeter_snr_db=8.0" in caplog.text
     assert "tweeter_snr_verdict=insufficient" in caplog.text
-    evidence = _analysis_json(fakes.measure(c._measure_program))
+    evidence = _analysis_json(fakes.measure(c.program_for_phase(PHASE_MEASURE)))
     assert evidence["alignment_confidence_source"] == "gcc_phat_seed"
     assert evidence["alignment_seed_delay_us"] == 120.0
     assert evidence["alignment_seed_ripple_db"] == 4.56

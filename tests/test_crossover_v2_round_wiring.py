@@ -144,7 +144,7 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """
     measured = measured_response_from_analysis(
         _verify_analysis(
-            conductor._verify_program, summed_db=_in_room_summed_db() * scale,
+            conductor.program_for_phase(flow.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
         ),
         reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
@@ -203,7 +203,7 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     ``VERIFY_TOLERANCE_DB`` is an accepted capture with a MATCHED realization.
     """
     return _verify_analysis(
-        conductor._verify_program,
+        conductor.program_for_phase(flow.PHASE_VERIFY),
         max_db=max_db,
         summed_db=_in_room_summed_db() * scale,
     )

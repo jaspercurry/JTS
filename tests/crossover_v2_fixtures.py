@@ -453,7 +453,7 @@ def _fixture_entry_baseline(conductor: CrossoverV2Conductor) -> EntryBaseline:
     """
     measured = measured_response_from_analysis(
         _verify_analysis(
-            conductor._verify_program,
+            conductor.program_for_phase(PHASE_VERIFY),
             summed_db=_in_room_summed_db() * _ENTRY_BASELINE_SCALE,
         ),
         reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
