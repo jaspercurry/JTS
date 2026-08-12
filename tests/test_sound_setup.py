@@ -1419,10 +1419,15 @@ def test_the_ring_transport_blocker_is_registered_on_every_household_surface():
     from jasper.active_speaker.staging import COMMISSIONING_TRANSPORT_GATE_ID
 
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    assert "commissioning_ring_transport_unsupported" in helper_js, (
+    # EXACT tokens, not substrings: `..._unsupported_X` contains
+    # `..._unsupported`, so a substring assertion passes over a misspelled rung —
+    # proved by mutation, which is why the ladder's real coverage is asserted
+    # BEHAVIOURALLY in tests/js/active_speaker_ui_test.mjs. This is the cheap
+    # second layer, not the guarantee.
+    assert "'commissioning_ring_transport_unsupported'" in helper_js, (
         "the /sound/ issue ladder does not name the ring-transport blocker"
     )
-    assert COMMISSIONING_TRANSPORT_GATE_ID in helper_js, (
+    assert f"\n    {COMMISSIONING_TRANSPORT_GATE_ID}:" in helper_js, (
         "the /sound/ gate map does not name the transport gate"
     )
     assert "commissioning_ring_transport_unsupported" in {
