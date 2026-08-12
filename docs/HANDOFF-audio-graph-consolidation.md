@@ -437,7 +437,7 @@ detail.
 | [#2306](https://github.com/jaspercurry/JTS/issues/2306) | P5c follow-ups, including the explicitly-owed Pi-side doctor pass | Open — rides the R6 session |
 | [#2319](https://github.com/jaspercurry/JTS/issues/2319) | `camillagui.socket` — unauthenticated root listener on `0.0.0.0:5005` with `ReadWritePaths=/etc/camilladsp` | Open. Pre-existing, surfaced by the R7 hearing-safety repanel, out of R7 scope; the jts3 hardware runbooks stop the socket for their sequence |
 | [#2327](https://github.com/jaspercurry/JTS/issues/2327) | jts3's corpus-mode chip-AEC `sys_delay` needs re-derivation after the DAC8x floor changed the period geometry | Open and **live-owed** from the 2026-08-11 floor deploy — jts3 has been running post-floor since then |
-| [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open — architect call deferred: validator symmetry vs the documented refuse-then-complete route. The route out is in the lifecycle section below; still unverified on hardware, since no rollback has run from a fully-armed box |
+| [#2332](https://github.com/jaspercurry/JTS/issues/2332) | Rollback ladder step 2 is refused on an ordinary armed box (ring-plan endpoint mismatch) | Open. Owner-ruled 2026-08-12 (this issue): refuse-then-complete is documented as the canonical rollback route in the lifecycle section below; the validator is untouched. Hardware verification rides the #2254 corpus-exit session's de-arm ([owner ruling](https://github.com/jaspercurry/JTS/issues/2254#issuecomment-5267220207)) |
 | [#2337](https://github.com/jaspercurry/JTS/issues/2337) | An `/eq/` or `/sound/` save on an armed roleful box re-emitted the snapshot's ALSA endpoint and silently disarmed the ring | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) and proven on armed jts3 the same day — two household-path `/sound/apply` saves preserved every armed-state field. The jts3 operating restriction is **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
 | [#2338](https://github.com/jaspercurry/JTS/issues/2338) | Unify `build_baseline_profile_candidate` onto `active_emit_devices` — the second emit site never learned the both-halves lesson | **Closed** by PR [#2359](https://github.com/jaspercurry/JTS/pull/2359) (merged 2026-08-12, `f6e2ea640`) — filed at #2335's merge, same family as #2337/#2339. It routes the candidate builder's capture lane, wire format and latency geometry through `active_emit_devices` and walks the contract at four forwarding sites instead of two |
 | [#2339](https://github.com/jaspercurry/JTS/issues/2339) | `reconcile-current-dsp` clobbered an armed ring graph, so arm step 3 and every deploy silently de-armed a roleful box | **Closed** by PR [#2343](https://github.com/jaspercurry/JTS/pull/2343) (merged 2026-08-11) — found live on jts3 during the arm, and proven fixed there the same day: a full deploy left the arm intact, the seam firing exactly as before onto an identical graph. Restriction **lifted 2026-08-11** (`captures/endpoint-deploy-jts3-20260811T185255Z`) |
@@ -629,12 +629,16 @@ ways depending on whether the validator can read the graph:
   `shm_ring` until step 3, while step 1 has already moved the graph to the
   ALSA lane — so it fails the ring-plan endpoint comparison (`transport
   plan is shm_ring but Camilla playback='outputd_active_content_playback'`)
-  and exits 78 with the marker preserved. This is a real rough edge, not a
-  dead end: step 3 does not gate on the marker, so running
+  and exits 78 with the marker preserved. **This refusal is the documented,
+  canonical rollback route** — owner-ruled 2026-08-12
+  ([#2332](https://github.com/jaspercurry/JTS/issues/2332)), not a rough
+  edge to close: step 3 does not gate on the marker, so running
   `jasper-fanin-coupling-reconcile loopback` anyway completes the rollback,
   the box validates clean again, and a later hardware reconcile clears the
   stale marker. Verified through `validate-outputd-env` in a scratch probe,
-  not on hardware.
+  not on hardware; the first hardware run rides the pending jts3 corpus-exit
+  session's de-arm, per the same
+  [owner ruling](https://github.com/jaspercurry/JTS/issues/2254#issuecomment-5267220207).
 - **When it cannot** (graph evidence unreadable, so the endpoint comparison
   is skipped), the marker clears and outputd restarts onto a cleared marker
   against a still-armed active ring path — the crossed pair its startup

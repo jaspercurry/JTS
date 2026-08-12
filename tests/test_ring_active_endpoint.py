@@ -1271,6 +1271,70 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     assert "baseline-reemit" not in passive.detail
 
 
+def test_the_coupling_warn_on_an_armed_box_names_the_2332_canonical_rollback_route(
+    monkeypatch,
+):
+    """#2332 (owner-ruled 2026-08-12): an ARMED roleful box whose loaded graph
+    is the aloop rollback endpoint (``outputd_active_content_playback``) is
+    indistinguishable, from this check alone, between a finding-5 revert and the
+    CANONICAL rollback-ladder step-2 refusal — jasper-audio-hardware-reconcile
+    refuses the candidate with a ring-plan endpoint mismatch and exits 78
+    without touching the marker, so the box lands in exactly this warn while
+    mid-rollback. The warn must say that refusal is expected and point straight
+    at step 3, not just the finding-5-revert framing that fits the
+    CLEARED-marker case covered above.
+    """
+    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    from jasper.cli.doctor import audio_runtime
+    from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
+
+    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: COUPLING_SHM_RING,
+    )
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.resolve_outputd_content_bridge",
+        lambda raw: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    )
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+    )
+    monkeypatch.setattr(
+        audio_runtime,
+        "_active_camilla_config_path",
+        lambda *a, **k: ("/tmp/statefile.yml", "/tmp/loaded.yml"),
+    )
+    monkeypatch.setattr(audio_runtime, "_loaded_capture_type", lambda path: "Alsa")
+    monkeypatch.setattr(
+        audio_runtime,
+        "_loaded_device_field",
+        lambda path, lane, field: (
+            OUTPUTD_ACTIVE_PLAYBACK_DEVICE if lane == "playback" else RING_CAPTURE_DEVICE
+        ),
+    )
+    result = audio_runtime.check_fanin_coupling()
+    assert result.status == "warn", result.detail
+    assert "2332" in result.detail
+    assert "exited 78" in result.detail
+    assert "EXPECTED" in result.detail
+    assert "jasper-fanin-coupling-reconcile loopback (step 3)" in result.detail
+    # The step-3 advice and the recovery ladder must not run together as one
+    # em-dash-joined clause — a `;` separates "skip to step 3" from "here is
+    # the ladder", so a reader can tell the two apart at a glance.
+    assert "step 2; the ACTIVE-ring ladder" in result.detail
+
+    # The CLEARED-marker case (the sibling test above) must NOT claim the #2332
+    # canonical-route framing — that reading only holds while the marker is
+    # still armed (preserved by the refused reconcile), not once it clears.
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
+    )
+    cleared = audio_runtime.check_fanin_coupling()
+    assert cleared.status == "warn", cleared.detail
+    assert "2332" not in cleared.detail
+
+
 def _emitter_required_kwargs(emit):
     """The non-default arguments each emitter needs beyond preset+playback_device.
 
