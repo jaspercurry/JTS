@@ -758,17 +758,39 @@ static int acquire_writer_lock(const char *path) {
     }
     // BOUNDED WAIT, not fail-fast. Two different situations reach this lock and
     // they want opposite answers:
-    //   - a LIVE incumbent (the renderer holding its ring while it plays) never
-    //     releases, so a competing opener must be REFUSED — that is the whole
-    //     C-S2 exclusivity property, and it is what the doctor's `aplay -D`
-    //     probe must hit;
+    //   - a LIVE incumbent (the renderer holding its ring while it plays) must
+    //     REFUSE a competing opener — that is the whole C-S2 exclusivity
+    //     property, and it is what the doctor's `aplay -D` probe must hit;
     //   - TRANSIENT concurrent openers (two processes racing through
     //     create-or-attach, which the open-lock transaction already serializes)
     //     must SERIALIZE and both succeed, not have one spuriously fail.
-    // A wait with a deadline answers both: transient contention resolves inside
-    // the window, a live holder outlasts it and the competitor gets -EAGAIN.
-    // Same budget and same loop shape as acquire_open_lock, deliberately — the
-    // two locks are contended by the same openers at the same moment.
+    //
+    // EXCLUSIVITY HERE IS STRUCTURAL, NOT A TIMING PROPERTY. Read that before
+    // ever "tuning" this number. A live incumbent NEVER releases the flock:
+    // release is reachable from exactly two places — the heartbeat-refusal
+    // cleanup path just below, and jts_ring_writer_close — and there is no
+    // periodic or opportunistic release anywhere. So ANY finite deadline
+    // expires into a refusal against a live holder. The 500 ms is therefore a
+    // LATENCY parameter (how long a transient race is allowed to resolve
+    // before we give up on it), not a safety parameter; the only safety
+    // requirement this wait has is that it is FINITE.
+    //
+    // The transient case resolves inside the window because hold durations here
+    // are binary, not a spectrum: a create-or-attach race holds the lock for a
+    // few syscalls, and a playing renderer holds it for the life of the stream.
+    // Nothing in between exists, which is what makes one threshold separate
+    // them cleanly.
+    //
+    // On expiry we return -1, which the caller maps to -EBUSY. That errno is
+    // REQUIRED, not incidental: jasper-doctor's `_alsa_busy()` matches on it to
+    // decide the lane is legitimately owned, and anything else reads as a
+    // broken device.
+    //
+    // Same loop shape as acquire_open_lock. Note the budgets ADD rather than
+    // overlap — this lock is taken AFTER ring_mapping_open has already spent
+    // its own wait — so a fully contended open can spend ~1 s inside ALSA's
+    // snd_pcm_prepare. Any caller with its own deadline (the doctor probe:
+    // see _PROBE_TIMEOUT_SEC) must outlast the sum, not just this half.
     uint64_t deadline = jts_ring_monotonic_ns() +
                         JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS * 1000000ull;
     for (;;) {

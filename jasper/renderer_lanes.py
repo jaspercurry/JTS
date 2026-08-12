@@ -213,10 +213,10 @@ def parse_armed_labels(value: str | None) -> tuple[str, ...]:
     a key whose empty value must never be read as "arm everything". Order is
     preserved and duplicates are NOT collapsed.
 
-    **The trim is Rust's, not Python's.** ``str.strip()`` also removes the C0
-    information separators (``\x1c``-``\x1f``); ``str::trim()`` does not,
-    because they are not Unicode ``White_Space``. Measured, that divergence
-    covers 5 of 11 separator cases — enough for this parser to report a lane
+    **The trim is Rust's, not Python's.** ``str.strip()`` also removes the FOUR
+    C0 information separators (``\x1c`` FS, ``\x1d`` GS, ``\x1e`` RS, ``\x1f``
+    US); ``str::trim()`` does not, because they are not Unicode
+    ``White_Space``. Those four are enough for this parser to report a lane
     armed that fan-in reports un-armed, off the same bytes. So the trim is
     matched deliberately here, and
     ``tests/test_renderer_ring_lanes.py`` pins the two against each other on

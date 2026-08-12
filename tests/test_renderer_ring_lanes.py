@@ -634,16 +634,43 @@ def test_a_geometry_mismatched_ring_is_deleted(tmp_path, monkeypatch):
     something either end recovers from: the renderer would fail its open and the
     lane would stay silent until someone ran `rm` by hand. Clearing it is what
     makes the arm lever re-pullable — the exact trap the format axis sprang on
-    Ring A's rollback."""
+    Ring A's rollback.
+
+    **And it clears the ring FILE ONLY.** The two adjacent lock files are the
+    cross-language mutexes that make a concurrent create-or-attach safe;
+    deleting one opens an inode-tear window — a holder keeps its flock on the
+    now-unlinked inode while the next opener creates a fresh file and locks
+    THAT, so two processes hold "exclusive" locks on different inodes and
+    neither excludes the other. It buys nothing either, since a lock file
+    carries no geometry and so is never the thing that is stale. Asserted here
+    rather than left to the comment, because a comment does not fail a build.
+    """
     monkeypatch.setattr(rl, "RING_SHM_DIR", str(tmp_path))
     path = rl.renderer_ring_path("spotify")
     _write_ring_header(path, n_slots=8, period_frames=256)   # conf.d says 16
     assert pathlib.Path(path).exists()
 
+    # Stage BOTH sidecars, exactly as a live box has them.
+    open_lock = pathlib.Path(path + ".open.lock")
+    writer_lock = pathlib.Path(path + ".writer.lock")
+    open_lock.write_bytes(b"")
+    writer_lock.write_bytes(b"")
+
     reason = rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF))
     assert reason is not None, "a sheared ring must be cleared"
     assert "n_slots" in reason
     assert not pathlib.Path(path).exists()
+
+    assert open_lock.exists(), (
+        "delete_stale_ring must NOT unlink <ring>.open.lock — it is the "
+        "cross-language open-transaction mutex, and removing it lets two "
+        "openers lock different inodes and stop excluding each other"
+    )
+    assert writer_lock.exists(), (
+        "delete_stale_ring must NOT unlink <ring>.writer.lock — it is what "
+        "makes writer exclusivity fd-scoped; removing it would let two writers "
+        "each hold an 'exclusive' lock on a different inode"
+    )
 
 
 def test_a_coherent_ring_is_left_alone(tmp_path, monkeypatch):
@@ -813,3 +840,54 @@ def test_the_arm_refuses_a_period_128_box_by_default(tmp_path):
         user_in_ring_group=True, input_buffer_frames=buf, period_frames=per,
     )
     assert reason is not None and "whole-slot" in reason
+
+
+def test_the_doctor_probe_outlasts_the_ring_writer_lock_wait():
+    """The probe's timeout MUST exceed the ring's writer-lock wait.
+
+    `_probe_open_as_user` treats a timeout-kill (exit 124) as SUCCESS. Probing
+    an ARMED lane whose renderer is PLAYING blocks inside `snd_pcm_prepare` for
+    the whole lock wait and only then returns EBUSY — so a probe killed first
+    exits 124, `_alsa_busy()` never sees the EBUSY, and
+    `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof) is
+    unreachable in exactly the contended case it exists for. The probe would
+    report a healthy lane it never opened.
+
+    Pinned cross-language for the same reason `OFF_WRITER_PID` is: the two
+    values live in different languages and either could be changed alone.
+    """
+    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
+    m = re.search(
+        r"#define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS (\d+)ull", header
+    )
+    assert m, "the ring's lock-wait constant moved or changed shape"
+    lock_wait_sec = int(m.group(1)) / 1000.0
+
+    src = (REPO / "jasper" / "cli" / "doctor" / "renderers.py").read_text()
+    m = re.search(r'_PROBE_TIMEOUT_SEC = "([0-9.]+)"', src)
+    assert m, "_PROBE_TIMEOUT_SEC moved or changed shape"
+    probe_sec = float(m.group(1))
+
+    assert probe_sec > lock_wait_sec, (
+        f"the doctor probe runs for {probe_sec}s but a contended ring writer "
+        f"lock waits {lock_wait_sec}s before returning EBUSY. A probe that is "
+        f"killed first exits 124, which the probe counts as SUCCESS — so the "
+        f"ownership check never runs on a busy lane. Raise the probe timeout, "
+        f"or lower the lock wait; do not leave them crossed"
+    )
+    # And the dependency is named at BOTH ends, so neither reads as arbitrary.
+    assert "JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS" in src, (
+        "the Python side must name the C constant it depends on"
+    )
+    assert "_PROBE_TIMEOUT_SEC" in header, (
+        "the C constant must name the doctor probe as a dependent"
+    )
+
+
+def test_the_probe_timeout_is_used_by_the_probe():
+    """The constant is load-bearing only if the command actually uses it."""
+    src = (REPO / "jasper" / "cli" / "doctor" / "renderers.py").read_text()
+    assert '"timeout", _PROBE_TIMEOUT_SEC,' in src, (
+        "the probe must build its command from _PROBE_TIMEOUT_SEC, not a "
+        "literal that the cross-language pin cannot see"
+    )

@@ -150,6 +150,12 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // heartbeat alone is not enough.
 #define JTS_RING_WRITER_LOCK_SUFFIX ".writer.lock"
 #define JTS_RING_OPEN_LOCK_MODE 0660
+// DEPENDENT: jasper-doctor's renderer probe (`_PROBE_TIMEOUT_SEC` in
+// jasper/cli/doctor/renderers.py) MUST outlast this wait. The probe reads a
+// timeout-kill as SUCCESS, so a probe shorter than this window would be killed
+// while still blocked on a contended ring lock and report a healthy lane it
+// never actually opened — hiding the EBUSY the ownership check needs.
+// tests/test_renderer_ring_lanes.py pins the two values against each other.
 #define JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS 500ull
 #define JTS_RING_OPEN_LOCK_WAIT_STEP_US 1000ull
 #define JTS_RING_OPEN_MAX_ATTEMPTS 8u

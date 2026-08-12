@@ -880,8 +880,32 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
+#: How long the probe lets `aplay` run before SIGTERMing it.
+#:
+#: **This MUST exceed `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
+#: `c/jts-ring-ioplug/jts_ring_shm.h`), which is how long a `jts_ring` writer
+#: waits for the ring's exclusive lock before returning EBUSY.
+#:
+#: Why, concretely: probing an ARMED renderer lane whose renderer is PLAYING
+#: means opening a ring someone already holds. The ioplug blocks inside
+#: `snd_pcm_prepare` for the full lock wait and only then returns EBUSY. At the
+#: old 0.3 s the probe was killed first, exited 124 — which this function counts
+#: as SUCCESS ("aplay was happily writing") — so `_alsa_busy()` never saw the
+#: EBUSY and `_ring_lane_busy_owner_matches` (the pid→cgroup ownership proof)
+#: was unreachable in exactly the contended case it exists for. The probe
+#: reported a healthy lane without ever proving the right process owned it.
+#:
+#: Second-order cost, accepted: a HEALTHY probe now runs 0.8 s instead of 0.3 s,
+#: and 124 remains its success path. Three renderers make that ~1.5 s more per
+#: doctor run — cheap against a check that could not fail.
+#:
+#: `tests/test_renderer_ring_lanes.py` pins this against the C header's value,
+#: so neither side can drift alone.
+_PROBE_TIMEOUT_SEC = "0.8"
+
+
 def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
-    """Attempt to open `device` for ~0.1 s of silence playback AS `user`.
+    """Attempt to open `device` for a short silence playback AS `user`.
     Returns (success, detail). success=True means snd_pcm_open and a
     short write both succeeded; detail is the underlying aplay stderr
     for diagnostics (best-effort short).
@@ -890,9 +914,11 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     uses (alsalib's snd_pcm_open through the user-space plugin chain)
     while writing only silence — sample-wise additive into any mix,
     so safe to run while music is playing.
+
+    The duration is `_PROBE_TIMEOUT_SEC`; read its note before shortening it.
     """
     cmd = [
-        "timeout", "0.3",
+        "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
@@ -907,9 +933,12 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, f"probe subprocess failed: {e}"
     # Exit code 124 = timeout fired = aplay was happily writing
-    # silence for the full 0.3 s, which means open + write succeeded.
+    # silence for the full _PROBE_TIMEOUT_SEC, which means open + write
+    # succeeded. That is why the timeout must outlast the ring writer-lock
+    # wait: a probe killed WHILE still blocked on the lock would also exit
+    # 124 and be read as success.
     # Exit code 0 = aplay exited cleanly before timeout (rare; means
-    # /dev/zero was fully consumed, which won't happen at 0.3 s but
+    # /dev/zero was fully consumed, which won't happen at this duration but
     # still success).
     # Any other code = failure; stderr should explain.
     stderr_tail = (r.stderr or "").strip().splitlines()[-2:]
