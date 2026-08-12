@@ -47,13 +47,35 @@ REMOVED_TTS_MAX_SYMBOL = "MAX_" + "TTS_GAIN_DB"
 REMOVED_TTS_CLAMP_SYMBOL = "clamp_" + "tts_gain_db"
 REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 
-# Files the ban covers. The first four DEFINE the shared gain policy; the
-# last three APPLY it to samples. Both halves matter: a ceiling
-# reintroduced at the application site never touches the policy modules,
-# which is how the gate found the applying files uncovered (PR #2355
-# adversarial review, note N4 — "a reintroduced fixed ceiling there would
-# evade the ban pin"). 6304556a4 in fact deleted ceiling references from
-# two of the three appliers.
+# Files the ban covers, in three groups — every entry is a place a fixed
+# ceiling could live, and the group says why.
+#
+#   DEFINE the shared gain policy (4). Where the removed ceiling was
+#   declared, and the modules re-exporting that policy.
+#
+#   APPLY the policy to samples (3). A ceiling reintroduced at an
+#   application site never touches a policy module, so covering only the
+#   definers left these open — PR #2355 adversarial review, note N4:
+#   "a reintroduced fixed ceiling there would evade the ban pin".
+#
+#   CARRY the gain command (1). outputd's TTS bridge held
+#   `fallback_gain_db: MAX_TTS_GAIN_DB` until 6304556a4 removed it, and
+#   still owns the live `TtsCommand::GainDb` handler — today a deliberate
+#   no-op with no fallback-gain state behind it, which makes it the
+#   natural place for one to grow back. Local gain math has in fact grown
+#   here before (deep-audit DA-0590: a private `db_to_linear` duplicating
+#   the shared helper).
+#
+# Of these, 6304556a4 deleted ceiling references from three:
+# fanin/tts.rs and outputd/tts.rs (the MAX_ constant) and core.rs (the
+# clamp helper). assistant_source.rs postdates that removal — it was
+# created later by 2ac841f24 (#2063) — and is covered because it is now a
+# gain applier, not because it ever carried a ceiling.
+#
+# Deliberately NOT covered: fanin/state.rs and outputd/state.rs. They are
+# pure STATUS renderers — they read a decided gain and serialize it, and
+# have no authority to cap one. Adding them would widen the ban past what
+# it can honestly claim to guard.
 RUST_TTS_GAIN_FILES = (
     "rust/jasper-tts-protocol/src/loudness.rs",
     "rust/jasper-fanin/src/loudness.rs",
@@ -62,6 +84,7 @@ RUST_TTS_GAIN_FILES = (
     "rust/jasper-fanin/src/tts.rs",
     "rust/jasper-outputd/src/assistant_source.rs",
     "rust/jasper-outputd/src/core.rs",
+    "rust/jasper-outputd/src/tts.rs",
 )
 
 RUST_SHARED_LOUDNESS_SHIMS = (

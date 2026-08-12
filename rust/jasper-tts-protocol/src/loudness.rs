@@ -848,18 +848,30 @@ fn push_json_u64(buf: &mut String, key: &str, value: u64) {
 ///
 /// `null` is the substitute rather than omission because the key set is a
 /// pinned wire contract (`ASSISTANT_LOUDNESS_STATUS_KEYS`, asserted present
-/// by both daemons' state tests), and because the Python consumer already
-/// reads a null gain as a fault: `jasper/cli/doctor/audio_runtime.py` WARNs
-/// on `decision_seen=true` with a non-numeric `final_gain_db`. So a
-/// non-finite value surfaces loudly instead of corrupting the document.
+/// by both daemons' state tests), and it lands somewhere a consumer already
+/// reads: `jasper/cli/doctor/audio_runtime.py` WARNs on `decision_seen=true`
+/// with a non-numeric `final_gain_db`. That loud path is scoped to
+/// `final_gain_db` — the one doctor-guarded field. Every other float here
+/// maps to `null` **silently, by design**: this is a polled render, so a
+/// value nobody checks should cost a null in a STATUS reply, not a journal
+/// line per poll.
 ///
-/// This filters at the render, not at the producer: fan-in cannot publish a
-/// non-finite value (`pack_optional_db` maps one to its NONE sentinel), while
-/// outputd copies engine floats straight into the snapshot — so the one
-/// shared writer both daemons render through is the single place that can
-/// make the guarantee hold for both. It also keeps the cost off the audio
-/// thread: outputd's `publish_loudness_snapshot` runs per period on the audio
-/// loop, but this runs on the state-server thread answering a STATUS read.
+/// This filters at the render, not at the producer, because only outputd
+/// needs it and both daemons share this writer. fan-in is already safe by
+/// two separate mechanisms, neither of which outputd has:
+///   * its `Option<f64>` fields ride packed integer atomics, and
+///     `pack_optional_db` maps a non-finite input to the NONE sentinel;
+///   * `profile_confidence` rides a scaled `AtomicU64` — `clamp(0.0, 1.0)`
+///     bounds ±inf, and NaN (which `clamp` returns unchanged) is absorbed by
+///     Rust's saturating float→int cast, which yields 0.
+///
+/// outputd copies engine floats straight into the snapshot struct, so it has
+/// neither. Filtering in the one shared writer makes the guarantee hold for
+/// both from a single place rather than a rule written twice.
+///
+/// It also keeps the cost off the audio thread: outputd's
+/// `publish_loudness_snapshot` runs per period on the audio loop, but this
+/// runs on the state-server thread answering a STATUS read.
 fn push_json_finite_or_null(buf: &mut String, value: f64, decimals: usize) {
     if value.is_finite() {
         buf.push_str(&format!("{value:.decimals$}"));
