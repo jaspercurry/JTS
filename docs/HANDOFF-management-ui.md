@@ -559,7 +559,16 @@ the correction measurement routes still have their own service/socket wrappers.
 Static and external companion surfaces:
 
 - `/` is static HTML under `deploy/`.
-- CamillaGUI remains a separate external surface at `http://jts.local:5005/`.
+- CamillaGUI remains a separate external surface, but its socket binds
+  loopback-only since [#2319](https://github.com/jaspercurry/JTS/issues/2319)
+  (`127.0.0.1:5005`, was `0.0.0.0:5005`) — the unauthenticated, root-backed
+  GUI can author and live-apply CamillaDSP configs naming any device, so
+  it is no longer LAN-reachable. The landing page's Advanced DSP row still
+  opens `http://<hostname>:5005/` in a new tab, which now fails to connect
+  from any LAN device; reach the GUI instead with
+  `ssh -L 5005:localhost:5005 <pi-host>` and browse
+  `http://localhost:5005/` from the laptop. `jasper-doctor`'s "CamillaGUI
+  socket bind" check pins the live posture.
 - `GET /volume`, `/mic`, `/source`, and `/grouping` (GET-only,
   exact-match — the stereo-pair banner's read) are same-origin proxies
   into `jasper-control`.
