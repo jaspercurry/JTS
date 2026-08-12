@@ -665,7 +665,14 @@ def test_no_test_module_imports_the_conductor_test_file():
     for module in modules:
         if module.name == "test_crossover_v2_conductor.py":
             continue
-        tree = ast.parse(module.read_text(), filename=str(module))
+        text = module.read_text()
+        # Coverage-preserving fast path: an import that names the module has to
+        # spell it, in either spelling. Parsing all ~825 modules unconditionally
+        # cost this one guard several seconds; a dynamically-built import would
+        # escape the AST check below with or without this line.
+        if relative not in text:
+            continue
+        tree = ast.parse(text, filename=str(module))
         lines = [
             node.lineno for node in ast.walk(tree)
             if names_the_conductor_file(node)
