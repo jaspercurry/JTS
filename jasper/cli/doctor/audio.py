@@ -1171,6 +1171,105 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     )
     return CheckResult("active speaker runtime graph", "fail", detail)
 
+
+@doctor_check(order=28.6, group="audio")
+def check_active_speaker_topology_blockers() -> CheckResult:
+    """Name the saved layout's unresolved blockers on a parked speaker.
+
+    Before #2145 a roleful topology carrying any topology-level blocker made
+    every deploy abort, so the blockers were impossible to miss — the install
+    transcript was the notification. They no longer abort it: the parked graph
+    is structurally silent (File sink, every output hard-muted), so a blocker
+    that cannot make it unsafe no longer refuses it, and the box parks and takes
+    the deploy. That is the right outcome, but it removes the loud signal, so
+    this check restores one at the household's own diagnostic surface and names
+    each blocker plus the wizard step that clears it.
+
+    WARN, never FAIL: a parked speaker is silent, not broken, and nothing here
+    is audible or at risk — the state is "commissioning is unfinished", which is
+    the household's to finish, not an error to fix. `jasper-doctor` exits
+    non-zero only on fails, so warning keeps a mid-commission box deployable,
+    which is the whole point of #2145.
+
+    Scoped to the parked outcome on purpose. A blocker-bearing topology that
+    DOES have a staged graph still fails the deploy and is already reported by
+    `check_active_speaker_runtime_graph`; repeating it here would be a second
+    voice for one fact.
+    """
+
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_STATUS,
+        classify_output_contract,
+        safe_graph_for_current_topology,
+    )
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    name = "active speaker topology blockers"
+    try:
+        topology = load_output_topology_strict()
+    except OutputTopologyError as exc:
+        return CheckResult(
+            name, "fail", f"saved output topology is unavailable or invalid: {exc}"
+        )
+
+    contract = classify_output_contract(topology)
+    if not contract.requires_roleful_graph:
+        return CheckResult(
+            name,
+            "ok",
+            f"{contract.classification}: no roleful/protected outputs configured",
+        )
+    if not contract.issues:
+        return CheckResult(
+            name, "ok", f"{contract.classification}: no topology blockers"
+        )
+
+    codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
+    messages = "; ".join(
+        str(issue.get("message") or "")
+        for issue in contract.issues
+        if issue.get("message")
+    )
+    try:
+        decision = safe_graph_for_current_topology(topology)
+    except (OSError, ValueError, OutputTopologyError) as exc:
+        # The blockers are the finding; a failed selection probe must not hide
+        # them, so report what is known and say the probe did not answer.
+        return CheckResult(
+            name,
+            "warn",
+            (
+                f"saved layout has unresolved blockers={codes}"
+                f"{': ' + messages if messages else ''}; "
+                f"could not determine the selected runtime graph ({exc}). "
+                "Finish the speaker layout at http://<speaker>/sound/setup/"
+            ),
+        )
+
+    if decision.status != PARKED_MUTED_STATUS:
+        return CheckResult(
+            name,
+            "ok",
+            (
+                f"saved layout has blockers={codes}, but the speaker is not "
+                f"parked (runtime graph: {decision.status}); reported by the "
+                "active speaker runtime graph check"
+            ),
+        )
+
+    return CheckResult(
+        name,
+        "warn",
+        (
+            f"speaker is parked silent and its saved layout still has "
+            f"unresolved blockers={codes}"
+            f"{': ' + messages if messages else ''}. "
+            "Deploys now succeed in this state, so finish the speaker layout at "
+            "http://<speaker>/sound/setup/ to bring it back to sound."
+        ),
+    )
+
+
 def _sound_profile_path() -> Path:
     return Path(
         os.environ.get(

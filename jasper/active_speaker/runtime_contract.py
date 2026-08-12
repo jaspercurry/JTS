@@ -3600,8 +3600,17 @@ def classify_camilla_graph(
         # Keyed on the VERDICT (`GRAPH_PARKED_ALL_MUTED`), not on the claimed
         # input class: `_parked_graph_allowed` returns that classification if
         # and only if all four structural facts hold, and `GRAPH_UNSAFE`
-        # otherwise. A graph that merely CLAIMS the parked source marker and
-        # fails its proof therefore keeps the blanket refusal below.
+        # otherwise. So a graph that merely CLAIMS the parked source marker and
+        # fails its proof cannot reach the exemption.
+        #
+        # Stated honestly, that key is defence in depth rather than the load-
+        # bearing guard: `graph.allowed` is already False for a failed proof, so
+        # keying on the claimed marker instead would refuse the same graphs, and
+        # no test distinguishes the two (verified by mutation — the swap
+        # survives the suite). It is kept because it makes the exemption's
+        # precondition legible at the point of use, and because it stays correct
+        # if a future classification ever returns `allowed=True` alongside a
+        # parked-looking marker.
         #
         # `graph_issues` still gate: they describe this graph's own text, so
         # they are exactly the class of defect that CAN make it unsafe.

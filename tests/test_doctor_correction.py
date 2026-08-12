@@ -865,6 +865,88 @@ def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
     assert PARKED_MUTED_EXITS in r.detail
 
 
+def test_active_speaker_topology_blockers_registered_in_sync_checks():
+    assert "check_active_speaker_topology_blockers" in _registered_check_names()
+
+
+def _blocker_bearing_roleful_topology():
+    """A roleful topology whose tweeter is not yet assigned to a DAC output."""
+    from dataclasses import replace
+
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    return replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if channel.role == "tweeter"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+
+
+def test_topology_blockers_ok_without_roleful_outputs(monkeypatch, tmp_path):
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_topology([]), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "ok"
+    assert "no roleful/protected outputs" in r.detail
+
+
+def test_topology_blockers_ok_when_a_clean_roleful_layout_is_parked(
+    monkeypatch, tmp_path
+):
+    # Parked but CLEAN: `check_active_speaker_runtime_graph` already warns about
+    # the parked state itself. This check speaks only to unresolved blockers, so
+    # a clean layout must stay quiet rather than adding a second warning.
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_active_topology("mono", "active_2_way"), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "ok"
+    assert "no topology blockers" in r.detail
+
+
+def test_topology_blockers_warn_names_each_blocker_and_the_wizard_step(
+    monkeypatch, tmp_path
+):
+    # #2145: this state used to abort every deploy, which was its own loud
+    # notification. It now parks and deploys, so the doctor carries the signal.
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_blocker_bearing_roleful_topology(), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    # WARN, never FAIL: doctor exits non-zero only on fails, and a parked box
+    # must stay deployable.
+    assert r.status == "warn"
+    assert "physical_output_unassigned" in r.detail
+    assert "tweeter is not assigned to a DAC output" in r.detail
+    assert "/sound/setup/" in r.detail
+
+
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
 
