@@ -175,7 +175,10 @@ above; this is only the entry points:
   Recovery is automatic and needs no operator action:
   the parked branch is last in the selector, so the moment commissioning
   stages a startup graph the `select_active_startup` branch wins on the
-  next reconcile/deploy. Both exits out of parked work: the parked graph is
+  next deploy. (Deploy specifically — `jasper-audio-hardware-reconcile`
+  never re-runs this selection; `tests/test_audio_hardware_reconcile.py`
+  pins that its script names neither `runtime-safe-graph` nor
+  `safe_graph_for_current_topology`.) Both exits out of parked work: the parked graph is
   an accepted `path_safety.restore_classifications` rollback target so
   `/sound/setup/` can start commissioning on a parked box, and
   `jasper-output-topology-reset` (and the `/sound/setup/` reset endpoint)

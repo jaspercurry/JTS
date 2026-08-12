@@ -725,10 +725,12 @@ What exists:
   topology with a tweeter, protected
   output, or subwoofer roleful assignment must preserve/select a matching
   all-muted active startup graph. Guarded commissioning graphs are active test
-  surfaces, not persisted boot/deploy fallbacks. When the SOLE missing piece is
-  the staged startup graph, install and recovery helpers seed the generated
+  surfaces, not persisted boot/deploy fallbacks. When the missing piece is the
+  staged startup graph, install and recovery helpers seed the generated
   DAC-less all-muted **parked** graph (issue #2135) instead of repointing
-  Camilla at flat stereo. Parking is deliberately narrow: a staged graph that
+  Camilla at flat stereo — parking gates on the absence of that staged graph,
+  and (since #2145, below) tolerates topology blockers alongside it rather than
+  requiring the staged graph to be the *only* thing missing. Parking is deliberately narrow: a staged graph that
   exists but fails its safety proof still fails closed — that is a
   commissioning bug, not a paused household. A topology-level blocker (for
   example a channel saved `protection_status="required_missing"`) no longer

@@ -1185,6 +1185,14 @@ def check_active_speaker_topology_blockers() -> CheckResult:
     this check restores one at the household's own diagnostic surface and names
     each blocker plus the wizard step that clears it.
 
+    The blockers and the way OUT of parked are stated as two facts, because
+    they are two: parking is gated on the absence of a staged startup graph, not
+    on the blockers, so clearing them does not on its own restore sound. The
+    exits therefore come from :func:`parked_muted_exits`, the owned
+    capability-aware helper the CLI and `/state` also use — it drops "finish
+    crossover preview" on a DAC that has no active outputd lane, where that
+    action can never succeed.
+
     WARN, never FAIL: a parked speaker is silent, not broken, and nothing here
     is audible or at risk — the state is "commissioning is unfinished", which is
     the household's to finish, not an error to fix. `jasper-doctor` exits
@@ -1200,6 +1208,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
     from jasper.active_speaker.runtime_contract import (
         PARKED_MUTED_STATUS,
         classify_output_contract,
+        parked_muted_exits,
         safe_graph_for_current_topology,
     )
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
@@ -1207,9 +1216,23 @@ def check_active_speaker_topology_blockers() -> CheckResult:
     name = "active speaker topology blockers"
     try:
         topology = load_output_topology_strict()
-    except OutputTopologyError as exc:
+    except OutputTopologyError:
+        # POINTS, does not restate. `check_active_speaker_runtime_graph` and
+        # `check_active_speaker_output_hardware_match` both already print the
+        # parse error verbatim; a third copy is the same fact in a third voice,
+        # which this check's own docstring rules out.
+        #
+        # Still a `fail`, not an ok-defer: this check cannot answer its question
+        # without a topology, and a green line next to two reds would read as
+        # "the layout is fine" about the very artifact that failed to load.
         return CheckResult(
-            name, "fail", f"saved output topology is unavailable or invalid: {exc}"
+            name,
+            "fail",
+            (
+                "saved output topology could not be loaded, so its blockers "
+                "cannot be listed; the active speaker runtime graph check "
+                "reports the parse error"
+            ),
         )
 
     contract = classify_output_contract(topology)
@@ -1242,7 +1265,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
                 f"saved layout has unresolved blockers={codes}"
                 f"{': ' + messages if messages else ''}; "
                 f"could not determine the selected runtime graph ({exc}). "
-                "Finish the speaker layout at http://<speaker>/sound/setup/"
+                "Fix the speaker layout at http://<speaker>/sound/setup/"
             ),
         )
 
@@ -1257,6 +1280,16 @@ def check_active_speaker_topology_blockers() -> CheckResult:
             ),
         )
 
+    # The exits come from the OWNED capability-aware helper, never a hand-rolled
+    # sentence: on a DAC with no active outputd lane "finish crossover preview"
+    # can never succeed, and this is one of three surfaces (CLI, doctor,
+    # `/state`) that must name the same actions.
+    #
+    # And the blockers are stated as a SEPARATE fact from the exits, because
+    # they are one: parking is gated on there being no staged startup graph, not
+    # on the blockers. A household told to "clear the blockers to get sound
+    # back" would clear them, still hear silence, and watch this check go green
+    # while the speaker stayed parked.
     return CheckResult(
         name,
         "warn",
@@ -1264,8 +1297,9 @@ def check_active_speaker_topology_blockers() -> CheckResult:
             f"speaker is parked silent and its saved layout still has "
             f"unresolved blockers={codes}"
             f"{': ' + messages if messages else ''}. "
-            "Deploys now succeed in this state, so finish the speaker layout at "
-            "http://<speaker>/sound/setup/ to bring it back to sound."
+            "Clearing them does not by itself unpark the speaker — "
+            f"next: {parked_muted_exits(topology)}. "
+            "Fix the layout at http://<speaker>/sound/setup/"
         ),
     )
 

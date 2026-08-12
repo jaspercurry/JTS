@@ -4629,8 +4629,12 @@ def test_blocker_bearing_box_actually_writes_the_parked_statefile(
     assert parked_path.exists()
     assert _statefile_config_path(statefile) == str(parked_path)
     # The stable observability line still fires for the newly-reachable state.
+    # Asserted as a LITERAL, not f-string-composed from the constant: the point
+    # of a stable `event=` line is that operators and journal greps depend on
+    # the exact bytes, so renaming `PARKED_MUTED_STATUS` must break this test
+    # rather than silently rename the log contract along with it.
     assert "active_speaker.runtime_graph" in caplog.text
-    assert f"decision={PARKED_MUTED_STATUS}" in caplog.text
+    assert "decision=parked_muted" in caplog.text
     # The written graph is genuinely all-muted and DAC-less.
     written = yaml.safe_load(parked_path.read_text(encoding="utf-8"))
     assert written["devices"]["playback"]["type"] == "File"

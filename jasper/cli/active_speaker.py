@@ -29,9 +29,9 @@ from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
     DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
-    PARKED_MUTED_EXITS,
     PARKED_MUTED_STATUS,
     apply_safe_graph_decision_to_statefile,
+    parked_muted_exits,
     safe_graph_for_current_topology,
 )
 from jasper.active_speaker.staging import load_staged_startup_config
@@ -61,7 +61,11 @@ from jasper.active_speaker.safe_playback import (
     load_safe_playback_state,
 )
 from jasper.dsp_apply import validate_camilla_config
-from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+from jasper.output_topology import (
+    OutputTopology,
+    OutputTopologyError,
+    load_output_topology_strict,
+)
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -252,6 +256,7 @@ def _print_runtime_safe_graph_summary(
     payload: dict[str, Any],
     *,
     wrote_statefile: bool,
+    topology: OutputTopology | None = None,
 ) -> None:
     contract = payload["topology_contract"]
     current = payload.get("current_graph") or {}
@@ -303,9 +308,16 @@ def _print_runtime_safe_graph_summary(
     print(f"  statefile written: {'yes' if wrote_statefile else 'no'}")
     if payload["status"] == PARKED_MUTED_STATUS:
         # The parked state is an ACTION for the household, not a stack of
-        # blockers for an operator to decode. Name the two exits and stop —
+        # blockers for an operator to decode. Name the exits and stop —
         # the blocker wall stays for a genuinely unsafe graph.
-        print(f"  next: {PARKED_MUTED_EXITS}")
+        #
+        # Through the capability-aware helper, not the bare constant: on a DAC
+        # with no active outputd lane "finish crossover preview" can never
+        # succeed, and offering an impossible action is worse than offering
+        # none. The doctor and `/state` already resolve it this way, so this is
+        # the third of the three surfaces that name the same exits agreeing on
+        # one owner rather than two of them agreeing and one drifting.
+        print(f"  next: {parked_muted_exits(topology)}")
     for issue in payload.get("issues") or []:
         print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
 
@@ -359,7 +371,13 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        _print_runtime_safe_graph_summary(payload, wrote_statefile=wrote)
+        _print_runtime_safe_graph_summary(
+            payload,
+            wrote_statefile=wrote,
+            # The same topology the decision was made from, so the exits named
+            # here cannot come from a second, differently-read topology.
+            topology=topology,
+        )
     return 0 if decision.ok else 1
 
 

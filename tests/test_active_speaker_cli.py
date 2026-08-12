@@ -896,6 +896,98 @@ def test_runtime_safe_graph_cli_parks_a_blocker_bearing_draft_and_prints_it(
     assert printed.count("physical_output_unassigned") == 1
 
 
+def test_runtime_safe_graph_cli_names_capability_aware_exits(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    """The CLI must resolve the parked exits through the OWNED helper.
+
+    On a DAC that declares no active outputd lane, "finish crossover preview"
+    can never succeed, so `parked_muted_exits` drops it. The CLI used to print
+    the bare `PARKED_MUTED_EXITS` constant, which offers that impossible action
+    anyway — and because the constant and the helper agree on every ORDINARY
+    DAC, only a passive-only profile can tell the two apart. That is what this
+    fixture is for; without it a revert to the constant passes silently.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        parked_muted_exits,
+    )
+    from jasper.output_topology import (
+        OUTPUT_TOPOLOGY_KIND,
+        OutputTopology,
+        save_output_topology,
+    )
+    from tests.active_speaker_fixtures import register_passive_only_dac
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+
+    profile = register_passive_only_dac(monkeypatch)
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": profile.id,
+            "device_label": profile.label,
+            "physical_output_count": profile.physical_output_count,
+        },
+        "speaker_groups": [{
+            "id": "mono",
+            "label": "Mono",
+            "kind": "mono",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 1,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        }],
+        "routing": {"mono_group_id": "mono"},
+    })
+    # The fixture is only meaningful if the helper and the constant DISAGREE.
+    assert parked_muted_exits(topology) != PARKED_MUTED_EXITS
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    flat = tmp_path / "outputd-cutover.yml"
+    flat.write_text(_flat_yaml(), encoding="utf-8")
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text("{}\n", encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
+    _parked_config_dir(monkeypatch, tmp_path)
+
+    code = main([
+        "runtime-safe-graph",
+        "--topology",
+        str(topology_path),
+        "--statefile",
+        str(statefile),
+        "--flat-config",
+        str(flat),
+        "--staged-metadata",
+        str(metadata),
+    ])
+
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert f"next: {parked_muted_exits(topology)}" in printed
+    assert profile.label in printed
+
+
 def test_runtime_safe_graph_cli_still_fails_on_an_unsafe_staged_graph(
     tmp_path: Path,
     capsys,

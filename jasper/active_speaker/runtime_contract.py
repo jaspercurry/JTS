@@ -3591,11 +3591,21 @@ def classify_camilla_graph(
         # half-assigned, a graph built against it can send the wrong band to a
         # tweeter. The parked graph cannot. Its safety is STRUCTURAL and was
         # just proved by `_parked_graph_allowed` against the graph's own bytes:
-        # the sink is a `File` (no DAC is attached at all), the pipeline is
-        # exhaustively one Mixer plus one mute-only Filter per output, and every
-        # output carries a wired hard mute. None of those four facts can be
-        # falsified by a topology blocker, so refusing on one only prevented the
-        # box from parking — it never made it quieter.
+        # a `File` sink, a pipeline that is exhaustively one Mixer plus one
+        # mute-only Filter per output, and a wired hard mute on every output.
+        #
+        # The load-bearing pair is the pipeline exactness plus the hard mutes —
+        # NOT the File sink on its own. A File sink is not proof that no DAC is
+        # reached: the program-bake exemption in this same function exists
+        # because a File sink can feed outputd's pipe, and outputd drives the
+        # DAC. So the silence guarantee is that every output is hard-muted and
+        # the pipeline provably cannot add anything back, whatever consumes the
+        # sink. ("Exhaustively" bounds the PIPELINE steps; the mixer's internal
+        # mapping is checked by the mute proof, not by step counting.)
+        #
+        # None of those facts can be falsified by a topology blocker, so
+        # refusing on one only prevented the box from parking — it never made it
+        # quieter.
         #
         # Keyed on the VERDICT (`GRAPH_PARKED_ALL_MUTED`), not on the claimed
         # input class: `_parked_graph_allowed` returns that classification if
@@ -4781,7 +4791,10 @@ def safe_graph_for_current_topology(
         # considered, so a parked file can never shadow a graph that carries
         # actual driver protection. Recovery needs no operator action: the
         # moment commissioning stages a startup graph, `select_active_startup`
-        # above wins on the next reconcile/deploy.
+        # above wins on the next deploy. (Deploy, not reconcile:
+        # `jasper-audio-hardware-reconcile` never re-runs this selection —
+        # `tests/test_audio_hardware_reconcile.py` pins that its script names
+        # neither `runtime-safe-graph` nor `safe_graph_for_current_topology`.)
         parked_text, parked_graph = build_parked_muted_graph(
             topology, config_path=parked_config_path
         )
@@ -4789,8 +4802,9 @@ def safe_graph_for_current_topology(
             # No `event=` line here: this function is a pure decision and is
             # also reached by read-only callers. The stable
             # `event=active_speaker.runtime_graph decision=parked_muted` line is
-            # emitted by `apply_safe_graph_decision_to_statefile`, at the moment
-            # the box is actually parked.
+            # emitted by `apply_safe_graph_decision_to_statefile`, on every apply
+            # that resolves to parked — including one that finds the statefile
+            # already pointing at the parked config and writes nothing.
             selected = str(parked_muted_config_path(parked_config_path))
             return SafeGraphDecision(
                 status=PARKED_MUTED_STATUS,
@@ -4901,6 +4915,13 @@ def apply_safe_graph_decision_to_statefile(
         # --write-statefile, the correction reset probe, the multiroom follower's
         # restore candidates), and a `decision=parked_muted` line from those
         # would read as "the box was just parked" when nothing was written.
+        #
+        # It DOES fire on a statefile no-op (the `_path_matches` return below),
+        # and that is deliberate: `_materialise_parked_muted_config` above has
+        # already re-proved and written the parked config by this point, so real
+        # work happened. The line means "this apply resolved to parked", not
+        # "the statefile changed" — moving it below the compare would silence a
+        # parked box on every deploy after the first.
         log_event(
             logger,
             "active_speaker.runtime_graph",
