@@ -571,7 +571,15 @@ right place. Read this before adding or restructuring docs.
    program found an eight-site same-shape incident (pre-flip comments
    describing a not-yet-landed state; a ninth candidate was examined
    and found sound) exactly this way, all trued up in the
-   squash-merged commit `2787623bf` (PR #2246).
+   squash-merged commit `2787623bf` (PR #2246). That default sweep is
+   scoped to the current branch's own diff, so it structurally cannot
+   catch a cutover falsifying prose in a module the diff never
+   touches — #2323's correctness lens found exactly this
+   (`crossover_v2/contracts.py` still called three live types inert
+   after a PR that never opened the file falsified the claim; #2325).
+   Run `bash scripts/tense-grep.sh --all` once per deletion PR instead
+   — every repo-tracked file, grouped by file with a per-file count —
+   against a baseline captured before the cut.
 
 ---
 

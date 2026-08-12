@@ -62,6 +62,7 @@
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture directly from the raw chip path | [Capture: alternative sources](#capture-alternative-sources) |
 | Sweep files changed on a branch for roadmap-dated comment/doc phrasing that may have gone stale ("not yet", "until X lands") before publishing a PR | [`scripts/tense-grep.sh`](../scripts/tense-grep.sh) — advisory, always exits 0 |
+| Sweep the WHOLE repo (not just a branch diff) for roadmap-dated phrasing once per deletion/cutover PR — a changed-files-only sweep structurally can't catch a claim falsified in a module the diff never touches (#2325) | [`scripts/tense-grep.sh --all`](../scripts/tense-grep.sh) — same advisory contract, output grouped by file with a per-file count; diff a before/after baseline by hand |
 
 ---
 
