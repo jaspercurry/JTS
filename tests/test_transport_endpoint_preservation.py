@@ -1045,6 +1045,42 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
     assert gate["passed"] is True
 
 
+async def test_the_refusal_reaches_the_guarded_load_preflight(tmp_path, monkeypatch):
+    """The blocker is RENDERABLE, not just returned to the builder's caller.
+
+    A refusal the operator never sees is the silent failure again wearing a
+    different hat. This walks the real gate that stands in front of the guarded
+    commissioning load and asserts the message — with the release command in it —
+    is in the payload a caller renders, and that the load is not allowed.
+    """
+    from jasper.active_speaker.startup_load import (
+        build_driver_commission_load_preflight,
+    )
+
+    topology, preset = _commissioning_box()
+    monkeypatch.setattr(
+        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+    )
+
+    preflight = build_driver_commission_load_preflight(
+        topology,
+        speaker_group_id="mono",
+        role="woofer",
+        preset=preset,
+        config_dir=tmp_path / "armed",
+        require_physical_identity=False,
+    )
+
+    assert preflight["load_allowed"] is False
+    refusal = next(
+        issue
+        for issue in preflight["issues"]
+        if issue.get("code") == "commissioning_ring_transport_unsupported"
+    )
+    assert refusal["severity"] == "blocker"
+    assert "baseline-reemit --endpoint aloop" in refusal["message"]
+
+
 async def test_the_durable_boot_anchor_is_not_refused_on_an_armed_box(
     tmp_path, monkeypatch,
 ):
