@@ -28,6 +28,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.accountability` — whether a built candidate may be proposed at all.
 * :mod:`.fc_sweep` — which crossover corners this speaker may be asked about,
   what each costs to score, and which one the evidence recommends.
+* :mod:`.planning` — one candidate assembled: the eligibility gate, the
+  planner request its own sections imply, and the emitted candidate.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants

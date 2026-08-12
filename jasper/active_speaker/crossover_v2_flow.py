@@ -130,13 +130,11 @@ from jasper.active_speaker.delta_probe import (
     classify_delta_probe,
     spatial_cost_from_group_spreads,
 )
-from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
-    sections_by_role,
-)
+from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
+from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
@@ -144,7 +142,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
-    CandidateAcousticContext,
     InterventionProposal,
     PlanRefusal,
 )
@@ -162,14 +159,14 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # import from the module that OWNS them; only what this module still reads is
 # imported here.
 from jasper.active_speaker.crossover_v2.intervention import (
-    LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     JournalRecord,
     LinearizationPlan,
     driver_response_by_role as _driver_response_by_role,
     measure_validity_floor_hz as _measure_validity_floor_hz,
+    # A live read, not a door: ``_plan_linearization`` passes it into the
+    # organ as a port so THIS name stays the one production resolves.
     plan_linearization,
-    request_from_analysis,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
@@ -1294,6 +1291,20 @@ from jasper.active_speaker.crossover_v2.fc_sweep import (
     _fc_rejection as _fc_rejection,
     fc_candidate_set as fc_candidate_set,
     resolve_fc_search_band as resolve_fc_search_band,
+)
+
+# Two more doors, on the same terms, opened by Phase 5a-v(c): the candidate
+# build's request assembly moved to :mod:`crossover_v2.planning` and took this
+# module's own last read of each with it, but callers walk through both —
+# ``flow.sections_by_role`` at three test sites, and
+# ``LINEARIZATION_MIN_PAIRED_OCCURRENCES`` imported FROM here by two suites.
+# READ-ONLY for the reason above: production resolves them inside the owning
+# modules.
+from jasper.active_speaker.branch_chain import (
+    sections_by_role as sections_by_role,
+)
+from jasper.active_speaker.crossover_v2.intervention import (
+    LINEARIZATION_MIN_PAIRED_OCCURRENCES as LINEARIZATION_MIN_PAIRED_OCCURRENCES,
 )
 
 _fc_refusal = _fc.refusal
@@ -2912,35 +2923,12 @@ class CrossoverV2FlowError(RuntimeError):
 back_off_gain = _programs.back_off_gain
 
 
-def alignment_to_candidate_fields(
-    analysis: ProgramAnalysis, *, woofer_role: str, tweeter_role: str,
-) -> tuple[float | None, str | None, str | None]:
-    """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
-
-    Honours the analysis sign contract (design §5.6.5): its ``delay_us`` is
-    ``(D_woofer − D_tweeter)``, so **positive ⇒ the tweeter arrived earlier and
-    the tweeter branch is delayed**; negative ⇒ the woofer is delayed. The W4
-    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverAlignment`
-    wants a non-negative magnitude + the delayed role, so the sign is folded into
-    the role choice. Returns ``(None, None, None)`` when there is no trustworthy
-    alignment (missing, or the estimator clamped at the search-window edge), so
-    the candidate falls back to a trims-only apply.
-    """
-    from jasper.active_speaker.crossover_alignment import (
-        POLARITY_INVERT,
-        POLARITY_KEEP,
-    )
-
-    est = analysis.alignment
-    if est is None or est.status != ALIGNMENT_OK:
-        return None, None, None
-    delay_us = float(est.delay_us)
-    if delay_us >= 0.0:
-        role, magnitude = tweeter_role, delay_us
-    else:
-        role, magnitude = woofer_role, -delay_us
-    polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
-    return magnitude, role, polarity
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.planning`, which
+#: owns it beside the build that is its reason to exist (#2291 Phase 5a-v(c)).
+#: This module's own ``_log_measure_diag`` still calls it through this name, as
+#: does every existing ``flow.alignment_to_candidate_fields`` import — one
+#: definition either way.
+alignment_to_candidate_fields = _planning.alignment_to_candidate_fields
 
 
 def _declared_alignment_delay_range_ms(
@@ -3011,62 +2999,11 @@ def alignment_delay_plausible(
     return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
 
 
-def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
-    """Compact JSON-safe evidence core for the measured candidate fingerprint.
-
-    The W4 candidate freezes ``analysis`` as exact JSON data, so only the
-    scalar verdicts travel — never the numpy response arrays. Enough to identify
-    the exact measurement that authorized the candidate (§5.6/§5.8).
-    """
-    drift = analysis.drift
-    align = analysis.alignment
-    cand = analysis.candidate
-    return {
-        "schema_version": 1,
-        "kind": "jts_program_analysis_evidence",
-        "program_id": analysis.program_id,
-        "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
-        "glitch_detected": bool(analysis.glitch_detected),
-        "delay_us": round(float(align.delay_us), 3) if align else None,
-        "alignment_seed_delay_us": (
-            round(float(align.seed_delay_us), 3)
-            if align and align.seed_delay_us is not None else None
-        ),
-        "polarity": align.polarity if align else None,
-        "alignment_confidence": round(float(align.confidence), 4) if align else None,
-        "alignment_confidence_source": align.confidence_source if align else None,
-        "trim_db": (
-            {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None
-        ),
-        # #1667: the band-average seed trim_db's ripple-optimal solve started
-        # from — evidence only, so replay/forensics can always see both even
-        # when the applied trim_db above coincides with it (the sanity-guard
-        # fallback path).
-        "trim_band_average_db": (
-            {k: round(float(v), 4) for k, v in cand.trim_band_average_db.items()}
-            if cand and cand.trim_band_average_db is not None else None
-        ),
-        "predicted_ripple_db": (
-            round(float(cand.predicted_ripple_db), 4) if cand else None
-        ),
-        "alignment_seed_ripple_db": (
-            round(float(cand.alignment_seed_ripple_db), 4)
-            if cand and cand.alignment_seed_ripple_db is not None else None
-        ),
-        "flatness_improvement_db": (
-            round(float(cand.flatness_improvement_db), 4)
-            if cand and cand.flatness_improvement_db is not None else None
-        ),
-        "anchor_delay_us": (
-            round(float(cand.anchor_delay_us), 3)
-            if cand and cand.anchor_delay_us is not None else None
-        ),
-        "snap_delta_us": (
-            round(float(cand.snap_delta_us), 3)
-            if cand and cand.snap_delta_us is not None else None
-        ),
-        "snap_found": bool(cand.snap_found) if cand else None,
-    }
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.planning`,
+#: which owns it beside the build that freezes it onto the candidate (#2291
+#: Phase 5a-v(c)). Every existing ``flow._analysis_json`` import resolves to
+#: that one function.
+_analysis_json = _planning.analysis_json
 
 
 def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
@@ -6630,8 +6567,8 @@ class CrossoverV2Conductor:
     def post_apply_verifies(self) -> bool:
         """Will this session's correction be MEASURED after it is applied?
 
-        The boost-permission evidence gate (see the ``FitVocabulary``
-        construction in ``_build_candidate``): a round nobody will verify may
+        The boost-permission evidence gate (passed into the planner request by
+        ``crossover_v2.planning.plan_for_candidate``): a round nobody will verify may
         not put energy in. Public because it is a fact ABOUT the journey that
         callers legitimately ask — tests reached the private field for it before
         this property existed.
@@ -11034,278 +10971,106 @@ class CrossoverV2Conductor:
         candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
         source_preset: Any = None,
     ) -> tuple[Any, _LinearizationState]:
-        """Build one candidate, and return what its linearization produced.
+        """Build one candidate, and return what its linearization produced — see
+        :func:`~jasper.active_speaker.crossover_v2.planning.build_candidate`,
+        which owns the eligibility gate, the SF2 degrade arm and the assembly.
 
-        The state is RETURNED rather than stashed (#2291 Phase 2b). It used to
-        reach the accountability gate, the VERIFY prior and the proposal as
-        seven ``self._last_*`` fields, which is why the Fc sweep had to
-        snapshot and restore them around every candidate — see
-        :class:`_LinearizationState`. Callers thread one value instead, so a
-        state can only ever describe the candidate returned beside it.
+        **The two preconditions stay HERE**, and that is the host/organ line
+        rather than an accident of the move: both are facts about this SESSION
+        stated in this module's own refusal vocabulary. A declared measurement
+        protection map is session state the candidate never sees, and
+        :class:`CrossoverV2FlowError` is this module's phase-transition error,
+        which a pure module has no business raising.
+
+        The first is ABOVE the SF2 degrade handler on purpose: raised inside it
+        this was caught and degraded to a committable trims-only candidate
+        (panel B1/SF2) in the wrong polarity convention. Severity, per the
+        hearing lens: NOT a boost hazard — the degrade left ``linearization={}``
+        and ``MeasuredCrossoverCandidate`` bounds trims cut-only to [-60, 0] dB
+        — but it was still offered for Apply. Bare ``ValueError`` =>
+        ``internal_error``.
+
+        ``_plan_linearization`` and ``_exclusion_evidence_json`` are passed as
+        bound attributes rather than reached for inside the organ, so a
+        substituted one still binds on production (#2354) — nine substitution
+        sites across two suites reach the first of them — six substituting the
+        class attribute, three substituting it on a conductor instance.
         """
-        from jasper.active_speaker.measured_crossover_candidate import (
-            MeasuredCrossoverAlignment,
-            MeasuredCrossoverCandidate,
-        )
-
-        # ABOVE the SF2 degrade handler on purpose: raised inside it this was
-        # caught and degraded to a committable trims-only candidate (panel
-        # B1/SF2) in the wrong polarity convention. Severity, per the
-        # hearing lens: NOT a boost hazard — the degrade left
-        # linearization={} and MeasuredCrossoverCandidate bounds trims
-        # cut-only to [-60, 0] dB — but it was still offered for Apply.
-        # Bare ValueError => internal_error.
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")
-
-        cand = analysis.candidate
-        if cand is None:
+        if analysis.candidate is None:
             # The residual. ``_measure_verdict`` hoisted this same check to the
             # capture that produces the analysis (2026-07-27 timing move), so
             # reaching it here means a caller that did not walk that path.
             raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
-        delay_us, delay_role, polarity = alignment_to_candidate_fields(
-            analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
-        )
-        alignment = (
-            MeasuredCrossoverAlignment(
-                delay_us=delay_us, delay_role=delay_role, polarity=polarity,
-            )
-            if delay_role is not None
-            else MeasuredCrossoverAlignment()
-        )
-
-        # Layer-1a driver linearization (#1668 PR-C). HARD GATE: reference-tier
-        # mic AND both drivers paired N>=3 — anything else is byte-identical
-        # to the pre-PR-C trims-only path (analysis.candidate.trim_db, empty
-        # linearization dict). See _linearization_ineligible_reason /
-        # _plan_linearization.
-        role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
-        linearization: Mapping[str, Any] = {}
-        ineligible = self._linearization_ineligible_reason(analysis)
-        state = _LinearizationState(outcome=ineligible or "")
-        if ineligible is None:
-            try:
-                plan = self._plan_linearization(
-                    analysis, cand, cloud, candidate_sections=candidate_sections,
-                )
-            except (
-                ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
-                KeyError, IndexError,
-            ) as exc:
-                # SF2 (adversarial review, 2026-07-24): the fit path is
-                # strictly additive — an eligible speaker with a bug in the
-                # (still-young) fit engine must degrade EXACTLY to the
-                # ineligible path, never fail the whole MEASURE accept.
-                # Mirrors _safe_log_diag's "never let enrichment logic break
-                # the primary path" posture, one layer earlier (this guards
-                # the candidate build itself, not just its diagnostic log
-                # line). The caught set matches _safe_log_diag's own
-                # (attribute/key/index/type/value access on structured
-                # data), extended with ArithmeticError since this call site
-                # does floating-point curve fitting (division, log,
-                # exponentiation), not plain field extraction, and with
-                # RuntimeError because linearization_fit.fit_driver_linearization
-                # (N1, this same review) raises exactly that on its own
-                # cut-only invariant violation — without it here, N1's safety
-                # net would escape SF2's and crash this accept instead of
-                # degrading to it. Since #2291 Phase 2b it also catches the
-                # planner's own typed refusals — ``NoCrossoverSectionsError``
-                # for a candidate preset naming no crossover at all, and
-                # ``CandidateFcDisagreementError`` for a section set naming two
-                # corners — both ``CrossoverV2ContractError``, itself a
-                # ``ValueError``. A prescription cannot be planned for a
-                # crossover the candidate does not describe, and degrading to
-                # the trims-only lane is the fail-closed answer: the household
-                # still gets its measured trims, and nothing is fitted toward a
-                # corner nobody committed to.
-                log_event(
-                    logger, "correction.crossover_v2_linearization_fit_failed",
-                    level=logging.WARNING, session_id=self.session_id,
-                    reason=type(exc).__name__, exc_info=True,
-                )
-                role_attenuations_db = dict(cand.trim_db)
-                linearization = {}
-                # PR-L4 item 1: a fit that raised part-way may already have
-                # produced a partial verdict, and none of it survives — a
-                # verdict about branches this candidate no longer carries is
-                # worse than no verdict, because the accountability gate would
-                # grade the wrong thing. A fresh state IS that clearing, and it
-                # covers the linearized VERIFY prior too, which the field-based
-                # degrade left behind.
-                state = _LinearizationState(outcome="fit_failed")
-            else:
-                role_attenuations_db = dict(plan.role_attenuations_db)
-                linearization = dict(plan.linearization)
-                state = _LinearizationState.from_plan(plan)
-
-        return MeasuredCrossoverCandidate(
-            program_id=analysis.program_id,
-            analysis=_analysis_json(analysis),
+        return _planning.build_candidate(
+            analysis, analysis.candidate, cloud,
+            candidate_sections=candidate_sections,
             source_preset=source_preset or self._preset,
-            role_attenuations_db=role_attenuations_db,
-            alignment=alignment,
-            linearization=linearization,
-            # The exclusion reason of record (plan PR-6b). Empty — the
-            # pre-move shape — whenever no cloud evidence reached the fit,
-            # INCLUDING when the fit itself failed above: a record of what the
-            # envelope consumed must not ride a candidate whose corrections
-            # came from the trims-only fallback instead.
-            exclusion_evidence=(
-                self._exclusion_evidence_json(cloud)
-                if cloud is not None and linearization
-                else {}
-            ),
-            # Gauge fix (2026-07-24): the single writer's own verdict,
-            # stamped verbatim onto the candidate at the exact moment it
-            # reaches its final value for this attempt — see
-            # MeasuredCrossoverCandidate.linearization_outcome's own
-            # docstring for why this module never re-derives it. Since #2291
-            # Phase 2b the verdict is this build's own returned state rather
-            # than a conductor field, so the candidate and the state beside it
-            # cannot describe different builds.
-            linearization_outcome=state.outcome,
-        ), state
+            woofer_role=self._woofer.role,
+            tweeter_role=self._tweeter.role,
+            plan=self._plan_linearization,
+            exclusion_evidence=self._exclusion_evidence_json,
+            journal=self._journal_linearization,
+        )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
-        """The fit's cloud inputs, as the candidate's exclusion reason of record.
+        """The fit's cloud inputs, as the candidate's exclusion reason of record
+        — see
+        :func:`~jasper.active_speaker.crossover_v2.planning.exclusion_evidence_json`,
+        which owns the shape and the reasons every field is in it.
 
-        Everything the two cloud envelope terms actually consumed, plus the
-        registry that justifies the intervals — enough that a reader holding
-        only ``candidate.json`` can re-derive ``spatial_exclusion_limit`` and
-        ``position_stability_limit`` and see WHY a band went uncorrected. The
-        registry is re-read from this group's own pipeline result —
-        ``_group_cloud_result``, always its CURRENT value, refreshed on every
-        close including a retake's re-close (issue #1872) — and serialized by
-        :func:`_null_registry_to_dict`, the one owner of that shape, so the
-        candidate's copy always describes the cloud actually retained at
-        confirm time. ``cloud_measure.json``'s own copy can lag it: the
-        evidence store's ``publish_cloud`` write is a per-phase SINGLETON
-        (see :meth:`_run_cloud_pipeline`'s own guard), so a retake landing
-        between the group's first close and the household's confirm leaves
-        the PERSISTED file describing an earlier cloud than the candidate
-        filed beside it. Accepted scope, not a defect this method owns: the
-        evidence artifact is forensic, the candidate is the product, and
-        #1872 is explicit that the store's write-once behavior — first
-        artifact stands — is by design.
-
-        ``band_spread`` is carried as the plain per-band numbers rather than
-        the dataclass: this is persisted JSON, and the two fields the term
-        reads (``sigma_db`` and the band edges it applies over) are the two a
-        reader needs to check it. ``max_sigma_db`` rides along because
-        ``position_stability_limit``'s docstring turns on the distinction
-        between the two spreads, and a reader auditing the choice needs to see
-        the number that was NOT used.
-
-        ``validity_floor_hz`` and ``gated_spec_curve`` (room-correction regime
-        plan RC1, issue #1787) ride here for a different consumer: the room
-        layer. Both previously existed ONLY in the retention-prunable session
-        bundle and the clearable v2 flow state, so once a bundle aged out the
-        room layer could not tell where this speaker's gated measurement stops
-        being trustworthy, nor what the speaker's own gated response is —
-        which is exactly what Tier B residual correction must subtract to
-        avoid re-flattening voicing the speaker layer already set. Carrying
-        them on the candidate makes them travel with the correction they
-        justify, and (because a non-empty ``exclusion_evidence`` is
-        fingerprinted — see :meth:`MeasuredCrossoverCandidate._core`) makes
-        them tamper-evident for free. Both are copied verbatim from this
-        group's own CURRENT pipeline result — the same field
-        ``cloud_measure.json`` was seeded from at publish time, but see the
-        null-registry paragraph above for why a retake after that publish can
-        leave the persisted file a close behind the candidate, and why that
-        gap is accepted rather than fixed here.
-
-        Cost, stated plainly: ``gated_spec_curve`` duplicates the already-
-        decimated cloud curve (<=512 points, two float arrays), which adds
-        roughly **15-20 KB of JSON per candidate**. That is a deliberate
-        trade — the curve is small, bounded, and written once per commission,
-        whereas the alternative (re-reading it from the session bundle) is
-        exactly the retention-prunable dependency this extension exists to
-        remove. If the curve ever grows unbounded, decimate at this boundary
-        rather than dropping the field.
+        This group's pipeline result is read HERE, at call time, and that is why
+        the build reaches this as a PORT rather than holding its answer as a
+        value: the read must be of ``_group_cloud_result``'s CURRENT value,
+        refreshed on every close including a retake's re-close (issue #1872), so
+        a mapping captured when the build was wired would file an earlier
+        close's registry beside this candidate.
         """
-        result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
-        registry = result.get("null_registry")
-        floor = result.get("validity_floor_hz")
-        curve = result.get("curve")
-        return {
-            "phase": PHASE_CLOUD_MEASURE,
-            "excluded_bands_hz": [list(band) for band in cloud.excluded_bands_hz],
-            "n_positions": cloud.n_positions,
-            "band_spread": [
-                {
-                    "center_hz": float(band.center_hz),
-                    "f_lo": float(band.f_lo),
-                    "f_hi": float(band.f_hi),
-                    "sigma_db": float(band.sigma_db),
-                    "max_sigma_db": float(band.max_sigma_db),
-                    "n_bins": int(band.n_bins),
-                }
-                for band in cloud.band_spread
-            ],
-            "null_registry": dict(registry) if isinstance(registry, Mapping) else {},
-            # None is a real, load-bearing value here: "the floor is
-            # unverified", never "the floor is 0 Hz" (see
-            # cloud_validity_floor_hz). The reader must treat it as absent.
-            "validity_floor_hz": (
-                float(floor)
-                if isinstance(floor, (int, float)) and math.isfinite(float(floor))
-                else None
-            ),
-            "gated_spec_curve": (
-                {
-                    "freqs_hz": [float(v) for v in curve.get("freqs_hz", ())],
-                    "magnitude_db": [float(v) for v in curve.get("magnitude_db", ())],
-                }
-                if isinstance(curve, Mapping)
-                else {}
-            ),
-        }
+        return _planning.exclusion_evidence_json(
+            cloud,
+            cloud_result=self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {},
+        )
 
     def _linearization_ineligible_reason(self, analysis: ProgramAnalysis) -> str | None:
-        """HARD GATE for the Layer-1a fit path, as a named reason or ``None``.
+        """HARD GATE for the Layer-1a fit path, as a named reason or ``None`` —
+        see :func:`~jasper.active_speaker.crossover_v2.planning.ineligible_reason`.
 
-        Eligible means a reference-tier mic AND both drivers paired
-        N >= :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES` in-capture
-        occurrences. Anything else falls back to the plain trims-only
-        candidate, byte-identical to the pre-PR-C path.
-
-        **Returns the reason rather than stamping it** (#2291 Phase 2b). It
-        used to answer ``bool`` and write ``self._last_linearization_outcome``
-        on the way out, which made the caller's own outcome depend on a field
-        it never named — the same implicit-return shape the planner extraction
-        removed one layer up. The caller now holds the answer as a value and
-        puts it on the candidate itself.
+        Kept as a conductor attribute because the Fc sweep already passes it as
+        a port (:meth:`_evaluate_fc_candidate`'s ``ineligible_reason=``). The
+        build calls the module function directly, per the sibling rule that a
+        seam nothing substitutes is called directly — both routes resolve to the
+        one definition.
         """
-        if analysis.mic_tier != "reference":
-            return "ineligible_mic_tier"
-        woofer_resp = _driver_response_by_role(analysis, self._woofer.role)
-        tweeter_resp = _driver_response_by_role(analysis, self._tweeter.role)
-        if woofer_resp is None or tweeter_resp is None:
-            return "ineligible_repeats"
-        woofer_n = 1 + len(woofer_resp.repeat_responses)
-        tweeter_n = 1 + len(tweeter_resp.repeat_responses)
-        if (
-            woofer_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
-            and tweeter_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        ):
-            return None
-        return "ineligible_repeats"
+        return _planning.ineligible_reason(
+            analysis,
+            woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
+        )
 
     def _journal_linearization(
-        self, record: JournalRecord | _accountability.GateRecord,
+        self,
+        record: (
+            JournalRecord | _accountability.GateRecord | _planning.FailureRecord
+        ),
     ) -> None:
-        """Emit one planner or gate record through this session's journal.
+        """Emit one planner, gate or build record through this session's journal.
 
         A pure module owns *what happened* and returns it as data; this owns
         *how it is said* — the logger and the session identity, neither of
-        which a pure function has. Two producers reach it, and they carry
-        their payloads in deliberately different record types: the planner's
-        detaches (its payload becomes JSON), the accountability gate's does
-        not (its payload's logfmt bytes are the contract, and detaching
-        rewrote a tuple as a list). Both expose ``event``/``level``/
-        ``fields``, which is all this needs.
+        which a pure function has, and neither of which travels with a record.
+        (That is also why this method did not move with the organ it serves:
+        two suites pin these lines to the ``crossover_v2_flow`` logger by name.)
+
+        Three producers reach it, and they carry their payloads in deliberately
+        different record types: the planner's detaches (its payload becomes
+        JSON), the accountability gate's does not (its payload's logfmt bytes
+        are the contract, and detaching rewrote a tuple as a list), and the
+        build's carries the live exception behind an SF2 degrade, because a
+        traceback cannot be reconstructed from a payload. All three expose
+        ``event``/``level``/``fields``; only the third has ``exc_info``, which
+        is read structurally so the other two need not grow a field they would
+        never set.
 
         For the planner, forwarding here rather than iterating ``plan.journal``
         afterwards is what makes a fit that raises part-way still disclose the
@@ -11315,14 +11080,17 @@ class CrossoverV2Conductor:
         ``record.fields`` is spread as keyword arguments rather than handed to
         ``log_event``'s ``fields=`` parameter so the rendered order matches
         what this module emitted before the extraction: ``session_id`` first,
-        then the payload in the planner's own order. A payload key colliding
-        with ``session_id`` or one of ``log_event``'s own keywords would raise
-        ``TypeError`` — a stdlib type, so the planner's port guard contains it
-        and names the loss on ``journal_dropped`` rather than costing a
-        household its candidate.
+        then the payload in the producer's own order. (``exc_info`` binds
+        ``log_event``'s own reserved parameter and never becomes a rendered
+        field, so a record with a traceback renders exactly the line it did
+        inline.) A payload key colliding with ``session_id``, ``exc_info`` or
+        one of ``log_event``'s other keywords would raise ``TypeError`` — a
+        stdlib type, so the planner's port guard contains it and names the loss
+        on ``journal_dropped`` rather than costing a household its candidate.
         """
         log_event(
             logger, record.event, level=record.level,
+            exc_info=getattr(record, "exc_info", False),
             session_id=self.session_id, **record.fields,
         )
 
@@ -11334,72 +11102,38 @@ class CrossoverV2Conductor:
         *,
         candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     ) -> LinearizationPlan:
-        """Assemble ONE candidate's planner request and run the pure planner.
+        """Assemble ONE candidate's planner request and run the pure planner —
+        see :func:`~jasper.active_speaker.crossover_v2.planning.plan_for_candidate`,
+        which owns the corner derivation and the request shape, and through it
+        the guarantee that ``self._fc_hz`` is not merely unread but unreachable.
 
-        This method is the whole of what the conductor still owns about
-        linearization: which measurement objects become which named planner
-        input. The prescription itself — the σ policy, the fit, the anchored
-        give-back, the ripple re-solve, the trim decision and the headroom
-        charge — lives in
-        :func:`~jasper.active_speaker.crossover_v2.intervention.plan_linearization`
-        and is reached identically from both candidate paths (#2291 Phase 2b).
+        :meth:`program_for_phase` is passed rather than called here because it
+        can raise (before the CHECK gain solve there is no MEASURE program), and
+        it must raise AFTER the candidate's own section set has been judged: a
+        split or empty section set is the more specific answer and is what the
+        SF2 line's ``reason=`` should name. ``plan_linearization`` is passed
+        rather than imported by the organ so THIS module's name stays the one
+        production resolves — the same reason ``select_fc`` is passed to the Fc
+        adjudication (#2354).
 
-        **One corner, and it is the candidate's.** The context is built from
-        the sections this candidate is realized with —
-        ``candidate_sections`` for a swept corner, the session preset's own
-        regions for the configured one — and
-        :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
-        derives the corner FROM them. ``self._fc_hz`` is not read, and there is
-        no second corner in scope for the planner to read either: that is the
-        2026-08-10 defect made unrepresentable rather than merely fixed.
-
-        A split or empty section set raises
-        (``CandidateFcDisagreementError`` / ``NoCrossoverSectionsError``, both
-        ``ValueError`` subclasses), which :meth:`_build_candidate`'s SF2 arm
-        degrades to the trims-only lane. Fail-closed on purpose: a candidate
-        whose own preset names no crossover has no crossover to plan for, and
-        guessing one from the session would be the defect wearing a new hat.
-
-        Only called after :meth:`_linearization_ineligible_reason` returns
-        ``None`` — the planner assumes eligibility and does not re-check.
+        **The ``journal_dropped`` notice stays HERE and cannot move.** It reports
+        on the journal port itself, so saying it through that port would lose it
+        in exactly the case it exists for — a host formatter that throws on
+        every record throws on the notice too.
         """
-        sections = (
-            {role: tuple(regions) for role, regions in candidate_sections.items()}
-            if candidate_sections is not None
-            else sections_by_role(
-                getattr(self._preset, "crossover_regions", ()) or ()
-            )
-        )
-        context = CandidateAcousticContext.from_sections(sections)
-        measure_program = self.program_for_phase(PHASE_MEASURE)
-        seg_w = measure_program.segment("sweep_w")
-        seg_t = measure_program.segment("sweep_t")
-        # ProgramSegment.f1_hz/f2_hz are typed float | None (the general
-        # ProgramSegment shape also covers non-stimulus/silence segments);
-        # __post_init__ guarantees a KIND_SWEEP stimulus segment (which
-        # "sweep_w"/"sweep_t" always are) never has either as None. Narrow
-        # explicitly for mypy and as a defensive invariant check.
-        assert seg_w.f1_hz is not None and seg_w.f2_hz is not None
-        assert seg_t.f1_hz is not None and seg_t.f2_hz is not None
-        request = request_from_analysis(
-            analysis, cand,
-            context=context,
+        plan = _planning.plan_for_candidate(
+            analysis, cand, cloud,
+            candidate_sections=candidate_sections,
+            preset=self._preset,
+            program_for_phase=self.program_for_phase,
             woofer_role=self._woofer.role,
             tweeter_role=self._tweeter.role,
-            excited_band_hz={
-                self._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
-                self._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
-            },
             driver_class_by_role=self._driver_class_by_role,
-            # Boost permission's ONE necessary condition, and the clause that
-            # tells "no cloud by design" (R15's driver-only path) apart from
-            # "a cloud was planned and lost". Both are the host's to answer —
-            # the planner cannot see a session's phase list.
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
-            cloud=cloud,
+            plan_linearization=plan_linearization,
+            journal=self._journal_linearization,
         )
-        plan = plan_linearization(request, journal=self._journal_linearization)
         if plan.journal_dropped:
             # The port refused lines. Plain scalars only, so whatever broke one
             # record's payload cannot also swallow the notice about it. This is
@@ -11412,7 +11146,6 @@ class CrossoverV2Conductor:
                 detail="; ".join(plan.journal_dropped),
             )
         return plan
-
 
 # --------------------------------------------------------------------------- #
 # capture plan + session spec (§5.7, auto-advance policy §5.2)
