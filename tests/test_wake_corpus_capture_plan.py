@@ -1184,11 +1184,16 @@ def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
 
 
 def _chip_corpus_disable_env(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    stub_handoff: bool = True,
 ) -> tuple[Path, list[str], list[str]]:
     """A chip-corpus box whose aec-init restart fails on the way out.
 
-    Returns (bridge env path, restart log, reconciler-kick log).
+    Returns (bridge env path, restart log, reconciler-kick log). Tests that
+    exercise the real handoff pass ``stub_handoff=False``; the kick log stays
+    empty for them.
     """
     _, bridge_path = _use_tmp_bridge_env(
         monkeypatch,
@@ -1218,11 +1223,12 @@ def _chip_corpus_disable_env(
         "restart_aec_bridge",
         lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
     )
-    monkeypatch.setattr(
-        bridge_session,
-        "_hand_chip_stack_to_reconciler",
-        lambda *, reason: kicks.append(reason),
-    )
+    if stub_handoff:
+        monkeypatch.setattr(
+            bridge_session,
+            "_hand_chip_stack_to_reconciler",
+            lambda *, reason: kicks.append(reason),
+        )
     return bridge_path, restarts, kicks
 
 
@@ -1411,7 +1417,11 @@ def test_a_broken_reconciler_kick_cannot_resurrect_the_rollback(
     An exception escaping the kick would be caught as a failed restart and roll
     the corpus env back — the #2254 trap through a second door.
     """
-    bridge_path, _restarts, _kicks = _chip_corpus_disable_env(monkeypatch, tmp_path)
+    # The real handoff, not the fixture's stub: the point is what the live
+    # function does when the broker call under it explodes.
+    bridge_path, _restarts, _kicks = _chip_corpus_disable_env(
+        monkeypatch, tmp_path, stub_handoff=False,
+    )
     monkeypatch.setattr(
         bridge_session, "_aec_init_exec_main_status", lambda: 2,
     )
