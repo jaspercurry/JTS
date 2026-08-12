@@ -6944,11 +6944,25 @@ mod tests {
             "the probe must exceed the old rails, or this test guards nothing",
         );
 
+        let ducked_probe = sum[0];
         apply_gain_to_sum(&mut sum, duck, ProgramWidth::Wide);
         assert_eq!(sum[0], 3_221_127_168, "the ducked sum keeps its headroom");
-        let clamped = i32::MAX as i64;
+
+        // THE OLD VALUE IS COMPUTED FROM THE OLD EXPRESSION, not written down.
+        // An earlier revision used the literal `i32::MAX` here and was wrong by
+        // one: `i32::MAX as f32` rounds UP to 2^31, so the old
+        // `.clamp(_, i32::MAX as f32) as i64` actually landed on 2_147_483_648.
+        // A hand-written "what the old code did" is a claim; this is the code.
+        let spent_value = ((ducked_probe as f32) * duck)
+            .round()
+            .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
+        assert_eq!(
+            spent_value,
+            i32::MAX as i64 + 1,
+            "the f32 upper rail is 2^31, one above i32::MAX",
+        );
         assert_ne!(
-            sum[0], clamped,
+            sum[0], spent_value,
             "the old i32 rails would have landed exactly here",
         );
 
@@ -6957,13 +6971,35 @@ mod tests {
         // the speaker, not by a rounding step.
         let assistant = -2_000_000_000i64;
         let kept = vec![sum[0] + assistant];
-        let spent = vec![clamped + assistant];
+        let spent = vec![spent_value + assistant];
         let mut kept_out = vec![0i16; 1];
         let mut spent_out = vec![0i16; 1];
         saturate_to_i16(&kept, &mut kept_out, ProgramWidth::Wide);
         saturate_to_i16(&spent, &mut spent_out, ProgramWidth::Wide);
         assert_eq!(kept_out[0], 18_633);
+        // 2_250 on BOTH old rail candidates (i32::MAX and the f32 clamp's
+        // 2^31): the two differ by one spine LSB, which is far below one i16
+        // step, so the audible verdict is the same either way. Verified
+        // mechanically rather than reasoned — an earlier revision of this line
+        // said 2_251 from hand arithmetic and jts3 caught it.
         assert_eq!(spent_out[0], 2_250);
+        assert_eq!(
+            {
+                let alt = vec![(i32::MAX as i64) + assistant];
+                let mut alt_out = vec![0i16; 1];
+                saturate_to_i16(&alt, &mut alt_out, ProgramWidth::Wide);
+                alt_out[0]
+            },
+            spent_out[0],
+            "both old-rail candidates land on the same i16 code",
+        );
+        // ~18 dB, stated as a ratio rather than left for the reader to divide.
+        assert!(
+            (kept_out[0] as f64 / spent_out[0] as f64) > 8.0,
+            "kept={} spent={}",
+            kept_out[0],
+            spent_out[0],
+        );
     }
 
     /// The ramp carries the same fix — it is the same multiply with a per-frame

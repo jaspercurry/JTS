@@ -140,6 +140,32 @@ def _isolate_environ():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tts_wire_width_cache():
+    """Clear the per-process assistant-width answer before AND after each test.
+
+    ``jasper.audio_io.tts_wire_is_wide`` is ``lru_cache``'d on purpose: the two
+    callers that ask (the playout's quantizer and the daemon's earcon bake) must
+    get ONE answer, and in production the daemon is restarted by anything that
+    could change it. In a test process there is no restart, so the cache is a
+    channel between tests — including ACROSS FILES, which no per-file inline
+    clear can close. A test that monkeypatches the box declaration to wide and
+    warms the cache would otherwise leave every later test quantizing and baking
+    at spine scale.
+
+    Both sides matter. Clearing AFTER stops a test from handing its answer
+    forward; clearing BEFORE means a test does not inherit one from a file that
+    forgot to clean up, so this fixture is not itself a thing to remember.
+    """
+    from jasper.audio_io import tts_wire_is_wide
+
+    tts_wire_is_wide.cache_clear()
+    try:
+        yield
+    finally:
+        tts_wire_is_wide.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
     """Point the automatic-capture entry stash at a per-test temp file.
 

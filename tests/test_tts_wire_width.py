@@ -265,19 +265,53 @@ def test_the_wide_wire_frame_is_twice_the_narrow_one():
 
 
 def _clear_cache():
+    """`tests/conftest.py` clears this around every test; these calls are the
+    WITHIN-test clears, because several of these tests deliberately resolve the
+    width more than once with different declarations."""
     tts_wire_is_wide.cache_clear()
 
 
-def test_the_width_comes_from_the_one_ring_wire_declaration(monkeypatch):
+def _declare(monkeypatch, *, wire_format: str, coupling: str) -> None:
+    """Stub BOTH halves of the box's declaration, at their real read points."""
+    import jasper.fanin.coupling_reconcile as cr
     import jasper.fanin_coupling as fc
 
+    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: wire_format)
+    monkeypatch.setattr(cr, "read_persisted_coupling", lambda *a, **k: coupling)
     _clear_cache()
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: "S32_LE")
-    assert tts_wire_is_wide() is True
-    _clear_cache()
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: "S16_LE")
-    assert tts_wire_is_wide() is False
-    _clear_cache()
+
+
+# The verdict table, mirroring `the_assistant_width_needs_both_halves_of_the_box_declaration`
+# in rust/jasper-tts-protocol/src/lib.rs. The (S32_LE, loopback) row is the one
+# that matters: an snd-aloop substream is an S16 device, so a box that declared
+# a wide format but never armed the ring is NARROW.
+_VERDICTS = [
+    ("S32_LE", "shm_ring", True),
+    ("S32_LE", "loopback", False),
+    ("S16_LE", "shm_ring", False),
+    ("S16_LE", "loopback", False),
+]
+
+
+@pytest.mark.parametrize(("wire_format", "coupling", "expected"), _VERDICTS)
+def test_the_width_needs_both_halves_of_the_box_declaration(
+    monkeypatch, wire_format, coupling, expected
+):
+    _declare(monkeypatch, wire_format=wire_format, coupling=coupling)
+    assert tts_wire_is_wide() is expected
+
+
+def test_a_declared_wide_but_unarmed_box_speaks_the_narrow_verb(monkeypatch):
+    """The row an earlier revision of this PR got wrong, end to end.
+
+    Keying on the format token alone made `jasper-voice` send AUDIO32 into a
+    fan-in that mixes narrow — converted losslessly, but a standing disagreement
+    on a perfectly legitimate configuration.
+    """
+    _declare(monkeypatch, wire_format="S32_LE", coupling="loopback")
+    tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    assert tts._wire_wide is False
+    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
 
 
 def test_an_unreadable_declaration_resolves_narrow_and_says_so(monkeypatch, caplog):
@@ -302,6 +336,7 @@ def test_an_unreadable_declaration_resolves_narrow_and_says_so(monkeypatch, capl
 
 def test_the_process_resolves_the_width_exactly_once(monkeypatch):
     """Two callers ask — the playout and the earcon bake. One answer, always."""
+    import jasper.fanin.coupling_reconcile as cr
     import jasper.fanin_coupling as fc
 
     calls = []
@@ -312,6 +347,7 @@ def test_the_process_resolves_the_width_exactly_once(monkeypatch):
 
     _clear_cache()
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _counted)
+    monkeypatch.setattr(cr, "read_persisted_coupling", lambda *a, **k: "shm_ring")
     assert tts_wire_is_wide() is True
     assert tts_wire_is_wide() is True
     assert tts_wire_is_wide() is True
@@ -320,19 +356,36 @@ def test_the_process_resolves_the_width_exactly_once(monkeypatch):
 
 
 def test_the_playout_resolves_its_width_when_none_is_given(monkeypatch):
-    import jasper.fanin_coupling as fc
-
-    _clear_cache()
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: "S32_LE")
+    _declare(monkeypatch, wire_format="S32_LE", coupling="shm_ring")
     tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is True
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
-    _clear_cache()
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: "S16_LE")
+    _declare(monkeypatch, wire_format="S16_LE", coupling="shm_ring")
     tts = OutputdTtsPlayout(socket_path="/nonexistent.sock")
     assert tts._wire_wide is False
     assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
-    _clear_cache()
+
+
+def test_a_startup_line_names_the_resolved_width_and_where_it_came_from(
+    monkeypatch, caplog
+):
+    """Item 4: a support read must not need journal archaeology.
+
+    The mismatch warn fires at most once for the daemon's lifetime and may have
+    scrolled away; this line is always there, on both sides of the socket.
+    """
+    _declare(monkeypatch, wire_format="S32_LE", coupling="shm_ring")
+    with caplog.at_level("INFO"):
+        OutputdTtsPlayout(socket_path="/nonexistent.sock")
+    assert "event=tts_wire.resolved" in caplog.text
+    assert "width=S32_LE" in caplog.text
+    assert "verb=AUDIO32" in caplog.text
+    assert "source=box_declaration" in caplog.text
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        OutputdTtsPlayout(socket_path="/nonexistent.sock", wire_wide=False)
+    assert "width=S16_LE" in caplog.text
+    assert "source=explicit" in caplog.text
 
 
 # ---------------------------------------------------------------------------

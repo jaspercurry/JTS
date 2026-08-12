@@ -272,6 +272,16 @@ fn run() -> Result<()> {
             (None, None, None)
         };
 
+    // The ASSISTANT wire this box will accept without converting — the reader's
+    // half of the pair `jasper-voice` publishes as `event=tts_wire.resolved`.
+    // Emitted unconditionally (even with the TTS socket disabled) and with BOTH
+    // inputs named, so "which half made this narrow?" is answerable from one
+    // line. Two lines side by side answer "is a mismatch converting right now"
+    // without waiting for a payload to trigger the mismatch warn — which by
+    // design fires at most once for the daemon's lifetime and may already have
+    // scrolled out of the journal window.
+    info!("{}", config.assistant_wire_resolved_line());
+
     // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
     // required in the production fan-in topology; a missing lane means
     // one renderer can silently play without entering the summed music

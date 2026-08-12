@@ -435,6 +435,16 @@ impl Coupling {
             _ => Coupling::Loopback,
         }
     }
+
+    /// The transport vocabulary token — the same spelling Python's
+    /// `jasper.fanin_coupling.COUPLING_LOOPBACK` / `COUPLING_SHM_RING` use and
+    /// the reconciler persists. Round-trips `from_env_value`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Coupling::Loopback => "loopback",
+            Coupling::ShmRing => "shm_ring",
+        }
+    }
 }
 
 /// The sample format Ring A's wire carries — the ONE place in this daemon that
@@ -531,9 +541,53 @@ impl Config {
     /// unset is the shipped default, and [`RingWireFormat::from_env_value`]
     /// resolves that to `S16_LE`. Arming a box is a per-box configuration
     /// change, never a code default.
+    ///
+    /// THE CONJUNCTION ITSELF LIVES IN THE SHARED CRATE
+    /// ([`jasper_tts_protocol::TtsWireWidth::from_box_declaration`]) and this
+    /// calls it rather than restating it. The same rule decides the ASSISTANT
+    /// wire's width, and the Python control plane
+    /// (`jasper.fanin_coupling.assistant_wire_is_wide`) mirrors that one
+    /// function — so "both ends derive the same answer" is a call graph, not a
+    /// claim. `tests/test_ring_wire_format_contract.py` pins the verdict table
+    /// across the two languages.
     pub fn program_wire_is_wide(&self) -> bool {
-        matches!(self.camilla_coupling, Coupling::ShmRing)
-            && matches!(self.ring_wire_format, RingWireFormat::S32Le)
+        matches!(
+            jasper_tts_protocol::TtsWireWidth::from_box_declaration(
+                matches!(self.ring_wire_format, RingWireFormat::S32Le),
+                matches!(self.camilla_coupling, Coupling::ShmRing),
+            ),
+            jasper_tts_protocol::TtsWireWidth::Wide,
+        )
+    }
+
+    /// The `event=fanin.tts_wire.resolved` startup line — this box's resolved
+    /// ASSISTANT wire width, and BOTH declared halves that produced it.
+    ///
+    /// A support read must be able to answer "is a mismatch converting right
+    /// now" without journal archaeology, and "which half made this narrow?"
+    /// without a code read. The mismatch warn itself fires at most once for the
+    /// daemon's lifetime and may already have scrolled out of the window, so
+    /// this line — always emitted, even with the TTS socket disabled — is the
+    /// durable half of the answer. `jasper-voice` publishes its own
+    /// `event=tts_wire.resolved`; the two compared are the whole diagnosis.
+    ///
+    /// Rendered here rather than formatted at the call site so the fields are
+    /// reachable from a test: an inline `info!` in `main()` is unguardable, and
+    /// this one shipped that way until a mutation deleting it left the suite
+    /// green.
+    pub fn assistant_wire_resolved_line(&self) -> String {
+        let width = if self.program_wire_is_wide() {
+            jasper_tts_protocol::TtsWireWidth::Wide
+        } else {
+            jasper_tts_protocol::TtsWireWidth::Narrow
+        };
+        format!(
+            "event=fanin.tts_wire.resolved verb={} wire_format={} coupling={} sample_bytes={}",
+            width.verb(),
+            self.ring_wire_format.as_str(),
+            self.camilla_coupling.as_str(),
+            width.sample_bytes(),
+        )
     }
 
     /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
@@ -2856,6 +2910,50 @@ mod tests {
                         cfg.program_wire_is_wide(),
                         expected,
                         "coupling={coupling} wire={wire:?}",
+                    );
+                },
+            );
+        }
+    }
+
+    /// The STARTUP WIDTH LINE, by its fields (U2 PR-2 item 4).
+    ///
+    /// This is the durable half of "is a mismatch converting right now": the
+    /// mismatch warn fires at most once for a daemon's lifetime and may have
+    /// scrolled away, but this line is always there, and `jasper-voice` emits
+    /// its own `event=tts_wire.resolved` to pair with it.
+    ///
+    /// Asserted by CONTENT, not by presence. Naming both declared halves is the
+    /// point — a line that said only "narrow" would leave a support read unable
+    /// to tell a narrow-format box from an unarmed one, which is exactly the
+    /// distinction the whole conjunction exists to draw.
+    #[test]
+    fn the_startup_width_line_names_the_verdict_and_both_declared_halves() {
+        let cases = [
+            ("shm_ring", "S32_LE", "AUDIO32", "4"),
+            ("shm_ring", "S16_LE", "AUDIO", "2"),
+            // The row a support read most needs to distinguish: declared wide,
+            // resolved narrow, BECAUSE of the coupling.
+            ("loopback", "S32_LE", "AUDIO", "2"),
+            ("loopback", "S16_LE", "AUDIO", "2"),
+        ];
+        for (coupling, wire, verb, sample_bytes) in cases {
+            with_env(
+                &[
+                    ("JASPER_FANIN_CAMILLA_COUPLING", Some(coupling)),
+                    ("JASPER_FANIN_RING_WIRE_FORMAT", Some(wire)),
+                ],
+                || {
+                    let line = Config::from_env()
+                        .expect("defaults must parse")
+                        .assistant_wire_resolved_line();
+                    assert!(line.starts_with("event=fanin.tts_wire.resolved "), "{line}",);
+                    assert!(line.contains(&format!("verb={verb}")), "{line}");
+                    assert!(line.contains(&format!("wire_format={wire}")), "{line}");
+                    assert!(line.contains(&format!("coupling={coupling}")), "{line}");
+                    assert!(
+                        line.contains(&format!("sample_bytes={sample_bytes}")),
+                        "{line}",
                     );
                 },
             );

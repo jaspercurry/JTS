@@ -519,8 +519,10 @@ pub struct TtsMixer {
     /// Per-segment playout accounting behind the FLUSH_SYNC ack. Drained at
     /// the mix-commit point (see [`crate::playout`]).
     ledger: PlayoutLedger,
-    /// The last payload width seen, so the mismatch warning fires on a
-    /// TRANSITION rather than once per audio command.
+    /// The last payload width seen AND compared, so the mismatch warning fires
+    /// on a transition rather than once per audio command. In practice a box
+    /// speaks one width for a daemon's whole lifetime, so this is one line per
+    /// lifetime, not per connection — the client reconnecting does not re-arm it.
     last_payload_width: Option<TtsWireWidth>,
     /// This box's own program width, recorded by `mix_period`. `None` until the
     /// first period is mixed — a daemon that has not mixed anything yet has no
@@ -611,29 +613,45 @@ impl TtsMixer {
         }
     }
 
-    /// Note the wire width a payload declared, warning ONCE per transition when
-    /// it disagrees with this box's own resolved program width.
+    /// Note the wire width a payload declared, warning when it disagrees with
+    /// this box's own resolved program width.
     ///
     /// A disagreement is config drift, not a level error — the payload names
     /// its own width and both conversions are exact — so it is observable
     /// rather than fatal. See [`TtsWireWidth`] for why this axis is a warn
     /// where the ring's is a park.
+    ///
+    /// THE DEDUP LATCH IS ARMED ONLY AFTER A COMPLETED COMPARISON, and that
+    /// ordering is the whole point rather than a detail. An earlier revision
+    /// recorded `last_payload_width` first and then bailed when the hint was
+    /// still `None` (no period mixed yet). A payload that arrived in that window
+    /// would have latched the width WITHOUT ever being compared, and every
+    /// later payload of the same width would then short-circuit on the latch —
+    /// so the mismatch would go unlogged for the daemon's entire life, decided
+    /// by a race the reader cannot see. Now an uncompared payload leaves the
+    /// latch untouched and the next one is compared properly: structural, not
+    /// timing-dependent.
     fn note_payload_width(&mut self, declared: TtsWireWidth) {
         if self.last_payload_width == Some(declared) {
             return;
         }
-        self.last_payload_width = Some(declared);
         // `None` is "no period mixed yet", not "narrow": a daemon with no
-        // opinion must not accuse a correct client of drifting.
+        // opinion must not accuse a correct client of drifting — and must not
+        // latch this width as though it had been checked.
         let Some(expected) = self.program_width_hint else {
             return;
         };
+        self.last_payload_width = Some(declared);
         if declared != expected {
             warn!(
                 "event=fanin.tts_wire_width_mismatch declared={} expected={} \
-                 action=converted note=jasper-voice and jasper-fanin resolved \
-                 different JASPER_FANIN_RING_WIRE_FORMAT values; restart \
-                 jasper-voice to re-read it",
+                 action=converted note=jasper-voice and jasper-fanin disagree on \
+                 this box's assistant width; either the coupling/wire-format \
+                 declaration changed without restarting jasper-voice, or the box \
+                 declares a wide wire it has not armed (a declared-wide loopback \
+                 box is narrow, and restarting voice will not change that) — \
+                 compare JASPER_FANIN_RING_WIRE_FORMAT and \
+                 JASPER_FANIN_CAMILLA_COUPLING in fanin.env",
                 declared.verb(),
                 expected.verb(),
             );
@@ -3288,6 +3306,138 @@ mod tests {
             metrics.dropped_audio_frames(),
             4,
             "an over-budget wide payload must be dropped and counted, not queued",
+        );
+        drop(flush_tx);
+    }
+
+    /// R-SF2: THE MISMATCH WARNING FIRES, AND FIRES ONCE.
+    ///
+    /// Before this the warn had no coverage at all — a mutation deleting the
+    /// whole `note_payload_width` call left the suite green. Two properties,
+    /// because either alone is a defect: silence would hide config drift, and a
+    /// line per audio command would spam the journal at ~4 Hz through a reply.
+    #[test]
+    fn a_width_mismatch_warns_exactly_once_for_the_daemon_lifetime() {
+        capture_logs();
+        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+        let mut sum = vec![0i64; 2];
+        // Give the daemon its opinion first: one period mixed at Wide.
+        mixer.prepare_period();
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
+
+        // Six narrow payloads from a drifted client, drained across three
+        // periods — the shape a real reply has.
+        for _ in 0..3 {
+            for _ in 0..2 {
+                tx.send(QueuedTtsCommand {
+                    epoch: 0,
+                    command: TtsCommand::Audio(vec![1_000, -1_000]),
+                })
+                .unwrap();
+            }
+            mixer.prepare_period();
+            let mut period = vec![0i64; 2];
+            mixer.mix_period(&mut period, crate::mixer::ProgramWidth::Wide);
+        }
+
+        let lines: Vec<String> = captured_logs()
+            .into_iter()
+            .filter(|line| line.contains("event=fanin.tts_wire_width_mismatch"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "expected exactly one mismatch line, got {lines:#?}",
+        );
+        let line = &lines[0];
+        assert!(line.contains("declared=AUDIO"), "{line}");
+        assert!(line.contains("expected=AUDIO32"), "{line}");
+        assert!(line.contains("action=converted"), "{line}");
+        // The remediation must name BOTH causes. "Restart jasper-voice" alone is
+        // wrong advice for a declared-wide-but-unarmed box, where restarting
+        // changes nothing and the coupling is the thing to look at.
+        assert!(
+            line.contains("JASPER_FANIN_CAMILLA_COUPLING"),
+            "the remediation must name the coupling half: {line}",
+        );
+        assert!(
+            line.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
+            "the remediation must name the format half: {line}",
+        );
+        drop(flush_tx);
+    }
+
+    /// R-SF2 (the ordering half): a payload that arrives BEFORE the daemon has
+    /// an opinion must not silence the warning for the rest of the process.
+    ///
+    /// The latch is the dedup for a per-command warn. If it were armed before
+    /// the comparison, a payload landing while `program_width_hint` is still
+    /// `None` would latch its width uncompared, and every later payload of that
+    /// width would short-circuit on the latch — the mismatch never logged, for
+    /// the daemon's whole life, decided by a race no reader can see. This drives
+    /// exactly that interleaving.
+    #[test]
+    fn a_payload_seen_before_the_first_mix_does_not_silence_the_warning() {
+        capture_logs();
+        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+
+        // Audio arrives and is INGESTED before any period is mixed, so the
+        // width hint is still None when `note_payload_width` runs.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1_000, -1_000]),
+        })
+        .unwrap();
+        mixer.prepare_period();
+        assert!(
+            captured_logs()
+                .iter()
+                .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
+            "a daemon with no opinion yet must not accuse anyone",
+        );
+
+        // Now the daemon forms its opinion, and the SAME width arrives again.
+        let mut sum = vec![0i64; 2];
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Wide);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1_000, -1_000]),
+        })
+        .unwrap();
+        mixer.prepare_period();
+
+        let hits = captured_logs()
+            .into_iter()
+            .filter(|line| line.contains("event=fanin.tts_wire_width_mismatch"))
+            .count();
+        assert_eq!(
+            hits, 1,
+            "the uncompared payload must not have latched the width",
+        );
+        drop(flush_tx);
+    }
+
+    /// The coherent box is silent. Without this the two tests above would pass
+    /// on a daemon that warned unconditionally.
+    #[test]
+    fn a_matching_payload_width_logs_nothing() {
+        capture_logs();
+        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+        let mut sum = vec![0i64; 2];
+        mixer.prepare_period();
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1_000, -1_000]),
+        })
+        .unwrap();
+        mixer.prepare_period();
+        mixer.mix_period(&mut sum, crate::mixer::ProgramWidth::Narrow);
+        assert!(
+            captured_logs()
+                .iter()
+                .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
+            "a coherent narrow box must not warn",
         );
         drop(flush_tx);
     }

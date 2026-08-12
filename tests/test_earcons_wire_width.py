@@ -159,18 +159,34 @@ def test_the_wide_bake_is_the_same_sound_with_sub_lsb_detail_the_narrow_lost():
 
 
 def test_the_wide_full_scale_is_the_promoted_narrow_one_not_the_containers():
-    """Level, not headroom.
+    """Round-trip identity, not loudness.
 
-    `i32::MAX` is one step above `32767 << 16`. Baking to the container's own
-    top code would make every wide earcon a hair louder than its narrow twin
-    and break the equivalence above — a level change disguised as a width
-    change.
+    `i32::MAX` is one step above `32767 << 16`, so baking to the container's own
+    top code would raise the wide earcon by 1 part in 32768 — about 0.0003 dB,
+    inaudible and not worth a test. What it would actually break is EXACTNESS:
+    `widen_i16_to_i32` and `narrow_i32_to_i16_round` are inverses only on this
+    grid, so the wide bake would stop narrowing back to the narrow bake and the
+    equivalence asserted above would become approximate. That is what this pins.
     """
     assert _PCM32_FULL_SCALE == 32_767 * 65_536
     assert _PCM32_FULL_SCALE == 32_767 << 16
     assert _PCM32_FULL_SCALE < _I32_MAX
     assert _I32_MIN == -(2 ** 31)
     assert _I32_MAX == 2 ** 31 - 1
+
+    # The exactness itself: full scale on this grid narrows back to full scale
+    # on the S16 grid, with the shared round-to-nearest quantizer's arithmetic.
+    def _narrow_round(sample: int) -> int:
+        return max(-32_768, min(32_767, (sample + 32_768) >> 16))
+
+    assert _narrow_round(_PCM32_FULL_SCALE) == 32_767
+    # The container's top code does NOT — it saturates, so the round trip stops
+    # being an identity exactly where a normalized earcon peaks.
+    assert _narrow_round(_I32_MAX) == 32_767
+    assert _I32_MAX - _PCM32_FULL_SCALE == 65_535, (
+        "the container's top code is most of one i16 step above the promoted "
+        "grid; normalizing to it would put every wide sample off that grid"
+    )
 
 
 def test_the_wide_packer_rounds_to_nearest_rather_than_truncating():

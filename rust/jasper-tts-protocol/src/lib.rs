@@ -37,11 +37,11 @@ pub const CHANNELS: u16 = 2;
 /// SELF-DESCRIBING, NOT NEGOTIATED. The writer spells its width in the command
 /// verb (`AUDIO` / `AUDIO32`) and the reader parses exactly what arrived, so
 /// there is no round trip and no agreement step. Both ends nevertheless derive
-/// the SAME answer from the SAME input — the box's declared
-/// `JASPER_FANIN_RING_WIRE_FORMAT`, through [`TtsWireWidth::from_ring_wire_format`]
-/// in Rust and `jasper.fanin_coupling.resolve_ring_wire_format` in Python — so
-/// in a coherent box the declaration and the reader's own resolution agree by
-/// construction.
+/// the SAME answer from the SAME two inputs, through the SAME rule —
+/// [`TtsWireWidth::from_box_declaration`], which `jasper-fanin`'s
+/// `Config::program_wire_is_wide` calls and
+/// `jasper.fanin_coupling.assistant_wire_is_wide` mirrors — so in a coherent box
+/// the declaration and the reader's own resolution agree by construction.
 ///
 /// WHY A DISAGREEMENT IS A WARNING AND NOT A PARK. A ring header or an ALSA
 /// open carries no width of its own, so guessing wrong there is a 96 dB level
@@ -50,11 +50,16 @@ pub const CHANNELS: u16 = 2;
 /// error: a narrow payload entering a wide mix is `widen_i16_to_i32`, a wide
 /// payload entering a narrow mix is `narrow_i32_to_i16_round`, and both are the
 /// exact conversions those primitives exist for. What a mismatch DOES mean is
-/// config drift — a box whose wire flipped without restarting `jasper-voice` —
-/// so each daemon logs it once per connection rather than muting the speaker's
-/// only voice path over a precision difference. This is PR #2330's round-3
-/// lesson applied: check each axis at its own strength, and do not park a
-/// configuration that is merely suboptimal.
+/// config drift — the two processes read the box's declaration at different
+/// times and one of them is stale — so each daemon logs it once for its
+/// lifetime rather than muting the speaker's only voice path over a precision
+/// difference. This is PR #2330's round-3 lesson applied: check each axis at its
+/// own strength, and do not park a configuration that is merely suboptimal.
+///
+/// The drift window is bounded rather than open-ended: `coupling_reconcile`
+/// restarts `jasper-voice` whenever a coupling flip changes the resolved
+/// assistant width, so the mismatch is a transient across that flip, not a
+/// state a box can sit in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsWireWidth {
     /// `AUDIO` — interleaved stereo S16LE, the shipped fleet default.
@@ -82,18 +87,33 @@ impl TtsWireWidth {
         }
     }
 
-    /// The box's TTS wire width, from its declared ring wire format token.
+    /// THE BOX'S ASSISTANT WIRE WIDTH — the one rule, over BOTH halves of the
+    /// declaration.
     ///
-    /// The token vocabulary is the ring's (`S16_LE` / `S32_LE`) because it is
-    /// the box's ONE format declaration; see [`TtsWireWidth`]. An unrecognized
-    /// token resolves `Narrow` here rather than raising: `jasper-fanin`'s own
-    /// `RingWireFormat::from_env_value` already treats it as a config-class
-    /// fault and parks at exit 78, so this reader's job is only to avoid
-    /// inventing a second, quieter verdict for the same byte.
-    pub fn from_ring_wire_format(token: &str) -> TtsWireWidth {
-        match token.trim() {
-            "S32_LE" => TtsWireWidth::Wide,
-            _ => TtsWireWidth::Narrow,
+    /// A wide wire needs the declared `S32_LE` ring wire format **and** the
+    /// `shm_ring` coupling. The format alone is not enough and the omission is
+    /// not academic: an snd-aloop substream is an S16 device, full stop, so a
+    /// loopback-coupled box resolves NARROW however it spelled its format. That
+    /// is exactly the conjunction `jasper_fanin::Config::program_wire_is_wide`
+    /// has always applied; this is that function's body, lifted here so the
+    /// Python control plane can mirror ONE rule instead of re-deriving it.
+    ///
+    /// Callers pass their own already-parsed halves rather than tokens, because
+    /// both ends have them typed by the time they ask: fan-in has `Coupling` and
+    /// `RingWireFormat`, and Python has `resolve_coupling` /
+    /// `resolve_ring_wire_format`. Re-stringifying to cross this boundary would
+    /// add a parse that could disagree with the parse that produced it.
+    ///
+    /// `tests/test_ring_wire_format_contract.py` pins the VERDICT — all four
+    /// pairings — against this function's source, not just the token vocabulary.
+    pub fn from_box_declaration(
+        wire_format_is_wide: bool,
+        coupling_is_shm_ring: bool,
+    ) -> TtsWireWidth {
+        if wire_format_is_wide && coupling_is_shm_ring {
+            TtsWireWidth::Wide
+        } else {
+            TtsWireWidth::Narrow
         }
     }
 }
@@ -1074,28 +1094,37 @@ mod tests {
         }
     }
 
-    /// The width comes from the box's ONE format declaration, spelled the way
-    /// the ring spells it. `tests/test_ring_wire_format_contract.py` pins the
-    /// Python half of the same token set.
+    /// THE VERDICT TABLE — all four pairings of the box's two declared halves.
+    ///
+    /// Only the conjunction is wide. The single most important row is
+    /// (wide format, loopback coupling) → **Narrow**: an snd-aloop substream is
+    /// an S16 device, so a box that declared a wide format but never armed the
+    /// ring must NOT speak `AUDIO32`. An earlier revision of this PR keyed the
+    /// Python side on the format token alone and got that row wrong.
+    ///
+    /// `tests/test_ring_wire_format_contract.py` pins the Python mirror against
+    /// this same table, by reading this function's source.
     #[test]
-    fn the_wire_width_is_resolved_from_the_ring_wire_format_token() {
+    fn the_assistant_width_needs_both_halves_of_the_box_declaration() {
         assert_eq!(
-            TtsWireWidth::from_ring_wire_format("S32_LE"),
+            TtsWireWidth::from_box_declaration(true, true),
             TtsWireWidth::Wide,
+            "wide format + shm_ring coupling is the ONLY wide pairing",
         );
         assert_eq!(
-            TtsWireWidth::from_ring_wire_format(" S32_LE "),
-            TtsWireWidth::Wide,
+            TtsWireWidth::from_box_declaration(true, false),
+            TtsWireWidth::Narrow,
+            "a declared-wide box that never armed the ring outputs to an S16 \
+             substream and must stay narrow",
         );
-        // Unset, narrow, and every unrecognized spelling resolve narrow here —
-        // fan-in's own parser owns the refusal verdict for a bad token.
-        for token in ["S16_LE", "", "s32_le", "S32LE", "bogus"] {
-            assert_eq!(
-                TtsWireWidth::from_ring_wire_format(token),
-                TtsWireWidth::Narrow,
-                "{token} must not resolve wide here",
-            );
-        }
+        assert_eq!(
+            TtsWireWidth::from_box_declaration(false, true),
+            TtsWireWidth::Narrow,
+        );
+        assert_eq!(
+            TtsWireWidth::from_box_declaration(false, false),
+            TtsWireWidth::Narrow,
+        );
     }
 
     /// A payload's own accessors agree with the command that carried it.

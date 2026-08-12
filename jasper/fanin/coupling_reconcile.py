@@ -115,6 +115,11 @@ OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
+# Not part of the ordered audio-graph bounce. jasper-voice is restarted by this
+# module for exactly ONE reason: a coupling flip changed the box's resolved
+# ASSISTANT wire width, which voice resolves once at start (U2 PR-2). See
+# :func:`_restart_voice_for_assistant_width`.
+VOICE_UNIT = "jasper-voice.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
 # actions (incl. the outputd content-buffer floor) into outputd.env. The disarm
 # path kicks it when leaving a live shm_ring bridge — see _disarm.
@@ -285,6 +290,72 @@ def _restart_unit(
 def _restart_fanin(reason: str) -> tuple[bool, str]:
     """Restart jasper-fanin through the broker. (ok, detail)."""
     return _restart_unit(FANIN_UNIT, reason=reason, timeout=8.0)
+
+
+def _try_restart_voice(reason: str) -> tuple[bool, str]:
+    """``try-restart`` jasper-voice through the broker. (ok, detail).
+
+    ``try-restart``, not ``restart``, and the difference is load-bearing: a
+    stopped jasper-voice must STAY stopped. A no-mic box parks the unit through
+    its ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` gate, and an
+    operator can stop it deliberately; a coupling flip is not permission to
+    start either one. ``try-restart`` is a no-op on an inactive unit.
+
+    Not in ``_CRASH_BUDGET_UNITS``: this fires only on an actual width
+    TRANSITION — at most once per coupling flip, which is itself an operator or
+    deploy event — so it cannot walk the start-limit window the way the
+    per-transaction fan-in bounces could.
+    """
+    return _restart_unit(VOICE_UNIT, verb="try-restart", reason=reason, timeout=8.0)
+
+
+def _assistant_width_token(env_path: str | Path) -> str:
+    """The box's resolved ASSISTANT wire width, from the persisted files.
+
+    Read through :func:`jasper.fanin_coupling.assistant_wire_is_wide` — the same
+    one rule ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls and
+    ``jasper-voice`` resolves at start — so this observes the transition voice
+    would observe, rather than a second opinion about it.
+
+    BOTH halves come from ``env_path`` when it declares them, and only then fall
+    back to the standard ``jasper.env`` -> ``fanin.env`` chain (where the format
+    key may legitimately live in the base file). With the default path those are
+    the same read; with an explicit one — the CLI's ``--env-path``, and every
+    test — reading the coupling from the caller's file and the format from a
+    module constant would make the predicate only accidentally coherent.
+    """
+    from jasper.fanin_coupling import (
+        RING_WIRE_FORMAT,
+        RING_WIRE_FORMAT_ENV_VAR,
+        RING_WIRE_FORMAT_WIDE,
+        assistant_wire_is_wide,
+        read_declared_ring_wire_format,
+        resolve_ring_wire_format,
+    )
+
+    try:
+        raw_format: str | None = None
+        try:
+            raw_format = read_value(
+                Path(env_path).read_text(encoding="utf-8"), RING_WIRE_FORMAT_ENV_VAR
+            )
+        except OSError:
+            raw_format = None
+        wire_format = (
+            resolve_ring_wire_format(raw_format)
+            if raw_format is not None
+            else read_declared_ring_wire_format()
+        )
+        wide = assistant_wire_is_wide(
+            wire_format=wire_format,
+            coupling=read_persisted_coupling(env_path),
+        )
+    except (OSError, ValueError):
+        # An unreadable/typo'd declaration is fan-in's fault to report (it parks
+        # at exit 78). Resolving narrow here matches what jasper-voice resolves
+        # in the same situation, so the comparison stays honest.
+        return RING_WIRE_FORMAT
+    return RING_WIRE_FORMAT_WIDE if wide else RING_WIRE_FORMAT
 
 
 def _stop_camilla(reason: str) -> tuple[bool, str]:
@@ -534,6 +605,83 @@ def _restart_fanin_coordinated(
 
 
 def reconcile_coupling(
+    desired_raw: str | None,
+    *,
+    reason: str,
+    env_path: str | Path = FANIN_ENV_PATH,
+    outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
+    apply: bool = True,
+    mark_operator_choice: bool = False,
+    restart_fanin: "DaemonOp | None" = None,
+    restart_outputd: "DaemonOp | None" = None,
+    reconcile_camilla=None,
+    kick_hardware_reconcile: "DaemonOp | None" = None,
+    active_leader_check: "Callable[[], bool] | None" = None,
+    restart_voice: "DaemonOp | None" = None,
+) -> CouplingResult:
+    """Reconcile the coupling, then bound the ASSISTANT-width transient it can open.
+
+    The coupling reconcile itself is :func:`_reconcile_coupling_inner`; this
+    wrapper adds ONE thing, and wraps rather than threading it through because
+    the inner function has a dozen exits (arm, disarm, confirm, three recovery
+    ladders) and every one of them can land on a different coupling than it was
+    asked for.
+
+    WHY VOICE IS IN THIS MODULE'S RESTART SET AT ALL. The box's assistant IPC
+    width is ``wire_format == S32_LE AND coupling == shm_ring``
+    (:func:`jasper.fanin_coupling.assistant_wire_is_wide`), and ``jasper-voice``
+    resolves it ONCE at start — it is not restarted by the ordered audio-graph
+    bounce. So a coupling flip alone can leave voice speaking the old width into
+    a fan-in that now expects the other one. That is converted losslessly and
+    logged (``event=fanin.tts_wire_width_mismatch``), never a level error — but
+    without this it is a STANDING disagreement, not a transient, and nothing in
+    the system would ever end it. Comparing the resolved width across the
+    reconcile and issuing one ``try-restart`` makes the window the length of a
+    flip.
+
+    Both reads are file-fresh and go through the same rule voice uses, so the
+    comparison sees the transition voice would see. The restart is best-effort:
+    a failure is logged and never changes the coupling verdict, because the
+    coupling IS reconciled either way and the remaining exposure is a precision
+    difference the reader already handles.
+    """
+    before = _assistant_width_token(env_path)
+    result = _reconcile_coupling_inner(
+        desired_raw,
+        reason=reason,
+        env_path=env_path,
+        outputd_env_path=outputd_env_path,
+        apply=apply,
+        mark_operator_choice=mark_operator_choice,
+        restart_fanin=restart_fanin,
+        restart_outputd=restart_outputd,
+        reconcile_camilla=reconcile_camilla,
+        kick_hardware_reconcile=kick_hardware_reconcile,
+        active_leader_check=active_leader_check,
+    )
+    if not apply:
+        # Staging/migration writes the env but runs no daemon ops; restarting
+        # voice here would be the one daemon op an apply=False pass performed.
+        return result
+    after = _assistant_width_token(env_path)
+    if after == before:
+        return result
+    do_restart_voice = restart_voice or (lambda: _try_restart_voice(reason=reason))
+    ok, detail = do_restart_voice()
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result="assistant_width_voice_restarted" if ok else "assistant_width_voice_restart_failed",
+        reason=reason,
+        assistant_width_before=before,
+        assistant_width_after=after,
+        detail=detail or None,
+        level=logging.INFO if ok else logging.WARNING,
+    )
+    return result
+
+
+def _reconcile_coupling_inner(
     desired_raw: str | None,
     *,
     reason: str,

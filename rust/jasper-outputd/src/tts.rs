@@ -1034,4 +1034,76 @@ mod tests {
             );
         }
     }
+
+    /// C-SF4: A REAL `AUDIO32` PAYLOAD THROUGH THE OUTPUTD TTS PATH.
+    ///
+    /// outputd is the bonded-multiroom assistant route, and it accepts the wide
+    /// verb by consuming the SAME shared parser fan-in does — but nothing here
+    /// exercised it, so `TtsCommand::AudioWide` reaching `OutputCore` was
+    /// argued rather than tested. This enqueues a genuine `Vec<i32>` and pins
+    /// that it lands at the SAME level as the S16 payload carrying the same
+    /// signal, which is the whole claim: outputd's spine is already i32, so a
+    /// wide payload is the identity where a narrow one is `widen_i16_to_i32`.
+    #[test]
+    fn a_wide_audio_payload_mixes_at_the_same_level_as_its_narrow_twin() {
+        let render = |command: TtsCommand| -> Vec<ProgramSample> {
+            let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+            send(
+                &tx,
+                0,
+                TtsCommand::PrepareAssistant {
+                    provider: "openai".to_string(),
+                    model: "gpt-realtime-2".to_string(),
+                    voice: "marin".to_string(),
+                    tts_envelope_lufs: -41.0,
+                    volume_context: Some(jasper_tts_protocol::VolumeContext {
+                        canonical_db: -30.0,
+                        downstream_db: -30.0,
+                        tts_envelope_lufs: -41.0,
+                        muted: false,
+                        stamp_boot_ns: 1,
+                    }),
+                },
+            );
+            send(
+                &tx,
+                0,
+                TtsCommand::SegmentStart {
+                    kind: SegmentKind::Assistant,
+                    provider_item_id: Some("item-wide".into()),
+                    profile: None,
+                },
+            );
+            send(&tx, 0, command);
+            send(&tx, 0, TtsCommand::SegmentEnd);
+            bridge.drain(&mut core);
+            core.push_content_period(vec![0; 8]);
+            let report = core.step();
+            assert_eq!(report.clipped_samples, 0);
+            core.dac().periods[0].clone()
+        };
+
+        // The same signal, offered at both widths. `w()` is the promotion the
+        // narrow route applies internally, so the wide payload is what an
+        // `AUDIO32` writer sends for that sample.
+        let narrow = render(TtsCommand::Audio(vec![4000i16; 8]));
+        let wide = render(TtsCommand::AudioWide(vec![w(4000); 8]));
+
+        assert!(
+            narrow.iter().any(|&s| s != 0),
+            "the narrow render must produce audio for this comparison to mean anything",
+        );
+        assert_eq!(
+            wide, narrow,
+            "a promoted narrow payload and its AUDIO32 twin must render identically",
+        );
+
+        // And a payload carrying detail BELOW the S16 grid survives — the thing
+        // the narrow route structurally cannot deliver here.
+        let sub_lsb = render(TtsCommand::AudioWide(vec![w(4000) + 0x4000; 8]));
+        assert_ne!(
+            sub_lsb, wide,
+            "a quarter-LSB offset must reach outputd's mix, not round away",
+        );
+    }
 }

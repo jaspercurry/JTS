@@ -367,6 +367,51 @@ def read_declared_ring_wire_format(
     return RING_WIRE_FORMAT
 
 
+def assistant_wire_is_wide(
+    *,
+    wire_format: str | None = None,
+    coupling: str | None = None,
+) -> bool:
+    """Whether THIS BOX's ASSISTANT IPC wire is wide (S32 at the i32 spine scale).
+
+    THE PYTHON MIRROR OF ONE RULE. `jasper-fanin` resolves the identical
+    conjunction in `Config::program_wire_is_wide`, which calls
+    `jasper_tts_protocol::TtsWireWidth::from_box_declaration`; this restates that
+    function's verdict, and
+    :mod:`tests.test_ring_wire_format_contract` pins the two against each other
+    by reading the Rust source rather than by trusting this docstring.
+
+    **BOTH halves, and the second one is not decoration.** A wide wire needs the
+    declared ``S32_LE`` ring wire format AND the ``shm_ring`` coupling. An
+    snd-aloop substream is an S16 device, full stop, so a box that declared a
+    wide format but never armed the ring resolves NARROW — and `jasper-fanin`
+    will mix narrow there whatever this says. Keying on the format token alone
+    would make `jasper-voice` speak ``AUDIO32`` into a narrow mixer on exactly
+    that box: not a level error (the reader narrows losslessly) but a standing,
+    unnecessary width disagreement on a legitimate configuration.
+
+    Both inputs default to a FILE-FRESH read of the same SSOT files the daemons
+    read — :func:`read_declared_ring_wire_format` for the format and
+    ``coupling_reconcile.read_persisted_coupling`` for the coupling — because the
+    callers that need this answer are long-lived daemons and socket-activated
+    wizards that never loaded ``fanin.env``. Passing either explicitly is
+    authoritative for that half, with no file fallback, for a caller that means
+    the value it hands in.
+    """
+    if wire_format is None:
+        wire_format = read_declared_ring_wire_format()
+    if coupling is None:
+        # Lazy import: jasper.fanin.coupling_reconcile imports THIS module, so a
+        # top-level import would be circular (mirrors every other in-tree caller).
+        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+
+        coupling = read_persisted_coupling()
+    return (
+        wire_format == RING_WIRE_FORMAT_WIDE
+        and resolve_coupling(coupling) == COUPLING_SHM_RING
+    )
+
+
 def resolve_ring_wire(topology: Any = None) -> RingWire:
     """Resolve the per-box SHM ring wire.
 

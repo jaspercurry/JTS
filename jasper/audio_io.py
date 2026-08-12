@@ -817,6 +817,13 @@ _OUTPUTD_MEASUREMENT_CONTROL_SLICE_SEC = 0.25
 # 250 ms chunks make barge-in/flush sharper and set the granularity at
 # which the writer's pacing (below) applies backpressure. Chunking alone
 # applies none — the owner drops on overflow rather than blocking.
+#
+# This is a BYTE ceiling, and deliberately stays one on both wires: it bounds
+# the allocation a single AUDIO/AUDIO32 command can ask the daemon for, and that
+# bound must not double because a box declared a wider wire. So the duration it
+# buys is wire-dependent — 250 ms of the narrow S16 wire, 125 ms of the wide S32
+# one — while the memory it costs the daemon is the same either way. Barge-in
+# granularity on a wide box is correspondingly finer, not coarser.
 _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
     _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 4
 )
@@ -888,18 +895,27 @@ def _quantize_to_wire(arr, *, wide: bool):
     the campaign's rule for a JTS-owned quantizer, and a new edge that does not
     inherit the narrow one's history.
 
-    The scaling multiply is in **float64**, and that is required rather than
-    tidy: a spine-scale value needs up to 31 significant bits, and float32's
-    24-bit mantissa would quantize the product to multiples of 256 — zeroing
-    the low byte of every sample the wide payload exists to carry. The upcast
-    from float32 is lossless and the factor is a power of two, so nothing is
-    introduced either.
+    The scaling multiply runs in **float64**, and it is worth being exact about
+    why, because the obvious reason is wrong. ``arr`` is float32 (``resample_poly``
+    returns what it was given), and multiplying it by 2^16 is EXACT in float32:
+    a power of two changes only the exponent, so no mantissa bit moves and no
+    precision is recovered by widening. The upcast buys two smaller things —
+    ``np.rint`` and the clip compare against the i32 rails at a width that
+    represents every i32 exactly, so the rounding decision and the saturation
+    boundary are not themselves approximated — and it costs one temporary per
+    chunk on a path that already allocates several. It is insurance on the
+    quantizer's own arithmetic, not a wider signal. (The ``pcm_wide`` ingest
+    below states the same power-of-two exactness for the inverse divide; the two
+    should read alike, because they are the same fact.)
 
-    What actually survives: resampling a 16-bit source produces values off the
-    S16 grid, and the float32 the resampler ran at carries ~8 of those bits into
-    the payload. The remaining 8 bits of the i32 container sit below that
-    mantissa and below the source's own resolution — the container is sized by
-    the spine, not by a claim about the assistant's precision.
+    What actually survives is therefore bounded by float32, and that is fine:
+    resampling a 16-bit source produces values off the S16 grid, and float32's
+    24-bit mantissa carries ~8 of those bits into the payload. The remaining 8
+    bits of the i32 container sit below that mantissa and below the source's own
+    resolution — the container is sized by the spine, not by a claim about the
+    assistant's precision. Widening the RESAMPLE path is not proposed here: it
+    would cost a real float64 pass over every chunk for bits the 16-bit source
+    never had.
     """
     if wide:
         scaled = np.rint(arr.astype(np.float64) * _SPINE_SCALE)
@@ -911,13 +927,13 @@ def _quantize_to_wire(arr, *, wide: bool):
 def tts_wire_is_wide() -> bool:
     """Whether THIS BOX's assistant wire is wide (S32). Resolved ONCE per process.
 
-    ONE INPUT, TWO LANGUAGES. The answer comes from the same
-    ``JASPER_FANIN_RING_WIRE_FORMAT`` declaration ``jasper-fanin`` resolves in
-    ``RingWireFormat::from_env_value`` and the emitters resolve through
-    :func:`jasper.fanin_coupling.resolve_ring_wire_format`, so the writer and
-    the reader reach the same width without exchanging a byte about it. Read
-    file-fresh (``read_declared_ring_wire_format``) rather than from
-    ``os.environ``, because ``jasper-voice`` never loaded ``fanin.env`` — the
+    ONE RULE, TWO LANGUAGES. Delegates to
+    :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
+    the shared crate's ``TtsWireWidth::from_box_declaration`` that
+    ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
+    the box's declaration are required — the ``S32_LE`` wire format AND the
+    ``shm_ring`` coupling — and both are read file-fresh, not from
+    ``os.environ``: ``jasper-voice`` never loaded ``fanin.env``, which is the
     stale-``os.environ`` class AGENTS.md canonizes.
 
     WHY A BAD TOKEN DOES NOT RAISE HERE. ``jasper-fanin`` already treats an
@@ -930,17 +946,16 @@ def tts_wire_is_wide() -> bool:
     CACHED so the process has exactly ONE answer. Two callers ask — the playout
     (which quantizes provider TTS) and the daemon (which bakes earcons) — and a
     second file read between them could return a second answer, which is the
-    drift this campaign exists to remove. `jasper-voice` is restarted by every
-    path that could change the declaration, so a per-process answer is also the
-    fresh one. Tests reset it with ``tts_wire_is_wide.cache_clear()``.
+    drift this campaign exists to remove. A coupling flip that changes this
+    answer restarts ``jasper-voice`` (``coupling_reconcile``), so a per-process
+    answer is also a bounded-staleness one. Tests reset it with
+    ``tts_wire_is_wide.cache_clear()``; ``tests/conftest.py`` does it
+    automatically around every test.
     """
-    from .fanin_coupling import (
-        RING_WIRE_FORMAT_WIDE,
-        read_declared_ring_wire_format,
-    )
+    from .fanin_coupling import assistant_wire_is_wide
 
     try:
-        return read_declared_ring_wire_format() == RING_WIRE_FORMAT_WIDE
+        return assistant_wire_is_wide()
     except (OSError, ValueError) as e:
         log_event(
             logger,
@@ -1427,14 +1442,29 @@ class OutputdTtsPlayout(TtsPlayout):
         self._profile_path = profile_path
         # Resolved ONCE, at construction: `jasper-voice` is restarted by every
         # deploy and by the wizards that could change this, and a per-write file
-        # read would put an open() on the audio path. A box whose wire flips
-        # under a running daemon is caught on the far side —
-        # `event=fanin.tts_wire_width_mismatch`.
+        # read would put an open() on the audio path. A coupling flip that
+        # changes the answer restarts this daemon (`coupling_reconcile`), so the
+        # window in which this value can be stale is bounded by that restart;
+        # fan-in logs `event=fanin.tts_wire_width_mismatch` if a payload lands
+        # inside it.
         self._wire_wide = tts_wire_is_wide() if wire_wide is None else wire_wide
         self._frame_bytes = (
             _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
             if self._wire_wide
             else _OUTPUTD_AUDIO_FRAME_BYTES
+        )
+        # Item 4 (observability): a support read must be able to answer "what
+        # width is this box speaking, and why" without journal archaeology or a
+        # code read. One line, at construction, naming the resolved width AND
+        # where it came from — a resolver answer or an explicit caller override.
+        log_event(
+            logger,
+            "tts_wire.resolved",
+            width="S32_LE" if self._wire_wide else "S16_LE",
+            verb="AUDIO32" if self._wire_wide else "AUDIO",
+            frame_bytes=self._frame_bytes,
+            source="explicit" if wire_wide is not None else "box_declaration",
+            socket=socket_path,
         )
         self._assistant_meter: AssistantSourceMeter | None = None
         self._profile_cache_key: tuple[str, str, str, str] | None = None

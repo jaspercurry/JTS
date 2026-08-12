@@ -61,9 +61,17 @@ logger = logging.getLogger("jasper.voice_daemon")
 _SR = 24000
 
 # The narrow bake's full-scale constant promoted by the exact 2^16 the Rust
-# `widen_i16_to_i32` shifts by. Deliberately NOT `2**31 - 1`: the wide earcon
-# must be the SAME signal at the SAME level as the narrow one, and 32767 << 16
-# is where a narrow full-scale sample lands after promotion.
+# `widen_i16_to_i32` shifts by. Deliberately NOT `2**31 - 1`.
+#
+# The payoff is ROUND-TRIP IDENTITY, not loudness. `2**31 - 1` would make the
+# wide earcon louder by 1 part in 32768 — about 0.0003 dB, which nobody could
+# hear and which would not be worth a constant on its own. What it WOULD break
+# is the exactness of the two conversions the whole width axis rests on:
+# `widen_i16_to_i32` and `narrow_i32_to_i16_round` are inverses only on this
+# grid, so a wide bake normalized to the container's top code would no longer
+# narrow back to the narrow bake, and every equivalence this module's tests
+# assert — and every lossless conversion a width mismatch relies on — would
+# become approximate.
 _PCM32_FULL_SCALE = 32767 * 65536
 _I32_MIN = -(2 ** 31)
 _I32_MAX = 2 ** 31 - 1
