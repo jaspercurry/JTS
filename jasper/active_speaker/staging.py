@@ -1714,7 +1714,7 @@ def prepare_driver_commissioning_config(
     # protection admission report asserts the tap capture route
     # (`commissioning_admission`'s `capture_route_current` check), so moving this
     # lane is a hearing-safety-adjacent change that needs its own evidence.
-    # Until then a loud, actionable blocker beats a silent silent sweep.
+    # Until then a loud, actionable blocker beats a sweep that measures nothing.
     #
     # Scoped to THIS builder, not the shared context: `stage_protected_startup_config`
     # emits the all-muted durable BOOT anchor through the same context, and an

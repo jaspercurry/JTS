@@ -2501,8 +2501,8 @@ def recompose_applied_baseline_yaml(
 
     ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
     is opt-in: ``None`` emits against the device the snapshot recorded,
-    byte-for-byte as before. An explicit value re-points the
-    SAME applied evidence at a different transport for the SAME lane — the
+    byte-for-byte as before. An explicit value re-points the SAME applied
+    evidence at a different transport for the SAME lane — the
     active ALSA lane and the ACTIVE RING carry identical post-crossover
     per-driver program at identical width to the same reader. What differs
     besides the name is the whole ``devices:`` block the sink implies — its
