@@ -30,6 +30,8 @@ order — so this list is what exists, not a plan:
   what each costs to score, and which one the evidence recommends.
 * :mod:`.planning` — one candidate assembled: the eligibility gate, the
   planner request its own sections imply, and the emitted candidate.
+* :mod:`.admission` — one position's attempt ledger, and whether the next
+  ``begin_capture`` may start on it.
 
 Only :mod:`.contracts` and :mod:`.planner_facade` are re-exported below; the
 rest are imported by module path, which is also what keeps a caller that wants

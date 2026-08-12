@@ -132,6 +132,7 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
+from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import planning as _planning
@@ -445,47 +446,13 @@ GEOMETRY_RETRY_POSITIONS = 2
 # will not fix."
 CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 
-# --------------------------------------------------------------------------- #
-# The bounded-retry ruling (owner, 2026-08-03, issue #2086)
-# --------------------------------------------------------------------------- #
-#
-# One prompted position gets its PLANNED capture plus at most this many EXTRA
-# attempts, POOLED across everyone who can ask for one: the household's "Try
-# again" and voluntary retakes, and the conductor's own geometry retakes. In the
-# owner's words: *"We need a finite bound: do up to three more measurements to
-# see if we can get a read. If we still can't, attribute it to X."*
-#
-# What this replaces: a per-REASON-CODE budget (``ReasonSpec.retry_budget``,
-# 0-2) measured against a cumulative per-slot attempt count. Two measured
-# defects fell out of that shape and killed two live sessions on 2026-08-03
-# (#2083 entries 4 and 6):
-#
-# * an ACCEPTED capture left the counter standing, so one voluntary retake of a
-#   healthy position could start at zero headroom;
-# * each reason code held its OWN counter while all of them drew on the same
-#   plan attempts and the same operator, so alternating conditions walked the
-#   meter to 12 attempts behind a screen still reading "step 6".
-#
-# One pooled counter with an honest surface is the whole replacement. It is
-# deliberately NOT derived from ``ReasonSpec.retry_budget``: the point of the
-# ruling is that the bound belongs to the POSITION and the household's patience,
-# not to whichever condition happened to fire last.
-MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
-
-# Who asked for one extra attempt. Pooled against the single bound above (the
-# ruling is explicit that the bound is shared), but recorded separately so the
-# count the household reads is truthful about who spent what — "the speaker used
-# 2 extra tries; you have 1 left" rather than a bare total that reads as though
-# the household burned them.
-#
-# The split is observed at the REJECTION that kept the plan alive, never at the
-# relay's ``retake`` flag: a geometry rung does not travel the retake path at
-# all (it rejects a good capture so the runner stays on the same index — see
-# ``GEOMETRY_RETRY_POSITIONS``' own note), so every geometry rung on 2026-08-03
-# was authorized with ``retake=false``. Reading the flag would have attributed
-# every system-forced take to the household.
-ATTEMPT_INITIATOR_HOUSEHOLD = "household"
-ATTEMPT_INITIATOR_SPEAKER = "speaker"
+# The bounded-retry ruling (owner, 2026-08-03, issue #2086) and the two
+# initiators its pooled bound is attributed to. Re-exported from
+# :mod:`jasper.active_speaker.crossover_v2.admission`, which owns the ledger
+# they belong to and states why each number is what it is (#2291 Phase 5a-vi).
+MAX_EXTRA_ATTEMPTS_PER_POSITION = _admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
+ATTEMPT_INITIATOR_HOUSEHOLD = _admission.ATTEMPT_INITIATOR_HOUSEHOLD
+ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
 
 # The fewest RESOLVED positions a cloud group can close with and still produce a
 # usable claim, so a position the flow gives up on degrades the group instead of
@@ -4141,72 +4108,12 @@ def attempt_record_from_verify(
     )
 
 
-@dataclass
-class SlotAttempts:
-    """One prompted position's attempt ledger (owner ruling #2086).
-
-    The single meter for a slot. ``admitted`` counts every attempt the
-    conductor let start — the first is the PLANNED capture and is free; each
-    one after it spends an extra against
-    :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`, attributed to whoever asked.
-
-    An ACCEPTED capture never adds to ``by_household``/``by_speaker`` beyond
-    the extra its own admission already spent, and the planned capture adds
-    nothing at all — so a position measured cleanly on the first take still has
-    its full three extras available if the household chooses to redo it. That
-    is the "accepted captures never consume retry budget" half of the ruling:
-    before it, acceptance left the old cumulative counter standing and one
-    voluntary retake of a healthy position could start at zero headroom.
-
-    Mutable on purpose (the frozen ``PhaseVerdict`` next door is a value; this
-    is per-session state the conductor advances).
-    """
-
-    admitted: int = 0
-    by_household: int = 0
-    by_speaker: int = 0
-
-    @property
-    def extras_used(self) -> int:
-        return self.by_household + self.by_speaker
-
-    @property
-    def extras_left(self) -> int:
-        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.extras_used)
-
-    def spend(self, initiator: str) -> None:
-        """Charge one extra attempt to ``initiator``.
-
-        Callers gate on :attr:`extras_left` first; an unchecked overspend would
-        be a bug, so it raises rather than silently capping — a meter that lies
-        about its own total is the defect this class replaces.
-        """
-        if self.extras_left <= 0:
-            raise CrossoverV2FlowError(
-                "slot has no extra attempts left "
-                f"({self.extras_used}/{MAX_EXTRA_ATTEMPTS_PER_POSITION})"
-            )
-        if initiator == ATTEMPT_INITIATOR_SPEAKER:
-            self.by_speaker += 1
-        else:
-            self.by_household += 1
-
-    def to_payload(self) -> dict[str, Any]:
-        """The honest count, as the phone renders it (ruling item 2).
-
-        Numbers only — the page composes the eyebrow ("Measurement 6 of 6 —
-        extra try 2 of 3") because the §2.1 screen grammar makes the counter
-        the page's slot, and a second sentence written here would be the same
-        fact stated twice. ``by_speaker`` is what makes the count truthful
-        about who spent what.
-        """
-        return {
-            "used": self.extras_used,
-            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
-            "left": self.extras_left,
-            "by_speaker": self.by_speaker,
-            "by_household": self.by_household,
-        }
+# One prompted position's attempt ledger (owner ruling #2086). Re-exported from
+# :mod:`jasper.active_speaker.crossover_v2.admission`, which owns the ledger and
+# the admission decision that reads it (#2291 Phase 5a-vi). Kept importable from
+# the flow because that is where the endpoints suite and the capture-sequence
+# pins name it.
+SlotAttempts = _admission.SlotAttempts
 
 
 @dataclass(frozen=True)
@@ -6962,32 +6869,32 @@ class CrossoverV2Conductor:
     ) -> bool | None:
         """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
 
-        With ``slot``, reads the pair owned by that capture position; without
-        it, reads the global pair used by persisted terminal state. Both forms
-        re-check the code because the failure being described is not always
-        the failure last consumed — :meth:`_refuse` can name a code the capture
-        loop never produced, and a replayed begin can address an older slot.
-        Attaching one capture's evidence to another's code would put a
-        confident, wrong sentence in front of a household. An unknown pairing
-        degrades to the registry copy, which claims nothing unmeasured.
+        Selects WHICH pair the rule is applied to; the rule itself is
+        :func:`~jasper.active_speaker.crossover_v2.admission.pilot_heard_for`.
+        With ``slot``, the pair owned by that capture position; without it, the
+        global pair used by persisted terminal state, assembled here from the
+        ``_last_failure_*`` fields. A global read with no failure code recorded
+        has no pair at all — the same answer the pairing rule gives a code that
+        does not match, and the reason this passes ``None`` rather than a
+        triple with a ``None`` head.
         """
         if slot is not None:
             paired = self._last_pilot_evidence.get(slot)
-            if code is None or paired is None or paired[0] != code:
-                return None
-            return paired[1]
-        if code is None or code != self._last_failure_code:
-            return None
-        return self._last_failure_pilot_heard
+        elif self._last_failure_code is None:
+            paired = None
+        else:
+            paired = (
+                self._last_failure_code, self._last_failure_pilot_heard, None,
+            )
+        return _admission.pilot_heard_for(code, paired)
 
     def _reflection_measured_for(
         self, code: str | None, *, slot: str,
     ) -> bool | None:
         """The gate discriminator recorded with ``code`` at ``slot``."""
-        paired = self._last_pilot_evidence.get(slot)
-        if code is None or paired is None or paired[0] != code:
-            return None
-        return paired[2]
+        return _admission.reflection_measured_for(
+            code, self._last_pilot_evidence.get(slot)
+        )
 
     @property
     def armed_capture(self) -> tuple[int, int] | None:
@@ -7165,94 +7072,136 @@ class CrossoverV2Conductor:
     def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
 
-        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until an apply is
-        observed. **Since the two-stage split (work order D10) no shipped
-        session reaches that hold**: stage 1 has no VERIFY index at all, and
-        stage 2's conductor is constructed ``applied=True``, so
-        ``_apply_observed`` short-circuits before either the deferral or the
-        ``apply_failed`` refusal below. The machinery is retained rather than
-        deleted — no new design may depend on it, and a conductor built without
-        a prior apply still gets the honest hold. If the auto-apply hit a
-        TERMINAL failure (``seams.apply_failed()`` names a reason), the hold is
-        refused outright rather than held toward a dishonest relay_timeout — the
-        household sees the real reason, not a manufactured "link timed out."
-        Every other begin is admitted.
+        The DECISION is
+        :func:`~jasper.active_speaker.crossover_v2.admission.assess_begin`,
+        which owns the bounded-retry ruling and its reasons. What stays here is
+        every irreversible half: the seam call and its guard, the household
+        sentence rendered from ``REASON_REGISTRY``, the ``_last_failure_*``
+        stamping, the two ledger mutations, the armed-capture identity, and the
+        journal line.
 
-        **Retry exhaustion does NOT normally arrive here** (owner ruling
-        #2086). A slot that has spent its extras is settled at the verdict that
-        spent the last one — ``_resolve_spent_slot`` either drops the position
-        and advances the group, or names the honest end — so the household is
-        never handed a "try again" screen whose button is about to end the
-        session. The refusal below is the backstop for a begin that reaches a
-        settled slot anyway (a page that ignored the verdict, a replayed
-        event), and its copy says the tries are gone rather than inviting one
-        more.
+        **Since the two-stage split (work order D10) no shipped session reaches
+        the VERIFY hold**: stage 1 has no VERIFY index at all, and stage 2's
+        conductor is constructed ``applied=True``, so ``_apply_observed``
+        short-circuits before either the deferral or the ``apply_failed``
+        refusal. The machinery is retained rather than deleted — no new design
+        may depend on it, and a conductor built without a prior apply still
+        gets the honest hold.
         """
         phase = self._phase_of_index(index)
-        if phase == PHASE_VERIFY and not self._apply_observed():
-            failure_code = ""
-            try:
-                failure_code = str(self._seams.apply_failed() or "")
-            except (OSError, RuntimeError, ValueError):
-                failure_code = ""
-            if failure_code:
-                self._last_failure_code = failure_code
-                # The apply seam's own verdict — no capture ran, so there is
-                # no pilot evidence to pair with it (#2085). Written rather
-                # than left alone so a previous capture's evidence cannot
-                # trail into this failure's copy.
-                self._last_failure_pilot_heard = None
-                spec = REASON_REGISTRY.get(failure_code)
-                message = reason_message(failure_code, spec) if spec else failure_code
-                self.relay_published_refusal = True
-                raise CaptureBeginRefused(failure_code, message)
-            raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
-        # ONE pooled meter per slot: the planned capture, then at most
-        # MAX_EXTRA_ATTEMPTS_PER_POSITION extras, whoever asks for them. The
-        # first attempt of any slot is always admitted and always free.
         slot = self._slot_of_index(index)
-        ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
-        if ledger.admitted:
-            last = self._last_reason.get(slot)
-            if last in NON_RETRIABLE_CODES:
-                # Not exhaustion — a condition another take cannot clear. Its
-                # own copy already names the one action that helps, so it is
-                # published unchanged (and it never promised "measure again").
-                spec = REASON_REGISTRY[last]
-                self.relay_published_refusal = True
-                raise CaptureBeginRefused(
+        # READ, never create: a begin held at the VERIFY anchor must not leave a
+        # meter behind for a capture that never started. The entry is created
+        # below, on the admitted path, exactly where the charge happens.
+        ledger = self._slot_attempts.get(slot)
+
+        def apply_failure_code() -> str:
+            """The apply seam's TERMINAL reason, or ``""`` — guarded here.
+
+            A local rather than an argument because the guard belongs to the
+            seam, and the seam is the conductor's: an apply binding that raises
+            must read as "no named failure" and fall through to the honest
+            hold, never take down the begin. Asked only on the hold branch, so
+            an ordinary begin still makes no seam call.
+            """
+            try:
+                return str(self._seams.apply_failed() or "")
+            except (OSError, RuntimeError, ValueError):
+                return ""
+
+        decision = _admission.assess_begin(
+            verify_hold=phase == PHASE_VERIFY and not self._apply_observed(),
+            apply_failure_code=apply_failure_code,
+            ledger=ledger,
+            last_reason=self._last_reason.get(slot),
+            non_retriable=NON_RETRIABLE_CODES,
+            default_code=REASON_LOCATE_FAILED,
+            geometry_locked_code=REASON_CLOUD_GEOMETRY_LOCKED,
+        )
+        if decision.kind == _admission.REFUSE_APPLY_FAILED:
+            self._last_failure_code = decision.code
+            # The apply seam's own verdict — no capture ran, so there is
+            # no pilot evidence to pair with it (#2085). Written rather
+            # than left alone so a previous capture's evidence cannot
+            # trail into this failure's copy.
+            self._last_failure_pilot_heard = None
+            spec = REASON_REGISTRY.get(decision.code)
+            message = (
+                reason_message(decision.code, spec) if spec else decision.code
+            )
+            self.relay_published_refusal = True
+            raise CaptureBeginRefused(decision.code, message)
+        if decision.kind == _admission.DEFER_AWAITING_APPLY:
+            raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
+        if decision.kind == _admission.REFUSE_NON_RETRIABLE:
+            spec = REASON_REGISTRY[decision.code]
+            self.relay_published_refusal = True
+            raise CaptureBeginRefused(
+                spec.code,
+                reason_message(
                     spec.code,
-                    reason_message(
-                        spec.code,
-                        spec,
-                        pilot_heard=self._pilot_heard_for(last, slot=slot),
-                    ),
-                )
-            if ledger.extras_left <= 0:
-                code = last or REASON_LOCATE_FAILED
-                spec = REASON_REGISTRY[code]
-                diagnosis = reason_diagnosis(
-                    code,
                     spec,
-                    pilot_heard=self._pilot_heard_for(code, slot=slot),
-                    reflection_measured=self._reflection_measured_for(
-                        code, slot=slot,
-                    ),
-                )
-                self.relay_published_refusal = True
-                raise CaptureBeginRefused(
-                    # ATTRIBUTE: the code the household is told about, and the
-                    # one ``_persist_terminal_failure`` records, is the
-                    # condition actually observed here — never a generic
-                    # exhaustion code that would erase what went wrong.
-                    code,
-                    self._extras_spent_message(
-                        ledger,
-                        diagnosis=diagnosis,
-                        outcome=self._spent_slot_outcome(phase, index),
-                    ),
-                )
-            ledger.spend(self._extra_initiator(slot))
+                    pilot_heard=self._pilot_heard_for(decision.code, slot=slot),
+                ),
+            )
+        if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
+            # Only reachable with a meter in hand — the decision is derived from
+            # this ledger's own spent extras.
+            assert ledger is not None
+            code = decision.code
+            spec = REASON_REGISTRY[code]
+            diagnosis = reason_diagnosis(
+                code,
+                spec,
+                pilot_heard=self._pilot_heard_for(code, slot=slot),
+                reflection_measured=self._reflection_measured_for(
+                    code, slot=slot,
+                ),
+            )
+            self.relay_published_refusal = True
+            raise CaptureBeginRefused(
+                # ATTRIBUTE: the code the household is told about, and the
+                # one ``_persist_terminal_failure`` records, is the
+                # condition actually observed here — never a generic
+                # exhaustion code that would erase what went wrong.
+                code,
+                self._extras_spent_message(
+                    ledger,
+                    diagnosis=diagnosis,
+                    outcome=self._spent_slot_outcome(phase, index),
+                ),
+            )
+        if decision.kind != _admission.ADMIT:
+            # One explicit arm per :data:`admission.DECISION_KINDS` member above,
+            # and this fallback is LOUD rather than a catch-all that admits. A
+            # kind arriving here unhandled is a wiring defect — a new decision
+            # shipped without an arm — and on a BEGIN gate the silent direction
+            # is the dangerous one: falling through starts a capture and charges
+            # a try nobody decided to spend. It refuses under the most
+            # conservative code available, the same choice
+            # ``_screen_refusal_code`` makes for an unmapped screen kind.
+            log_event(
+                logger, "correction.crossover_v2_begin_decision_kind_unmapped",
+                level=logging.ERROR, session_id=self.session_id,
+                phase=phase, index=index, kind=str(decision.kind),
+            )
+            self.relay_published_refusal = True
+            raise CaptureBeginRefused(
+                REASON_LOCATE_FAILED,
+                reason_message(
+                    REASON_LOCATE_FAILED, REASON_REGISTRY[REASON_LOCATE_FAILED],
+                ),
+            )
+        ledger = self._slot_attempts.setdefault(slot, SlotAttempts())
+        if decision.spends_extra:
+            try:
+                ledger.spend(decision.initiator)
+            except _admission.AttemptOverspendError as exc:
+                # The flow's own error type is what every caller (and the relay
+                # runner above them) already handles; the ledger is pure and has
+                # no business knowing it — the same translation
+                # ``program_for_phase`` makes for the program selector.
+                raise CrossoverV2FlowError(str(exc)) from exc
         ledger.admitted += 1
         self._armed_index = index
         self._armed_capture = (index, attempt)
@@ -7271,55 +7220,39 @@ class CrossoverV2Conductor:
     def _extra_initiator(self, slot: str) -> str:
         """Who is asking for the extra attempt about to be admitted.
 
-        Read off the rejection that kept the plan alive at this slot, because
-        that is the only place the distinction is visible: a geometry rung is
-        the conductor demanding a wider take of a capture that was otherwise
-        fine, and it travels the ordinary begin path with ``retake=false``
-        (see :data:`GEOMETRY_RETRY_POSITIONS` — rejecting is the only lever
-        that keeps a fixed-length plan on the same index). Everything else —
-        a "Try again" after a quality rejection, a voluntary retake — is the
-        household choosing to spend one.
+        The attribution rule is
+        :func:`~jasper.active_speaker.crossover_v2.admission.extra_initiator`;
+        this reads the rejection it is derived from, which is the conductor's.
         """
-        return (
-            ATTEMPT_INITIATOR_SPEAKER
-            if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED
-            else ATTEMPT_INITIATOR_HOUSEHOLD
+        return _admission.extra_initiator(
+            self._last_reason.get(slot),
+            geometry_locked_code=REASON_CLOUD_GEOMETRY_LOCKED,
         )
 
     @staticmethod
     def _extras_spent_message(
         ledger: SlotAttempts, *, diagnosis: str, outcome: str,
     ) -> str:
-        """The household sentence for a position whose extras are gone.
-
-        Keeps an evidence-derived diagnosis when one exists, then names the
-        count and terminal outcome. It deliberately does NOT reuse the full
-        registry ``message``: retriable rows end by inviting an action the
-        flow will no longer grant.
-        """
-        used = ledger.extras_used
-        tries = "try" if used == 1 else "tries"
-        count = (
-            f"JTS measured this spot {ledger.admitted} times — the planned one "
-            f"plus {used} extra {tries} — and still could not get a clean read."
+        """The household sentence for a position whose extras are gone."""
+        return _admission.extras_spent_message(
+            ledger, diagnosis=diagnosis, outcome=outcome,
         )
-        return " ".join(part for part in (diagnosis, count, outcome) if part)
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
-        """The state after an exhausted slot, derived from conductor state."""
-        if self._journey.plan.is_group(phase):
-            if index in self._group_unresolved[phase]:
-                return "This position was left out and the group continued."
-            if index in self._retained_group_indexes(phase):
-                return (
-                    "JTS kept the earlier measurement for this position and "
-                    "the group continued."
-                )
-            return (
-                "The measurement cannot continue because too few positions "
-                "produced a clean read."
-            )
-        return "The measurement cannot continue because this step needs a clean read."
+        """The state after an exhausted slot, derived from conductor state.
+
+        The three facts the sentence turns on are read here — the phase's
+        group-ness, the positions this session gave up on, and the ones still
+        represented by an earlier take — and stated to
+        :func:`~jasper.active_speaker.crossover_v2.admission.spent_slot_outcome`.
+        """
+        is_group = self._journey.plan.is_group(phase)
+        return _admission.spent_slot_outcome(
+            is_group=is_group,
+            index=index,
+            unresolved=self._group_unresolved[phase] if is_group else (),
+            retained=self._retained_group_indexes(phase) if is_group else (),
+        )
 
     def on_armed(self, state: Any = None) -> None:
         """Play the armed phase's excitation program (the host stimulus)."""
