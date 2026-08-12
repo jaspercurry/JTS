@@ -129,12 +129,30 @@ static int report_fd_identity(int report_fd, int ring_fd) {
     return write_bytes(report_fd, &observed, sizeof(observed));
 }
 
+// Every adjacent lock file a ring can accumulate. BOTH must be listed here and
+// in cleanup_all_test_paths: a suffix this array does not know is a per-run leak
+// in /tmp that nothing ever collects (measured at 34 files per clean run when
+// the writer lock was missing from it).
+static const char *const k_ring_lock_suffixes[] = {
+    JTS_RING_OPEN_LOCK_SUFFIX,
+    JTS_RING_WRITER_LOCK_SUFFIX,
+};
+#define K_RING_LOCK_SUFFIX_COUNT \
+    (sizeof(k_ring_lock_suffixes) / sizeof(k_ring_lock_suffixes[0]))
+
 static void cleanup_owned_test_locks(void) {
     DIR *dir = opendir(g_owned_dir);
     if (dir == NULL) return;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, JTS_RING_OPEN_LOCK_SUFFIX) == NULL) continue;
+        int is_lock = 0;
+        for (size_t i = 0; i < K_RING_LOCK_SUFFIX_COUNT; i++) {
+            if (strstr(entry->d_name, k_ring_lock_suffixes[i]) != NULL) {
+                is_lock = 1;
+                break;
+            }
+        }
+        if (!is_lock) continue;
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", g_owned_dir, entry->d_name);
         (void)unlink(path);
@@ -151,12 +169,12 @@ static void remember_test_path(const char *path) {
 static void cleanup_all_test_paths(void) {
     for (size_t i = 0; i < g_test_path_count; i++) {
         (void)unlink(g_test_paths[i]);
-        char lock_path[sizeof(g_test_paths[0]) + sizeof(JTS_RING_OPEN_LOCK_SUFFIX)];
-        size_t path_len = strlen(g_test_paths[i]);
-        memcpy(lock_path, g_test_paths[i], path_len);
-        memcpy(lock_path + path_len, JTS_RING_OPEN_LOCK_SUFFIX,
-               sizeof(JTS_RING_OPEN_LOCK_SUFFIX));
-        (void)unlink(lock_path);
+        for (size_t j = 0; j < K_RING_LOCK_SUFFIX_COUNT; j++) {
+            char lock_path[512];
+            snprintf(lock_path, sizeof(lock_path), "%s%s", g_test_paths[i],
+                     k_ring_lock_suffixes[j]);
+            (void)unlink(lock_path);
+        }
     }
 }
 
@@ -1342,11 +1360,6 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) jts_ring_writer_close(&w);
-        // Exit 1 encodes -EBUSY specifically: since U3/P6a a writer holds an
-        // EXCLUSIVE flock for the life of its mapping, so being refused as a
-        // SECOND LIVE WRITER is a correct outcome here, not a failure. Any
-        // other rc is still 3 (a real fault).
-        if (rc == -EBUSY) _exit(1);
         _exit(rc == 0 ? 0 : 3);
     }
     pid_t attacher_c = fork();
@@ -1358,11 +1371,6 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
         jts_ring_writer_t w;
         int rc = jts_ring_writer_open(path, &g, &w);
         if (rc == 0) jts_ring_writer_close(&w);
-        // Exit 1 encodes -EBUSY specifically: since U3/P6a a writer holds an
-        // EXCLUSIVE flock for the life of its mapping, so being refused as a
-        // SECOND LIVE WRITER is a correct outcome here, not a failure. Any
-        // other rc is still 4 (a real fault).
-        if (rc == -EBUSY) _exit(1);
         _exit(rc == 0 ? 0 : 4);
     }
     unsetenv("JTS_RING_TEST_LOCK_WAIT_FD");
@@ -1399,32 +1407,10 @@ static void test_simultaneous_first_open_waits_for_creator_ftruncate(void) {
           "join simultaneous public attacher C");
     CHECK(WIFEXITED(creator_status) && WEXITSTATUS(creator_status) == 0,
           "O_EXCL-winning public opener succeeds");
-    // What this test is actually about is the OPEN-lock transaction: competing
-    // public openers must SERIALIZE behind the O_EXCL creator rather than tear
-    // the file, and must all end up pointed at the one creator inode (asserted
-    // below). It reaches that through three concurrent WRITER opens.
-    //
-    // Since U3/P6a a writer additionally holds an exclusive flock for the life
-    // of its mapping (the SPSC writer guard), so "three concurrent writers all
-    // attach" is no longer a property this codebase wants — exactly one may
-    // hold a ring at a time. Each competitor therefore has TWO correct
-    // outcomes, and which one it gets is a timing detail of when the incumbent
-    // closed:
-    //   exit 0 — it waited on the open lock and then attached;
-    //   exit 1 — it was refused -EBUSY as a second live writer.
-    // Both prove it serialized rather than raced; neither is a torn file. Any
-    // other status (2/3/4) is still a real failure, and the inode-identity
-    // assertions below are unchanged and remain the load-bearing half.
-    CHECK(WIFEXITED(attacher_b_status) &&
-              (WEXITSTATUS(attacher_b_status) == 0 ||
-               WEXITSTATUS(attacher_b_status) == 1),
-          "competing public opener B either waits and attaches or is refused "
-          "as a second live writer");
-    CHECK(WIFEXITED(attacher_c_status) &&
-              (WEXITSTATUS(attacher_c_status) == 0 ||
-               WEXITSTATUS(attacher_c_status) == 1),
-          "competing public opener C either waits and attaches or is refused "
-          "as a second live writer");
+    CHECK(WIFEXITED(attacher_b_status) && WEXITSTATUS(attacher_b_status) == 0,
+          "competing public opener B waits and attaches");
+    CHECK(WIFEXITED(attacher_c_status) && WEXITSTATUS(attacher_c_status) == 0,
+          "competing public opener C waits and attaches");
     struct stat path_st;
     CHECK(creator_ready_rc == 0 && stat(path, &path_st) == 0 &&
               (uint64_t)path_st.st_dev == creator_observation.dev &&
@@ -2241,8 +2227,16 @@ static void test_writer_ebusy_second_writer(void) {
     CHECK(atomic_load_explicit(&h3->writer_pid, memory_order_relaxed)
               == (uint64_t)getpid(),
           "fresh attach took ownership (our pid)");
+    // Assert the WRITER'S OWN mirror, not the header's. The header value is
+    // never reset by an open, so testing it is true by construction and admits
+    // a writer that zeroed `out->write_seq` — which would make the next
+    // publish compute a huge `write_seq - read_seq` occupancy and free-run
+    // drop-oldest against a reader that is perfectly healthy.
+    CHECK(w3.write_seq == wseq_before,
+          "the takeover writer's own seq continues from the header rather than "
+          "resetting to 0");
     CHECK(atomic_load_explicit(&h3->write_seq, memory_order_relaxed) == wseq_before,
-          "takeover continues the file-lifetime write_seq rather than resetting it");
+          "the header's file-lifetime write_seq is untouched by a takeover");
 
     // --- (4) The HEARTBEAT guard still covers the cross-implementation case -
     //
@@ -2281,6 +2275,115 @@ static void test_writer_ebusy_second_writer(void) {
               == (uint64_t)getpid(),
           "the fresh attach took ownership from the dead foreign writer");
     jts_ring_writer_close(&w5);
+
+    jts_ring_reader_close(&rr);
+    unlink(path);
+}
+
+static void test_writer_lock_unopenable_fails_open_and_is_logged(void) {
+    // The -2 path: the lock FILE cannot be opened at all. Reachable in
+    // production when an out-of-unit first creator (the doctor's sudo aplay
+    // probe, an operator shell — neither carries UMask=0007) lands the lock file
+    // 0640 under a different uid; the renderer then takes EACCES forever, and
+    // the sticky bit stops it deleting the file, so only a reboot clears tmpfs.
+    //
+    // We FAIL OPEN there — refusing would take a renderer down over a lock file
+    // — which means the ring silently loses fd-scoped exclusivity. That is
+    // exactly why it must be LOUD: this pins the journal line, because a box in
+    // that state is otherwise indistinguishable from a healthy one.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-lock-unopenable");
+    char lock_path[320];
+    snprintf(lock_path, sizeof(lock_path), "%s%s", path,
+             JTS_RING_WRITER_LOCK_SUFFIX);
+    char log_path[320];
+    snprintf(log_path, sizeof(log_path), "%s.log", path);
+    unlink(lock_path);
+    unlink(log_path);
+
+    // Make the lock path unopenable for THIS process by putting a directory
+    // where the file must go: open(O_RDWR) on a directory returns EISDIR.
+    CHECK(mkdir(lock_path, 0700) == 0, "stage an unopenable writer-lock path");
+
+    jts_ring_geometry_t g = proto_geometry();
+    int log_fd = open(log_path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+    CHECK(log_fd >= 0, "open fail-open event capture");
+    int saved_stderr = dup(STDERR_FILENO);
+    CHECK(saved_stderr >= 0, "save stderr");
+    jts_ring_writer_t w;
+    int rc = -1;
+    if (log_fd >= 0 && saved_stderr >= 0) {
+        fflush(stderr);
+        CHECK(dup2(log_fd, STDERR_FILENO) >= 0, "capture fail-open event");
+        rc = jts_ring_writer_open(path, &g, &w);
+        fflush(stderr);
+        CHECK(dup2(saved_stderr, STDERR_FILENO) >= 0, "restore stderr");
+    }
+
+    CHECK(rc == 0, "an unopenable lock file FAILS OPEN rather than refusing "
+                   "(a renderer must not die over a lock file)");
+    CHECK(w.writer_lock_fd == -1,
+          "the fail-open writer records that it holds NO lock, so the sentinel "
+          "cannot be mistaken for a held fd (0 would be stdin)");
+
+    if (log_fd >= 0) {
+        CHECK(lseek(log_fd, 0, SEEK_SET) == 0, "rewind fail-open event");
+        char log_buf[1024] = {0};
+        ssize_t got = read(log_fd, log_buf, sizeof(log_buf) - 1);
+        CHECK(got > 0 &&
+                  strstr(log_buf, "event=jts_ring.writer.lock_unavailable") != NULL,
+              "losing fd-scoped exclusivity emits a stable, greppable event — "
+              "a box running without it must be VISIBLE");
+    }
+
+    if (rc == 0) jts_ring_writer_close(&w);
+    if (saved_stderr >= 0) close(saved_stderr);
+    if (log_fd >= 0) close(log_fd);
+    rmdir(lock_path);
+    unlink(log_path);
+    unlink(path);
+}
+
+static void test_writer_lock_survives_a_sigkilled_incumbent(void) {
+    // SIGKILL truth. The LOCK is windowless — the kernel drops it with the fd,
+    // so a killed writer's ring is immediately claimable. The SECONDARY
+    // heartbeat guard is NOT: SIGKILL leaves writer_pid stamped and the
+    // heartbeat frozen at its last publish, so for up to
+    // JTS_RING_WRITER_LIVENESS_TIMEOUT_NS a fresh writer is still refused.
+    //
+    // That is the real shape (a close() model would clear writer_pid and hide
+    // it), and it is why a ring-writing renderer's RestartSec must exceed that
+    // window: it moved from the lock to the secondary guard, it did not vanish.
+    char path[256];
+    tmp_path(path, sizeof(path), "wtr-sigkill");
+    jts_ring_geometry_t g = proto_geometry();
+
+    // Model the survivor state directly: no lock held (the kill dropped it),
+    // but a FOREIGN pid stamped with a FRESH heartbeat.
+    jts_ring_writer_t seed;
+    CHECK(jts_ring_writer_open(path, &g, &seed) == 0, "seed the ring");
+    jts_ring_writer_close(&seed);
+
+    jts_ring_reader_t rr;
+    CHECK(jts_ring_reader_open(path, &g, &rr) == 0, "reader mapping");
+    jts_ring_header_t *h = (jts_ring_header_t *)rr.base;
+    uint64_t killed = (uint64_t)getpid() + 11; // a pid that is not us
+    atomic_store_explicit(&h->writer_pid, killed, memory_order_relaxed);
+    atomic_store_explicit(&h->writer_heartbeat_ns, jts_ring_monotonic_ns(),
+                          memory_order_relaxed);
+
+    jts_ring_writer_t w;
+    memset(&w, 0, sizeof(w));
+    CHECK(jts_ring_writer_open(path, &g, &w) == -EBUSY,
+          "a SIGKILLed incumbent's frozen-fresh heartbeat still refuses a new "
+          "writer even though its lock is already free — the secondary guard's "
+          "<=2s window is real, and this is where RestartSec matters");
+
+    // Once the frozen heartbeat ages past the window, the ring is claimable.
+    atomic_store_explicit(&h->writer_heartbeat_ns, 1, memory_order_relaxed);
+    CHECK(jts_ring_writer_open(path, &g, &w) == 0,
+          "past the liveness window the killed writer's ring is reclaimable");
+    jts_ring_writer_close(&w);
 
     jts_ring_reader_close(&rr);
     unlink(path);
@@ -2671,9 +2774,14 @@ static void test_capture_alias_dead_to_live_recovery(void) {
     // heartbeat under a still-open mapping. That is what dying is: the process
     // exits, its fd closes, and the kernel drops the writer's flock — which is
     // precisely the property that lets a new writer reclaim the ring without
-    // waiting on heartbeat timing (U3/P6a). The reader's verdict is unchanged
-    // either way: a closed writer clears `writer_pid`, so `writer_is_live` is
-    // false for the same reason a stale heartbeat made it false.
+    // waiting on heartbeat timing (U3/P6a).
+    //
+    // NOTE what this CHANGED, honestly: the reader still sees a dead writer,
+    // but via a DIFFERENT branch of `writer_is_live` — the `pid == 0` test
+    // (close clears writer_pid), not the heartbeat-age test. So this test no
+    // longer exercises the stale-heartbeat branch at all. That coverage lives
+    // in test_capture_alias_writer_death_flip, which stamps an ancient
+    // heartbeat without closing and is unaffected by this change.
     jts_ring_writer_close(&w1);
     (void)cap_model_avail(&m, &r);
     uint64_t hw_before = m.alsa_hw_ptr;
@@ -3136,6 +3244,8 @@ int main(void) {
     test_reader_defensive_resync_on_overrun();
     test_reader_ebusy_second_reader();
     test_writer_ebusy_second_writer();
+    test_writer_lock_unopenable_fails_open_and_is_logged();
+    test_writer_lock_survives_a_sigkilled_incumbent();
     test_reader_close_clears_pid_only_if_ours();
     test_reader_epoch_reset_on_writer_reattach();
     test_capture_pointer_advances_on_publish();

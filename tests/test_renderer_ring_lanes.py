@@ -672,3 +672,144 @@ def test_a_magicless_ring_is_left_for_the_writer_to_reclaim(tmp_path, monkeypatc
 
     assert rl.delete_stale_ring("spotify", conf_d=str(LANES_CONF)) is None
     assert pathlib.Path(path).exists()
+
+
+def test_every_detach_reason_has_its_own_remedy():
+    """A remedy-per-token guard, so a P6b-d token cannot ship remedy-less.
+
+    The remedy function used to fall through to the "ring does not exist yet"
+    text for anything it did not name, which sent an operator looking for a
+    missing file when the real cause was an orphaned mapping. A new token added
+    in Rust without a remedy here would silently inherit the same wrong advice.
+    """
+    from jasper.cli import doctor
+
+    rs = (
+        REPO / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
+    ).read_text()
+    block = re.search(
+        r"pub\(super\) const fn as_str\(self\) -> &'static str \{(.*?)\n    \}",
+        rs,
+        re.S,
+    )
+    assert block, "the detach-reason token table moved"
+    tokens = re.findall(r'=> "([a-z_]+)"', block.group(1))
+    assert len(tokens) >= 4, tokens
+
+    remedies = {t: doctor.audio_runtime._ring_detach_remedy(t) for t in tokens}
+    # The fallback text, identified by what only it says.
+    fallback = doctor.audio_runtime._ring_detach_remedy("__no_such_token__")
+    for token, text in remedies.items():
+        assert text, token
+        if token == "unavailable":
+            continue  # unavailable IS the fallback's subject
+        assert text != fallback, (
+            f"detach reason {token!r} has no remedy of its own and falls through "
+            f"to the 'ring does not exist yet' text, which is the wrong advice "
+            f"for it"
+        )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["spotify\x1c", "\x1cspotify", "spotify\x1d", "spotify\x1e", "spotify\x1f"],
+)
+def test_the_label_trim_matches_rusts_not_pythons(raw):
+    """`str.strip()` removes the C0 information separators; `str::trim()` does
+    not, because they are not Unicode White_Space. Measured, that covers 5 of 11
+    separator cases — enough for this parser to call a lane armed that fan-in
+    calls un-armed, off identical bytes. The Python side must keep them."""
+    parsed = rl.parse_armed_labels(raw)
+    assert parsed == (raw,), (
+        f"{raw!r} must survive the trim intact, exactly as Rust's trim() leaves "
+        f"it; got {parsed!r}"
+    )
+
+
+def test_the_label_trim_still_strips_real_whitespace():
+    """The floor for the test above: ordinary whitespace must still go, or the
+    fail-safe empty-value handling breaks."""
+    assert rl.parse_armed_labels("  spotify  ") == ("spotify",)
+    assert rl.parse_armed_labels("\t spotify \n") == ("spotify",)
+    assert rl.parse_armed_labels(" , \t , ") == ()
+
+
+def test_the_rust_parser_uses_trim_not_a_wider_strip():
+    """Pin the Rust side of the same contract."""
+    rs = FANIN_CONFIG_RS.read_text()
+    fn = re.search(r"fn env_csv_labels\(name: &str\) -> Vec<String> \{(.*?)\n\}", rs, re.S)
+    assert fn, "env_csv_labels moved"
+    assert ".map(str::trim)" in fn.group(1)
+
+
+def test_the_effective_geometry_chain_matches_the_fanin_unit():
+    """The preflight models fan-in's env chain; if the unit gains or reorders an
+    EnvironmentFile the model must follow, or the arm approves a geometry the
+    next daemon start will not use."""
+    unit = FANIN_UNIT.read_text()
+    files = re.findall(r"^EnvironmentFile=-?(\S+)", unit, re.M)
+    assert files, "the fan-in unit declares no EnvironmentFile"
+    assert list(rl.FANIN_ENV_CHAIN) == files, (
+        f"renderer_lanes.FANIN_ENV_CHAIN {list(rl.FANIN_ENV_CHAIN)} has drifted "
+        f"from the unit's own order {files}"
+    )
+    for key, default in rl.FANIN_UNIT_DEFAULTS.items():
+        assert f'Environment="{key}={default}"' in unit, (
+            f"{key}'s modelled unit default {default} is not what the unit sets"
+        )
+    # The rest fall through to fan-in's OWN defaults, which live in Rust — a
+    # different source, and one this model must not claim the unit provides.
+    rs = FANIN_CONFIG_RS.read_text()
+    for key, default in rl.FANIN_RUST_DEFAULTS.items():
+        assert re.search(
+            rf'env_u32(?:_positive)?\("{re.escape(key)}", {default}\)', rs
+        ), f"{key}'s modelled Rust default {default} is not what Config uses"
+        assert f'Environment="{key}=' not in unit, (
+            f"{key} is modelled as a Rust default but the unit now sets it too"
+        )
+
+
+def test_the_effective_geometry_prefers_the_later_file(tmp_path):
+    """Later EnvironmentFile beats earlier, and every file beats the in-unit
+    default — the precedence a single-file read gets wrong."""
+    early = tmp_path / "jasper.env"
+    late = tmp_path / "fanin.env"
+    early.write_text("JASPER_FANIN_PERIOD_FRAMES=128\n")
+    late.write_text("JASPER_FANIN_PERIOD_FRAMES=512\n")
+    chain = (str(early), str(late))
+
+    value, source = rl.resolve_effective_fanin_value(
+        "JASPER_FANIN_PERIOD_FRAMES", chain=chain
+    )
+    assert (value, source) == (512, str(late))
+
+    # Absent everywhere -> the unit default, named as such.
+    value, source = rl.resolve_effective_fanin_value(
+        "JASPER_FANIN_INPUT_BUFFER_FRAMES", chain=chain
+    )
+    assert (value, source) == (4096, "unit-default")
+    # A key the unit does NOT set falls through to fan-in's own default, named
+    # as such rather than mislabelled as the unit's.
+    value, source = rl.resolve_effective_fanin_value(
+        "JASPER_FANIN_PERIOD_FRAMES", chain=(str(tmp_path / "absent.env"),)
+    )
+    assert (value, source) == (256, "rust-default")
+
+
+def test_the_arm_refuses_a_period_128_box_by_default(tmp_path):
+    """The B2 box shape, driven through the PREFLIGHT rather than a flag: a box
+    whose env chain says period=128 derives 32 slots and must be refused
+    WITHOUT the operator passing anything."""
+    fanin = tmp_path / "fanin.env"
+    fanin.write_text("JASPER_FANIN_PERIOD_FRAMES=128\n")
+    chain = (str(tmp_path / "jasper.env"), str(fanin))
+
+    buf, per, provenance = rl.effective_lane_geometry(chain=chain)
+    assert (buf, per) == (4096, 128)
+    assert str(fanin) in provenance
+
+    reason = rl.arm_refusal_reason(
+        "spotify", assets_present=True, lane_conf_present=True,
+        user_in_ring_group=True, input_buffer_frames=buf, period_frames=per,
+    )
+    assert reason is not None and "whole-slot" in reason

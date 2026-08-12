@@ -3215,6 +3215,14 @@ def _ring_detach_remedy(reason: str) -> str:
             f"(which leaves a new ring 0640, group-unwritable). Redeploy and "
             "restart the renderer"
         )
+    if reason == "orphaned":
+        return (
+            "the ring at this path was REPLACED while fan-in held it open (an "
+            "arm/disarm, or a geometry change, clears and recreates it). The "
+            "lane re-latches onto the live file on its own within ~2 s, so a "
+            "single sighting is self-healing; persistent means something is "
+            "recreating the ring in a loop"
+        )
     return (
         "the ring file does not exist yet — normal briefly at boot; persistent "
         "means the renderer has never opened its device"

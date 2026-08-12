@@ -11,6 +11,7 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -751,7 +752,11 @@ def _renderer_lane_device_overrides() -> dict[str, str]:
         return {}
     try:
         return rl.fanin_env_expectations()
-    except OSError:
+    except (OSError, ValueError):
+        # Fail-SOFT, as this function's contract says: a torn or malformed map
+        # must degrade to "no opinion" and let the next tier answer, never raise
+        # into a doctor check. ValueError belongs here alongside OSError because
+        # the map is parsed, not just read.
         return {}
 
 
@@ -841,8 +846,25 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
             env_map.update(_parse_systemd_environment(r.stdout))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
-    env_map.update(_unit_runtime_environ(unit))
-    env_map.update(_renderer_lane_device_overrides())
+    observed = _unit_runtime_environ(unit)
+    env_map.update(observed)
+    declared = _renderer_lane_device_overrides()
+    # The map WINS (it is what the next restart will apply), but a disagreement
+    # with what the daemon is actually running is the single most diagnostic
+    # fact available here — it means the unit has not restarted since the lane
+    # was armed or disarmed, which is exactly the half-flip window. Naming it
+    # costs one line; swallowing it leaves an operator comparing a healthy-
+    # looking probe against a lane that is silent.
+    for name, value in declared.items():
+        was = observed.get(name)
+        if was is not None and was != value:
+            logging.warning(
+                "event=renderer_lane.device_disagreement unit=%s key=%s "
+                "lane_map=%s running=%s (the unit has not restarted since the "
+                "lane map changed; the probe follows the map)",
+                unit, name, value, was,
+            )
+    env_map.update(declared)
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1)

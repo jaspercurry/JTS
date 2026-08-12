@@ -258,6 +258,13 @@ pub struct RingMetrics {
 /// Ring A by construction and has no second opener, so there is nothing to
 /// exclude. A ring whose writer is this crate is therefore guarded by the
 /// heartbeat alone, which is why the C reader-side guard still consults it.
+///
+/// **The window moved; it did not vanish.** A SIGKILLed writer's flock drops
+/// with its fd, but SIGKILL leaves `writer_pid` stamped and the heartbeat frozen
+/// at its last publish — so for up to this window the C secondary guard still
+/// refuses a fresh writer. A ring-writing renderer's `RestartSec` must therefore
+/// exceed it: librespot's 5 s clears it, and `jasper-camilla`'s 2 s sits on the
+/// boundary for Ring B.
 pub const WRITER_LIVENESS_TIMEOUT_NS: u64 = 2_000_000_000;
 
 /// One bounded attach budget for the creator's ftruncate + magic publish.

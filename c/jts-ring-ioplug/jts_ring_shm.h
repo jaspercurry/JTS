@@ -102,7 +102,21 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // flowing" the moment a renderer pauses — which is exactly what makes it WRONG
 // as an ownership test, because a paused renderer still owns its device. The
 // lock is fd-scoped, so it holds through a pause and drops automatically when
-// the process dies, with no timing window either way.
+// the process dies.
+//
+// PRECISELY, because "no timing window" would be false: the LOCK is windowless
+// — the kernel releases it with the fd, so a SIGKILLed writer's ring is
+// claimable immediately. The SECONDARY heartbeat guard is NOT. SIGKILL leaves
+// writer_pid stamped and the heartbeat frozen at its last publish, so for up to
+// this window a fresh writer is still refused by foreign_writer_is_live even
+// though the lock is already free. The window did not vanish when the lock
+// landed — it MOVED from the primary guard to the secondary one.
+//
+// So a ring-writing renderer's RestartSec must still exceed this window, or a
+// fast respawn races its own predecessor's frozen heartbeat into an avoidable
+// -EBUSY. librespot's RestartSec=5 clears it comfortably; jasper-camilla's
+// RestartSec=2 sits ON the boundary for Ring B, which is worth knowing before
+// anyone shortens it. Pinned by test_writer_lock_survives_a_sigkilled_incumbent.
 //
 // One consequence worth naming: the two can legitimately disagree. A paused
 // renderer reports `writer_alive:false` while still holding the ring, and that
@@ -209,8 +223,14 @@ typedef struct {
     uint64_t drop_no_reader;   // slots discarded because no live reader
     uint64_t full_waits;       // publish attempts that had to wait for space
     // EXCLUSIVE flock held for the life of this mapping (see
-    // JTS_RING_WRITER_LOCK_SUFFIX). -1 when not held: the guard degrades to the
-    // heartbeat test rather than refusing to open.
+    // JTS_RING_WRITER_LOCK_SUFFIX). -1 means NOT HELD, which happens on exactly
+    // one path: acquire_writer_lock could not open or chmod the lock FILE
+    // (-2 internally), so the open proceeded fail-open on the heartbeat guard
+    // alone and logged `event=jts_ring.writer.lock_unavailable`. A writer that
+    // was REFUSED the lock never gets a struct at all — jts_ring_writer_open
+    // returns -EBUSY before writer_take_mapping. So a live writer with -1 here
+    // is a ring running WITHOUT fd-scoped exclusivity, not merely one that has
+    // not taken it yet.
     int writer_lock_fd;
 } jts_ring_writer_t;
 

@@ -2894,6 +2894,14 @@ mod tests {
                     "unmatched-label rejection must PARK (exit 78), not restart-loop \
                      into StartLimitAction=reboot: {err:#}"
                 );
+                // Bind the assertion to THIS rejection, not merely to "some
+                // config-class error happened". Without it, reordering the
+                // checks so an earlier one fires first would leave this case
+                // untested while the test stayed green.
+                assert!(
+                    format!("{err:#}").contains("not one of this"),
+                    "expected the unmatched-label rejection specifically: {err:#}"
+                );
             },
         );
         // 2. A geometry with no whole-slot expression. period 128 with the
@@ -2910,6 +2918,10 @@ mod tests {
                     err.downcast_ref::<crate::ConfigClassError>().is_some(),
                     "inexpressible-geometry rejection must PARK: {err:#}"
                 );
+                assert!(
+                    format!("{err:#}").contains("whole ring slots"),
+                    "expected the geometry rejection specifically: {err:#}"
+                );
             },
         );
         // 3. A ring lane that is ALSO the armed resampler lane.
@@ -2924,6 +2936,11 @@ mod tests {
                 assert!(
                     err.downcast_ref::<crate::ConfigClassError>().is_some(),
                     "ring+resampler rejection must PARK: {err:#}"
+                );
+                assert!(
+                    format!("{err:#}").contains("armed \nresampler lane")
+                        || format!("{err:#}").contains("resampler lane"),
+                    "expected the ring+resampler rejection specifically: {err:#}"
                 );
             },
         );

@@ -269,6 +269,21 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
     if newly_armed:
         presence = ring_asset_presence()
         lane_conf = os.path.exists(rl.RENDERER_LANES_CONF_D)
+        # Resolve the geometry THE BOX will actually run, from the same env-file
+        # chain jasper-fanin loads — not from this command's defaults. Reading
+        # our own flags would approve a box whose next daemon start uses
+        # different numbers, which is precisely the class the Ring-A
+        # `resolve_effective_fanin_ring_slots` precedent exists to prevent. The
+        # CLI flags remain available as EXPLICIT overrides for an operator
+        # modelling a box other than this one.
+        eff_buffer, eff_period, provenance = rl.effective_lane_geometry()
+        if args.input_buffer_frames is not None:
+            eff_buffer = args.input_buffer_frames
+            provenance += " buffer=cli-override"
+        if args.period_frames is not None:
+            eff_period = args.period_frames
+            provenance += " period=cli-override"
+        print(f"geometry {eff_buffer}/{eff_period} ({provenance})")
         for label in newly_armed:
             lane = rl.lane_by_label(label)
             user = _renderer_unit_user(lane.unit) if lane else None
@@ -280,8 +295,8 @@ def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
                 user_in_ring_group=(
                     rl.renderer_user_in_ring_group(user) if user else None
                 ),
-                input_buffer_frames=args.input_buffer_frames,
-                period_frames=args.period_frames,
+                input_buffer_frames=eff_buffer,
+                period_frames=eff_period,
             )
             if refusal is not None:
                 print(f"refused {label}: {refusal}", file=sys.stderr)
@@ -558,8 +573,10 @@ def build_parser() -> argparse.ArgumentParser:
     # The arm preflights the DERIVED ring geometry so an inexpressible one is
     # refused where the operator is watching, rather than only as a fan-in park
     # at its next start. Defaults are the shipped fan-in geometry.
-    renderer_lanes.add_argument("--input-buffer-frames", type=int, default=4096)
-    renderer_lanes.add_argument("--period-frames", type=int, default=256)
+    # EXPLICIT overrides only. Unset means "resolve what this box will run" via
+    # the fan-in env chain; passing one models a different box on purpose.
+    renderer_lanes.add_argument("--input-buffer-frames", type=int, default=None)
+    renderer_lanes.add_argument("--period-frames", type=int, default=None)
     renderer_lanes.set_defaults(func=_cmd_renderer_lanes)
 
     validate_outputd = sub.add_parser(

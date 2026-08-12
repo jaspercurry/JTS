@@ -959,3 +959,93 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
     )
     assert not owned
     assert "4242" in detail
+
+
+def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_path):
+    """Execute the /proc tier end to end on real bytes.
+
+    This is the tier the B1 fix EXISTS for — `systemctl show` cannot see
+    `EnvironmentFile=` and the lane map only knows lanes it wrote — and it was
+    the one mutation survivor: every other path was covered by a monkeypatched
+    stand-in. Feed it a genuine NUL-delimited environ blob.
+    """
+    from jasper.cli.doctor import renderers as rdoc
+
+    environ = tmp_path / "environ"
+    environ.write_bytes(
+        b"PATH=/usr/bin\x00JASPER_LIBRESPOT_DEVICE=librespot_ring_lane\x00"
+        b"EMPTY=\x00NOEQUALS\x00LANG=C.UTF-8\x00"
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "4242\n"
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    real_path = rdoc.Path
+    monkeypatch.setattr(
+        rdoc, "Path",
+        lambda p: environ if str(p) == "/proc/4242/environ" else real_path(p),
+    )
+
+    env = rdoc._unit_runtime_environ("librespot.service")
+    assert env["JASPER_LIBRESPOT_DEVICE"] == "librespot_ring_lane"
+    assert env["PATH"] == "/usr/bin"
+    assert env["EMPTY"] == "", "an empty value is a value, not an absence"
+    assert "NOEQUALS" not in env, "a malformed entry is dropped, not crashed on"
+
+
+def test_unit_runtime_environ_returns_empty_for_a_parked_unit(monkeypatch):
+    """MainPID 0 means stopped/parked/failed. There is no environ to read, and
+    guessing one would be worse than deferring to the next tier."""
+    from jasper.cli.doctor import renderers as rdoc
+
+    for mainpid in ("0", "", "not-a-pid"):
+        def fake_run(cmd, _v=mainpid, **kwargs):
+            class R:
+                returncode = 0
+                stdout = _v
+            return R()
+
+        monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+        assert rdoc._unit_runtime_environ("librespot.service") == {}, mainpid
+
+
+def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path, caplog):
+    """The docstring promises `/proc` is worth naming as ground truth. When the
+    map's implied device differs from what the daemon is ACTUALLY running, that
+    disagreement is the single most diagnostic fact available — the map wins
+    (it is what the next restart will apply) but the divergence must not be
+    silent."""
+    import logging
+
+    from jasper import renderer_lanes as rl
+    from jasper.cli.doctor import renderers as rdoc
+
+    lanes = str(tmp_path / "renderer_lanes.env")
+    rl.render_renderer_lanes_env(("spotify",), path=lanes)
+    monkeypatch.setattr(rl, "RENDERER_LANES_ENV", lanes)
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = ""
+        return R()
+
+    monkeypatch.setattr(rdoc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        rdoc, "_unit_runtime_environ",
+        lambda unit: {"JASPER_LIBRESPOT_DEVICE": "librespot_substream"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        resolved = rdoc._resolve_systemd_env_vars(
+            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+        )
+    assert resolved == "librespot_ring_lane", "the map wins — it is what restarts apply"
+    assert any(
+        "renderer_lane.device_disagreement" in r.getMessage()
+        for r in caplog.records
+    ), "the map-vs-running disagreement must be surfaced, not swallowed"

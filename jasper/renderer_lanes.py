@@ -32,12 +32,17 @@ last so it beats their in-unit defaults:
 * ``JASPER_<RENDERER>_DEVICE`` — read by the renderer unit's ``ExecStart``;
   selects the ALSA PCM it writes.
 
-Writing them together is what makes a half-flip unrepresentable **in the
-file**. Be precise about what that does and does not buy: neither end is
-restarted by the write, so both keep running their OLD values until each is
-restarted. The transition is atomic ON DISK and NOT atomic in the running
-system — between the two restarts one end has moved and the other has not, and
-that window is silence on the affected lane.
+Writing them together is what makes a half-flip unrepresentable **by this
+writer**. Be precise about the scope, because two other things could still
+produce one: a hand-edit of the file (which is why the rendered header says not
+to), and the restart window below. What this module guarantees is narrower and
+worth stating exactly: *no render this function performs can leave the two keys
+disagreeing.*
+
+Neither end is restarted by the write, so both keep running their OLD values
+until each is restarted. The transition is atomic ON DISK and NOT atomic in the
+running system — between the two restarts one end has moved and the other has
+not, and that window is silence on the affected lane.
 
 That is deliberate, and it is why nothing here restarts anything. A writer that
 restarted one unit would be choosing which end leads and making the window a
@@ -72,6 +77,7 @@ else either (see ``Config::lane_is_renderer_ring``).
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -182,19 +188,45 @@ def renderer_ring_path(label: str) -> str:
     return f"{RING_SHM_DIR}/{RENDERER_RING_PREFIX}{label}.ring"
 
 
+#: Characters Python's ``str.strip()`` removes but Rust's ``str::trim()`` does
+#: NOT. Rust trims the Unicode ``White_Space`` set; Python additionally strips
+#: the C0 information separators. Trimming them here would make the Python
+#: parser accept a label Rust keeps un-trimmed — the two would then disagree
+#: about which lanes are armed, which is a half-flip with no file to blame.
+_RUST_KEEPS = "\x1c\x1d\x1e\x1f"
+
+
+def _rust_trim(s: str) -> str:
+    """``str::trim()`` semantics, exactly — Unicode ``White_Space`` only."""
+    return s.strip("".join(c for c in s if c.isspace() and c not in _RUST_KEEPS)) \
+        if s else s
+
+
 def parse_armed_labels(value: str | None) -> tuple[str, ...]:
     """Parse the armed-lane env value into labels.
 
     Whitespace is trimmed and empty entries are dropped, so ``None``, ``""``,
     ``" "`` and ``",,"`` all mean "nothing armed" — the fail-safe direction for
     a key whose empty value must never be read as "arm everything". Order is
-    preserved and duplicates are NOT collapsed, matching fan-in's own
-    ``env_csv_labels`` so the two parsers cannot disagree about what a
-    malformed value means.
+    preserved and duplicates are NOT collapsed.
+
+    **The trim is Rust's, not Python's.** ``str.strip()`` also removes the C0
+    information separators (``\x1c``-``\x1f``); ``str::trim()`` does not,
+    because they are not Unicode ``White_Space``. Measured, that divergence
+    covers 5 of 11 separator cases — enough for this parser to report a lane
+    armed that fan-in reports un-armed, off the same bytes. So the trim is
+    matched deliberately here, and
+    ``tests/test_renderer_ring_lanes.py`` pins the two against each other on
+    exactly those characters.
     """
     if not value:
         return ()
-    return tuple(part.strip() for part in value.split(",") if part.strip())
+    out = []
+    for part in value.split(","):
+        trimmed = _rust_trim(part)
+        if trimmed:
+            out.append(trimmed)
+    return tuple(out)
 
 
 def read_armed_labels(path: str | None = None) -> tuple[str, ...]:
@@ -260,7 +292,8 @@ def render_env_text(armed: tuple[str, ...]) -> str:
         "# WRITTEN BY jasper.renderer_lanes.render_renderer_lanes_env (via",
         "# `jasper-audio-config renderer-lanes`). Do not hand-edit: this file is",
         "# the single writer's own record of the armed set, and both ends of every",
-        "# lane are derived from it together, so no EDIT can express a half-flip.",
+        "# lane are derived from it together, so no render can leave the two keys",
+        "# disagreeing. A HAND-EDIT can — which is what this line is for.",
         "# The RUNNING system still transitions one unit at a time: both keep their",
         "# old values until restarted, and the gap between the two restarts is",
         "# silence on that lane. Restart jasper-fanin and the renderer together.",
@@ -420,6 +453,70 @@ def arm_refusal_reason(
     return None
 
 
+#: fan-in's env-file chain, in the order `jasper-fanin.service` loads it. LATER
+#: wins, so this list is read back-to-front when resolving an effective value.
+#: Mirrors the unit; `tests/test_renderer_ring_lanes.py` pins it against the
+#: unit's own `EnvironmentFile=` lines.
+FANIN_ENV_CHAIN = (
+    "/etc/jasper/jasper.env",
+    "/var/lib/jasper/fanin.env",
+    RENDERER_LANES_ENV,
+)
+
+#: Defaults that apply when no file in the chain sets the key, with the SOURCE
+#: named — the two are genuinely different places, and conflating them would
+#: make this model claim the unit sets something it does not.
+#:
+#: ``FANIN_UNIT_DEFAULTS`` come from ``Environment=`` lines in
+#: jasper-fanin.service; ``FANIN_RUST_DEFAULTS`` come from ``Config::from_env``'s
+#: own fallbacks in ``rust/jasper-fanin/src/config.rs``. Both are pinned against
+#: their real sources by ``tests/test_renderer_ring_lanes.py``.
+FANIN_UNIT_DEFAULTS = {
+    "JASPER_FANIN_INPUT_BUFFER_FRAMES": 4096,
+}
+FANIN_RUST_DEFAULTS = {
+    "JASPER_FANIN_PERIOD_FRAMES": 256,
+}
+
+
+def resolve_effective_fanin_value(key: str, *, chain=None) -> tuple[int | None, str]:
+    """The value `jasper-fanin` will actually see for `key`, and where from.
+
+    Models the SAME precedence the unit applies — later `EnvironmentFile=` beats
+    earlier, and every file beats the in-unit `Environment=` default — because
+    reading only one file is exactly how a preflight ends up approving a box
+    whose next daemon start uses a different number. That is the failure the
+    Ring-A resolver (`resolve_effective_fanin_ring_slots`) was written for; this
+    is the same shape for the lane-geometry keys.
+
+    Returns `(value, source)`. `value` is `None` only when a present value
+    cannot be parsed as an int, which the caller treats as unknown rather than
+    guessing.
+    """
+    for path in reversed(tuple(chain if chain is not None else FANIN_ENV_CHAIN)):
+        raw = _env_file_value(path, key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw), path
+        except ValueError:
+            return None, path
+    if key in FANIN_UNIT_DEFAULTS:
+        return FANIN_UNIT_DEFAULTS[key], "unit-default"
+    return FANIN_RUST_DEFAULTS.get(key), "rust-default"
+
+
+def effective_lane_geometry(*, chain=None) -> tuple[int | None, int | None, str]:
+    """`(input_buffer_frames, period_frames, provenance)` for THIS box."""
+    buf, buf_src = resolve_effective_fanin_value(
+        "JASPER_FANIN_INPUT_BUFFER_FRAMES", chain=chain
+    )
+    per, per_src = resolve_effective_fanin_value(
+        "JASPER_FANIN_PERIOD_FRAMES", chain=chain
+    )
+    return buf, per, f"buffer={buf_src} period={per_src}"
+
+
 def renderer_ring_slots(input_buffer_frames: int, period_frames: int) -> int | None:
     """Slots for a renderer ring — MIRRORS ``jasper_fanin::config::renderer_ring_slots``.
 
@@ -502,15 +599,32 @@ def delete_stale_ring(label: str, *, conf_d: str | None = None) -> str | None:
     path = renderer_ring_path(label)
     try:
         os.unlink(path)
-    except OSError:
+    except OSError as e:
         # The writer's own attach error is the backstop; never raise from a
-        # best-effort self-heal.
+        # best-effort self-heal. But a delete that FAILED is worth a line: the
+        # lane will keep refusing its attach and nothing else says why.
+        logging.warning(
+            "event=renderer_lane.stale_ring_delete_failed label=%s path=%s "
+            "errno=%s detail=%s",
+            label, path, getattr(e, "errno", "?"), e,
+        )
         return None
-    for suffix in (".open.lock",):
-        try:
-            os.unlink(path + suffix)
-        except OSError:
-            pass
+    # DELIBERATELY unlinks the ring FILE ONLY.
+    #
+    # NOT `<path>.open.lock`, and NOT `<path>.writer.lock`. The named precedent
+    # (`_delete_stale_ring_files`) unlinks only the ring for the same reason:
+    # those two files are the cross-language MUTEXES that make a concurrent
+    # create-or-attach safe, and deleting one opens an inode-tear window — a
+    # holder keeps its flock on the now-unlinked inode while the next opener
+    # creates a fresh file and locks THAT, so two processes hold "exclusive"
+    # locks on different inodes and neither excludes the other. It buys nothing:
+    # a lock file carries no geometry, so it is never the thing that is stale.
+    logging.warning(
+        "event=renderer_lane.stale_ring_cleared label=%s path=%s axis=%s "
+        "detail=%s (a ring from a prior geometry cannot attach; cleared so the "
+        "next open recreates it)",
+        label, path, verdict.axis or "geometry", verdict.detail or "",
+    )
     axis = verdict.axis or "geometry"
     return f"{axis} mismatch{f': {verdict.detail}' if verdict.detail else ''}"
 
