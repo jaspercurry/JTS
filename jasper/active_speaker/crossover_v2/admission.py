@@ -384,7 +384,10 @@ def assess_begin(
     # above leaves no ledger entry behind for a capture that never started.
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
-    if last_reason in non_retriable:
+    # The ``is not None`` half narrows the code this returns and changes no
+    # answer: the flow passes a ``frozenset[str]``, in which ``None`` is never
+    # a member, so the membership test alone already excluded it.
+    if last_reason is not None and last_reason in non_retriable:
         # Not exhaustion — a condition another take cannot clear. Its own copy
         # already names the one action that helps, so the flow publishes it
         # unchanged (and it never promised "measure again").
