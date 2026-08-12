@@ -1,5 +1,5 @@
 [Unit]
-Description=CamillaGUI public-facing listener (5005, idle-exit via proxy)
+Description=CamillaGUI loopback listener (5005, idle-exit via proxy)
 # When a connection arrives, systemd activates camillagui-proxy.service.
 # The proxy forwards to camillagui_backend on 127.0.0.1:5006, then exits
 # after --exit-idle-time of no traffic. StopWhenUnneeded on the backend
@@ -8,7 +8,14 @@ Description=CamillaGUI public-facing listener (5005, idle-exit via proxy)
 # the systemd-socket-proxyd pattern.
 
 [Socket]
-ListenStream=0.0.0.0:5005
+# Loopback-only (#2319): this proxy is the sole externally-reachable half
+# of CamillaGUI — the backend it forwards to already bound 127.0.0.1:5006
+# (deploy/camillagui/config.yml). A LAN-wide 0.0.0.0:5005 bind let any
+# device on the network reach an unauthenticated root-backed service that
+# can author and live-apply new CamillaDSP configs naming any device
+# (ReadWritePaths=/etc/camilladsp). Reach the GUI from a laptop with
+# `ssh -L 5005:localhost:5005 <pi-host>` then browse http://localhost:5005/.
+ListenStream=127.0.0.1:5005
 # Accept=no — single proxy instance per socket, not per connection.
 Accept=no
 # By default systemd activates the .service of the same basename as

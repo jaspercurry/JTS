@@ -11,11 +11,12 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from ...control import control_token
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import CheckResult, _run
 
 def _manifest_entries(manifest: Path) -> list[str]:
     """Relative asset paths from the installer-written manifest.
@@ -248,3 +249,104 @@ def check_conversation_history() -> CheckResult:
         )
     finally:
         store.close()
+
+
+# Probe target for check_camillagui_loopback (#2319). Module constant,
+# mirroring MANAGEMENT_PROBE_URL above, so tests can point elsewhere;
+# matches deploy/systemd/camillagui.socket's ListenStream port.
+CAMILLAGUI_PORT = 5005
+_LOOPBACK_BIND_ADDRESSES = frozenset({"127.0.0.1", "[::1]"})
+
+
+def _camillagui_listen_addresses() -> list[str] | None:
+    """Local bind addresses of any live LISTEN socket on CAMILLAGUI_PORT.
+
+    Reads the kernel's actual socket table via `ss`, not the unit file.
+    `systemctl show camillagui.socket -p Listen` reflects the *parsed
+    configuration* — it updates the instant `daemon-reload` re-reads a
+    changed ListenStream=, even before the socket unit is restarted — so it
+    cannot distinguish a genuinely-rebound listener from one still holding
+    its pre-upgrade fd open. That gap is exactly the failure mode this
+    check exists to catch: install.sh's `install_camillagui` restarts (not
+    just starts/enables) the socket on every deploy specifically so a
+    ListenStream= change actually re-binds; `ss` is the ground truth that
+    proves the restart worked rather than trusting it did.
+
+    Returns None when the `ss` probe itself fails (not found, not
+    executable, a transient fork/resource failure, non-zero exit) so the
+    caller can report "can't verify" rather than silently reading a failed
+    probe as "nothing listening". `OSError` (not just `FileNotFoundError`)
+    is caught so a non-executable `ss` (PermissionError) or a fork failure
+    under memory pressure (OSError ENOMEM) also degrades to warn rather
+    than crashing the whole doctor run — the package's majority convention
+    for subprocess probes like this one (see jasper/cli/doctor/memory.py,
+    correction.py). Returns [] when the probe ran cleanly and found no
+    LISTEN socket on the port — covers both "never installed" and
+    "administratively stopped" (e.g. a hardware runbook's precautionary
+    `systemctl stop camillagui.socket`); either way there is no live
+    exposure to warn about."""
+    try:
+        proc = _run(["ss", "-H", "-ltn"], timeout=5.0)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    addresses: list[str] = []
+    for line in proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[0] != "LISTEN":
+            continue
+        # "Local Address:Port" — rpartition on the LAST colon so a
+        # bracketed IPv6 address (which contains colons of its own, e.g.
+        # "[::1]:5005") still splits into the right (addr, port) pair.
+        addr, _, port = fields[3].rpartition(":")
+        if port == str(CAMILLAGUI_PORT):
+            addresses.append(addr)
+    return addresses
+
+
+@doctor_check(order=24.81, group="web")
+def check_camillagui_loopback() -> CheckResult:
+    """CamillaGUI's externally-reachable socket must bind loopback-only.
+
+    #2319: camillagui.socket used to bind 0.0.0.0:5005 directly — an
+    unauthenticated, root-backed listener (ReadWritePaths=/etc/camilladsp)
+    that can author new CamillaDSP configs naming any device and live-apply
+    a graph over CamillaDSP's websocket, reachable from any device on the
+    LAN. The shipped unit now binds 127.0.0.1:5005 instead; reach the GUI
+    with `ssh -L 5005:localhost:5005 <pi-host>` then browse
+    http://localhost:5005/ from the laptop.
+
+    Probes the LIVE kernel-level bind via `ss` (see
+    `_camillagui_listen_addresses`), not the unit file, so a restart that
+    silently fails to re-bind is caught rather than masked. Warn, not fail
+    — matches `check_household_secret_readable`'s convention for a security
+    posture that has silently degraded without breaking product function
+    (jasper-doctor's exit code is driven by fails, not warns). Not
+    currently listening is ok, not a failure: it covers both "never
+    installed" (an arch without a CamillaGUI bundle) and "administratively
+    stopped" (e.g. the jts3 hardware runbooks' precaution of stopping the
+    socket for a measurement sequence) — neither is a live exposure."""
+    label = "CamillaGUI socket bind"
+    addresses = _camillagui_listen_addresses()
+    if addresses is None:
+        return CheckResult(
+            label, "warn", "`ss` probe failed — can't verify bind posture",
+        )
+    if not addresses:
+        return CheckResult(label, "ok", "not currently listening")
+    non_loopback = sorted({a for a in addresses if a not in _LOOPBACK_BIND_ADDRESSES})
+    if non_loopback:
+        shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in non_loopback)
+        return CheckResult(
+            label, "warn",
+            f"listening on {shown}, not loopback-only — an unauthenticated, "
+            "root-backed CamillaDSP config editor is LAN-reachable (#2319); "
+            "redeploy, or `systemctl restart camillagui.socket`, to "
+            "re-apply the shipped 127.0.0.1 bind",
+        )
+    # Derived from the observed bind, not hardcoded to "127.0.0.1" — an
+    # [::1]-only bind is equally loopback-only and must not be misreported
+    # as an IPv4 address that isn't actually listening.
+    shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in sorted(set(addresses)))
+    return CheckResult(label, "ok", f"loopback-only ({shown})")

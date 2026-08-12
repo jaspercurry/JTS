@@ -1509,9 +1509,10 @@ never redirected.
   returns a debug-safe action result with config basename rather than
   raw paths.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
-  of v1 — `camillagui.service` runs at port 5005, linked from the
-  landing page. No additional work required for the originally
-  scoped Phase 3.
+  of v1 — `camillagui.service` runs at port 5005, reachable via SSH
+  tunnel (loopback-only, not linked from the landing page, since
+  #2319). No additional work required for the originally scoped
+  Phase 3.
 - ⏳ **Phase 4 — REW interop.** Partially started. Generic export
   landed in Phase 2.12; import/upload of external filter designs and a
   documented REW round-trip remain outstanding.

@@ -2048,9 +2048,13 @@ install_camillagui() {
     # file management. We use the prebuilt PyInstaller bundle from the
     # upstream release rather than a venv/source install — bundle is
     # self-contained (Python 3.12 + frontend assets baked in), no apt
-    # deps, no pip resolution. Listens on 0.0.0.0:5005 directly like the
-    # other unauthenticated, home-LAN-only management surfaces. The landing
-    # page links straight to http://${HOSTNAME}:5005.
+    # deps, no pip resolution. Loopback-only since #2319
+    # (deploy/systemd/camillagui.socket binds 127.0.0.1:5005) — unlike
+    # the other unauthenticated, home-LAN-only management surfaces, this
+    # one can author and live-apply CamillaDSP configs naming any device,
+    # so it is not LAN-reachable. The landing page has no link to it (a
+    # link that always connection-refuses is a silent failure); reach it
+    # with `ssh -L 5005:localhost:5005 <pi-host>`.
     local CAMILLAGUI_VERSION="4.1.0"
     local CAMILLAGUI_DIR="/opt/camillagui"
     local arch bundle bundle_sha256
@@ -2133,8 +2137,18 @@ install_camillagui() {
     systemctl stop camillagui.service 2>/dev/null || true
 
     systemctl daemon-reload
-    systemctl enable --now camillagui.socket
-    echo "  CamillaGUI listening on :5005 via socket-activated proxy"
+    systemctl enable camillagui.socket
+    # Restart (not just start/enable --now) so a ListenStream= change on
+    # upgrade — e.g. the #2319 loopback rebind — actually takes effect. A
+    # bare `start` is a no-op when the socket is already active from a
+    # prior install and would silently leave the old bind (0.0.0.0:5005)
+    # live until the next reboot: the same trap AGENTS.md documents for
+    # jasper-web.socket (PR #118). Not swallowed with `|| true` like the
+    # wizard-socket loop's restart — a failed rebind here leaves a
+    # security-relevant posture unchanged (still LAN-reachable) and should
+    # abort the install loudly rather than continue past it silently.
+    systemctl restart camillagui.socket
+    echo "  CamillaGUI listening on 127.0.0.1:5005 via socket-activated proxy"
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 

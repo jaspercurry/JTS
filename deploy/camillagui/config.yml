@@ -16,14 +16,15 @@
 camilla_host: "127.0.0.1"
 camilla_port: 1234
 
-# Bind loopback-only — the LAN-facing endpoint is :5005, served by
-# systemd-socket-proxyd (camillagui-proxy.service) which forwards
-# to us here on 5006. The proxy enables socket-activation +
-# idle-exit so this backend can shut down between admin sessions,
-# reclaiming ~50 MB Pss the Python interpreter holds onto. Direct
-# bind on 0.0.0.0:5005 (as in earlier installs) would keep us
-# resident 24/7. Security parity with /spotify and /voice is
-# unchanged — :5005 stays unauthenticated, home-LAN-only.
+# Bind loopback-only — the externally-addressed port is :5005, served by
+# systemd-socket-proxyd (camillagui-proxy.service) which forwards to us
+# here on 5006. The proxy enables socket-activation + idle-exit so this
+# backend can shut down between admin sessions, reclaiming ~50 MB Pss the
+# Python interpreter holds onto. Direct bind on 0.0.0.0:5005 (as in
+# earlier installs) would keep us resident 24/7. Since #2319,
+# camillagui.socket's own ListenStream= is ALSO loopback-only
+# (127.0.0.1:5005) — reach the GUI with `ssh -L 5005:localhost:5005
+# <pi-host>`, not from another device on the LAN.
 bind_address: "127.0.0.1"
 port: 5006
 
