@@ -341,8 +341,11 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
 def test_a_context_cannot_be_built_from_sections_naming_two_corners():
     """The 2026-08-10 shape, refused at construction rather than planned.
 
-    Not a message check: the refusal is a *type*, which is what
-    ``planner_facade`` classifies on.
+    Not a message check: the refusal is a *type*, so a caller classifies on the
+    exception class rather than on its wording. (The classifier of record was
+    the Phase-1 ``planner_facade``, deleted in #2291 Phase 5c-iii; the property
+    this test pins is the contract's, not that consumer's, which is why it
+    outlived it.)
     """
     from jasper.active_speaker.crossover_v2.contracts import (
         CandidateFcDisagreementError,

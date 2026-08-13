@@ -6442,9 +6442,13 @@ class CrossoverV2Conductor:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
             # deeper and one line later (``_build_candidate``'s own identical
-            # check, still there as the residual) — same exception, same
-            # message, same phase, so the host's ``internal_error`` mapping is
-            # unchanged. Hoisting it is what keeps that behaviour at MEASURE:
+            # check, still there — and kept deliberately, see its own note) —
+            # same exception, same message, same phase, so the host's
+            # ``program_unplayable`` mapping is unchanged. (That mapping was
+            # named ``internal_error`` here until #2291 Phase 5c-iii; the whole
+            # program/admission/flow family was folded into one code until
+            # #1820 defect 4 split it, and this comment had not caught up.)
+            # Hoisting it is what keeps that behaviour at MEASURE:
             # the candidate build now happens eight captures later, and a
             # household must not walk the whole cloud for a session that was
             # already unable to produce a candidate at sweep two.

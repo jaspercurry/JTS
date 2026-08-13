@@ -18,13 +18,17 @@ fields whose only reader was each other.  Sequencing is exactly what a
 coordinator is, so it moved here whole rather than being split across a class
 that also owns capture choreography.
 
-**What this module is, that its siblings are not.**  Every other module in this
-package is side-effect-free.  This one calls seams and writes journal lines,
-because "restore the previous graph and record what happened" is not a pure
-question.  The boundary it keeps instead is narrower and stated here so it can
-be checked: it holds **no session state** (every input arrives as an argument,
-every output leaves as a return value), it reaches **no host object** (only the
-five callables in :class:`RoundPorts`), and it owns **no household vocabulary**
+**What this module is, that its siblings are not.**  It is the only one that
+CHANGES THE SPEAKER: "restore the previous graph and record what happened" is
+not a pure question, so this module calls seams that act.  (Emitting a log line
+is not the distinction — :mod:`.planning` and :mod:`.vocabulary` both write one
+too.  This module's own text said "every other module in this package is
+side-effect-free" until #2291 Phase 5c-iii; that was too strong, and the
+narrower claim is the one worth checking.)  The boundary it keeps is stated
+here so it can be checked: it holds **no session state** (every input arrives
+as an argument, every output leaves as a return value), it reaches **no host
+object** (only the five callables in :class:`RoundPorts`), and it owns **no
+household vocabulary**
 — a refusal leaves as :class:`RoundRefusal`, a typed *kind*, and the flow maps
 it to the ``REASON_REGISTRY`` code whose copy the household reads.  That last
 line is why :func:`run_round` can live outside the flow at all.  Its original

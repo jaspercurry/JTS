@@ -157,6 +157,14 @@ def test_the_flow_defines_none_of_the_moved_names_itself():
     owner's value changed. This reads the flow's SOURCE instead of its runtime
     namespace: no ``def``/``class``/assignment may re-declare a moved name. The
     only permitted binding is the ``from ... import X as X`` door.
+
+    Walked at ANY nesting depth, not just module level (#2291 Phase 5c-iii,
+    closing the #2391 gate's note N3). The traversal was ``tree.body`` while
+    this docstring already promised "no ``def``/``class``/assignment" without
+    qualification. No coverage gap existed — the identity test above catches a
+    nested re-declaration the moment it shadows, which the gate proved with a
+    planted nested shape — so this aligns the guard to its own stated claim
+    rather than fixing a hole.
     """
 
     src = pathlib.Path(flow.__file__).read_text(encoding="utf-8")
@@ -164,7 +172,7 @@ def test_the_flow_defines_none_of_the_moved_names_itself():
     moved = {s for names in MOVED_NAMES.values() for s in names}
 
     redefined: list[str] = []
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name in moved:
                 redefined.append(node.name)
