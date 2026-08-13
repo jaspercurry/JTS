@@ -3168,6 +3168,19 @@ def check_renderer_ring_lanes() -> CheckResult:
         startup = ring.get("startup_empty_reads") or 0
         frames = entry.get("frames_read") or 0
         if not frames and startup:
+            if _ring_lane_is_on_demand(lane_label):
+                # An on-demand lane (correction — ephemeral aplay writers,
+                # U3/P6c) is fed only while a measurement is playing, so
+                # armed-attached-never-fed is its RESTING state between
+                # measurements — the same "not a fault" class as a paused
+                # renderer, not the daemon-renderer wiring failure the WARN
+                # below diagnoses. Warning here would put a standing false
+                # warning on every armed box.
+                healthy.append(
+                    f"{lane_label}(attached, on-demand, no measurement "
+                    "played yet)"
+                )
+                continue
             problems.append(
                 f"{lane_label}: attached but NEVER FED (startup_empty_reads="
                 f"{startup}, frames_read=0) — the renderer has not opened its "
@@ -3197,11 +3210,34 @@ def rl_source_ring() -> str:
     return FANIN_INPUT_SOURCE_RING
 
 
-def _ring_lane_unit(label: str) -> str:
+def _ring_lane_is_on_demand(label: str) -> bool:
+    """Whether this lane's writers are ephemeral spawns (no renderer unit).
+
+    Unitless lanes (correction, U3/P6c) are fed only while a measurement
+    plays; the never-fed WARN's daemon-renderer wiring diagnosis does not
+    apply to them.
+    """
     from jasper import renderer_lanes as rl
 
     lane = rl.lane_by_label(label)
-    return lane.unit if lane else "the renderer"
+    return lane is not None and lane.unit is None
+
+
+def _ring_lane_unit(label: str) -> str:
+    """The restartable thing a lane's remedy strings should name.
+
+    Only unit-ful lanes reach the never-fed remedy (on-demand lanes branch
+    off before it), but the fallbacks stay total so a remedy string can
+    never interpolate ``None``.
+    """
+    from jasper import renderer_lanes as rl
+
+    lane = rl.lane_by_label(label)
+    if lane is None:
+        return "the renderer"
+    if lane.unit is None:
+        return f"{lane.renderer} (spawn-time writers; nothing to restart)"
+    return lane.unit
 
 
 def _ring_detach_remedy(reason: str) -> str:
